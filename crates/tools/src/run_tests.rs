@@ -77,6 +77,7 @@ pub(crate) async fn execute_run_tests(
     let revision_before = capture_workspace_revision(context.workspace()).await;
     let output = run_cargo(context, shell, &command, &args, RUN_TESTS_TIMEOUT_MS).await?;
     let exit_code = output.exit_code.unwrap_or(-1);
+    let exited_with_failure = output.status == ShellStatus::Failed;
     let mut stderr_raw = output.stderr;
     let canceled = output.status == ShellStatus::Killed
         && context
@@ -125,8 +126,13 @@ pub(crate) async fn execute_run_tests(
         metadata.insert("summary".to_string(), Value::String(summary.summary));
         metadata.insert("cargo_failure_summary".to_string(), summary_metadata);
     }
-    if outcome.is_success() && verification_usable {
+    if verification_usable && (outcome.is_success() || exited_with_failure) {
         let revision_after = capture_workspace_revision(context.workspace()).await;
+        let verdict = if outcome.is_success() {
+            codewhale_protocol::task::VerifierVerdict::Passed
+        } else {
+            codewhale_protocol::task::VerifierVerdict::Failed
+        };
         attach_verifier_observation(
             &mut outcome,
             VerifierSpec {
@@ -146,9 +152,10 @@ pub(crate) async fn execute_run_tests(
                     }],
                 },
             },
+            verdict,
             format!(
-                "cargo test passed {} test(s) with exit code {}",
-                evidence.passed, result.exit_code
+                "cargo test observed {} passed and {} failed test(s) with exit code {}",
+                evidence.passed, evidence.failed, result.exit_code
             ),
             revision_before,
             revision_after,
@@ -388,6 +395,36 @@ mod tests {
             observation.spec.plan.steps[0].args,
             vec!["test", "--locked"]
         );
+    }
+
+    #[tokio::test]
+    async fn real_cargo_failure_produces_revision_bound_failed_observation() {
+        let workspace = rust_workspace(true);
+        std::fs::write(
+            workspace.path().join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n#[cfg(test)] mod tests { #[test] fn adds() { assert_eq!(super::add(1, 2), 4); } }\n",
+        )
+        .unwrap();
+        let context = ProductionToolContext::new(workspace.path());
+        let outcome = execute_run_tests(
+            json!({"args": ["--locked"]}),
+            &context,
+            &shell(workspace.path()),
+        )
+        .await
+        .unwrap();
+
+        assert!(!outcome.is_success());
+        assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
+        assert_eq!(outcome.artifacts.len(), 1);
+        assert_eq!(
+            outcome
+                .verifier_observation
+                .as_ref()
+                .map(|value| value.verdict),
+            Some(codewhale_protocol::task::VerifierVerdict::Failed)
+        );
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::Indeterminate);
     }
 
     #[tokio::test]

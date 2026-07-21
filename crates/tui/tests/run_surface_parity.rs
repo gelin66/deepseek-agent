@@ -38,9 +38,9 @@ use codewhale_protocol::run_api::{
 };
 use codewhale_protocol::task::{
     AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
-    EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract, TaskDefinition,
-    TaskGenerationId, VerificationId, VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
-    WorkspaceState,
+    EvidenceLineage, EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract,
+    TaskDefinition, TaskGenerationId, VerificationId, VerifierEvidencePolicy, VerifierPlan,
+    VerifierSpec, VerifierStep, WorkspaceRevision, WorkspaceState,
 };
 use codewhale_runtime::{RunReplay, RunStore};
 use codewhale_state::StateStore;
@@ -826,6 +826,7 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
             acceptance: vec![TaskAcceptance::Verifier {
                 id: AcceptanceId::from("writer-tests"),
                 description: "writer 测试必须通过".to_owned(),
+                evidence_policy: VerifierEvidencePolicy::LatestPass,
                 verifier: verifier.clone(),
             }],
         },
@@ -868,6 +869,7 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
         verifier,
         workspace_state: writer_workspace_state(4, WRITER_FINAL_COMMIT),
         artifact_ids: vec!["writer-diff".to_owned()],
+        lineage: EvidenceLineage::LatestPass,
     };
     let outcome_accounting = writer_outcome_accounting();
     let awaiting_outcome = writer_outcome(
@@ -1018,6 +1020,7 @@ fn writer_outcome(
                 sha256: Some(WRITER_DIFF_SHA256.to_owned()),
                 media_type: Some("text/x-diff".to_owned()),
                 byte_len: Some(128),
+                inline_content: None,
             }],
             workspace: Some(task.workspace.clone()),
             workspace_state: Some(writer_workspace_state(4, WRITER_FINAL_COMMIT)),

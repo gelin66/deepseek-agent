@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 16;
+const STATE_SCHEMA_VERSION: u32 = 17;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -322,6 +322,17 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-Writer-admission canonical run state")?;
         }
+        if user_version < 17 {
+            // RuntimeEvent v12 makes verifier evidence policy and temporal
+            // progress mandatory canonical facts. Retire v11 rows rather
+            // than guessing lineage for historical runs.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                tx.execute("DELETE FROM agent_run_creations", [])
+                    .context("failed to retire pre-temporal-evidence creation state")?;
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-temporal-evidence canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -467,6 +478,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 16)
                 .context("failed to commit Writer admission state cutover")?;
             user_version = 16;
+        }
+        if user_version < 17 {
+            tx.pragma_update(None, "user_version", 17)
+                .context("failed to commit temporal evidence state cutover")?;
+            user_version = 17;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

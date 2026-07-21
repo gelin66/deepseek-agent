@@ -22,9 +22,9 @@ use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::{
-    AcceptanceId, TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId,
-    VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
-    WorkspaceRevision,
+    AcceptanceId, EvidenceLineage, TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId,
+    VerifierEvidencePolicy, VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep,
+    VerifierVerdict, WorkspaceRevision,
 };
 use codewhale_runtime::{
     AGENT_TOOL_NAME, ActorRequestAccounting, AgentActorKind, AgentControl, AgentOrchestrationError,
@@ -34,10 +34,11 @@ use codewhale_runtime::{
     ModelPortError, ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink,
     PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RunStoreError,
     RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage,
-    TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolArtifactStatus,
-    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolExecutionError, ToolExecutor,
-    ToolInvocation, ToolOutcome, Usage, UserInteractionResponse, WorkspaceState, WriterBinding,
-    WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation, WriterSeal, reduce_events,
+    TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolDefinition, ToolEvidence,
+    ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
+    UserInteractionResponse, VerificationArtifactPayload, WorkspaceState, WriteExecutionMode,
+    WriterBinding, WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation, WriterSeal,
+    reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -54,15 +55,15 @@ const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
 const CREATE_COMMAND_SHA256: &str = "sha256:process-crash-create-payload";
 const TOOL_NAME: &str = "write_marker";
+const TEMPORAL_WRITE_TOOL: &str = "temporal_write";
 const HOST_VERIFIER_ACCEPTANCE_ID: &str = "process-crash-verifier";
 const HOST_VERIFIER_REVISION: &str = "sha256:process-crash-workspace";
-const HOST_VERIFIER_ARTIFACT_ID: &str = "process-crash-verifier-artifact";
+const TEMPORAL_BROKEN_REVISION: &str = "sha256:process-crash-broken";
+const TEMPORAL_FIXED_REVISION: &str = "sha256:process-crash-fixed";
 const WRITER_BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const WRITER_FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const WRITER_DIRTY_REVISION: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-const WRITER_ARTIFACT_SHA256: &str =
-    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const WRITER_ROOT_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-root";
 const WRITER_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-owned";
@@ -132,6 +133,18 @@ fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
         CrashScenario::HostVerificationPrepared
             | CrashScenario::HostVerificationInFlight
             | CrashScenario::HostVerificationCommitted
+            | CrashScenario::TemporalFailureCommitted
+            | CrashScenario::TemporalMutationCommitted
+            | CrashScenario::TemporalHostVerificationCommitted
+    )
+}
+
+fn is_temporal_verification_scenario(scenario: CrashScenario) -> bool {
+    matches!(
+        scenario,
+        CrashScenario::TemporalFailureCommitted
+            | CrashScenario::TemporalMutationCommitted
+            | CrashScenario::TemporalHostVerificationCommitted
     )
 }
 
@@ -149,6 +162,7 @@ fn is_writer_scenario(scenario: CrashScenario) -> bool {
             | CrashScenario::WriterIntegrationCommitted
             | CrashScenario::WriterCleanupPrepared
             | CrashScenario::WriterCleanupSideEffect
+            | CrashScenario::WriterDelegatedReceiptCommitted
     )
 }
 
@@ -168,6 +182,9 @@ enum CrashScenario {
     HostVerificationPrepared,
     HostVerificationInFlight,
     HostVerificationCommitted,
+    TemporalFailureCommitted,
+    TemporalMutationCommitted,
+    TemporalHostVerificationCommitted,
     WriterTaskPrepared,
     WriterCreateSideEffect,
     WriterRunning,
@@ -179,6 +196,7 @@ enum CrashScenario {
     WriterIntegrationCommitted,
     WriterCleanupPrepared,
     WriterCleanupSideEffect,
+    WriterDelegatedReceiptCommitted,
     CreationReserved,
     TerminalCommitted,
 }
@@ -200,6 +218,9 @@ impl CrashScenario {
             Self::HostVerificationPrepared => "host_verification_prepared",
             Self::HostVerificationInFlight => "host_verification_in_flight",
             Self::HostVerificationCommitted => "host_verification_committed",
+            Self::TemporalFailureCommitted => "temporal_failure_committed",
+            Self::TemporalMutationCommitted => "temporal_mutation_committed",
+            Self::TemporalHostVerificationCommitted => "temporal_host_verification_committed",
             Self::WriterTaskPrepared => "writer_task_prepared",
             Self::WriterCreateSideEffect => "writer_create_side_effect",
             Self::WriterRunning => "writer_running",
@@ -211,6 +232,7 @@ impl CrashScenario {
             Self::WriterIntegrationCommitted => "writer_integration_committed",
             Self::WriterCleanupPrepared => "writer_cleanup_prepared",
             Self::WriterCleanupSideEffect => "writer_cleanup_side_effect",
+            Self::WriterDelegatedReceiptCommitted => "writer_delegated_receipt_committed",
             Self::CreationReserved => "creation_reserved",
             Self::TerminalCommitted => "terminal_committed",
         }
@@ -232,6 +254,9 @@ impl CrashScenario {
             "host_verification_prepared" => Self::HostVerificationPrepared,
             "host_verification_in_flight" => Self::HostVerificationInFlight,
             "host_verification_committed" => Self::HostVerificationCommitted,
+            "temporal_failure_committed" => Self::TemporalFailureCommitted,
+            "temporal_mutation_committed" => Self::TemporalMutationCommitted,
+            "temporal_host_verification_committed" => Self::TemporalHostVerificationCommitted,
             "writer_task_prepared" => Self::WriterTaskPrepared,
             "writer_create_side_effect" => Self::WriterCreateSideEffect,
             "writer_running" => Self::WriterRunning,
@@ -243,6 +268,7 @@ impl CrashScenario {
             "writer_integration_committed" => Self::WriterIntegrationCommitted,
             "writer_cleanup_prepared" => Self::WriterCleanupPrepared,
             "writer_cleanup_side_effect" => Self::WriterCleanupSideEffect,
+            "writer_delegated_receipt_committed" => Self::WriterDelegatedReceiptCommitted,
             "creation_reserved" => Self::CreationReserved,
             "terminal_committed" => Self::TerminalCommitted,
             other => panic!("unknown crash test scenario: {other}"),
@@ -402,7 +428,7 @@ impl CrashFixture {
         scenario: CrashScenario,
     ) -> (Arc<AgentRuntime>, Arc<StateStore>, Arc<WriterMarkerModel>) {
         let store = Arc::new(StateStore::open(Some(self.db.clone())).expect("reopen SQLite store"));
-        let model = Arc::new(WriterMarkerModel::new(self.model_marker.clone()));
+        let model = Arc::new(WriterMarkerModel::new(self.model_marker.clone(), scenario));
         let root_tools = Arc::new(ProcessWriterTools::root(
             self.tool_marker.clone(),
             self.writer_marker.clone(),
@@ -487,13 +513,35 @@ impl ModelPort for MarkerModel {
                 Some(ModelMessage::User { content }) if content.starts_with("## 当前 Host 事实")
             ));
         }
-        let request_number = marker_count(&self.marker);
-        append_marker(&self.marker, "request");
+        let temporal = is_temporal_verification_scenario(self.scenario);
+        let request_number = if temporal {
+            request.request_number.saturating_sub(1) as usize
+        } else {
+            marker_count(&self.marker)
+        };
+        let request_marker = if temporal {
+            format!("temporal-model:{}", request.request_number)
+        } else {
+            "request".to_owned()
+        };
+        append_marker(&self.marker, &request_marker);
         self.ledger.started.fetch_add(1, Ordering::AcqRel);
         if self.scenario == CrashScenario::SteerQueued {
             return Ok(Box::new(PendingStream));
         }
-        let output = if matches!(
+        let output = if is_temporal_verification_scenario(self.scenario) && request_number == 1 {
+            ModelOutput {
+                content: String::new(),
+                reasoning_content: Some("根据已持久化的失败事实修复工作区".to_owned()),
+                tool_calls: vec![ModelToolCall {
+                    id: "temporal-write-call".to_owned(),
+                    name: TEMPORAL_WRITE_TOOL.to_owned(),
+                    arguments: ToolArguments::parse("{}"),
+                }],
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: one_usage(),
+            }
+        } else if matches!(
             self.scenario,
             CrashScenario::ToolInFlight | CrashScenario::ToolInFlightControlRequested
         ) || matches!(
@@ -594,14 +642,16 @@ impl ModelStream for OneShotStream {
 
 struct WriterMarkerModel {
     marker: PathBuf,
+    scenario: CrashScenario,
     ledger: Arc<ModelLedger>,
     observed_requests: Mutex<Vec<ModelRequest>>,
 }
 
 impl WriterMarkerModel {
-    fn new(marker: PathBuf) -> Self {
+    fn new(marker: PathBuf, scenario: CrashScenario) -> Self {
         Self {
             marker,
+            scenario,
             ledger: Arc::new(ModelLedger::default()),
             observed_requests: Mutex::new(Vec::new()),
         }
@@ -630,6 +680,7 @@ impl ModelPort for WriterMarkerModel {
             },
         );
         self.ledger.started.fetch_add(1, Ordering::AcqRel);
+        let temporal_writer = self.scenario == CrashScenario::WriterDelegatedReceiptCommitted;
         let tool_calls = match (request.actor.kind, request.request_number) {
             (AgentActorKind::Root, 1) => vec![ModelToolCall {
                 id: "writer-agent-call".to_owned(),
@@ -641,6 +692,16 @@ impl ModelPort for WriterMarkerModel {
                     "allowed_paths": ["src/lib.rs"],
                     "expected_artifact": "一个 Host seal 的提交"
                 })),
+            }],
+            (AgentActorKind::Child, 1) if temporal_writer => vec![ModelToolCall {
+                id: "writer-temporal-failure".to_owned(),
+                name: WRITER_VERIFY_TOOL.to_owned(),
+                arguments: ToolArguments::from_value(json!({"verifier_id": "writer-tests"})),
+            }],
+            (AgentActorKind::Child, 2) if temporal_writer => vec![ModelToolCall {
+                id: "writer-edit-call".to_owned(),
+                name: WRITER_WRITE_TOOL.to_owned(),
+                arguments: ToolArguments::from_value(json!({"path": "src/lib.rs"})),
             }],
             (AgentActorKind::Child, 1) => vec![ModelToolCall {
                 id: "writer-edit-call".to_owned(),
@@ -762,8 +823,19 @@ impl ToolExecutor for ProcessWriterTools {
         definitions
     }
 
+    fn definition_workspace_access(&self, name: &str) -> codewhale_runtime::WorkspaceAccess {
+        if matches!(name, WRITER_WRITE_TOOL | WRITER_VERIFY_TOOL) {
+            codewhale_runtime::WorkspaceAccess::MayWrite
+        } else {
+            codewhale_runtime::WorkspaceAccess::ReadOnly
+        }
+    }
+
     fn workspace_access(&self, invocation: &ToolInvocation) -> codewhale_runtime::WorkspaceAccess {
-        if invocation.name == WRITER_WRITE_TOOL {
+        if matches!(
+            invocation.name.as_str(),
+            WRITER_WRITE_TOOL | WRITER_VERIFY_TOOL
+        ) {
             codewhale_runtime::WorkspaceAccess::MayWrite
         } else {
             codewhale_runtime::WorkspaceAccess::ReadOnly
@@ -781,7 +853,11 @@ impl ToolExecutor for ProcessWriterTools {
     ) -> Result<ToolOutcome, ToolExecutionError> {
         match invocation.name.as_str() {
             WRITER_WRITE_TOOL if !self.root => {
-                append_marker_once(&self.writer_marker, "write");
+                if self.scenario == CrashScenario::WriterDelegatedReceiptCommitted {
+                    append_marker(&self.writer_marker, "write");
+                } else {
+                    append_marker_once(&self.writer_marker, "write");
+                }
                 append_marker(&self.tool_marker, "writer-write");
                 if self.scenario == CrashScenario::WriterRunning {
                     append_marker(
@@ -810,30 +886,52 @@ impl ToolExecutor for ProcessWriterTools {
                         "root exact verifier rejected an unintegrated writer revision",
                     ));
                 }
-                let artifact_id = format!("writer-artifact:{}:{}", invocation.run_id, revision);
-                let mut outcome = ToolOutcome::success("exact writer verifier passed");
+                let verifier = VerifierSpec {
+                    parameters: invocation
+                        .arguments
+                        .parsed
+                        .expect("writer verifier arguments"),
+                    ..writer_verifier_spec()
+                };
+                let workspace_revision = WorkspaceRevision::Known {
+                    sha256: revision.clone(),
+                };
+                let failed = self.scenario == CrashScenario::WriterDelegatedReceiptCommitted
+                    && !self.root
+                    && marker_line_count(&self.writer_marker, "write") == 0;
+                let verdict = if failed {
+                    VerifierVerdict::Failed
+                } else {
+                    VerifierVerdict::Passed
+                };
+                let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+                    summary: if failed {
+                        "exact writer verifier failed"
+                    } else {
+                        "exact writer verifier passed"
+                    }
+                    .to_owned(),
+                    verifier: verifier.clone(),
+                    verdict,
+                    workspace_revision: workspace_revision.clone(),
+                });
+                let artifact_id = artifact.id.clone();
+                let mut outcome = if failed {
+                    ToolOutcome::error("exact writer verifier failed")
+                } else {
+                    ToolOutcome::success("exact writer verifier passed")
+                };
+                outcome.side_effect = codewhale_runtime::ToolSideEffectStatus::NotApplied;
                 outcome.workspace_revision = Some(revision.clone());
                 outcome.evidence = ToolEvidence {
                     status: ToolEvidenceStatus::Produced,
                     references: vec![artifact_id.clone()],
                 };
-                outcome.artifacts = vec![ToolArtifact {
-                    id: artifact_id.clone(),
-                    status: ToolArtifactStatus::Available,
-                    sha256: Some(WRITER_ARTIFACT_SHA256.to_owned()),
-                    media_type: Some("application/json".to_owned()),
-                    byte_len: Some(2),
-                }];
+                outcome.artifacts = vec![artifact];
                 outcome.verifier_observation = Some(VerifierObservation {
-                    spec: VerifierSpec {
-                        parameters: invocation
-                            .arguments
-                            .parsed
-                            .expect("writer verifier arguments"),
-                        ..writer_verifier_spec()
-                    },
-                    verdict: VerifierVerdict::Passed,
-                    workspace_revision: WorkspaceRevision::Known { sha256: revision },
+                    spec: verifier,
+                    verdict,
+                    workspace_revision,
                     artifact_ids: vec![artifact_id],
                 });
                 Ok(outcome)
@@ -1031,16 +1129,44 @@ impl MarkerTools {
             scenario,
         }
     }
+
+    fn revision(&self) -> &'static str {
+        if is_temporal_verification_scenario(self.scenario) {
+            if marker_line_count(&self.marker, "temporal-write") > 0 {
+                TEMPORAL_FIXED_REVISION
+            } else {
+                TEMPORAL_BROKEN_REVISION
+            }
+        } else {
+            HOST_VERIFIER_REVISION
+        }
+    }
 }
 
 #[async_trait]
 impl ToolExecutor for MarkerTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
+        let mut definitions = vec![ToolDefinition {
             name: TOOL_NAME.to_owned(),
             description: "write a process crash test marker".to_owned(),
             input_schema: json!({"type": "object", "additionalProperties": false}),
-        }]
+        }];
+        if is_temporal_verification_scenario(self.scenario) {
+            definitions.push(ToolDefinition {
+                name: TEMPORAL_WRITE_TOOL.to_owned(),
+                description: "apply the deterministic temporal repair".to_owned(),
+                input_schema: json!({"type": "object", "additionalProperties": false}),
+            });
+        }
+        definitions
+    }
+
+    fn workspace_access(&self, invocation: &ToolInvocation) -> codewhale_runtime::WorkspaceAccess {
+        if invocation.name == TEMPORAL_WRITE_TOOL {
+            codewhale_runtime::WorkspaceAccess::MayWrite
+        } else {
+            codewhale_runtime::WorkspaceAccess::ReadOnly
+        }
     }
 
     fn approval_prompt(
@@ -1059,7 +1185,7 @@ impl ToolExecutor for MarkerTools {
 
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
         if is_host_verification_scenario(self.scenario) {
-            Ok(HOST_VERIFIER_REVISION.to_owned())
+            Ok(self.revision().to_owned())
         } else {
             Err(ToolExecutionError::new(
                 "workspace_revision_unavailable",
@@ -1085,34 +1211,62 @@ impl ToolExecutor for MarkerTools {
                 wait_for_parent_kill().await;
             }
 
-            let mut outcome = ToolOutcome::success("deterministic Host verifier passed");
-            outcome.workspace_revision = Some(HOST_VERIFIER_REVISION.to_owned());
+            let verifier = VerifierSpec {
+                parameters: invocation
+                    .arguments
+                    .parsed
+                    .expect("Host verifier arguments must remain canonical"),
+                ..host_verifier_spec()
+            };
+            let failed = is_temporal_verification_scenario(self.scenario)
+                && marker_line_count(&self.marker, "temporal-write") == 0;
+            let workspace_revision = WorkspaceRevision::Known {
+                sha256: self.revision().to_owned(),
+            };
+            let verdict = if failed {
+                VerifierVerdict::Failed
+            } else {
+                VerifierVerdict::Passed
+            };
+            let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+                summary: if failed {
+                    "deterministic Host verifier failed"
+                } else {
+                    "deterministic Host verifier passed"
+                }
+                .to_owned(),
+                verifier: verifier.clone(),
+                verdict,
+                workspace_revision: workspace_revision.clone(),
+            });
+            let artifact_id = artifact.id.clone();
+            let mut outcome = if failed {
+                ToolOutcome::error("deterministic Host verifier failed")
+            } else {
+                ToolOutcome::success("deterministic Host verifier passed")
+            };
+            outcome.side_effect = codewhale_runtime::ToolSideEffectStatus::NotApplied;
+            outcome.workspace_revision = Some(self.revision().to_owned());
             outcome.evidence = ToolEvidence {
                 status: ToolEvidenceStatus::Produced,
-                references: vec![HOST_VERIFIER_ARTIFACT_ID.to_owned()],
+                references: vec![artifact_id.clone()],
             };
-            outcome.artifacts = vec![ToolArtifact {
-                id: HOST_VERIFIER_ARTIFACT_ID.to_owned(),
-                status: ToolArtifactStatus::Available,
-                sha256: Some("sha256:process-crash-verifier-artifact".to_owned()),
-                media_type: Some("application/json".to_owned()),
-                byte_len: Some(2),
-            }];
+            outcome.artifacts = vec![artifact];
             outcome.verifier_observation = Some(VerifierObservation {
-                spec: VerifierSpec {
-                    parameters: invocation
-                        .arguments
-                        .parsed
-                        .expect("Host verifier arguments must remain canonical"),
-                    ..host_verifier_spec()
-                },
-                verdict: VerifierVerdict::Passed,
-                workspace_revision: WorkspaceRevision::Known {
-                    sha256: HOST_VERIFIER_REVISION.to_owned(),
-                },
-                artifact_ids: vec![HOST_VERIFIER_ARTIFACT_ID.to_owned()],
+                spec: verifier,
+                verdict,
+                workspace_revision,
+                artifact_ids: vec![artifact_id],
             });
             return Ok(outcome);
+        }
+
+        if is_temporal_verification_scenario(self.scenario)
+            && invocation.name == TEMPORAL_WRITE_TOOL
+        {
+            append_marker(&self.marker, "temporal-write");
+            return Ok(ToolOutcome::success("temporal repair applied")
+                .with_side_effect(codewhale_runtime::ToolSideEffectStatus::Applied));
         }
 
         append_marker(&self.marker, "side-effect");
@@ -1227,6 +1381,28 @@ impl RuntimeEventSink for CrashSink {
                 event.event,
                 RuntimeEventKind::HostVerificationCommitted { .. }
             ),
+            CrashScenario::TemporalFailureCommitted => matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted {
+                    receipt: None,
+                    ref outcome,
+                    ..
+                } if outcome.verifier_observation.as_ref().is_some_and(|observation| {
+                    observation.verdict == VerifierVerdict::Failed
+                })
+            ),
+            CrashScenario::TemporalMutationCommitted => matches!(
+                event.event,
+                RuntimeEventKind::ToolOutcomeCommitted { ref name, .. }
+                    if name == TEMPORAL_WRITE_TOOL
+            ),
+            CrashScenario::TemporalHostVerificationCommitted => matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted {
+                    receipt: Some(ref receipt),
+                    ..
+                } if matches!(&receipt.lineage, EvidenceLineage::FailedWritePass { .. })
+            ),
             CrashScenario::WriterTaskPrepared => {
                 matches!(event.event, RuntimeEventKind::AgentTaskPrepared { .. })
             }
@@ -1253,6 +1429,16 @@ impl RuntimeEventSink for CrashSink {
                 matches!(event.event, RuntimeEventKind::AgentCleanupPrepared { .. })
             }
             CrashScenario::WriterCleanupSideEffect => false,
+            CrashScenario::WriterDelegatedReceiptCommitted => matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted {
+                    receipt: Some(ref receipt),
+                    ..
+                } if matches!(
+                    &receipt.lineage,
+                    EvidenceLineage::DelegatedFailedWritePass { .. }
+                )
+            ),
             CrashScenario::CreationReserved => false,
         };
         if should_abort {
@@ -1318,6 +1504,11 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
             .acceptance = vec![TaskAcceptance::Verifier {
             id: AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID),
             description: "冻结的进程级 Host verifier 必须通过".to_owned(),
+            evidence_policy: if is_temporal_verification_scenario(scenario) {
+                VerifierEvidencePolicy::FailedWritePass
+            } else {
+                VerifierEvidencePolicy::LatestPass
+            },
             verifier: host_verifier_spec(),
         }];
     }
@@ -1368,7 +1559,7 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
     request
 }
 
-fn writer_request() -> RunRequest {
+fn writer_request(scenario: CrashScenario) -> RunRequest {
     let mut request = RunRequest::new(
         TaskContract {
             generation_id: TaskGenerationId::from(RUN_ID),
@@ -1379,6 +1570,11 @@ fn writer_request() -> RunRequest {
                 acceptance: vec![TaskAcceptance::Verifier {
                     id: AcceptanceId::from("writer-tests"),
                     description: "冻结的 writer 验证必须通过".to_owned(),
+                    evidence_policy: if scenario == CrashScenario::WriterDelegatedReceiptCommitted {
+                        VerifierEvidencePolicy::FailedWritePass
+                    } else {
+                        VerifierEvidencePolicy::LatestPass
+                    },
                     verifier: writer_verifier_spec(),
                 }],
             },
@@ -1388,6 +1584,7 @@ fn writer_request() -> RunRequest {
     request.run_id = Some(RunId::from(RUN_ID));
     request.model = "deepseek-test".to_owned();
     request.environment.workspace = WRITER_ROOT_WORKSPACE.to_owned();
+    request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
     request.environment.auto_approve = true;
     request.limits.max_turns = 12;
     request.limits.max_model_requests = 16;
@@ -1670,7 +1867,7 @@ fn process_crash_helper() {
             unreachable!("steer-applied helper aborts");
         }
         if is_writer_scenario(scenario) {
-            let model = Arc::new(WriterMarkerModel::new(model_marker));
+            let model = Arc::new(WriterMarkerModel::new(model_marker, scenario));
             let root_tools = Arc::new(ProcessWriterTools::root(
                 tool_marker.clone(),
                 writer_marker.clone(),
@@ -1695,7 +1892,7 @@ fn process_crash_helper() {
                 .with_orchestrator(orchestrator),
             );
             let outcome = runtime
-                .start(writer_request())
+                .start(writer_request(scenario))
                 .wait()
                 .await
                 .expect("writer crash helper join");
@@ -2529,6 +2726,33 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
                 "cleanup side effect must precede its durable commit"
             );
         }
+        CrashScenario::WriterDelegatedReceiptCommitted => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "create"), 1);
+            assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+            assert_eq!(marker_line_count(&fixture.writer_marker, "seal"), 1);
+            assert_eq!(marker_line_count(&fixture.writer_marker, "integration"), 1);
+            assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 0);
+            let [receipt] = before.snapshot.evidence_receipts.as_slice() else {
+                panic!("delegated receipt must be durable before SIGKILL");
+            };
+            assert!(matches!(
+                &receipt.lineage,
+                EvidenceLineage::DelegatedFailedWritePass { .. }
+            ));
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::HostVerificationCommitted {
+                        receipt: Some(receipt),
+                        ..
+                    } if matches!(
+                        &receipt.lineage,
+                        EvidenceLineage::DelegatedFailedWritePass { .. }
+                    )
+                )),
+                1
+            );
+        }
         _ => panic!("not a writer crash scenario: {scenario:?}"),
     }
 
@@ -2556,6 +2780,12 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
         ),
         "recovery must not reissue the root request that prepared the writer task"
     );
+    if scenario == CrashScenario::WriterDelegatedReceiptCommitted {
+        assert!(
+            model.observed_requests().is_empty(),
+            "a committed delegated receipt must complete without another model request"
+        );
+    }
 
     let after = store
         .load(&RunId::from(RUN_ID))
@@ -2670,6 +2900,57 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
         assert!(cleanup.worktree_removed);
         assert!(cleanup.branch_removed);
         assert!(!cleanup.retained_for_recovery);
+        if scenario == CrashScenario::WriterDelegatedReceiptCommitted {
+            assert_eq!(
+                marker_line_count(&fixture.model_marker, "writer-root-model"),
+                2
+            );
+            assert_eq!(
+                marker_line_count(&fixture.model_marker, "writer-child-model"),
+                3
+            );
+            assert_eq!(
+                marker_line_count(&fixture.tool_marker, "writer-verifier"),
+                2,
+                "child failed verifier and final Host verifier must each execute once"
+            );
+            assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+            let child = store
+                .load(&lifecycle.task.child_run_id)
+                .await
+                .expect("load temporal Writer child")
+                .expect("temporal Writer child exists");
+            let [child_receipt] = child.snapshot.evidence_receipts.as_slice() else {
+                panic!("temporal Writer child must retain one local receipt");
+            };
+            assert!(matches!(
+                &child_receipt.lineage,
+                EvidenceLineage::FailedWritePass { .. }
+            ));
+            let EvidenceLineage::DelegatedFailedWritePass {
+                child_run_id,
+                child_receipt_id,
+                integration: delegated_integration,
+            } = &receipt.lineage
+            else {
+                panic!("root receipt must preserve delegated temporal lineage");
+            };
+            assert_eq!(child_run_id, &lifecycle.task.child_run_id.0);
+            assert_eq!(child_receipt_id, &child_receipt.id);
+            assert_eq!(
+                delegated_integration.operation_id,
+                lifecycle
+                    .integration
+                    .as_ref()
+                    .expect("integration lifecycle")
+                    .integration_id
+                    .0
+            );
+            assert_eq!(
+                delegated_integration.workspace_state_after,
+                integration.root_workspace_state_after
+            );
+        }
     } else {
         assert_eq!(
             marker_line_count(&fixture.writer_marker, "integration"),
@@ -2740,6 +3021,11 @@ async fn writer_cleanup_prepared_sigkill_removes_owned_resources_once() {
 #[tokio::test]
 async fn writer_cleanup_side_effect_sigkill_proves_absence_without_second_removal() {
     assert_writer_sigkill_recovery(CrashScenario::WriterCleanupSideEffect, true).await;
+}
+
+#[tokio::test]
+async fn writer_delegated_temporal_receipt_survives_sigkill_without_reexecution() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterDelegatedReceiptCommitted, true).await;
 }
 
 #[tokio::test]
@@ -3008,7 +3294,7 @@ async fn host_verification_committed_sigkill_replays_receipt_and_completes_exact
                 verification_id,
                 receipt: Some(committed),
                 ..
-            } if verification_id == &receipt.verification_id && committed == &receipt
+            } if verification_id == &receipt.verification_id && **committed == receipt
         )),
         1
     );
@@ -3054,6 +3340,210 @@ async fn host_verification_committed_sigkill_replays_receipt_and_completes_exact
         1,
         "receipt replay may produce exactly one canonical terminal"
     );
+}
+
+async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(scenario);
+
+    let store_before =
+        StateStore::open(Some(fixture.db.clone())).expect("open temporal crash SQLite prefix");
+    let before = store_before
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load temporal crash prefix")
+        .expect("temporal crash run exists");
+    drop(store_before);
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    let progress = before.snapshot.temporal_evidence_progress.as_ref();
+    match scenario {
+        CrashScenario::TemporalFailureCommitted => {
+            let progress = progress.expect("failed verifier fact must survive SIGKILL");
+            assert_eq!(
+                progress.failure.workspace_state.revision,
+                WorkspaceRevision::Known {
+                    sha256: TEMPORAL_BROKEN_REVISION.to_owned(),
+                }
+            );
+            assert!(progress.mutation.is_none());
+            assert!(before.snapshot.evidence_receipts.is_empty());
+            let pending = before
+                .snapshot
+                .pending_completion
+                .as_ref()
+                .expect("failed Host verifier must retain its pending candidate");
+            let failure = before
+                .snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .expect("failed Host verifier projection");
+            assert_eq!(failure.rejection.candidate_id, pending.id);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::CompletionRejected { .. }
+                )),
+                0,
+                "SIGKILL must land before the deterministic rejection commit"
+            );
+            assert_eq!(marker_count(&fixture.model_marker), 1);
+        }
+        CrashScenario::TemporalMutationCommitted => {
+            let progress = progress.expect("failure and mutation must survive SIGKILL");
+            let mutation = progress
+                .mutation
+                .as_ref()
+                .expect("effective mutation must be durable");
+            assert_eq!(
+                mutation.workspace_state_before.revision,
+                WorkspaceRevision::Known {
+                    sha256: TEMPORAL_BROKEN_REVISION.to_owned(),
+                }
+            );
+            assert_eq!(
+                mutation.workspace_state_after.revision,
+                WorkspaceRevision::Known {
+                    sha256: TEMPORAL_FIXED_REVISION.to_owned(),
+                }
+            );
+            assert!(before.snapshot.evidence_receipts.is_empty());
+            assert_eq!(marker_count(&fixture.model_marker), 2);
+        }
+        CrashScenario::TemporalHostVerificationCommitted => {
+            assert!(progress.is_none());
+            let [receipt] = before.snapshot.evidence_receipts.as_slice() else {
+                panic!("temporal Host commit must persist exactly one receipt");
+            };
+            assert!(matches!(
+                &receipt.lineage,
+                EvidenceLineage::FailedWritePass { failure, mutation }
+                    if failure.workspace_state.revision
+                        == WorkspaceRevision::Known {
+                            sha256: TEMPORAL_BROKEN_REVISION.to_owned(),
+                        }
+                        && mutation.workspace_state_after.revision
+                            == WorkspaceRevision::Known {
+                                sha256: TEMPORAL_FIXED_REVISION.to_owned(),
+                            }
+            ));
+            assert_eq!(marker_count(&fixture.model_marker), 3);
+        }
+        _ => panic!("not a temporal crash scenario: {scenario:?}"),
+    }
+
+    let (runtime, store, model) = fixture.reopen_with_model(scenario);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume temporal crash lifecycle");
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "temporal recovery must complete from durable facts: {:?}",
+        outcome.terminal
+    );
+
+    let expected_recovery_requests = match scenario {
+        CrashScenario::TemporalFailureCommitted => 2,
+        CrashScenario::TemporalMutationCommitted => 1,
+        CrashScenario::TemporalHostVerificationCommitted => 0,
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        model.observed_requests().len(),
+        expected_recovery_requests,
+        "resume must continue after the committed boundary without reissuing settled work"
+    );
+    assert_eq!(marker_count(&fixture.model_marker), 3);
+    assert_eq!(
+        marker_lines(&fixture.model_marker),
+        ["temporal-model:1", "temporal-model:2", "temporal-model:3"],
+        "each logical model request must execute exactly once"
+    );
+    assert_eq!(
+        marker_line_count(&fixture.tool_marker, "temporal-write"),
+        1,
+        "the effective repair must execute exactly once"
+    );
+    let host_verifications = marker_lines(&fixture.tool_marker)
+        .into_iter()
+        .filter(|line| line.starts_with("host:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        host_verifications.len(),
+        2,
+        "the failed and final Host verifier executions must each occur exactly once"
+    );
+    assert_ne!(
+        host_verifications[0], host_verifications[1],
+        "the failed and final verifier must retain distinct durable identities"
+    );
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered temporal lifecycle")
+        .expect("recovered temporal lifecycle exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce recovered temporal lifecycle"),
+        after.snapshot
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::ToolOutcomeCommitted { name, .. }
+                if name == TEMPORAL_WRITE_TOOL
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        2
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::CompletionRejected { .. }
+        )),
+        1,
+        "the original failed candidate must be rejected exactly once across recovery"
+    );
+    let [receipt] = after.snapshot.evidence_receipts.as_slice() else {
+        panic!("recovered temporal lifecycle must retain exactly one receipt");
+    };
+    assert!(matches!(
+        &receipt.lineage,
+        EvidenceLineage::FailedWritePass { failure, mutation }
+            if failure.workspace_state.revision
+                == WorkspaceRevision::Known {
+                    sha256: TEMPORAL_BROKEN_REVISION.to_owned(),
+                }
+                && mutation.workspace_state_after.revision
+                    == WorkspaceRevision::Known {
+                        sha256: TEMPORAL_FIXED_REVISION.to_owned(),
+                    }
+    ));
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn temporal_failure_commit_survives_sigkill_without_rerunning_the_failed_verifier() {
+    assert_temporal_sigkill_recovery(CrashScenario::TemporalFailureCommitted).await;
+}
+
+#[tokio::test]
+async fn temporal_mutation_commit_survives_sigkill_without_reapplying_the_write() {
+    assert_temporal_sigkill_recovery(CrashScenario::TemporalMutationCommitted).await;
+}
+
+#[tokio::test]
+async fn temporal_receipt_commit_survives_sigkill_and_completes_exactly_once() {
+    assert_temporal_sigkill_recovery(CrashScenario::TemporalHostVerificationCommitted).await;
 }
 
 #[tokio::test]

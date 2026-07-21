@@ -302,6 +302,7 @@ pub struct RunSnapshot {
     pub pending_host_verification: Option<PendingHostVerification>,
     pub last_completion_rejection: Option<CompletionRejection>,
     pub last_host_verification_failure: Option<HostVerificationFailure>,
+    pub temporal_evidence_progress: Option<TemporalEvidenceProgress>,
     pub runtime_model_requests: u32,
     pub runtime_retries: u32,
     pub tool_calls: u32,
@@ -497,6 +498,7 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
             .and_then(|facts| facts.last_completion_rejection.clone()),
         last_host_verification_failure: inherited_facts
             .and_then(|facts| facts.last_host_verification_failure),
+        temporal_evidence_progress: None,
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
@@ -985,6 +987,7 @@ pub fn apply_event(
             outcome,
             workspace_state,
         } => {
+            let workspace_state_before = snapshot.workspace_state.clone();
             outcome
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
@@ -1133,6 +1136,12 @@ pub fn apply_event(
                     ));
                 }
                 (WorkspaceAccess::MayWrite, Some(state)) => {
+                    if pending_state != DurableActionState::InFlight {
+                        return Err(corrupt(
+                            &run_id,
+                            "unstarted workspace-mutating tool cannot settle workspace state",
+                        ));
+                    }
                     if settles_agent_call.is_some()
                         && integrated_writer_state
                             .as_ref()
@@ -1166,6 +1175,93 @@ pub fn apply_event(
                     snapshot.workspace_state = state.clone();
                 }
             }
+            let revision_changed =
+                workspace_revision_changed(&workspace_state_before, &snapshot.workspace_state);
+            if revision_changed && outcome.side_effect == ToolSideEffectStatus::NotApplied {
+                return Err(corrupt(
+                    &run_id,
+                    "tool reporting no side effect cannot settle a changed workspace revision",
+                ));
+            }
+            let is_temporal_verifier = snapshot
+                .temporal_evidence_progress
+                .as_ref()
+                .is_some_and(|progress| name == &progress.verifier.verifier_id);
+            let effective_mutation = pending_workspace_access == WorkspaceAccess::MayWrite
+                && pending_state == DurableActionState::InFlight
+                && outcome.invocation == ToolInvocationStatus::Accepted
+                && outcome.transport == ToolTransportStatus::Succeeded
+                && outcome.side_effect == ToolSideEffectStatus::Applied
+                && !is_temporal_verifier
+                && revision_changed;
+            if revision_changed && !effective_mutation {
+                snapshot.temporal_evidence_progress = None;
+            } else if effective_mutation
+                && let Some(progress) = snapshot.temporal_evidence_progress.as_mut()
+            {
+                let mutation = WorkspaceMutationEvidence {
+                    operation_id: operation_id.0.clone(),
+                    workspace_state_before: workspace_state_before.clone(),
+                    workspace_state_after: snapshot.workspace_state.clone(),
+                };
+                mutation
+                    .validate()
+                    .map_err(|message| corrupt(&run_id, message))?;
+                if progress.failure.workspace_state.generation
+                    <= mutation.workspace_state_before.generation
+                {
+                    progress.mutation = Some(mutation);
+                    progress
+                        .validate()
+                        .map_err(|message| corrupt(&run_id, message))?;
+                }
+            }
+            let authorized_verifier_observation =
+                outcome
+                    .verifier_observation
+                    .as_ref()
+                    .is_none_or(|observation| {
+                        pending_state == DurableActionState::InFlight
+                            && name == &observation.spec.verifier_id
+                            && outcome.invocation == ToolInvocationStatus::Accepted
+                            && outcome.transport == ToolTransportStatus::Succeeded
+                            && outcome.has_stable_verifier_revision(
+                                &workspace_state_before.revision,
+                                &snapshot.workspace_state.revision,
+                            )
+                            && verifier_artifacts_are_available(outcome, observation)
+                            && matches!(
+                                (observation.verdict, outcome.operation),
+                                (VerifierVerdict::Passed, ToolOperationStatus::Succeeded)
+                                    | (VerifierVerdict::Failed, ToolOperationStatus::Failed)
+                            )
+                    });
+            if !authorized_verifier_observation {
+                return Err(corrupt(
+                    &run_id,
+                    "tool verifier observation does not match an exact deterministic execution",
+                ));
+            }
+            let deterministic_verifier_failure = pending_workspace_access
+                == WorkspaceAccess::MayWrite
+                && pending_state == DurableActionState::InFlight
+                && outcome
+                    .verifier_observation
+                    .as_ref()
+                    .is_some_and(|observation| name == &observation.spec.verifier_id);
+            if deterministic_verifier_failure
+                && let Some(progress) = failed_temporal_progress(
+                    snapshot,
+                    outcome,
+                    FailedVerifierSource::Tool {
+                        operation_id: operation_id.0.clone(),
+                    },
+                    &snapshot.workspace_state,
+                    None,
+                )
+            {
+                snapshot.temporal_evidence_progress = Some(progress);
+            }
             snapshot.pending_tool = None;
             snapshot.transcript.entries.push(TranscriptEntry::Tool {
                 call_id: call_id.clone(),
@@ -1192,6 +1288,9 @@ pub fn apply_event(
                     &run_id,
                     "workspace observation carries an invalid generation",
                 ));
+            }
+            if snapshot.workspace_state.revision != workspace_state.revision {
+                snapshot.temporal_evidence_progress = None;
             }
             snapshot.workspace_state = workspace_state.clone();
         }
@@ -1306,6 +1405,17 @@ pub fn apply_event(
             workspace_state_after
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
+            if outcome.verifier_observation.is_some()
+                && !outcome.has_stable_verifier_revision(
+                    &pending.workspace_state_before.revision,
+                    &workspace_state_after.revision,
+                )
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verifier observation changed the workspace revision",
+                ));
+            }
             if let Some(receipt) = receipt {
                 receipt
                     .validate()
@@ -1316,23 +1426,37 @@ pub fn apply_event(
                         "Host verification receipt has no typed verifier observation",
                     )
                 })?;
-                let known_revision_matches = matches!(
-                    (&observation.workspace_revision, &workspace_state_after.revision),
-                    (
-                        WorkspaceRevision::Known { sha256: observed },
-                        WorkspaceRevision::Known { sha256: settled }
-                    ) if observed == settled
-                );
                 let contract = snapshot
                     .request
                     .task_contract
                     .as_ref()
                     .expect("Agent contract validated at run creation");
+                let evidence_policy = contract
+                    .definition
+                    .acceptance
+                    .iter()
+                    .find_map(|acceptance| match acceptance {
+                        TaskAcceptance::Verifier {
+                            id,
+                            evidence_policy,
+                            verifier,
+                            ..
+                        } if *id == pending.acceptance_id && *verifier == pending.verifier => {
+                            Some(*evidence_policy)
+                        }
+                        TaskAcceptance::Host { .. } | TaskAcceptance::Verifier { .. } => None,
+                    })
+                    .ok_or_else(|| {
+                        corrupt(&run_id, "Host verification lost its verifier acceptance")
+                    })?;
                 if !outcome.is_success()
                     || observation.verdict != VerifierVerdict::Passed
                     || observation.spec != pending.verifier
                     || !verifier_artifacts_are_available(outcome, observation)
-                    || !known_revision_matches
+                    || !outcome.has_stable_verifier_revision(
+                        &pending.workspace_state_before.revision,
+                        &workspace_state_after.revision,
+                    )
                     || receipt.id
                         != EvidenceReceiptId::from(format!("receipt:{}", verification_id.0))
                     || receipt.generation_id != contract.generation_id
@@ -1341,6 +1465,14 @@ pub fn apply_event(
                     || receipt.verifier != pending.verifier
                     || receipt.workspace_state != *workspace_state_after
                     || receipt.artifact_ids != observation.artifact_ids
+                    || expected_evidence_lineage(
+                        snapshot,
+                        &pending.acceptance_id,
+                        &pending.verifier,
+                        evidence_policy,
+                    )
+                    .as_ref()
+                        != Some(&receipt.lineage)
                 {
                     return Err(corrupt(
                         &run_id,
@@ -1354,14 +1486,37 @@ pub fn apply_event(
                 {
                     return Err(corrupt(&run_id, "evidence receipt id was committed twice"));
                 }
-                snapshot.evidence_receipts.push(receipt.clone());
+                snapshot.evidence_receipts.push((**receipt).clone());
                 snapshot.last_completion_rejection = None;
                 snapshot.last_host_verification_failure = None;
+                snapshot.temporal_evidence_progress = None;
             } else {
+                if snapshot.workspace_state.revision != workspace_state_after.revision {
+                    snapshot.temporal_evidence_progress = None;
+                }
                 snapshot.last_host_verification_failure = Some(HostVerificationFailure {
                     outcome: (**outcome).clone(),
                     workspace_state: workspace_state_after.clone(),
+                    rejection: CompletionRejection {
+                        candidate_id: pending.candidate.id.clone(),
+                        unmet_acceptance_ids: vec![pending.acceptance_id.clone()],
+                        reason: format!(
+                            "Host verifier '{}' 未产生与当前任务和工作区精确匹配的通过证据",
+                            pending.verifier.verifier_id
+                        ),
+                    },
                 });
+                if let Some(progress) = failed_temporal_progress(
+                    snapshot,
+                    outcome,
+                    FailedVerifierSource::Host {
+                        verification_id: verification_id.clone(),
+                    },
+                    workspace_state_after,
+                    Some((&pending.acceptance_id, &pending.verifier)),
+                ) {
+                    snapshot.temporal_evidence_progress = Some(progress);
+                }
             }
             snapshot.workspace_state = workspace_state_after.clone();
             snapshot.pending_host_verification = None;
@@ -2086,9 +2241,12 @@ fn validate_collected_agent_result(
                             .acceptance
                             .iter()
                             .find_map(|acceptance| match acceptance {
-                                TaskAcceptance::Verifier { id, verifier, .. } => {
-                                    Some((id, verifier))
-                                }
+                                TaskAcceptance::Verifier {
+                                    id,
+                                    evidence_policy,
+                                    verifier,
+                                    ..
+                                } => Some((id, evidence_policy, verifier)),
                                 TaskAcceptance::Host { .. } => None,
                             })
                             .ok_or_else(|| {
@@ -2100,7 +2258,14 @@ fn validate_collected_agent_result(
                         if outcome.details.evidence.len() != 1
                             || outcome.details.evidence.iter().any(|receipt| {
                                 receipt.acceptance_id != *expected_acceptance.0
-                                    || receipt.verifier != *expected_acceptance.1
+                                    || !receipt.lineage.satisfies(*expected_acceptance.1)
+                                    || (*expected_acceptance.1
+                                        == VerifierEvidencePolicy::FailedWritePass
+                                        && !matches!(
+                                            receipt.lineage,
+                                            EvidenceLineage::FailedWritePass { .. }
+                                        ))
+                                    || receipt.verifier != *expected_acceptance.2
                                     || receipt.workspace_state
                                         != lifecycle
                                             .seal
@@ -2441,7 +2606,11 @@ fn validate_completion_decision(
         match (acceptance, satisfaction) {
             (TaskAcceptance::Host { .. }, AcceptanceSatisfaction::Host { .. }) => {}
             (
-                TaskAcceptance::Verifier { verifier, .. },
+                TaskAcceptance::Verifier {
+                    evidence_policy,
+                    verifier,
+                    ..
+                },
                 AcceptanceSatisfaction::Evidence { receipt_id, .. },
             ) => {
                 let receipt = snapshot
@@ -2452,6 +2621,7 @@ fn validate_completion_decision(
                 if receipt.generation_id != contract.generation_id
                     || receipt.acceptance_id != *acceptance.id()
                     || receipt.verifier != *verifier
+                    || !receipt.lineage.satisfies(*evidence_policy)
                     || receipt.workspace_state != snapshot.workspace_state
                 {
                     return Err(corrupt(
@@ -2481,10 +2651,150 @@ pub(crate) fn verifier_artifacts_are_available(
         && observation.artifact_ids.iter().all(|artifact_id| {
             outcome.artifacts.iter().any(|artifact| {
                 artifact.id == *artifact_id
-                    && artifact.status == ToolArtifactStatus::Available
-                    && artifact.sha256.is_some()
+                    && artifact
+                        .validate_inline_verification()
+                        .is_ok_and(|payload| {
+                            payload.verifier == observation.spec
+                                && payload.verdict == observation.verdict
+                                && payload.workspace_revision == observation.workspace_revision
+                        })
             })
         })
+        && matches!(
+            (&observation.workspace_revision, outcome.workspace_revision.as_deref()),
+            (WorkspaceRevision::Known { sha256 }, Some(outcome_revision))
+                if sha256 == outcome_revision
+        )
+}
+
+fn workspace_revision_changed(before: &WorkspaceState, after: &WorkspaceState) -> bool {
+    matches!(
+        (&before.revision, &after.revision),
+        (
+            WorkspaceRevision::Known { sha256: before },
+            WorkspaceRevision::Known { sha256: after }
+        ) if before != after
+    )
+}
+
+fn failed_temporal_progress(
+    snapshot: &RunSnapshot,
+    outcome: &ToolOutcome,
+    source: FailedVerifierSource,
+    workspace_state: &WorkspaceState,
+    expected_acceptance: Option<(&AcceptanceId, &VerifierSpec)>,
+) -> Option<TemporalEvidenceProgress> {
+    let observation = outcome.verifier_observation.as_ref()?;
+    if outcome.invocation != ToolInvocationStatus::Accepted
+        || outcome.transport != ToolTransportStatus::Succeeded
+        || outcome.operation != ToolOperationStatus::Failed
+        || outcome.side_effect == ToolSideEffectStatus::Applied
+        || observation.verdict != VerifierVerdict::Failed
+        || !verifier_artifacts_are_available(outcome, observation)
+        || observation.workspace_revision != workspace_state.revision
+    {
+        return None;
+    }
+    let contract = snapshot.request.task_contract.as_ref()?;
+    let (acceptance_id, verifier) =
+        contract
+            .definition
+            .acceptance
+            .iter()
+            .find_map(|acceptance| match acceptance {
+                TaskAcceptance::Verifier {
+                    id,
+                    evidence_policy: VerifierEvidencePolicy::FailedWritePass,
+                    verifier,
+                    ..
+                } if *verifier == observation.spec
+                    && expected_acceptance.is_none_or(|(expected_id, expected_verifier)| {
+                        id == expected_id && verifier == expected_verifier
+                    }) =>
+                {
+                    Some((id, verifier))
+                }
+                TaskAcceptance::Host { .. } | TaskAcceptance::Verifier { .. } => None,
+            })?;
+    let failure = FailedVerifierEvidence {
+        source,
+        workspace_state: workspace_state.clone(),
+        artifact_ids: observation.artifact_ids.clone(),
+    };
+    failure.validate().ok()?;
+    let progress = TemporalEvidenceProgress {
+        acceptance_id: acceptance_id.clone(),
+        verifier: verifier.clone(),
+        failure,
+        mutation: None,
+    };
+    progress.validate().ok()?;
+    Some(progress)
+}
+
+pub(crate) fn expected_evidence_lineage(
+    snapshot: &RunSnapshot,
+    acceptance_id: &AcceptanceId,
+    verifier: &VerifierSpec,
+    policy: VerifierEvidencePolicy,
+) -> Option<EvidenceLineage> {
+    match policy {
+        VerifierEvidencePolicy::LatestPass => Some(EvidenceLineage::LatestPass),
+        VerifierEvidencePolicy::FailedWritePass => {
+            if let Some(progress) = &snapshot.temporal_evidence_progress {
+                let mutation = progress.mutation.as_ref()?;
+                if progress.acceptance_id != *acceptance_id
+                    || progress.verifier != *verifier
+                    || progress.failure.workspace_state.revision
+                        == snapshot.workspace_state.revision
+                    || mutation.workspace_state_after.generation
+                        > snapshot.workspace_state.generation
+                    || mutation.workspace_state_after.revision != snapshot.workspace_state.revision
+                {
+                    return None;
+                }
+                return Some(EvidenceLineage::FailedWritePass {
+                    failure: progress.failure.clone(),
+                    mutation: mutation.clone(),
+                });
+            }
+            snapshot.agent_tasks.iter().rev().find_map(|lifecycle| {
+                let integration = lifecycle.integration.as_ref()?;
+                let committed = integration.committed.as_ref()?;
+                if lifecycle.task.workspace.access != AgentWorkspaceAccess::IsolatedWrite
+                    || committed.root_workspace_state_after != snapshot.workspace_state
+                {
+                    return None;
+                }
+                let child_receipt =
+                    lifecycle
+                        .result
+                        .as_ref()?
+                        .details
+                        .evidence
+                        .iter()
+                        .find(|receipt| {
+                            receipt.acceptance_id == *acceptance_id
+                                && receipt.verifier == *verifier
+                                && matches!(
+                                    receipt.lineage,
+                                    EvidenceLineage::FailedWritePass { .. }
+                                )
+                        })?;
+                let integration_evidence = WorkspaceMutationEvidence {
+                    operation_id: integration.integration_id.0.clone(),
+                    workspace_state_before: integration.expected_root_workspace_state.clone(),
+                    workspace_state_after: committed.root_workspace_state_after.clone(),
+                };
+                integration_evidence.validate().ok()?;
+                Some(EvidenceLineage::DelegatedFailedWritePass {
+                    child_run_id: lifecycle.task.child_run_id.0.clone(),
+                    child_receipt_id: child_receipt.id.clone(),
+                    integration: integration_evidence,
+                })
+            })
+        }
+    }
 }
 
 fn retry_policy_stop_reason(
@@ -3118,6 +3428,7 @@ mod tests {
         );
         request.run_id = Some(run_id);
         request.environment.workspace = "/repo".to_owned();
+        request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
         request
     }
 
@@ -3139,6 +3450,7 @@ mod tests {
                     acceptance: vec![TaskAcceptance::Verifier {
                         id: AcceptanceId::from("host"),
                         description: "exact child verifier".to_owned(),
+                        evidence_policy: VerifierEvidencePolicy::LatestPass,
                         verifier: verifier(),
                     }],
                 },
@@ -3177,6 +3489,115 @@ mod tests {
         }
     }
 
+    fn temporal_request() -> RunRequest {
+        let mut request = root_request();
+        request.environment.write_execution_mode = WriteExecutionMode::Root;
+        request
+            .task_contract
+            .as_mut()
+            .expect("root contract")
+            .definition
+            .acceptance = vec![TaskAcceptance::Verifier {
+            id: AcceptanceId::from("temporal"),
+            description: "failure then effective write then pass".to_owned(),
+            evidence_policy: VerifierEvidencePolicy::FailedWritePass,
+            verifier: verifier(),
+        }];
+        request
+    }
+
+    fn failed_verifier_outcome(revision: &str) -> ToolOutcome {
+        let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+            summary: "deterministic verifier failure".to_owned(),
+            verifier: verifier(),
+            verdict: VerifierVerdict::Failed,
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: revision.to_owned(),
+            },
+        });
+        let artifact_id = artifact.id.clone();
+        let mut outcome = ToolOutcome::error("deterministic verifier failure");
+        outcome.side_effect = ToolSideEffectStatus::NotApplied;
+        outcome.workspace_revision = Some(revision.to_owned());
+        outcome.evidence = ToolEvidence {
+            status: ToolEvidenceStatus::Produced,
+            references: vec![artifact_id.clone()],
+        };
+        outcome.artifacts = vec![artifact];
+        outcome.verifier_observation = Some(VerifierObservation {
+            spec: verifier(),
+            verdict: VerifierVerdict::Failed,
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: revision.to_owned(),
+            },
+            artifact_ids: vec![artifact_id],
+        });
+        outcome
+    }
+
+    fn temporal_failure_kinds() -> Vec<RuntimeEventKind> {
+        let operation_id = OperationId::from("failed-verifier");
+        vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(temporal_request()),
+            },
+            RuntimeEventKind::WorkspaceObserved {
+                workspace_state: known(1, "revision-a"),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: operation_id.clone(),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: "failed-verifier".to_owned(),
+                    name: "fixture".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"verifier_id": "temporal"})),
+                },
+                workspace_access: WorkspaceAccess::MayWrite,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: operation_id.clone(),
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id,
+                call_id: "failed-verifier".to_owned(),
+                name: "fixture".to_owned(),
+                outcome: Box::new(failed_verifier_outcome("revision-a")),
+                workspace_state: Some(known(2, "revision-a")),
+            },
+        ]
+    }
+
+    fn push_effective_write(
+        kinds: &mut Vec<RuntimeEventKind>,
+        operation: &str,
+        workspace_after: WorkspaceState,
+    ) {
+        let operation_id = OperationId::from(operation);
+        kinds.push(RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: RunId::from("root"),
+                call_id: operation.to_owned(),
+                name: "write".to_owned(),
+                arguments: ToolArguments::from_value(json!({})),
+            },
+            workspace_access: WorkspaceAccess::MayWrite,
+        });
+        kinds.push(RuntimeEventKind::ToolExecutionStarted {
+            operation_id: operation_id.clone(),
+        });
+        kinds.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id,
+            call_id: operation.to_owned(),
+            name: "write".to_owned(),
+            outcome: Box::new(
+                ToolOutcome::success("workspace changed")
+                    .with_side_effect(ToolSideEffectStatus::Applied),
+            ),
+            workspace_state: Some(workspace_after),
+        });
+    }
+
     fn child_receipt() -> EvidenceReceipt {
         EvidenceReceipt {
             id: EvidenceReceiptId::from("child-receipt"),
@@ -3186,6 +3607,7 @@ mod tests {
             verifier: verifier(),
             workspace_state: known(1, "writer-dirty"),
             artifact_ids: vec!["child-artifact".to_owned()],
+            lineage: EvidenceLineage::LatestPass,
         }
     }
 
@@ -3469,6 +3891,245 @@ mod tests {
                 tool_calls: 0,
                 details: AgentResultDetails::default(),
             }),
+        }
+    }
+
+    #[test]
+    fn unowned_workspace_change_breaks_failure_to_write_lineage() {
+        let mut kinds = temporal_failure_kinds();
+        kinds.push(RuntimeEventKind::WorkspaceObserved {
+            workspace_state: known(3, "revision-b"),
+        });
+        push_effective_write(&mut kinds, "write-b-to-c", known(4, "revision-c"));
+
+        let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+        assert!(snapshot.temporal_evidence_progress.is_none());
+        assert!(
+            expected_evidence_lineage(
+                &snapshot,
+                &AcceptanceId::from("temporal"),
+                &verifier(),
+                VerifierEvidencePolicy::FailedWritePass,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unstarted_write_cannot_claim_an_external_revision_change() {
+        let mut kinds = temporal_failure_kinds();
+        let operation_id = OperationId::from("rejected-write");
+        kinds.push(RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: RunId::from("root"),
+                call_id: "rejected-write".to_owned(),
+                name: "write".to_owned(),
+                arguments: ToolArguments::from_value(json!({})),
+            },
+            workspace_access: WorkspaceAccess::MayWrite,
+        });
+        kinds.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id,
+            call_id: "rejected-write".to_owned(),
+            name: "write".to_owned(),
+            outcome: Box::new(ToolOutcome::rejected(
+                "approval denied",
+                ToolRetryDisposition::AfterCorrection,
+            )),
+            workspace_state: Some(known(3, "revision-external")),
+        });
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("unstarted workspace-mutating tool")
+        ));
+    }
+
+    #[test]
+    fn forged_verifier_observation_is_not_a_failure_fact() {
+        let mut kinds = temporal_failure_kinds();
+        let RuntimeEventKind::ToolPrepared { invocation, .. } = &mut kinds[2] else {
+            unreachable!("temporal fixture has a prepared verifier")
+        };
+        invocation.name = "not-the-verifier".to_owned();
+        let RuntimeEventKind::ToolOutcomeCommitted { name, .. } = &mut kinds[4] else {
+            unreachable!("temporal fixture has a verifier outcome")
+        };
+        *name = "not-the-verifier".to_owned();
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("exact deterministic execution")
+        ));
+    }
+
+    #[test]
+    fn returning_to_the_failed_revision_cannot_satisfy_temporal_evidence() {
+        let mut kinds = temporal_failure_kinds();
+        push_effective_write(&mut kinds, "write-a-to-b", known(3, "revision-b"));
+        push_effective_write(&mut kinds, "write-b-to-a", known(4, "revision-a"));
+
+        let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+        assert!(snapshot.temporal_evidence_progress.is_some());
+        assert!(
+            expected_evidence_lineage(
+                &snapshot,
+                &AcceptanceId::from("temporal"),
+                &verifier(),
+                VerifierEvidencePolicy::FailedWritePass,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn corrupt_inline_verification_artifact_is_rejected_on_replay() {
+        let mut kinds = temporal_failure_kinds();
+        let RuntimeEventKind::ToolOutcomeCommitted { outcome, .. } = &mut kinds[4] else {
+            unreachable!("temporal fixture has a verifier outcome")
+        };
+        outcome.artifacts[0].byte_len = Some(0);
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("verification artifact metadata")
+        ));
+    }
+
+    #[test]
+    fn self_consistent_artifact_for_another_verdict_cannot_back_an_observation() {
+        let mut kinds = temporal_failure_kinds();
+        let RuntimeEventKind::ToolOutcomeCommitted { outcome, .. } = &mut kinds[4] else {
+            unreachable!("temporal fixture has a verifier outcome")
+        };
+        let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+            summary: "claims pass".to_owned(),
+            verifier: verifier(),
+            verdict: VerifierVerdict::Passed,
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: "revision-a".to_owned(),
+            },
+        });
+        let artifact_id = artifact.id.clone();
+        outcome.evidence.references = vec![artifact_id.clone()];
+        outcome.artifacts = vec![artifact];
+        outcome
+            .verifier_observation
+            .as_mut()
+            .expect("failed verifier observation")
+            .artifact_ids = vec![artifact_id];
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("exact deterministic execution")
+        ));
+    }
+
+    #[test]
+    fn host_verifier_receipt_requires_a_stable_non_applied_workspace_observation() {
+        for (label, settled_revision, side_effect) in [
+            (
+                "revision_changed",
+                "revision-c",
+                ToolSideEffectStatus::Indeterminate,
+            ),
+            (
+                "side_effect_applied",
+                "revision-b",
+                ToolSideEffectStatus::Applied,
+            ),
+        ] {
+            let mut kinds = temporal_failure_kinds();
+            push_effective_write(&mut kinds, "repair", known(3, "revision-b"));
+            let prefix = reduce_events(&stored_events(kinds.clone())).unwrap();
+            let candidate = CompletionCandidate {
+                id: CompletionCandidateId::from(format!("candidate-{label}")),
+                generation_id: prefix
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .expect("temporal contract")
+                    .generation_id
+                    .clone(),
+                message: "claims completion".to_owned(),
+            };
+            let verification_id = VerificationId::from(format!("verification-{label}"));
+            let workspace_state_after = known(4, settled_revision);
+            let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+                summary: "claims deterministic pass".to_owned(),
+                verifier: verifier(),
+                verdict: VerifierVerdict::Passed,
+                workspace_revision: workspace_state_after.revision.clone(),
+            });
+            let artifact_id = artifact.id.clone();
+            let mut outcome = ToolOutcome::success("claims deterministic pass");
+            outcome.side_effect = side_effect;
+            outcome.workspace_revision = Some(settled_revision.to_owned());
+            outcome.evidence = ToolEvidence {
+                status: ToolEvidenceStatus::Produced,
+                references: vec![artifact_id.clone()],
+            };
+            outcome.artifacts = vec![artifact];
+            outcome.verifier_observation = Some(VerifierObservation {
+                spec: verifier(),
+                verdict: VerifierVerdict::Passed,
+                workspace_revision: workspace_state_after.revision.clone(),
+                artifact_ids: vec![artifact_id.clone()],
+            });
+            let lineage = expected_evidence_lineage(
+                &prefix,
+                &AcceptanceId::from("temporal"),
+                &verifier(),
+                VerifierEvidencePolicy::FailedWritePass,
+            )
+            .expect("failure and write lineage");
+            let receipt = EvidenceReceipt {
+                id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+                generation_id: candidate.generation_id.clone(),
+                acceptance_id: AcceptanceId::from("temporal"),
+                verification_id: verification_id.clone(),
+                verifier: verifier(),
+                workspace_state: workspace_state_after.clone(),
+                artifact_ids: vec![artifact_id],
+                lineage,
+            };
+            kinds.extend([
+                RuntimeEventKind::CompletionProposed {
+                    candidate: candidate.clone(),
+                },
+                RuntimeEventKind::HostVerificationPrepared {
+                    verification_id: verification_id.clone(),
+                    candidate,
+                    acceptance_id: AcceptanceId::from("temporal"),
+                    verifier: verifier(),
+                    workspace_state_before: prefix.workspace_state,
+                },
+                RuntimeEventKind::HostVerificationStarted {
+                    verification_id: verification_id.clone(),
+                },
+                RuntimeEventKind::HostVerificationCommitted {
+                    verification_id,
+                    outcome: Box::new(outcome),
+                    receipt: Some(Box::new(receipt)),
+                    workspace_state_after,
+                },
+            ]);
+
+            let error = reduce_events(&stored_events(kinds)).unwrap_err();
+            assert!(matches!(
+                error,
+                RunStoreError::Corrupt { message, .. }
+                    if message.contains("changed the workspace revision")
+            ));
         }
     }
 

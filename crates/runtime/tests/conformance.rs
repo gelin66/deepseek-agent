@@ -305,6 +305,7 @@ struct CorrectableVerifierTools {
     spec: VerifierSpec,
     revision: Mutex<String>,
     fixed: AtomicBool,
+    write_changes_revision: bool,
     calls: Mutex<Vec<String>>,
 }
 
@@ -329,7 +330,17 @@ impl ToolExecutor for VerifierTools {
     ) -> Result<ToolOutcome, ToolExecutionError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         if self.fail {
-            return Ok(ToolOutcome::error("deterministic verifier failed"));
+            return Ok(failed_verifier_outcome(
+                VerifierSpec {
+                    parameters: invocation
+                        .arguments
+                        .parsed
+                        .expect("Host verifier arguments are canonical"),
+                    ..self.spec.clone()
+                },
+                &self.revision.lock().expect("revision lock"),
+                "deterministic verifier failed",
+            ));
         }
         let mut outcome = passed_verifier_outcome(
             VerifierSpec {
@@ -355,7 +366,7 @@ impl ToolExecutor for CorrectableVerifierTools {
     }
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
-        if name == "write" {
+        if matches!(name, "write" | "run_tests") {
             WorkspaceAccess::MayWrite
         } else {
             WorkspaceAccess::ReadOnly
@@ -363,7 +374,7 @@ impl ToolExecutor for CorrectableVerifierTools {
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
-        if invocation.name == "write" {
+        if matches!(invocation.name.as_str(), "write" | "run_tests") {
             WorkspaceAccess::MayWrite
         } else {
             WorkspaceAccess::ReadOnly
@@ -386,12 +397,23 @@ impl ToolExecutor for CorrectableVerifierTools {
         match invocation.name.as_str() {
             "write" => {
                 self.fixed.store(true, Ordering::Release);
-                *self.revision.lock().expect("revision lock") = "sha256:fixed".to_owned();
-                Ok(ToolOutcome::success("已修复确定性测试夹具"))
+                if self.write_changes_revision {
+                    *self.revision.lock().expect("revision lock") = "sha256:fixed".to_owned();
+                }
+                Ok(ToolOutcome::success("已修复确定性测试夹具")
+                    .with_side_effect(ToolSideEffectStatus::Applied))
             }
-            "run_tests" if !self.fixed.load(Ordering::Acquire) => {
-                Ok(ToolOutcome::error("EXPECTED_SENTINEL：断言失败"))
-            }
+            "run_tests" if !self.fixed.load(Ordering::Acquire) => Ok(failed_verifier_outcome(
+                VerifierSpec {
+                    parameters: invocation
+                        .arguments
+                        .parsed
+                        .expect("Host verifier arguments are canonical"),
+                    ..self.spec.clone()
+                },
+                &self.revision.lock().expect("revision lock"),
+                "EXPECTED_SENTINEL：断言失败",
+            )),
             "run_tests" => Ok(passed_verifier_outcome(
                 VerifierSpec {
                     parameters: invocation
@@ -586,6 +608,13 @@ fn exact_run_tests_spec() -> VerifierSpec {
 }
 
 fn verifier_request(input: &str) -> RunRequest {
+    verifier_request_with_policy(input, VerifierEvidencePolicy::LatestPass)
+}
+
+fn verifier_request_with_policy(
+    input: &str,
+    evidence_policy: VerifierEvidencePolicy,
+) -> RunRequest {
     let mut request = request(input);
     request
         .task_contract
@@ -595,32 +624,65 @@ fn verifier_request(input: &str) -> RunRequest {
         .acceptance = vec![TaskAcceptance::Verifier {
         id: AcceptanceId::from("tests"),
         description: "冻结的 Cargo 测试必须通过".to_owned(),
+        evidence_policy,
         verifier: exact_run_tests_spec(),
     }];
     request
 }
 
 fn passed_verifier_outcome(spec: VerifierSpec, revision: &str) -> ToolOutcome {
+    let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+        summary: "deterministic verifier passed".to_owned(),
+        verifier: spec.clone(),
+        verdict: VerifierVerdict::Passed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+    });
+    let artifact_id = artifact.id.clone();
     let mut outcome = ToolOutcome::success("deterministic verifier passed");
     outcome.workspace_revision = Some(revision.to_owned());
     outcome.evidence = ToolEvidence {
         status: ToolEvidenceStatus::Produced,
-        references: vec!["artifact-1".to_owned()],
+        references: vec![artifact_id.clone()],
     };
-    outcome.artifacts = vec![ToolArtifact {
-        id: "artifact-1".to_owned(),
-        status: ToolArtifactStatus::Available,
-        sha256: Some("sha256:artifact".to_owned()),
-        media_type: Some("application/json".to_owned()),
-        byte_len: Some(2),
-    }];
+    outcome.artifacts = vec![artifact];
     outcome.verifier_observation = Some(VerifierObservation {
         spec,
         verdict: VerifierVerdict::Passed,
         workspace_revision: WorkspaceRevision::Known {
             sha256: revision.to_owned(),
         },
-        artifact_ids: vec!["artifact-1".to_owned()],
+        artifact_ids: vec![artifact_id],
+    });
+    outcome
+}
+
+fn failed_verifier_outcome(spec: VerifierSpec, revision: &str, content: &str) -> ToolOutcome {
+    let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+        summary: content.to_owned(),
+        verifier: spec.clone(),
+        verdict: VerifierVerdict::Failed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+    });
+    let artifact_id = artifact.id.clone();
+    let mut outcome = ToolOutcome::error(content);
+    outcome.side_effect = ToolSideEffectStatus::NotApplied;
+    outcome.workspace_revision = Some(revision.to_owned());
+    outcome.evidence = ToolEvidence {
+        status: ToolEvidenceStatus::Produced,
+        references: vec![artifact_id.clone()],
+    };
+    outcome.artifacts = vec![artifact];
+    outcome.verifier_observation = Some(VerifierObservation {
+        spec,
+        verdict: VerifierVerdict::Failed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+        artifact_ids: vec![artifact_id],
     });
     outcome
 }
@@ -935,7 +997,11 @@ async fn structured_task_semantics_are_visible_to_the_model_and_canonical_transc
     definition.non_goals = vec!["不要修改测试".to_owned()];
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected terminal: {:#?}",
+        outcome.terminal
+    );
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     assert!(
         replay
@@ -1936,7 +2002,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
         .into_iter()
         .find(|definition| definition.name == "agent")
         .expect("agent definition");
-    assert!(agent.description.contains("默认只读"));
+    assert!(agent.description.contains("只读后台子 Agent"));
 
     let properties = agent.input_schema["properties"]
         .as_object()
@@ -1967,6 +2033,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
         );
     }
     assert_eq!(properties.len(), 10);
+    assert_eq!(properties["workspace_access"]["enum"], json!(["read_only"]));
     for removed in [
         "name",
         "task",
@@ -2725,6 +2792,46 @@ async fn model_completion_requires_the_frozen_host_verifier_receipt() {
 }
 
 #[tokio::test]
+async fn failed_write_pass_rejects_an_isolated_final_pass() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![completed(
+            "只提供最终通过",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let tools = Arc::new(VerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:fixed".to_owned()),
+        fail: false,
+        omit_artifact: false,
+        calls: AtomicUsize::new(0),
+    });
+    let sink = Arc::new(CollectSink::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools,
+        sink.clone(),
+        Arc::new(InMemoryRunStore::default()),
+    ));
+    let mut run_request = verifier_request_with_policy(
+        "必须证明失败后修复",
+        VerifierEvidencePolicy::FailedWritePass,
+    );
+    run_request.limits.max_turns = 1;
+    run_request.limits.max_model_requests = 1;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert!(sink.events().iter().any(|event| matches!(
+        event.event,
+        RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
+    )));
+}
+
+#[tokio::test]
 async fn model_named_verifier_persists_only_the_id_and_executes_frozen_parameters() {
     let model_calls = Arc::new(AtomicUsize::new(0));
     let observed_calls = model_calls.clone();
@@ -2772,13 +2879,14 @@ async fn model_named_verifier_persists_only_the_id_and_executes_frozen_parameter
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
     assert_eq!(model_calls.load(Ordering::Acquire), 2);
-    let calls = tools.calls.lock().expect("tool call lock");
-    assert_eq!(calls.len(), 2, "model invocation plus final Host verifier");
-    assert_eq!(
-        calls[0].arguments.parsed,
-        Some(json!({"all_features": false, "args": ["--locked"]}))
-    );
-    drop(calls);
+    {
+        let calls = tools.calls.lock().expect("tool call lock");
+        assert_eq!(calls.len(), 2, "model invocation plus final Host verifier");
+        assert_eq!(
+            calls[0].arguments.parsed,
+            Some(json!({"all_features": false, "args": ["--locked"]}))
+        );
+    }
 
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     let prepared = replay
@@ -2894,6 +3002,7 @@ async fn verifier_failure_is_projected_once_then_a_write_allows_verified_correct
         spec: exact_run_tests_spec(),
         revision: Mutex::new("sha256:broken".to_owned()),
         fixed: AtomicBool::new(false),
+        write_changes_revision: true,
         calls: Mutex::new(Vec::new()),
     });
     let sink = Arc::new(CollectSink::default());
@@ -2906,7 +3015,10 @@ async fn verifier_failure_is_projected_once_then_a_write_allows_verified_correct
     ));
 
     let outcome = runtime
-        .start(verifier_request("修复边界错误"))
+        .start(verifier_request_with_policy(
+            "修复边界错误",
+            VerifierEvidencePolicy::FailedWritePass,
+        ))
         .wait()
         .await
         .unwrap();
@@ -2944,6 +3056,172 @@ async fn verifier_failure_is_projected_once_then_a_write_allows_verified_correct
     assert!(replay.snapshot.last_completion_rejection.is_none());
     assert!(replay.snapshot.last_host_verification_failure.is_none());
     assert_eq!(replay.snapshot.evidence_receipts.len(), 1);
+    assert!(matches!(
+        &replay.snapshot.evidence_receipts[0].lineage,
+        EvidenceLineage::FailedWritePass {
+            failure: FailedVerifierEvidence {
+                source: FailedVerifierSource::Host { .. },
+                ..
+            },
+            mutation,
+        } if mutation.workspace_state_before.revision
+            == WorkspaceRevision::Known { sha256: "sha256:broken".to_owned() }
+            && mutation.workspace_state_after.revision
+                == WorkspaceRevision::Known { sha256: "sha256:fixed".to_owned() }
+    ));
+}
+
+#[tokio::test]
+async fn model_failed_verifier_then_effective_write_seals_temporal_receipt() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        match observed_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                Some("先按冻结 ID 观察修改前失败"),
+                vec![call(
+                    "before-failure",
+                    "run_tests",
+                    r#"{"verifier_id":"tests"}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                let rendered = serde_json::to_string(&request.messages).unwrap();
+                assert!(rendered.contains("EXPECTED_SENTINEL"));
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    Some("根据失败事实修改工作区"),
+                    vec![call("repair-write", "write", "{}")],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            2 => ScriptResponse::Events(vec![completed(
+                "",
+                Some("用同一个冻结 verifier 确认修改后通过"),
+                vec![call(
+                    "after-pass",
+                    "run_tests",
+                    r#"{"verifier_id":"tests"}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]),
+            3 => ScriptResponse::Events(vec![completed(
+                "修复完成",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            _ => panic!("unexpected extra model request"),
+        }
+    }));
+    let tools = Arc::new(CorrectableVerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:broken".to_owned()),
+        fixed: AtomicBool::new(false),
+        write_changes_revision: true,
+        calls: Mutex::new(Vec::new()),
+    });
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    ));
+
+    let outcome = runtime
+        .start(verifier_request_with_policy(
+            "先失败再修复",
+            VerifierEvidencePolicy::FailedWritePass,
+        ))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected terminal: {:#?}",
+        outcome.terminal
+    );
+    assert_eq!(
+        *tools.calls.lock().unwrap(),
+        ["run_tests", "write", "run_tests", "run_tests"]
+    );
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert!(matches!(
+        &replay.snapshot.evidence_receipts[0].lineage,
+        EvidenceLineage::FailedWritePass {
+            failure: FailedVerifierEvidence {
+                source: FailedVerifierSource::Tool { operation_id },
+                ..
+            },
+            ..
+        } if !operation_id.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn failed_write_pass_rejects_a_write_without_content_change() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        match observed_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "先触发修改前 Host 验证",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            1 => ScriptResponse::Events(vec![completed(
+                "",
+                Some("尝试一次没有改变内容的写入"),
+                vec![call("noop-write", "write", "{}")],
+                ModelFinishReason::ToolCalls,
+            )]),
+            2 => ScriptResponse::Events(vec![completed(
+                "写后声称完成",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            _ => panic!("unexpected extra model request"),
+        }
+    }));
+    let tools = Arc::new(CorrectableVerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:unchanged".to_owned()),
+        fixed: AtomicBool::new(false),
+        write_changes_revision: false,
+        calls: Mutex::new(Vec::new()),
+    });
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools,
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    ));
+    let mut run_request = verifier_request_with_policy(
+        "拒绝无内容变化的伪修复",
+        VerifierEvidencePolicy::FailedWritePass,
+    );
+    run_request.limits.max_turns = 3;
+    run_request.limits.max_model_requests = 3;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert!(replay.snapshot.evidence_receipts.is_empty());
+    assert!(
+        replay
+            .snapshot
+            .temporal_evidence_progress
+            .as_ref()
+            .is_some_and(|progress| progress.mutation.is_none())
+    );
 }
 
 #[tokio::test]
@@ -3101,6 +3379,13 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         generation: 2,
         revision: revision.clone(),
     };
+    let verifier_outcome = passed_verifier_outcome(verifier.clone(), "sha256:workspace-a");
+    let artifact_ids = verifier_outcome
+        .verifier_observation
+        .as_ref()
+        .expect("passed verifier observation")
+        .artifact_ids
+        .clone();
     let receipt = EvidenceReceipt {
         id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
         generation_id: contract.generation_id.clone(),
@@ -3108,7 +3393,8 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         verification_id: verification_id.clone(),
         verifier: verifier.clone(),
         workspace_state: verified_state.clone(),
-        artifact_ids: vec!["artifact-1".to_owned()],
+        artifact_ids,
+        lineage: EvidenceLineage::LatestPass,
     };
     append_event(
         &store,
@@ -3116,11 +3402,8 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         "host-verification-committed",
         RuntimeEventKind::HostVerificationCommitted {
             verification_id,
-            outcome: Box::new(passed_verifier_outcome(
-                verifier.clone(),
-                "sha256:workspace-a",
-            )),
-            receipt: Some(receipt.clone()),
+            outcome: Box::new(verifier_outcome),
+            receipt: Some(Box::new(receipt.clone())),
             workspace_state_after: verified_state,
         },
     )
@@ -4720,6 +5003,7 @@ async fn tool_commit_atomically_replays_typed_outcome_and_transcript() {
         sha256: Some("deadbeef".into()),
         media_type: Some("text/plain".into()),
         byte_len: Some(13),
+        inline_content: None,
     });
     let committed_event = RuntimeEventKind::ToolOutcomeCommitted {
         operation_id,

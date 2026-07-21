@@ -10,7 +10,6 @@ use serde_json::json;
 const BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const DIRTY_REVISION: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-const ARTIFACT_SHA256: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const ROOT_WORKSPACE: &str = "/workspace/root";
 const WRITER_WORKSPACE: &str = "/workspace/writers/task";
@@ -38,6 +37,7 @@ impl ModelStream for PendingStream {
 #[derive(Clone, Copy)]
 enum ModelScript {
     Writer,
+    TemporalWriter,
     SlowWriter,
     TurnLimitedWriter,
     ReadOnlyRole,
@@ -69,7 +69,21 @@ impl DeterministicModel {
         let isolated_writer_child = request.actor.kind == AgentActorKind::Child
             && request_index == 0
             && request.tools.iter().any(|tool| tool.name == "write");
-        let tool_calls = if turn_limited_writer_child {
+        let temporal_writer_child = matches!(self.script, ModelScript::TemporalWriter)
+            && request.actor.kind == AgentActorKind::Child;
+        let tool_calls = if temporal_writer_child && request_index == 0 {
+            vec![tool_call(
+                "writer-before-verifier",
+                "run_tests",
+                json!({"verifier_id": "tests"}),
+            )]
+        } else if temporal_writer_child && request_index == 1 {
+            vec![tool_call(
+                "writer-temporal-edit",
+                "write",
+                json!({"path": "src/lib.rs", "content": "improved"}),
+            )]
+        } else if turn_limited_writer_child {
             vec![tool_call(
                 &format!("writer-edit-{request_index}"),
                 "write",
@@ -83,7 +97,7 @@ impl DeterministicModel {
             )]
         } else {
             match (self.script, request.actor.kind, request_index) {
-                (ModelScript::Writer, AgentActorKind::Root, 0)
+                (ModelScript::Writer | ModelScript::TemporalWriter, AgentActorKind::Root, 0)
                 | (ModelScript::RejectWriter, AgentActorKind::Root, 0) => vec![tool_call(
                     "writer-call",
                     AGENT_TOOL_NAME,
@@ -330,30 +344,70 @@ fn verifier() -> VerifierSpec {
 }
 
 fn passed_verifier(invocation: &ToolInvocation, revision: &str) -> ToolOutcome {
-    let artifact_id = format!("artifact:{}:{}", invocation.run_id, invocation.call_id);
+    let verifier = VerifierSpec {
+        parameters: invocation
+            .arguments
+            .parsed
+            .clone()
+            .expect("Host verifier arguments are parsed"),
+        ..verifier()
+    };
+    let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+        summary: "冻结验证通过".to_owned(),
+        verifier: verifier.clone(),
+        verdict: VerifierVerdict::Passed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+    });
+    let artifact_id = artifact.id.clone();
     let mut outcome = ToolOutcome::success("冻结验证通过");
     outcome.workspace_revision = Some(revision.to_owned());
     outcome.evidence = ToolEvidence {
         status: ToolEvidenceStatus::Produced,
         references: vec![artifact_id.clone()],
     };
-    outcome.artifacts = vec![ToolArtifact {
-        id: artifact_id.clone(),
-        status: ToolArtifactStatus::Available,
-        sha256: Some(ARTIFACT_SHA256.to_owned()),
-        media_type: Some("application/json".to_owned()),
-        byte_len: Some(2),
-    }];
+    outcome.artifacts = vec![artifact];
     outcome.verifier_observation = Some(VerifierObservation {
-        spec: VerifierSpec {
-            parameters: invocation
-                .arguments
-                .parsed
-                .clone()
-                .expect("Host verifier arguments are parsed"),
-            ..verifier()
-        },
+        spec: verifier,
         verdict: VerifierVerdict::Passed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+        artifact_ids: vec![artifact_id],
+    });
+    outcome
+}
+
+fn failed_verifier(invocation: &ToolInvocation, revision: &str) -> ToolOutcome {
+    let verifier = VerifierSpec {
+        parameters: invocation
+            .arguments
+            .parsed
+            .clone()
+            .expect("verifier arguments are parsed"),
+        ..verifier()
+    };
+    let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+        summary: "冻结验证确定性失败".to_owned(),
+        verifier: verifier.clone(),
+        verdict: VerifierVerdict::Failed,
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+    });
+    let artifact_id = artifact.id.clone();
+    let mut outcome = ToolOutcome::error("冻结验证确定性失败");
+    outcome.side_effect = ToolSideEffectStatus::NotApplied;
+    outcome.workspace_revision = Some(revision.to_owned());
+    outcome.evidence = ToolEvidence {
+        status: ToolEvidenceStatus::Produced,
+        references: vec![artifact_id.clone()],
+    };
+    outcome.artifacts = vec![artifact];
+    outcome.verifier_observation = Some(VerifierObservation {
+        spec: verifier,
+        verdict: VerifierVerdict::Failed,
         workspace_revision: WorkspaceRevision::Known {
             sha256: revision.to_owned(),
         },
@@ -447,7 +501,7 @@ impl ToolExecutor for WriterTools {
     }
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
-        if name == "write" {
+        if matches!(name, "write" | "run_tests") {
             WorkspaceAccess::MayWrite
         } else {
             WorkspaceAccess::ReadOnly
@@ -455,7 +509,7 @@ impl ToolExecutor for WriterTools {
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
-        if invocation.name == "write" {
+        if matches!(invocation.name.as_str(), "write" | "run_tests") {
             WorkspaceAccess::MayWrite
         } else {
             WorkspaceAccess::ReadOnly
@@ -488,7 +542,11 @@ impl ToolExecutor for WriterTools {
             }
             "run_tests" => {
                 let revision = self.revision.lock().expect("writer revision lock").clone();
-                Ok(passed_verifier(&invocation, &revision))
+                if revision == BASE_COMMIT {
+                    Ok(failed_verifier(&invocation, &revision))
+                } else {
+                    Ok(passed_verifier(&invocation, &revision))
+                }
             }
             other => Err(ToolExecutionError::new("unexpected_writer_tool", other)),
         }
@@ -770,6 +828,7 @@ fn root_request(exact_verifier: bool, auto_approve: bool) -> RunRequest {
             acceptance: vec![TaskAcceptance::Verifier {
                 id: AcceptanceId::from("tests"),
                 description: "冻结验证必须通过".to_owned(),
+                evidence_policy: VerifierEvidencePolicy::LatestPass,
                 verifier: verifier(),
             }],
         }
@@ -889,6 +948,7 @@ fn child_receipt(task: &AgentTask) -> EvidenceReceipt {
         verifier: verifier(),
         workspace_state: known(3, DIRTY_REVISION),
         artifact_ids: vec!["child-artifact".to_owned()],
+        lineage: EvidenceLineage::LatestPass,
     }
 }
 
@@ -1778,6 +1838,115 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
             .count(),
         7,
     );
+}
+
+#[tokio::test]
+async fn writer_temporal_receipt_is_delegated_then_reverified_on_the_root() {
+    let RuntimeFixture {
+        runtime,
+        root_tools,
+        writer_tools,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::TemporalWriter);
+    let mut request = root_request(true, true);
+    let TaskAcceptance::Verifier {
+        evidence_policy, ..
+    } = &mut request
+        .task_contract
+        .as_mut()
+        .expect("root contract")
+        .definition
+        .acceptance[0]
+    else {
+        unreachable!();
+    };
+    *evidence_policy = VerifierEvidencePolicy::FailedWritePass;
+
+    let outcome = runtime.start(request).wait().await.unwrap();
+
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected root terminal: {:?}",
+        outcome.terminal
+    );
+    assert_eq!(
+        writer_tools.calls.lock().unwrap().as_slice(),
+        ["run_tests", "write", "run_tests"]
+    );
+    assert_eq!(root_tools.calls.lock().unwrap().as_slice(), ["run_tests"]);
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let lifecycle = replay
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("writer lifecycle");
+    let child_receipt = lifecycle
+        .result
+        .as_ref()
+        .and_then(|result| result.details.evidence.first())
+        .expect("child temporal receipt");
+    assert!(matches!(
+        child_receipt.lineage,
+        EvidenceLineage::FailedWritePass { .. }
+    ));
+    let root_receipt = replay
+        .snapshot
+        .evidence_receipts
+        .first()
+        .expect("root receipt");
+    assert!(matches!(
+        &root_receipt.lineage,
+        EvidenceLineage::DelegatedFailedWritePass {
+            child_run_id,
+            child_receipt_id,
+            integration,
+        } if child_run_id == &lifecycle.task.child_run_id.0
+            && child_receipt_id == &child_receipt.id
+            && integration.workspace_state_after.revision
+                == WorkspaceRevision::Known { sha256: FINAL_COMMIT.to_owned() }
+    ));
+
+    for tamper in ["child_run_id", "child_receipt_id", "integration_id"] {
+        let mut forged = replay.events.clone();
+        let lineage = forged
+            .iter_mut()
+            .find_map(|event| match &mut event.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    receipt: Some(receipt),
+                    ..
+                } if matches!(
+                    receipt.lineage,
+                    EvidenceLineage::DelegatedFailedWritePass { .. }
+                ) =>
+                {
+                    Some(&mut receipt.lineage)
+                }
+                _ => None,
+            })
+            .expect("root delegated receipt event");
+        let EvidenceLineage::DelegatedFailedWritePass {
+            child_run_id,
+            child_receipt_id,
+            integration,
+        } = lineage
+        else {
+            unreachable!();
+        };
+        match tamper {
+            "child_run_id" => *child_run_id = "forged-child".to_owned(),
+            "child_receipt_id" => {
+                *child_receipt_id = EvidenceReceiptId::from("forged-child-receipt")
+            }
+            "integration_id" => integration.operation_id = "forged-integration".to_owned(),
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            reduce_events(&forged),
+            Err(RunStoreError::Corrupt { message, .. })
+                if message.contains("receipt does not match the exact observation")
+        ));
+    }
 }
 
 #[tokio::test]

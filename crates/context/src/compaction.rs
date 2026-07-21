@@ -531,6 +531,12 @@ fn render_host_facts(
         lines.push(format!("### 未解决的完成拒绝\n`{encoded}`"));
         if let Some(outcome) = input.last_verifier_failure {
             let mut outcome = outcome.clone();
+            for artifact in &mut outcome.artifacts {
+                // Inline verification payloads are durable replay evidence,
+                // not additional model context. The model already receives
+                // the verifier failure content plus artifact identity.
+                artifact.inline_content = None;
+            }
             if outcome.content.chars().count() > TOOL_RESULT_PRUNE_CHARS {
                 let original = outcome.content.chars().count();
                 outcome.content = format!(
@@ -560,8 +566,10 @@ fn latest_valid_receipt(input: ContextInput<'_>) -> Option<&EvidenceReceipt> {
             && contract.definition.acceptance.iter().any(|acceptance| {
                 matches!(
                     acceptance,
-                    TaskAcceptance::Verifier { id, verifier, .. }
-                        if *id == receipt.acceptance_id && *verifier == receipt.verifier
+                    TaskAcceptance::Verifier { id, evidence_policy, verifier, .. }
+                        if *id == receipt.acceptance_id
+                            && *verifier == receipt.verifier
+                            && receipt.lineage.satisfies(*evidence_policy)
                 )
             })
     })
@@ -578,8 +586,10 @@ fn unresolved_rejection(input: ContextInput<'_>) -> Option<&CompletionRejection>
                 && contract.definition.acceptance.iter().any(|acceptance| {
                     matches!(
                         acceptance,
-                        TaskAcceptance::Verifier { id, verifier, .. }
-                            if id == acceptance_id && *verifier == receipt.verifier
+                        TaskAcceptance::Verifier { id, evidence_policy, verifier, .. }
+                            if id == acceptance_id
+                                && *verifier == receipt.verifier
+                                && receipt.lineage.satisfies(*evidence_policy)
                     )
                 })
         })
@@ -772,8 +782,9 @@ mod tests {
         ToolOutcome, TranscriptEntry,
     };
     use codewhale_protocol::task::{
-        AcceptanceId, EvidenceReceiptId, TaskDefinition, TaskGenerationId, VerificationId,
-        VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
+        AcceptanceId, EvidenceLineage, EvidenceReceiptId, TaskDefinition, TaskGenerationId,
+        VerificationId, VerifierEvidencePolicy, VerifierPlan, VerifierSpec, VerifierStep,
+        WorkspaceRevision,
     };
     use serde_json::json;
 
@@ -789,6 +800,7 @@ mod tests {
                 acceptance: vec![TaskAcceptance::Verifier {
                     id: AcceptanceId::from("accept-1"),
                     description: "通过冻结验证".to_owned(),
+                    evidence_policy: VerifierEvidencePolicy::LatestPass,
                     verifier: verifier(),
                 }],
             },
@@ -953,6 +965,7 @@ mod tests {
             verifier: verifier(),
             workspace_state: old_workspace.clone(),
             artifact_ids: vec!["artifact-1".to_owned()],
+            lineage: EvidenceLineage::LatestPass,
         };
         let receipts = vec![receipt];
         let current_workspace = workspace(5, "sha256:same");

@@ -275,6 +275,12 @@ pub(crate) async fn execute_run_verifiers(
         .filter(|result| result.status == GateStatus::Skipped)
         .count();
     let success = failed == 0 && skipped == 0;
+    let failed_observation_usable = failed > 0
+        && skipped == 0
+        && results
+            .iter()
+            .filter(|result| result.status == GateStatus::Failed)
+            .all(|result| result.exit_code.is_some());
     let summary = if success {
         format!("All {passed} verifier gates passed.")
     } else {
@@ -294,19 +300,36 @@ pub(crate) async fn execute_run_verifiers(
         gates: results,
     };
     let mut outcome = verifier_tool_result(&output)?;
-    if outcome.is_success() {
-        let verifier =
-            exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
-        let revision_after = capture_workspace_revision(context.workspace()).await;
-        attach_verifier_observation(
-            &mut outcome,
-            verifier,
-            output.summary.clone(),
-            revision_before,
-            revision_after,
-        );
-    } else {
-        reject_verification_artifact(&mut outcome);
+    match output.verifier_verdict {
+        VerifierVerdict::Pass => {
+            let verifier =
+                exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
+            let revision_after = capture_workspace_revision(context.workspace()).await;
+            attach_verifier_observation(
+                &mut outcome,
+                verifier,
+                codewhale_protocol::task::VerifierVerdict::Passed,
+                output.summary.clone(),
+                revision_before,
+                revision_after,
+            );
+        }
+        VerifierVerdict::Fail if failed_observation_usable => {
+            let verifier =
+                exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
+            let revision_after = capture_workspace_revision(context.workspace()).await;
+            attach_verifier_observation(
+                &mut outcome,
+                verifier,
+                codewhale_protocol::task::VerifierVerdict::Failed,
+                output.summary.clone(),
+                revision_before,
+                revision_after,
+            );
+        }
+        VerifierVerdict::Fail | VerifierVerdict::Partial => {
+            reject_verification_artifact(&mut outcome)
+        }
     }
     Ok(outcome)
 }
@@ -1274,7 +1297,16 @@ mod tests {
         assert!(!outcome.is_success());
         assert!(!workspace.path().join("__pycache__").exists());
         assert!(!workspace.path().join(".pytest_cache").exists());
-        assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Rejected);
+        assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
+        assert_eq!(outcome.artifacts.len(), 1);
+        assert_eq!(
+            outcome
+                .verifier_observation
+                .as_ref()
+                .map(|value| value.verdict),
+            Some(codewhale_protocol::task::VerifierVerdict::Failed)
+        );
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::Indeterminate);
     }
 
     #[tokio::test]

@@ -12,10 +12,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use codewhale_protocol::agent_runtime::{
-    ToolArtifact, ToolArtifactStatus, ToolEvidence, ToolEvidenceStatus,
+    ToolArtifact, ToolEvidence, ToolEvidenceStatus, VerificationArtifactPayload,
 };
 use codewhale_protocol::task::{
-    VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision, canonical_json,
+    VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -24,8 +24,6 @@ use wait_timeout::ChildExt;
 use crate::ToolOutcome;
 use crate::shell::{ProcessTreeOwner, configure_process_tree};
 
-const ARTIFACT_ID_PREFIX: &str = "verification-evidence:";
-const ARTIFACT_MEDIA_TYPE: &str = "application/vnd.codewhale.verification+json";
 const MAX_GIT_DIFF_BYTES: usize = 256 * 1024 * 1024;
 const MAX_GIT_PATH_LIST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
@@ -48,41 +46,44 @@ pub async fn capture_workspace_revision(workspace: &Path) -> Result<String, Stri
 pub fn attach_verifier_observation(
     result: &mut ToolOutcome,
     verifier: VerifierSpec,
+    verdict: VerifierVerdict,
     summary: String,
     revision_before: Result<String, String>,
     revision_after: Result<String, String>,
 ) {
+    let verdict_matches_outcome = matches!(verdict, VerifierVerdict::Passed) && result.is_success()
+        || matches!(verdict, VerifierVerdict::Failed) && !result.is_success();
+    if !verdict_matches_outcome {
+        reject_verification_artifact(result);
+        return;
+    }
     let observation = match (revision_before, revision_after) {
-        (Ok(before), Ok(after)) if before == after && result.is_success() => Ok((after, verifier)),
-        (Ok(_), Ok(_)) if result.is_success() => Err((
+        (Ok(before), Ok(after)) if before == after => Ok((after, verifier)),
+        (Ok(_), Ok(_)) => Err((
             ToolEvidenceStatus::Stale,
             "workspace changed while the evidence command was running; rerun it in the final workspace"
                 .to_string(),
         )),
-        (Err(error), _) | (_, Err(error)) if result.is_success() => Err((
+        (Err(error), _) | (_, Err(error)) => Err((
             ToolEvidenceStatus::Missing,
             format!("could not bind checker evidence to the workspace revision: {error}"),
         )),
-        _ => {
-            reject_verification_artifact(result);
-            return;
-        }
     };
 
     match observation {
         Ok((workspace_revision, verifier)) => {
-            let evidence_value = json!({
-                "summary": summary,
-                "verifier": verifier,
-                "workspace_revision": workspace_revision,
+            let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+                summary,
+                verifier: verifier.clone(),
+                verdict,
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: workspace_revision.clone(),
+                },
             });
-            let artifact_bytes = serde_json::to_vec(&canonical_json(&evidence_value))
-                .expect("verification evidence JSON is serializable");
-            let artifact_sha256 = format_sha256(Sha256::digest(&artifact_bytes).as_slice());
-            let artifact_id = format!("{ARTIFACT_ID_PREFIX}{artifact_sha256}");
+            let artifact_id = artifact.id.clone();
             result.verifier_observation = Some(VerifierObservation {
                 spec: verifier,
-                verdict: VerifierVerdict::Passed,
+                verdict,
                 workspace_revision: WorkspaceRevision::Known {
                     sha256: workspace_revision.clone(),
                 },
@@ -92,16 +93,7 @@ pub fn attach_verifier_observation(
                 status: ToolEvidenceStatus::Produced,
                 references: vec![artifact_id.clone()],
             };
-            result.artifacts = vec![ToolArtifact {
-                id: artifact_id,
-                status: ToolArtifactStatus::Available,
-                sha256: Some(artifact_sha256),
-                media_type: Some(ARTIFACT_MEDIA_TYPE.to_string()),
-                byte_len: Some(
-                    u64::try_from(artifact_bytes.len())
-                        .expect("verification artifact length fits in u64"),
-                ),
-            }];
+            result.artifacts = vec![artifact];
             result.workspace_revision = Some(workspace_revision);
         }
         Err((status, reason)) => {
@@ -481,6 +473,7 @@ mod tests {
         attach_verifier_observation(
             &mut first,
             test_spec(Vec::new()),
+            VerifierVerdict::Passed,
             "passed".to_string(),
             revision.clone(),
             revision.clone(),
@@ -489,6 +482,7 @@ mod tests {
         attach_verifier_observation(
             &mut second,
             test_spec(vec!["--lib"]),
+            VerifierVerdict::Passed,
             "passed".to_string(),
             revision.clone(),
             revision,

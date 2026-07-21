@@ -471,15 +471,45 @@ impl AgentRuntime {
                 return TerminalState::Failed { failure };
             }
             if let Some(candidate) = state.snapshot.pending_completion.clone() {
-                match self.accept_completion_candidate(state, candidate).await {
-                    Ok((message, decision)) => {
-                        return TerminalState::Completed { message, decision };
+                let recovered_rejection = state
+                    .snapshot
+                    .last_host_verification_failure
+                    .as_ref()
+                    .filter(|failure| failure.rejection.candidate_id == candidate.id)
+                    .map(|failure| failure.rejection.clone());
+                if let Some(rejection) = recovered_rejection {
+                    if let Err(failure) = self
+                        .publish(
+                            state,
+                            RuntimeEventKind::CompletionRejected {
+                                rejection: rejection.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        return TerminalState::Failed { failure };
                     }
-                    Err(CompletionReviewError::Retry(_))
-                        if budget.has_unreserved_model_request() => {}
-                    Err(CompletionReviewError::Retry(reason))
-                    | Err(CompletionReviewError::Blocked(reason)) => {
-                        return TerminalState::Blocked { reason };
+                    // The response that proposed this candidate was already
+                    // consumed before the Host verifier committed. Once the
+                    // missing rejection is repaired, replay must advance to a
+                    // new model request rather than process that Stop again.
+                    state.recovery_output = None;
+                    if !budget.has_unreserved_model_request() {
+                        return TerminalState::Blocked {
+                            reason: rejection.reason,
+                        };
+                    }
+                } else {
+                    match self.accept_completion_candidate(state, candidate).await {
+                        Ok((message, decision)) => {
+                            return TerminalState::Completed { message, decision };
+                        }
+                        Err(CompletionReviewError::Retry(_))
+                            if budget.has_unreserved_model_request() => {}
+                        Err(CompletionReviewError::Retry(reason))
+                        | Err(CompletionReviewError::Blocked(reason)) => {
+                            return TerminalState::Blocked { reason };
+                        }
                     }
                 }
             }
@@ -1556,6 +1586,7 @@ impl AgentRuntime {
             });
         let workspace_state = if state.snapshot.pending_tool.as_ref().is_some_and(|pending| {
             pending.workspace_access == WorkspaceAccess::MayWrite
+                && pending.state == DurableActionState::InFlight
                 && !(pending.invocation.name == AGENT_TOOL_NAME
                     && (outcome.side_effect == ToolSideEffectStatus::NotApplied
                         || unintegrated_writer_recovery))
@@ -3852,7 +3883,12 @@ impl AgentRuntime {
                         acceptance_id: id.clone(),
                     });
                 }
-                TaskAcceptance::Verifier { id, verifier, .. } => {
+                TaskAcceptance::Verifier {
+                    id,
+                    evidence_policy,
+                    verifier,
+                    ..
+                } => {
                     let receipt = if let Some(receipt) = state
                         .snapshot
                         .evidence_receipts
@@ -3861,13 +3897,14 @@ impl AgentRuntime {
                             receipt.generation_id == contract.generation_id
                                 && receipt.acceptance_id == *id
                                 && receipt.verifier == *verifier
+                                && receipt.lineage.satisfies(*evidence_policy)
                                 && receipt.workspace_state == state.snapshot.workspace_state
                         })
                         .cloned()
                     {
                         receipt
                     } else {
-                        self.run_host_verifier(state, &candidate, id, verifier)
+                        self.run_host_verifier(state, &candidate, id, *evidence_policy, verifier)
                             .await?
                     };
                     satisfied.push(AcceptanceSatisfaction::Evidence {
@@ -3915,6 +3952,7 @@ impl AgentRuntime {
         state: &mut RunState,
         candidate: &CompletionCandidate,
         acceptance_id: &AcceptanceId,
+        evidence_policy: VerifierEvidencePolicy,
         verifier: &VerifierSpec,
     ) -> Result<EvidenceReceipt, CompletionReviewError> {
         let verification_id = state
@@ -3993,6 +4031,7 @@ impl AgentRuntime {
             state,
             &verification_id,
             acceptance_id,
+            evidence_policy,
             verifier,
             &outcome,
             &workspace_state_after,
@@ -4002,7 +4041,7 @@ impl AgentRuntime {
             RuntimeEventKind::HostVerificationCommitted {
                 verification_id: verification_id.clone(),
                 outcome: Box::new(outcome.clone()),
-                receipt: receipt.clone(),
+                receipt: receipt.clone().map(Box::new),
                 workspace_state_after,
             },
         )
@@ -4011,14 +4050,17 @@ impl AgentRuntime {
             CompletionReviewError::Blocked(format!("无法提交 Host verifier 结果：{failure:?}"))
         })?;
         let Some(receipt) = receipt else {
-            let rejection = CompletionRejection {
-                candidate_id: candidate.id.clone(),
-                unmet_acceptance_ids: vec![acceptance_id.clone()],
-                reason: format!(
-                    "Host verifier '{}' 未产生与当前任务和工作区精确匹配的通过证据",
-                    verifier.verifier_id
-                ),
-            };
+            let rejection = state
+                .snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .filter(|failure| failure.rejection.candidate_id == candidate.id)
+                .map(|failure| failure.rejection.clone())
+                .ok_or_else(|| {
+                    CompletionReviewError::Blocked(
+                        "Host verifier 失败后没有持久化对应的完成拒绝".to_owned(),
+                    )
+                })?;
             self.publish(
                 state,
                 RuntimeEventKind::CompletionRejected {
@@ -5150,15 +5192,20 @@ fn validate_writer_seal(task: &AgentTask, seal: &WriterSeal) -> Result<(), Strin
 }
 
 fn validate_writer_receipts(task: &AgentTask, receipts: &[EvidenceReceipt]) -> Result<(), String> {
-    let Some((acceptance_id, verifier)) =
-        task.task_contract
-            .definition
-            .acceptance
-            .iter()
-            .find_map(|acceptance| match acceptance {
-                TaskAcceptance::Verifier { id, verifier, .. } => Some((id, verifier)),
-                TaskAcceptance::Host { .. } => None,
-            })
+    let Some((acceptance_id, evidence_policy, verifier)) = task
+        .task_contract
+        .definition
+        .acceptance
+        .iter()
+        .find_map(|acceptance| match acceptance {
+            TaskAcceptance::Verifier {
+                id,
+                evidence_policy,
+                verifier,
+                ..
+            } => Some((id, evidence_policy, verifier)),
+            TaskAcceptance::Host { .. } => None,
+        })
     else {
         return Err("writer AgentTask 没有冻结 exact verifier".to_owned());
     };
@@ -5167,6 +5214,7 @@ fn validate_writer_receipts(task: &AgentTask, receipts: &[EvidenceReceipt]) -> R
             receipt.generation_id != task.task_contract.generation_id
                 || receipt.acceptance_id != *acceptance_id
                 || receipt.verifier != *verifier
+                || !receipt.lineage.satisfies(*evidence_policy)
         })
     {
         return Err(
@@ -5362,23 +5410,20 @@ fn seal_evidence_receipt(
     state: &RunState,
     verification_id: &VerificationId,
     acceptance_id: &AcceptanceId,
+    evidence_policy: VerifierEvidencePolicy,
     verifier: &VerifierSpec,
     outcome: &ToolOutcome,
     workspace_state: &WorkspaceState,
 ) -> Option<EvidenceReceipt> {
     let observation = outcome.verifier_observation.as_ref()?;
-    let revision_matches = matches!(
-        (&observation.workspace_revision, &workspace_state.revision),
-        (
-            WorkspaceRevision::Known { sha256: observed },
-            WorkspaceRevision::Known { sha256: settled }
-        ) if observed == settled
-    );
     if !outcome.is_success()
         || observation.verdict != VerifierVerdict::Passed
         || observation.spec != *verifier
         || !crate::store::verifier_artifacts_are_available(outcome, observation)
-        || !revision_matches
+        || !outcome.has_stable_verifier_revision(
+            &state.snapshot.workspace_state.revision,
+            &workspace_state.revision,
+        )
     {
         return None;
     }
@@ -5389,6 +5434,12 @@ fn seal_evidence_receipt(
         .as_ref()?
         .generation_id
         .clone();
+    let lineage = crate::store::expected_evidence_lineage(
+        &state.snapshot,
+        acceptance_id,
+        verifier,
+        evidence_policy,
+    )?;
     let receipt = EvidenceReceipt {
         id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
         generation_id,
@@ -5397,6 +5448,7 @@ fn seal_evidence_receipt(
         verifier: verifier.clone(),
         workspace_state: workspace_state.clone(),
         artifact_ids: observation.artifact_ids.clone(),
+        lineage,
     };
     receipt.validate().ok().map(|()| receipt)
 }
@@ -5425,6 +5477,7 @@ mod actor_capability_tests {
                 acceptance: vec![TaskAcceptance::Verifier {
                     id: AcceptanceId::from("frozen-check"),
                     description: "冻结检查".to_owned(),
+                    evidence_policy: VerifierEvidencePolicy::LatestPass,
                     verifier: VerifierSpec {
                         verifier_id: "run_verifiers".to_owned(),
                         parameters: json!({"profile": "exact"}),

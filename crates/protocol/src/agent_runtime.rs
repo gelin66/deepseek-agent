@@ -9,16 +9,17 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::task::{
     AcceptanceId, CompletionCandidate, CompletionDecision, CompletionRejection, EvidenceReceipt,
-    TaskContract, VerificationId, VerifierObservation, VerifierSpec, WorkspaceRevision,
-    WorkspaceState,
+    FailedVerifierEvidence, TaskContract, VerificationId, VerifierObservation, VerifierSpec,
+    VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 11;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 11;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 12;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 12;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -812,6 +813,80 @@ pub struct ToolArtifact {
     pub media_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub byte_len: Option<u64>,
+    /// Small canonical evidence payloads remain replay-verifiable after a
+    /// crash instead of degrading into untrusted digest metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_content: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct VerificationArtifactPayload {
+    pub summary: String,
+    pub verifier: VerifierSpec,
+    pub verdict: VerifierVerdict,
+    pub workspace_revision: WorkspaceRevision,
+}
+
+impl VerificationArtifactPayload {
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("verification artifact summary", &self.summary)?;
+        self.verifier.validate()?;
+        self.workspace_revision.validate()
+    }
+}
+
+impl ToolArtifact {
+    const VERIFICATION_ID_PREFIX: &'static str = "verification-evidence:";
+    const VERIFICATION_MEDIA_TYPE: &'static str = "application/vnd.codewhale.verification+json";
+
+    #[must_use]
+    pub fn inline_verification(payload: VerificationArtifactPayload) -> Self {
+        payload
+            .validate()
+            .expect("verification artifact payload is valid");
+        let content = canonical_json(
+            &serde_json::to_value(payload)
+                .expect("verification artifact payload JSON is serializable"),
+        );
+        let bytes = serde_json::to_vec(&content)
+            .expect("canonical verification evidence JSON is serializable");
+        let sha256 = format_prefixed_sha256(&bytes);
+        Self {
+            id: format!("{}{sha256}", Self::VERIFICATION_ID_PREFIX),
+            status: ToolArtifactStatus::Available,
+            sha256: Some(sha256),
+            media_type: Some(Self::VERIFICATION_MEDIA_TYPE.to_owned()),
+            byte_len: Some(
+                u64::try_from(bytes.len()).expect("verification evidence length fits in u64"),
+            ),
+            inline_content: Some(content),
+        }
+    }
+
+    pub fn validate_inline_verification(&self) -> Result<VerificationArtifactPayload, String> {
+        let content = self
+            .inline_content
+            .as_ref()
+            .ok_or_else(|| "verification artifact is missing its inline payload".to_owned())?;
+        let bytes = serde_json::to_vec(&canonical_json(content))
+            .map_err(|error| format!("verification artifact cannot be encoded: {error}"))?;
+        let sha256 = format_prefixed_sha256(&bytes);
+        if self.status != ToolArtifactStatus::Available
+            || self.sha256.as_deref() != Some(sha256.as_str())
+            || self.id != format!("{}{sha256}", Self::VERIFICATION_ID_PREFIX)
+            || self.media_type.as_deref() != Some(Self::VERIFICATION_MEDIA_TYPE)
+            || self.byte_len != u64::try_from(bytes.len()).ok()
+        {
+            return Err(
+                "verification artifact metadata does not match its inline payload".to_owned(),
+            );
+        }
+        let payload: VerificationArtifactPayload = serde_json::from_value(content.clone())
+            .map_err(|error| format!("verification artifact payload is invalid: {error}"))?;
+        payload.validate()?;
+        Ok(payload)
+    }
 }
 
 /// The one tool outcome shared by tool implementations, AgentRuntime,
@@ -844,6 +919,40 @@ pub struct ToolOutcome {
 pub struct HostVerificationFailure {
     pub outcome: ToolOutcome,
     pub workspace_state: WorkspaceState,
+    /// Deterministic rejection that must be committed after the verifier
+    /// result. Persisting it in the replay projection closes the crash window
+    /// between those two canonical events without rerunning the verifier.
+    pub rejection: CompletionRejection,
+}
+
+/// Durable local progress toward a `failed_write_pass` acceptance.
+///
+/// Child Writer provenance travels in its sealed receipt; this state only
+/// tracks failure and effective mutations observed in the current workspace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct TemporalEvidenceProgress {
+    pub acceptance_id: AcceptanceId,
+    pub verifier: VerifierSpec,
+    pub failure: FailedVerifierEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutation: Option<WorkspaceMutationEvidence>,
+}
+
+impl TemporalEvidenceProgress {
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("temporal evidence acceptance id", &self.acceptance_id.0)?;
+        self.verifier.validate()?;
+        self.failure.validate()?;
+        if let Some(mutation) = &self.mutation {
+            mutation.validate()?;
+            if self.failure.workspace_state.generation > mutation.workspace_state_before.generation
+            {
+                return Err("temporal verifier failure must precede its mutation".to_owned());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -948,6 +1057,35 @@ impl ToolOutcome {
             && self.operation == ToolOperationStatus::Succeeded
     }
 
+    /// A deterministic verifier may report external side effects as
+    /// indeterminate, but it cannot mutate the task workspace. Both the live
+    /// completion gate and replay use this exact revision relation.
+    #[must_use]
+    pub fn has_stable_verifier_revision(
+        &self,
+        before: &WorkspaceRevision,
+        after: &WorkspaceRevision,
+    ) -> bool {
+        let Some(observation) = &self.verifier_observation else {
+            return false;
+        };
+        self.side_effect != ToolSideEffectStatus::Applied
+            && matches!(
+                (
+                    before,
+                    after,
+                    &observation.workspace_revision,
+                    self.workspace_revision.as_deref(),
+                ),
+                (
+                    WorkspaceRevision::Known { sha256: before },
+                    WorkspaceRevision::Known { sha256: after },
+                    WorkspaceRevision::Known { sha256: observed },
+                    Some(outcome),
+                ) if before == after && after == observed && observed == outcome
+            )
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.invocation == ToolInvocationStatus::Rejected
             && (self.transport != ToolTransportStatus::NotStarted
@@ -985,6 +1123,9 @@ impl ToolOutcome {
                     "available artifact '{}' must carry a sha256 digest",
                     artifact.id
                 ));
+            }
+            if artifact.inline_content.is_some() {
+                artifact.validate_inline_verification().map(|_| ())?;
             }
         }
         if let Some(observation) = &self.verifier_observation {
@@ -1171,6 +1312,9 @@ impl AgentResultDetails {
                     "available Agent artifact '{}' requires a sha256 digest",
                     artifact.id
                 ));
+            }
+            if artifact.inline_content.is_some() {
+                artifact.validate_inline_verification().map(|_| ())?;
             }
         }
         if let Some(workspace) = &self.workspace {
@@ -2116,7 +2260,7 @@ pub enum RuntimeEventKind {
         verification_id: VerificationId,
         outcome: Box<ToolOutcome>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        receipt: Option<EvidenceReceipt>,
+        receipt: Option<Box<EvidenceReceipt>>,
         workspace_state_after: WorkspaceState,
     },
     CompletionRejected {
@@ -2442,6 +2586,15 @@ fn validate_sha256(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn format_prefixed_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
 fn validate_unique_non_empty_text(label: &str, values: &[String]) -> Result<(), String> {
     let mut unique = HashSet::new();
     for value in values {
@@ -2499,7 +2652,7 @@ pub struct StoredRuntimeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{TaskDefinition, TaskGenerationId};
+    use crate::task::{TaskDefinition, TaskGenerationId, VerifierPlan, VerifierStep};
 
     fn known_workspace(generation: u64, digest: char) -> WorkspaceState {
         WorkspaceState {
@@ -2573,8 +2726,8 @@ mod tests {
 
     #[test]
     fn m6_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 11);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 11);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 12);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 12);
     }
 
     #[test]
@@ -2914,6 +3067,7 @@ mod tests {
                 sha256: Some("abc123".into()),
                 media_type: Some("text/plain".into()),
                 byte_len: Some(7),
+                inline_content: None,
             }],
             workspace_revision: Some("revision-7".into()),
             verifier_observation: None,
@@ -2949,6 +3103,74 @@ mod tests {
         assert_eq!(ambiguous.operation, ToolOperationStatus::Indeterminate);
         assert_eq!(ambiguous.side_effect, ToolSideEffectStatus::Indeterminate);
         assert_eq!(ambiguous.retry, ToolRetryDisposition::Unsafe);
+    }
+
+    #[test]
+    fn inline_verification_artifact_is_replay_verifiable() {
+        let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+            summary: "fixture failed".to_owned(),
+            verifier: VerifierSpec {
+                verifier_id: "fixture".to_owned(),
+                parameters: serde_json::json!({}),
+                plan: VerifierPlan {
+                    steps: vec![VerifierStep {
+                        id: "fixture".to_owned(),
+                        program: "false".to_owned(),
+                        args: Vec::new(),
+                        cwd: String::new(),
+                        env: std::collections::BTreeMap::new(),
+                        timeout_ms: 1_000,
+                    }],
+                },
+            },
+            verdict: VerifierVerdict::Failed,
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: "sha256:fixture".to_owned(),
+            },
+        });
+        artifact.validate_inline_verification().unwrap();
+
+        let mut corrupt = artifact;
+        corrupt.byte_len = Some(0);
+        assert!(corrupt.validate_inline_verification().is_err());
+    }
+
+    #[test]
+    fn verifier_revision_stability_rejects_workspace_mutation_and_applied_side_effects() {
+        let revision_a = WorkspaceRevision::Known {
+            sha256: "sha256:a".to_owned(),
+        };
+        let revision_b = WorkspaceRevision::Known {
+            sha256: "sha256:b".to_owned(),
+        };
+        let verifier = VerifierSpec {
+            verifier_id: "fixture".to_owned(),
+            parameters: serde_json::json!({}),
+            plan: VerifierPlan {
+                steps: vec![VerifierStep {
+                    id: "fixture".to_owned(),
+                    program: "true".to_owned(),
+                    args: Vec::new(),
+                    cwd: String::new(),
+                    env: std::collections::BTreeMap::new(),
+                    timeout_ms: 1_000,
+                }],
+            },
+        };
+        let mut outcome = ToolOutcome::success("passed");
+        outcome.side_effect = ToolSideEffectStatus::Indeterminate;
+        outcome.workspace_revision = Some("sha256:a".to_owned());
+        outcome.verifier_observation = Some(VerifierObservation {
+            spec: verifier,
+            verdict: VerifierVerdict::Passed,
+            workspace_revision: revision_a.clone(),
+            artifact_ids: vec!["artifact".to_owned()],
+        });
+
+        assert!(outcome.has_stable_verifier_revision(&revision_a, &revision_a));
+        assert!(!outcome.has_stable_verifier_revision(&revision_a, &revision_b));
+        outcome.side_effect = ToolSideEffectStatus::Applied;
+        assert!(!outcome.has_stable_verifier_revision(&revision_a, &revision_a));
     }
 
     #[test]
