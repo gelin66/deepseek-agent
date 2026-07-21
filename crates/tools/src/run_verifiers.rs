@@ -515,7 +515,7 @@ fn add_python_gates(
         gates.push(python_module_gate(
             "python-pytest",
             workspace,
-            ["-m", "pytest"],
+            ["-m", "pytest", "-p", "no:cacheprovider"],
         ));
     }
 }
@@ -551,7 +551,7 @@ where
             .into_iter()
             .map(|argument| argument.as_ref().to_string())
             .collect(),
-        env: Vec::new(),
+        env: verifier_environment(),
         skipped_reason: None,
     }
 }
@@ -598,13 +598,17 @@ fn custom_gate(
             custom.name
         )));
     }
+    let mut args = custom.args.clone();
+    if is_python_program(&custom.program) && !args.iter().any(|argument| argument == "-B") {
+        args.insert(0, "-B".to_owned());
+    }
     Ok(VerifierGate {
         name: custom.name.clone(),
         ecosystem: "custom".to_string(),
         cwd,
         program: Some(custom.program.clone()),
-        args: custom.args.clone(),
-        env: Vec::new(),
+        args,
+        env: verifier_environment(),
         skipped_reason: None,
     })
 }
@@ -627,13 +631,11 @@ fn python_syntax_gate(workspace: &Path, files: &[PathBuf]) -> VerifierGate {
             "Python interpreter is not installed or not in PATH",
         );
     };
+    args.push("-B".to_string());
     args.push("-c".to_string());
     args.push(PYTHON_SYNTAX_SCRIPT.to_string());
     args.extend(files.iter().map(|path| path.display().to_string()));
-    let mut gate = gate_vec("python-syntax", "python", workspace, &program, args);
-    gate.env
-        .push(("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string()));
-    gate
+    gate_vec("python-syntax", "python", workspace, &program, args)
 }
 
 fn python_module_gate<const N: usize>(
@@ -649,8 +651,20 @@ fn python_module_gate<const N: usize>(
             "Python interpreter is not installed or not in PATH",
         );
     };
+    args.push("-B".to_string());
     args.extend(module_args.into_iter().map(str::to_string));
     gate_vec(name, "python", workspace, &program, args)
+}
+
+fn verifier_environment() -> Vec<(String, String)> {
+    vec![("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned())]
+}
+
+fn is_python_program(program: &str) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "py" || name.starts_with("python"))
 }
 
 fn python_command_parts() -> Option<(String, Vec<String>)> {
@@ -1021,6 +1035,34 @@ mod tests {
         workspace
     }
 
+    fn commit_workspace(workspace: &Path) {
+        assert!(
+            Command::new("git")
+                .args(["add", "--all"])
+                .current_dir(workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=CodeWhale Test",
+                    "-c",
+                    "user.email=test.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "fixture",
+                ])
+                .current_dir(workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
     fn shell(workspace: &Path) -> ExecShellOptions {
         ExecShellOptions::new(
             new_shared_shell_manager(workspace.to_path_buf()),
@@ -1102,6 +1144,137 @@ mod tests {
         assert_eq!(full.len(), 5);
         assert!(full.iter().any(|gate| gate.name == "rust-clippy"));
         assert!(full.iter().any(|gate| gate.name == "rust-test"));
+    }
+
+    #[test]
+    fn every_executable_gate_disables_python_bytecode_cache() {
+        let workspace = initialized_workspace();
+        fs::write(workspace.path().join("main.py"), "VALUE = 1\n").unwrap();
+        fs::write(
+            workspace.path().join("pyproject.toml"),
+            "[tool.pytest.ini_options]\n",
+        )
+        .unwrap();
+        let context = ProductionToolContext::new(workspace.path());
+        let custom = CustomVerifierInput {
+            name: "custom-python".to_owned(),
+            program: "/usr/bin/python3".to_owned(),
+            args: vec!["verifier.py".to_owned()],
+            cwd: None,
+        };
+        let gates = build_gate_plan(
+            &context,
+            VerifierProfile::Auto,
+            VerifierLevel::Full,
+            200,
+            &[custom],
+        )
+        .unwrap();
+        for gate in gates.iter().filter(|gate| gate.program.is_some()) {
+            assert!(
+                gate.env
+                    .iter()
+                    .any(|(key, value)| { key == "PYTHONDONTWRITEBYTECODE" && value == "1" })
+            );
+        }
+        let syntax = gates
+            .iter()
+            .find(|gate| gate.name == "python-syntax")
+            .unwrap();
+        if syntax.program.is_some() {
+            assert!(syntax.args.iter().any(|argument| argument == "-B"));
+        }
+        let pytest = gates
+            .iter()
+            .find(|gate| gate.name == "python-pytest")
+            .unwrap();
+        if pytest.program.is_some() {
+            assert!(pytest.args.iter().any(|argument| argument == "-B"));
+            assert!(
+                pytest
+                    .args
+                    .windows(2)
+                    .any(|args| args == ["-p", "no:cacheprovider"])
+            );
+        }
+        let custom = gates
+            .iter()
+            .find(|gate| gate.name == "custom-python")
+            .unwrap();
+        assert_eq!(custom.args.first().map(String::as_str), Some("-B"));
+    }
+
+    #[tokio::test]
+    async fn python_verifier_success_leaves_a_clean_workspace() {
+        let workspace = initialized_workspace();
+        fs::write(workspace.path().join("target_module.py"), "VALUE = 1\n").unwrap();
+        fs::write(
+            workspace.path().join("verifier.py"),
+            "import target_module\nassert target_module.VALUE == 1\n",
+        )
+        .unwrap();
+        commit_workspace(workspace.path());
+        let context = ProductionToolContext::new(workspace.path());
+        let outcome = execute_run_verifiers(
+            json!({
+                "profile": "exact",
+                "commands": [{
+                    "name": "python-import",
+                    "program": "/usr/bin/python3",
+                    "args": ["verifier.py"]
+                }]
+            }),
+            &context,
+            &shell(workspace.path()),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.is_success(), "{}", outcome.content);
+        assert!(!workspace.path().join("__pycache__").exists());
+        assert!(!workspace.path().join(".pytest_cache").exists());
+        let status = Command::new("git")
+            .args(["status", "--porcelain=v1", "--untracked-files=all"])
+            .current_dir(workspace.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        assert!(status.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_python_verifier_leaves_no_ignored_cache() {
+        let workspace = initialized_workspace();
+        fs::write(
+            workspace.path().join(".gitignore"),
+            "/target\n__pycache__/\n.pytest_cache/\n",
+        )
+        .unwrap();
+        fs::write(workspace.path().join("target_module.py"), "VALUE = 1\n").unwrap();
+        fs::write(
+            workspace.path().join("verifier.py"),
+            "import target_module\nassert target_module.VALUE == 2\n",
+        )
+        .unwrap();
+        commit_workspace(workspace.path());
+        let context = ProductionToolContext::new(workspace.path());
+        let outcome = execute_run_verifiers(
+            json!({
+                "profile": "exact",
+                "commands": [{
+                    "name": "python-import",
+                    "program": "/usr/bin/python3",
+                    "args": ["-I", "verifier.py"]
+                }]
+            }),
+            &context,
+            &shell(workspace.path()),
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.is_success());
+        assert!(!workspace.path().join("__pycache__").exists());
+        assert!(!workspace.path().join(".pytest_cache").exists());
+        assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Rejected);
     }
 
     #[tokio::test]
