@@ -38,7 +38,11 @@ pub async fn capture_workspace_revision(workspace: &Path) -> Result<String, Stri
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || capture_workspace_revision_sync(&workspace))
         .await
-        .map_err(|error| format!("workspace revision task failed: {error}"))?
+        .map_err(workspace_revision_join_error)?
+}
+
+fn workspace_revision_join_error(_error: tokio::task::JoinError) -> String {
+    "工作区版本后台任务异常终止".to_owned()
 }
 
 /// Attach evidence only when the checker succeeded and the workspace stayed
@@ -448,6 +452,16 @@ mod tests {
                 }],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_revision_join_failure_does_not_expose_the_panic_payload() {
+        let join = tokio::task::spawn_blocking(|| panic!("TOP_SECRET_WORKSPACE_BYTES"))
+            .await
+            .expect_err("worker must panic");
+        let error = workspace_revision_join_error(join);
+        assert_eq!(error, "工作区版本后台任务异常终止");
+        assert!(!error.contains("TOP_SECRET_WORKSPACE_BYTES"));
     }
 
     #[tokio::test]

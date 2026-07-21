@@ -109,11 +109,7 @@ where
     };
 
     let joined = result.map_err(|_| file_search_timeout(timeout))?;
-    joined.map_err(|err| {
-        ToolError::execution_failed(format!(
-            "file_search worker failed before completion: {err}"
-        ))
-    })?
+    joined.map_err(|_error| ToolError::execution_failed("file_search 后台任务异常终止"))?
 }
 
 fn file_search_cancelled() -> ToolError {
@@ -361,6 +357,18 @@ mod tests {
 
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn worker_join_failure_does_not_expose_the_panic_payload() {
+        let error = run_blocking_file_search(Duration::from_secs(1), None, || {
+            panic!("TOP_SECRET_FILE_SEARCH_BYTES")
+        })
+        .await
+        .expect_err("worker must fail");
+        let message = error.to_string();
+        assert!(message.contains("file_search 后台任务异常终止"));
+        assert!(!message.contains("TOP_SECRET_FILE_SEARCH_BYTES"));
+    }
 
     #[tokio::test]
     async fn test_file_search_basic() {

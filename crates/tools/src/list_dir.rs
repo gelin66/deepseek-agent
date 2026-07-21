@@ -70,9 +70,7 @@ where
     };
 
     let joined = result.map_err(|_| list_dir_timeout(timeout))?;
-    joined.map_err(|error| {
-        ToolError::execution_failed(format!("list_dir worker failed before completion: {error}"))
-    })?
+    joined.map_err(|_error| ToolError::execution_failed("list_dir 后台任务异常终止"))?
 }
 
 fn list_dir_entries(
@@ -145,6 +143,18 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn worker_join_failure_does_not_expose_the_panic_payload() {
+        let error = run_blocking_list_dir(Duration::from_secs(1), None, || {
+            panic!("TOP_SECRET_LIST_DIR_BYTES")
+        })
+        .await
+        .expect_err("worker must fail");
+        let message = error.to_string();
+        assert!(message.contains("list_dir 后台任务异常终止"));
+        assert!(!message.contains("TOP_SECRET_LIST_DIR_BYTES"));
+    }
 
     #[tokio::test]
     async fn lists_the_workspace_root_by_default() {

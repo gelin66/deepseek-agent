@@ -404,21 +404,7 @@ where
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(extract)) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(error.to_string()),
-        Err(payload) => Err(format!(
-            "extractor panicked: {}",
-            panic_payload_message(payload.as_ref())
-        )),
-    }
-}
-
-#[cfg(feature = "pdf")]
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "unknown panic".to_string()
+        Err(_payload) => Err("PDF 提取器异常终止".to_owned()),
     }
 }
 
@@ -706,13 +692,16 @@ mod tests {
 
     #[cfg(feature = "pdf")]
     #[test]
-    fn pdf_extract_panic_is_returned_as_tool_error_text() {
+    fn pdf_extract_panic_payload_is_redacted_before_the_canonical_tool_error() {
+        const SECRET_SENTINEL: &str = "SECRET_PDF_PANIC_PAYLOAD_MUST_NOT_ESCAPE";
         let error = guard_pdf_extract(|| -> Result<String, &'static str> {
-            panic!("assertion failed: name == \"Identity-H\"");
+            panic!("{SECRET_SENTINEL}");
         })
         .expect_err("panic should become an error");
-        assert!(error.contains("extractor panicked"));
-        assert!(error.contains("Identity-H"));
+        assert_eq!(error, "PDF 提取器异常终止");
+        let outcome = ToolOutcome::error(ToolError::execution_failed(error).to_string());
+        assert!(outcome.content.contains("PDF 提取器异常终止"));
+        assert!(!outcome.content.contains(SECRET_SENTINEL));
     }
 
     #[cfg(feature = "pdf")]

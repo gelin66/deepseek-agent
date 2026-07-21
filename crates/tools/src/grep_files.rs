@@ -238,9 +238,7 @@ where
     };
 
     let joined = result.map_err(|_| grep_timeout(timeout))?;
-    joined.map_err(|err| {
-        ToolError::execution_failed(format!("grep_files worker failed before completion: {err}"))
-    })?
+    joined.map_err(|_error| ToolError::execution_failed("grep_files 后台任务异常终止"))?
 }
 
 fn grep_cancelled() -> ToolError {
@@ -611,6 +609,7 @@ fn matches_simple_glob(text: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
     use serde_json::{Value, json};
     use tempfile::tempdir;
@@ -618,7 +617,19 @@ mod tests {
 
     use crate::ProductionToolContext;
 
-    use super::{MAX_RESULTS, execute_grep_files, matches_glob};
+    use super::{MAX_RESULTS, execute_grep_files, matches_glob, run_blocking_grep};
+
+    #[tokio::test]
+    async fn worker_join_failure_does_not_expose_the_panic_payload() {
+        let error = run_blocking_grep(Duration::from_secs(1), None, || {
+            panic!("TOP_SECRET_GREP_BYTES")
+        })
+        .await
+        .expect_err("worker must fail");
+        let message = error.to_string();
+        assert!(message.contains("grep_files 后台任务异常终止"));
+        assert!(!message.contains("TOP_SECRET_GREP_BYTES"));
+    }
 
     #[test]
     fn test_matches_glob_star() {
