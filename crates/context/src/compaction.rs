@@ -578,6 +578,9 @@ fn latest_valid_receipt(input: ContextInput<'_>) -> Option<&EvidenceReceipt> {
 fn unresolved_rejection(input: ContextInput<'_>) -> Option<&CompletionRejection> {
     let rejection = input.last_completion_rejection?;
     let contract = input.task_contract?;
+    if rejection.generation_id != contract.generation_id {
+        return None;
+    }
     let resolved = rejection.unmet_acceptance_ids.iter().all(|acceptance_id| {
         input.evidence_receipts.iter().any(|receipt| {
             receipt.generation_id == contract.generation_id
@@ -779,12 +782,12 @@ fn take_tail_chars(value: &str, count: usize) -> String {
 mod tests {
     use codewhale_protocol::agent_runtime::{
         AgentOutcome, ModelAccounting, ModelToolCall, RunId, SystemPrompt, ToolArguments,
-        ToolOutcome, TranscriptEntry,
+        ToolArtifact, ToolArtifactStatus, ToolOutcome, TranscriptEntry,
     };
     use codewhale_protocol::task::{
-        AcceptanceId, EvidenceLineage, EvidenceReceiptId, TaskDefinition, TaskGenerationId,
-        VerificationId, VerifierEvidencePolicy, VerifierPlan, VerifierSpec, VerifierStep,
-        WorkspaceRevision,
+        AcceptanceId, CompletionCandidateId, CompletionRequiredTransition, EvidenceLineage,
+        EvidenceReceiptId, EvidenceSealRejection, TaskDefinition, TaskGenerationId, VerificationId,
+        VerifierEvidencePolicy, VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
     };
     use serde_json::json;
 
@@ -982,6 +985,75 @@ mod tests {
         assert!(!rendered.contains("receipt-1"));
         assert!(rendered.contains("current_evidence_receipt"));
         assert!(rendered.contains("`none`"));
+    }
+
+    #[test]
+    fn current_typed_rejection_is_visible_without_inline_artifact_payload() {
+        let contract = contract();
+        let workspace = workspace(2, "sha256:broken");
+        let transcript = long_transcript(&contract);
+        let rejection = CompletionRejection {
+            candidate_id: CompletionCandidateId::from("candidate-1"),
+            generation_id: contract.generation_id.clone(),
+            unmet_acceptance_ids: vec![AcceptanceId::from("accept-1")],
+            cause: EvidenceSealRejection::VerifierFailed,
+            required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+            reason: "先有效修改工作区，再重新提出完成".to_owned(),
+        };
+        let mut outcome = ToolOutcome::error("EXPECTED_VERIFIER_FAILURE");
+        outcome.artifacts.push(ToolArtifact {
+            id: "artifact-1".to_owned(),
+            status: ToolArtifactStatus::Available,
+            sha256: Some("sha256:artifact".to_owned()),
+            media_type: Some("application/json".to_owned()),
+            byte_len: Some(24),
+            inline_content: Some(json!({"secret": "INLINE_ARTIFACT_SENTINEL"})),
+        });
+        let mut current = input(
+            &transcript,
+            None,
+            &contract,
+            &workspace,
+            &[],
+            Some(&rejection),
+        );
+        current.last_verifier_failure = Some(&outcome);
+        current.last_verifier_failure_workspace = Some(&workspace);
+
+        let projected = effective_context(current).expect("typed rejection context");
+        let rendered = serde_json::to_string(&projected.messages).expect("messages");
+        assert!(rendered.contains("verifier_failed"));
+        assert!(rendered.contains("effective_workspace_mutation"));
+        assert!(rendered.contains("EXPECTED_VERIFIER_FAILURE"));
+        assert!(!rendered.contains("INLINE_ARTIFACT_SENTINEL"));
+    }
+
+    #[test]
+    fn inherited_rejection_from_an_old_task_generation_is_not_projected() {
+        let contract = contract();
+        let workspace = workspace(2, "sha256:current");
+        let transcript = long_transcript(&contract);
+        let rejection = CompletionRejection {
+            candidate_id: CompletionCandidateId::from("old-candidate"),
+            generation_id: TaskGenerationId::from("old-generation"),
+            unmet_acceptance_ids: vec![AcceptanceId::from("accept-1")],
+            cause: EvidenceSealRejection::VerifierFailed,
+            required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+            reason: "OLD_GENERATION_REJECTION_SENTINEL".to_owned(),
+        };
+
+        let projected = effective_context(input(
+            &transcript,
+            None,
+            &contract,
+            &workspace,
+            &[],
+            Some(&rejection),
+        ))
+        .expect("new generation context");
+        let rendered = serde_json::to_string(&projected.messages).expect("messages");
+        assert!(!rendered.contains("OLD_GENERATION_REJECTION_SENTINEL"));
+        assert!(!rendered.contains("未解决的完成拒绝"));
     }
 
     #[test]

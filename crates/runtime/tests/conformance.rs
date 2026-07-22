@@ -2789,6 +2789,20 @@ async fn model_completion_requires_the_frozen_host_verifier_receipt() {
         events.last().map(|event| &event.event),
         Some(RuntimeEventKind::Terminal { .. })
     ));
+    let mut missing_receipt = events.clone();
+    let committed_receipt = missing_receipt
+        .iter_mut()
+        .find_map(|event| match &mut event.event {
+            RuntimeEventKind::HostVerificationCommitted { receipt, .. } => Some(receipt),
+            _ => None,
+        })
+        .expect("Host verification commit");
+    *committed_receipt = None;
+    assert!(matches!(
+        reduce_events(&missing_receipt),
+        Err(RunStoreError::Corrupt { message, .. })
+            if message.contains("omitted a receipt that canonical sealing accepted")
+    ));
 }
 
 #[tokio::test]
@@ -2828,6 +2842,13 @@ async fn failed_write_pass_rejects_an_isolated_final_pass() {
     assert!(sink.events().iter().any(|event| matches!(
         event.event,
         RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
+    )));
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::CompletionRejected { rejection }
+            if rejection.cause == EvidenceSealRejection::EvidenceLineageUnavailable
+                && rejection.required_transition
+                    == CompletionRequiredTransition::EvidenceLineageRepair
     )));
 }
 
@@ -2918,6 +2939,8 @@ async fn model_completion_is_rejected_when_the_frozen_verifier_fails() {
                 serde_json::to_string(&request.messages).expect("model request messages");
             assert!(rendered.contains("deterministic verifier failed"));
             assert!(rendered.contains("未解决的完成拒绝"));
+            assert!(rendered.contains("verifier_failed"));
+            assert!(rendered.contains("effective_workspace_mutation"));
         } else {
             assert_eq!(call_index, 0, "unexpected extra model request");
         }
@@ -2957,11 +2980,13 @@ async fn model_completion_is_rejected_when_the_frozen_verifier_fails() {
         &event.event,
         RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
     )));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(&event.event, RuntimeEventKind::CompletionRejected { .. }))
-    );
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::CompletionRejected { rejection }
+            if rejection.cause == EvidenceSealRejection::VerifierFailed
+                && rejection.required_transition
+                    == CompletionRequiredTransition::EffectiveWorkspaceMutation
+    )));
 }
 
 #[tokio::test]
@@ -3199,7 +3224,7 @@ async fn failed_write_pass_rejects_a_write_without_content_change() {
     let store = Arc::new(InMemoryRunStore::default());
     let runtime = Arc::new(AgentRuntime::new(
         model,
-        tools,
+        tools.clone(),
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
@@ -3213,6 +3238,12 @@ async fn failed_write_pass_rejects_a_write_without_content_change() {
     let outcome = runtime.start(run_request).wait().await.unwrap();
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert_eq!(model_calls.load(Ordering::Acquire), 3);
+    assert_eq!(
+        *tools.calls.lock().expect("tool call lock"),
+        ["run_tests", "write"],
+        "generation-only progress must not trigger a second Host verifier on the same revision"
+    );
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     assert!(replay.snapshot.evidence_receipts.is_empty());
     assert!(
@@ -3226,7 +3257,14 @@ async fn failed_write_pass_rejects_a_write_without_content_change() {
 
 #[tokio::test]
 async fn verifier_observation_without_an_available_artifact_cannot_complete() {
-    let model = Arc::new(MockModel::new(|_| {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        assert_eq!(
+            observed_calls.fetch_add(1, Ordering::AcqRel),
+            0,
+            "Host execution defects must not consume a recovery model request"
+        );
         ScriptResponse::Events(vec![completed(
             "我已经完成",
             None,
@@ -3256,11 +3294,206 @@ async fn verifier_observation_without_an_available_artifact_cannot_complete() {
         .unwrap();
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert_eq!(model_calls.load(Ordering::Acquire), 1);
     assert_eq!(tools.calls.load(Ordering::Acquire), 1);
     assert!(sink.events().iter().any(|event| matches!(
         event.event,
         RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
     )));
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::CompletionRejected { rejection }
+            if rejection.cause == EvidenceSealRejection::VerifierArtifactUnavailable
+                && rejection.required_transition
+                    == CompletionRequiredTransition::HostVerifierExecutionRepair
+    )));
+}
+
+#[tokio::test]
+async fn verifier_spec_mismatch_blocks_without_an_extra_model_request() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        assert_eq!(
+            observed_calls.fetch_add(1, Ordering::AcqRel),
+            0,
+            "a Host contract defect is not a model recovery turn"
+        );
+        ScriptResponse::Events(vec![completed(
+            "我已经完成",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let mut actual_spec = exact_run_tests_spec();
+    actual_spec.plan.steps[0].timeout_ms += 1;
+    let tools = Arc::new(VerifierTools {
+        spec: actual_spec,
+        revision: Mutex::new("sha256:workspace-a".to_owned()),
+        fail: false,
+        omit_artifact: false,
+        calls: AtomicUsize::new(0),
+    });
+    let sink = Arc::new(CollectSink::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        sink.clone(),
+        Arc::new(InMemoryRunStore::default()),
+    ));
+
+    let outcome = runtime
+        .start(verifier_request("拒绝 Host verifier 规格漂移"))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert_eq!(model_calls.load(Ordering::Acquire), 1);
+    assert_eq!(tools.calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            ))
+            .count(),
+        1
+    );
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::CompletionRejected { rejection }
+            if rejection.cause == EvidenceSealRejection::VerifierSpecMismatch
+                && rejection.required_transition
+                    == CompletionRequiredTransition::HostVerifierContractRepair
+    )));
+}
+
+#[tokio::test]
+async fn continuation_generation_ignores_a_same_id_rejection_from_its_source() {
+    let store = Arc::new(InMemoryRunStore::default());
+    let source_tools = Arc::new(VerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:workspace-a".to_owned()),
+        fail: true,
+        omit_artifact: false,
+        calls: AtomicUsize::new(0),
+    });
+    let source_runtime = Arc::new(AgentRuntime::new(
+        Arc::new(MockModel::new(|_| {
+            ScriptResponse::Events(vec![completed(
+                "源任务声称完成",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        })),
+        source_tools,
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    ));
+    let mut source_request = verifier_request("建立带拒绝的 continuation 源任务");
+    source_request.limits.max_turns = 1;
+    source_request.limits.max_model_requests = 1;
+    let source_outcome = source_runtime.start(source_request).wait().await.unwrap();
+    assert!(matches!(
+        source_outcome.terminal,
+        TerminalState::Blocked { .. }
+    ));
+    let source = store
+        .load(&source_outcome.run_id)
+        .await
+        .unwrap()
+        .expect("source replay");
+    let source_rejection = source
+        .snapshot
+        .last_completion_rejection
+        .clone()
+        .expect("source completion rejection");
+
+    let continued_run_id = RunId::from("continued-generation");
+    let source_contract = source
+        .snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .expect("source contract");
+    let mut continued_request = source.snapshot.request.clone();
+    continued_request.run_id = Some(continued_run_id.clone());
+    continued_request.parent_run_id = None;
+    continued_request.continued_from_run_id = Some(source_outcome.run_id.clone());
+    continued_request.task_contract = Some(TaskContract {
+        generation_id: TaskGenerationId::from(continued_run_id.0.clone()),
+        definition: source_contract.definition.clone(),
+    });
+    continued_request.transcript = source.snapshot.transcript.clone();
+    continued_request.context_projection = source.snapshot.context_projection.clone();
+    continued_request.inherited_facts = Some(InheritedRunFacts {
+        workspace_state: source.snapshot.workspace_state.clone(),
+        last_completion_rejection: source.snapshot.last_completion_rejection.clone(),
+        last_host_verification_failure: source.snapshot.last_host_verification_failure.clone(),
+    });
+    continued_request.accounting_baseline = ModelAccounting::default();
+
+    let continued_model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = continued_model_calls.clone();
+    let old_reason = source_rejection.reason.clone();
+    let continued_model = Arc::new(MockModel::new(move |request| {
+        assert_eq!(observed_calls.fetch_add(1, Ordering::AcqRel), 0);
+        let rendered = serde_json::to_string(&request.messages).expect("continued messages");
+        assert!(!rendered.contains(&old_reason));
+        assert!(!rendered.contains("未解决的完成拒绝"));
+        ScriptResponse::Events(vec![completed(
+            "新 generation 已独立完成",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let continued_tools = Arc::new(VerifierTools {
+        spec: exact_run_tests_spec(),
+        // A newly observed revision adds the same canonical event boundary as
+        // the source run, intentionally reproducing completion-N across runs.
+        revision: Mutex::new("sha256:workspace-b".to_owned()),
+        fail: false,
+        omit_artifact: false,
+        calls: AtomicUsize::new(0),
+    });
+    let continued_runtime = Arc::new(AgentRuntime::new(
+        continued_model,
+        continued_tools.clone(),
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    ));
+
+    let outcome = continued_runtime
+        .start(continued_request)
+        .wait()
+        .await
+        .unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(continued_model_calls.load(Ordering::Acquire), 1);
+    assert_eq!(continued_tools.calls.load(Ordering::Acquire), 1);
+    let continued = store
+        .load(&continued_run_id)
+        .await
+        .unwrap()
+        .expect("continued replay");
+    let new_candidate = continued
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::CompletionProposed { candidate } => Some(candidate),
+            _ => None,
+        })
+        .expect("continued completion candidate");
+    assert_eq!(
+        new_candidate.id, source_rejection.candidate_id,
+        "the regression must exercise a real cross-run candidate-id collision"
+    );
+    assert_ne!(new_candidate.generation_id, source_rejection.generation_id);
 }
 
 #[tokio::test]

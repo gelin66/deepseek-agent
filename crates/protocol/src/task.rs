@@ -595,17 +595,63 @@ impl CompletionDecision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum EvidenceSealRejection {
+    VerifierObservationMissing,
+    VerifierSpecMismatch,
+    VerifierWorkspaceUnstable,
+    VerifierArtifactUnavailable,
+    VerifierFailed,
+    VerifierIncomplete,
+    VerifierOutcomeInconsistent,
+    EvidenceLineageUnavailable,
+    EvidenceReceiptInvalid,
+}
+
+impl EvidenceSealRejection {
+    #[must_use]
+    pub const fn required_transition(self) -> CompletionRequiredTransition {
+        match self {
+            Self::VerifierFailed => CompletionRequiredTransition::EffectiveWorkspaceMutation,
+            Self::VerifierSpecMismatch => CompletionRequiredTransition::HostVerifierContractRepair,
+            Self::EvidenceLineageUnavailable => CompletionRequiredTransition::EvidenceLineageRepair,
+            Self::VerifierObservationMissing
+            | Self::VerifierWorkspaceUnstable
+            | Self::VerifierArtifactUnavailable
+            | Self::VerifierIncomplete
+            | Self::VerifierOutcomeInconsistent
+            | Self::EvidenceReceiptInvalid => {
+                CompletionRequiredTransition::HostVerifierExecutionRepair
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionRequiredTransition {
+    EffectiveWorkspaceMutation,
+    EvidenceLineageRepair,
+    HostVerifierContractRepair,
+    HostVerifierExecutionRepair,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CompletionRejection {
     pub candidate_id: CompletionCandidateId,
+    pub generation_id: TaskGenerationId,
     pub unmet_acceptance_ids: Vec<AcceptanceId>,
+    pub cause: EvidenceSealRejection,
+    pub required_transition: CompletionRequiredTransition,
     pub reason: String,
 }
 
 impl CompletionRejection {
     pub fn validate(&self) -> Result<(), String> {
         require_id("completion candidate id", &self.candidate_id.0)?;
+        require_id("task generation id", &self.generation_id.0)?;
         if self.unmet_acceptance_ids.is_empty() {
             return Err("completion rejection must identify unmet acceptance".to_owned());
         }
@@ -617,6 +663,11 @@ impl CompletionRejection {
                 .map(|id| id.0.clone())
                 .collect::<Vec<_>>(),
         )?;
+        if self.required_transition != self.cause.required_transition() {
+            return Err(
+                "completion rejection transition does not match its typed cause".to_owned(),
+            );
+        }
         require_text("completion rejection reason", &self.reason)
     }
 }
@@ -901,5 +952,103 @@ mod tests {
             "legacy_goal": true
         });
         assert!(serde_json::from_value::<TaskDefinition>(value).is_err());
+    }
+
+    #[test]
+    fn completion_rejection_requires_the_transition_owned_by_its_typed_cause() {
+        let mut rejection = CompletionRejection {
+            candidate_id: CompletionCandidateId::from("candidate-1"),
+            generation_id: TaskGenerationId::from("generation-1"),
+            unmet_acceptance_ids: vec![AcceptanceId::from("tests")],
+            cause: EvidenceSealRejection::VerifierFailed,
+            required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+            reason: "确定性 verifier 失败，修改后重试".to_owned(),
+        };
+        assert!(rejection.validate().is_ok());
+
+        rejection.required_transition = CompletionRequiredTransition::HostVerifierExecutionRepair;
+        assert_eq!(
+            rejection.validate().unwrap_err(),
+            "completion rejection transition does not match its typed cause"
+        );
+    }
+
+    #[test]
+    fn only_a_genuine_verifier_failure_requests_workspace_mutation() {
+        let causes = [
+            EvidenceSealRejection::VerifierObservationMissing,
+            EvidenceSealRejection::VerifierSpecMismatch,
+            EvidenceSealRejection::VerifierWorkspaceUnstable,
+            EvidenceSealRejection::VerifierArtifactUnavailable,
+            EvidenceSealRejection::VerifierFailed,
+            EvidenceSealRejection::VerifierIncomplete,
+            EvidenceSealRejection::VerifierOutcomeInconsistent,
+            EvidenceSealRejection::EvidenceLineageUnavailable,
+            EvidenceSealRejection::EvidenceReceiptInvalid,
+        ];
+        let mutation_causes = causes
+            .into_iter()
+            .filter(|cause| {
+                cause.required_transition()
+                    == CompletionRequiredTransition::EffectiveWorkspaceMutation
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mutation_causes, [EvidenceSealRejection::VerifierFailed]);
+    }
+
+    #[test]
+    fn typed_completion_rejection_wire_is_exact_and_has_no_legacy_defaults() {
+        let rejection = CompletionRejection {
+            candidate_id: CompletionCandidateId::from("candidate-1"),
+            generation_id: TaskGenerationId::from("generation-1"),
+            unmet_acceptance_ids: vec![AcceptanceId::from("tests")],
+            cause: EvidenceSealRejection::VerifierSpecMismatch,
+            required_transition: CompletionRequiredTransition::HostVerifierContractRepair,
+            reason: "冻结 verifier 规格与实际执行不一致".to_owned(),
+        };
+        let encoded = serde_json::to_value(&rejection).expect("serialize rejection");
+        assert_eq!(
+            encoded,
+            json!({
+                "candidate_id": "candidate-1",
+                "generation_id": "generation-1",
+                "unmet_acceptance_ids": ["tests"],
+                "cause": "verifier_spec_mismatch",
+                "required_transition": "host_verifier_contract_repair",
+                "reason": "冻结 verifier 规格与实际执行不一致"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<CompletionRejection>(encoded.clone())
+                .expect("round-trip rejection"),
+            rejection
+        );
+
+        for required in ["generation_id", "cause", "required_transition"] {
+            let mut missing = encoded.clone();
+            missing
+                .as_object_mut()
+                .expect("rejection object")
+                .remove(required);
+            assert!(
+                serde_json::from_value::<CompletionRejection>(missing).is_err(),
+                "missing {required} must not deserialize through a compatibility default"
+            );
+        }
+        let mut unknown = encoded.clone();
+        unknown
+            .as_object_mut()
+            .expect("rejection object")
+            .insert("legacy_action".to_owned(), json!("retry"));
+        assert!(serde_json::from_value::<CompletionRejection>(unknown).is_err());
+
+        let mut mismatched = encoded;
+        mismatched["required_transition"] = json!("effective_workspace_mutation");
+        let mismatched = serde_json::from_value::<CompletionRejection>(mismatched)
+            .expect("wire enums deserialize before semantic validation");
+        assert_eq!(
+            mismatched.validate().unwrap_err(),
+            "completion rejection transition does not match its typed cause"
+        );
     }
 }

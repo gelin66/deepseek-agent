@@ -2096,7 +2096,7 @@ async fn writer_temporal_receipt_is_delegated_then_reverified_on_the_root() {
         assert!(matches!(
             reduce_events(&forged),
             Err(RunStoreError::Corrupt { message, .. })
-                if message.contains("receipt does not match the exact observation")
+                if message.contains("receipt does not equal the canonical seal result")
         ));
     }
 }

@@ -514,7 +514,10 @@ impl AgentRuntime {
                     .snapshot
                     .last_host_verification_failure
                     .as_ref()
-                    .filter(|failure| failure.rejection.candidate_id == candidate.id)
+                    .filter(|failure| {
+                        failure.rejection.candidate_id == candidate.id
+                            && failure.rejection.generation_id == candidate.generation_id
+                    })
                     .map(|failure| failure.rejection.clone());
                 if let Some(rejection) = recovered_rejection {
                     if let Err(failure) = self
@@ -533,7 +536,10 @@ impl AgentRuntime {
                     // missing rejection is repaired, replay must advance to a
                     // new model request rather than process that Stop again.
                     state.recovery_output = None;
-                    if !budget.has_unreserved_model_request() {
+                    if rejection.required_transition
+                        != CompletionRequiredTransition::EffectiveWorkspaceMutation
+                        || !budget.has_unreserved_model_request()
+                    {
                         return TerminalState::Blocked {
                             reason: rejection.reason,
                         };
@@ -550,6 +556,44 @@ impl AgentRuntime {
                             return TerminalState::Blocked { reason };
                         }
                     }
+                }
+            }
+            if state.recovery_model.is_none()
+                && state.recovery_output.is_some()
+                && let Some(rejection) = state
+                    .snapshot
+                    .last_completion_rejection
+                    .as_ref()
+                    .filter(|rejection| {
+                        state
+                            .snapshot
+                            .request
+                            .task_contract
+                            .as_ref()
+                            .is_some_and(|contract| {
+                                rejection.generation_id == contract.generation_id
+                            })
+                            && rejection.candidate_id
+                                == completion_candidate_id(
+                                    state
+                                        .snapshot
+                                        .last_model_response_sequence
+                                        .unwrap_or_default(),
+                                )
+                    })
+                    .cloned()
+            {
+                // CompletionRejected already consumed this exact Stop response
+                // before the process ended. Never replay it as a fresh
+                // candidate after reopen.
+                state.recovery_output = None;
+                if rejection.required_transition
+                    != CompletionRequiredTransition::EffectiveWorkspaceMutation
+                    || !budget.has_unreserved_model_request()
+                {
+                    return TerminalState::Blocked {
+                        reason: rejection.reason,
+                    };
                 }
             }
         }
@@ -718,13 +762,12 @@ impl AgentRuntime {
                     .clone()
                     .expect("Agent run contract is validated at creation");
                 let candidate = CompletionCandidate {
-                    id: CompletionCandidateId::from(format!(
-                        "completion-{}",
+                    id: completion_candidate_id(
                         state
                             .snapshot
                             .last_model_response_sequence
-                            .unwrap_or_default()
-                    )),
+                            .unwrap_or_default(),
+                    ),
                     generation_id: contract.generation_id.clone(),
                     message: turn.content,
                 };
@@ -3679,14 +3722,18 @@ impl AgentRuntime {
             .map_err(CompletionReviewError::Blocked)?;
         if let Some(rejection) = &state.snapshot.last_completion_rejection
             && rejection.candidate_id == candidate.id
+            && rejection.generation_id == contract.generation_id
         {
             return Err(CompletionReviewError::Blocked(rejection.reason.clone()));
         }
         if let Some(failure) = &state.snapshot.last_host_verification_failure
-            && failure.workspace_state == state.snapshot.workspace_state
+            && failure.rejection.generation_id == contract.generation_id
+            && failure.rejection.required_transition
+                == CompletionRequiredTransition::EffectiveWorkspaceMutation
+            && failure.workspace_state.revision == state.snapshot.workspace_state.revision
         {
             return Err(CompletionReviewError::Blocked(
-                "上一次 Host verifier 失败后工作区没有发生写入；拒绝在同一 revision 重复验证"
+                "上一次 Host verifier 失败后工作区没有发生有效 revision 修改；拒绝重复验证相同内容"
                     .to_owned(),
             ));
         }
@@ -3848,8 +3895,8 @@ impl AgentRuntime {
                 ToolOutcome::transport_failure(format!("{}：{}", error.code, error.message))
             });
         let workspace_state_after = self.observe_workspace_state(state, true).await;
-        let receipt = seal_evidence_receipt(
-            state,
+        let seal = crate::store::seal_evidence_receipt(
+            &state.snapshot,
             &verification_id,
             acceptance_id,
             evidence_policy,
@@ -3862,7 +3909,7 @@ impl AgentRuntime {
             RuntimeEventKind::HostVerificationCommitted {
                 verification_id: verification_id.clone(),
                 outcome: Box::new(outcome.clone()),
-                receipt: receipt.clone().map(Box::new),
+                receipt: seal.as_ref().ok().cloned().map(Box::new),
                 workspace_state_after,
             },
         )
@@ -3870,29 +3917,40 @@ impl AgentRuntime {
         .map_err(|failure| {
             CompletionReviewError::Blocked(format!("无法提交 Host verifier 结果：{failure:?}"))
         })?;
-        let Some(receipt) = receipt else {
-            let rejection = state
-                .snapshot
-                .last_host_verification_failure
-                .as_ref()
-                .filter(|failure| failure.rejection.candidate_id == candidate.id)
-                .map(|failure| failure.rejection.clone())
-                .ok_or_else(|| {
-                    CompletionReviewError::Blocked(
-                        "Host verifier 失败后没有持久化对应的完成拒绝".to_owned(),
-                    )
+        let receipt = match seal {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                let rejection = state
+                    .snapshot
+                    .last_host_verification_failure
+                    .as_ref()
+                    .filter(|failure| failure.rejection.candidate_id == candidate.id)
+                    .map(|failure| failure.rejection.clone())
+                    .ok_or_else(|| {
+                        CompletionReviewError::Blocked(
+                            "Host verifier 失败后没有持久化对应的完成拒绝".to_owned(),
+                        )
+                    })?;
+                self.publish(
+                    state,
+                    RuntimeEventKind::CompletionRejected {
+                        rejection: rejection.clone(),
+                    },
+                )
+                .await
+                .map_err(|failure| {
+                    CompletionReviewError::Blocked(format!("无法提交完成拒绝：{failure:?}"))
                 })?;
-            self.publish(
-                state,
-                RuntimeEventKind::CompletionRejected {
-                    rejection: rejection.clone(),
-                },
-            )
-            .await
-            .map_err(|failure| {
-                CompletionReviewError::Blocked(format!("无法提交完成拒绝：{failure:?}"))
-            })?;
-            return Err(CompletionReviewError::Retry(rejection.reason));
+                return Err(
+                    if rejection.required_transition
+                        == CompletionRequiredTransition::EffectiveWorkspaceMutation
+                    {
+                        CompletionReviewError::Retry(rejection.reason)
+                    } else {
+                        CompletionReviewError::Blocked(rejection.reason)
+                    },
+                );
+            }
         };
         Ok(receipt)
     }
@@ -5327,6 +5385,10 @@ fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> 
     }
 }
 
+fn completion_candidate_id(model_response_sequence: u64) -> CompletionCandidateId {
+    CompletionCandidateId::from(format!("completion-{model_response_sequence}"))
+}
+
 fn context_projection_failure(
     error: codewhale_context::compaction::ContextProjectionError,
 ) -> RuntimeFailure {
@@ -5342,53 +5404,6 @@ fn latched_model_failure(primary: &Option<ModelPortError>) -> RuntimeFailure {
         .unwrap_or_else(|| RuntimeFailure::InvalidModelOutput {
             message: "model failed without a typed primary error".to_owned(),
         })
-}
-
-fn seal_evidence_receipt(
-    state: &RunState,
-    verification_id: &VerificationId,
-    acceptance_id: &AcceptanceId,
-    evidence_policy: VerifierEvidencePolicy,
-    verifier: &VerifierSpec,
-    outcome: &ToolOutcome,
-    workspace_state: &WorkspaceState,
-) -> Option<EvidenceReceipt> {
-    let observation = outcome.verifier_observation.as_ref()?;
-    if !outcome.is_success()
-        || observation.verdict != VerifierVerdict::Passed
-        || observation.spec != *verifier
-        || !crate::store::verifier_artifacts_are_available(outcome, observation)
-        || !outcome.has_stable_verifier_revision(
-            &state.snapshot.workspace_state.revision,
-            &workspace_state.revision,
-        )
-    {
-        return None;
-    }
-    let generation_id = state
-        .snapshot
-        .request
-        .task_contract
-        .as_ref()?
-        .generation_id
-        .clone();
-    let lineage = crate::store::expected_evidence_lineage(
-        &state.snapshot,
-        acceptance_id,
-        verifier,
-        evidence_policy,
-    )?;
-    let receipt = EvidenceReceipt {
-        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
-        generation_id,
-        acceptance_id: acceptance_id.clone(),
-        verification_id: verification_id.clone(),
-        verifier: verifier.clone(),
-        workspace_state: workspace_state.clone(),
-        artifact_ids: observation.artifact_ids.clone(),
-        lineage,
-    };
-    receipt.validate().ok().map(|()| receipt)
 }
 
 fn invalid_model(message: impl Into<String>) -> TerminalState {

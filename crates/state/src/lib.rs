@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 18;
+const STATE_SCHEMA_VERSION: u32 = 19;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -344,6 +344,32 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-exact-cleanup canonical run state")?;
         }
+        if user_version < 19 {
+            // RuntimeEvent v14 makes completion rejection causes and required
+            // recovery transitions mandatory. Historical rows cannot be
+            // upgraded without guessing why receipt sealing failed. Run API
+            // v9 creation intents did not change: preserve still-pending
+            // canonical commands so a schema upgrade cannot turn a reserved
+            // request into a second physical launch. Finalized creation
+            // receipts point at the runtime rows retired below and are no
+            // longer valid idempotency results.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    tx.execute(
+                        "DELETE FROM agent_run_creations WHERE command_json IS NULL",
+                        [],
+                    )
+                    .context("failed to retire finalized pre-typed-rejection creations")?;
+                } else {
+                    // State v8 has no canonical command_json to distinguish a
+                    // safe pending intent from a finalized receipt.
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-intent creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-typed-rejection canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -499,6 +525,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 18)
                 .context("failed to commit exact Writer cleanup state cutover")?;
             user_version = 18;
+        }
+        if user_version < 19 {
+            tx.pragma_update(None, "user_version", 19)
+                .context("failed to commit typed completion rejection state cutover")?;
+            user_version = 19;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

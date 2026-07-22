@@ -22,9 +22,10 @@ use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::{
-    AcceptanceId, EvidenceLineage, TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId,
-    VerifierEvidencePolicy, VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep,
-    VerifierVerdict, WorkspaceRevision,
+    AcceptanceId, CompletionRequiredTransition, EvidenceLineage, EvidenceSealRejection,
+    TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId, VerifierEvidencePolicy,
+    VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
+    WorkspaceRevision,
 };
 use codewhale_runtime::{
     AGENT_TOOL_NAME, ActorRequestAccounting, AgentActorKind, AgentControl, AgentOrchestrationError,
@@ -138,8 +139,10 @@ fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
             | CrashScenario::HostVerificationInFlight
             | CrashScenario::HostVerificationCommitted
             | CrashScenario::TemporalFailureCommitted
+            | CrashScenario::TemporalRejectionCommitted
             | CrashScenario::TemporalMutationCommitted
             | CrashScenario::TemporalHostVerificationCommitted
+            | CrashScenario::HostSpecMismatchRejectionCommitted
     )
 }
 
@@ -147,6 +150,7 @@ fn is_temporal_verification_scenario(scenario: CrashScenario) -> bool {
     matches!(
         scenario,
         CrashScenario::TemporalFailureCommitted
+            | CrashScenario::TemporalRejectionCommitted
             | CrashScenario::TemporalMutationCommitted
             | CrashScenario::TemporalHostVerificationCommitted
     )
@@ -199,8 +203,10 @@ enum CrashScenario {
     HostVerificationInFlight,
     HostVerificationCommitted,
     TemporalFailureCommitted,
+    TemporalRejectionCommitted,
     TemporalMutationCommitted,
     TemporalHostVerificationCommitted,
+    HostSpecMismatchRejectionCommitted,
     WriterTaskPrepared,
     WriterCreateSideEffect,
     WriterRunning,
@@ -238,8 +244,10 @@ impl CrashScenario {
             Self::HostVerificationInFlight => "host_verification_in_flight",
             Self::HostVerificationCommitted => "host_verification_committed",
             Self::TemporalFailureCommitted => "temporal_failure_committed",
+            Self::TemporalRejectionCommitted => "temporal_rejection_committed",
             Self::TemporalMutationCommitted => "temporal_mutation_committed",
             Self::TemporalHostVerificationCommitted => "temporal_host_verification_committed",
+            Self::HostSpecMismatchRejectionCommitted => "host_spec_mismatch_rejection_committed",
             Self::WriterTaskPrepared => "writer_task_prepared",
             Self::WriterCreateSideEffect => "writer_create_side_effect",
             Self::WriterRunning => "writer_running",
@@ -277,8 +285,10 @@ impl CrashScenario {
             "host_verification_in_flight" => Self::HostVerificationInFlight,
             "host_verification_committed" => Self::HostVerificationCommitted,
             "temporal_failure_committed" => Self::TemporalFailureCommitted,
+            "temporal_rejection_committed" => Self::TemporalRejectionCommitted,
             "temporal_mutation_committed" => Self::TemporalMutationCommitted,
             "temporal_host_verification_committed" => Self::TemporalHostVerificationCommitted,
+            "host_spec_mismatch_rejection_committed" => Self::HostSpecMismatchRejectionCommitted,
             "writer_task_prepared" => Self::WriterTaskPrepared,
             "writer_create_side_effect" => Self::WriterCreateSideEffect,
             "writer_running" => Self::WriterRunning,
@@ -1304,13 +1314,17 @@ impl ToolExecutor for MarkerTools {
                 wait_for_parent_kill().await;
             }
 
-            let verifier = VerifierSpec {
+            let mut verifier = VerifierSpec {
                 parameters: invocation
                     .arguments
                     .parsed
                     .expect("Host verifier arguments must remain canonical"),
                 ..host_verifier_spec()
             };
+            if self.scenario == CrashScenario::HostSpecMismatchRejectionCommitted {
+                verifier.plan.steps[0].timeout_ms =
+                    verifier.plan.steps[0].timeout_ms.saturating_add(1);
+            }
             let failed = is_temporal_verification_scenario(self.scenario)
                 && marker_line_count(&self.marker, "temporal-write") == 0;
             let workspace_revision = WorkspaceRevision::Known {
@@ -1484,6 +1498,11 @@ impl RuntimeEventSink for CrashSink {
                     observation.verdict == VerifierVerdict::Failed
                 })
             ),
+            CrashScenario::TemporalRejectionCommitted => matches!(
+                event.event,
+                RuntimeEventKind::CompletionRejected { ref rejection }
+                    if rejection.cause == EvidenceSealRejection::VerifierFailed
+            ),
             CrashScenario::TemporalMutationCommitted => matches!(
                 event.event,
                 RuntimeEventKind::ToolOutcomeCommitted { ref name, .. }
@@ -1495,6 +1514,11 @@ impl RuntimeEventSink for CrashSink {
                     receipt: Some(ref receipt),
                     ..
                 } if matches!(&receipt.lineage, EvidenceLineage::FailedWritePass { .. })
+            ),
+            CrashScenario::HostSpecMismatchRejectionCommitted => matches!(
+                event.event,
+                RuntimeEventKind::CompletionRejected { ref rejection }
+                    if rejection.cause == EvidenceSealRejection::VerifierSpecMismatch
             ),
             CrashScenario::WriterTaskPrepared => {
                 matches!(event.event, RuntimeEventKind::AgentTaskPrepared { .. })
@@ -4101,6 +4125,95 @@ async fn host_verification_committed_sigkill_replays_receipt_and_completes_exact
     );
 }
 
+#[tokio::test]
+async fn spec_mismatch_rejection_sigkill_blocks_without_model_or_verifier_rerun() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::HostSpecMismatchRejectionCommitted);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+    let store_before =
+        StateStore::open(Some(fixture.db.clone())).expect("open spec mismatch crash prefix");
+    let before = store_before
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load spec mismatch prefix")
+        .expect("spec mismatch run exists");
+    drop(store_before);
+    let failure = before
+        .snapshot
+        .last_host_verification_failure
+        .as_ref()
+        .expect("typed spec mismatch failure");
+    assert_eq!(
+        failure.rejection.cause,
+        EvidenceSealRejection::VerifierSpecMismatch
+    );
+    assert_eq!(
+        failure.rejection.required_transition,
+        CompletionRequiredTransition::HostVerifierContractRepair
+    );
+    assert!(before.snapshot.pending_completion.is_none());
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::CompletionRejected { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+    let verifier_markers = marker_lines(&fixture.tool_marker);
+    assert_eq!(verifier_markers.len(), 1);
+    assert!(verifier_markers[0].starts_with("host:"));
+
+    let (runtime, store, model) =
+        fixture.reopen_with_model(CrashScenario::HostSpecMismatchRejectionCommitted);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume spec mismatch rejection");
+    assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert!(
+        model.observed_requests().is_empty(),
+        "Host contract repair cannot be delegated to an extra model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert_eq!(marker_lines(&fixture.tool_marker), verifier_markers);
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load settled spec mismatch run")
+        .expect("settled spec mismatch run exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce settled spec mismatch run"),
+        after.snapshot
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::CompletionRejected { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
 async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
     let fixture = CrashFixture::new();
     fixture.crash_child(scenario);
@@ -4117,7 +4230,7 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
 
     let progress = before.snapshot.temporal_evidence_progress.as_ref();
     match scenario {
-        CrashScenario::TemporalFailureCommitted => {
+        CrashScenario::TemporalFailureCommitted | CrashScenario::TemporalRejectionCommitted => {
             let progress = progress.expect("failed verifier fact must survive SIGKILL");
             assert_eq!(
                 progress.failure.workspace_state.revision,
@@ -4127,24 +4240,50 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
             );
             assert!(progress.mutation.is_none());
             assert!(before.snapshot.evidence_receipts.is_empty());
-            let pending = before
-                .snapshot
-                .pending_completion
-                .as_ref()
-                .expect("failed Host verifier must retain its pending candidate");
             let failure = before
                 .snapshot
                 .last_host_verification_failure
                 .as_ref()
                 .expect("failed Host verifier projection");
-            assert_eq!(failure.rejection.candidate_id, pending.id);
+            assert_eq!(
+                failure.rejection.cause,
+                EvidenceSealRejection::VerifierFailed
+            );
+            assert_eq!(
+                failure.rejection.required_transition,
+                CompletionRequiredTransition::EffectiveWorkspaceMutation
+            );
+            match scenario {
+                CrashScenario::TemporalFailureCommitted => {
+                    let pending = before
+                        .snapshot
+                        .pending_completion
+                        .as_ref()
+                        .expect("Host commit retains the pending candidate before rejection");
+                    assert_eq!(failure.rejection.candidate_id, pending.id);
+                    assert_eq!(failure.rejection.generation_id, pending.generation_id);
+                }
+                CrashScenario::TemporalRejectionCommitted => {
+                    assert!(before.snapshot.pending_completion.is_none());
+                    let committed = before
+                        .events
+                        .iter()
+                        .find_map(|event| match &event.event {
+                            RuntimeEventKind::CompletionRejected { rejection } => Some(rejection),
+                            _ => None,
+                        })
+                        .expect("durable completion rejection");
+                    assert_eq!(committed, &failure.rejection);
+                }
+                _ => unreachable!(),
+            }
             assert_eq!(
                 event_count(&before, |event| matches!(
                     event,
                     RuntimeEventKind::CompletionRejected { .. }
                 )),
-                0,
-                "SIGKILL must land before the deterministic rejection commit"
+                usize::from(scenario == CrashScenario::TemporalRejectionCommitted),
+                "SIGKILL boundary must preserve the exact rejection commit count"
             );
             assert_eq!(marker_count(&fixture.model_marker), 1);
         }
@@ -4204,7 +4343,7 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
     );
 
     let expected_recovery_requests = match scenario {
-        CrashScenario::TemporalFailureCommitted => 2,
+        CrashScenario::TemporalFailureCommitted | CrashScenario::TemporalRejectionCommitted => 2,
         CrashScenario::TemporalMutationCommitted => 1,
         CrashScenario::TemporalHostVerificationCommitted => 0,
         _ => unreachable!(),
@@ -4272,6 +4411,19 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
         1,
         "the original failed candidate must be rejected exactly once across recovery"
     );
+    let rejection = after
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::CompletionRejected { rejection } => Some(rejection),
+            _ => None,
+        })
+        .expect("typed completion rejection survives recovery");
+    assert_eq!(rejection.cause, EvidenceSealRejection::VerifierFailed);
+    assert_eq!(
+        rejection.required_transition,
+        CompletionRequiredTransition::EffectiveWorkspaceMutation
+    );
     let [receipt] = after.snapshot.evidence_receipts.as_slice() else {
         panic!("recovered temporal lifecycle must retain exactly one receipt");
     };
@@ -4293,6 +4445,11 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
 #[tokio::test]
 async fn temporal_failure_commit_survives_sigkill_without_rerunning_the_failed_verifier() {
     assert_temporal_sigkill_recovery(CrashScenario::TemporalFailureCommitted).await;
+}
+
+#[tokio::test]
+async fn temporal_rejection_commit_survives_sigkill_without_replaying_the_old_stop() {
+    assert_temporal_sigkill_recovery(CrashScenario::TemporalRejectionCommitted).await;
 }
 
 #[tokio::test]

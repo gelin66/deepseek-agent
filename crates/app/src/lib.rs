@@ -523,6 +523,14 @@ impl AgentApplication {
         &self,
         mut command: ContinueRunCommand,
     ) -> Result<(ContinueRunCommand, RunReplay), RunApiError> {
+        command.task.validate().map_err(|message| {
+            api_error(
+                RunApiErrorCode::InvalidRequest,
+                format!("continuation task is invalid: {message}"),
+                Some(command.run_id.clone()),
+                None,
+            )
+        })?;
         let source = self.continuation_source(&command).await?;
         command.task = self
             .composition

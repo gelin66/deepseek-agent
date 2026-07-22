@@ -1374,15 +1374,25 @@ pub fn apply_event(
             outcome
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
-            let pending = snapshot.pending_host_verification.as_ref().ok_or_else(|| {
-                corrupt(&run_id, "Host verification committed before preparation")
-            })?;
+            let pending = snapshot
+                .pending_host_verification
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| {
+                    corrupt(&run_id, "Host verification committed before preparation")
+                })?;
             if pending.verification_id != *verification_id
                 || pending.state != DurableActionState::InFlight
             {
                 return Err(corrupt(
                     &run_id,
                     "Host verification outcome does not match the in-flight action",
+                ));
+            }
+            if pending.workspace_state_before != snapshot.workspace_state {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification workspace changed after its exact action was prepared",
                 ));
             }
             if workspace_state_after.generation
@@ -1396,117 +1406,98 @@ pub fn apply_event(
             workspace_state_after
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
-            if outcome.verifier_observation.is_some()
-                && !outcome.has_stable_verifier_revision(
-                    &pending.workspace_state_before.revision,
-                    &workspace_state_after.revision,
-                )
-            {
-                return Err(corrupt(
-                    &run_id,
-                    "Host verifier observation changed the workspace revision",
-                ));
-            }
-            if let Some(receipt) = receipt {
-                receipt
-                    .validate()
-                    .map_err(|message| corrupt(&run_id, message))?;
-                let observation = outcome.verifier_observation.as_ref().ok_or_else(|| {
-                    corrupt(
-                        &run_id,
-                        "Host verification receipt has no typed verifier observation",
-                    )
-                })?;
-                let contract = snapshot
-                    .request
-                    .task_contract
-                    .as_ref()
-                    .expect("Agent contract validated at run creation");
-                let evidence_policy = contract
-                    .definition
-                    .acceptance
-                    .iter()
-                    .find_map(|acceptance| match acceptance {
-                        TaskAcceptance::Verifier {
-                            id,
-                            evidence_policy,
-                            verifier,
-                            ..
-                        } if *id == pending.acceptance_id && *verifier == pending.verifier => {
-                            Some(*evidence_policy)
-                        }
-                        TaskAcceptance::Host { .. } | TaskAcceptance::Verifier { .. } => None,
-                    })
-                    .ok_or_else(|| {
-                        corrupt(&run_id, "Host verification lost its verifier acceptance")
-                    })?;
-                if !outcome.is_success()
-                    || observation.verdict != VerifierVerdict::Passed
-                    || observation.spec != pending.verifier
-                    || !verifier_artifacts_are_available(outcome, observation)
-                    || !outcome.has_stable_verifier_revision(
-                        &pending.workspace_state_before.revision,
-                        &workspace_state_after.revision,
-                    )
-                    || receipt.id
-                        != EvidenceReceiptId::from(format!("receipt:{}", verification_id.0))
-                    || receipt.generation_id != contract.generation_id
-                    || receipt.acceptance_id != pending.acceptance_id
-                    || receipt.verification_id != *verification_id
-                    || receipt.verifier != pending.verifier
-                    || receipt.workspace_state != *workspace_state_after
-                    || receipt.artifact_ids != observation.artifact_ids
-                    || expected_evidence_lineage(
-                        snapshot,
-                        &pending.acceptance_id,
-                        &pending.verifier,
+            let contract = snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("Agent contract validated at run creation");
+            let generation_id = contract.generation_id.clone();
+            let evidence_policy = contract
+                .definition
+                .acceptance
+                .iter()
+                .find_map(|acceptance| match acceptance {
+                    TaskAcceptance::Verifier {
+                        id,
                         evidence_policy,
-                    )
-                    .as_ref()
-                        != Some(&receipt.lineage)
-                {
-                    return Err(corrupt(
-                        &run_id,
-                        "Host verification receipt does not match the exact observation",
-                    ));
-                }
-                if snapshot
-                    .evidence_receipts
-                    .iter()
-                    .any(|existing| existing.id == receipt.id)
-                {
-                    return Err(corrupt(&run_id, "evidence receipt id was committed twice"));
-                }
-                snapshot.evidence_receipts.push((**receipt).clone());
-                snapshot.last_completion_rejection = None;
-                snapshot.last_host_verification_failure = None;
-                snapshot.temporal_evidence_progress = None;
-            } else {
-                if snapshot.workspace_state.revision != workspace_state_after.revision {
+                        verifier,
+                        ..
+                    } if *id == pending.acceptance_id && *verifier == pending.verifier => {
+                        Some(*evidence_policy)
+                    }
+                    TaskAcceptance::Host { .. } | TaskAcceptance::Verifier { .. } => None,
+                })
+                .ok_or_else(|| {
+                    corrupt(&run_id, "Host verification lost its verifier acceptance")
+                })?;
+            let expected = seal_evidence_receipt(
+                snapshot,
+                verification_id,
+                &pending.acceptance_id,
+                evidence_policy,
+                &pending.verifier,
+                outcome,
+                workspace_state_after,
+            );
+            match (expected, receipt.as_deref()) {
+                (Ok(expected), Some(receipt)) => {
+                    if expected != *receipt {
+                        return Err(corrupt(
+                            &run_id,
+                            "Host verification receipt does not equal the canonical seal result",
+                        ));
+                    }
+                    if snapshot
+                        .evidence_receipts
+                        .iter()
+                        .any(|existing| existing.id == receipt.id)
+                    {
+                        return Err(corrupt(&run_id, "evidence receipt id was committed twice"));
+                    }
+                    snapshot.evidence_receipts.push(receipt.clone());
+                    snapshot.last_completion_rejection = None;
+                    snapshot.last_host_verification_failure = None;
                     snapshot.temporal_evidence_progress = None;
                 }
-                snapshot.last_host_verification_failure = Some(HostVerificationFailure {
-                    outcome: (**outcome).clone(),
-                    workspace_state: workspace_state_after.clone(),
-                    rejection: CompletionRejection {
-                        candidate_id: pending.candidate.id.clone(),
-                        unmet_acceptance_ids: vec![pending.acceptance_id.clone()],
-                        reason: format!(
-                            "Host verifier '{}' 未产生与当前任务和工作区精确匹配的通过证据",
-                            pending.verifier.verifier_id
-                        ),
-                    },
-                });
-                if let Some(progress) = failed_temporal_progress(
-                    snapshot,
-                    outcome,
-                    FailedVerifierSource::Host {
-                        verification_id: verification_id.clone(),
-                    },
-                    workspace_state_after,
-                    Some((&pending.acceptance_id, &pending.verifier)),
-                ) {
-                    snapshot.temporal_evidence_progress = Some(progress);
+                (Ok(_), None) => {
+                    return Err(corrupt(
+                        &run_id,
+                        "Host verification omitted a receipt that canonical sealing accepted",
+                    ));
+                }
+                (Err(_), Some(_)) => {
+                    return Err(corrupt(
+                        &run_id,
+                        "Host verification carried a receipt that canonical sealing rejected",
+                    ));
+                }
+                (Err(cause), None) => {
+                    if snapshot.workspace_state.revision != workspace_state_after.revision {
+                        snapshot.temporal_evidence_progress = None;
+                    }
+                    let rejection = completion_rejection(
+                        pending.candidate.id.clone(),
+                        generation_id,
+                        pending.acceptance_id.clone(),
+                        &pending.verifier.verifier_id,
+                        cause,
+                    );
+                    snapshot.last_host_verification_failure = Some(HostVerificationFailure {
+                        outcome: (**outcome).clone(),
+                        workspace_state: workspace_state_after.clone(),
+                        rejection,
+                    });
+                    if let Some(progress) = failed_temporal_progress(
+                        snapshot,
+                        outcome,
+                        FailedVerifierSource::Host {
+                            verification_id: verification_id.clone(),
+                        },
+                        workspace_state_after,
+                        Some((&pending.acceptance_id, &pending.verifier)),
+                    ) {
+                        snapshot.temporal_evidence_progress = Some(progress);
+                    }
                 }
             }
             snapshot.workspace_state = workspace_state_after.clone();
@@ -1524,6 +1515,27 @@ pub fn apply_event(
                 return Err(corrupt(
                     &run_id,
                     "completion rejection does not match the pending candidate",
+                ));
+            }
+            let contract = snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("Agent contract validated at run creation");
+            if rejection.generation_id != contract.generation_id {
+                return Err(corrupt(
+                    &run_id,
+                    "completion rejection belongs to another task generation",
+                ));
+            }
+            if snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .is_none_or(|failure| failure.rejection != *rejection)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "completion rejection does not match the canonical Host verification failure",
                 ));
             }
             snapshot.last_completion_rejection = Some(rejection.clone());
@@ -2917,6 +2929,118 @@ pub(crate) fn expected_evidence_lineage(
     }
 }
 
+pub(crate) fn seal_evidence_receipt(
+    snapshot: &RunSnapshot,
+    verification_id: &VerificationId,
+    acceptance_id: &AcceptanceId,
+    evidence_policy: VerifierEvidencePolicy,
+    verifier: &VerifierSpec,
+    outcome: &ToolOutcome,
+    workspace_state: &WorkspaceState,
+) -> Result<EvidenceReceipt, EvidenceSealRejection> {
+    let observation = outcome
+        .verifier_observation
+        .as_ref()
+        .ok_or(EvidenceSealRejection::VerifierObservationMissing)?;
+    if observation.spec != *verifier {
+        return Err(EvidenceSealRejection::VerifierSpecMismatch);
+    }
+    if !outcome.has_stable_verifier_revision(
+        &snapshot.workspace_state.revision,
+        &workspace_state.revision,
+    ) {
+        return Err(EvidenceSealRejection::VerifierWorkspaceUnstable);
+    }
+    if !verifier_artifacts_are_available(outcome, observation) {
+        return Err(EvidenceSealRejection::VerifierArtifactUnavailable);
+    }
+    match observation.verdict {
+        VerifierVerdict::Passed if outcome.is_success() => {}
+        VerifierVerdict::Failed
+            if outcome.invocation == ToolInvocationStatus::Accepted
+                && outcome.transport == ToolTransportStatus::Succeeded
+                && outcome.operation == ToolOperationStatus::Failed =>
+        {
+            return Err(EvidenceSealRejection::VerifierFailed);
+        }
+        VerifierVerdict::Partial => {
+            return Err(EvidenceSealRejection::VerifierIncomplete);
+        }
+        VerifierVerdict::Passed | VerifierVerdict::Failed => {
+            return Err(EvidenceSealRejection::VerifierOutcomeInconsistent);
+        }
+    }
+    let generation_id = snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .ok_or(EvidenceSealRejection::EvidenceReceiptInvalid)?
+        .generation_id
+        .clone();
+    let lineage = expected_evidence_lineage(snapshot, acceptance_id, verifier, evidence_policy)
+        .ok_or(EvidenceSealRejection::EvidenceLineageUnavailable)?;
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+        generation_id,
+        acceptance_id: acceptance_id.clone(),
+        verification_id: verification_id.clone(),
+        verifier: verifier.clone(),
+        workspace_state: workspace_state.clone(),
+        artifact_ids: observation.artifact_ids.clone(),
+        lineage,
+    };
+    receipt
+        .validate()
+        .map_err(|_| EvidenceSealRejection::EvidenceReceiptInvalid)?;
+    Ok(receipt)
+}
+
+pub(crate) fn completion_rejection(
+    candidate_id: CompletionCandidateId,
+    generation_id: TaskGenerationId,
+    acceptance_id: AcceptanceId,
+    verifier_id: &str,
+    cause: EvidenceSealRejection,
+) -> CompletionRejection {
+    let reason = match cause {
+        EvidenceSealRejection::VerifierFailed => format!(
+            "Host verifier '{verifier_id}' 确定性失败；必须先有效修改工作区，再在新 revision 提出完成"
+        ),
+        EvidenceSealRejection::VerifierSpecMismatch => format!(
+            "Host verifier '{verifier_id}' 的实际执行规格与冻结 TaskContract 不一致；这是 Host 契约问题，禁止重复验证"
+        ),
+        EvidenceSealRejection::VerifierWorkspaceUnstable => format!(
+            "Host verifier '{verifier_id}' 执行期间工作区 revision 不稳定；需要 Host 修复执行环境"
+        ),
+        EvidenceSealRejection::VerifierArtifactUnavailable => format!(
+            "Host verifier '{verifier_id}' 没有产生完整、可校验的证据 artifact；需要 Host 修复执行链"
+        ),
+        EvidenceSealRejection::VerifierObservationMissing => format!(
+            "Host verifier '{verifier_id}' 没有产生 typed verifier observation；需要 Host 修复执行链"
+        ),
+        EvidenceSealRejection::VerifierIncomplete => {
+            format!("Host verifier '{verifier_id}' 只得到不完整结果；需要 Host 修复执行环境")
+        }
+        EvidenceSealRejection::VerifierOutcomeInconsistent => format!(
+            "Host verifier '{verifier_id}' 的 verdict 与工具结果不一致；需要 Host 修复执行链"
+        ),
+        EvidenceSealRejection::EvidenceLineageUnavailable => format!(
+            "Host verifier '{verifier_id}' 已通过，但缺少 TaskContract 要求的有序失败—修改—通过证据；禁止伪造完成"
+        ),
+        EvidenceSealRejection::EvidenceReceiptInvalid => format!(
+            "Host verifier '{verifier_id}' 的 EvidenceReceipt 无法通过 canonical 校验；需要 Host 修复验收链"
+        ),
+    };
+    CompletionRejection {
+        candidate_id,
+        generation_id,
+        unmet_acceptance_ids: vec![acceptance_id],
+        cause,
+        required_transition: cause.required_transition(),
+        reason,
+    }
+}
+
 fn retry_policy_stop_reason(
     pending: &PendingModelAction,
     failure: &ModelAttemptFailure,
@@ -3650,6 +3774,13 @@ mod tests {
         outcome
     }
 
+    fn attach_failed_verifier_evidence(target: &mut ToolOutcome, source: &ToolOutcome) {
+        target.evidence = source.evidence.clone();
+        target.artifacts = source.artifacts.clone();
+        target.workspace_revision = source.workspace_revision.clone();
+        target.verifier_observation = source.verifier_observation.clone();
+    }
+
     fn temporal_failure_kinds() -> Vec<RuntimeEventKind> {
         let operation_id = OperationId::from("failed-verifier");
         vec![
@@ -4188,7 +4319,7 @@ mod tests {
     }
 
     #[test]
-    fn host_verifier_receipt_requires_a_stable_non_applied_workspace_observation() {
+    fn unstable_host_verifier_observation_is_a_typed_execution_rejection() {
         for (label, settled_revision, side_effect) in [
             (
                 "revision_changed",
@@ -4223,38 +4354,20 @@ mod tests {
                 verdict: VerifierVerdict::Passed,
                 workspace_revision: workspace_state_after.revision.clone(),
             });
-            let artifact_id = artifact.id.clone();
             let mut outcome = ToolOutcome::success("claims deterministic pass");
             outcome.side_effect = side_effect;
             outcome.workspace_revision = Some(settled_revision.to_owned());
             outcome.evidence = ToolEvidence {
                 status: ToolEvidenceStatus::Produced,
-                references: vec![artifact_id.clone()],
+                references: vec![artifact.id.clone()],
             };
             outcome.artifacts = vec![artifact];
             outcome.verifier_observation = Some(VerifierObservation {
                 spec: verifier(),
                 verdict: VerifierVerdict::Passed,
                 workspace_revision: workspace_state_after.revision.clone(),
-                artifact_ids: vec![artifact_id.clone()],
+                artifact_ids: outcome.evidence.references.clone(),
             });
-            let lineage = expected_evidence_lineage(
-                &prefix,
-                &AcceptanceId::from("temporal"),
-                &verifier(),
-                VerifierEvidencePolicy::FailedWritePass,
-            )
-            .expect("failure and write lineage");
-            let receipt = EvidenceReceipt {
-                id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
-                generation_id: candidate.generation_id.clone(),
-                acceptance_id: AcceptanceId::from("temporal"),
-                verification_id: verification_id.clone(),
-                verifier: verifier(),
-                workspace_state: workspace_state_after.clone(),
-                artifact_ids: vec![artifact_id],
-                lineage,
-            };
             kinds.extend([
                 RuntimeEventKind::CompletionProposed {
                     candidate: candidate.clone(),
@@ -4272,18 +4385,126 @@ mod tests {
                 RuntimeEventKind::HostVerificationCommitted {
                     verification_id,
                     outcome: Box::new(outcome),
-                    receipt: Some(Box::new(receipt)),
+                    receipt: None,
                     workspace_state_after,
                 },
             ]);
 
-            let error = reduce_events(&stored_events(kinds)).unwrap_err();
-            assert!(matches!(
-                error,
-                RunStoreError::Corrupt { message, .. }
-                    if message.contains("changed the workspace revision")
-            ));
+            let snapshot = reduce_events(&stored_events(kinds)).expect("typed rejection replay");
+            let rejection = &snapshot
+                .last_host_verification_failure
+                .expect("Host failure")
+                .rejection;
+            assert_eq!(
+                rejection.cause,
+                EvidenceSealRejection::VerifierWorkspaceUnstable
+            );
+            assert_eq!(
+                rejection.required_transition,
+                CompletionRequiredTransition::HostVerifierExecutionRepair
+            );
+            assert!(snapshot.evidence_receipts.is_empty());
         }
+    }
+
+    #[test]
+    fn only_an_exact_deterministic_failure_can_request_workspace_mutation() {
+        let snapshot = reduce_events(&stored_events(temporal_failure_kinds()))
+            .expect("temporal verifier snapshot");
+        let workspace_after = known(3, "revision-a");
+        let exact_failure = failed_verifier_outcome("revision-a");
+        assert_eq!(
+            seal_evidence_receipt(
+                &snapshot,
+                &VerificationId::from("exact-failure"),
+                &AcceptanceId::from("temporal"),
+                VerifierEvidencePolicy::FailedWritePass,
+                &verifier(),
+                &exact_failure,
+                &workspace_after,
+            ),
+            Err(EvidenceSealRejection::VerifierFailed)
+        );
+
+        let mut rejected =
+            ToolOutcome::rejected("invocation rejected", ToolRetryDisposition::AfterCorrection);
+        attach_failed_verifier_evidence(&mut rejected, &exact_failure);
+        let mut transport_failed = ToolOutcome::transport_failure("transport failed");
+        attach_failed_verifier_evidence(&mut transport_failed, &exact_failure);
+        let mut ambiguous = ToolOutcome::recovery_ambiguous("operation ambiguous");
+        attach_failed_verifier_evidence(&mut ambiguous, &exact_failure);
+
+        for (label, outcome) in [
+            ("rejected", rejected),
+            ("transport_failed", transport_failed),
+            ("ambiguous", ambiguous),
+        ] {
+            outcome
+                .validate()
+                .unwrap_or_else(|error| panic!("{label} fixture is invalid: {error}"));
+            assert_eq!(
+                seal_evidence_receipt(
+                    &snapshot,
+                    &VerificationId::from(format!("not-deterministic-{label}")),
+                    &AcceptanceId::from("temporal"),
+                    VerifierEvidencePolicy::FailedWritePass,
+                    &verifier(),
+                    &outcome,
+                    &workspace_after,
+                ),
+                Err(EvidenceSealRejection::VerifierOutcomeInconsistent),
+                "{label} must not tell the model to modify code"
+            );
+        }
+    }
+
+    #[test]
+    fn host_verification_commit_rejects_workspace_drift_after_prepare() {
+        let mut kinds = temporal_failure_kinds();
+        push_effective_write(&mut kinds, "repair", known(3, "revision-b"));
+        let prefix = reduce_events(&stored_events(kinds.clone())).expect("write prefix");
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("candidate-workspace-drift"),
+            generation_id: prefix
+                .request
+                .task_contract
+                .as_ref()
+                .expect("temporal contract")
+                .generation_id
+                .clone(),
+            message: "claims completion".to_owned(),
+        };
+        let verification_id = VerificationId::from("verification-workspace-drift");
+        kinds.extend([
+            RuntimeEventKind::CompletionProposed {
+                candidate: candidate.clone(),
+            },
+            RuntimeEventKind::HostVerificationPrepared {
+                verification_id: verification_id.clone(),
+                candidate,
+                acceptance_id: AcceptanceId::from("temporal"),
+                verifier: verifier(),
+                workspace_state_before: prefix.workspace_state,
+            },
+            RuntimeEventKind::HostVerificationStarted {
+                verification_id: verification_id.clone(),
+            },
+            RuntimeEventKind::WorkspaceObserved {
+                workspace_state: known(4, "revision-c"),
+            },
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id,
+                outcome: Box::new(failed_verifier_outcome("revision-c")),
+                receipt: None,
+                workspace_state_after: known(4, "revision-c"),
+            },
+        ]);
+
+        assert!(matches!(
+            reduce_events(&stored_events(kinds)),
+            Err(RunStoreError::Corrupt { message, .. })
+                if message.contains("workspace changed after its exact action was prepared")
+        ));
     }
 
     #[test]

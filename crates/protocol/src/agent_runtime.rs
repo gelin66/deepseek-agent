@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 13;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 13;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 14;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 14;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -2862,7 +2862,10 @@ pub struct StoredRuntimeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{TaskDefinition, TaskGenerationId, VerifierPlan, VerifierStep};
+    use crate::task::{
+        CompletionCandidateId, CompletionRequiredTransition, EvidenceSealRejection, TaskDefinition,
+        TaskGenerationId, VerifierPlan, VerifierStep,
+    };
 
     fn known_workspace(generation: u64, digest: char) -> WorkspaceState {
         WorkspaceState {
@@ -2935,9 +2938,35 @@ mod tests {
     }
 
     #[test]
-    fn m6_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 13);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 13);
+    fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 14);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 14);
+    }
+
+    #[test]
+    fn runtime_event_v14_completion_rejection_round_trips_all_typed_fields() {
+        let event = RuntimeEventKind::CompletionRejected {
+            rejection: CompletionRejection {
+                candidate_id: CompletionCandidateId::from("candidate-1"),
+                generation_id: TaskGenerationId::from("generation-1"),
+                unmet_acceptance_ids: vec![AcceptanceId::from("tests")],
+                cause: EvidenceSealRejection::VerifierFailed,
+                required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+                reason: "确定性 verifier 失败".to_owned(),
+            },
+        };
+        let encoded = serde_json::to_value(&event).expect("serialize RuntimeEvent v14");
+        assert_eq!(encoded["kind"], "completion_rejected");
+        assert_eq!(encoded["rejection"]["generation_id"], "generation-1");
+        assert_eq!(encoded["rejection"]["cause"], "verifier_failed");
+        assert_eq!(
+            encoded["rejection"]["required_transition"],
+            "effective_workspace_mutation"
+        );
+        assert_eq!(
+            serde_json::from_value::<RuntimeEventKind>(encoded).expect("round-trip event"),
+            event
+        );
     }
 
     #[test]
