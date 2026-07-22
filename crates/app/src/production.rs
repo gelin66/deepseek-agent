@@ -2439,6 +2439,46 @@ mod tests {
         .expect("run reaches terminal")
     }
 
+    fn prepared_request(replay: &RunReplay) -> ModelRequest {
+        replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::ModelRequestPrepared { request, .. } => Some((**request).clone()),
+                _ => None,
+            })
+            .expect("canonical ModelRequestPrepared event")
+    }
+
+    async fn run_and_reopen_plan_fixture(
+        workspace: &Path,
+        state_path: &Path,
+        root: &str,
+        strict_tools: bool,
+        request_id: &str,
+    ) -> (RunReplay, RunReplay) {
+        let app =
+            AgentApplication::production(config(state_path, connection(root, strict_tools), true))
+                .expect("production app");
+        let run = run_result(
+            app.execute(envelope(
+                request_id,
+                RunCommand::Start(start_command(workspace, Some("deepseek-v4-pro"))),
+            ))
+            .await,
+        );
+        let before_reopen = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        drop(app);
+
+        let reopened = StateStore::open(Some(state_path.to_path_buf())).expect("reopen StateStore");
+        let after_reopen = reopened
+            .load(&run.run_id)
+            .await
+            .expect("load reopened run")
+            .expect("reopened run exists");
+        (before_reopen, after_reopen)
+    }
+
     struct OneShotModel;
 
     #[async_trait]
@@ -2971,6 +3011,122 @@ mod tests {
             tools
                 .iter()
                 .all(|tool| tool["function"].get("strict").is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn request_plan_rebuilds_after_sqlite_reopen_and_fingerprint_binds_strict_policy() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        let strict_state = temp.path().join("strict-state");
+        let standard_state = temp.path().join("standard-state");
+        for directory in [&workspace, &strict_state, &standard_state] {
+            std::fs::create_dir(directory).expect("create fixture directory");
+        }
+        let server = MockDeepSeekServer::start(vec![
+            response("deepseek-v4-pro", "完成", 10, 2),
+            response("deepseek-v4-pro", "完成", 10, 2),
+        ])
+        .await;
+        let root = server.root.clone();
+
+        let (strict_before, strict_reopened) = run_and_reopen_plan_fixture(
+            &workspace,
+            &strict_state.join("state.db"),
+            &root,
+            true,
+            "m7b-strict-reopen",
+        )
+        .await;
+        let (standard_before, _) = run_and_reopen_plan_fixture(
+            &workspace,
+            &standard_state.join("state.db"),
+            &root,
+            false,
+            "m7b-standard-fingerprint",
+        )
+        .await;
+        let captured = server.finish().await;
+
+        let strict_request = prepared_request(&strict_before);
+        let reopened_request = prepared_request(&strict_reopened);
+        assert_eq!(reopened_request, strict_request);
+        assert_eq!(
+            strict_reopened
+                .snapshot
+                .request
+                .environment
+                .tool_catalog_sha256,
+            Some(canonical_tool_catalog_sha256(&reopened_request.tools))
+        );
+
+        let capability = official_model_capabilities(&reopened_request.model)
+            .expect("official production model capability");
+        let max_tokens = capability
+            .resolve_output_tokens(reopened_request.max_output_tokens)
+            .expect("production output limit");
+        let plan_input = |strict_enabled| RuntimeChatPlanInput {
+            root: &root,
+            strict_enabled,
+            wire_model: capability.model.to_owned(),
+            max_tokens,
+        };
+        let before_plan =
+            plan_runtime_chat(plan_input(true), &strict_request).expect("original request plan");
+        let reopened_plan =
+            plan_runtime_chat(plan_input(true), &reopened_request).expect("reopened request plan");
+        assert_eq!(reopened_plan, before_plan);
+        assert_eq!(reopened_plan.surface, ApiSurface::StandardChat);
+        assert!(matches!(
+            &reopened_plan
+                .tool_surface
+                .as_ref()
+                .expect("Strict tool decision")
+                .reason,
+            ToolSurfaceReason::IncompatibleCatalog { .. }
+        ));
+
+        let ordinary_plan =
+            plan_runtime_chat(plan_input(false), &reopened_request).expect("ordinary request plan");
+        assert_eq!(ordinary_plan.surface, ApiSurface::StandardChat);
+        assert!(matches!(
+            &ordinary_plan
+                .tool_surface
+                .as_ref()
+                .expect("ordinary tool decision")
+                .reason,
+            ToolSurfaceReason::Disabled
+        ));
+        assert_eq!(ordinary_plan.body, reopened_plan.body);
+
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].path, "/v1/chat/completions");
+        assert_eq!(captured[0].body, reopened_plan.body);
+        let wire_tools = captured[0].body["tools"]
+            .as_array()
+            .expect("wire tool catalog");
+        assert_eq!(wire_tools.len(), reopened_request.tools.len());
+        for (wire, canonical) in wire_tools.iter().zip(&reopened_request.tools) {
+            assert_eq!(wire["function"]["name"], canonical.name);
+            assert_eq!(wire["function"]["description"], canonical.description);
+            assert_eq!(wire["function"]["parameters"], canonical.input_schema);
+            assert!(wire["function"].get("strict").is_none());
+        }
+
+        let standard_request = prepared_request(&standard_before);
+        assert_eq!(standard_request.tools, strict_request.tools);
+        let strict_environment = &strict_reopened.snapshot.request.environment;
+        let standard_environment = &standard_before.snapshot.request.environment;
+        assert_eq!(
+            strict_environment.tool_catalog_sha256,
+            standard_environment.tool_catalog_sha256
+        );
+        assert!(strict_environment.execution_fingerprint_sha256.is_some());
+        assert!(standard_environment.execution_fingerprint_sha256.is_some());
+        assert_ne!(
+            strict_environment.execution_fingerprint_sha256,
+            standard_environment.execution_fingerprint_sha256,
+            "resume identity must bind the strict_tools policy used to rebuild the plan"
         );
     }
 

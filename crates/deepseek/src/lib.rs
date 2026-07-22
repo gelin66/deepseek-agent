@@ -249,8 +249,6 @@ pub enum ToolSurfaceReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSurfaceDecision {
     pub surface: ApiSurface,
-    pub strict_compatible: bool,
-    pub strict_fallback: bool,
     pub reason: ToolSurfaceReason,
 }
 
@@ -277,8 +275,6 @@ pub fn plan_tool_surface(strict_enabled: bool, tools: &[PlannedTool]) -> ToolSur
     let strict_compatible = reason == ToolSurfaceReason::Compatible;
     ToolSurfaceDecision {
         surface: chat_surface(strict_compatible),
-        strict_compatible,
-        strict_fallback: matches!(reason, ToolSurfaceReason::IncompatibleCatalog { .. }),
         reason,
     }
 }
@@ -315,7 +311,9 @@ pub fn plan_chat(
         body["tools"] = Value::Array(
             tools
                 .iter()
-                .map(|tool| planned_tool_to_chat(tool, tool_surface.strict_compatible))
+                .map(|tool| {
+                    planned_tool_to_chat(tool, tool_surface.surface == ApiSurface::StrictChat)
+                })
                 .collect(),
         );
     }
@@ -706,13 +704,6 @@ fn reasoning_replay_tokens(body: &Value) -> Option<u32> {
             total.saturating_add(reasoning.len() as u64)
         });
     (replay_bytes > 0).then(|| (replay_bytes / 4).min(u64::from(u32::MAX)) as u32)
-}
-
-/// Validate a schema against DeepSeek Beta Strict Function Calling's complete
-/// documented subset. Unsupported catalogs must fall back as a whole.
-#[must_use]
-pub fn strict_schema_supported(schema: &Value) -> bool {
-    strict_schema_issue(schema).is_none()
 }
 
 #[must_use]
