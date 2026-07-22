@@ -1626,11 +1626,13 @@ impl AgentRuntime {
                 loop {
                     tokio::select! {
                         result = &mut execution => break match result {
-                            Ok(outcome) => outcome,
+                            Ok(outcome) => outcome
+                                .with_workspace_access_guarantee(workspace_access),
                             Err(error) => ToolOutcome::transport_failure(format!(
                                 "工具执行失败：{}",
                                 error.message
-                            )),
+                            ))
+                            .with_workspace_access_guarantee(workspace_access),
                         },
                         command = control.recv() => if let Some(command) = command {
                             match self.handle_control(state, command).await.map_err(store_terminal)? {
@@ -1644,7 +1646,8 @@ impl AgentRuntime {
                                         "工具执行已取消。"
                                     };
                                     terminal_after_result = Some(terminal);
-                                    break cancelled_tool_outcome(message);
+                                    break cancelled_tool_outcome(message)
+                                        .with_workspace_access_guarantee(workspace_access);
                                 }
                             }
                         },
@@ -1652,7 +1655,8 @@ impl AgentRuntime {
                             cancellation.cancel();
                             let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
                             terminal_after_result = Some(timeout_terminal(state, deadline));
-                            break cancelled_tool_outcome("工具执行超过本次运行期限。");
+                            break cancelled_tool_outcome("工具执行超过本次运行期限。")
+                                .with_workspace_access_guarantee(workspace_access);
                         }
                     }
                 }

@@ -482,8 +482,8 @@ impl ProductionToolExecutor {
     /// correctable input-semantic failure is now an accepted operation that
     /// failed without applying a side effect; it can no longer claim the
     /// preflight-only Rejected/NotStarted lifecycle.
-    fn execution_error_outcome(error: ToolError) -> ToolOutcome {
-        match &error {
+    fn execution_error_outcome(error: ToolError, workspace_access: WorkspaceAccess) -> ToolOutcome {
+        let outcome = match &error {
             ToolError::SchemaValidation { .. }
             | ToolError::InvalidInput { .. }
             | ToolError::MissingField { .. }
@@ -532,7 +532,8 @@ impl ProductionToolExecutor {
                 outcome
             }
             ToolError::ExecutionFailed { .. } => ToolOutcome::error(error.to_string()),
-        }
+        };
+        outcome.with_workspace_access_guarantee(workspace_access)
     }
 
     async fn dispatch(
@@ -576,15 +577,6 @@ impl ToolExecutor for ProductionToolExecutor {
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
             "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {
-                WorkspaceAccess::ReadOnly
-            }
-            "exec_shell"
-                if invocation
-                    .arguments
-                    .parsed
-                    .as_ref()
-                    .is_some_and(exec_shell_input_is_parallel_readonly) =>
-            {
                 WorkspaceAccess::ReadOnly
             }
             _ => WorkspaceAccess::MayWrite,
@@ -685,15 +677,18 @@ impl ToolExecutor for ProductionToolExecutor {
         // committed ToolExecutionStarted. Keep this boundary defensive, but
         // represent callers that skipped preflight as an observed operation
         // failure rather than corrupting the lifecycle.
+        let workspace_access = self.workspace_access(&invocation);
         if !PRODUCTION_TOOL_NAMES.contains(&invocation.name.as_str()) {
-            return Ok(Self::execution_error_outcome(ToolError::not_available(
-                format!("工具 '{}' 不在固定生产目录中", invocation.name),
-            )));
+            return Ok(Self::execution_error_outcome(
+                ToolError::not_available(format!("工具 '{}' 不在固定生产目录中", invocation.name)),
+                workspace_access,
+            ));
         }
         let Some(input) = invocation.arguments.parsed else {
-            return Ok(Self::execution_error_outcome(ToolError::invalid_input(
-                "JSON 参数格式错误",
-            )));
+            return Ok(Self::execution_error_outcome(
+                ToolError::invalid_input("JSON 参数格式错误"),
+                workspace_access,
+            ));
         };
         if cancellation.is_cancelled() {
             let mut outcome =
@@ -710,8 +705,8 @@ impl ToolExecutor for ProductionToolExecutor {
         tokio::pin!(execution);
         tokio::select! {
             result = &mut execution => Ok(match result {
-                Ok(outcome) => outcome,
-                Err(error) => Self::execution_error_outcome(error),
+                Ok(outcome) => outcome.with_workspace_access_guarantee(workspace_access),
+                Err(error) => Self::execution_error_outcome(error, workspace_access),
             }),
             () = cancellation.cancelled() => {
                 tool_cancellation.cancel();
@@ -720,16 +715,16 @@ impl ToolExecutor for ProductionToolExecutor {
                         if !outcome.is_success() {
                             outcome.operation = ToolOperationStatus::Cancelled;
                         }
-                        Ok(outcome)
+                        Ok(outcome.with_workspace_access_guarantee(workspace_access))
                     },
-                    Ok(Err(error)) => Ok(Self::execution_error_outcome(error)),
+                    Ok(Err(error)) => Ok(Self::execution_error_outcome(error, workspace_access)),
                     Err(_) => {
                         let mut outcome = ToolOutcome::recovery_ambiguous(format!(
                             "工具 '{}' 收到取消后未在 5 秒内停止",
                             invocation.name
                         ));
                         outcome.operation = ToolOperationStatus::Cancelled;
-                        Ok(outcome)
+                        Ok(outcome.with_workspace_access_guarantee(workspace_access))
                     }
                 }
             }
@@ -1209,6 +1204,31 @@ mod tests {
     }
 
     #[test]
+    fn shell_text_never_downgrades_runtime_workspace_authority() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path()).with_shell_policy(ShellPolicy::Full),
+        );
+
+        for command in [
+            "git status --short",
+            "rg needle src",
+            "rg --pre mutate-helper needle src",
+            "fd --exec rm {}",
+        ] {
+            assert_eq!(
+                executor.workspace_access(&invocation("exec_shell", json!({"command": command}))),
+                WorkspaceAccess::MayWrite,
+                "shell command text must not become a workspace authority certificate: {command}"
+            );
+        }
+        assert_eq!(
+            executor.workspace_access(&invocation("read_file", json!({"path":"src/lib.rs"}))),
+            WorkspaceAccess::ReadOnly
+        );
+    }
+
+    #[test]
     fn shell_preflight_reports_canonical_critical_and_elevated_risk() {
         let workspace = tempfile::tempdir().unwrap();
         let executor = ProductionToolExecutor::new(
@@ -1303,6 +1323,64 @@ mod tests {
         assert_eq!(canceled.operation, ToolOperationStatus::Cancelled);
         assert_eq!(canceled.side_effect, ToolSideEffectStatus::NotApplied);
         assert_eq!(canceled.retry, ToolRetryDisposition::Safe);
+    }
+
+    #[test]
+    fn readonly_failures_never_require_write_side_effect_recovery() {
+        let ordinary = ToolOutcome::error("读取失败")
+            .with_workspace_access_guarantee(WorkspaceAccess::ReadOnly);
+        assert_eq!(ordinary.operation, ToolOperationStatus::Failed);
+        assert_eq!(ordinary.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_eq!(ordinary.retry, ToolRetryDisposition::NotRetryable);
+        ordinary.validate().unwrap();
+
+        let timeout = ProductionToolExecutor::execution_error_outcome(
+            ToolError::Timeout { seconds: 30 },
+            WorkspaceAccess::ReadOnly,
+        );
+        assert_eq!(timeout.operation, ToolOperationStatus::Indeterminate);
+        assert_eq!(timeout.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_eq!(timeout.retry, ToolRetryDisposition::Safe);
+        timeout.validate().unwrap();
+
+        let cancelled = ToolOutcome::recovery_ambiguous("只读任务取消后未及时停止")
+            .with_workspace_access_guarantee(WorkspaceAccess::ReadOnly);
+        assert_eq!(
+            cancelled.failure_code,
+            Some(ToolFailureCode::OperationFailed)
+        );
+        assert_eq!(cancelled.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_eq!(cancelled.retry, ToolRetryDisposition::Safe);
+        cancelled.validate().unwrap();
+
+        let writer_timeout = ProductionToolExecutor::execution_error_outcome(
+            ToolError::Timeout { seconds: 30 },
+            WorkspaceAccess::MayWrite,
+        );
+        assert_eq!(
+            writer_timeout.side_effect,
+            ToolSideEffectStatus::Indeterminate
+        );
+        assert_eq!(writer_timeout.retry, ToolRetryDisposition::Unsafe);
+        writer_timeout.validate().unwrap();
+    }
+
+    #[tokio::test]
+    async fn readonly_tool_owned_failure_is_projected_without_write_ambiguity() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
+        let outcome = executor
+            .execute(
+                invocation("git_status", json!({})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!outcome.is_success());
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_ne!(outcome.retry, ToolRetryDisposition::Unsafe);
+        outcome.validate().unwrap();
     }
 
     #[tokio::test]

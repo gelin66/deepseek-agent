@@ -811,6 +811,9 @@ pub enum ToolSideEffectStatus {
 pub enum ToolRetryDisposition {
     NotNeeded,
     AfterCorrection,
+    /// Repeating the invocation cannot duplicate a task-workspace side
+    /// effect. This is a safety statement, not a promise that retrying will
+    /// succeed or that the Host will retry automatically.
     Safe,
     Unsafe,
     NotRetryable,
@@ -1154,6 +1157,28 @@ impl ToolOutcome {
         }
     }
 
+    /// Reconcile an executor outcome with the workspace authority frozen in
+    /// `ToolPrepared`. A read-only invocation cannot apply a task-workspace
+    /// mutation, so an incomplete operation may remain transport/operation
+    /// indeterminate without inventing write recovery or an unsafe replay.
+    /// Outcomes that explicitly claim an applied side effect are left intact
+    /// for the RunStore reducer to reject as an authority violation.
+    #[must_use]
+    pub fn with_workspace_access_guarantee(mut self, workspace_access: WorkspaceAccess) -> Self {
+        if workspace_access == WorkspaceAccess::ReadOnly && !self.is_success() {
+            if self.side_effect == ToolSideEffectStatus::Indeterminate {
+                self.side_effect = ToolSideEffectStatus::NotApplicable;
+            }
+            if self.retry == ToolRetryDisposition::Unsafe {
+                self.retry = ToolRetryDisposition::Safe;
+            }
+            if self.failure_code == Some(ToolFailureCode::SideEffectAmbiguous) {
+                self.failure_code = Some(ToolFailureCode::OperationFailed);
+            }
+        }
+        self
+    }
+
     #[must_use]
     pub fn is_success(&self) -> bool {
         self.invocation == ToolInvocationStatus::Accepted
@@ -1183,7 +1208,14 @@ impl ToolOutcome {
             }
             ToolFailureCode::AmbiguousEdit => "先读取更多上下文，再使用唯一且更精确的编辑范围。",
             ToolFailureCode::UnknownTool => "只使用当前请求实际提供的工具名。",
-            ToolFailureCode::TransportFailed | ToolFailureCode::SideEffectAmbiguous => {
+            ToolFailureCode::TransportFailed => match self.retry {
+                ToolRetryDisposition::Safe => {
+                    "传输失败，但已确认没有工作区副作用，可以安全重新调用。"
+                }
+                ToolRetryDisposition::AfterCorrection => "修正传输参数或环境后再调用。",
+                _ => "不要自动重放；先确认副作用状态或等待 Host recovery。",
+            },
+            ToolFailureCode::SideEffectAmbiguous => {
                 "副作用状态无法安全确认；不要自动重放，等待 Host recovery 或人工处理。"
             }
             ToolFailureCode::VerifierFailed => "根据确定性 verifier 结果修改工作区后重新验证。",
@@ -3858,6 +3890,55 @@ mod tests {
         let mut invalid = ToolOutcome::recovery_ambiguous("unsafe side effect");
         invalid.side_effect = ToolSideEffectStatus::NotApplied;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn read_only_workspace_authority_removes_only_write_ambiguity() {
+        let transport = ToolOutcome::transport_failure("执行器连接中断")
+            .with_workspace_access_guarantee(WorkspaceAccess::ReadOnly);
+        assert_eq!(
+            transport.failure_code,
+            Some(ToolFailureCode::TransportFailed)
+        );
+        assert_eq!(transport.transport, ToolTransportStatus::Failed);
+        assert_eq!(transport.operation, ToolOperationStatus::Indeterminate);
+        assert_eq!(transport.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_eq!(transport.retry, ToolRetryDisposition::Safe);
+        transport.validate().unwrap();
+        assert!(
+            transport
+                .model_content()
+                .contains("传输失败，但已确认没有工作区副作用，可以安全重新调用。")
+        );
+        assert!(!transport.model_content().contains("副作用状态无法安全确认"));
+
+        let ambiguous = ToolOutcome::recovery_ambiguous("执行状态未知")
+            .with_workspace_access_guarantee(WorkspaceAccess::ReadOnly);
+        assert_eq!(
+            ambiguous.failure_code,
+            Some(ToolFailureCode::OperationFailed)
+        );
+        assert_eq!(ambiguous.transport, ToolTransportStatus::Indeterminate);
+        assert_eq!(ambiguous.operation, ToolOperationStatus::Indeterminate);
+        assert_eq!(ambiguous.side_effect, ToolSideEffectStatus::NotApplicable);
+        assert_eq!(ambiguous.retry, ToolRetryDisposition::Safe);
+        ambiguous.validate().unwrap();
+
+        let mut impossible = ToolOutcome::error("错误声明已写入");
+        impossible.side_effect = ToolSideEffectStatus::Applied;
+        let impossible = impossible.with_workspace_access_guarantee(WorkspaceAccess::ReadOnly);
+        assert_eq!(impossible.side_effect, ToolSideEffectStatus::Applied);
+
+        let writer = ToolOutcome::recovery_ambiguous("写入状态未知")
+            .with_workspace_access_guarantee(WorkspaceAccess::MayWrite);
+        assert_eq!(
+            writer.failure_code,
+            Some(ToolFailureCode::SideEffectAmbiguous)
+        );
+        assert_eq!(writer.side_effect, ToolSideEffectStatus::Indeterminate);
+        assert_eq!(writer.retry, ToolRetryDisposition::Unsafe);
+        writer.validate().unwrap();
+        assert!(writer.model_content().contains("副作用状态无法安全确认"));
     }
 
     #[test]

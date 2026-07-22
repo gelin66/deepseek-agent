@@ -1054,6 +1054,19 @@ pub fn apply_event(
             }
             let pending_workspace_access = pending.workspace_access;
             let pending_state = pending.state;
+            if pending_workspace_access == WorkspaceAccess::ReadOnly
+                && pending.invocation.name != AGENT_TOOL_NAME
+                && pending.invocation.name != REQUEST_USER_INPUT_TOOL_NAME
+                && matches!(
+                    outcome.side_effect,
+                    ToolSideEffectStatus::Applied | ToolSideEffectStatus::Indeterminate
+                )
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "read-only executable tool outcome cannot claim an applied or indeterminate workspace side effect",
+                ));
+            }
             let settles_agent_call = (pending.invocation.name == AGENT_TOOL_NAME)
                 .then(|| pending.invocation.call_id.clone());
             let settled_agent_lifecycle = settles_agent_call.as_ref().and_then(|agent_call_id| {
@@ -5257,6 +5270,49 @@ mod tests {
             RunStoreError::Corrupt { message, .. }
                 if message.contains("in-flight tool cannot commit a preflight rejection")
         ));
+    }
+
+    #[test]
+    fn read_only_executable_outcome_cannot_claim_workspace_side_effect_ambiguity() {
+        for side_effect in [
+            ToolSideEffectStatus::Applied,
+            ToolSideEffectStatus::Indeterminate,
+        ] {
+            let mut outcome = ToolOutcome::error("只读工具失败");
+            outcome.side_effect = side_effect;
+            let kinds = vec![
+                RuntimeEventKind::RunCreated {
+                    request: Box::new(root_request()),
+                },
+                RuntimeEventKind::ToolPrepared {
+                    operation_id: OperationId("read-operation".to_owned()),
+                    invocation: ToolInvocation {
+                        run_id: RunId::from("root"),
+                        call_id: "read-call".to_owned(),
+                        name: "read_file".to_owned(),
+                        arguments: ToolArguments::from_value(json!({"path":"src/lib.rs"})),
+                    },
+                    workspace_access: WorkspaceAccess::ReadOnly,
+                },
+                RuntimeEventKind::ToolExecutionStarted {
+                    operation_id: OperationId("read-operation".to_owned()),
+                },
+                RuntimeEventKind::ToolOutcomeCommitted {
+                    operation_id: OperationId("read-operation".to_owned()),
+                    call_id: "read-call".to_owned(),
+                    name: "read_file".to_owned(),
+                    outcome: Box::new(outcome),
+                    workspace_state: None,
+                },
+            ];
+
+            let error = reduce_events(&stored_events(kinds)).unwrap_err();
+            assert!(matches!(
+                error,
+                RunStoreError::Corrupt { message, .. }
+                    if message.contains("read-only executable tool outcome")
+            ));
+        }
     }
 
     #[test]

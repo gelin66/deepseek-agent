@@ -473,6 +473,7 @@ impl ToolExecutor for MockTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             definition("delay"),
+            definition("error"),
             definition("approval"),
             definition("grep"),
             definition("read"),
@@ -481,12 +482,15 @@ impl ToolExecutor for MockTools {
             definition("slow"),
             definition("write"),
             definition("write_approval"),
+            definition("write_slow"),
         ]
     }
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
-            "write" | "write_approval" | "run_tests" | "run_verifiers" => WorkspaceAccess::MayWrite,
+            "write" | "write_approval" | "write_slow" | "run_tests" | "run_verifiers" => {
+                WorkspaceAccess::MayWrite
+            }
             _ => WorkspaceAccess::ReadOnly,
         }
     }
@@ -519,10 +523,16 @@ impl ToolExecutor for MockTools {
             .lock()
             .expect("tool call lock")
             .push(invocation.clone());
-        if invocation.name == "slow" {
+        if matches!(invocation.name.as_str(), "slow" | "write_slow") {
             cancellation.cancelled().await;
             self.slow_cancelled.store(true, Ordering::Release);
             return Err(ToolExecutionError::new("cancelled", "cancelled"));
+        }
+        if invocation.name == "error" {
+            return Err(ToolExecutionError::new(
+                "executor_transport",
+                "执行器连接已断开",
+            ));
         }
         if invocation.name == "delay" {
             tokio::time::sleep(Duration::from_millis(80)).await;
@@ -2296,43 +2306,135 @@ async fn resume_after_steer_applied_never_reuses_the_superseded_stop_response() 
 }
 
 #[tokio::test]
-async fn cancelling_a_tool_waits_for_its_cancellation_token() {
-    let model = Arc::new(MockModel::new(|_| {
+async fn cancelling_a_tool_preserves_read_and_write_recovery_truth() {
+    for (tool_name, side_effect, retry, failure_code) in [
+        (
+            "slow",
+            ToolSideEffectStatus::NotApplicable,
+            ToolRetryDisposition::Safe,
+            ToolFailureCode::OperationFailed,
+        ),
+        (
+            "write_slow",
+            ToolSideEffectStatus::Indeterminate,
+            ToolRetryDisposition::Unsafe,
+            ToolFailureCode::SideEffectAmbiguous,
+        ),
+    ] {
+        let model = Arc::new(MockModel::new(move |_| {
+            ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("slow-1", tool_name, "{}")],
+                ModelFinishReason::ToolCalls,
+            )])
+        }));
+        let (runtime, tools, sink, store) = fixture(model);
+        let run = runtime.start(request("慢工具"));
+        let run_id = run.run_id.clone();
+        let control = run.control();
+        sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+            .await;
+        control.cancel().unwrap();
+        let terminal = run.wait().await.unwrap();
+        assert_eq!(terminal.terminal, TerminalState::Cancelled);
+        assert!(tools.slow_cancelled.load(Ordering::Acquire));
+        let replay = store.load(&run_id).await.unwrap().expect("cancelled run");
+        let committed = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted {
+                    call_id, outcome, ..
+                } if call_id == "slow-1" => Some(outcome.as_ref()),
+                _ => None,
+            })
+            .expect("committed cancellation outcome");
+        assert_eq!(committed.operation, ToolOperationStatus::Cancelled);
+        assert_eq!(committed.side_effect, side_effect);
+        assert_eq!(committed.retry, retry);
+        assert_eq!(committed.failure_code, Some(failure_code));
+        committed.validate().unwrap();
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
+        assert!(replay.events.last().unwrap().event.is_terminal());
+        assert_eq!(
+            sink.events()
+                .into_iter()
+                .filter(|event| event.run_id == run_id)
+                .collect::<Vec<_>>(),
+            replay.events
+        );
+    }
+}
+
+#[tokio::test]
+async fn readonly_executor_transport_failure_is_typed_and_recovers_on_the_next_model_turn() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("error-1", "error", "{}")],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        let content = request
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                ModelMessage::Tool {
+                    call_id, content, ..
+                } if call_id == "error-1" => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("canonical tool feedback");
+        assert!(content.contains("code=transport_failed"));
+        assert!(content.contains("side_effect=not_applicable"));
+        assert!(content.contains("retry=safe"));
+        assert!(content.contains("可以安全重新调用"));
+        assert!(!content.contains("副作用状态无法安全确认"));
         ScriptResponse::Events(vec![completed(
-            "",
+            "已恢复",
             None,
-            vec![call("slow-1", "slow", "{}")],
-            ModelFinishReason::ToolCalls,
+            Vec::new(),
+            ModelFinishReason::Stop,
         )])
     }));
-    let (runtime, tools, sink, _) = fixture(model);
-    let run = runtime.start(request("慢工具"));
+    let (runtime, _tools, _sink, store) = fixture(model);
+    let run = runtime.start(request("执行器失败后恢复"));
     let run_id = run.run_id.clone();
-    let control = run.control();
-    sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
-        .await;
-    control.cancel().unwrap();
-    let outcome = run.wait().await.unwrap();
-    assert_eq!(outcome.terminal, TerminalState::Cancelled);
-    assert!(tools.slow_cancelled.load(Ordering::Acquire));
-    let events = sink
-        .events()
-        .into_iter()
-        .filter(|event| event.run_id == run_id)
-        .collect::<Vec<_>>();
-    assert!(events.iter().any(|event| matches!(
-        &event.event,
-        RuntimeEventKind::ToolOutcomeCommitted { call_id, outcome, .. }
-            if call_id == "slow-1" && outcome.operation == ToolOperationStatus::Cancelled
-    )));
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.event.is_terminal())
-            .count(),
-        1
-    );
-    assert!(events.last().unwrap().event.is_terminal());
+    let terminal = run.wait().await.unwrap();
+    assert!(matches!(
+        terminal.terminal,
+        TerminalState::Completed { ref message, .. } if message == "已恢复"
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+
+    let replay = store.load(&run_id).await.unwrap().expect("completed run");
+    let outcome = replay
+        .snapshot
+        .transcript
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            TranscriptEntry::Tool {
+                call_id, outcome, ..
+            } if call_id == "error-1" => Some(outcome.as_ref()),
+            _ => None,
+        })
+        .expect("persisted tool outcome");
+    assert_eq!(outcome.failure_code, Some(ToolFailureCode::TransportFailed));
+    assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplicable);
+    assert_eq!(outcome.retry, ToolRetryDisposition::Safe);
 }
 
 #[tokio::test]
