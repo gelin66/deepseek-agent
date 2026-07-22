@@ -674,38 +674,64 @@ pub fn parse_chat_response(value: &Value) -> Result<DeepSeekResponse, DeepSeekTr
 }
 
 fn parse_tool_calls(value: Option<&Value>) -> Result<Vec<ModelToolCall>, DeepSeekTransportError> {
-    value
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .map(|(index, call)| {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let calls = value.as_array().ok_or_else(|| {
+        DeepSeekTransportError::InvalidJson(
+            "DeepSeek tool_calls must be an array when present".to_owned(),
+        )
+    })?;
+    let mut call_ids = std::collections::BTreeSet::new();
+    calls
+        .iter()
+        .map(|call| {
+            let id = required_tool_call_string(call, "id", "tool_calls[].id")?;
+            if !call_ids.insert(id) {
+                return Err(DeepSeekTransportError::InvalidJson(
+                    "DeepSeek tool_calls contains a duplicate id".to_owned(),
+                ));
+            }
+            let call_type = required_tool_call_string(call, "type", "tool_calls[].type")?;
+            if call_type != "function" {
+                return Err(DeepSeekTransportError::InvalidJson(
+                    "DeepSeek tool_calls[].type must be function".to_owned(),
+                ));
+            }
             let function = call
                 .get("function")
+                .filter(|function| function.is_object())
                 .ok_or(DeepSeekTransportError::MissingField(
                     "tool_calls[].function",
                 ))?;
-            let raw = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let name = required_tool_call_string(function, "name", "tool_calls[].function.name")?;
+            let raw = required_tool_call_string(
+                function,
+                "arguments",
+                "tool_calls[].function.arguments",
+            )?;
             Ok(ModelToolCall {
-                id: call
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("call_{index}")),
-                name: decode_tool_name(
-                    function
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown_tool"),
-                ),
-                arguments: ToolArguments::parse(raw),
+                id: id.to_owned(),
+                name: decode_tool_name(name),
+                arguments: ToolArguments::parse(raw.to_owned()),
             })
         })
         .collect()
+}
+
+fn required_tool_call_string<'a>(
+    object: &'a Value,
+    key: &str,
+    field: &'static str,
+) -> Result<&'a str, DeepSeekTransportError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(DeepSeekTransportError::MissingField(field))
 }
 
 fn parse_finish_reason(value: &str) -> Result<ModelFinishReason, DeepSeekTransportError> {
@@ -777,6 +803,8 @@ struct PartialToolCall {
     name: Option<String>,
     arguments: String,
     id_observed: bool,
+    type_observed: bool,
+    function_observed: bool,
     name_observed: bool,
     arguments_observed: bool,
 }
@@ -870,18 +898,53 @@ impl SseParser {
                     .into_iter()
                     .flatten()
                 {
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let index = call
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                        .ok_or(DeepSeekTransportError::MissingField("tool_calls[].index"))?;
                     let partial = self.tools.entry(index).or_default();
-                    if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if let Some(id) = call.get("id") {
+                        let id = id
+                            .as_str()
+                            .filter(|id| !id.is_empty())
+                            .ok_or(DeepSeekTransportError::MissingField("tool_calls[].id"))?;
                         partial.id_observed = true;
                         partial.id = Some(id.to_string());
                     }
+                    if let Some(call_type) = call.get("type") {
+                        let call_type = call_type
+                            .as_str()
+                            .ok_or(DeepSeekTransportError::MissingField("tool_calls[].type"))?;
+                        if call_type != "function" {
+                            return Err(DeepSeekTransportError::InvalidJson(
+                                "DeepSeek tool_calls[].type must be function".to_owned(),
+                            ));
+                        }
+                        partial.type_observed = true;
+                    }
                     if let Some(function) = call.get("function") {
-                        if let Some(name) = function.get("name").and_then(Value::as_str) {
+                        let function =
+                            function
+                                .as_object()
+                                .ok_or(DeepSeekTransportError::MissingField(
+                                    "tool_calls[].function",
+                                ))?;
+                        partial.function_observed = true;
+                        if let Some(name) = function.get("name") {
+                            let name = name.as_str().filter(|name| !name.is_empty()).ok_or(
+                                DeepSeekTransportError::MissingField("tool_calls[].function.name"),
+                            )?;
                             partial.name_observed = true;
                             partial.name = Some(name.to_string());
                         }
-                        if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                        if let Some(arguments) = function.get("arguments") {
+                            let arguments =
+                                arguments
+                                    .as_str()
+                                    .ok_or(DeepSeekTransportError::MissingField(
+                                        "tool_calls[].function.arguments",
+                                    ))?;
                             partial.arguments_observed = true;
                             partial.arguments.push_str(arguments);
                         }
@@ -919,15 +982,51 @@ impl SseParser {
         let finish_reason = self
             .finish_reason
             .ok_or(DeepSeekTransportError::StreamIncomplete)?;
-        let tool_calls = std::mem::take(&mut self.tools)
-            .into_iter()
-            .enumerate()
-            .map(|(fallback_index, (_, call))| ModelToolCall {
-                id: call.id.unwrap_or_else(|| format!("call_{fallback_index}")),
-                name: decode_tool_name(call.name.as_deref().unwrap_or("unknown_tool")),
-                arguments: ToolArguments::parse(call.arguments),
+        let partials = std::mem::take(&mut self.tools);
+        if finish_reason == ModelFinishReason::ToolCalls && partials.is_empty() {
+            return Err(DeepSeekTransportError::MissingField("tool_calls"));
+        }
+        if finish_reason != ModelFinishReason::ToolCalls && !partials.is_empty() {
+            return Err(DeepSeekTransportError::InvalidJson(
+                "DeepSeek emitted tool_calls with a non-tool finish_reason".to_owned(),
+            ));
+        }
+        let mut call_ids = std::collections::BTreeSet::new();
+        let tool_calls = partials
+            .into_values()
+            .map(|call| {
+                let id = call
+                    .id
+                    .filter(|id| !id.is_empty())
+                    .ok_or(DeepSeekTransportError::MissingField("tool_calls[].id"))?;
+                if !call.type_observed {
+                    return Err(DeepSeekTransportError::MissingField("tool_calls[].type"));
+                }
+                if !call.function_observed {
+                    return Err(DeepSeekTransportError::MissingField(
+                        "tool_calls[].function",
+                    ));
+                }
+                let name = call.name.filter(|name| !name.is_empty()).ok_or(
+                    DeepSeekTransportError::MissingField("tool_calls[].function.name"),
+                )?;
+                if !call.arguments_observed {
+                    return Err(DeepSeekTransportError::MissingField(
+                        "tool_calls[].function.arguments",
+                    ));
+                }
+                if !call_ids.insert(id.clone()) {
+                    return Err(DeepSeekTransportError::InvalidJson(
+                        "DeepSeek tool_calls contains a duplicate id".to_owned(),
+                    ));
+                }
+                Ok(ModelToolCall {
+                    id,
+                    name: decode_tool_name(&name),
+                    arguments: ToolArguments::parse(call.arguments),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         self.usage.reasoning_replay_tokens = self.replay_tokens;
         Ok(DeepSeekResponse {
             id: std::mem::take(&mut self.id),
@@ -1124,6 +1223,7 @@ mod tests {
                     "reasoning_content": "exact reasoning",
                     "tool_calls": [{
                         "id": "call-1",
+                        "type": "function",
                         "function": {
                             "name": "web-x00002E-run",
                             "arguments": "{\"q\":\"中文\"}"
@@ -1155,10 +1255,59 @@ mod tests {
     }
 
     #[test]
+    fn non_streaming_tool_calls_require_every_official_identity_field() {
+        let base = json!({
+            "id": "chat-1",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "reasoning_content": "exact reasoning",
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"src/lib.rs\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        for (path, expected) in [
+            ("/choices/0/message/tool_calls/0/id", "tool_calls[].id"),
+            ("/choices/0/message/tool_calls/0/type", "tool_calls[].type"),
+            (
+                "/choices/0/message/tool_calls/0/function/name",
+                "tool_calls[].function.name",
+            ),
+            (
+                "/choices/0/message/tool_calls/0/function/arguments",
+                "tool_calls[].function.arguments",
+            ),
+        ] {
+            let mut response = base.clone();
+            response
+                .pointer_mut(path)
+                .expect("fixture field exists")
+                .take();
+            assert!(
+                matches!(
+                    parse_chat_response(&response),
+                    Err(DeepSeekTransportError::MissingField(field)) if field == expected
+                ),
+                "missing {path} must fail closed"
+            );
+        }
+    }
+
+    #[test]
     fn sse_parser_reassembles_raw_tool_arguments_and_trailing_usage() {
         let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 9);
         let first = parser
-            .push_frame(r#"{"id":"chat-1","choices":[{"delta":{"reasoning_content":"想","tool_calls":[{"index":0,"id":"call-1","function":{"name":"read-x00002E-file","arguments":"{\"path\":"}}]}}]}"#)
+            .push_frame(r#"{"id":"chat-1","choices":[{"delta":{"reasoning_content":"想","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read-x00002E-file","arguments":"{\"path\":"}}]}}]}"#)
             .expect("first frame");
         assert_eq!(
             first,
@@ -1180,6 +1329,47 @@ mod tests {
             "{\"path\":\"a.rs\"}"
         );
         assert_eq!(response.output.usage.reasoning_replay_tokens, 9);
+    }
+
+    #[test]
+    fn sse_tool_calls_never_fabricate_missing_identity_fields() {
+        for (label, tool_call, expected) in [
+            (
+                "id",
+                r#"{"index":0,"type":"function","function":{"name":"read_file","arguments":"{}"}}"#,
+                "tool_calls[].id",
+            ),
+            (
+                "type",
+                r#"{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{}"}}"#,
+                "tool_calls[].type",
+            ),
+            (
+                "name",
+                r#"{"index":0,"id":"call-1","type":"function","function":{"arguments":"{}"}}"#,
+                "tool_calls[].function.name",
+            ),
+            (
+                "arguments",
+                r#"{"index":0,"id":"call-1","type":"function","function":{"name":"read_file"}}"#,
+                "tool_calls[].function.arguments",
+            ),
+        ] {
+            let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 0);
+            parser
+                .push_frame(&format!(
+                    r#"{{"choices":[{{"delta":{{"tool_calls":[{tool_call}]}},"finish_reason":"tool_calls"}}]}}"#
+                ))
+                .expect("partial tool-call frame is syntactically valid");
+            parser.push_frame("[DONE]").expect("done frame");
+            assert!(
+                matches!(
+                    parser.finish(),
+                    Err(DeepSeekTransportError::MissingField(field)) if field == expected
+                ),
+                "missing {label} must fail closed"
+            );
+        }
     }
 
     #[test]

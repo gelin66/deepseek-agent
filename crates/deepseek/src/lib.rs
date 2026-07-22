@@ -273,7 +273,7 @@ pub fn plan_chat(
         .as_str()
         .expect("planner model is a JSON string")
         .to_owned();
-    validate_exact_reasoning_replay(&body, &model)?;
+    validate_exact_reasoning_replay(&body, &model, input.reasoning.thinking_enabled())?;
     Ok(RequestPlan {
         surface: tool_surface.surface,
         url: chat_url(root, tool_surface.surface),
@@ -439,8 +439,9 @@ fn runtime_chat_messages(
                         unresolved_count: pending_tool_calls.len(),
                     });
                 }
-                let replay_tool_reasoning =
-                    !tool_calls.is_empty() && requires_tool_call_reasoning_replay(wire_model);
+                let replay_tool_reasoning = !tool_calls.is_empty()
+                    && replay_current_reasoning
+                    && requires_tool_call_reasoning_replay(wire_model);
                 let reasoning = reasoning_content
                     .as_deref()
                     .filter(|reasoning| !reasoning.is_empty())
@@ -528,7 +529,9 @@ fn validate_runtime_reasoning_replay(
     request: &ModelRequest,
     model: &str,
 ) -> Result<(), ChatPlanError> {
-    if !requires_tool_call_reasoning_replay(model) {
+    if !ReasoningMode::from_runtime(request.reasoning_effort).thinking_enabled()
+        || !requires_tool_call_reasoning_replay(model)
+    {
         return Ok(());
     }
     for (message_index, message) in request.messages.iter().enumerate() {
@@ -540,15 +543,19 @@ fn validate_runtime_reasoning_replay(
         else {
             continue;
         };
-        if !tool_calls.is_empty() && reasoning_content.as_deref() == Some("") {
+        if !tool_calls.is_empty() && reasoning_content.as_deref().is_none_or(str::is_empty) {
             return Err(ChatPlanError::MissingReasoningContent { message_index });
         }
     }
     Ok(())
 }
 
-fn validate_exact_reasoning_replay(body: &Value, model: &str) -> Result<(), ChatPlanError> {
-    if !requires_tool_call_reasoning_replay(model) {
+fn validate_exact_reasoning_replay(
+    body: &Value,
+    model: &str,
+    thinking_enabled: bool,
+) -> Result<(), ChatPlanError> {
+    if !thinking_enabled || !requires_tool_call_reasoning_replay(model) {
         return Ok(());
     }
     let Some(messages) = body.get("messages").and_then(Value::as_array) else {
@@ -562,11 +569,11 @@ fn validate_exact_reasoning_replay(body: &Value, model: &str) -> Result<(), Chat
             .get("tool_calls")
             .and_then(Value::as_array)
             .is_some_and(|calls| !calls.is_empty());
-        let has_empty_reasoning = message
+        let missing_reasoning = message
             .get("reasoning_content")
             .and_then(Value::as_str)
-            .is_some_and(str::is_empty);
-        if has_tool_calls && has_empty_reasoning {
+            .is_none_or(str::is_empty);
+        if has_tool_calls && missing_reasoning {
             return Err(ChatPlanError::MissingReasoningContent { message_index });
         }
     }
@@ -914,6 +921,56 @@ mod tests {
                 unresolved_count: 1,
             })
         );
+    }
+
+    #[test]
+    fn thinking_tool_call_without_original_reasoning_fails_before_http() {
+        let mut request = runtime_request(true);
+        let ModelMessage::Assistant {
+            reasoning_content, ..
+        } = &mut request.messages[0]
+        else {
+            panic!("fixture begins with an assistant tool call");
+        };
+        *reasoning_content = None;
+
+        assert_eq!(
+            plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: "https://api.deepseek.com",
+                    strict_enabled: false,
+                    wire_model: request.model.clone(),
+                    max_tokens: 64,
+                },
+                &request,
+            ),
+            Err(ChatPlanError::MissingReasoningContent { message_index: 0 })
+        );
+    }
+
+    #[test]
+    fn non_thinking_tool_call_without_reasoning_remains_valid() {
+        let mut request = runtime_request(true);
+        request.reasoning_effort = ReasoningEffort::Off;
+        let ModelMessage::Assistant {
+            reasoning_content, ..
+        } = &mut request.messages[0]
+        else {
+            panic!("fixture begins with an assistant tool call");
+        };
+        *reasoning_content = None;
+
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: false,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .expect("non-thinking tool history does not require reasoning_content");
+        assert!(plan.body["messages"][1].get("reasoning_content").is_none());
     }
 
     #[test]
