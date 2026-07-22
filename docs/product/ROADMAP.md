@@ -15,8 +15,10 @@
   M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为 `65fa88ba`；
   M5-B 收缩检查点为 `e2c870b0`；M6-A 代码与真实 canary 检查点为 `a982a9a8`。
   M6-B1 v2 candidate 为 `5d72ae94`，结果为 `reject_and_rework`；rework v3
-  candidate 为 `3310aa73`，结果为 `hold_mechanism`。
-  当前 Run API v9、RuntimeEvent v13、State schema v18。CLI、TUI、本地 API 与
+  candidate 为 `3310aa73`，结果为 `hold_mechanism`。M7-A candidate `24c8a530`
+  已完成 verifier contract 单 owner 与 typed completion recovery；正式 v1 因
+  canonical JSON 评测口径失效判定 `hold`，不宣称产品收益。
+  当前 Run API v9、RuntimeEvent v14、State schema v19。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -128,8 +130,8 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
-| M6 | 统一多 Agent 与 worktree 生命周期 | 当前阶段（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
+| M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A v1 因 canonical JSON 评测口径失效而 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1640,6 +1642,34 @@ rework v3 正式同二进制 A/B 在 candidate `3310aa73ef3bae45ce9296e65964c9b7
   冲突率综合后有可测净收益；无收益时自动退回单 Agent。
 
 ## 11. M7：专项调优与外围清理
+
+### M7-A：单 Agent 可验证完成与拒绝恢复
+
+生产候选 `24c8a530` 已把 verifier spec 收敛为 `crates/tools` resolver 的单一真相，并把
+completion rejection 的原因和所需恢复动作持久化为 typed RuntimeEvent；调用方手写 plan、
+Host 执行 plan 与恢复时重建 plan 的重复 owner 已删除。root、read-only child 和显式单
+Writer 仍使用同一个 Runtime/Store/Event owner，没有新增模型循环、Provider、scheduler、
+prompt treatment 或多 Writer。
+
+实现分为两个可审查提交：`13b5c3eb` 由 `crates/tools` 唯一解析并冻结真实 verifier
+contract，`24c8a530` 由 `protocol/runtime/state` 唯一表达、持久化和恢复 typed rejection。
+从起始 checkpoint 到 candidate 的 `crates/` diff 为 19 files、`+2,045/-428`；其中独立
+tests 为 5 files、`+633/-41`，其余源码路径上界为 `+1,412/-387`（仍包含源码内联测试）。
+没有新增 Cargo 依赖、模型可见工具、Runtime、Store 或兼容开关；该复杂度只有正式复评
+通过后才能证明值得长期保留，当前 `hold` 不把代码增加本身算作进步。
+
+离线 focused、workspace test/clippy、精确 release binary 和 34 项冻结 Harness 自测均通过。
+正式 v1 预注册为 20 对 / 40 arms，但在首个 T1 pair 后因 Harness 把 candidate 计算为
+`false_success` 而停止。事后只读复核证明该值是假阳性：生产二进制的 `serde_json` 启用
+`preserve_order`，Rust `canonical_json` 没有真正排序，Python Harness 却按字典序重算
+artifact SHA。candidate 实际拥有唯一 Host receipt，外部 verifier、scope、权限、lineage、
+ledger、accounting 均通过；baseline 和 candidate 都出现同一 artifact mismatch。
+
+因此 v1 的产品结论是 **hold**，不是 keep，也不是安全 reject：只完成 2/40 arms，不能证明
+总体收益；原 suite 不覆盖、不续跑、不拼样。下一独立切片先修复唯一 canonical JSON owner，
+加入跨 key-order 与 Rust/Python 固定向量，再用新的 candidate、suite ID、output path 从
+position 1 完整 refreeze。完整身份、费用、已执行事实和非结论见
+[M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
 
 ### 调优
 

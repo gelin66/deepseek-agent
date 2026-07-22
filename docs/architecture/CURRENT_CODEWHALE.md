@@ -13,12 +13,15 @@
 - M6-A 代码与真实 DeepSeek Writer canary 检查点：`a982a9a8`
 - M6-B1 v2 正式 A/B candidate：`5d72ae94`
 - M6-B1 rework v3 candidate：`3310aa73`
+- M7-A production candidate：`24c8a530`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
   `reject_and_rework`。rework 已完成，v3 因一次真实 transport attempt 的计费不可证明按
-  预注册规则判定 `hold_mechanism`；Writer 保持 explicit-only，M6-B2 不准入
-- 当前协议：Run API v9、RuntimeEvent v13、State schema v18
+  预注册规则判定 `hold_mechanism`；Writer 保持 explicit-only，M6-B2 不准入。M7-A 已完成
+  verifier contract 单 owner 与 typed completion recovery，正式 v1 因 Rust/Python
+  canonical JSON 口径失效判定 `hold`
+- 当前协议：Run API v9、RuntimeEvent v14、State schema v19
 
 ## 1. 当前结论
 
@@ -71,6 +74,13 @@ Fleet 的真实执行仍是 `FleetExecutor -> codewhale exec`。只有 route、r
 custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢复这些状态，而是在
 `protocol/runtime/state` 中建立唯一 TaskContract/EvidenceReceipt/Host completion 链路；
 历史测试只作为反例，仓库不存在旧类型 adapter、镜像 Store 或第二 completion loop。
+
+M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
+`ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
+plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
+推断已被替代。RuntimeEvent v14 与 State schema v19 又持久化 completion rejection 的 typed
+`cause` 和 `required_transition`，恢复只能消费当前 generation 的 exact rejection 事实；
+root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
 
 WorkSurface 现在只投影 canonical child Agent，并保留 top/left/right 布局。旧键盘/鼠标
 handler 从未接入生产事件循环，却生成不存在的 `/task` 与 `/jobs` 命令；该交互岛及其焦点、
@@ -152,7 +162,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue 通过 State schema v18 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v19 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -176,7 +186,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v13 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+RuntimeEvent v14 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -245,7 +255,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v13 / State v18 的 canonical facts。
+post-integration verification 都是 RuntimeEvent v14 / State v19 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -298,9 +308,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v18；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v19；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v13；
+- 当前 canonical RuntimeEvent writer/reader 为 v14；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -348,7 +358,7 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
 - 当前 Run API v9 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v13；
+  writer/reader 为 v14；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -901,6 +911,15 @@ capability、named verifier、时序 EvidenceReceipt、精确 cleanup/recovery �
 的产品结论，Writer 继续 explicit-only，M6-B2 仍不准入。完整身份和证据边界见
 [M6-B1 rework Writer 收益 A/B v3](../../eval/summaries/m6-b1-writer-benefit-ab-v3-2026-07-22.md)。
 
+M7-A candidate `24c8a530` 的离线门禁和 exact release identity 已冻结。正式 DeepSeek v1
+在首个 T1 pair 后停止：baseline blocked，candidate Completed 且有唯一 Host receipt，两边
+外部 verifier 都通过、accounting 都闭合。停止原因不是 candidate 行为错误，而是 Harness
+按 sorted JSON 重算 artifact SHA，production binary 却因 `serde_json/preserve_order` 和
+未真正排序的 `canonical_json` 按插入序计算。该 mismatch 同时出现在 baseline/candidate，
+因此 raw `false_success/reject` 不能成为产品结论；2/40 arms 也不足以保留 candidate。
+当前状态为 `hold`，原 suite 不续跑，完整证据见
+[M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -919,6 +938,8 @@ capability、named verifier、时序 EvidenceReceipt、精确 cleanup/recovery �
 - M6-A 单 Writer 相对当前 single-agent 已证明净收益；M6-B1 只观察到 verified
   `2/18 -> 4/18`，但 false-success、安全和开销硬门槛失败；
 - transport 迁移本身提升了真实编码成功率；
+- M7-A verifier 单 owner 与 typed recovery 已证明提高完整正式任务集的 verified success 或
+  效率；v1 只执行 2/40 arms，且 artifact canonical JSON 评测口径失效；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B

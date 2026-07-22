@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-21
+- 上次更新：2026-07-22
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -342,7 +342,7 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 #### 2026-07-19 M5-A 机制与真实 A/B 证据
 
 M5-A 被测 checkpoint 实现了上述 canonical 边界：当时的 Run API v5、RuntimeEvent v7、
-State schema v12；当前 v9/v13/v18 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
+State schema v12；当前 v9/v14/v19 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
 模型 `Stop` 只产生 completion candidate，Runtime 是
 唯一 EvidenceReceipt 与 Completed owner。结构化 task 的 constraints、non-goals 和
 acceptance description 已进入确定性的 model-visible canonical transcript。显式 verifier
@@ -682,6 +682,35 @@ v3 与未来样本合并。新的 v4 必须来自独立、实质性的产品代�
 请求前重新冻结，从 schedule position 1 全新收集；若改变任务、预算、阈值或只改变
 Harness/版本号，则属于新 claim 或条件重采样。只有权威 transport phase 或 provider 计费
 证据才能把失败 attempt 标为已知未计费；unknown billing 门禁不得为跑满样本而放宽。
+
+### 9.5 M7-A Agent 收敛 v1 口径中止证据（2026-07-22）
+
+M7-A candidate `24c8a530fd7ae200d823e07cce5d9c75ff2cc5ea` 完成 verifier contract
+单 owner 与 typed completion recovery 后，使用 `deepseek-v4-flash` Standard Chat 启动
+20 对 / 40 arms 正式 A/B。Harness、manifest、schedule、baseline/candidate exact release
+binary 均在 live API 前冻结。v1 只完成 T1 首对即按 `false_success` safety gate 停止：
+
+- baseline blocked，外部 verifier passed，10 个 physical attempts，USD `0.007048597`；
+- candidate completed，唯一 Host receipt，外部 verifier passed，5 个 physical attempts，
+  USD `0.002141535`；
+- 两 arm accounting 均 complete、sealed、billing known，总费用 USD `0.009190132`；
+- candidate 只修改 `slugify.py`，scope/path/tool/child/temporal、verifier spec、lineage、ledger、
+  Terminal/RunView projection 和 Standard Chat/model identity 全部通过；
+- 只完成 2/40 arms，`product_metric_eligible=false`。
+
+事后复核证明 raw 中的 `artifact_closure_mismatch → false_success → reject` 是评测假阳性。
+Python Harness 用排序后的 JSON 重算 artifact SHA；Rust binary 因 `serde_json/preserve_order`
+保留插入顺序，而当前 `canonical_json` 实现并未像注释声称的那样显式排序。结构体字段顺序与
+字典序不同，所以跨语言 SHA 必然不同；baseline 与 candidate 都出现同一 mismatch。candidate
+能生成 receipt，也证明生产 Store 已按 Rust 自身协议验证 inline artifact、observation、
+revision、spec 和 lineage。
+
+正式决定为 **hold**：不能用不完整 pair 宣称 candidate 收益，也不能把该假阳性记为真实
+Host unsafe completion。原始结果保持本地 `0600`、Git ignored，SHA-256
+`27e38db2f33280528a1552a57c1bb705ef3ab9bd15bffdaa9552ba9958825af2`；不得覆盖、续跑或
+拼接。下一 suite 必须来自修复 production canonical JSON owner、增加跨语言固定向量后的
+新 clean candidate，并重新冻结独立 identity。完整记录见
+[M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
 
 ## 10. 结果与决策记录
 
