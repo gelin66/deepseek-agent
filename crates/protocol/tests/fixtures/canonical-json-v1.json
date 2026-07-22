@@ -1,0 +1,136 @@
+{
+  "schema": "codewhale.protocol.canonical-json.v1",
+  "vectors": [
+    {
+      "id": "nested-order-a",
+      "input_json": "{\"z\":\"中文\\n\\\"quoted\\\"\\\\slash/😀\",\"a\":{\"nested\":{\"z\":2,\"a\":1},\"empty_object\":{},\"empty_array\":[]}}",
+      "canonical": "{\"a\":{\"empty_array\":[],\"empty_object\":{},\"nested\":{\"a\":1,\"z\":2}},\"z\":\"中文\\n\\\"quoted\\\"\\\\slash/😀\"}",
+      "byte_len": 102,
+      "sha256": "sha256:32bfbdbdba536cdce4b897632d85215077b15a63a192db4165dbb9667cde67c6"
+    },
+    {
+      "id": "nested-order-b",
+      "input_json": "{\"a\":{\"empty_array\":[],\"empty_object\":{},\"nested\":{\"a\":1,\"z\":2}},\"z\":\"中文\\n\\\"quoted\\\"\\\\slash/😀\"}",
+      "canonical": "{\"a\":{\"empty_array\":[],\"empty_object\":{},\"nested\":{\"a\":1,\"z\":2}},\"z\":\"中文\\n\\\"quoted\\\"\\\\slash/😀\"}",
+      "byte_len": 102,
+      "sha256": "sha256:32bfbdbdba536cdce4b897632d85215077b15a63a192db4165dbb9667cde67c6"
+    },
+    {
+      "id": "array-forward",
+      "input_json": "{\"array\":[1,2,3]}",
+      "canonical": "{\"array\":[1,2,3]}",
+      "byte_len": 17,
+      "sha256": "sha256:12f5de7e504f999c4b302da6338900110587c32f94dc158b70571469ab344b76"
+    },
+    {
+      "id": "array-reverse",
+      "input_json": "{\"array\":[3,2,1]}",
+      "canonical": "{\"array\":[3,2,1]}",
+      "byte_len": 17,
+      "sha256": "sha256:3348bd6d6c610d1594a57a327aef673bff1c30aa0dfdcfc0508704775261afdd"
+    },
+    {
+      "id": "unicode-key-order",
+      "input_json": "{\"😀\":3,\"𐀀\":2,\"\":1,\"a\":0}",
+      "canonical": "{\"a\":0,\"\":1,\"𐀀\":2,\"😀\":3}",
+      "byte_len": 33,
+      "sha256": "sha256:1e6f80414bad0b075ce55ffd91438032194f5324abc1959ddeec315e166ba01c"
+    }
+  ],
+  "m7_a_v1_t1": {
+    "artifact_payload": {
+      "workspace_revision": {
+        "status": "known",
+        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verifier": {
+        "verifier_id": "run_verifiers",
+        "parameters": {
+          "profile": "exact",
+          "level": "quick",
+          "max_python_files": 200,
+          "commands": [
+            {
+              "name": "m7a-t1-exact",
+              "program": "/usr/bin/python3",
+              "args": ["-I", "-B", "_eval_verifier.py", "."],
+              "cwd": ""
+            }
+          ]
+        },
+        "plan": {
+          "steps": [
+            {
+              "id": "m7a-t1-exact",
+              "program": "/usr/bin/python3",
+              "args": ["-I", "-B", "_eval_verifier.py", "."],
+              "cwd": "",
+              "env": {
+                "PYTHONDONTWRITEBYTECODE": "1"
+              },
+              "timeout_ms": 600000
+            }
+          ]
+        }
+      },
+      "summary": "All 1 verifier gates passed.",
+      "verdict": "passed"
+    },
+    "artifact_canonical": "{\"summary\":\"All 1 verifier gates passed.\",\"verdict\":\"passed\",\"verifier\":{\"parameters\":{\"commands\":[{\"args\":[\"-I\",\"-B\",\"_eval_verifier.py\",\".\"],\"cwd\":\"\",\"name\":\"m7a-t1-exact\",\"program\":\"/usr/bin/python3\"}],\"level\":\"quick\",\"max_python_files\":200,\"profile\":\"exact\"},\"plan\":{\"steps\":[{\"args\":[\"-I\",\"-B\",\"_eval_verifier.py\",\".\"],\"cwd\":\"\",\"env\":{\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"id\":\"m7a-t1-exact\",\"program\":\"/usr/bin/python3\",\"timeout_ms\":600000}]},\"verifier_id\":\"run_verifiers\"},\"workspace_revision\":{\"sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"known\"}}",
+    "artifact_byte_len": 597,
+    "artifact_sha256": "sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d",
+    "artifact_id": "verification-evidence:sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d",
+    "receipt": {
+      "lineage": {
+        "policy": "latest_pass"
+      },
+      "artifact_ids": [
+        "verification-evidence:sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d"
+      ],
+      "workspace_state": {
+        "revision": {
+          "status": "known",
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "generation": 2
+      },
+      "verifier": {
+        "plan": {
+          "steps": [
+            {
+              "timeout_ms": 600000,
+              "program": "/usr/bin/python3",
+              "id": "m7a-t1-exact",
+              "env": {
+                "PYTHONDONTWRITEBYTECODE": "1"
+              },
+              "cwd": "",
+              "args": ["-I", "-B", "_eval_verifier.py", "."]
+            }
+          ]
+        },
+        "parameters": {
+          "commands": [
+            {
+              "cwd": "",
+              "args": ["-I", "-B", "_eval_verifier.py", "."],
+              "program": "/usr/bin/python3",
+              "name": "m7a-t1-exact"
+            }
+          ],
+          "max_python_files": 200,
+          "level": "quick",
+          "profile": "exact"
+        },
+        "verifier_id": "run_verifiers"
+      },
+      "verification_id": "host-verification:completion-m7a2:m7a-t1",
+      "acceptance_id": "m7a-t1",
+      "generation_id": "generation-m7a2",
+      "id": "receipt:host-verification:completion-m7a2:m7a-t1"
+    },
+    "receipt_canonical": "{\"acceptance_id\":\"m7a-t1\",\"artifact_ids\":[\"verification-evidence:sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d\"],\"generation_id\":\"generation-m7a2\",\"id\":\"receipt:host-verification:completion-m7a2:m7a-t1\",\"lineage\":{\"policy\":\"latest_pass\"},\"verification_id\":\"host-verification:completion-m7a2:m7a-t1\",\"verifier\":{\"parameters\":{\"commands\":[{\"args\":[\"-I\",\"-B\",\"_eval_verifier.py\",\".\"],\"cwd\":\"\",\"name\":\"m7a-t1-exact\",\"program\":\"/usr/bin/python3\"}],\"level\":\"quick\",\"max_python_files\":200,\"profile\":\"exact\"},\"plan\":{\"steps\":[{\"args\":[\"-I\",\"-B\",\"_eval_verifier.py\",\".\"],\"cwd\":\"\",\"env\":{\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"id\":\"m7a-t1-exact\",\"program\":\"/usr/bin/python3\",\"timeout_ms\":600000}]},\"verifier_id\":\"run_verifiers\"},\"workspace_state\":{\"generation\":2,\"revision\":{\"sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"known\"}}}",
+    "receipt_byte_len": 886,
+    "receipt_sha256": "sha256:15192093f99995766739569ee4ebc34bf9a496bd7d53e58fe70156feb59fd07b"
+  }
+}
