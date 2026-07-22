@@ -2258,11 +2258,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
+                "sha256:b2fe1b3abfb72e4eebb28f2a3ced08225c4941861c0b9cb8f6fc7a4add6df9b3",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
+                "sha256:90e9a19b10ad2997fec89ef96d2513ddc5b2682b2c8f13c88e3f4ff229200caa",
             ),
             (
                 "coordinator",
@@ -2275,16 +2277,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
+                "sha256:0b66bd94fcfd644782ba24a37bc642e28c73b18f986a5a73101c9d275da2f1e4",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
+                "sha256:a9fdff5e75a6e1e833f2f7c6fb3bb84e1da0ffd1bcc2d2893cb975dbcee72cf9",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("file_search", "$/required", "all_properties_required")),
+                "sha256:9abb08ef262ae9851c61e7ba99e10bcb091b3d5a8ece8beb8bc669c022bc447b",
             ),
             (
                 "isolated_writer",
@@ -2297,11 +2302,22 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
+                "sha256:0d10eda41159109d4e8cc70561c25dfc5685fa6bdc4653ef78c8e0c5ee6c61f5",
             ),
-            ("terminal_empty", Vec::new(), None),
+            (
+                "terminal_empty",
+                Vec::new(),
+                None,
+                "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            ),
         ];
 
-        for (label, catalog, expected) in catalogs {
+        for (label, catalog, expected, expected_catalog_sha256) in catalogs {
+            assert_eq!(
+                canonical_tool_catalog_sha256(&catalog),
+                expected_catalog_sha256,
+                "{label}"
+            );
             let request = ModelRequest {
                 run_id: RunId::from(format!("strict-matrix-{label}")),
                 parent_run_id: None,
@@ -2910,40 +2926,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_incompatible_catalog_falls_back_atomically_without_losing_eleven_tools() {
-        let server =
-            MockDeepSeekServer::start(vec![response("deepseek-v4-pro", "完成", 10, 2)]).await;
-        let temp = tempfile::tempdir().expect("temp workspace");
-        let mut command = start_command(temp.path(), Some("deepseek-v4-pro"));
-        command.tool_policy.allowed = Some(
-            PRODUCTION_TOOL_NAMES
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect(),
-        );
-        let app = AgentApplication::production(config(
-            &temp.path().join("state.db"),
-            connection(&server.root, true),
-            true,
-        ))
-        .expect("production app");
-        let run = run_result(
-            app.execute(envelope("strict", RunCommand::Start(command)))
+    async fn standard_and_strict_candidate_send_the_same_fallback_catalog() {
+        let mut observed = Vec::new();
+        for strict_enabled in [false, true] {
+            let server =
+                MockDeepSeekServer::start(vec![response("deepseek-v4-pro", "完成", 10, 2)]).await;
+            let temp = tempfile::tempdir().expect("temp workspace");
+            let mut command = start_command(temp.path(), Some("deepseek-v4-pro"));
+            command.tool_policy.allowed = Some(
+                PRODUCTION_TOOL_NAMES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            );
+            let app = AgentApplication::production(config(
+                &temp.path().join("state.db"),
+                connection(&server.root, strict_enabled),
+                true,
+            ))
+            .expect("production app");
+            let run = run_result(
+                app.execute(envelope(
+                    if strict_enabled { "strict" } else { "standard" },
+                    RunCommand::Start(command),
+                ))
                 .await,
-        );
-        wait_terminal(app.store.as_ref(), &run.run_id).await;
-        let requests = server.finish().await;
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].path, "/v1/chat/completions");
-        let tools = requests[0].body["tools"]
-            .as_array()
-            .expect("ordinary tool catalog");
+            );
+            wait_terminal(app.store.as_ref(), &run.run_id).await;
+            let requests = server.finish().await;
+            assert_eq!(requests.len(), 1);
+            observed.push((requests[0].path.clone(), requests[0].body["tools"].clone()));
+        }
+
+        assert_eq!(observed[0], observed[1]);
+        assert_eq!(observed[0].0, "/v1/chat/completions");
+        let tools = observed[0].1.as_array().expect("ordinary tool catalog");
         assert_eq!(tools.len(), PRODUCTION_TOOL_NAMES.len());
         let names = tools
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
         assert_eq!(names, PRODUCTION_TOOL_NAMES);
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["function"].get("strict").is_none())
+        );
     }
 
     async fn seed_resume_mismatch(
