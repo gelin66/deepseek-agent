@@ -39,10 +39,10 @@ pub use production::{
 };
 pub use production_context::ProductionToolContext;
 pub use read_file::execute_read_file;
-pub(crate) use run_tests::execute_run_tests;
 pub use run_tests::{CargoTestEvidence, RunTestsOutput};
-pub(crate) use run_verifiers::execute_run_verifiers;
+pub(crate) use run_tests::{execute_run_tests, resolve_run_tests_spec};
 pub use run_verifiers::{GateResult, GateStatus, RunVerifiersOutput, VerifierVerdict};
+pub(crate) use run_verifiers::{execute_run_verifiers, resolve_run_verifiers_spec};
 pub use unified_diff::make_unified_diff;
 pub use verification_artifact::{
     attach_verifier_observation, capture_workspace_revision, reject_verification_artifact,

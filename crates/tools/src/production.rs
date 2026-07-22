@@ -12,6 +12,7 @@ use codewhale_protocol::agent_runtime::{
     ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolOperationStatus, ToolRetryDisposition,
     ToolSideEffectStatus, WorkspaceAccess,
 };
+use codewhale_protocol::task::VerifierSpec;
 use codewhale_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -29,7 +30,7 @@ use crate::{
     ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
     execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
     execute_grep_files, execute_list_dir, execute_read_file, execute_run_tests,
-    execute_run_verifiers,
+    execute_run_verifiers, resolve_run_tests_spec, resolve_run_verifiers_spec,
 };
 
 pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
@@ -419,6 +420,32 @@ impl ProductionToolExecutor {
             shell_host: ProductionExecShellHost {
                 exec_policy: config.exec_policy,
             },
+        }
+    }
+
+    /// Resolve one Host verifier request into the exact plan used by the
+    /// production implementation. Callers must persist this result instead of
+    /// trusting a duplicated, caller-authored execution plan.
+    pub fn resolve_verifier_spec(
+        &self,
+        verifier_id: &str,
+        parameters: Value,
+    ) -> Result<VerifierSpec, ToolError> {
+        validate_input_shape(verifier_id, &parameters)?;
+        match verifier_id {
+            "run_tests" => resolve_run_tests_spec(parameters),
+            "run_verifiers" => {
+                let spec = resolve_run_verifiers_spec(parameters, &self.context)?;
+                if spec.parameters.get("profile").and_then(Value::as_str) != Some("exact") {
+                    return Err(ToolError::invalid_input(
+                        "Host acceptance requires run_verifiers profile 'exact'; workspace-detected profiles remain advisory tools because their plan can change after edits",
+                    ));
+                }
+                Ok(spec)
+            }
+            _ => Err(ToolError::invalid_input(format!(
+                "tool '{verifier_id}' cannot produce canonical Host verification evidence"
+            ))),
         }
     }
 
@@ -862,6 +889,40 @@ mod tests {
         for forbidden in ["cancel", "shell_manager", "read_tracker", "api_key"] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn production_resolver_replaces_untrusted_verifier_plan_fields() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(workspace.path()));
+        let spec = executor
+            .resolve_verifier_spec(
+                "run_verifiers",
+                json!({
+                    "profile": "exact",
+                    "commands": [{
+                        "name": "exact",
+                        "program": "/usr/bin/python3",
+                        "args": ["-I", "-B", "verify.py", "."],
+                        "cwd": ""
+                    }]
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            spec.plan.steps[0].env.get("PYTHONDONTWRITEBYTECODE"),
+            Some(&"1".to_owned())
+        );
+        assert!(
+            executor
+                .resolve_verifier_spec("read_file", json!({"path": "src/lib.rs"}))
+                .is_err()
+        );
+        assert!(
+            executor
+                .resolve_verifier_spec("run_verifiers", json!({"profile": "auto"}))
+                .is_err()
+        );
     }
 
     #[test]

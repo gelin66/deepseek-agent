@@ -65,13 +65,9 @@ pub(crate) async fn execute_run_tests(
     context: &ProductionToolContext,
     shell: &ExecShellOptions,
 ) -> Result<ToolOutcome, ToolError> {
-    let input: RunTestsInput = serde_json::from_value(input)
-        .map_err(|error| ToolError::invalid_input(error.to_string()))?;
-    let mut args = vec!["test".to_string()];
-    if input.all_features {
-        args.push("--all-features".to_string());
-    }
-    args.extend(input.args.iter().cloned());
+    let input = parse_run_tests_input(input)?;
+    let verifier = run_tests_verifier_spec(&input);
+    let args = verifier.plan.steps[0].args.clone();
 
     let command = format_command(context.workspace(), &args);
     let revision_before = capture_workspace_revision(context.workspace()).await;
@@ -135,23 +131,7 @@ pub(crate) async fn execute_run_tests(
         };
         attach_verifier_observation(
             &mut outcome,
-            VerifierSpec {
-                verifier_id: "run_tests".to_owned(),
-                parameters: json!({
-                    "all_features": input.all_features,
-                    "args": input.args,
-                }),
-                plan: VerifierPlan {
-                    steps: vec![VerifierStep {
-                        id: "cargo-test".to_owned(),
-                        program: "cargo".to_owned(),
-                        args,
-                        cwd: String::new(),
-                        env: BTreeMap::new(),
-                        timeout_ms: RUN_TESTS_TIMEOUT_MS,
-                    }],
-                },
-            },
+            verifier,
             verdict,
             format!(
                 "cargo test observed {} passed and {} failed test(s) with exit code {}",
@@ -164,6 +144,40 @@ pub(crate) async fn execute_run_tests(
         reject_verification_artifact(&mut outcome);
     }
     Ok(outcome)
+}
+
+pub(crate) fn resolve_run_tests_spec(parameters: Value) -> Result<VerifierSpec, ToolError> {
+    parse_run_tests_input(parameters).map(|input| run_tests_verifier_spec(&input))
+}
+
+fn parse_run_tests_input(input: Value) -> Result<RunTestsInput, ToolError> {
+    serde_json::from_value(input).map_err(|error| ToolError::invalid_input(error.to_string()))
+}
+
+fn run_tests_verifier_spec(input: &RunTestsInput) -> VerifierSpec {
+    let mut args = vec!["test".to_owned()];
+    if input.all_features {
+        args.push("--all-features".to_owned());
+    }
+    args.extend(input.args.iter().cloned());
+    VerifierSpec {
+        verifier_id: "run_tests".to_owned(),
+        parameters: json!({
+            "all_features": input.all_features,
+            "args": input.args,
+        }),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "cargo-test".to_owned(),
+                program: "cargo".to_owned(),
+                args,
+                cwd: String::new(),
+                env: BTreeMap::new(),
+                timeout_ms: RUN_TESTS_TIMEOUT_MS,
+            }],
+        },
+    }
+    .canonicalized()
 }
 
 async fn run_cargo(
@@ -357,6 +371,19 @@ mod tests {
         assert_eq!(evidence.failed, 0);
         assert_eq!(evidence.ignored, 1);
         assert_eq!(evidence.filtered_out, 3);
+    }
+
+    #[test]
+    fn resolver_owns_normalized_parameters_and_execution_plan() {
+        let spec = resolve_run_tests_spec(json!({"args": ["--locked"]})).unwrap();
+        assert_eq!(spec.verifier_id, "run_tests");
+        assert_eq!(
+            spec.parameters,
+            json!({"all_features": false, "args": ["--locked"]})
+        );
+        assert_eq!(spec.plan.steps.len(), 1);
+        assert_eq!(spec.plan.steps[0].args, ["test", "--locked"]);
+        assert_eq!(spec.plan.steps[0].timeout_ms, RUN_TESTS_TIMEOUT_MS);
     }
 
     #[test]

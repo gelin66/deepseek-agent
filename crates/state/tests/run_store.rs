@@ -1640,6 +1640,31 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
     assert!(!sqlite_retry.newly_reserved);
     assert_eq!(sqlite_retry.reservation.run_id, proposed);
 
+    let sqlite_drifted_retry = sqlite
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            RunId::from("ignored-drifted-proposal"),
+            creation_intent("/tmp/re-resolved-elsewhere"),
+        )
+        .await
+        .expect("same caller digest reuses first SQLite intent");
+    let memory_drifted_retry = memory
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            RunId::from("ignored-drifted-proposal"),
+            creation_intent("/tmp/re-resolved-elsewhere"),
+        )
+        .await
+        .expect("same caller digest reuses first memory intent");
+    assert_eq!(sqlite_drifted_retry, sqlite_retry);
+    assert_eq!(memory_drifted_retry, memory_retry);
+    assert_eq!(
+        sqlite_drifted_retry.reservation,
+        memory_drifted_retry.reservation
+    );
+
     assert!(matches!(
         sqlite
             .reserve_creation(

@@ -86,12 +86,6 @@ impl StateStore {
                 source_run_id,
                 command_json,
             )?;
-            if stored_intent
-                .as_ref()
-                .is_some_and(|stored| stored != &intent)
-            {
-                return Err(RunStoreError::CreationConflict { command_id });
-            }
             let reservation = CreationReservation {
                 command_id,
                 command_sha256: existing_sha256,

@@ -133,6 +133,13 @@ struct VerifierGate {
     skipped_reason: Option<String>,
 }
 
+struct ResolvedRunVerifiers {
+    profile: VerifierProfile,
+    level: VerifierLevel,
+    gates: Vec<VerifierGate>,
+    spec: Option<VerifierSpec>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateResult {
     pub name: String,
@@ -199,42 +206,13 @@ pub(crate) async fn execute_run_verifiers(
     context: &ProductionToolContext,
     shell: &ExecShellOptions,
 ) -> Result<ToolOutcome, ToolError> {
-    let input: RunVerifiersInput = serde_json::from_value(input)
-        .map_err(|error| ToolError::invalid_input(error.to_string()))?;
-    let profile = VerifierProfile::parse(&input.profile)?;
-    let level = VerifierLevel::parse(&input.level)?;
-    if input.max_python_files == 0 || input.max_python_files > 1000 {
-        return Err(ToolError::invalid_input(
-            "max_python_files must be between 1 and 1000",
-        ));
-    }
-    if input.commands.len() > MAX_CUSTOM_GATES {
-        return Err(ToolError::invalid_input(format!(
-            "commands may contain at most {MAX_CUSTOM_GATES} custom gates"
-        )));
-    }
-    let mut command_names = BTreeSet::new();
-    for command in &input.commands {
-        if !command_names.insert(command.name.as_str()) {
-            return Err(ToolError::invalid_input(format!(
-                "Custom verifier command name '{}' appears more than once",
-                command.name
-            )));
-        }
-    }
-    if profile == VerifierProfile::Exact && input.commands.is_empty() {
-        return Err(ToolError::invalid_input(
-            "exact verifier profile requires at least one custom command",
-        ));
-    }
-
-    let gates = build_gate_plan(
-        context,
+    let ResolvedRunVerifiers {
         profile,
         level,
-        input.max_python_files,
-        &input.commands,
-    )?;
+        gates,
+        spec: verifier,
+    } = resolve_run_verifiers(input, context)?;
+
     if gates.is_empty() {
         let mut outcome = verifier_tool_result(&RunVerifiersOutput {
             success: false,
@@ -253,7 +231,6 @@ pub(crate) async fn execute_run_verifiers(
         return Ok(outcome);
     }
 
-    let gates_for_spec = gates.clone();
     let revision_before = capture_workspace_revision(context.workspace()).await;
     let mut results = futures_util::future::join_all(
         gates
@@ -302,12 +279,10 @@ pub(crate) async fn execute_run_verifiers(
     let mut outcome = verifier_tool_result(&output)?;
     match output.verifier_verdict {
         VerifierVerdict::Pass => {
-            let verifier =
-                exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
             let revision_after = capture_workspace_revision(context.workspace()).await;
             attach_verifier_observation(
                 &mut outcome,
-                verifier,
+                verifier.expect("non-empty gate plan has a verifier spec"),
                 codewhale_protocol::task::VerifierVerdict::Passed,
                 output.summary.clone(),
                 revision_before,
@@ -315,12 +290,10 @@ pub(crate) async fn execute_run_verifiers(
             );
         }
         VerifierVerdict::Fail if failed_observation_usable => {
-            let verifier =
-                exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
             let revision_after = capture_workspace_revision(context.workspace()).await;
             attach_verifier_observation(
                 &mut outcome,
-                verifier,
+                verifier.expect("non-empty gate plan has a verifier spec"),
                 codewhale_protocol::task::VerifierVerdict::Failed,
                 output.summary.clone(),
                 revision_before,
@@ -332,6 +305,83 @@ pub(crate) async fn execute_run_verifiers(
         }
     }
     Ok(outcome)
+}
+
+pub(crate) fn resolve_run_verifiers_spec(
+    parameters: Value,
+    context: &ProductionToolContext,
+) -> Result<VerifierSpec, ToolError> {
+    resolve_run_verifiers(parameters, context)?
+        .spec
+        .ok_or_else(|| {
+            ToolError::invalid_input("run_verifiers did not resolve any executable gate")
+        })
+}
+
+fn resolve_run_verifiers(
+    input: Value,
+    context: &ProductionToolContext,
+) -> Result<ResolvedRunVerifiers, ToolError> {
+    let (input, profile, level) = parse_run_verifiers_input(input)?;
+    let gates = build_gate_plan(
+        context,
+        profile,
+        level,
+        input.max_python_files,
+        &input.commands,
+    )?;
+    let spec = if gates.iter().all(|gate| gate.program.is_none()) {
+        None
+    } else {
+        Some(exact_verifier_spec(
+            context.workspace(),
+            &input,
+            profile,
+            level,
+            &gates,
+        )?)
+    };
+    Ok(ResolvedRunVerifiers {
+        profile,
+        level,
+        gates,
+        spec,
+    })
+}
+
+fn parse_run_verifiers_input(
+    input: Value,
+) -> Result<(RunVerifiersInput, VerifierProfile, VerifierLevel), ToolError> {
+    let input: RunVerifiersInput = serde_json::from_value(input)
+        .map_err(|error| ToolError::invalid_input(error.to_string()))?;
+    let profile = VerifierProfile::parse(&input.profile)?;
+    let level = VerifierLevel::parse(&input.level)?;
+    if input.max_python_files == 0 || input.max_python_files > 1000 {
+        return Err(ToolError::invalid_input(
+            "max_python_files must be between 1 and 1000",
+        ));
+    }
+    if input.commands.len() > MAX_CUSTOM_GATES {
+        return Err(ToolError::invalid_input(format!(
+            "commands may contain at most {MAX_CUSTOM_GATES} custom gates"
+        )));
+    }
+    let mut command_names = BTreeSet::new();
+    for command in &input.commands {
+        if !command_names.insert(command.name.as_str()) {
+            return Err(ToolError::invalid_input(format!(
+                "Custom verifier command name '{}' appears more than once",
+                command.name
+            )));
+        }
+    }
+    if profile == VerifierProfile::Exact && input.commands.is_empty() {
+        return Err(ToolError::invalid_input(
+            "exact verifier profile requires at least one custom command",
+        ));
+    }
+
+    Ok((input, profile, level))
 }
 
 fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolOutcome, ToolError> {
@@ -1227,6 +1277,30 @@ mod tests {
         assert_eq!(custom.args.first().map(String::as_str), Some("-B"));
     }
 
+    #[test]
+    fn resolver_injects_the_same_host_environment_as_execution() {
+        let workspace = initialized_workspace();
+        let context = ProductionToolContext::new(workspace.path());
+        let parameters = json!({
+            "profile": "exact",
+            "commands": [{
+                "name": "python-check",
+                "program": "/usr/bin/python3",
+                "args": ["-I", "-B", "check.py", "."],
+                "cwd": ""
+            }]
+        });
+        let spec = resolve_run_verifiers_spec(parameters, &context).unwrap();
+        assert_eq!(spec.verifier_id, "run_verifiers");
+        assert_eq!(spec.parameters["level"], "quick");
+        assert_eq!(spec.parameters["max_python_files"], 200);
+        assert_eq!(
+            spec.plan.steps[0].env.get("PYTHONDONTWRITEBYTECODE"),
+            Some(&"1".to_owned())
+        );
+        assert_eq!(spec.plan.steps[0].timeout_ms, VERIFIER_GATE_TIMEOUT_MS);
+    }
+
     #[tokio::test]
     async fn python_verifier_success_leaves_a_clean_workspace() {
         let workspace = initialized_workspace();
@@ -1238,21 +1312,27 @@ mod tests {
         .unwrap();
         commit_workspace(workspace.path());
         let context = ProductionToolContext::new(workspace.path());
-        let outcome = execute_run_verifiers(
-            json!({
-                "profile": "exact",
-                "commands": [{
-                    "name": "python-import",
-                    "program": "/usr/bin/python3",
-                    "args": ["verifier.py"]
-                }]
-            }),
-            &context,
-            &shell(workspace.path()),
-        )
-        .await
-        .unwrap();
+        let parameters = json!({
+            "profile": "exact",
+            "commands": [{
+                "name": "python-import",
+                "program": "/usr/bin/python3",
+                "args": ["verifier.py"]
+            }]
+        });
+        let resolved = resolve_run_verifiers_spec(parameters.clone(), &context).unwrap();
+        let outcome = execute_run_verifiers(parameters, &context, &shell(workspace.path()))
+            .await
+            .unwrap();
         assert!(outcome.is_success(), "{}", outcome.content);
+        assert_eq!(
+            outcome
+                .verifier_observation
+                .as_ref()
+                .expect("successful verifier observation")
+                .spec,
+            resolved
+        );
         assert!(!workspace.path().join("__pycache__").exists());
         assert!(!workspace.path().join(".pytest_cache").exists());
         let status = Command::new("git")

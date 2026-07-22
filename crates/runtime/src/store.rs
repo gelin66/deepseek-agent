@@ -63,10 +63,12 @@ impl CreationIntent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreationReservation {
     pub command_id: CommandId,
+    /// Identity of the canonical caller payload, before Host-owned resolution.
     pub command_sha256: String,
     pub run_id: RunId,
     pub created_at_unix_ms: u64,
-    /// Present only until this reservation's `RunCreated` is committed.
+    /// First Host-resolved durable launch truth. Present only until this
+    /// reservation's `RunCreated` is committed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent: Option<CreationIntent>,
 }
@@ -3141,12 +3143,7 @@ impl RunStore for InMemoryRunStore {
     ) -> Result<ReservedCreation, RunStoreError> {
         let mut creations = self.creations.lock().await;
         if let Some(existing) = creations.get(command_id) {
-            if existing.command_sha256 != command_sha256
-                || existing
-                    .intent
-                    .as_ref()
-                    .is_some_and(|stored| stored != &intent)
-            {
+            if existing.command_sha256 != command_sha256 {
                 return Err(RunStoreError::CreationConflict {
                     command_id: command_id.clone(),
                 });

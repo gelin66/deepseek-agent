@@ -259,8 +259,13 @@ pub trait RuntimeEventSink: Send + Sync {
 
 #[async_trait]
 pub trait RunStore: Send + Sync {
-    /// Atomically reserve the durable identity of a Start/Continue/Compact
-    /// command before composition can perform any external model request.
+    /// Atomically reserve the durable identity of a Start/Continue command
+    /// before composition can perform any external model request.
+    ///
+    /// `command_sha256` identifies the canonical caller payload. `intent` is
+    /// the first Host-resolved launch payload. A retry with the same digest
+    /// must return that original intent even when re-resolution would now
+    /// differ; a different digest for the same command id is a conflict.
     async fn reserve_creation(
         &self,
         command_id: &CommandId,

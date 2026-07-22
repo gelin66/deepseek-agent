@@ -184,6 +184,14 @@ trait RunComposition: Send + Sync {
         command: StartRunCommand,
     ) -> Result<StartRunCommand, RunApiError>;
 
+    fn prepare_continue_task(
+        &self,
+        _source: &RunReplay,
+        task: TaskDefinition,
+    ) -> Result<TaskDefinition, RunApiError> {
+        Ok(task)
+    }
+
     async fn start(
         &self,
         run_id: RunId,
@@ -277,6 +285,7 @@ impl AgentApplication {
         } else {
             match command {
                 RunCommand::Start(command) => {
+                    let digest = creation_command_sha256(&RunCommand::Start(command.clone()));
                     let command = match self.composition.prepare_start_command(command) {
                         Ok(command) => command,
                         Err(error) => {
@@ -287,12 +296,21 @@ impl AgentApplication {
                             };
                         }
                     };
-                    let digest = creation_command_sha256(&RunCommand::Start(command.clone()));
                     self.start(command_id, digest, command).await
                 }
                 RunCommand::Continue(command) => {
                     let digest = creation_command_sha256(&RunCommand::Continue(command.clone()));
-                    self.continue_run(command_id, digest, command).await
+                    let (command, source) = match self.prepare_continue(command).await {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            return RunCommandResponse {
+                                schema_version: RUN_API_SCHEMA_VERSION,
+                                request_id,
+                                result: error_result(error),
+                            };
+                        }
+                    };
+                    self.continue_run(command_id, digest, command, source).await
                 }
                 RunCommand::ListRoots { workspace, limit } => {
                     self.list_roots(&workspace, limit).await
@@ -438,20 +456,45 @@ impl AgentApplication {
             Ok(reservation) => reservation,
             Err(error) => return error_result(error),
         };
-        if !reservation.newly_reserved {
+        let command = if reservation.newly_reserved {
+            command
+        } else {
             match self.store.load(&reservation.reservation.run_id).await {
                 Ok(Some(replay)) => {
                     return RunCommandResult::Run {
                         run: Box::new(project_run(&replay)),
                     };
                 }
-                Ok(None) if command.model.is_none() => {
+                Ok(None)
+                    if reservation
+                        .reservation
+                        .intent
+                        .as_ref()
+                        .is_some_and(CreationIntent::is_unknown_billing) =>
+                {
                     return error_result(unknown_billing_creation_error(&reservation.reservation));
                 }
                 Ok(None) => {}
                 Err(error) => return error_result(store_error(error)),
             }
-        }
+            match reservation
+                .reservation
+                .intent
+                .as_ref()
+                .map(|intent| &intent.command)
+            {
+                Some(RunCommand::Start(stored)) => stored.clone(),
+                _ => {
+                    return error_result(creation_error(
+                        RunApiErrorCode::RunRecoveryRequired,
+                        "start creation reservation has no canonical Start command",
+                        &reservation.reservation.command_id.0,
+                        Some(reservation.reservation.run_id.clone()),
+                        false,
+                    ));
+                }
+            }
+        };
         let sink = self.event_sink();
         let run = match self
             .composition
@@ -476,61 +519,77 @@ impl AgentApplication {
         }
     }
 
-    async fn continue_run(
+    async fn prepare_continue(
         &self,
-        command_id: CommandId,
-        command_sha256: String,
-        command: ContinueRunCommand,
-    ) -> RunCommandResult {
-        if let Err(message) = command.task.validate() {
-            return error_result(api_error(
+        mut command: ContinueRunCommand,
+    ) -> Result<(ContinueRunCommand, RunReplay), RunApiError> {
+        let source = self.continuation_source(&command).await?;
+        command.task = self
+            .composition
+            .prepare_continue_task(&source, command.task)?;
+        command.task.validate().map_err(|message| {
+            api_error(
                 RunApiErrorCode::InvalidRequest,
                 format!("continuation task is invalid: {message}"),
-                Some(command.run_id),
+                Some(command.run_id.clone()),
                 None,
-            ));
-        }
-        let source = match self.load(&command.run_id).await {
-            Ok(replay) => replay,
-            Err(error) => return error_result(error),
-        };
+            )
+        })?;
+        Ok((command, source))
+    }
+
+    async fn continuation_source(
+        &self,
+        command: &ContinueRunCommand,
+    ) -> Result<RunReplay, RunApiError> {
+        let source = self.load(&command.run_id).await?;
         if let Some(expected_workspace) = command.expected_workspace.as_deref()
             && expected_workspace != source.snapshot.request.environment.workspace
         {
-            return error_result(api_error(
+            return Err(api_error(
                 RunApiErrorCode::RunEnvironmentMismatch,
                 format!(
                     "run_continue_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
                     source.snapshot.request.environment.workspace
                 ),
-                Some(command.run_id),
+                Some(command.run_id.clone()),
                 None,
             ));
         }
         if source.snapshot.request.parent_run_id.is_some() {
-            return error_result(api_error(
+            return Err(api_error(
                 RunApiErrorCode::RunContinuationInvalid,
                 "child Agent runs cannot be continuation sources",
-                Some(command.run_id),
+                Some(command.run_id.clone()),
                 None,
             ));
         }
         let Some(outcome) = source.snapshot.terminal.as_ref() else {
-            return error_result(api_error(
+            return Err(api_error(
                 RunApiErrorCode::RunContinuationInvalid,
                 "only a terminal root run can be continued; resume the active run instead",
-                Some(command.run_id),
+                Some(command.run_id.clone()),
                 None,
             ));
         };
         if matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }) {
-            return error_result(api_error(
+            return Err(api_error(
                 RunApiErrorCode::RunRecoveryRequired,
                 "run has unresolved recovery ambiguity and cannot be continued",
-                Some(command.run_id),
+                Some(command.run_id.clone()),
                 Some(outcome.terminal.clone()),
             ));
         }
+        Ok(source)
+    }
+
+    async fn continue_run(
+        &self,
+        command_id: CommandId,
+        command_sha256: String,
+        command: ContinueRunCommand,
+        source: RunReplay,
+    ) -> RunCommandResult {
         let intent = CreationIntent {
             kind: PendingCreationKind::Continue,
             workspace: source.snapshot.request.environment.workspace.clone(),
@@ -544,7 +603,9 @@ impl AgentApplication {
             Ok(reservation) => reservation,
             Err(error) => return error_result(error),
         };
-        if !reservation.newly_reserved {
+        let (command, source) = if reservation.newly_reserved {
+            (command, source)
+        } else {
             match self.store.load(&reservation.reservation.run_id).await {
                 Ok(Some(replay)) => {
                     return RunCommandResult::Run {
@@ -554,7 +615,38 @@ impl AgentApplication {
                 Ok(None) => {}
                 Err(error) => return error_result(store_error(error)),
             }
-        }
+            let stored = match reservation
+                .reservation
+                .intent
+                .as_ref()
+                .map(|intent| &intent.command)
+            {
+                Some(RunCommand::Continue(stored)) => stored.clone(),
+                _ => {
+                    return error_result(creation_error(
+                        RunApiErrorCode::RunRecoveryRequired,
+                        "continuation reservation has no canonical Continue command",
+                        &reservation.reservation.command_id.0,
+                        Some(reservation.reservation.run_id.clone()),
+                        false,
+                    ));
+                }
+            };
+            if let Err(message) = stored.task.validate() {
+                return error_result(creation_error(
+                    RunApiErrorCode::RunRecoveryRequired,
+                    format!("reserved continuation task is invalid: {message}"),
+                    &reservation.reservation.command_id.0,
+                    Some(reservation.reservation.run_id.clone()),
+                    false,
+                ));
+            }
+            let source = match self.continuation_source(&stored).await {
+                Ok(source) => source,
+                Err(error) => return error_result(error),
+            };
+            (stored, source)
+        };
 
         let sink = self.event_sink();
         let run = match self
@@ -642,7 +734,22 @@ impl AgentApplication {
         let digest = reservation.command_sha256.clone();
         match intent.command {
             RunCommand::Start(command) => self.start(command_id, digest, command).await,
-            RunCommand::Continue(command) => self.continue_run(command_id, digest, command).await,
+            RunCommand::Continue(command) => {
+                if let Err(message) = command.task.validate() {
+                    return error_result(creation_error(
+                        RunApiErrorCode::RunRecoveryRequired,
+                        format!("reserved continuation task is invalid: {message}"),
+                        creation_request_id,
+                        Some(reservation.run_id),
+                        false,
+                    ));
+                }
+                let source = match self.continuation_source(&command).await {
+                    Ok(source) => source,
+                    Err(error) => return error_result(error),
+                };
+                self.continue_run(command_id, digest, command, source).await
+            }
             _ => error_result(creation_error(
                 RunApiErrorCode::RunStoreFailed,
                 "pending creation payload is not a creation command",

@@ -23,7 +23,7 @@ use codewhale_protocol::agent_runtime::{
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
 };
-use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+use codewhale_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     AgentRuntime, ModelPort, ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun,
     ToolExecutor, canonical_tool_catalog_sha256,
@@ -275,7 +275,29 @@ impl RunComposition for ProductionComposition {
         &self,
         command: StartRunCommand,
     ) -> Result<StartRunCommand, RunApiError> {
-        prepare_production_start_command(command)
+        prepare_production_start_command(command, &self.tools)
+    }
+
+    fn prepare_continue_task(
+        &self,
+        source: &RunReplay,
+        task: TaskDefinition,
+    ) -> Result<TaskDefinition, RunApiError> {
+        let source_run_id = source.snapshot.request.run_id.as_ref().ok_or_else(|| {
+            invalid_request("run_continue_source_id_missing：source run has no durable id")
+        })?;
+        let request = &source.snapshot.request;
+        if request.environment.provider != DEEPSEEK_PROVIDER {
+            return Err(environment_mismatch(
+                source_run_id,
+                "run_continue_provider_mismatch：source run is not bound to the official DeepSeek provider",
+            ));
+        }
+        let workspace = canonical_resume_workspace(source_run_id, &request.environment.workspace)?;
+        let controls = controls_from_environment(&request.environment);
+        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
+        resolve_task_verifiers(task, &ProductionToolExecutor::new(tool_config))
+            .map_err(|error| invalid_request(format!("verifier_contract_invalid：{error}")))
     }
 
     async fn start(
@@ -298,6 +320,13 @@ impl RunComposition for ProductionComposition {
             .map_err(|error| invalid_request(error.to_string()))?;
         let tool_config = tool_config_for_run(&self.tools, &workspace, &command.controls)?;
         let tool_identity = tool_config.execution_identity();
+        let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
+        ensure_task_verifiers_exact(&command.task, &concrete_tool_executor).map_err(|error| {
+            environment_mismatch(
+                &run_id,
+                format!("run_start_verifier_contract_mismatch：{error}"),
+            )
+        })?;
 
         let request_budget = SharedApiRequestBudget::new(
             command
@@ -340,8 +369,7 @@ impl RunComposition for ProductionComposition {
             .map_err(|error| invalid_request(error.to_string()))?;
         let context_policy = production_context_policy(capability, max_output_tokens);
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
-        let tool_executor: Arc<dyn ToolExecutor> =
-            Arc::new(ProductionToolExecutor::new(tool_config));
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
         let runtime = Arc::new(
@@ -421,19 +449,22 @@ impl RunComposition for ProductionComposition {
             ));
         }
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
-        let controls = RunProductControls {
-            write_execution_mode: request.environment.write_execution_mode,
-            auto_approve: request.environment.auto_approve,
-            trust_mode: request.environment.trust_mode,
-            allow_sandbox_elevation: request.environment.allow_sandbox_elevation,
-            interactive: request.environment.interactive,
-            sandbox: request.environment.sandbox.clone(),
-        };
+        let controls = controls_from_environment(&request.environment);
         let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
         let tool_identity = tool_config.execution_identity();
+        let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
+        if let Some(contract) = request.task_contract.as_ref() {
+            ensure_task_verifiers_exact(&contract.definition, &concrete_tool_executor).map_err(
+                |error| {
+                    environment_mismatch(
+                        &run_id,
+                        format!("run_resume_verifier_contract_mismatch：{error}"),
+                    )
+                },
+            )?;
+        }
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
-        let tool_executor: Arc<dyn ToolExecutor> =
-            Arc::new(ProductionToolExecutor::new(tool_config));
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let accounting = recover_writer_accounting(&run_id, &replay, store.as_ref()).await?;
         let (request_budget, exhausted) = resume_api_request_budget(&accounting);
         let model_port: Arc<dyn ModelPort> = if !exhausted && resume_needs_live_model(&replay) {
@@ -542,16 +573,16 @@ impl RunComposition for ProductionComposition {
         }
         let workspace =
             canonical_resume_workspace(&source_run_id, &source_request.environment.workspace)?;
-        let controls = RunProductControls {
-            write_execution_mode: source_request.environment.write_execution_mode,
-            auto_approve: source_request.environment.auto_approve,
-            trust_mode: source_request.environment.trust_mode,
-            allow_sandbox_elevation: source_request.environment.allow_sandbox_elevation,
-            interactive: source_request.environment.interactive,
-            sandbox: source_request.environment.sandbox.clone(),
-        };
+        let controls = controls_from_environment(&source_request.environment);
         let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
         let tool_identity = tool_config.execution_identity();
+        let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
+        ensure_task_verifiers_exact(&task, &concrete_tool_executor).map_err(|error| {
+            environment_mismatch(
+                &source_run_id,
+                format!("run_continue_verifier_contract_mismatch：{error}"),
+            )
+        })?;
         let request_limit = source
             .snapshot
             .accounting
@@ -568,8 +599,7 @@ impl RunComposition for ProductionComposition {
             .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
         let context_policy = production_context_policy(capability, max_output_tokens);
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
-        let tool_executor: Arc<dyn ToolExecutor> =
-            Arc::new(ProductionToolExecutor::new(tool_config));
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
         let runtime = Arc::new(
@@ -891,12 +921,56 @@ fn surface_usage_is_dominated(parent: &SurfaceUsage, candidate: &[SurfaceUsage])
 
 fn prepare_production_start_command(
     mut command: StartRunCommand,
+    base_tools: &ProductionToolConfig,
 ) -> Result<StartRunCommand, RunApiError> {
     if let Some(model) = command.model.as_deref() {
         official_model_capabilities(model).map_err(|error| invalid_request(error.to_string()))?;
     }
-    command.workspace = stable_path(&canonical_start_workspace(&command.workspace)?);
+    let workspace = canonical_start_workspace(&command.workspace)?;
+    let tool_config = tool_config_for_run(base_tools, &workspace, &command.controls)?;
+    command.task = resolve_task_verifiers(command.task, &ProductionToolExecutor::new(tool_config))
+        .map_err(|error| invalid_request(format!("verifier_contract_invalid：{error}")))?;
+    command.workspace = stable_path(&workspace);
     Ok(command)
+}
+
+fn controls_from_environment(environment: &RunEnvironment) -> RunProductControls {
+    RunProductControls {
+        write_execution_mode: environment.write_execution_mode,
+        auto_approve: environment.auto_approve,
+        trust_mode: environment.trust_mode,
+        allow_sandbox_elevation: environment.allow_sandbox_elevation,
+        interactive: environment.interactive,
+        sandbox: environment.sandbox.clone(),
+    }
+}
+
+fn resolve_task_verifiers(
+    mut task: TaskDefinition,
+    tools: &ProductionToolExecutor,
+) -> Result<TaskDefinition, codewhale_tools::ToolError> {
+    for acceptance in &mut task.acceptance {
+        let TaskAcceptance::Verifier { verifier, .. } = acceptance else {
+            continue;
+        };
+        *verifier =
+            tools.resolve_verifier_spec(&verifier.verifier_id, verifier.parameters.clone())?;
+    }
+    Ok(task)
+}
+
+fn ensure_task_verifiers_exact(
+    task: &TaskDefinition,
+    tools: &ProductionToolExecutor,
+) -> Result<(), codewhale_tools::ToolError> {
+    let resolved = resolve_task_verifiers(task.clone(), tools)?;
+    if resolved == *task {
+        Ok(())
+    } else {
+        Err(codewhale_tools::ToolError::invalid_input(
+            "persisted verifier specification differs from the production resolver",
+        ))
+    }
 }
 
 fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunApiError> {
@@ -1254,6 +1328,41 @@ mod tests {
                 sandbox: Some("workspace-write".to_owned()),
             },
         }
+    }
+
+    fn caller_authored_verifier_task() -> TaskDefinition {
+        serde_json::from_value(json!({
+            "objective": "验证 canonical verifier contract",
+            "constraints": [],
+            "non_goals": [],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": "exact-check",
+                "description": "确定性检查通过",
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "run_verifiers",
+                    "parameters": {
+                        "profile": "exact",
+                        "commands": [{
+                            "name": "exact-check",
+                            "program": "/usr/bin/python3",
+                            "args": ["-I", "-B", "verify.py", "."],
+                            "cwd": ""
+                        }]
+                    },
+                    "plan": {"steps": [{
+                        "id": "caller-guess",
+                        "program": "false",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1
+                    }]}
+                }
+            }]
+        }))
+        .expect("caller verifier task")
     }
 
     fn test_run_request(
@@ -1839,9 +1948,11 @@ mod tests {
         std::fs::create_dir(&workspace).expect("create workspace");
         std::os::unix::fs::symlink(&workspace, &alias).expect("create workspace symlink");
 
-        let prepared =
-            prepare_production_start_command(start_command(&alias, Some("deepseek-v4-flash")))
-                .expect("prepare canonical start command");
+        let prepared = prepare_production_start_command(
+            start_command(&alias, Some("deepseek-v4-flash")),
+            &ProductionToolConfig::new(&workspace),
+        )
+        .expect("prepare canonical start command");
         assert_eq!(
             prepared.workspace,
             stable_path(&workspace.canonicalize().expect("canonical workspace"))
@@ -1851,17 +1962,21 @@ mod tests {
     #[test]
     fn production_start_preparation_accepts_only_auto_or_official_models() {
         let workspace = tempfile::tempdir().expect("temp workspace");
+        let tools = ProductionToolConfig::new(workspace.path());
 
         for model in [None, Some("deepseek-v4-pro"), Some("deepseek-v4-flash")] {
-            let prepared = prepare_production_start_command(start_command(workspace.path(), model))
-                .expect("supported model selection");
+            let prepared =
+                prepare_production_start_command(start_command(workspace.path(), model), &tools)
+                    .expect("supported model selection");
             assert_eq!(prepared.model.as_deref(), model);
         }
 
         for model in ["deepseek-chat", "deepseek-reasoner", "gpt-5.5-codex"] {
-            let error =
-                prepare_production_start_command(start_command(workspace.path(), Some(model)))
-                    .expect_err("unsupported model must fail before creation reservation");
+            let error = prepare_production_start_command(
+                start_command(workspace.path(), Some(model)),
+                &tools,
+            )
+            .expect_err("unsupported model must fail before creation reservation");
             assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
             assert!(
                 error
@@ -1869,6 +1984,26 @@ mod tests {
                     .contains("unsupported official DeepSeek model")
             );
         }
+    }
+
+    #[test]
+    fn production_start_replaces_the_caller_authored_verifier_plan() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut command = start_command(workspace.path(), Some("deepseek-v4-flash"));
+        command.task = caller_authored_verifier_task();
+        let prepared =
+            prepare_production_start_command(command, &ProductionToolConfig::new(workspace.path()))
+                .expect("resolve verifier before reservation");
+        let TaskAcceptance::Verifier { verifier, .. } = &prepared.task.acceptance[0] else {
+            panic!("expected verifier acceptance");
+        };
+        assert_eq!(verifier.plan.steps[0].id, "exact-check");
+        assert_eq!(verifier.plan.steps[0].program, "/usr/bin/python3");
+        assert_eq!(verifier.plan.steps[0].timeout_ms, 600_000);
+        assert_eq!(
+            verifier.plan.steps[0].env.get("PYTHONDONTWRITEBYTECODE"),
+            Some(&"1".to_owned())
+        );
     }
 
     #[test]
@@ -2402,6 +2537,100 @@ mod tests {
         ));
         assert_eq!(server.finish().await.len(), 1);
         assert!(workspace.join("dirty.txt").is_file());
+    }
+
+    #[tokio::test]
+    async fn production_resolves_verifier_then_seals_the_exact_host_receipt() {
+        let server =
+            MockDeepSeekServer::start(vec![response("deepseek-v4-flash", "完成", 5, 2)]).await;
+        let temp = tempfile::tempdir().expect("temporary parent");
+        let workspace = temp.path().join("repo");
+        let state_dir = temp.path().join("state");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&state_dir).expect("state directory");
+        std::fs::write(workspace.join("verify.py"), "import sys\nsys.exit(0)\n")
+            .expect("verifier fixture");
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "CodeWhale Test"][..],
+            &["config", "user.email", "test@codewhale.local"][..],
+            &["add", "verify.py"][..],
+            &["commit", "-m", "fixture"][..],
+        ] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let app = AgentApplication::production(config(
+            &state_dir.join("state.db"),
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-flash"));
+        command.task = caller_authored_verifier_task();
+        let run = run_result(
+            app.execute(envelope(
+                "resolved-verifier-receipt",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        assert!(matches!(
+            replay.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        let frozen = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::RunCreated { request } => request
+                    .task_contract
+                    .as_ref()
+                    .and_then(|contract| match &contract.definition.acceptance[0] {
+                        TaskAcceptance::Verifier { verifier, .. } => Some(verifier.clone()),
+                        TaskAcceptance::Host { .. } => None,
+                    }),
+                _ => None,
+            })
+            .expect("frozen resolved verifier");
+        let (observation, receipt) = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } => Some((
+                    outcome
+                        .verifier_observation
+                        .as_ref()
+                        .expect("Host verifier observation")
+                        .spec
+                        .clone(),
+                    receipt.as_deref().expect("canonical receipt").clone(),
+                )),
+                _ => None,
+            })
+            .expect("Host verification commit");
+        assert_eq!(frozen, observation);
+        assert_eq!(frozen, receipt.verifier);
+        assert_eq!(
+            frozen.plan.steps[0].env.get("PYTHONDONTWRITEBYTECODE"),
+            Some(&"1".to_owned())
+        );
+        assert_eq!(server.finish().await.len(), 1);
     }
 
     #[tokio::test]
