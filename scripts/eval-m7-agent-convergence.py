@@ -3435,6 +3435,9 @@ class HarnessTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_excluded_baseline_diagnostic_identity_is_frozen(self) -> None:
+        preflight_diagnostic_evidence()
+
     def test_schedule_is_balanced_and_complete(self) -> None:
         schedule = formal_schedule()
         self.assertEqual(len(schedule), 40)

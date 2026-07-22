@@ -31,7 +31,7 @@
     "invalid_v1": "eval/results/m7-a-baseline-diagnostic-v1.json",
     "baseline_v2": {
       "path": "eval/results/m7-a-baseline-diagnostic-v2.json",
-      "sha256": "sha256:a8d89ebd1b24deeb68fb2e4e2a11a2bd9a2f893bdc74276797bb33eb6f005",
+      "sha256": "sha256:a8d89ebd1b24deeb68fb2e4e2a11a2bd5fd9a2f893bdc74276797bb33eb6f005",
       "arms": 5,
       "product_metric_eligible": false,
       "excluded_from_formal": true
@@ -368,8 +368,8 @@
     ]
   },
   "frozen_hashes": {
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:c2d0fd9d71a10426d77a1712704468ef158a0c1c327ecf1059391813fd12df19",
-    "harness_sha256": "sha256:e516d98e03611c83ececae515f5a70cdef3e4aca2e58f9853b7406bc56fed6bb",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:7e9bd0c6bd086501b5c9bcaecfc1a08f9399568322fcb74814e78b3f8a2ba512",
+    "harness_sha256": "sha256:3ca0ac151dd105205a1ed93e92d47bef42034e0aee1e29afe36d385611d69ab6",
     "canary_helper_sha256": "sha256:fbeea1ce4951f450acb0534297d3f6bd619a6060c4cb67cde3c00a8a717fe68f",
     "schedule_sha256": "sha256:6cc1ec05469aa874e43bb4989e13b35a2eb753dcabe2506c289fdeaadc90ec37",
     "binary_identities_sha256": "sha256:03fc60704a57065e1776418be350204c312ec4e1e4f934eff791c79620a6eab8",
