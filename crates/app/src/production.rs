@@ -1103,6 +1103,7 @@ mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::{Arc, Mutex as StdMutex};
 
+    use codewhale_context::compaction::{ContextInput, effective_context};
     use codewhale_deepseek::{
         ApiSurface, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
         OFFICIAL_V4_MAX_OUTPUT_TOKENS, RuntimeChatPlanInput, StrictSchemaIssue, ToolSurfaceReason,
@@ -1110,11 +1111,11 @@ mod tests {
     };
     use codewhale_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
-        AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting, ModelFinishReason,
-        ModelOutput, ModelRequest, ModelStreamEvent, OperationId, PendingRuntimeEvent,
-        RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits, RuntimeEventKind, TerminalState,
-        ToolArguments, ToolDefinition, ToolFailureCode, ToolInvocation, ToolOutcome, ToolPolicy,
-        Usage, WorkspaceAccess, WriteExecutionMode,
+        AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, ModelAccounting,
+        ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent, ModelToolCall, OperationId,
+        PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits,
+        RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
+        ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
     };
     use codewhale_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -1564,6 +1565,94 @@ mod tests {
             .as_ref()
             .map_or_else(|| "read_file".to_owned(), |_| AGENT_TOOL_NAME.to_owned());
         let created = store.create(request).await.expect("create fixture root");
+        let arguments = task.as_ref().map_or_else(
+            || ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+            |_| {
+                ToolArguments::from_value(json!({
+                    "prompt": "修改唯一允许的文件并给出证据",
+                    "type": "implementer",
+                    "workspace_access": "isolated_write",
+                    "allowed_paths": ["src/lib.rs"],
+                    "expected_artifact": "一个 Host seal 的提交"
+                }))
+            },
+        );
+        let tool_call = ModelToolCall {
+            id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+        };
+        let tools = vec![ToolDefinition {
+            name: name.clone(),
+            description: format!("{name} 测试夹具"),
+            input_schema: json!({"type": "object"}),
+        }];
+        let snapshot = &created.replay.snapshot;
+        let context = effective_context(ContextInput {
+            transcript: &snapshot.transcript,
+            projection: snapshot.context_projection.as_ref(),
+            task_contract: snapshot.request.task_contract.as_ref(),
+            workspace_state: &snapshot.workspace_state,
+            evidence_receipts: &snapshot.evidence_receipts,
+            last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+            last_verifier_failure: snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .map(|failure| &failure.outcome),
+            last_verifier_failure_workspace: snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .map(|failure| &failure.workspace_state),
+            tools: &tools,
+        })
+        .expect("fixture model context");
+        let attempt_id = AttemptId(format!("fixture-attempt-{}", run_id.0));
+        append_test_event(
+            store,
+            &created.lease,
+            RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(ModelRequest {
+                    run_id: run_id.clone(),
+                    parent_run_id: snapshot.request.parent_run_id.clone(),
+                    actor: snapshot.request.actor,
+                    model: snapshot.request.model.clone(),
+                    system_prompt: context.system_prompt,
+                    messages: context.messages,
+                    tools,
+                    reasoning_effort: snapshot.request.reasoning_effort,
+                    max_output_tokens: snapshot.request.max_output_tokens,
+                    streaming: snapshot.request.streaming,
+                    request_number: snapshot.local_turns.saturating_add(1),
+                    attempt: 0,
+                }),
+            },
+        )
+        .await;
+        append_test_event(
+            store,
+            &created.lease,
+            RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        )
+        .await;
+        append_test_event(
+            store,
+            &created.lease,
+            RuntimeEventKind::ModelResponseCommitted {
+                attempt_id,
+                output: Box::new(ModelOutput {
+                    content: String::new(),
+                    reasoning_content: None,
+                    tool_calls: vec![tool_call],
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: Usage::default(),
+                }),
+                accounting: Box::new(snapshot.accounting.clone()),
+            },
+        )
+        .await;
         let operation_id = OperationId::from(format!("operation-{}", run_id.0));
         append_test_event(
             store,
@@ -1574,7 +1663,7 @@ mod tests {
                     run_id: run_id.clone(),
                     call_id,
                     name,
-                    arguments: ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+                    arguments,
                 },
                 workspace_access: if task.is_some() {
                     WorkspaceAccess::MayWrite

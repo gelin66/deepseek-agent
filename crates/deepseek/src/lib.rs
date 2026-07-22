@@ -8,7 +8,7 @@
 //! its local replay preflight, after the interactive loop emits canonical
 //! `ModelRequest` directly.
 
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::fmt;
 
 use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt};
@@ -42,7 +42,7 @@ pub use pricing::{
 pub use transport::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekResponse,
     DeepSeekStream, DeepSeekTransport, DeepSeekTransportConfig, DeepSeekTransportError,
-    TransportRetryPolicy, decode_tool_name, encode_tool_name, parse_chat_response,
+    TransportRetryPolicy, parse_chat_response,
 };
 
 pub const FIM_MODEL: &str = "deepseek-v4-pro";
@@ -142,6 +142,20 @@ pub enum ChatPlanError {
         message_index: usize,
         unresolved_count: usize,
     },
+    DuplicateToolCallId {
+        message_index: usize,
+        call_id: String,
+    },
+    UnexpectedToolResult {
+        message_index: usize,
+        call_id: String,
+    },
+    ToolResultNameMismatch {
+        message_index: usize,
+        call_id: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl fmt::Display for ChatPlanError {
@@ -164,6 +178,29 @@ impl fmt::Display for ChatPlanError {
             } => write!(
                 formatter,
                 "Invalid DeepSeek request: assistant message {message_index} has {unresolved_count} tool call(s) without canonical results; HTTP request was not sent"
+            ),
+            Self::DuplicateToolCallId {
+                message_index,
+                call_id,
+            } => write!(
+                formatter,
+                "Invalid DeepSeek request: assistant message {message_index} repeats tool call id '{call_id}'; HTTP request was not sent"
+            ),
+            Self::UnexpectedToolResult {
+                message_index,
+                call_id,
+            } => write!(
+                formatter,
+                "Invalid DeepSeek request: tool message {message_index} has orphan or duplicate call id '{call_id}'; HTTP request was not sent"
+            ),
+            Self::ToolResultNameMismatch {
+                message_index,
+                call_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "Invalid DeepSeek request: tool message {message_index} for call id '{call_id}' names '{actual}' instead of '{expected}'; HTTP request was not sent"
             ),
         }
     }
@@ -318,7 +355,7 @@ pub fn plan_chat(
 /// Project one canonical runtime request and freeze its official Chat plan.
 ///
 /// Canonical tool results have already passed the runtime/tool output policy.
-/// The provider layer replays them exactly and owns tool-name projection,
+/// The provider layer replays them exactly and owns tool-name preservation,
 /// message ordering, reasoning/raw-argument replay, strict selection, and
 /// every remaining wire decision.
 pub fn plan_runtime_chat(
@@ -337,7 +374,7 @@ pub fn plan_runtime_chat(
             .tools
             .iter()
             .map(|tool| PlannedTool {
-                name: encode_tool_name(&tool.name),
+                name: tool.name.clone(),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
             })
@@ -441,7 +478,7 @@ fn runtime_chat_messages(
     wire_model: &str,
 ) -> Result<Vec<Value>, ChatPlanError> {
     let mut messages = Vec::new();
-    let mut pending_tool_calls: HashSet<String> = HashSet::new();
+    let mut pending_tool_calls = BTreeMap::<String, String>::new();
     let mut pending_assistant_index = None;
     let mut deferred_users = Vec::new();
     if let Some(system) = runtime_system_instructions(&request.system_prompt) {
@@ -505,14 +542,25 @@ fn runtime_chat_messages(
                                     "id": call.id,
                                     "type": "function",
                                     "function": {
-                                        "name": encode_tool_name(&call.name),
+                                        "name": call.name,
                                         "arguments": call.arguments.raw,
                                     }
                                 })
                             })
                             .collect(),
                     );
-                    pending_tool_calls = tool_calls.iter().map(|call| call.id.clone()).collect();
+                    pending_tool_calls.clear();
+                    for call in tool_calls {
+                        if pending_tool_calls
+                            .insert(call.id.clone(), call.name.clone())
+                            .is_some()
+                        {
+                            return Err(ChatPlanError::DuplicateToolCallId {
+                                message_index,
+                                call_id: call.id.clone(),
+                            });
+                        }
+                    }
                     pending_assistant_index = Some(message_index);
                 } else {
                     pending_tool_calls.clear();
@@ -521,10 +569,23 @@ fn runtime_chat_messages(
                 messages.push(wire);
             }
             ModelMessage::Tool {
-                call_id, content, ..
+                call_id,
+                name,
+                content,
             } => {
-                if !pending_tool_calls.remove(call_id) {
-                    continue;
+                let expected = pending_tool_calls.remove(call_id).ok_or_else(|| {
+                    ChatPlanError::UnexpectedToolResult {
+                        message_index,
+                        call_id: call_id.clone(),
+                    }
+                })?;
+                if name != &expected {
+                    return Err(ChatPlanError::ToolResultNameMismatch {
+                        message_index,
+                        call_id: call_id.clone(),
+                        expected,
+                        actual: name.clone(),
+                    });
                 }
                 messages.push(json!({
                     "role": "tool",
@@ -1056,12 +1117,25 @@ mod tests {
     #[test]
     fn child_handoff_is_deferred_until_all_deepseek_tool_results() {
         let mut request = runtime_request(true);
+        let ModelMessage::Assistant { tool_calls, .. } = &mut request.messages[0] else {
+            panic!("fixture begins with an assistant tool call");
+        };
+        tool_calls.push(ModelToolCall {
+            id: "call-2".to_owned(),
+            name: "read_file".to_owned(),
+            arguments: ToolArguments::from_value(json!({"path": "src/second.rs"})),
+        });
         request.messages.insert(
             1,
             ModelMessage::User {
                 content: "子 Agent 已完成并交回结构化结果".to_owned(),
             },
         );
+        request.messages.push(ModelMessage::Tool {
+            call_id: "call-2".to_owned(),
+            name: "read_file".to_owned(),
+            content: "second result".to_owned(),
+        });
 
         let plan = plan_runtime_chat(
             RuntimeChatPlanInput {
@@ -1080,9 +1154,11 @@ mod tests {
             .expect("assistant tool call");
         assert_eq!(messages[assistant_index + 1]["role"], "tool");
         assert_eq!(messages[assistant_index + 1]["tool_call_id"], "call-1");
-        assert_eq!(messages[assistant_index + 2]["role"], "user");
+        assert_eq!(messages[assistant_index + 2]["role"], "tool");
+        assert_eq!(messages[assistant_index + 2]["tool_call_id"], "call-2");
+        assert_eq!(messages[assistant_index + 3]["role"], "user");
         assert_eq!(
-            messages[assistant_index + 2]["content"],
+            messages[assistant_index + 3]["content"],
             "子 Agent 已完成并交回结构化结果"
         );
     }
@@ -1108,6 +1184,92 @@ mod tests {
             Err(ChatPlanError::MissingToolResults {
                 message_index: 0,
                 unresolved_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn orphan_duplicate_and_mismatched_tool_results_fail_before_http() {
+        let plan = |request: &ModelRequest| {
+            plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: "https://api.deepseek.com",
+                    strict_enabled: false,
+                    wire_model: request.model.clone(),
+                    max_tokens: 64,
+                },
+                request,
+            )
+        };
+
+        let mut orphan = runtime_request(true);
+        orphan.messages.insert(
+            0,
+            ModelMessage::Tool {
+                call_id: "orphan".to_owned(),
+                name: "read_file".to_owned(),
+                content: "不应被静默丢弃".to_owned(),
+            },
+        );
+        assert_eq!(
+            plan(&orphan),
+            Err(ChatPlanError::UnexpectedToolResult {
+                message_index: 0,
+                call_id: "orphan".to_owned(),
+            })
+        );
+
+        let mut duplicate = runtime_request(true);
+        duplicate.messages.push(duplicate.messages[1].clone());
+        assert_eq!(
+            plan(&duplicate),
+            Err(ChatPlanError::UnexpectedToolResult {
+                message_index: 2,
+                call_id: "call-1".to_owned(),
+            })
+        );
+
+        let mut mismatch = runtime_request(true);
+        let ModelMessage::Tool { name, .. } = &mut mismatch.messages[1] else {
+            panic!("fixture contains one tool result");
+        };
+        *name = "grep_files".to_owned();
+        assert_eq!(
+            plan(&mismatch),
+            Err(ChatPlanError::ToolResultNameMismatch {
+                message_index: 1,
+                call_id: "call-1".to_owned(),
+                expected: "read_file".to_owned(),
+                actual: "grep_files".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_tool_call_id_in_one_assistant_turn_fails_before_http() {
+        let mut request = runtime_request(true);
+        let ModelMessage::Assistant { tool_calls, .. } = &mut request.messages[0] else {
+            panic!("fixture begins with an assistant tool call");
+        };
+        tool_calls.push(ModelToolCall {
+            id: "call-1".to_owned(),
+            name: "grep_files".to_owned(),
+            arguments: ToolArguments::from_value(json!({"pattern": "TODO"})),
+        });
+
+        assert_eq!(
+            plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: "https://api.deepseek.com",
+                    strict_enabled: false,
+                    wire_model: request.model.clone(),
+                    max_tokens: 64,
+                },
+                &request,
+            ),
+            Err(ChatPlanError::DuplicateToolCallId {
+                message_index: 0,
+                call_id: "call-1".to_owned(),
             })
         );
     }

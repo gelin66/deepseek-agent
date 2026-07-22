@@ -847,6 +847,78 @@ async fn seed_committed_model_output(
     attempt_id
 }
 
+async fn seed_current_model_tool_calls(
+    store: &InMemoryRunStore,
+    lease: &RunLease,
+    event_prefix: &str,
+    tool_calls: Vec<ModelToolCall>,
+) {
+    let replay = store
+        .load(&lease.run_id)
+        .await
+        .unwrap()
+        .expect("run at model boundary");
+    let snapshot = &replay.snapshot;
+    let mut tools = tool_calls
+        .iter()
+        .map(|call| definition(&call.name))
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools.dedup_by(|left, right| left.name == right.name);
+    let context = request_context(snapshot, &tools);
+    let request_number = snapshot.local_turns.saturating_add(1);
+    let attempt_id = AttemptId(format!("{event_prefix}-attempt"));
+    append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-prepared"),
+        RuntimeEventKind::ModelRequestPrepared {
+            attempt_id: attempt_id.clone(),
+            request: Box::new(ModelRequest {
+                run_id: lease.run_id.clone(),
+                parent_run_id: snapshot.request.parent_run_id.clone(),
+                actor: snapshot.request.actor,
+                model: snapshot.request.model.clone(),
+                system_prompt: context.system_prompt,
+                messages: context.messages,
+                tools,
+                reasoning_effort: snapshot.request.reasoning_effort,
+                max_output_tokens: snapshot.request.max_output_tokens,
+                streaming: snapshot.request.streaming,
+                request_number,
+                attempt: 0,
+            }),
+        },
+    )
+    .await;
+    append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-in-flight"),
+        RuntimeEventKind::ModelRequestInFlight {
+            attempt_id: attempt_id.clone(),
+        },
+    )
+    .await;
+    append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-committed"),
+        RuntimeEventKind::ModelResponseCommitted {
+            attempt_id,
+            output: Box::new(ModelOutput {
+                content: String::new(),
+                reasoning_content: None,
+                tool_calls,
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: Usage::default(),
+            }),
+            accounting: Box::new(snapshot.accounting.clone()),
+        },
+    )
+    .await;
+}
+
 async fn seed_pending_approval(
     store: &InMemoryRunStore,
     run_id: &str,
@@ -1150,6 +1222,174 @@ async fn tool_reasoning_and_raw_arguments_replay_exactly() {
     let calls = tools.calls.lock().unwrap();
     assert_eq!(calls[0].arguments.raw, "{ \"path\" : \"src/lib.rs\" }");
     assert!(calls[0].arguments.parsed.is_some());
+}
+
+#[tokio::test]
+async fn reused_call_id_executes_once_for_each_assistant_turn() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let script_requests = requests.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        match script_requests.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                Some("先读第一个文件"),
+                vec![call("reused-call", "read", r#"{"path":"src/first.rs"}"#)],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                assert_eq!(
+                    request
+                        .messages
+                        .iter()
+                        .filter(|message| matches!(
+                            message,
+                            ModelMessage::Tool { call_id, .. } if call_id == "reused-call"
+                        ))
+                        .count(),
+                    1
+                );
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    Some("再读第二个文件"),
+                    vec![call("reused-call", "read", r#"{"path":"src/second.rs"}"#)],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            2 => {
+                assert_eq!(
+                    request
+                        .messages
+                        .iter()
+                        .filter(|message| matches!(
+                            message,
+                            ModelMessage::Tool { call_id, .. } if call_id == "reused-call"
+                        ))
+                        .count(),
+                    2
+                );
+                ScriptResponse::Events(vec![completed(
+                    "两次读取均已完成",
+                    None,
+                    Vec::new(),
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected extra model request"),
+        }
+    }));
+    let (runtime, tools, _, _) = fixture(model);
+
+    let outcome = runtime
+        .start(request("依次读取两个文件"))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    let calls = tools.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].arguments.raw, r#"{"path":"src/first.rs"}"#);
+    assert_eq!(calls[1].arguments.raw, r#"{"path":"src/second.rs"}"#);
+}
+
+#[tokio::test]
+async fn resume_partially_settled_assistant_turn_executes_only_remaining_call() {
+    let store = Arc::new(InMemoryRunStore::default());
+    let mut run_request = request("恢复同一 assistant turn 的剩余工具");
+    let run_id = RunId::from("partial-tool-turn");
+    run_request.run_id = Some(run_id.clone());
+    run_request
+        .task_contract
+        .as_mut()
+        .expect("task contract")
+        .generation_id = TaskGenerationId::from(run_id.0.clone());
+    let created = store.create(run_request).await.unwrap();
+    let first = call("partial-1", "read", r#"{"path":"src/first.rs"}"#);
+    let second = call("partial-2", "read", r#"{"path":"src/second.rs"}"#);
+    seed_committed_model_output(
+        store.as_ref(),
+        &created,
+        model_output(
+            "",
+            Some("同一轮依次读取两个文件"),
+            vec![first.clone(), second.clone()],
+            ModelFinishReason::ToolCalls,
+        ),
+        true,
+    )
+    .await;
+    let operation_id = OperationId::from("partial-operation-1".to_owned());
+    append_event(
+        store.as_ref(),
+        &created.lease,
+        "partial-tool-prepared",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: run_id.clone(),
+                call_id: first.id.clone(),
+                name: first.name.clone(),
+                arguments: first.arguments.clone(),
+            },
+            workspace_access: WorkspaceAccess::ReadOnly,
+        },
+    )
+    .await;
+    append_event(
+        store.as_ref(),
+        &created.lease,
+        "partial-tool-started",
+        RuntimeEventKind::ToolExecutionStarted {
+            operation_id: operation_id.clone(),
+        },
+    )
+    .await;
+    append_event(
+        store.as_ref(),
+        &created.lease,
+        "partial-tool-committed",
+        RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id,
+            call_id: first.id,
+            name: first.name,
+            outcome: Box::new(ToolOutcome::success("第一个结果")),
+            workspace_state: None,
+        },
+    )
+    .await;
+    store.release(&created.lease).await.unwrap();
+
+    let model = Arc::new(MockModel::new(|request| {
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| matches!(message, ModelMessage::Tool { .. }))
+                .count(),
+            2
+        );
+        ScriptResponse::Events(vec![completed(
+            "恢复完成",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let tools = Arc::new(MockTools::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        Arc::new(NullEventSink),
+        store,
+    ));
+
+    let outcome = runtime.resume(run_id).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    let calls = tools.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].call_id, second.id);
+    assert_eq!(calls[0].arguments, second.arguments);
 }
 
 #[tokio::test]
@@ -2700,6 +2940,118 @@ async fn async_child_handoff_precedes_the_next_root_request() {
 }
 
 #[tokio::test]
+async fn forked_child_excludes_the_entire_current_multi_tool_turn() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let child_calls = Arc::new(AtomicUsize::new(0));
+    let roots = root_calls.clone();
+    let children = child_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => {
+            children.fetch_add(1, Ordering::AcqRel);
+            let assistant_call_ids = request
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    ModelMessage::Assistant { tool_calls, .. } => Some(
+                        tool_calls
+                            .iter()
+                            .map(|call| call.id.as_str())
+                            .collect::<Vec<_>>(),
+                    ),
+                    ModelMessage::User { .. } | ModelMessage::Tool { .. } => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            let tool_result_ids = request
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    ModelMessage::Tool { call_id, .. } => Some(call_id.as_str()),
+                    ModelMessage::User { .. } | ModelMessage::Assistant { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(assistant_call_ids, vec!["history-read"]);
+            assert_eq!(tool_result_ids, vec!["history-read"]);
+            for current_turn_id in ["current-before", "forked-child", "current-after"] {
+                assert!(!assistant_call_ids.contains(&current_turn_id));
+                assert!(!tool_result_ids.contains(&current_turn_id));
+            }
+            ScriptResponse::Events(vec![completed(
+                "子 Agent 已基于完整历史完成",
+                None,
+                vec![],
+                ModelFinishReason::Stop,
+            )])
+        }
+        AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("history-read", "read", r#"{"path":"history.txt"}"#)],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![
+                    call("current-before", "read", r#"{"path":"before.txt"}"#),
+                    call(
+                        "forked-child",
+                        "agent",
+                        r#"{"prompt":"继承已结算历史","fork_context":true,"allowed_tools":["read"],"max_steps":1}"#,
+                    ),
+                    call("current-after", "read", r#"{"path":"after.txt"}"#),
+                ],
+                ModelFinishReason::ToolCalls,
+            )]),
+            2 => {
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content }
+                        if content.contains("kind=\"subagent_completion\"")
+                )));
+                ScriptResponse::Events(vec![completed(
+                    "已整合 fork 子 Agent",
+                    None,
+                    vec![],
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected root request"),
+        },
+    }));
+    let (runtime, _, _, store) = fixture(model);
+
+    let outcome = runtime
+        .start(request("验证多工具批次的 fork_context"))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(root_calls.load(Ordering::Acquire), 3);
+    assert_eq!(child_calls.load(Ordering::Acquire), 1);
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let child_run_id = replay
+        .snapshot
+        .agent_tasks
+        .iter()
+        .find(|lifecycle| lifecycle.task.call_id == "forked-child")
+        .map(|lifecycle| lifecycle.task.child_run_id.clone())
+        .expect("forked child lifecycle");
+    let child = store
+        .load(&child_run_id)
+        .await
+        .unwrap()
+        .expect("forked child replay");
+    child
+        .snapshot
+        .transcript
+        .validate_complete_tool_history()
+        .expect("forked child stores only settled inherited history");
+}
+
+#[tokio::test]
 async fn a_real_child_uses_the_same_broker_and_compacts_without_a_summary_request() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
@@ -3058,8 +3410,8 @@ async fn child_search_then_read_can_return_on_a_third_ordinary_request() {
                 assert!(request.tools.iter().any(|tool| tool.name == "grep"));
                 ScriptResponse::Events(vec![completed(
                     "",
-                    None,
-                    vec![call("child-search", "grep", "{}")],
+                    Some("子 Agent 原始搜索推理"),
+                    vec![call("child-search", "grep", "{ \"query\" : \"TODO\" }")],
                     ModelFinishReason::ToolCalls,
                 )])
             }
@@ -3067,12 +3419,21 @@ async fn child_search_then_read_can_return_on_a_third_ordinary_request() {
                 assert!(request.tools.iter().any(|tool| tool.name == "read"));
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
+                    ModelMessage::Assistant {
+                        reasoning_content: Some(reasoning),
+                        tool_calls,
+                        ..
+                    } if reasoning == "子 Agent 原始搜索推理"
+                        && tool_calls[0].arguments.raw == "{ \"query\" : \"TODO\" }"
+                )));
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
                     ModelMessage::Tool { call_id, .. } if call_id == "child-search"
                 )));
                 ScriptResponse::Events(vec![completed(
                     "",
-                    None,
-                    vec![call("child-read", "read", "{}")],
+                    Some("子 Agent 原始读取推理"),
+                    vec![call("child-read", "read", "{ \"path\" : \"src/lib.rs\" }")],
                     ModelFinishReason::ToolCalls,
                 )])
             }
@@ -3084,6 +3445,15 @@ async fn child_search_then_read_can_return_on_a_third_ordinary_request() {
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
                     ModelMessage::Tool { call_id, .. } if call_id == "child-read"
+                )));
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::Assistant {
+                        reasoning_content: Some(reasoning),
+                        tool_calls,
+                        ..
+                    } if reasoning == "子 Agent 原始读取推理"
+                        && tool_calls[0].arguments.raw == "{ \"path\" : \"src/lib.rs\" }"
                 )));
                 ScriptResponse::Events(vec![completed(
                     "搜索并读取后的证据",
@@ -4027,10 +4397,10 @@ async fn completed_terminal_without_a_host_completion_candidate_is_rejected() {
 }
 
 #[tokio::test]
-async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to_the_same_value() {
+async fn host_receipt_terminal_must_use_the_exact_verified_workspace() {
     let store = InMemoryRunStore::default();
     let created = store
-        .create(verifier_request("验证后仍可能发生写入"))
+        .create(verifier_request("完成决定必须绑定 Host 已验证工作区"))
         .await
         .expect("create verifier Agent run");
     let run_id = created.lease.run_id.clone();
@@ -4041,18 +4411,16 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         .task_contract
         .clone()
         .expect("frozen task contract");
-    let verifier = exact_run_tests_spec();
     let candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-stale-evidence"),
+        id: CompletionCandidateId::from("candidate-exact-workspace"),
         generation_id: contract.generation_id.clone(),
         message: "任务已完成".to_owned(),
     };
-    let revision = WorkspaceRevision::Known {
-        sha256: "sha256:workspace-a".to_owned(),
-    };
     let observed = WorkspaceState {
         generation: 1,
-        revision: revision.clone(),
+        revision: WorkspaceRevision::Known {
+            sha256: "sha256:workspace-a".to_owned(),
+        },
     };
     append_event(
         &store,
@@ -4072,7 +4440,8 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         },
     )
     .await;
-    let verification_id = VerificationId::from("host-verification-stale-test");
+    let verification_id = VerificationId::from("host-verification-exact-workspace");
+    let verifier = exact_run_tests_spec();
     append_event(
         &store,
         &created.lease,
@@ -4082,7 +4451,7 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
             candidate: candidate.clone(),
             acceptance_id: AcceptanceId::from("tests"),
             verifier: verifier.clone(),
-            workspace_state_before: observed,
+            workspace_state_before: observed.clone(),
         },
     )
     .await;
@@ -4097,7 +4466,7 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
     .await;
     let verified_state = WorkspaceState {
         generation: 2,
-        revision: revision.clone(),
+        revision: observed.revision,
     };
     let verifier_outcome = passed_verifier_outcome(verifier.clone(), "sha256:workspace-a");
     let artifact_ids = verifier_outcome
@@ -4111,7 +4480,7 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         generation_id: contract.generation_id.clone(),
         acceptance_id: AcceptanceId::from("tests"),
         verification_id: verification_id.clone(),
-        verifier: verifier.clone(),
+        verifier,
         workspace_state: verified_state.clone(),
         artifact_ids,
         lineage: EvidenceLineage::LatestPass,
@@ -4124,69 +4493,27 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
             verification_id,
             outcome: Box::new(verifier_outcome),
             receipt: Some(Box::new(receipt.clone())),
-            workspace_state_after: verified_state,
+            workspace_state_after: verified_state.clone(),
         },
     )
     .await;
 
-    let operation_id = OperationId::from("write-after-verification");
-    append_event(
-        &store,
-        &created.lease,
-        "write-prepared",
-        RuntimeEventKind::ToolPrepared {
-            operation_id: operation_id.clone(),
-            invocation: ToolInvocation {
-                run_id: run_id.clone(),
-                call_id: "write-after-verification".to_owned(),
-                name: "write_file".to_owned(),
-                arguments: ToolArguments::from_value(json!({"path": "same.txt"})),
-            },
-            workspace_access: WorkspaceAccess::MayWrite,
-        },
-    )
-    .await;
-    append_event(
-        &store,
-        &created.lease,
-        "write-started",
-        RuntimeEventKind::ToolExecutionStarted {
-            operation_id: operation_id.clone(),
-        },
-    )
-    .await;
-    let mut write_outcome = ToolOutcome::success("write settled to identical bytes");
-    write_outcome.side_effect = ToolSideEffectStatus::Applied;
-    let current_state = WorkspaceState {
-        generation: 3,
-        revision,
+    let forged_workspace = WorkspaceState {
+        generation: verified_state.generation.saturating_add(1),
+        revision: verified_state.revision.clone(),
     };
-    append_event(
-        &store,
-        &created.lease,
-        "write-committed",
-        RuntimeEventKind::ToolOutcomeCommitted {
-            operation_id,
-            call_id: "write-after-verification".to_owned(),
-            name: "write_file".to_owned(),
-            outcome: Box::new(write_outcome),
-            workspace_state: Some(current_state.clone()),
-        },
-    )
-    .await;
-
     let error = store
         .append(
             &created.lease,
             PendingRuntimeEvent::terminal(AgentOutcome {
-                run_id: run_id.clone(),
+                run_id,
                 parent_run_id: None,
                 terminal: TerminalState::Completed {
                     message: candidate.message,
                     decision: CompletionDecision {
                         candidate_id: candidate.id,
                         generation_id: contract.generation_id,
-                        workspace_state: current_state,
+                        workspace_state: forged_workspace,
                         satisfied: vec![AcceptanceSatisfaction::Evidence {
                             acceptance_id: AcceptanceId::from("tests"),
                             receipt_id: receipt.id,
@@ -4196,7 +4523,287 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
                 accounting: ModelAccounting::default(),
                 runtime_model_requests: 0,
                 runtime_retries: 0,
-                tool_calls: 1,
+                tool_calls: 0,
+                details: AgentResultDetails::default(),
+            }),
+        )
+        .await
+        .expect_err("completion cannot claim a workspace the Host did not verify");
+
+    assert!(matches!(
+        error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("current candidate, generation, or workspace")
+    ));
+}
+
+#[tokio::test]
+async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to_the_same_value() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(verifier_request("验证证据不得跨越同哈希写入世代"))
+        .await
+        .expect("create verifier Agent run");
+    let run_id = created.lease.run_id.clone();
+    let contract = created
+        .replay
+        .snapshot
+        .request
+        .task_contract
+        .clone()
+        .expect("frozen task contract");
+    let verifier = exact_run_tests_spec();
+    let candidate = CompletionCandidate {
+        id: CompletionCandidateId::from("candidate-before-aba-write"),
+        generation_id: contract.generation_id.clone(),
+        message: "第一次提出完成".to_owned(),
+    };
+    let revision = WorkspaceRevision::Known {
+        sha256: "sha256:workspace-a".to_owned(),
+    };
+    let observed = WorkspaceState {
+        generation: 1,
+        revision: revision.clone(),
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "aba-workspace-observed",
+        RuntimeEventKind::WorkspaceObserved {
+            workspace_state: observed.clone(),
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-completion-proposed",
+        RuntimeEventKind::CompletionProposed {
+            candidate: candidate.clone(),
+        },
+    )
+    .await;
+
+    let passing_verification = VerificationId::from("aba-pass");
+    append_event(
+        &store,
+        &created.lease,
+        "aba-pass-prepared",
+        RuntimeEventKind::HostVerificationPrepared {
+            verification_id: passing_verification.clone(),
+            candidate: candidate.clone(),
+            acceptance_id: AcceptanceId::from("tests"),
+            verifier: verifier.clone(),
+            workspace_state_before: observed,
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-pass-started",
+        RuntimeEventKind::HostVerificationStarted {
+            verification_id: passing_verification.clone(),
+        },
+    )
+    .await;
+    let passed_state = WorkspaceState {
+        generation: 2,
+        revision: revision.clone(),
+    };
+    let passed_outcome = passed_verifier_outcome(verifier.clone(), "sha256:workspace-a");
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from(format!("receipt:{}", passing_verification.0)),
+        generation_id: contract.generation_id.clone(),
+        acceptance_id: AcceptanceId::from("tests"),
+        verification_id: passing_verification.clone(),
+        verifier: verifier.clone(),
+        workspace_state: passed_state.clone(),
+        artifact_ids: passed_outcome
+            .verifier_observation
+            .as_ref()
+            .expect("passed verifier observation")
+            .artifact_ids
+            .clone(),
+        lineage: EvidenceLineage::LatestPass,
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "aba-pass-committed",
+        RuntimeEventKind::HostVerificationCommitted {
+            verification_id: passing_verification,
+            outcome: Box::new(passed_outcome),
+            receipt: Some(Box::new(receipt.clone())),
+            workspace_state_after: passed_state.clone(),
+        },
+    )
+    .await;
+
+    // A later failed verification legally rejects the pending completion and
+    // reopens the model/tool boundary while retaining the earlier receipt as
+    // historical evidence. This avoids manufacturing an impossible tool call
+    // while a successful completion is still pending.
+    let failing_verification = VerificationId::from("aba-fail");
+    append_event(
+        &store,
+        &created.lease,
+        "aba-fail-prepared",
+        RuntimeEventKind::HostVerificationPrepared {
+            verification_id: failing_verification.clone(),
+            candidate: candidate.clone(),
+            acceptance_id: AcceptanceId::from("tests"),
+            verifier: verifier.clone(),
+            workspace_state_before: passed_state,
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-fail-started",
+        RuntimeEventKind::HostVerificationStarted {
+            verification_id: failing_verification.clone(),
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-fail-committed",
+        RuntimeEventKind::HostVerificationCommitted {
+            verification_id: failing_verification,
+            outcome: Box::new(failed_verifier_outcome(
+                verifier,
+                "sha256:workspace-a",
+                "复验失败，必须重新修改",
+            )),
+            receipt: None,
+            workspace_state_after: WorkspaceState {
+                generation: 3,
+                revision: revision.clone(),
+            },
+        },
+    )
+    .await;
+    let rejection = store
+        .load(&run_id)
+        .await
+        .unwrap()
+        .expect("run after failed verification")
+        .snapshot
+        .last_host_verification_failure
+        .expect("typed Host verification failure")
+        .rejection;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-completion-rejected",
+        RuntimeEventKind::CompletionRejected { rejection },
+    )
+    .await;
+
+    let write_arguments = ToolArguments::from_value(json!({"path": "same.txt"}));
+    seed_current_model_tool_calls(
+        &store,
+        &created.lease,
+        "aba-write-model",
+        vec![ModelToolCall {
+            id: "aba-write".to_owned(),
+            name: "write".to_owned(),
+            arguments: write_arguments.clone(),
+        }],
+    )
+    .await;
+    let operation_id = OperationId::from("aba-write-operation");
+    append_event(
+        &store,
+        &created.lease,
+        "aba-write-prepared",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: run_id.clone(),
+                call_id: "aba-write".to_owned(),
+                name: "write".to_owned(),
+                arguments: write_arguments,
+            },
+            workspace_access: WorkspaceAccess::MayWrite,
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "aba-write-started",
+        RuntimeEventKind::ToolExecutionStarted {
+            operation_id: operation_id.clone(),
+        },
+    )
+    .await;
+    let mut write_outcome = ToolOutcome::success("写入已执行，但内容最终回到同一哈希");
+    write_outcome.side_effect = ToolSideEffectStatus::Applied;
+    write_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
+    let current_state = WorkspaceState {
+        generation: 4,
+        revision,
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "aba-write-committed",
+        RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id,
+            call_id: "aba-write".to_owned(),
+            name: "write".to_owned(),
+            outcome: Box::new(write_outcome),
+            workspace_state: Some(current_state.clone()),
+        },
+    )
+    .await;
+
+    let second_candidate = CompletionCandidate {
+        id: CompletionCandidateId::from("candidate-after-aba-write"),
+        generation_id: contract.generation_id.clone(),
+        message: "写入后再次提出完成".to_owned(),
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "aba-second-completion-proposed",
+        RuntimeEventKind::CompletionProposed {
+            candidate: second_candidate.clone(),
+        },
+    )
+    .await;
+    let current = store
+        .load(&run_id)
+        .await
+        .unwrap()
+        .expect("run before stale receipt terminal")
+        .snapshot;
+    let error = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::terminal(AgentOutcome {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                terminal: TerminalState::Completed {
+                    message: second_candidate.message,
+                    decision: CompletionDecision {
+                        candidate_id: second_candidate.id,
+                        generation_id: contract.generation_id,
+                        workspace_state: current_state,
+                        satisfied: vec![AcceptanceSatisfaction::Evidence {
+                            acceptance_id: AcceptanceId::from("tests"),
+                            receipt_id: receipt.id,
+                        }],
+                    },
+                },
+                accounting: current.accounting,
+                runtime_model_requests: current.runtime_model_requests,
+                runtime_retries: current.runtime_retries,
+                tool_calls: current.tool_calls,
                 details: AgentResultDetails::default(),
             }),
         )
@@ -4211,60 +4818,50 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
 }
 
 #[tokio::test]
-async fn root_and_child_use_the_same_exact_verifier_completion_gate() {
-    for (actor, parent_run_id) in [
-        (AgentActor::default(), None),
-        (
-            AgentActor {
-                kind: AgentActorKind::Child,
-                depth: 1,
-            },
-            Some(RunId::from("parent-fixture")),
-        ),
-    ] {
-        let model = Arc::new(MockModel::new(|_| {
-            ScriptResponse::Events(vec![completed(
-                "相同验收语义",
-                None,
-                vec![],
-                ModelFinishReason::Stop,
-            )])
-        }));
-        let tools = Arc::new(VerifierTools {
-            spec: exact_run_tests_spec(),
-            revision: Mutex::new("sha256:workspace-parity".to_owned()),
-            fail: false,
-            omit_artifact: false,
-            calls: AtomicUsize::new(0),
-        });
-        let runtime = Arc::new(AgentRuntime::new(
-            model,
-            tools.clone(),
-            Arc::new(NullEventSink),
-            Arc::new(InMemoryRunStore::default()),
-        ));
-        let mut run_request = verifier_request("root/child 一致验收");
-        run_request.actor = actor;
-        run_request.parent_run_id = parent_run_id;
+async fn root_uses_the_exact_verifier_completion_gate() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![completed(
+            "root 验收完成",
+            None,
+            vec![],
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let tools = Arc::new(VerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:workspace-parity".to_owned()),
+        fail: false,
+        omit_artifact: false,
+        calls: AtomicUsize::new(0),
+    });
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        Arc::new(NullEventSink),
+        Arc::new(InMemoryRunStore::default()),
+    ));
 
-        let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = runtime
+        .start(verifier_request("root exact verifier 验收"))
+        .wait()
+        .await
+        .unwrap();
 
-        assert!(matches!(
-            outcome.terminal,
-            TerminalState::Completed {
-                decision: CompletionDecision {
-                    satisfied,
-                    ..
-                },
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Completed {
+            decision: CompletionDecision {
+                satisfied,
                 ..
-            } if matches!(
-                satisfied.as_slice(),
-                [AcceptanceSatisfaction::Evidence { acceptance_id, .. }]
-                    if acceptance_id == &AcceptanceId::from("tests")
-            )
-        ));
-        assert_eq!(tools.calls.load(Ordering::Acquire), 1);
-    }
+            },
+            ..
+        } if matches!(
+            satisfied.as_slice(),
+            [AcceptanceSatisfaction::Evidence { acceptance_id, .. }]
+                if acceptance_id == &AcceptanceId::from("tests")
+        )
+    ));
+    assert_eq!(tools.calls.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -5052,6 +5649,18 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
         .await
         .unwrap();
     let operation_id = OperationId::from("approval-operation");
+    let approval_arguments = ToolArguments::from_value(json!({"path": "actual"}));
+    seed_current_model_tool_calls(
+        &approval_store,
+        &approval_run.lease,
+        "approval-model",
+        vec![ModelToolCall {
+            id: "approval-call".to_owned(),
+            name: "approval".to_owned(),
+            arguments: approval_arguments.clone(),
+        }],
+    )
+    .await;
     append_event(
         &approval_store,
         &approval_run.lease,
@@ -5063,7 +5672,7 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
                 run_id: approval_run.lease.run_id.clone(),
                 call_id: "approval-call".to_owned(),
                 name: "approval".to_owned(),
-                arguments: ToolArguments::from_value(json!({"path": "actual"})),
+                arguments: approval_arguments,
             },
         },
     )
@@ -5196,6 +5805,19 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
             },
         ],
     };
+    let invalid_user_arguments =
+        ToolArguments::from_value(serde_json::to_value(&invalid_user_input).unwrap());
+    seed_current_model_tool_calls(
+        &user_input_store,
+        &user_input_run.lease,
+        "invalid-user-input-model",
+        vec![ModelToolCall {
+            id: "user-input-call".to_owned(),
+            name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+            arguments: invalid_user_arguments.clone(),
+        }],
+    )
+    .await;
     append_event(
         &user_input_store,
         &user_input_run.lease,
@@ -5207,9 +5829,7 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
                 run_id: user_input_run.lease.run_id.clone(),
                 call_id: "user-input-call".to_owned(),
                 name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
-                arguments: ToolArguments::from_value(
-                    serde_json::to_value(&invalid_user_input).unwrap(),
-                ),
+                arguments: invalid_user_arguments,
             },
         },
     )
@@ -5258,6 +5878,18 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
             ]
         }]
     });
+    let defaulted_arguments = ToolArguments::from_value(raw_arguments.clone());
+    seed_current_model_tool_calls(
+        &defaulted_input_store,
+        &defaulted_input_run.lease,
+        "defaulted-user-input-model",
+        vec![ModelToolCall {
+            id: "defaulted-input-call".to_owned(),
+            name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+            arguments: defaulted_arguments.clone(),
+        }],
+    )
+    .await;
     append_event(
         &defaulted_input_store,
         &defaulted_input_run.lease,
@@ -5269,7 +5901,7 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
                 run_id: defaulted_input_run.lease.run_id.clone(),
                 call_id: "defaulted-input-call".to_owned(),
                 name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
-                arguments: ToolArguments::from_value(raw_arguments.clone()),
+                arguments: defaulted_arguments,
             },
         },
     )

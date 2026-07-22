@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Component;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -713,7 +713,7 @@ impl AgentRuntime {
                 return terminal;
             }
 
-            if let Err(message) = validate_tool_calls(&turn.tool_calls) {
+            if let Err(message) = validate_model_tool_calls(&turn.tool_calls) {
                 let terminal = self.settled_terminal(state, invalid_model(message)).await;
                 return terminal;
             }
@@ -801,7 +801,7 @@ impl AgentRuntime {
             }
 
             for call in turn.tool_calls {
-                if tool_call_completed(&state.snapshot.transcript, &call.id) {
+                if tool_call_completed(&state.snapshot.transcript, &call) {
                     continue;
                 }
                 let recovering_prepared = state
@@ -1920,29 +1920,6 @@ impl AgentRuntime {
         } else {
             format!("{}\n期望产物：{}", launch.prompt, launch.expected_artifact)
         };
-        let mut system_prompt = state
-            .snapshot
-            .transcript
-            .entries
-            .iter()
-            .find_map(|entry| match entry {
-                TranscriptEntry::System { prompt } => Some(prompt.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
-        let access_prompt = if writer {
-            format!(
-                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{role}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据。必须使用本次实际提供的文件工具完成任务，不得只描述或声称已修改；已有文件先读取，再用写工具修改，写后重新读取相关文件核对最终内容。至少一次写工具成功前不得提出完成；最终结果仍由 Host 的冻结 exact verifier 验收。"
-            )
-        } else {
-            format!(
-                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{role}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。"
-            )
-        };
-        system_prompt.blocks.push(SystemPromptBlock {
-            text: access_prompt,
-            cache_control: PromptCacheControl::Volatile,
-        });
         let mut child_limits = state.snapshot.request.limits;
         if let Some(max_steps) = launch.max_steps {
             let max_steps = u32::try_from(max_steps).unwrap_or(u32::MAX);
@@ -1967,24 +1944,6 @@ impl AgentRuntime {
             now_unix_ms(),
         );
         let fork_context = launch.fork_context;
-        let transcript = if fork_context {
-            let mut transcript = state.snapshot.transcript.clone();
-            if matches!(
-                transcript.entries.last(),
-                Some(TranscriptEntry::Assistant { .. })
-            ) {
-                transcript.entries.pop();
-            }
-            if let Some(TranscriptEntry::System { prompt }) = transcript.entries.first_mut() {
-                *prompt = system_prompt.clone();
-            }
-            transcript
-        } else {
-            CanonicalTranscript::default()
-        };
-        let context_projection = fork_context
-            .then(|| state.snapshot.context_projection.clone())
-            .flatten();
 
         let root_run_id = state
             .snapshot
@@ -2150,39 +2109,7 @@ impl AgentRuntime {
         .await
         .map_err(store_terminal)?;
 
-        let mut child_environment = state.snapshot.request.environment.clone();
-        child_environment.interactive = false;
-        child_environment.workspace = workspace.execution_workspace().to_owned();
-        if writer {
-            child_environment.trust_mode = false;
-            child_environment.allow_sandbox_elevation = false;
-            child_environment.sandbox = Some("isolated_writer".to_owned());
-        }
-        let mut child_request = RunRequest {
-            run_id: Some(child_run_id.clone()),
-            parent_run_id: Some(state.run_id().clone()),
-            continued_from_run_id: None,
-            model: state.snapshot.request.model.clone(),
-            task_contract: Some(task_contract),
-            system_prompt,
-            transcript,
-            reasoning_effort: state.snapshot.request.reasoning_effort,
-            max_output_tokens: state.snapshot.request.max_output_tokens,
-            streaming: false,
-            actor: AgentActor {
-                kind: AgentActorKind::Child,
-                depth: child_depth,
-            },
-            agent_task: Some(task.clone()),
-            deadline_unix_ms: child_deadline_unix_ms,
-            tool_policy: child_policy,
-            limits: child_limits,
-            environment: child_environment,
-            context_policy: state.snapshot.request.context_policy,
-            context_projection,
-            inherited_facts: None,
-            accounting_baseline: state.accounting_epoch_baseline.clone(),
-        };
+        let mut child_request = child_request_from_task(state, &task, fork_context);
         let child_runtime = writer_binding.as_ref().map_or_else(
             || self.clone(),
             |binding| self.with_tools(binding.tools.clone()),
@@ -2415,7 +2342,7 @@ impl AgentRuntime {
                         "恢复尚未创建的 writer child 时无法保留最终模型请求",
                     )
                 })?;
-                let mut child_request = recovered_writer_request(state, task, fork_context);
+                let mut child_request = child_request_from_task(state, task, fork_context);
                 child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
                 child_runtime.start_inner(
                     child_request,
@@ -5076,7 +5003,7 @@ fn cleanup_uncertainty_code(result: &WriterCleanupResult) -> Option<&str> {
     }
 }
 
-fn recovered_writer_request(state: &RunState, task: &AgentTask, fork_context: bool) -> RunRequest {
+fn child_request_from_task(state: &RunState, task: &AgentTask, fork_context: bool) -> RunRequest {
     let mut system_prompt = state
         .snapshot
         .transcript
@@ -5088,19 +5015,26 @@ fn recovered_writer_request(state: &RunState, task: &AgentTask, fork_context: bo
         })
         .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
     system_prompt.blocks.push(SystemPromptBlock {
-        text: format!(
-            "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据；完成前让 Host 使用冻结的 exact verifier 验收。",
-            task.role
-        ),
+        text: match task.workspace.access {
+            AgentWorkspaceAccess::ReadOnly => format!(
+                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。",
+                task.role
+            ),
+            AgentWorkspaceAccess::IsolatedWrite => format!(
+                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据。必须使用本次实际提供的文件工具完成任务，不得只描述或声称已修改；已有文件先读取，再用写工具修改，写后重新读取相关文件核对最终内容。至少一次写工具成功前不得提出完成；最终结果仍由 Host 的冻结 exact verifier 验收。",
+                task.role
+            ),
+        },
         cache_control: PromptCacheControl::Volatile,
     });
     let transcript = if fork_context {
         let mut transcript = state.snapshot.transcript.clone();
-        if matches!(
-            transcript.entries.last(),
-            Some(TranscriptEntry::Assistant { .. })
-        ) {
-            transcript.entries.pop();
+        if let Some(current_turn) = transcript
+            .entries
+            .iter()
+            .rposition(|entry| matches!(entry, TranscriptEntry::Assistant { .. }))
+        {
+            transcript.entries.truncate(current_turn);
         }
         if let Some(TranscriptEntry::System { prompt }) = transcript.entries.first_mut() {
             *prompt = system_prompt.clone();
@@ -5112,9 +5046,11 @@ fn recovered_writer_request(state: &RunState, task: &AgentTask, fork_context: bo
     let mut environment = state.snapshot.request.environment.clone();
     environment.workspace = task.workspace.execution_workspace().to_owned();
     environment.interactive = false;
-    environment.trust_mode = false;
-    environment.allow_sandbox_elevation = false;
-    environment.sandbox = Some("isolated_writer".to_owned());
+    if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite {
+        environment.trust_mode = false;
+        environment.allow_sandbox_elevation = false;
+        environment.sandbox = Some("isolated_writer".to_owned());
+    }
     RunRequest {
         run_id: Some(task.child_run_id.clone()),
         parent_run_id: Some(task.parent_run_id.clone()),
@@ -5912,14 +5848,28 @@ fn cancelled_before_execution_outcome(content: impl Into<String>) -> ToolOutcome
     outcome
 }
 
-fn tool_call_completed(transcript: &CanonicalTranscript, call_id: &str) -> bool {
-    transcript.entries.iter().any(|entry| {
+fn tool_call_completed(transcript: &CanonicalTranscript, call: &ModelToolCall) -> bool {
+    let Some(turn_index) = transcript
+        .entries
+        .iter()
+        .rposition(|entry| matches!(entry, TranscriptEntry::Assistant { .. }))
+    else {
+        return false;
+    };
+    let TranscriptEntry::Assistant { tool_calls, .. } = &transcript.entries[turn_index] else {
+        unreachable!("latest assistant index was selected above");
+    };
+    if !tool_calls.iter().any(|candidate| candidate == call) {
+        return false;
+    }
+    transcript.entries[turn_index + 1..].iter().any(|entry| {
         matches!(
             entry,
             TranscriptEntry::Tool {
-                call_id: completed,
+                call_id,
+                name,
                 ..
-            } if completed == call_id
+            } if call_id == &call.id && name == &call.name
         )
     })
 }
@@ -6002,22 +5952,6 @@ fn timeout_terminal(state: &RunState, deadline: Option<u64>) -> TerminalState {
                 }),
         },
     }
-}
-
-fn validate_tool_calls(calls: &[ModelToolCall]) -> Result<(), String> {
-    let mut ids = HashSet::with_capacity(calls.len());
-    for call in calls {
-        if call.id.trim().is_empty() {
-            return Err("tool call id must not be empty".to_owned());
-        }
-        if call.name.trim().is_empty() {
-            return Err(format!("tool call '{}' has an empty name", call.id));
-        }
-        if !ids.insert(call.id.as_str()) {
-            return Err(format!("duplicate tool call id '{}'", call.id));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

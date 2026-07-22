@@ -395,6 +395,85 @@ async fn append_to_both(
     assert_canonical_event_eq(&sqlite_event, &memory_event);
 }
 
+async fn append_model_tool_calls_to_both(
+    sqlite: &StateStore,
+    sqlite_lease: &RunLease,
+    memory: &InMemoryRunStore,
+    memory_lease: &RunLease,
+    event_prefix: &str,
+    tool_calls: Vec<ModelToolCall>,
+) {
+    let snapshot = sqlite
+        .load(&sqlite_lease.run_id)
+        .await
+        .expect("load canonical model boundary")
+        .expect("model boundary run exists")
+        .snapshot;
+    let mut tools = tool_calls
+        .iter()
+        .map(|call| ToolDefinition {
+            name: call.name.clone(),
+            description: format!("{} parity fixture", call.name),
+            input_schema: serde_json::json!({"type": "object"}),
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools.dedup_by(|left, right| left.name == right.name);
+    let attempt_id = AttemptId(format!("{event_prefix}-attempt"));
+    append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-prepared")),
+            event: RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(model_request_for_snapshot(
+                    sqlite_lease.run_id.clone(),
+                    &snapshot,
+                    tools,
+                )),
+            },
+        },
+    )
+    .await;
+    append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-in-flight")),
+            event: RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        },
+    )
+    .await;
+    append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-committed")),
+            event: RuntimeEventKind::ModelResponseCommitted {
+                attempt_id,
+                output: Box::new(ModelOutput {
+                    content: String::new(),
+                    reasoning_content: None,
+                    tool_calls,
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: Usage::default(),
+                }),
+                accounting: Box::new(snapshot.accounting),
+            },
+        },
+    )
+    .await;
+}
+
 fn root_list_semantics(
     records: Vec<RootRunRecord>,
 ) -> Vec<(RunId, Option<RunId>, String, u64, bool)> {
@@ -1136,8 +1215,11 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
                 call_id: task.call_id.clone(),
                 name: "agent".to_owned(),
                 arguments: ToolArguments::from_value(serde_json::json!({
+                    "prompt": "修改一个冻结文件",
+                    "type": "writer",
                     "workspace_access": "isolated_write",
-                    "allowed_paths": ["src/lib.rs"]
+                    "allowed_paths": ["src/lib.rs"],
+                    "expected_artifact": "sealed_commit"
                 })),
             },
             workspace_access: WorkspaceAccess::MayWrite,
@@ -1270,7 +1352,7 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
                 },
             },
             accounting: ModelAccounting::default(),
-            runtime_model_requests: 0,
+            runtime_model_requests: 1,
             runtime_retries: 0,
             tool_calls: 1,
             details: AgentResultDetails::default(),
@@ -1278,6 +1360,21 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
     });
 
     for (index, event) in lifecycle.into_iter().enumerate() {
+        if let RuntimeEventKind::ToolPrepared { invocation, .. } = &event {
+            append_model_tool_calls_to_both(
+                &sqlite,
+                &sqlite_created.lease,
+                &memory,
+                &memory_created.lease,
+                "writer-parity-model",
+                vec![ModelToolCall {
+                    id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: invocation.arguments.clone(),
+                }],
+            )
+            .await;
+        }
         append_to_both(
             &sqlite,
             &sqlite_created.lease,
@@ -1332,6 +1429,21 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
         .await
         .expect("create uncertain cleanup memory root");
     for (index, event) in uncertain_lifecycle.into_iter().enumerate() {
+        if let RuntimeEventKind::ToolPrepared { invocation, .. } = &event {
+            append_model_tool_calls_to_both(
+                &uncertain_sqlite,
+                &uncertain_sqlite_created.lease,
+                &uncertain_memory,
+                &uncertain_memory_created.lease,
+                "writer-uncertain-model",
+                vec![ModelToolCall {
+                    id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: invocation.arguments.clone(),
+                }],
+            )
+            .await;
+        }
         append_to_both(
             &uncertain_sqlite,
             &uncertain_sqlite_created.lease,
@@ -3672,12 +3784,121 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
                 verification_id,
                 outcome: Box::new(verifier_outcome),
                 receipt: Some(Box::new(receipt.clone())),
-                workspace_state_after: verified_state,
+                workspace_state_after: verified_state.clone(),
             },
         ),
     )
     .await;
 
+    let failing_verification = VerificationId::from("host-verification-reopen-boundary");
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-fail-prepared",
+            RuntimeEventKind::HostVerificationPrepared {
+                verification_id: failing_verification.clone(),
+                candidate: candidate.clone(),
+                acceptance_id: AcceptanceId::from("tests"),
+                verifier: verifier.clone(),
+                workspace_state_before: verified_state,
+            },
+        ),
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-fail-started",
+            RuntimeEventKind::HostVerificationStarted {
+                verification_id: failing_verification.clone(),
+            },
+        ),
+    )
+    .await;
+    let failed_artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+        summary: "deterministic verifier failed".to_owned(),
+        verifier: verifier.clone(),
+        verdict: VerifierVerdict::Failed,
+        workspace_revision: revision.clone(),
+    });
+    let failed_artifact_id = failed_artifact.id.clone();
+    let mut failed_outcome = ToolOutcome::error("deterministic verifier failed")
+        .with_failure_code(codewhale_runtime::ToolFailureCode::VerifierFailed);
+    failed_outcome.side_effect = ToolSideEffectStatus::NotApplied;
+    failed_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
+    failed_outcome.evidence = ToolEvidence {
+        status: ToolEvidenceStatus::Produced,
+        references: vec![failed_artifact_id.clone()],
+    };
+    failed_outcome.artifacts = vec![failed_artifact];
+    failed_outcome.verifier_observation = Some(VerifierObservation {
+        spec: verifier,
+        verdict: VerifierVerdict::Failed,
+        workspace_revision: revision.clone(),
+        artifact_ids: vec![failed_artifact_id],
+    });
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-fail-committed",
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id: failing_verification,
+                outcome: Box::new(failed_outcome),
+                receipt: None,
+                workspace_state_after: WorkspaceState {
+                    generation: 3,
+                    revision: revision.clone(),
+                },
+            },
+        ),
+    )
+    .await;
+    let rejection = sqlite
+        .load(&run_id)
+        .await
+        .expect("load failed verifier state")
+        .expect("failed verifier run exists")
+        .snapshot
+        .last_host_verification_failure
+        .expect("typed Host verifier failure")
+        .rejection;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "completion-rejected-before-write",
+            RuntimeEventKind::CompletionRejected { rejection },
+        ),
+    )
+    .await;
+
+    let write_arguments = ToolArguments::from_value(serde_json::json!({
+        "changes": [{"path": "same.txt", "content": "same bytes"}]
+    }));
+    append_model_tool_calls_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        "stale-receipt-write-model",
+        vec![ModelToolCall {
+            id: "write-after-receipt".to_owned(),
+            name: "apply_patch".to_owned(),
+            arguments: write_arguments.clone(),
+        }],
+    )
+    .await;
     let operation_id = OperationId::from("write-after-receipt");
     append_to_both(
         &sqlite,
@@ -3691,8 +3912,8 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
                 invocation: ToolInvocation {
                     run_id: run_id.clone(),
                     call_id: "write-after-receipt".to_owned(),
-                    name: "write_file".to_owned(),
-                    arguments: ToolArguments::parse(r#"{"path":"same.txt"}"#),
+                    name: "apply_patch".to_owned(),
+                    arguments: write_arguments,
                 },
                 workspace_access: WorkspaceAccess::MayWrite,
             },
@@ -3714,9 +3935,10 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     .await;
     let mut write_outcome = ToolOutcome::success("same bytes restored");
     write_outcome.side_effect = ToolSideEffectStatus::Applied;
+    write_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
     let current_state = WorkspaceState {
-        generation: 3,
-        revision,
+        generation: 4,
+        revision: revision.clone(),
     };
     append_to_both(
         &sqlite,
@@ -3728,7 +3950,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
             RuntimeEventKind::ToolOutcomeCommitted {
                 operation_id,
                 call_id: "write-after-receipt".to_owned(),
-                name: "write_file".to_owned(),
+                name: "apply_patch".to_owned(),
                 outcome: Box::new(write_outcome),
                 workspace_state: Some(current_state.clone()),
             },
@@ -3736,13 +3958,31 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     )
     .await;
 
+    let second_candidate = CompletionCandidate {
+        id: CompletionCandidateId::from("candidate-after-same-hash-write"),
+        generation_id: generation_id.clone(),
+        message: "写入后再次提出完成".to_owned(),
+    };
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "completion-proposed-after-write",
+            RuntimeEventKind::CompletionProposed {
+                candidate: second_candidate.clone(),
+            },
+        ),
+    )
+    .await;
     let terminal = PendingRuntimeEvent::terminal(AgentOutcome {
         run_id: run_id.clone(),
         parent_run_id: None,
         terminal: TerminalState::Completed {
-            message: candidate.message,
+            message: second_candidate.message,
             decision: CompletionDecision {
-                candidate_id: candidate.id,
+                candidate_id: second_candidate.id,
                 generation_id,
                 workspace_state: current_state,
                 satisfied: vec![AcceptanceSatisfaction::Evidence {
@@ -3752,7 +3992,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
             },
         },
         accounting: ModelAccounting::default(),
-        runtime_model_requests: 0,
+        runtime_model_requests: 1,
         runtime_retries: 0,
         tool_calls: 1,
         details: Default::default(),
@@ -3786,7 +4026,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
         .expect("memory run exists");
     assert_canonical_replay_eq(&sqlite_before_reopen, &memory_replay);
     assert!(sqlite_before_reopen.snapshot.terminal.is_none());
-    assert_eq!(sqlite_before_reopen.snapshot.workspace_state.generation, 3);
+    assert_eq!(sqlite_before_reopen.snapshot.workspace_state.generation, 4);
     assert_eq!(sqlite_before_reopen.snapshot.evidence_receipts.len(), 1);
     drop(sqlite);
     let reopened = StateStore::open(Some(path)).expect("reopen SQLite store");
@@ -3884,6 +4124,21 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         },
     ];
     for (index, event) in events.into_iter().enumerate() {
+        if let RuntimeEventKind::ToolPrepared { invocation, .. } = &event {
+            append_model_tool_calls_to_both(
+                &sqlite,
+                &sqlite_created.lease,
+                &memory,
+                &memory_created.lease,
+                "temporal-failure-model",
+                vec![ModelToolCall {
+                    id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: invocation.arguments.clone(),
+                }],
+            )
+            .await;
+        }
         append_to_both(
             &sqlite,
             &sqlite_created.lease,
@@ -3956,6 +4211,21 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         },
     ];
     for (index, event) in write_events.into_iter().enumerate() {
+        if let RuntimeEventKind::ToolPrepared { invocation, .. } = &event {
+            append_model_tool_calls_to_both(
+                &reopened,
+                &sqlite_created.lease,
+                &memory,
+                &memory_created.lease,
+                "temporal-write-model",
+                vec![ModelToolCall {
+                    id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: invocation.arguments.clone(),
+                }],
+            )
+            .await;
+        }
         append_to_both(
             &reopened,
             &sqlite_created.lease,

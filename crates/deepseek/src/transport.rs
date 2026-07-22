@@ -715,7 +715,7 @@ fn parse_tool_calls(value: Option<&Value>) -> Result<Vec<ModelToolCall>, DeepSee
             )?;
             Ok(ModelToolCall {
                 id: id.to_owned(),
-                name: decode_tool_name(name),
+                name: name.to_owned(),
                 arguments: ToolArguments::parse(raw.to_owned()),
             })
         })
@@ -1022,7 +1022,7 @@ impl SseParser {
                 }
                 Ok(ModelToolCall {
                     id,
-                    name: decode_tool_name(&name),
+                    name,
                     arguments: ToolArguments::parse(call.arguments),
                 })
             })
@@ -1122,65 +1122,6 @@ fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     rendered
 }
 
-#[must_use]
-pub fn encode_tool_name(name: &str) -> String {
-    let mut encoded = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() || character == '_' {
-            encoded.push(character);
-        } else if character == '-' {
-            encoded.push_str("--");
-        } else {
-            encoded.push_str(&format!("-x{:06X}-", character as u32));
-        }
-    }
-    encoded
-}
-
-#[must_use]
-pub fn decode_tool_name(name: &str) -> String {
-    let chars = name.chars().collect::<Vec<_>>();
-    let mut decoded = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '-' && chars.get(index + 1) == Some(&'-') {
-            decoded.push('-');
-            index += 2;
-            continue;
-        }
-        let delimited = chars[index] == '-'
-            && chars.get(index + 1) == Some(&'x')
-            && chars.get(index + 8) == Some(&'-');
-        let bare = chars[index] == 'x';
-        let hex_start = if delimited {
-            index + 2
-        } else if bare {
-            index + 1
-        } else {
-            decoded.push(chars[index]);
-            index += 1;
-            continue;
-        };
-        if hex_start + 6 <= chars.len() {
-            let hex = chars[hex_start..hex_start + 6].iter().collect::<String>();
-            if let Ok(codepoint) = u32::from_str_radix(&hex, 16)
-                && let Some(character) = char::from_u32(codepoint)
-                && !character.is_ascii_alphanumeric()
-                && !matches!(character, '_' | '-')
-            {
-                decoded.push(character);
-                index = hex_start
-                    + 6
-                    + usize::from(delimited || chars.get(hex_start + 6) == Some(&'-'));
-                continue;
-            }
-        }
-        decoded.push(chars[index]);
-        index += 1;
-    }
-    decoded
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,7 +1166,7 @@ mod tests {
                         "id": "call-1",
                         "type": "function",
                         "function": {
-                            "name": "web-x00002E-run",
+                            "name": "web_run",
                             "arguments": "{\"q\":\"中文\"}"
                         }
                     }]
@@ -1245,7 +1186,7 @@ mod tests {
             Some("exact reasoning")
         );
         assert_eq!(response.output.finish_reason, ModelFinishReason::ToolCalls);
-        assert_eq!(response.output.tool_calls[0].name, "web.run");
+        assert_eq!(response.output.tool_calls[0].name, "web_run");
         assert_eq!(
             response.output.tool_calls[0].arguments.raw,
             "{\"q\":\"中文\"}"
@@ -1307,7 +1248,7 @@ mod tests {
     fn sse_parser_reassembles_raw_tool_arguments_and_trailing_usage() {
         let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 9);
         let first = parser
-            .push_frame(r#"{"id":"chat-1","choices":[{"delta":{"reasoning_content":"想","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read-x00002E-file","arguments":"{\"path\":"}}]}}]}"#)
+            .push_frame(r#"{"id":"chat-1","choices":[{"delta":{"reasoning_content":"想","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}"#)
             .expect("first frame");
         assert_eq!(
             first,
@@ -1323,7 +1264,7 @@ mod tests {
             .expect("usage frame");
         parser.push_frame("[DONE]").expect("done frame");
         let response = parser.finish().expect("complete response");
-        assert_eq!(response.output.tool_calls[0].name, "read.file");
+        assert_eq!(response.output.tool_calls[0].name, "read_file");
         assert_eq!(
             response.output.tool_calls[0].arguments.raw,
             "{\"path\":\"a.rs\"}"
@@ -1671,14 +1612,6 @@ mod tests {
             parse_finish_reason("future_reason"),
             Err(DeepSeekTransportError::UnsupportedFinishReason(_))
         ));
-    }
-
-    #[test]
-    fn tool_name_projection_round_trips_unicode_and_punctuation() {
-        for name in ["web.run", "apply-patch", "工具/读取", "snake_case"] {
-            assert_eq!(decode_tool_name(&encode_tool_name(name)), name);
-        }
-        assert_eq!(decode_tool_name("webx00002Erun"), "web.run");
     }
 
     fn fixture_stream_transport(

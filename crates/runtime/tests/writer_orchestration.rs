@@ -65,6 +65,29 @@ impl DeterministicModel {
     }
 
     fn output(&self, request: &ModelRequest, request_index: usize) -> ModelOutput {
+        if matches!(self.script, ModelScript::Writer)
+            && request.actor.kind == AgentActorKind::Child
+            && request_index == 1
+        {
+            let expected = tool_call(
+                "writer-edit",
+                "write",
+                json!({"path": "src/lib.rs", "content": "improved"}),
+            );
+            assert!(request.messages.iter().any(|message| matches!(
+                message,
+                ModelMessage::Assistant {
+                    reasoning_content: Some(reasoning),
+                    tool_calls,
+                    ..
+                } if reasoning == "Writer 原始编辑推理"
+                    && tool_calls.as_slice() == [expected.clone()]
+            )));
+            assert!(request.messages.iter().any(|message| matches!(
+                message,
+                ModelMessage::Tool { call_id, .. } if call_id == "writer-edit"
+            )));
+        }
         let turn_limited_writer_child = matches!(self.script, ModelScript::TurnLimitedWriter)
             && request.actor.kind == AgentActorKind::Child;
         let isolated_writer_child = request.actor.kind == AgentActorKind::Child
@@ -179,7 +202,10 @@ impl DeterministicModel {
             } else {
                 String::new()
             },
-            reasoning_content: None,
+            reasoning_content: (matches!(self.script, ModelScript::Writer)
+                && request.actor.kind == AgentActorKind::Child
+                && request_index == 0)
+                .then(|| "Writer 原始编辑推理".to_owned()),
             finish_reason: if tool_calls.is_empty() {
                 ModelFinishReason::Stop
             } else {
@@ -1567,6 +1593,26 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
         .unwrap()
         .expect("writer child replay");
     assert_eq!(
+        child_replay.snapshot.request.actor,
+        AgentActor {
+            kind: AgentActorKind::Child,
+            depth: 1,
+        }
+    );
+    assert_eq!(
+        child_replay.snapshot.request.parent_run_id.as_ref(),
+        Some(&outcome.run_id)
+    );
+    assert_eq!(
+        child_replay.snapshot.request.task_contract.as_ref(),
+        Some(&lifecycle.task.task_contract)
+    );
+    assert!(matches!(
+        lifecycle.task.task_contract.definition.acceptance.as_slice(),
+        [TaskAcceptance::Verifier { id, verifier: frozen, .. }]
+            if id == &AcceptanceId::from("tests") && frozen == &verifier()
+    ));
+    assert_eq!(
         lifecycle.task.deadline_unix_ms, child_replay.snapshot.request.deadline_unix_ms,
         "frozen AgentTask and child RunRequest must share one deadline"
     );
@@ -1643,6 +1689,34 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
         .evidence
         .first()
         .expect("child receipt");
+    let child_verification = child_replay
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            )
+        })
+        .expect("child Host verifier commit");
+    let child_terminal = child_replay
+        .events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::Terminal { .. }))
+        .expect("child terminal");
+    assert!(child_verification < child_terminal);
+    assert!(matches!(
+        child_replay.snapshot.terminal.as_ref().map(|outcome| &outcome.terminal),
+        Some(TerminalState::Completed {
+            decision: CompletionDecision { satisfied, .. },
+            ..
+        }) if matches!(
+            satisfied.as_slice(),
+            [AcceptanceSatisfaction::Evidence { acceptance_id, receipt_id }]
+                if acceptance_id == &AcceptanceId::from("tests")
+                    && receipt_id == &child_receipt.id
+        )
+    ));
     assert_eq!(
         child_receipt.workspace_state, seal.writer_workspace_state_before,
         "child receipt proves the exact pre-seal bytes"
@@ -2957,6 +3031,11 @@ async fn assert_resume_reuses_frozen_identity(checkpoint: RecoveryCheckpoint) {
         },
     ))
     .await;
+    let root_before = store
+        .load(&run_id)
+        .await
+        .unwrap()
+        .expect("recovery root before resume");
     let timeline = Arc::new(Mutex::new(Vec::new()));
     let root_tools = Arc::new(RootTools::new(timeline.clone()));
     let writer_tools = Arc::new(WriterTools::new(timeline));
@@ -2999,6 +3078,63 @@ async fn assert_resume_reuses_frozen_identity(checkpoint: RecoveryCheckpoint) {
         store.load(&task.child_run_id).await.unwrap().is_some(),
         "resume must create the frozen child id, not a replacement"
     );
+    let child = store
+        .load(&task.child_run_id)
+        .await
+        .unwrap()
+        .expect("recovered writer child");
+    let child_request = &child.snapshot.request;
+    assert_eq!(
+        child_request.actor,
+        AgentActor {
+            kind: AgentActorKind::Child,
+            depth: 1,
+        }
+    );
+    assert_eq!(child_request.parent_run_id.as_ref(), Some(&run_id));
+    assert_eq!(
+        child_request.task_contract.as_ref(),
+        Some(&task.task_contract)
+    );
+    assert_eq!(child_request.agent_task.as_ref(), Some(&task));
+    assert_eq!(child_request.tool_policy, task.tool_policy);
+    assert_eq!(child_request.limits, task.limits);
+    assert_eq!(child_request.deadline_unix_ms, task.deadline_unix_ms);
+    assert_eq!(
+        child_request.environment.workspace,
+        task.workspace.execution_workspace()
+    );
+    assert!(!child_request.environment.interactive);
+    assert!(!child_request.environment.trust_mode);
+    assert!(!child_request.environment.allow_sandbox_elevation);
+    assert_eq!(
+        child_request.environment.sandbox.as_deref(),
+        Some("isolated_writer")
+    );
+    assert!(child_request.transcript.entries.is_empty());
+    assert!(child_request.context_projection.is_none());
+    assert_eq!(
+        child_request.accounting_baseline,
+        root_before.snapshot.accounting
+    );
+    assert!(child_request.environment.tool_catalog_sha256.is_some());
+    assert!(
+        child_request
+            .environment
+            .execution_fingerprint_sha256
+            .is_none()
+    );
+    let instructions = child_request
+        .system_prompt
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(instructions.contains("必须使用本次实际提供的文件工具完成任务"));
+    assert!(instructions.contains("已有文件先读取，再用写工具修改"));
+    assert!(instructions.contains("写后重新读取相关文件核对最终内容"));
+    assert!(instructions.contains("至少一次写工具成功前不得提出完成"));
     assert_eq!(
         orchestrator.bind_side_effects.load(Ordering::Acquire),
         1,

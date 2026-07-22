@@ -442,6 +442,10 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
     request
         .validate_agent_task_binding()
         .map_err(|message| corrupt(&run_id, message))?;
+    request
+        .transcript
+        .validate_complete_tool_history()
+        .map_err(|message| corrupt(&run_id, message))?;
     if request.continued_from_run_id.is_none() && request.inherited_facts.is_some() {
         return Err(corrupt(
             &run_id,
@@ -825,6 +829,7 @@ pub fn apply_event(
                     "tool prepared while another durable action is pending",
                 ));
             }
+            validate_tool_preparation_binding(snapshot, &run_id, invocation)?;
             snapshot.tool_calls = snapshot.tool_calls.saturating_add(1);
             snapshot.pending_tool = Some(PendingToolAction {
                 operation_id: operation_id.clone(),
@@ -3245,6 +3250,66 @@ fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> 
     }
 }
 
+fn validate_tool_preparation_binding(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    invocation: &ToolInvocation,
+) -> Result<(), RunStoreError> {
+    if &invocation.run_id != run_id {
+        return Err(corrupt(
+            run_id,
+            "prepared tool invocation run id does not match its canonical run",
+        ));
+    }
+    let Some(assistant_index) = snapshot
+        .transcript
+        .entries
+        .iter()
+        .rposition(|entry| matches!(entry, TranscriptEntry::Assistant { .. }))
+    else {
+        return Err(corrupt(
+            run_id,
+            "prepared tool invocation has no assistant turn",
+        ));
+    };
+    let TranscriptEntry::Assistant { tool_calls, .. } =
+        &snapshot.transcript.entries[assistant_index]
+    else {
+        unreachable!("latest assistant index was selected above");
+    };
+    let matching_calls = tool_calls
+        .iter()
+        .filter(|call| call.id == invocation.call_id)
+        .collect::<Vec<_>>();
+    let [call] = matching_calls.as_slice() else {
+        return Err(corrupt(
+            run_id,
+            "prepared tool invocation does not bind one unique call in the latest assistant turn",
+        ));
+    };
+    if call.name != invocation.name || call.arguments != invocation.arguments {
+        return Err(corrupt(
+            run_id,
+            "prepared tool invocation changed the latest assistant call identity or arguments",
+        ));
+    }
+    if snapshot.transcript.entries[assistant_index + 1..]
+        .iter()
+        .any(|entry| {
+            matches!(
+                entry,
+                TranscriptEntry::Tool { call_id, .. } if call_id == &invocation.call_id
+            )
+        })
+    {
+        return Err(corrupt(
+            run_id,
+            "prepared tool invocation repeats an already settled call in the latest assistant turn",
+        ));
+    }
+    Ok(())
+}
+
 fn pending_model_mut<'a>(
     snapshot: &'a mut RunSnapshot,
     run_id: &RunId,
@@ -4212,10 +4277,9 @@ mod tests {
     }
 
     fn stored_events(kinds: Vec<RuntimeEventKind>) -> Vec<StoredRuntimeEvent> {
-        kinds
-            .into_iter()
-            .enumerate()
-            .map(|(index, event)| StoredRuntimeEvent {
+        fn push(events: &mut Vec<StoredRuntimeEvent>, event: RuntimeEventKind) {
+            let index = events.len();
+            events.push(StoredRuntimeEvent {
                 schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
                 run_id: RunId::from("root"),
                 parent_run_id: None,
@@ -4227,8 +4291,71 @@ mod tests {
                 sequence: u64::try_from(index).unwrap() + 1,
                 occurred_at_unix_ms: 1,
                 event,
-            })
-            .collect()
+            });
+        }
+
+        let mut events = Vec::new();
+        for kind in kinds {
+            if let RuntimeEventKind::ToolPrepared { invocation, .. } = &kind {
+                let snapshot = reduce_events(&events).expect("canonical fixture prefix");
+                let tools = vec![ToolDefinition {
+                    name: invocation.name.clone(),
+                    description: "fixture tool".to_owned(),
+                    input_schema: json!({"type": "object"}),
+                }];
+                let context = effective_context(context_input(&snapshot, &tools))
+                    .expect("fixture model context");
+                let request_number = snapshot.local_turns.saturating_add(1);
+                let attempt_id = AttemptId(format!("fixture-attempt-{request_number}"));
+                let request = ModelRequest {
+                    run_id: RunId::from("root"),
+                    parent_run_id: snapshot.request.parent_run_id.clone(),
+                    actor: snapshot.request.actor,
+                    model: snapshot.request.model.clone(),
+                    system_prompt: context.system_prompt,
+                    messages: context.messages,
+                    tools,
+                    reasoning_effort: snapshot.request.reasoning_effort,
+                    max_output_tokens: snapshot.request.max_output_tokens,
+                    streaming: snapshot.request.streaming,
+                    request_number,
+                    attempt: 0,
+                };
+                push(
+                    &mut events,
+                    RuntimeEventKind::ModelRequestPrepared {
+                        attempt_id: attempt_id.clone(),
+                        request: Box::new(request),
+                    },
+                );
+                push(
+                    &mut events,
+                    RuntimeEventKind::ModelRequestInFlight {
+                        attempt_id: attempt_id.clone(),
+                    },
+                );
+                push(
+                    &mut events,
+                    RuntimeEventKind::ModelResponseCommitted {
+                        attempt_id,
+                        output: Box::new(ModelOutput {
+                            content: String::new(),
+                            reasoning_content: None,
+                            tool_calls: vec![ModelToolCall {
+                                id: invocation.call_id.clone(),
+                                name: invocation.name.clone(),
+                                arguments: invocation.arguments.clone(),
+                            }],
+                            finish_reason: ModelFinishReason::ToolCalls,
+                            usage: Usage::default(),
+                        }),
+                        accounting: Box::new(snapshot.accounting),
+                    },
+                );
+            }
+            push(&mut events, kind);
+        }
+        events
     }
 
     fn root_terminal(terminal: TerminalState) -> RuntimeEventKind {
@@ -4993,6 +5120,104 @@ mod tests {
             error,
             RunStoreError::Corrupt { message, .. }
                 if message.contains("unstarted tool can only commit a preflight rejection")
+        ));
+    }
+
+    #[test]
+    fn tool_history_rejects_orphan_duplicate_and_changed_invocations() {
+        let mut orphan_request = root_request();
+        orphan_request
+            .transcript
+            .entries
+            .push(TranscriptEntry::Tool {
+                call_id: "orphan".to_owned(),
+                name: "read".to_owned(),
+                outcome: Box::new(ToolOutcome::success("orphan")),
+            });
+        let error = reduce_events(&stored_events(vec![RuntimeEventKind::RunCreated {
+            request: Box::new(orphan_request),
+        }]))
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("orphan or duplicate call id")
+        ));
+
+        let invocation = ToolInvocation {
+            run_id: RunId::from("root"),
+            call_id: "call-1".to_owned(),
+            name: "read".to_owned(),
+            arguments: ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+        };
+        let mut changed = stored_events(vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("read-operation".to_owned()),
+                invocation: invocation.clone(),
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+        ]);
+        let prepared = changed
+            .iter_mut()
+            .find(|event| matches!(event.event, RuntimeEventKind::ToolPrepared { .. }))
+            .expect("fixture ToolPrepared");
+        let RuntimeEventKind::ToolPrepared {
+            invocation: changed_invocation,
+            ..
+        } = &mut prepared.event
+        else {
+            unreachable!();
+        };
+        changed_invocation.arguments = ToolArguments::from_value(json!({"path": "src/other.rs"}));
+        let error = reduce_events(&changed).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("changed the latest assistant call")
+        ));
+
+        let mut duplicate = stored_events(vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("read-operation".to_owned()),
+                invocation: invocation.clone(),
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("read-operation".to_owned()),
+                call_id: invocation.call_id.clone(),
+                name: invocation.name.clone(),
+                outcome: Box::new(ToolOutcome::rejected(
+                    "fixture rejection",
+                    ToolRetryDisposition::AfterCorrection,
+                )),
+                workspace_state: None,
+            },
+        ]);
+        let index = duplicate.len();
+        duplicate.push(StoredRuntimeEvent {
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: RunId::from("root"),
+            parent_run_id: None,
+            event_id: RuntimeEventId("duplicate-tool-prepared".to_owned()),
+            sequence: u64::try_from(index).unwrap() + 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("duplicate-read-operation".to_owned()),
+                invocation,
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+        });
+        let error = reduce_events(&duplicate).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("repeats an already settled call")
         ));
     }
 

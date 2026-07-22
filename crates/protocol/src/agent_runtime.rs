@@ -1913,6 +1913,56 @@ pub struct CanonicalTranscript {
 }
 
 impl CanonicalTranscript {
+    /// Validate a settled transcript before it becomes the starting history
+    /// of another run. Tool results bind to the exact latest unresolved
+    /// assistant call; orphan, duplicate, or renamed results are corruption.
+    pub fn validate_complete_tool_history(&self) -> Result<(), String> {
+        let mut pending = Vec::<ModelToolCall>::new();
+        for (entry_index, entry) in self.entries.iter().enumerate() {
+            match entry {
+                TranscriptEntry::Assistant { tool_calls, .. } => {
+                    if !pending.is_empty() {
+                        return Err(format!(
+                            "assistant transcript entry {entry_index} begins before {} tool result(s) are settled",
+                            pending.len()
+                        ));
+                    }
+                    validate_model_tool_calls(tool_calls)?;
+                    pending = tool_calls.clone();
+                }
+                TranscriptEntry::Tool {
+                    call_id,
+                    name,
+                    outcome,
+                } => {
+                    outcome.validate()?;
+                    let Some(position) = pending.iter().position(|call| call.id == *call_id) else {
+                        return Err(format!(
+                            "tool transcript entry {entry_index} has orphan or duplicate call id '{call_id}'"
+                        ));
+                    };
+                    if pending[position].name != *name {
+                        return Err(format!(
+                            "tool transcript entry {entry_index} names '{name}' instead of '{}' for call id '{call_id}'",
+                            pending[position].name
+                        ));
+                    }
+                    pending.remove(position);
+                }
+                TranscriptEntry::System { .. }
+                | TranscriptEntry::User { .. }
+                | TranscriptEntry::ChildOutcome { .. } => {}
+            }
+        }
+        if !pending.is_empty() {
+            return Err(format!(
+                "settled transcript ends with {} unresolved tool call(s)",
+                pending.len()
+            ));
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn project_messages(&self) -> Vec<ModelMessage> {
         self.entries
@@ -1948,6 +1998,22 @@ impl CanonicalTranscript {
             })
             .collect()
     }
+}
+
+pub fn validate_model_tool_calls(calls: &[ModelToolCall]) -> Result<(), String> {
+    let mut ids = HashSet::with_capacity(calls.len());
+    for call in calls {
+        if call.id.trim().is_empty() {
+            return Err("tool call id must not be empty".to_owned());
+        }
+        if call.name.trim().is_empty() {
+            return Err(format!("tool call '{}' has an empty name", call.id));
+        }
+        if !ids.insert(call.id.as_str()) {
+            return Err(format!("duplicate tool call id '{}'", call.id));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3511,6 +3577,70 @@ mod tests {
                 reasoning_content: Some("原始推理".into()),
                 tool_calls: vec![call],
             }]
+        );
+    }
+
+    #[test]
+    fn settled_tool_history_binds_each_result_to_its_exact_assistant_turn() {
+        let first = ModelToolCall {
+            id: "reused-call".into(),
+            name: "read_file".into(),
+            arguments: ToolArguments::from_value(serde_json::json!({"path": "first.rs"})),
+        };
+        let second = ModelToolCall {
+            id: "reused-call".into(),
+            name: "read_file".into(),
+            arguments: ToolArguments::from_value(serde_json::json!({"path": "second.rs"})),
+        };
+        let valid = CanonicalTranscript {
+            entries: vec![
+                TranscriptEntry::Assistant {
+                    content: None,
+                    reasoning_content: Some("first reasoning".into()),
+                    tool_calls: vec![first.clone()],
+                },
+                TranscriptEntry::Tool {
+                    call_id: first.id,
+                    name: first.name,
+                    outcome: Box::new(ToolOutcome::success("first result")),
+                },
+                TranscriptEntry::Assistant {
+                    content: None,
+                    reasoning_content: Some("second reasoning".into()),
+                    tool_calls: vec![second.clone()],
+                },
+                TranscriptEntry::Tool {
+                    call_id: second.id,
+                    name: second.name,
+                    outcome: Box::new(ToolOutcome::success("second result")),
+                },
+            ],
+        };
+        assert!(valid.validate_complete_tool_history().is_ok());
+
+        let mut duplicate = valid.clone();
+        duplicate.entries.push(TranscriptEntry::Tool {
+            call_id: "reused-call".into(),
+            name: "read_file".into(),
+            outcome: Box::new(ToolOutcome::success("duplicate")),
+        });
+        assert!(
+            duplicate
+                .validate_complete_tool_history()
+                .unwrap_err()
+                .contains("orphan or duplicate")
+        );
+
+        let mut mismatch = valid;
+        let TranscriptEntry::Tool { name, .. } = mismatch.entries.last_mut().unwrap() else {
+            unreachable!();
+        };
+        *name = "grep_files".into();
+        assert!(
+            mismatch
+                .validate_complete_tool_history()
+                .unwrap_err()
+                .contains("instead of")
         );
     }
 
