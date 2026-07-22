@@ -19,18 +19,20 @@ use codewhale_protocol::task::{
     WorkspaceRevision, WorkspaceState,
 };
 use codewhale_runtime::{
-    ActorRequestAccounting, AgentOutcome, AgentResultDetails, AttemptId, CommandId, CreatedRun,
-    DurableActionState, InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput,
-    ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity,
-    RecoveryAmbiguityPhase, RootRunRecord, RunId, RunLease, RunReplay, RunRequest, RunSnapshot,
-    RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent,
-    TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus, ToolDefinition, ToolEvidence,
-    ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus, ToolOutcome,
-    ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage,
-    VerificationArtifactPayload, WorkspaceAccess, WriteExecutionMode, WriterArtifactState,
-    WriterCleanupMetadataState, WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase,
-    WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope, WriterIntegrationStatus,
-    WriterRemovalState, WriterResourceState, reduce_events, writer_path_set_sha256,
+    ActorRequestAccounting, AgentOutcome, AgentResultDetails, ApiSurface, AttemptId, CommandId,
+    CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting, ModelAttemptFailure,
+    ModelErrorCategory, ModelFinishReason, ModelOutput, ModelRequest, ModelResponseEvidence,
+    ModelRetryDecision, ModelRetryStopReason, ModelToolCall, OperationId, PendingRuntimeEvent,
+    RecoveryAmbiguity, RecoveryAmbiguityPhase, RootRunRecord, RunId, RunLease, RunReplay,
+    RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
+    RuntimeFailure, StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolArguments, ToolArtifact,
+    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
+    ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
+    ToolSideEffectStatus, ToolTransportStatus, Usage, VerificationArtifactPayload, WorkspaceAccess,
+    WriteExecutionMode, WriterArtifactState, WriterCleanupMetadataState, WriterCleanupMode,
+    WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
+    WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState, WriterResourceState,
+    reduce_events, writer_path_set_sha256,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -671,6 +673,167 @@ fn downgrade_catalog_snapshot_to_v9(path: &PathBuf, corrupt: bool) {
     .expect("write v9 materialized snapshot");
     conn.pragma_update(None, "user_version", 9)
         .expect("downgrade schema marker to v9");
+}
+
+#[tokio::test]
+async fn typed_incomplete_response_failure_and_accounting_survive_store_reopen_exactly() {
+    let path = temp_state_path("typed_incomplete_response_reopen");
+    let store = StateStore::open(Some(path.clone())).expect("open sqlite store");
+    let created = store
+        .create(request(
+            "typed-incomplete-response",
+            "/tmp/typed-incomplete-response",
+        ))
+        .await
+        .expect("create run");
+    let attempt_id = AttemptId("typed-incomplete-attempt".to_owned());
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("typed-incomplete-prepared".to_owned()),
+                event: RuntimeEventKind::ModelRequestPrepared {
+                    attempt_id: attempt_id.clone(),
+                    request: Box::new(model_request(&created)),
+                },
+            },
+        )
+        .await
+        .expect("append prepared request");
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("typed-incomplete-in-flight".to_owned()),
+                event: RuntimeEventKind::ModelRequestInFlight {
+                    attempt_id: attempt_id.clone(),
+                },
+            },
+        )
+        .await
+        .expect("append in-flight request");
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("typed-incomplete-content".to_owned()),
+                event: RuntimeEventKind::ContentDelta {
+                    attempt_id: attempt_id.clone(),
+                    index: 1,
+                    delta: "部分正文".to_owned(),
+                },
+            },
+        )
+        .await
+        .expect("append partial output");
+
+    let response = ModelResponseEvidence {
+        response_headers_received: true,
+        content_observed: true,
+        finish_reason_observed: true,
+        usage_received: true,
+        ..ModelResponseEvidence::default()
+    };
+    let failure = ModelAttemptFailure {
+        code: "deepseek_stream_incomplete".to_owned(),
+        category: ModelErrorCategory::Protocol,
+        message: "DeepSeek SSE stream ended before [DONE]".to_owned(),
+        retryable: true,
+        retry_safe: false,
+        actionable_output: true,
+        response,
+    };
+    let usage = Usage {
+        input_tokens: 12,
+        output_tokens: 2,
+        cache_hit_tokens: 4,
+        cache_miss_tokens: 8,
+        cache_write_tokens: 0,
+        reasoning_tokens: 1,
+        reasoning_replay_tokens: 0,
+    };
+    let accounting = ModelAccounting {
+        hard_request_limit: Some(4),
+        root: ActorRequestAccounting {
+            started: 1,
+            completed: 1,
+            in_flight: 0,
+            retries: 0,
+        },
+        complete: false,
+        usage_complete: false,
+        usage_incomplete: true,
+        usage_responses: 1,
+        incomplete_responses: 1,
+        usage,
+        surface_usage: vec![SurfaceUsage {
+            surface: ApiSurface::StandardChat,
+            model: "deepseek-v4-flash".to_owned(),
+            response_count: 1,
+            usage_response_count: 1,
+            usage,
+            cost_nanousd: 17,
+            cost_nanocny: 123,
+        }],
+        cost_nanousd: 17,
+        cost_nanocny: 123,
+        ..ModelAccounting::default()
+    };
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("typed-incomplete-failed".to_owned()),
+                event: RuntimeEventKind::ModelRequestFailed {
+                    attempt_id,
+                    failure: failure.clone(),
+                    accounting: Box::new(accounting.clone()),
+                    retry: ModelRetryDecision::Stop {
+                        reason: ModelRetryStopReason::ActionableOutput,
+                    },
+                },
+            },
+        )
+        .await
+        .expect("append typed failure");
+    drop(store);
+
+    let reopened = StateStore::open(Some(path)).expect("reopen sqlite store");
+    let replay = reopened
+        .load(&created.lease.run_id)
+        .await
+        .expect("load reopened run")
+        .expect("run remains available");
+    assert_eq!(replay.snapshot.accounting, accounting);
+    assert!(replay.snapshot.pending_model.is_none());
+    assert_eq!(
+        replay.snapshot.last_model_failure,
+        Some(codewhale_runtime::StoppedModelFailure {
+            failure: failure.clone(),
+            reason: ModelRetryStopReason::ActionableOutput,
+        })
+    );
+    let persisted = replay
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::ModelRequestFailed {
+                failure,
+                accounting,
+                retry,
+                ..
+            } => Some((failure, accounting, retry)),
+            _ => None,
+        })
+        .expect("persisted typed failure event");
+    assert_eq!(persisted.0, &failure);
+    assert_eq!(persisted.1.as_ref(), &accounting);
+    assert_eq!(
+        persisted.2,
+        &ModelRetryDecision::Stop {
+            reason: ModelRetryStopReason::ActionableOutput,
+        }
+    );
 }
 
 #[tokio::test]
@@ -2170,7 +2333,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2262,7 +2425,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
 }
 
 #[tokio::test]
@@ -2334,7 +2497,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
 }
 
 #[tokio::test]
@@ -2378,7 +2541,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
 }
 
 #[tokio::test]
@@ -2459,7 +2622,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2575,7 +2738,7 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_thread_metadat
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -2590,6 +2753,107 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_thread_metadat
             .unwrap_or_else(|error| panic!("count v19 cutover rows in {table}: {error}"));
         assert_eq!(count, 0, "{table} retained incompatible v18 rows");
     }
+}
+
+#[tokio::test]
+async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pending_commands() {
+    let path = temp_state_path("v19_response_evidence_cutover");
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+    let created = store
+        .create(request(
+            "v19-response-evidence",
+            "/tmp/v19-response-evidence",
+        ))
+        .await
+        .expect("create pre-cutover run");
+    let run_id = created.lease.run_id.clone();
+    let pending_command_id = CommandId::from("v19-pending-command");
+    let pending_intent = creation_intent("/tmp/v19-pending-creation");
+    let pending = store
+        .reserve_creation(
+            &pending_command_id,
+            "sha256:v19-pending-command",
+            RunId::from("v19-pending-run"),
+            pending_intent.clone(),
+        )
+        .await
+        .expect("reserve valid v19 Run API v9 creation");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare raw v19 fixture");
+    conn.execute_batch(
+        r#"
+        INSERT INTO threads (
+            id, preview, ephemeral, model_provider, created_at, updated_at,
+            status, cwd, cli_version, source, archived
+        ) VALUES (
+            'v19-retained-thread', 'local metadata survives v20', 0, 'deepseek', 1, 1,
+            'idle', '/tmp/v19-response-evidence', 'test', 'interactive', 0
+        );
+        "#,
+    )
+    .expect("insert v19 local thread metadata");
+    conn.execute(
+        "UPDATE agent_run_events SET schema_version = 14 WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("mark pre-response-evidence RuntimeEvent rows");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"v19_without_response_evidence\"}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible v19 snapshot");
+    conn.pragma_update(None, "user_version", 19)
+        .expect("mark v19 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply state v20 cutover");
+    assert!(
+        reopened
+            .load(&run_id)
+            .await
+            .expect("query retired v19 run")
+            .is_none(),
+        "v20 must retire rows that cannot prove response lifecycle facts"
+    );
+    assert_eq!(
+        reopened
+            .get_thread("v19-retained-thread")
+            .expect("read retained thread")
+            .expect("local thread must survive runtime cutover")
+            .preview,
+        "local metadata survives v20"
+    );
+    let retained_pending = reopened
+        .creation(&pending_command_id)
+        .await
+        .expect("read retained pending creation")
+        .expect("pending command must survive RuntimeEvent cutover");
+    assert_eq!(retained_pending, pending.reservation);
+    assert_eq!(retained_pending.intent, Some(pending_intent));
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v20 database");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read migrated version");
+    assert_eq!(user_version, 20);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count retained pending command"),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count retired runs"),
+        0
+    );
 }
 
 #[tokio::test]
@@ -2628,7 +2892,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     for column in [
         "creation_kind",
         "workspace",
@@ -2667,7 +2931,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
 }
 
 #[tokio::test]
@@ -2691,7 +2955,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
 }
 
 #[tokio::test]
@@ -2783,7 +3047,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -2837,7 +3101,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -2906,7 +3170,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 19);
+    assert_eq!(user_version, 20);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3022,7 +3286,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -3581,13 +3845,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 20)
+    conn.pragma_update(None, "user_version", 21)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 19")
+            .contains("newer than supported version 20")
     );
 }

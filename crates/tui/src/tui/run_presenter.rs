@@ -6,8 +6,6 @@
 
 use std::time::Instant;
 
-#[cfg(test)]
-use codewhale_protocol::agent_runtime::WriterCleanupMetadataState;
 use codewhale_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
@@ -15,6 +13,8 @@ use codewhale_protocol::agent_runtime::{
     ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
     WriterCleanupResult, WriterIntegrationStatus,
 };
+#[cfg(test)]
+use codewhale_protocol::agent_runtime::{ModelResponseEvidence, WriterCleanupMetadataState};
 use serde_json::Value;
 
 use super::app::{App, ReasoningEffort};
@@ -726,6 +726,7 @@ fn model_retry_label(retry: &ModelRetryDecision) -> String {
 fn model_retry_stop_reason_label(reason: ModelRetryStopReason) -> &'static str {
     match reason {
         ModelRetryStopReason::ActionableOutput => "已收到可执行输出",
+        ModelRetryStopReason::UnsafeReplay => "响应状态不允许安全重放",
         ModelRetryStopReason::NotRetryable => "错误不可重试",
         ModelRetryStopReason::FailureChanged => "失败类型已变化",
         ModelRetryStopReason::RetryLimitReached => "已达到重试上限",
@@ -1414,7 +1415,9 @@ mod tests {
             category: ModelErrorCategory::Transport,
             message: "connection reset by peer".to_owned(),
             retryable: true,
+            retry_safe: true,
             actionable_output: false,
+            response: ModelResponseEvidence::default(),
         };
         let retry = ModelRetryDecision::Stop {
             reason: ModelRetryStopReason::RetryLimitReached,

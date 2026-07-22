@@ -717,6 +717,7 @@ pub fn apply_event(
                     "model request failed before transport began",
                 ));
             }
+            validate_model_failure_evidence(&run_id, failure)?;
             let primary_failure = pending
                 .primary_failure
                 .clone()
@@ -3050,6 +3051,9 @@ fn retry_policy_stop_reason(
     if failure.actionable_output {
         return Some(ModelRetryStopReason::ActionableOutput);
     }
+    if !failure.retry_safe {
+        return Some(ModelRetryStopReason::UnsafeReplay);
+    }
     if !failure.retryable {
         return Some(ModelRetryStopReason::NotRetryable);
     }
@@ -3058,6 +3062,51 @@ fn retry_policy_stop_reason(
     }
     (pending.request.attempt >= max_model_retries)
         .then_some(ModelRetryStopReason::RetryLimitReached)
+}
+
+fn validate_model_failure_evidence(
+    run_id: &RunId,
+    failure: &ModelAttemptFailure,
+) -> Result<(), RunStoreError> {
+    let response = failure.response;
+    if failure.actionable_output != response.actionable_output()
+        || failure.retry_safe != response.replay_safe()
+    {
+        return Err(corrupt(
+            run_id,
+            "persisted model failure summary disagrees with response evidence",
+        ));
+    }
+    if (response.tool_call_id_observed
+        || response.tool_call_name_observed
+        || response.tool_call_arguments_observed)
+        && !response.tool_call_observed
+    {
+        return Err(corrupt(
+            run_id,
+            "persisted model failure has tool fragments without a tool call",
+        ));
+    }
+    if response.finish_reason_trusted
+        && (!response.finish_reason_observed || !response.stream_done_received)
+    {
+        return Err(corrupt(
+            run_id,
+            "persisted model failure trusts a finish reason without [DONE]",
+        ));
+    }
+    if (response.actionable_output()
+        || response.finish_reason_observed
+        || response.usage_received
+        || response.stream_done_received)
+        && !response.response_headers_received
+    {
+        return Err(corrupt(
+            run_id,
+            "persisted model response evidence exists before response headers",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_retry_stop(

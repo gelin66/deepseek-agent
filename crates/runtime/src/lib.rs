@@ -60,6 +60,7 @@ pub struct ModelPortError {
     pub category: ModelErrorCategory,
     pub message: String,
     pub retryable: bool,
+    pub response: ModelResponseEvidence,
 }
 
 impl ModelPortError {
@@ -75,7 +76,14 @@ impl ModelPortError {
             category,
             message: message.into(),
             retryable,
+            response: ModelResponseEvidence::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_response(mut self, response: ModelResponseEvidence) -> Self {
+        self.response = response;
+        self
     }
 }
 

@@ -4,7 +4,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use codewhale_runtime::{
-    ModelFinishReason, ModelOutput, ModelStreamEvent, ModelToolCall, ToolArguments, Usage,
+    ModelFinishReason, ModelOutput, ModelResponseEvidence, ModelStreamEvent, ModelToolCall,
+    ToolArguments, Usage,
 };
 use futures_util::{Stream, StreamExt};
 use reqwest::header::RETRY_AFTER;
@@ -326,11 +327,18 @@ impl DeepSeekTransport {
             let mut buffer = Vec::new();
             let mut failed = false;
 
+            yield Ok(ModelStreamEvent::ResponseProgress {
+                evidence: parser.failure_evidence(),
+            });
+
             loop {
                 let next = match tokio::time::timeout(idle, bytes.next()).await {
                     Ok(next) => next,
                     Err(_) => {
                         failed = true;
+                        yield Ok(ModelStreamEvent::ResponseProgress {
+                            evidence: parser.failure_evidence(),
+                        });
                         yield Err(DeepSeekTransportError::StreamStall { timeout: idle });
                         break;
                     }
@@ -340,12 +348,18 @@ impl DeepSeekTransport {
                     Ok(chunk) => buffer.extend_from_slice(&chunk),
                     Err(error) => {
                         failed = true;
+                        yield Ok(ModelStreamEvent::ResponseProgress {
+                            evidence: parser.failure_evidence(),
+                        });
                         yield Err(DeepSeekTransportError::Network(format_error_chain(&error)));
                         break;
                     }
                 }
                 if buffer.len() > MAX_SSE_BUFFER_BYTES {
                     failed = true;
+                    yield Ok(ModelStreamEvent::ResponseProgress {
+                        evidence: parser.failure_evidence(),
+                    });
                     yield Err(DeepSeekTransportError::StreamOverflow {
                         limit: MAX_SSE_BUFFER_BYTES,
                     });
@@ -353,14 +367,24 @@ impl DeepSeekTransport {
                 }
 
                 while let Some(frame) = take_sse_frame(&mut buffer) {
-                    match parser.push_frame(&frame) {
+                    let parsed = parser.push_frame(&frame);
+                    if let Some(wire_usage) = parser.wire_usage.as_ref() {
+                        accounting.observe(&parser.usage, Some(wire_usage));
+                    }
+                    match parsed {
                         Ok(events) => {
                             for event in events {
                                 yield Ok(event);
                             }
+                            yield Ok(ModelStreamEvent::ResponseProgress {
+                                evidence: parser.failure_evidence(),
+                            });
                         }
                         Err(error) => {
                             failed = true;
+                            yield Ok(ModelStreamEvent::ResponseProgress {
+                                evidence: parser.failure_evidence(),
+                            });
                             yield Err(error);
                             break;
                         }
@@ -373,20 +397,35 @@ impl DeepSeekTransport {
 
             if !failed && !parser.saw_done && !buffer.is_empty() {
                 match parse_trailing_sse_frame(&buffer) {
-                    Ok(Some(frame)) => match parser.push_frame(&frame) {
-                        Ok(events) => {
-                            for event in events {
-                                yield Ok(event);
+                    Ok(Some(frame)) => {
+                        let parsed = parser.push_frame(&frame);
+                        if let Some(wire_usage) = parser.wire_usage.as_ref() {
+                            accounting.observe(&parser.usage, Some(wire_usage));
+                        }
+                        match parsed {
+                            Ok(events) => {
+                                for event in events {
+                                    yield Ok(event);
+                                }
+                                yield Ok(ModelStreamEvent::ResponseProgress {
+                                    evidence: parser.failure_evidence(),
+                                });
+                            }
+                            Err(error) => {
+                                failed = true;
+                                yield Ok(ModelStreamEvent::ResponseProgress {
+                                    evidence: parser.failure_evidence(),
+                                });
+                                yield Err(error);
                             }
                         }
-                        Err(error) => {
-                            failed = true;
-                            yield Err(error);
-                        }
-                    },
+                    }
                     Ok(None) => {}
                     Err(error) => {
                         failed = true;
+                        yield Ok(ModelStreamEvent::ResponseProgress {
+                            evidence: parser.failure_evidence(),
+                        });
                         yield Err(error);
                     }
                 }
@@ -405,6 +444,9 @@ impl DeepSeekTransport {
                 }
                 Err(error) => {
                     accounting.incomplete();
+                    yield Ok(ModelStreamEvent::ResponseProgress {
+                        evidence: parser.failure_evidence(),
+                    });
                     yield Err(error);
                 }
             }
@@ -734,6 +776,9 @@ struct PartialToolCall {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+    id_observed: bool,
+    name_observed: bool,
+    arguments_observed: bool,
 }
 
 struct SseParser {
@@ -747,6 +792,7 @@ struct SseParser {
     wire_usage: Option<Value>,
     replay_tokens: u64,
     saw_done: bool,
+    finish_reason_observed: bool,
 }
 
 impl SseParser {
@@ -762,10 +808,16 @@ impl SseParser {
             wire_usage: None,
             replay_tokens,
             saw_done: false,
+            finish_reason_observed: false,
         }
     }
 
     fn push_frame(&mut self, data: &str) -> Result<Vec<ModelStreamEvent>, DeepSeekTransportError> {
+        if self.saw_done {
+            return Err(DeepSeekTransportError::InvalidJson(
+                "DeepSeek SSE produced data after [DONE]".to_string(),
+            ));
+        }
         if data.trim() == "[DONE]" {
             self.saw_done = true;
             return Ok(Vec::new());
@@ -821,26 +873,49 @@ impl SseParser {
                     let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
                     let partial = self.tools.entry(index).or_default();
                     if let Some(id) = call.get("id").and_then(Value::as_str) {
+                        partial.id_observed = true;
                         partial.id = Some(id.to_string());
                     }
                     if let Some(function) = call.get("function") {
                         if let Some(name) = function.get("name").and_then(Value::as_str) {
+                            partial.name_observed = true;
                             partial.name = Some(name.to_string());
                         }
                         if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                            partial.arguments_observed = true;
                             partial.arguments.push_str(arguments);
                         }
                     }
                 }
             }
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                self.finish_reason_observed = true;
                 self.finish_reason = Some(parse_finish_reason(reason)?);
             }
         }
         Ok(events)
     }
 
+    fn failure_evidence(&self) -> ModelResponseEvidence {
+        ModelResponseEvidence {
+            response_headers_received: true,
+            content_observed: !self.content.is_empty(),
+            reasoning_observed: !self.reasoning_content.is_empty(),
+            tool_call_observed: !self.tools.is_empty(),
+            tool_call_id_observed: self.tools.values().any(|call| call.id_observed),
+            tool_call_name_observed: self.tools.values().any(|call| call.name_observed),
+            tool_call_arguments_observed: self.tools.values().any(|call| call.arguments_observed),
+            finish_reason_observed: self.finish_reason_observed,
+            finish_reason_trusted: self.saw_done && self.finish_reason.is_some(),
+            usage_received: self.wire_usage.is_some(),
+            stream_done_received: self.saw_done,
+        }
+    }
+
     fn finish(&mut self) -> Result<DeepSeekResponse, DeepSeekTransportError> {
+        if !self.saw_done {
+            return Err(DeepSeekTransportError::StreamIncomplete);
+        }
         let finish_reason = self
             .finish_reason
             .ok_or(DeepSeekTransportError::StreamIncomplete)?;
@@ -1204,6 +1279,197 @@ mod tests {
         assert!(!usage.usage_complete());
     }
 
+    #[tokio::test]
+    async fn abnormal_eof_projects_each_actionable_partial_response_shape() {
+        for (label, body, expected) in [
+            (
+                "content",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"部分正文\"}}]}\n\n",
+                ModelResponseEvidence {
+                    response_headers_received: true,
+                    content_observed: true,
+                    ..ModelResponseEvidence::default()
+                },
+            ),
+            (
+                "reasoning",
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"部分推理\"}}]}\n\n",
+                ModelResponseEvidence {
+                    response_headers_received: true,
+                    reasoning_observed: true,
+                    ..ModelResponseEvidence::default()
+                },
+            ),
+            (
+                "tool_arguments",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-partial\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+                ModelResponseEvidence {
+                    response_headers_received: true,
+                    tool_call_observed: true,
+                    tool_call_id_observed: true,
+                    tool_call_name_observed: true,
+                    tool_call_arguments_observed: true,
+                    ..ModelResponseEvidence::default()
+                },
+            ),
+        ] {
+            let (transport, budget, root, server) = fixture_stream_transport(body);
+            let mut stream = transport
+                .stream(stream_plan(&root))
+                .await
+                .expect("response headers");
+            let mut evidence = ModelResponseEvidence::default();
+            let mut failure = None;
+            let mut completed = false;
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(ModelStreamEvent::ResponseProgress { evidence: next }) => {
+                        evidence.merge(next);
+                    }
+                    Ok(ModelStreamEvent::Completed { .. }) => completed = true,
+                    Ok(_) => {}
+                    Err(error) => failure = Some(error),
+                }
+            }
+            server.join().expect("fixture server");
+
+            assert!(!completed, "{label}: partial response committed output");
+            assert!(matches!(
+                failure,
+                Some(DeepSeekTransportError::StreamIncomplete)
+            ));
+            assert_eq!(evidence, expected, "{label}: wrong redacted evidence");
+            assert!(
+                evidence.actionable_output(),
+                "{label}: replay must be unsafe"
+            );
+            let usage = budget.usage_snapshot();
+            assert_eq!(usage.incomplete_responses, 1, "{label}");
+            assert_eq!(usage.usage_responses, 0, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_finish_without_usage_commits_output_but_marks_usage_missing() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"完成\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (transport, budget, root, server) = fixture_stream_transport(body);
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        let mut output = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(ModelStreamEvent::Completed { output: completed }) = event {
+                output = Some(completed);
+            }
+        }
+        server.join().expect("fixture server");
+
+        assert_eq!(output.expect("trusted completed output").content, "完成");
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.usage_responses, 0);
+        assert_eq!(usage.responses_missing_usage, 1);
+        assert_eq!(usage.incomplete_responses, 0);
+        assert!(!usage.usage_complete());
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_is_typed_and_accounted_incomplete() {
+        let (transport, budget, root, server) = fixture_stream_transport_with_timing(
+            "",
+            Duration::from_millis(20),
+            Duration::from_millis(100),
+        );
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        let mut failure = None;
+        while let Some(event) = stream.next().await {
+            if let Err(error) = event {
+                failure = Some(error);
+            }
+        }
+        server.join().expect("fixture server");
+
+        assert!(matches!(
+            failure,
+            Some(DeepSeekTransportError::StreamStall { .. })
+        ));
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.incomplete_responses, 1);
+        assert_eq!(usage.usage_responses, 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_stream_consumer_settles_the_response_once_as_incomplete() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_cache_hit_tokens\":4,\"prompt_cache_miss_tokens\":8}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (transport, budget, root, server) = fixture_stream_transport(body);
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(ModelStreamEvent::ResponseProgress { .. }))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(ModelStreamEvent::ContentDelta { .. }))
+        ));
+        drop(stream);
+        server.join().expect("fixture server");
+
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.incomplete_responses, 1);
+        assert_eq!(usage.usage_responses, 0);
+        assert_eq!(usage.usage, Usage::default());
+        assert_eq!(budget.snapshot().in_flight, 0);
+        assert_eq!(budget.snapshot().completed, 1);
+    }
+
+    #[tokio::test]
+    async fn dropping_after_usage_preserves_exact_usage_and_marks_incomplete_once() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_cache_hit_tokens\":4,\"prompt_cache_miss_tokens\":8}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (transport, budget, root, server) = fixture_stream_transport(body);
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        loop {
+            match stream.next().await {
+                Some(Ok(ModelStreamEvent::ResponseProgress { evidence }))
+                    if evidence.usage_received =>
+                {
+                    break;
+                }
+                Some(Ok(_)) => {}
+                event => panic!("usage progress missing before consumer drop: {event:?}"),
+            }
+        }
+        drop(stream);
+        server.join().expect("fixture server");
+
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.usage_responses, 1);
+        assert_eq!(usage.incomplete_responses, 1);
+        assert_eq!(usage.usage.input_tokens, 12);
+        assert_eq!(usage.usage.output_tokens, 2);
+        assert_eq!(budget.snapshot().in_flight, 0);
+        assert_eq!(budget.snapshot().completed, 1);
+    }
+
     #[test]
     fn sse_error_and_unknown_finish_reason_are_typed() {
         let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 0);
@@ -1233,6 +1499,20 @@ mod tests {
         String,
         thread::JoinHandle<()>,
     ) {
+        fixture_stream_transport_with_timing(body, Duration::from_secs(1), Duration::ZERO)
+    }
+
+    fn fixture_stream_transport_with_timing(
+        body: &'static str,
+        stream_idle_timeout: Duration,
+        hold_open: Duration,
+    ) -> (
+        DeepSeekTransport,
+        SharedApiRequestBudget,
+        String,
+        thread::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind stream fixture");
         let address = listener.local_addr().expect("fixture address");
         let server = thread::spawn(move || {
@@ -1252,6 +1532,10 @@ mod tests {
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
             )
             .expect("write stream fixture");
+            stream.flush().expect("flush stream fixture");
+            if !hold_open.is_zero() {
+                thread::sleep(hold_open);
+            }
         });
         let budget = SharedApiRequestBudget::new(NonZeroU32::new(4).unwrap());
         let root = format!("http://{address}/v1");
@@ -1259,7 +1543,7 @@ mod tests {
             endpoint: DeepSeekEndpoint::loopback_fixture(&root).expect("loopback root"),
             strict_tools: false,
             response_header_timeout: Duration::from_secs(1),
-            stream_idle_timeout: Duration::from_secs(1),
+            stream_idle_timeout,
             retry: TransportRetryPolicy::disabled(),
         }
         .bind(

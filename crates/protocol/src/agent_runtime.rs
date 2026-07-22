@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 14;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 14;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 15;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 15;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -707,9 +707,57 @@ pub struct ModelOutput {
     pub usage: Usage,
 }
 
+/// Redacted facts observed while consuming one model response.
+///
+/// These booleans deliberately omit response text, reasoning text, tool
+/// arguments, credentials, headers, and local paths. The DeepSeek transport
+/// is the sole production writer; Runtime uses the facts only to decide
+/// whether replaying the request is safe and to persist a diagnosable failure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelResponseEvidence {
+    pub response_headers_received: bool,
+    pub content_observed: bool,
+    pub reasoning_observed: bool,
+    pub tool_call_observed: bool,
+    pub tool_call_id_observed: bool,
+    pub tool_call_name_observed: bool,
+    pub tool_call_arguments_observed: bool,
+    pub finish_reason_observed: bool,
+    pub finish_reason_trusted: bool,
+    pub usage_received: bool,
+    pub stream_done_received: bool,
+}
+
+impl ModelResponseEvidence {
+    pub fn merge(&mut self, other: Self) {
+        self.response_headers_received |= other.response_headers_received;
+        self.content_observed |= other.content_observed;
+        self.reasoning_observed |= other.reasoning_observed;
+        self.tool_call_observed |= other.tool_call_observed;
+        self.tool_call_id_observed |= other.tool_call_id_observed;
+        self.tool_call_name_observed |= other.tool_call_name_observed;
+        self.tool_call_arguments_observed |= other.tool_call_arguments_observed;
+        self.finish_reason_observed |= other.finish_reason_observed;
+        self.finish_reason_trusted |= other.finish_reason_trusted;
+        self.usage_received |= other.usage_received;
+        self.stream_done_received |= other.stream_done_received;
+    }
+
+    #[must_use]
+    pub fn actionable_output(self) -> bool {
+        self.content_observed || self.reasoning_observed || self.tool_call_observed
+    }
+
+    #[must_use]
+    pub fn replay_safe(self) -> bool {
+        !self.actionable_output() && !self.finish_reason_observed && !self.stream_done_received
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
+    ResponseProgress { evidence: ModelResponseEvidence },
     ContentDelta { delta: String },
     ReasoningDelta { delta: String },
     Completed { output: ModelOutput },
@@ -2365,13 +2413,16 @@ pub struct ModelAttemptFailure {
     pub category: ModelErrorCategory,
     pub message: String,
     pub retryable: bool,
+    pub retry_safe: bool,
     pub actionable_output: bool,
+    pub response: ModelResponseEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelRetryStopReason {
     ActionableOutput,
+    UnsafeReplay,
     NotRetryable,
     FailureChanged,
     RetryLimitReached,
@@ -2943,8 +2994,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 14);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 14);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 15);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 15);
     }
 
     #[test]
@@ -3553,7 +3604,9 @@ mod tests {
                 category: ModelErrorCategory::Transport,
                 message: "connection reset".into(),
                 retryable: true,
+                retry_safe: true,
                 actionable_output: false,
+                response: ModelResponseEvidence::default(),
             },
             accounting: Box::new(ModelAccounting::default()),
             retry: ModelRetryDecision::Retry {

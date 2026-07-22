@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 19;
+const STATE_SCHEMA_VERSION: u32 = 20;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -370,6 +370,28 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-typed-rejection canonical run state")?;
         }
+        if user_version < 20 {
+            // RuntimeEvent v15 makes redacted response lifecycle evidence and
+            // the safe-replay decision mandatory on every model failure.
+            // Historical failures cannot be upgraded without guessing which
+            // output or tool-call fragments crossed the wire. Preserve only
+            // still-pending canonical creation commands; finalized receipts
+            // point at the incompatible runtime rows retired below.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    tx.execute(
+                        "DELETE FROM agent_run_creations WHERE command_json IS NULL",
+                        [],
+                    )
+                    .context("failed to retire finalized pre-response-evidence creations")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-intent creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-response-evidence canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -530,6 +552,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 19)
                 .context("failed to commit typed completion rejection state cutover")?;
             user_version = 19;
+        }
+        if user_version < 20 {
+            tx.pragma_update(None, "user_version", 20)
+                .context("failed to commit response evidence state cutover")?;
+            user_version = 20;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

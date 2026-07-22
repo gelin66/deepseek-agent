@@ -4,10 +4,10 @@ use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentActor, AgentActorKind,
     AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId, AgentWorkspaceAccess,
     AgentWorkspaceAssignment, AttemptId, ContextProjection, ModelAccounting, ModelAttemptFailure,
-    ModelErrorCategory, ModelMessage, ModelRequest, ModelRetryDecision, ModelRetryStopReason,
-    PreparedModelRetry, PromptCacheControl, ReasoningEffort, RunId, RunRequest, RuntimeEventId,
-    RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SystemPrompt, SystemPromptBlock,
-    TerminalState, ToolDefinition,
+    ModelErrorCategory, ModelMessage, ModelRequest, ModelResponseEvidence, ModelRetryDecision,
+    ModelRetryStopReason, PreparedModelRetry, PromptCacheControl, ReasoningEffort, RunId,
+    RunRequest, RuntimeEventId, RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
+    SystemPromptBlock, TerminalState, ToolDefinition,
 };
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 
@@ -221,7 +221,9 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     category: ModelErrorCategory::Timeout,
                     message: "首次模型请求超时。".to_owned(),
                     retryable: true,
+                    retry_safe: true,
                     actionable_output: false,
+                    response: ModelResponseEvidence::default(),
                 },
                 accounting: Box::new(accounting(AgentActorKind::Root, 1, 0, false)),
                 retry: ModelRetryDecision::Retry {
@@ -253,7 +255,9 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     category: ModelErrorCategory::Timeout,
                     message: "模型重试仍然超时。".to_owned(),
                     retryable: true,
+                    retry_safe: true,
                     actionable_output: false,
+                    response: ModelResponseEvidence::default(),
                 },
                 accounting: Box::new(accounting(AgentActorKind::Root, 2, 1, false)),
                 retry: ModelRetryDecision::Stop {

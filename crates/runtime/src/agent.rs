@@ -1001,17 +1001,14 @@ impl AgentRuntime {
                         advertised_tool_names,
                     )));
                 }
-                ModelAttemptControl::Failed {
-                    error,
-                    actionable_output,
-                } => {
+                ModelAttemptControl::Failed { error, response } => {
                     let plan = self.plan_model_failure(
                         state,
                         budget,
                         &request,
                         &mut primary_error,
                         &error,
-                        actionable_output,
+                        response,
                     );
                     match plan {
                         ModelFailurePlan::Retry {
@@ -1022,7 +1019,7 @@ impl AgentRuntime {
                                 state,
                                 &attempt_id,
                                 &error,
-                                actionable_output,
+                                response,
                                 ModelRetryDecision::Retry {
                                     prepared: retry_prepared,
                                 },
@@ -1044,7 +1041,7 @@ impl AgentRuntime {
                                 state,
                                 &attempt_id,
                                 &error,
-                                actionable_output,
+                                response,
                                 ModelRetryDecision::Stop { reason },
                                 None,
                             )
@@ -1084,8 +1081,8 @@ impl AgentRuntime {
                     Ok(stream) => stream,
                     Err(error) => {
                         return Ok(ModelAttemptControl::Failed {
+                            response: error.response,
                             error,
-                            actionable_output: false,
                         });
                     }
                 },
@@ -1107,7 +1104,7 @@ impl AgentRuntime {
         let mut reasoning = String::new();
         let mut content_delta_seen = false;
         let mut reasoning_delta_seen = false;
-        let mut actionable_output = false;
+        let mut response = ModelResponseEvidence::default();
         let mut content_index = 0_u64;
         let mut reasoning_index = 0_u64;
         loop {
@@ -1122,11 +1119,15 @@ impl AgentRuntime {
                                 format!("model stream produced no canonical event for {timeout_ms}ms"),
                                 true,
                             );
-                            return Ok(ModelAttemptControl::Failed { error, actionable_output });
+                            return Ok(ModelAttemptControl::Failed { error, response });
+                        }
+                        ModelEventPoll::Event(Some(Ok(ModelStreamEvent::ResponseProgress { evidence }))) => {
+                            response.merge(evidence);
                         }
                         ModelEventPoll::Event(Some(Ok(ModelStreamEvent::ContentDelta { delta }))) => {
                             if !delta.is_empty() {
-                                actionable_output = true;
+                                response.response_headers_received = true;
+                                response.content_observed = true;
                                 content_delta_seen = true;
                                 content.push_str(&delta);
                                 content_index = content_index.saturating_add(1);
@@ -1142,7 +1143,8 @@ impl AgentRuntime {
                         }
                         ModelEventPoll::Event(Some(Ok(ModelStreamEvent::ReasoningDelta { delta }))) => {
                             if !delta.is_empty() {
-                                actionable_output = true;
+                                response.response_headers_received = true;
+                                response.reasoning_observed = true;
                                 reasoning_delta_seen = true;
                                 reasoning.push_str(&delta);
                                 reasoning_index = reasoning_index.saturating_add(1);
@@ -1202,7 +1204,8 @@ impl AgentRuntime {
                             return Ok(ModelAttemptControl::Output(output));
                         }
                         ModelEventPoll::Event(Some(Err(error))) => {
-                            return Ok(ModelAttemptControl::Failed { error, actionable_output });
+                            response.merge(error.response);
+                            return Ok(ModelAttemptControl::Failed { error, response });
                         }
                         ModelEventPoll::Event(None) => {
                             let error = ModelPortError::new(
@@ -1211,7 +1214,7 @@ impl AgentRuntime {
                                 "model stream ended without a completed event",
                                 true,
                             );
-                            return Ok(ModelAttemptControl::Failed { error, actionable_output });
+                            return Ok(ModelAttemptControl::Failed { error, response });
                         }
                     }
                 }
@@ -1235,7 +1238,7 @@ impl AgentRuntime {
         state: &mut RunState,
         attempt_id: &AttemptId,
         error: &ModelPortError,
-        actionable_output: bool,
+        response: ModelResponseEvidence,
         retry: ModelRetryDecision,
         permit: Option<ModelRequestPermit>,
     ) -> Result<(), RuntimeFailure> {
@@ -1244,7 +1247,7 @@ impl AgentRuntime {
             state,
             RuntimeEventKind::ModelRequestFailed {
                 attempt_id: attempt_id.clone(),
-                failure: model_attempt_failure(error, actionable_output),
+                failure: model_attempt_failure(error, response),
                 accounting: Box::new(accounting),
                 retry,
             },
@@ -1276,7 +1279,7 @@ impl AgentRuntime {
         request: &ModelRequest,
         primary: &mut Option<ModelPortError>,
         error: &ModelPortError,
-        actionable_output: bool,
+        response: ModelResponseEvidence,
     ) -> ModelFailurePlan {
         let differs_from_primary = primary.as_ref().is_some_and(|latched| {
             latched.code != error.code || latched.category != error.category
@@ -1284,8 +1287,10 @@ impl AgentRuntime {
         if primary.is_none() {
             *primary = Some(error.clone());
         }
-        let stop_reason = if actionable_output {
+        let stop_reason = if response.actionable_output() {
             Some(ModelRetryStopReason::ActionableOutput)
+        } else if !response.replay_safe() {
+            Some(ModelRetryStopReason::UnsafeReplay)
         } else if !error.retryable {
             Some(ModelRetryStopReason::NotRetryable)
         } else if differs_from_primary {
@@ -4092,7 +4097,7 @@ enum ModelAttemptControl {
     Output(ModelOutput),
     Failed {
         error: ModelPortError,
-        actionable_output: bool,
+        response: ModelResponseEvidence,
     },
     Terminal(TerminalState),
 }
@@ -5346,13 +5351,18 @@ fn model_failure(error: ModelPortError) -> RuntimeFailure {
     }
 }
 
-fn model_attempt_failure(error: &ModelPortError, actionable_output: bool) -> ModelAttemptFailure {
+fn model_attempt_failure(
+    error: &ModelPortError,
+    response: ModelResponseEvidence,
+) -> ModelAttemptFailure {
     ModelAttemptFailure {
         code: error.code.clone(),
         category: error.category,
         message: error.message.clone(),
         retryable: error.retryable,
-        actionable_output,
+        retry_safe: response.replay_safe(),
+        actionable_output: response.actionable_output(),
+        response,
     }
 }
 
@@ -5363,6 +5373,7 @@ fn model_port_error_from_failure(failure: &ModelAttemptFailure) -> ModelPortErro
         failure.message.clone(),
         failure.retryable,
     )
+    .with_response(failure.response)
 }
 
 fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> ContextInput<'a> {

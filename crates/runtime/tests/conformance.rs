@@ -1879,6 +1879,204 @@ async fn retryable_transport_reopens_only_without_output_and_preserves_first_fai
         1,
         "partial output must not replay"
     );
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let tool_evidence = ModelResponseEvidence {
+        response_headers_received: true,
+        tool_call_observed: true,
+        tool_call_id_observed: true,
+        tool_call_name_observed: true,
+        tool_call_arguments_observed: true,
+        ..ModelResponseEvidence::default()
+    };
+    let model = Arc::new(MockModel::new(move |_| {
+        script_calls.fetch_add(1, Ordering::AcqRel);
+        ScriptResponse::Events(vec![
+            StreamStep::now(ModelStreamEvent::ResponseProgress {
+                evidence: tool_evidence,
+            }),
+            StreamStep::error(ModelPortError::new(
+                "deepseek_stream_incomplete",
+                ModelErrorCategory::Protocol,
+                "stream ended after partial tool arguments",
+                true,
+            )),
+        ])
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut partial_tool = request("partial tool");
+    partial_tool.limits.max_model_retries = 3;
+    let outcome = runtime.start(partial_tool).wait().await.unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Failed { .. }));
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "partial tool must not replay"
+    );
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ModelRequestFailed {
+            failure,
+            retry: ModelRetryDecision::Stop {
+                reason: ModelRetryStopReason::ActionableOutput,
+            },
+            ..
+        } if failure.response == tool_evidence
+            && failure.actionable_output
+            && !failure.retry_safe
+    )));
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let untrusted_finish = ModelResponseEvidence {
+        response_headers_received: true,
+        finish_reason_observed: true,
+        ..ModelResponseEvidence::default()
+    };
+    let model = Arc::new(MockModel::new(move |_| {
+        script_calls.fetch_add(1, Ordering::AcqRel);
+        ScriptResponse::Events(vec![
+            StreamStep::now(ModelStreamEvent::ResponseProgress {
+                evidence: untrusted_finish,
+            }),
+            StreamStep::error(ModelPortError::new(
+                "deepseek_stream_incomplete",
+                ModelErrorCategory::Protocol,
+                "stream ended before [DONE]",
+                true,
+            )),
+        ])
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut incomplete_finish = request("untrusted finish");
+    incomplete_finish.limits.max_model_retries = 3;
+    let outcome = runtime.start(incomplete_finish).wait().await.unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Failed { .. }));
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "an observed but untrusted terminal frame must not replay"
+    );
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ModelRequestFailed {
+            failure,
+            retry: ModelRetryDecision::Stop {
+                reason: ModelRetryStopReason::UnsafeReplay,
+            },
+            ..
+        } if failure.response == untrusted_finish
+            && !failure.actionable_output
+            && !failure.retry_safe
+    )));
+}
+
+#[tokio::test]
+async fn root_and_read_only_child_share_the_same_unsafe_replay_contract() {
+    let evidence = ModelResponseEvidence {
+        response_headers_received: true,
+        tool_call_observed: true,
+        tool_call_arguments_observed: true,
+        ..ModelResponseEvidence::default()
+    };
+    let unsafe_stream = move || {
+        ScriptResponse::Events(vec![
+            StreamStep::now(ModelStreamEvent::ResponseProgress { evidence }),
+            StreamStep::error(ModelPortError::new(
+                "deepseek_stream_incomplete",
+                ModelErrorCategory::Protocol,
+                "stream ended after partial tool arguments",
+                true,
+            )),
+        ])
+    };
+
+    let root_model = Arc::new(MockModel::new(move |_| unsafe_stream()));
+    let (runtime, _, root_sink, _) = fixture(root_model);
+    let mut root_request = request("root unsafe response");
+    root_request.limits.max_model_retries = 2;
+    let root_outcome = runtime.start(root_request).wait().await.unwrap();
+    assert!(matches!(
+        root_outcome.terminal,
+        TerminalState::Failed { .. }
+    ));
+    let (root_failure, root_reason) = root_sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::ModelRequestFailed {
+                failure,
+                retry: ModelRetryDecision::Stop { reason },
+                ..
+            } => Some((failure, reason)),
+            _ => None,
+        })
+        .expect("root typed model failure");
+
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let observed_root_calls = root_calls.clone();
+    let child_model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Root => match observed_root_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call(
+                    "launch-read-only-child",
+                    "agent",
+                    r#"{"prompt":"触发相同的不完整响应","max_steps":1}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => ScriptResponse::Events(vec![completed(
+                "已接收子 Agent 失败证据",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            index => panic!("unexpected root request {index}"),
+        },
+        AgentActorKind::Child => ScriptResponse::Events(vec![
+            StreamStep::now(ModelStreamEvent::ResponseProgress { evidence }),
+            StreamStep::error(ModelPortError::new(
+                "deepseek_stream_incomplete",
+                ModelErrorCategory::Protocol,
+                "stream ended after partial tool arguments",
+                true,
+            )),
+        ]),
+    }));
+    let (runtime, _, child_sink, _) = fixture(child_model);
+    let mut parent_request = request("launch child unsafe response");
+    parent_request.limits.max_model_retries = 2;
+    parent_request.limits.max_turns = 3;
+    parent_request.limits.max_model_requests = 4;
+    let parent_outcome = runtime.start(parent_request).wait().await.unwrap();
+    assert!(matches!(
+        parent_outcome.terminal,
+        TerminalState::Completed { .. }
+    ));
+    let (child_failure, child_reason) = child_sink
+        .events()
+        .into_iter()
+        .find_map(|event| {
+            event.parent_run_id.as_ref()?;
+            match event.event {
+                RuntimeEventKind::ModelRequestFailed {
+                    failure,
+                    retry: ModelRetryDecision::Stop { reason },
+                    ..
+                } => Some((failure, reason)),
+                _ => None,
+            }
+        })
+        .expect("child typed model failure");
+
+    assert_eq!(child_failure, root_failure);
+    assert_eq!(child_reason, root_reason);
+    assert_eq!(child_reason, ModelRetryStopReason::ActionableOutput);
+    assert_eq!(child_failure.response, evidence);
+    assert!(!child_failure.retry_safe);
 }
 
 #[tokio::test]
@@ -4972,7 +5170,9 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
         category: ModelErrorCategory::Transport,
         message: "connection reset".into(),
         retryable: true,
+        retry_safe: true,
         actionable_output: false,
+        response: ModelResponseEvidence::default(),
     };
     let mut changed_request = persisted_model_request(&created, 1);
     changed_request.attempt = 1;
@@ -5032,7 +5232,9 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
                 category: ModelErrorCategory::Transport,
                 message: "connection reset".into(),
                 retryable: true,
+                retry_safe: true,
                 actionable_output: false,
+                response: ModelResponseEvidence::default(),
             },
             accounting: Box::new(ModelAccounting::default()),
             retry: ModelRetryDecision::Retry {
@@ -5511,7 +5713,9 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
         category: ModelErrorCategory::Transport,
         message: "first connection reset".into(),
         retryable: true,
+        retry_safe: true,
         actionable_output: false,
+        response: ModelResponseEvidence::default(),
     };
     let first_attempt = AttemptId("failed-first-attempt".into());
     append_event(
@@ -5652,7 +5856,9 @@ async fn resume_in_flight_retry_requires_recovery_without_reissuing_the_retry() 
         category: ModelErrorCategory::Transport,
         message: "first connection reset".into(),
         retryable: true,
+        retry_safe: true,
         actionable_output: false,
+        response: ModelResponseEvidence::default(),
     };
     let first_attempt = AttemptId("retry-primary-attempt".into());
     append_event(

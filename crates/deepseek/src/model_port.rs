@@ -3,8 +3,8 @@ use std::num::NonZeroU32;
 use async_trait::async_trait;
 use codewhale_runtime::{
     ActorRequestAccounting, AgentActorKind, ApiSurface as RuntimeApiSurface, ModelAccounting,
-    ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream, ModelStreamEvent,
-    SurfaceUsage,
+    ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelResponseEvidence,
+    ModelStream, ModelStreamEvent, SurfaceUsage,
 };
 
 use crate::{
@@ -257,7 +257,56 @@ fn transport_error(error: DeepSeekTransportError) -> ModelPortError {
             ("deepseek_protocol", ModelErrorCategory::Protocol)
         }
     };
-    ModelPortError::new(code, category, error.to_string(), error.retryable())
+    let response_headers_received = matches!(
+        &error,
+        DeepSeekTransportError::Http { .. }
+            | DeepSeekTransportError::InvalidJson(_)
+            | DeepSeekTransportError::SseProvider(_)
+            | DeepSeekTransportError::StreamStall { .. }
+            | DeepSeekTransportError::StreamOverflow { .. }
+            | DeepSeekTransportError::StreamIncomplete
+            | DeepSeekTransportError::UnsupportedFinishReason(_)
+            | DeepSeekTransportError::MissingField(_)
+    );
+    let message = transport_diagnostic_message(&error);
+    ModelPortError::new(code, category, message, error.retryable()).with_response(
+        ModelResponseEvidence {
+            response_headers_received,
+            ..ModelResponseEvidence::default()
+        },
+    )
+}
+
+fn transport_diagnostic_message(error: &DeepSeekTransportError) -> String {
+    match error {
+        DeepSeekTransportError::RequestBudget(error) => error.to_string(),
+        DeepSeekTransportError::ResponseHeaderTimeout { timeout } => {
+            format!("DeepSeek 响应头等待超时（{timeout:?}）")
+        }
+        DeepSeekTransportError::Http { status, .. } => {
+            format!("DeepSeek HTTP 请求失败（状态码：{status}）")
+        }
+        DeepSeekTransportError::StreamStall { timeout } => {
+            format!("DeepSeek 流式响应停滞（{timeout:?}）")
+        }
+        DeepSeekTransportError::StreamOverflow { limit } => {
+            format!("DeepSeek 流式响应超过本地缓冲上限（{limit} 字节）")
+        }
+        DeepSeekTransportError::StreamIncomplete => {
+            "DeepSeek 流式响应未形成可信完成状态".to_owned()
+        }
+        DeepSeekTransportError::UnsupportedFinishReason(_) => {
+            "DeepSeek 返回了当前协议不支持的完成原因".to_owned()
+        }
+        DeepSeekTransportError::MissingField(field) => {
+            format!("DeepSeek 响应缺少必要字段：{field}")
+        }
+        DeepSeekTransportError::Network(_) => "DeepSeek 网络传输失败".to_owned(),
+        DeepSeekTransportError::InvalidConfig(_) => "DeepSeek 连接配置无效".to_owned(),
+        DeepSeekTransportError::InvalidPlan(_) => "DeepSeek 请求计划无效".to_owned(),
+        DeepSeekTransportError::InvalidJson(_) => "DeepSeek 响应不是有效 JSON".to_owned(),
+        DeepSeekTransportError::SseProvider(_) => "DeepSeek 流返回服务端错误".to_owned(),
+    }
 }
 
 fn runtime_accounting(
@@ -389,6 +438,25 @@ mod tests {
         ] {
             assert!(official_model_capabilities(unsupported).is_err());
         }
+    }
+
+    #[test]
+    fn persisted_transport_diagnostics_never_retain_provider_body_or_network_detail() {
+        let http = transport_error(DeepSeekTransportError::Http {
+            status: 503,
+            message: "sk-sensitive /private/workspace provider body".to_owned(),
+            retry_after: None,
+        });
+        assert_eq!(http.message, "DeepSeek HTTP 请求失败（状态码：503）");
+        assert!(http.response.response_headers_received);
+        assert!(!http.message.contains("sensitive"));
+        assert!(!http.message.contains("/private"));
+
+        let network = transport_error(DeepSeekTransportError::Network(
+            "request to https://secret.example failed at /private/path".to_owned(),
+        ));
+        assert_eq!(network.message, "DeepSeek 网络传输失败");
+        assert!(!network.response.response_headers_received);
     }
 
     #[test]
