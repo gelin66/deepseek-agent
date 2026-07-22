@@ -20,7 +20,10 @@
   canonical JSON 评测口径失效判定 `hold`。M7-A2 已修复唯一 canonical JSON owner，建立
   公平 shared-fix control/treatment 并重新冻结；正式 suite 在第 7/40 arm 遇到一个真实
   incomplete response/accounting 后按预注册规则停止，仍为 `hold`、不具备产品指标资格。
-  当前 Run API v9、RuntimeEvent v14、State schema v19。CLI、TUI、本地 API 与
+  M7-A3 已在 `e98ca5ae` 建立不完整 stream 的 typed evidence、增量 usage accounting 与
+  replay-safe retry；完整离线门禁通过。旧 control/treatment 无法同时承载字节等价修复并
+  保持原 production delta，因此 formal 复评在读取 Key 前判定 `inadmissible`，M7-A 产品
+  结论继续 `hold`。当前 Run API v9、RuntimeEvent v15、State schema v20。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -133,7 +136,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A2 因真实 incomplete response/accounting 在 7/40 arms 后 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A3 correctness 已完成；旧 A/B 因 shared-fix 不可交换继续 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1697,6 +1700,27 @@ production response/usage 生命周期未闭合。原 A2 raw 不续跑、不补 
 才能用新 candidate、suite ID/output 从 position 1 全量 refreeze。当前不开放多 Writer，
 也不以 Harness-only 改动换号重跑。完整证据见
 [M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
+
+M7-A3 已完成独立 correctness 切片。`crates/deepseek` 现在要求受支持的 finish 与 `[DONE]`
+共同闭合 response，拒绝 DONE 后 data，并在 usage frame 到达时立即记录 accounting；partial
+content、reasoning 或任意 tool-call fragment 都会形成最小 typed evidence 并禁止自动重放。
+Runtime 只在 response 可证明 replay-safe 且错误可重试时原子准备 retry；RuntimeEvent v15
+和 State v20 直接持久化该证据，root/read-only child 使用同一 conformance，crash 后仍不
+重发 in-flight request。旧 v19 materialized run 直接退役，不建立兼容 reader 或双写。
+
+Harness 已区分 response count 与 usage response count，以 `accounting.usage` 保存异常 EOF 前
+已经观察到的 usage，并只输出 failure/attempt/message 的脱敏 typed 投影或哈希。对 M7-A2
+T4 的修正投影移除了派生 surface mismatch，但 incomplete、usage incomplete 和费用下界仍
+独立成立；原 raw、manifest 和 `hold` 结论没有改变。Harness 39/39、focused、fmt、workspace
+clippy/test 全部通过。
+
+正式 M7-A 复评没有执行：M7-A3 的 12-path patch 在旧 treatment 上可直接应用，但旧 control
+有 8 个不同 blob、三方模拟出现 8 个 changed-in-both 文件/20 个冲突块；更重要的是 control
+v13/v18、treatment v14/v19 与新 v15/v20 的直接切换不能同时满足相同 patch、相同 numstat/
+patch-id 和原 production delta 不变。Harness 已在任何 output/Key/API 前明确阻断复评，未
+创建新 formal manifest 或 raw。M7-A 继续 `hold`；若未来重评，必须从共同 corrected base
+定义新的 treatment delta，不得冒充旧 delta。完整证据见
+[M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
 
 ### 调优
 

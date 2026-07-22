@@ -16,6 +16,8 @@
 - M7-A production candidate：`24c8a530`
 - M7-A2 canonical JSON correctness checkpoint：`570212ae`
 - M7-A2 evaluator checkpoint：`1077fe93`
+- M7-A3 incomplete stream correctness checkpoint：`e98ca5ae`
+- M7-A3 Harness checkpoint：`db381889`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -24,8 +26,10 @@
   verifier contract 单 owner 与 typed completion recovery，正式 v1 因 Rust/Python
   canonical JSON 口径失效判定 `hold`。M7-A2 已修复唯一 canonical JSON owner 并完成公平
   shared-fix 复评；正式 suite 在 7/40 arms 后因一个真实 incomplete response/accounting
-  停止，仍为 `hold`、不具备产品指标资格
-- 当前协议：Run API v9、RuntimeEvent v14、State schema v19
+  停止，仍为 `hold`、不具备产品指标资格。M7-A3 已补齐 typed stream failure、增量 usage
+  accounting 与 replay-safe retry；完整离线门禁通过，但旧 control/treatment 无法建立保持
+  原 production delta 的公平 shared fix，因此没有读取 Key 或执行 live 复评，M7-A 继续 `hold`
+- 当前协议：Run API v9、RuntimeEvent v15、State schema v20
 
 ## 1. 当前结论
 
@@ -82,7 +86,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。RuntimeEvent v14 与 State schema v19 又持久化 completion rejection 的 typed
+推断已被替代。RuntimeEvent v15 与 State schema v20 继续持久化 completion rejection 的 typed
 `cause` 和 `required_transition`，恢复只能消费当前 generation 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
 
@@ -166,7 +170,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue 通过 State schema v19 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v20 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -190,7 +194,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v14 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+RuntimeEvent v15 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -265,7 +269,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v14 / State v19 的 canonical facts。
+post-integration verification 都是 RuntimeEvent v15 / State v20 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -283,6 +287,10 @@ EvidenceReceipt 可以满足 root TaskContract。
 - Chat ordinary/non-streaming 与 SSE transport；
 - reasoning/tool-call 历史回放；
 - finish reason、typed error、retry 和 usage；
+- 完整 SSE response 必须同时观察受支持 finish reason 与 `[DONE]`，DONE 后 data fail closed；
+- content、reasoning、tool-call fragment、finish、usage 与 DONE 的最小 typed evidence；
+- usage frame 到达即进入 accounting，异常 EOF/consumer drop 不丢失已知 usage；
+- retryable 与 replay-safe 分离，partial output/tool-call 不允许自动重放；
 - root/child physical request attribution；
 - auto-route classifier 与确定性 fallback；
 - 官方模型 capability、output limit 和 pricing fixture。
@@ -318,9 +326,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v19；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v20；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v14；
+- 当前 canonical RuntimeEvent writer/reader 为 v15；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -329,7 +337,7 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
   一个 reserved run ID，不同 payload 复用 ID 被拒绝；
 - 最近一次模型请求实际 advertised tool catalog 的持久化与 replay 重建；
 - execution lease 与 epoch；
-- pending model attempt 与 unknown billing；
+- pending model attempt、typed response/failure evidence、原子 retry decision 与 unknown billing；
 - pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
 - frozen TaskContract、workspace state、completion candidate、Host verifier durable action
   与 EvidenceReceipt；
@@ -337,8 +345,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
   post-integration verification 与 cleanup/recovery；
 - terminal exactly-once；
 - Terminal reducer 原子投影 `AgentOutcome.accounting`；root terminal accounting
-  `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；v18 只允许从
-  canonical event log 确定性重建旧物化 snapshot，其他差异 fail closed；
+  `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；
+- v20 直接退役不兼容的 v19 materialized run/finalized creation，同时保留可安全恢复的
+  pending Run API creation；不提供兼容 reader、alias 或双写；
 - no-key terminal replay。
 
 旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
@@ -368,7 +377,7 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
 - 当前 Run API v9 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v14；
+  writer/reader 为 v15；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -403,7 +412,7 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 | `protocol` | canonical task、request、command、event、named verifier、显式稳定 JSON evidence、AgentTask/outcome、terminal | 后续 evidence 只按真实任务缺口扩展 |
 | `runtime` | 唯一根/只读子/Writer Agent loop、Host actor capability、显式 Writer admission、时序 completion gate 与 reducer | M7 DeepSeek 可靠性/预算调优 |
 | `orchestrator` | 单 Writer worktree、Host diff/verify/integrate、精确 cleanup/recovery | Writer 保持 explicit-only；不扩双 Writer |
-| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | incomplete stream 的诊断、accounting 与安全恢复；FIM 调优 |
+| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting、完整 stream 证据与 usage 保全 | FIM 调优 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
 | `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
@@ -946,6 +955,18 @@ M7-A2 已将相同 canonical JSON correctness patch 应用到 control `18de2ad2`
 response 的可诊断、accounting、actionable-output 安全恢复和脱敏 typed failure evidence，
 再以新 candidate/suite/output 从 position 1 refreeze；不据此开放多 Writer。完整证据见
 [M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
+
+M7-A3 已完成该 production correctness 切片。DeepSeek stream 只有在受支持 finish 与
+`[DONE]` 都闭合后才提交；usage 在 frame 到达时立即记账；content、reasoning 或任意
+tool-call fragment 都形成 typed response evidence 并禁止自动重放。RuntimeEvent v15、State
+v20 与 RunStore 重开保持 response evidence、retry decision 和 accounting 一致。Harness
+同时区分 HTTP response、usage response、accounting usage 与 committed usage，并在任何
+output/Key/API 前拒绝不可采信的 live 复评。
+
+旧 control 的 v13/v18 与 treatment 的 v14/v19 使完整 v15/v20 correctness patch 无法同时
+保持 byte-equivalent shared fix 和原 M7-A production delta；因此本轮没有新 formal manifest、
+binary 或 raw，也没有读取 Key。M7-A 产品结论继续 `hold`。完整实现、离线门禁与公平性边界见
+[M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
 
 ## 7. 明确非结论
 

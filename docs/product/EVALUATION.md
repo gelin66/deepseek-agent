@@ -766,6 +766,31 @@ T1–T3 机制证据；T4 control、T5 和 read-only child 路径未执行，不
 1 全量 refreeze。完整身份与逐 arm 事实见
 [M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
 
+### 9.7 M7-A3 不完整流式响应 correctness 与不可复评结论（2026-07-22）
+
+M7-A3 在 production owner 上补齐了 M7-A2 缺失的诊断与安全恢复事实：DeepSeek parser 只有
+在受支持 finish 与 `[DONE]` 都闭合后才提交 response；usage 一经观察立即进入 accounting；
+partial content、reasoning 或 tool-call fragment 均禁止自动重放。RuntimeEvent v15 与 State
+v20 持久化脱敏 response evidence、`retryable`、`retry_safe`、actionable output 和原子 retry
+决策，RunStore 重开后逐字段一致，root/read-only child 通过同一 Runtime conformance。
+
+Harness 现在分别核对 response count 与 usage response count，并以 `accounting.usage` 保留
+完整响应提交前已经观察到的 usage；RunView committed usage 单独投影且不得超过 accounting。
+对 M7-A2 T4 的纠正只消除了错误的 surface 等式，`incomplete_responses=1`、
+`usage_complete=false`、`complete=false` 和费用下界仍保持不变。原 M7-A2 raw/manifest 未改。
+
+离线 focused、fmt、workspace clippy/test 和 Harness 39/39 全部通过。但正式复评不具备公平
+准入条件：M7-A3 patch 修改 12 个路径，旧 treatment 与 patch base 的 12 个 blob 全部相同，
+旧 control 却有 8 个不同 blob 和 20 个三方冲突块；control 的 RuntimeEvent v13/State v18、
+treatment 的 v14/v19 与新 v15/v20 直接切换也无法同时保持相同 correctness patch 和原 M7-A
+production delta。因此 Harness 在 output、Key 和 API 前返回 typed inadmissible；本轮未读取
+Key、未调用官方 API、未创建新 formal manifest/binary/raw。
+
+决策边界为：M7-A3 correctness 机制依据离线反例与恢复证据保留；M7-A 产品收益结论仍为
+**hold**，不能把 M7-A2 的方向性前缀结果升级为 keep。未来若重评，必须从共同的 corrected
+base 冻结一个新的 treatment delta。完整记录见
+[M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -65,9 +65,12 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v7, State schema is v15, and RuntimeEvent is v10. State
-  v15 persists and rebuilds the exact tool catalog advertised by the latest
-  model request plus the canonical Writer lifecycle and terminal accounting.
+- Current Run API is v9, State schema is v20, and RuntimeEvent is v15. State
+  v20 persists and rebuilds the exact advertised tool catalog, typed DeepSeek
+  response/failure evidence, retry decision, Writer lifecycle, and terminal
+  accounting. It directly retires incompatible v19 materialized runs while
+  preserving safe pending Run API creation recovery; no compatibility reader
+  or dual write exists.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
@@ -80,10 +83,17 @@ Changing one of these constraints requires evidence and a new ADR.
   seals diff/outcome, verifies in the worktree, integrates fast-forward with
   Git CAS/lease, verifies the latest root revision, and cleans up. The live
   canary is mechanism evidence only. M6-B1's formal 18-pair/36-arm A/B decided
-  `reject_and_rework`: keep the isolated mechanism, make Writer admission
-  explicit-only in the next cutover, and do not build multi-Writer before
-  verifier/evidence rework passes a new freeze. Current defaults have not yet
-  completed that admission cutover.
+  `reject_and_rework`: keep the isolated mechanism and make Writer admission
+  explicit-only. That cutover and verifier/evidence rework are complete, but
+  the subsequent formal v3 stopped on unknown billing; Writer remains
+  explicit-only and multi-Writer is not admitted.
+- M7-A3 established typed incomplete-stream evidence, incremental usage
+  accounting, and replay-safe retry at production checkpoint `e98ca5ae`.
+  Focused, fmt, workspace clippy/test, crash/reopen, and Harness gates pass.
+  A live M7-A reevaluation is inadmissible because the old v13/v18 control and
+  v14/v19 treatment cannot receive a byte-equivalent v15/v20 correctness patch
+  while preserving the original production delta. No Key or API was used;
+  the M7-A product conclusion remains `hold`.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split
