@@ -17,7 +17,9 @@
   M6-B1 v2 candidate 为 `5d72ae94`，结果为 `reject_and_rework`；rework v3
   candidate 为 `3310aa73`，结果为 `hold_mechanism`。M7-A candidate `24c8a530`
   已完成 verifier contract 单 owner 与 typed completion recovery；正式 v1 因
-  canonical JSON 评测口径失效判定 `hold`，不宣称产品收益。
+  canonical JSON 评测口径失效判定 `hold`。M7-A2 已修复唯一 canonical JSON owner，建立
+  公平 shared-fix control/treatment 并重新冻结；正式 suite 在第 7/40 arm 遇到一个真实
+  incomplete response/accounting 后按预注册规则停止，仍为 `hold`、不具备产品指标资格。
   当前 Run API v9、RuntimeEvent v14、State schema v19。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -131,7 +133,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A v1 因 canonical JSON 评测口径失效而 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A2 因真实 incomplete response/accounting 在 7/40 arms 后 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1670,6 +1672,31 @@ ledger、accounting 均通过；baseline 和 candidate 都出现同一 artifact 
 加入跨 key-order 与 Rust/Python 固定向量，再用新的 candidate、suite ID、output path 从
 position 1 完整 refreeze。完整身份、费用、已执行事实和非结论见
 [M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
+
+M7-A2 已完成上述 correctness 切片。`crates/protocol` 现在逐层显式排序 object key，artifact
+构造与 replay 验证共用同一 canonical-byte helper；跨 Rust/Python、`preserve_order`
+开/关、M7-A v1 T1 和篡改反例由共同向量冻结。相同修复被字节等价地应用到 control
+`18de2ad2`（parent `3351213b`）与 treatment `c6a74304`（parent `24c8a530`）；M7-A
+production delta 没有被 canonical correctness 混入 treatment。
+
+新的 20 对 / 40 arms 正式 suite 从 position 1 执行，在第 7 arm 按 accounting gate 停止：
+
+- 前 6 arms 计量完整、0 false-success；T1–T3 treatment 为 3/3 verified，control 为
+  0/3 blocked，提供强方向性机制证据但不构成总体收益结论；
+- 第 7 arm T4 treatment 的外部 verifier 和修改范围通过，但 canonical terminal 为 Failed；
+  4 个 physical responses/attempts 只有 3 个 usage response，`incomplete_responses=1`、
+  `usage_complete=false`、`complete=false`；
+- aggregate 为 `hold`、`product_metric_eligible=false`，已知费用 USD `0.019383566` 只作
+  下界；T4 control 与 T5 均未执行，不能宣称 read-only multi Agent 或 5-task 总体收益。
+
+这次停止不是 Harness canonical JSON 假阳性，也不是 safety reject。raw 没有保存足以归因
+网络、provider、输出上限或其他具体原因的 typed failure，因此不得猜测根因；它只证明
+production response/usage 生命周期未闭合。原 A2 raw 不续跑、不补 mate、不覆盖、不拼样。
+下一独立切片先定义并修复 incomplete response 的可诊断、accounting 与安全恢复边界，补齐
+脱敏 typed failure evidence 和离线 stream/crash/replay 反例；只有实质 production 变化后
+才能用新 candidate、suite ID/output 从 position 1 全量 refreeze。当前不开放多 Writer，
+也不以 Harness-only 改动换号重跑。完整证据见
+[M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
 
 ### 调优
 

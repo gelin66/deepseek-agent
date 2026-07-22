@@ -712,6 +712,60 @@ Host unsafe completion。原始结果保持本地 `0600`、Git ignored，SHA-256
 新 clean candidate，并重新冻结独立 identity。完整记录见
 [M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
 
+### 9.6 M7-A2 shared canonical JSON 修复与 accounting 中止证据（2026-07-22）
+
+M7-A2 先修复 v1 的评测口径根因，再建立公平 shared-fix A/B：同一个 canonical JSON
+correctness patch 被应用到 control parent `3351213b` 和 treatment parent `24c8a530`，形成
+direct-child checkpoints `18de2ad29a9db5780fcbe90e8ba0eef39225399f` 与
+`c6a743040eae9548837849c6f58e5c638cc073cc`。两边 changed paths、numstat、stable patch-id
+完全相同；原始和修复后的 M7-A production delta patch-id 也相同。control/treatment exact
+release binary 分别为：
+
+- `sha256:9c8d5b095222ac879ad5cf85f83bfe53b9e91dda88c4775f213fd02d3bdc0b3d`；
+- `sha256:dd5becce5fb9ab50b1cf53de70918adb26c8da7957672817943c51f1d774445a`。
+
+`crates/protocol` 现在显式递归排序 JSON object、保持 array 顺序，并让 artifact create/replay
+共用 canonical bytes；Rust/Python、`preserve_order` 开关、M7-A v1 T1 artifact/receipt 和
+payload/SHA/length/ID 篡改使用同一固定向量。新的 v3 Harness 还绑定实际 root start
+identity、TaskContract、完整 event/RunView digest、Host lifecycle、typed rejection 实因和
+工具生命周期。live 前 focused、fmt、workspace clippy/test、两个 checkpoint 定向测试、
+exact release build 和 Harness 36/36 自测全部通过。
+
+冻结 suite `m7-a2-agent-convergence-ab-v1-18de2ad2-vs-c6a74304` 仍使用原任务、提示词、
+`deepseek-v4-flash` Standard Chat、预算、顺序和门槛，从 position 1 计划执行 20 对 / 40
+arms。实际完成 7 arms 后按预注册 accounting gate 停止：
+
+- 前 6 arms measurement valid、0 false-success；T1–T3 treatment 3/3 Completed+verified，
+  control 0/3 blocked；
+- treatment 三个成功 arm 的 Host receipt、artifact、lineage、Terminal/RunView、external
+  verifier、scope 和 authority 都闭环；T3 明确完成 failed verifier → effective mutation →
+  passed 的时序 lineage；
+- 第 7 arm T4 treatment 修改预期文件且 external verifier passed，但 canonical terminal
+  为 Failed，无 completion proposal/Host receipt；4 个 physical response/attempts 只有 3 个
+  usage response，并有 `model_request_failed=1`、`incomplete_responses=1`、
+  `usage_complete=false`、`complete=false`；
+- accounting 为 sealed、in-flight 0、billing_unknown=false、unpriced=false，但这只排除了
+  transport delivery unknown，不能证明 incomplete response 的 billable usage 为零；
+- 7 arms 共 50 个 physical attempts，已知费用 USD `0.019383566` / CNY `0.138454040`
+  只作下界；input/output 记录为 254,495 / 25,648，但也不是完整总消费。
+
+Harness 的 `surface_totals_valid` 对 incomplete response 的 response/usage response 数量要求
+偏严，但即使移除该派生 mismatch，`incomplete_responses=1`、`usage_complete=false` 和
+`complete=false` 仍独立要求停止。raw 没有保存可把 failure 归因到网络、provider、输出上限
+或其他具体原因的 typed cause，因此不得事后猜测或把缺失 usage 当作零。
+
+预注册决定为 **hold**：`product_metric_eligible=false`、`safety_failures={}`、
+0 false-success、treatment identity/spec 全部有效。已观察到的 verified delta `+3` 仅是
+T1–T3 机制证据；T4 control、T5 和 read-only child 路径未执行，不能宣布 5-task 总体收益、
+正式效率收益或多 Agent 收敛。raw 保持本地 `0600`、Git ignored，SHA-256
+`ca3eeaaa7a2e46914d262549dab57c57fe23bfd7a94678002a81f405f80ffbbc`，无 formal partial；
+不得覆盖、续跑、补 mate、追加 position 8、重采样或与未来 suite 拼接。
+
+新的正式 claim 必须先有独立、实质性的 production stream/accounting/typed failure evidence
+变化及离线 fixture/crash/replay 证据，再使用新 candidate、suite ID、output path 从 position
+1 全量 refreeze。完整身份与逐 arm 事实见
+[M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

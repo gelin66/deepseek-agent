@@ -14,13 +14,17 @@
 - M6-B1 v2 正式 A/B candidate：`5d72ae94`
 - M6-B1 rework v3 candidate：`3310aa73`
 - M7-A production candidate：`24c8a530`
+- M7-A2 canonical JSON correctness checkpoint：`570212ae`
+- M7-A2 evaluator checkpoint：`1077fe93`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
   `reject_and_rework`。rework 已完成，v3 因一次真实 transport attempt 的计费不可证明按
   预注册规则判定 `hold_mechanism`；Writer 保持 explicit-only，M6-B2 不准入。M7-A 已完成
   verifier contract 单 owner 与 typed completion recovery，正式 v1 因 Rust/Python
-  canonical JSON 口径失效判定 `hold`
+  canonical JSON 口径失效判定 `hold`。M7-A2 已修复唯一 canonical JSON owner 并完成公平
+  shared-fix 复评；正式 suite 在 7/40 arms 后因一个真实 incomplete response/accounting
+  停止，仍为 `hold`、不具备产品指标资格
 - 当前协议：Run API v9、RuntimeEvent v14、State schema v19
 
 ## 1. 当前结论
@@ -203,6 +207,12 @@ generation 和已知 revision 的 Host-sealed `EvidenceReceipt`。任何 `MayWri
 执行都会推进 workspace generation，即使内容 hash 恢复原值；旧 receipt 因而不能复活。默认
 `TaskDefinition::host` 仍由 Host Runtime policy 接受候选，它不是确定性验证成功，也不能
 自动计为评测的 `verified_success`。
+
+M7-A2 后，`crates/protocol` 的 canonical JSON 不再依赖 `serde_json::Map` 的 feature 后端：
+每层 object 显式按 UTF-8 key bytes 排序，array 保持原序；inline verification artifact 的
+构造与 replay validation 共用同一 canonical-byte helper。跨 Rust/Python、
+`serde_json/preserve_order` 开/关、M7-A v1 T1 artifact/receipt 和篡改反例共享固定向量。
+没有新增第二种 digest、legacy adapter、兼容开关或 schema owner。
 
 Runtime 还为每个 root/child 从共享逻辑预算预留一个可退还的最终请求许可。descendant 与
 child 必须先 join，随后各自以 `tools=[]` 发出最后请求；没有最终容量时不得先提交假的
@@ -390,10 +400,10 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 
 | Crate | 当前生产职责 | 当前迁移债务 |
 |---|---|---|
-| `protocol` | canonical task、request、command、event、named verifier、有序 evidence、AgentTask/outcome、terminal | 后续 evidence 只按真实任务缺口扩展 |
+| `protocol` | canonical task、request、command、event、named verifier、显式稳定 JSON evidence、AgentTask/outcome、terminal | 后续 evidence 只按真实任务缺口扩展 |
 | `runtime` | 唯一根/只读子/Writer Agent loop、Host actor capability、显式 Writer admission、时序 completion gate 与 reducer | M7 DeepSeek 可靠性/预算调优 |
 | `orchestrator` | 单 Writer worktree、Host diff/verify/integrate、精确 cleanup/recovery | Writer 保持 explicit-only；不扩双 Writer |
-| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
+| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | incomplete stream 的诊断、accounting 与安全恢复；FIM 调优 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
 | `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
@@ -920,6 +930,23 @@ M7-A candidate `24c8a530` 的离线门禁和 exact release identity 已冻结。
 当前状态为 `hold`，原 suite 不续跑，完整证据见
 [M7-A DeepSeek Agent 收敛正式 A/B v1](../../eval/summaries/m7-a-agent-convergence-ab-2026-07-22.md)。
 
+M7-A2 已将相同 canonical JSON correctness patch 应用到 control `18de2ad2` 和 treatment
+`c6a74304`，并以独立 exact binaries、共同向量和 v3 Harness 从 position 1 重新冻结。
+正式 DeepSeek suite 的前 6 arms 计量完整：T1–T3 treatment 3/3 Completed+verified，control
+0/3 blocked，全部 0 false-success。第 7 arm T4 treatment 修改范围和外部 verifier 通过，
+但 canonical terminal 为 Failed；4 个 physical response/attempts 只有 3 个 usage response，
+`incomplete_responses=1`、`usage_complete=false`、`complete=false`。Harness 按冻结规则
+停止，aggregate 为 `hold`、`product_metric_eligible=false`，已知 USD `0.019383566` 只作
+下界。raw 没有保存足以归因网络、provider、输出上限或其他具体原因的 typed failure；当前
+只能确认 production response/usage 生命周期没有闭合。
+
+因此 M7-A2 证明 canonical JSON 修复消除了 v1 evaluator 假阳性，并为 T1–T3 提供强方向性
+机制证据；它没有证明 5-task 总体收益、正式效率或 T5 read-only child。T4 control 与 T5
+均未执行，原 raw 不续跑、不补 mate、不拼样。下一 production 切片必须先收敛 incomplete
+response 的可诊断、accounting、actionable-output 安全恢复和脱敏 typed failure evidence，
+再以新 candidate/suite/output 从 position 1 refreeze；不据此开放多 Writer。完整证据见
+[M7-A2 DeepSeek Agent 收敛正式 A/B](../../eval/summaries/m7-a2-agent-convergence-ab-2026-07-22.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -939,7 +966,8 @@ M7-A candidate `24c8a530` 的离线门禁和 exact release identity 已冻结。
   `2/18 -> 4/18`，但 false-success、安全和开销硬门槛失败；
 - transport 迁移本身提升了真实编码成功率；
 - M7-A verifier 单 owner 与 typed recovery 已证明提高完整正式任务集的 verified success 或
-  效率；v1 只执行 2/40 arms，且 artifact canonical JSON 评测口径失效；
+  效率；A2 虽修复 v1 canonical JSON 口径并观察到 T1–T3 `0/3 -> 3/3`，但正式 suite 因
+  incomplete response 只执行 7/40 arms，T4 mate、T5 和 read-only child 均无本次 live 证据；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
