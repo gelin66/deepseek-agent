@@ -19,8 +19,8 @@ use codewhale_app::{
 };
 use codewhale_context::InstructionSource;
 use codewhale_protocol::run_api::{
-    ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand,
-    RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
+    ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunApiErrorReason,
+    RunCommand, RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
@@ -60,7 +60,7 @@ fn protocol_label(value: &impl Serialize) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecStartupFailure {
     InvalidArguments,
     ProviderUnsupported,
@@ -864,34 +864,35 @@ fn signal_cancel_won(result: &RunCommandResult, phase: &AtomicI32) -> bool {
 }
 
 fn startup_failure_for_run_api(error: &RunApiError) -> ExecStartupFailure {
-    let message = error.message.as_ref();
-    if message.starts_with("run_resume_workspace_mismatch：") {
-        return ExecStartupFailure::ResumeWorkspaceMismatch;
-    }
-    if message.starts_with("run_resume_provider_mismatch：") {
-        return ExecStartupFailure::ResumeProviderMismatch;
-    }
-    if message.starts_with("run_resume_tool_catalog_mismatch：") {
-        return ExecStartupFailure::ResumeToolCatalogMismatch;
-    }
-    if message.starts_with("run_resume_fingerprint_missing：") {
-        return ExecStartupFailure::ResumeFingerprintMissing;
-    }
-    if message.starts_with("run_resume_fingerprint_mismatch：") {
-        return ExecStartupFailure::ResumeFingerprintMismatch;
-    }
-    match error.code {
-        RunApiErrorCode::RunNotFound => ExecStartupFailure::ResumeNotFound,
-        RunApiErrorCode::RunStoreFailed | RunApiErrorCode::RunAlreadyRunning => {
-            ExecStartupFailure::RunStore
+    match (error.code, error.reason) {
+        (RunApiErrorCode::RunEnvironmentMismatch, Some(RunApiErrorReason::WorkspaceMismatch)) => {
+            ExecStartupFailure::ResumeWorkspaceMismatch
         }
-        RunApiErrorCode::InvalidRequest if message.starts_with("deepseek_auto_route_") => {
+        (RunApiErrorCode::RunEnvironmentMismatch, Some(RunApiErrorReason::ProviderMismatch)) => {
+            ExecStartupFailure::ResumeProviderMismatch
+        }
+        (RunApiErrorCode::RunEnvironmentMismatch, Some(RunApiErrorReason::ToolCatalogMismatch)) => {
+            ExecStartupFailure::ResumeToolCatalogMismatch
+        }
+        (
+            RunApiErrorCode::RunEnvironmentMismatch,
+            Some(RunApiErrorReason::ExecutionFingerprintMissing),
+        ) => ExecStartupFailure::ResumeFingerprintMissing,
+        (
+            RunApiErrorCode::RunEnvironmentMismatch,
+            Some(RunApiErrorReason::ExecutionFingerprintMismatch),
+        ) => ExecStartupFailure::ResumeFingerprintMismatch,
+        (RunApiErrorCode::InvalidRequest, Some(RunApiErrorReason::DeepSeekAutoRouteFailed)) => {
             ExecStartupFailure::Route
         }
-        RunApiErrorCode::InvalidRequest if message.starts_with("deepseek_credential_missing：") => {
+        (RunApiErrorCode::InvalidRequest, Some(RunApiErrorReason::DeepSeekCredentialMissing)) => {
             ExecStartupFailure::Client
         }
-        RunApiErrorCode::InvalidRequest => ExecStartupFailure::InvalidArguments,
+        (RunApiErrorCode::RunNotFound, _) => ExecStartupFailure::ResumeNotFound,
+        (RunApiErrorCode::RunStoreFailed | RunApiErrorCode::RunAlreadyRunning, _) => {
+            ExecStartupFailure::RunStore
+        }
+        (RunApiErrorCode::InvalidRequest, _) => ExecStartupFailure::InvalidArguments,
         _ => ExecStartupFailure::InvalidArguments,
     }
 }
@@ -1957,11 +1958,41 @@ mod tests {
     }
 
     #[test]
+    fn exec_startup_failure_uses_typed_reason_instead_of_message_prefix() {
+        let typed = RunApiError {
+            code: RunApiErrorCode::RunEnvironmentMismatch,
+            reason: Some(RunApiErrorReason::WorkspaceMismatch),
+            message: "任意中文说明，不参与机器分类".into(),
+            run_id: Some(RunId::from("run-resume")),
+            terminal: None,
+            creation: None,
+        };
+        let legacy_text_only = RunApiError {
+            code: RunApiErrorCode::RunEnvironmentMismatch,
+            reason: None,
+            message: "run_resume_workspace_mismatch：旧文本前缀".into(),
+            run_id: Some(RunId::from("run-resume")),
+            terminal: None,
+            creation: None,
+        };
+
+        assert_eq!(
+            startup_failure_for_run_api(&typed),
+            ExecStartupFailure::ResumeWorkspaceMismatch
+        );
+        assert_eq!(
+            startup_failure_for_run_api(&legacy_text_only),
+            ExecStartupFailure::InvalidArguments
+        );
+    }
+
+    #[test]
     fn canonical_terminal_rejects_an_already_latched_process_signal() {
         let phase = AtomicI32::new(143);
         let result = RunCommandResult::Error {
             error: RunApiError {
                 code: RunApiErrorCode::RunTerminal,
+                reason: None,
                 message: "run already terminal".into(),
                 run_id: Some(RunId::from("run-terminal")),
                 terminal: None,

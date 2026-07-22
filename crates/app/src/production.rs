@@ -21,7 +21,7 @@ use codewhale_protocol::agent_runtime::{
     TranscriptEntry, Usage,
 };
 use codewhale_protocol::run_api::{
-    RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
+    RunApiError, RunApiErrorCode, RunApiErrorReason, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
@@ -38,8 +38,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{
-    AgentApplication, ReplayOnlyModelPort, RunComposition, api_error, recoverable_writer_task,
-    resume_needs_live_model, store_error,
+    AgentApplication, ReplayOnlyModelPort, RunComposition, api_error, api_error_with_reason,
+    recoverable_writer_task, resume_needs_live_model, store_error,
 };
 
 const DEEPSEEK_PROVIDER: &str = "deepseek";
@@ -288,9 +288,10 @@ impl RunComposition for ProductionComposition {
         })?;
         let request = &source.snapshot.request;
         if request.environment.provider != DEEPSEEK_PROVIDER {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 source_run_id,
-                "run_continue_provider_mismatch：source run is not bound to the official DeepSeek provider",
+                RunApiErrorReason::ProviderMismatch,
+                "来源运行未绑定官方 DeepSeek Provider",
             ));
         }
         let workspace = canonical_resume_workspace(source_run_id, &request.environment.workspace)?;
@@ -353,7 +354,12 @@ impl RunComposition for ProductionComposition {
                 },
             )
             .await
-            .map_err(|error| invalid_request(error.to_string()))?;
+            .map_err(|error| {
+                invalid_request_reason(
+                    RunApiErrorReason::DeepSeekAutoRouteFailed,
+                    format!("DeepSeek 自动路由失败：{error}"),
+                )
+            })?;
             (
                 selected.model().to_owned(),
                 selected
@@ -443,9 +449,10 @@ impl RunComposition for ProductionComposition {
             ));
         }
         if request.environment.provider != DEEPSEEK_PROVIDER {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 &run_id,
-                "run_resume_provider_mismatch：persisted run provider is not the official DeepSeek production provider",
+                RunApiErrorReason::ProviderMismatch,
+                "持久化运行未绑定官方 DeepSeek Provider",
             ));
         }
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
@@ -492,9 +499,10 @@ impl RunComposition for ProductionComposition {
         if request.environment.tool_catalog_sha256.as_deref()
             != Some(current_catalog_sha256.as_str())
         {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 &run_id,
-                "run_resume_tool_catalog_mismatch：model-visible tool catalog does not match the persisted run",
+                RunApiErrorReason::ToolCatalogMismatch,
+                "当前模型可见工具目录与持久化运行不一致",
             ));
         }
         let persisted_fingerprint = request
@@ -502,9 +510,10 @@ impl RunComposition for ProductionComposition {
             .execution_fingerprint_sha256
             .as_deref()
             .ok_or_else(|| {
-                environment_mismatch(
+                environment_mismatch_reason(
                     &run_id,
-                    "run_resume_fingerprint_missing：persisted run has no production execution fingerprint",
+                    RunApiErrorReason::ExecutionFingerprintMissing,
+                    "持久化运行缺少生产执行指纹",
                 )
             })?;
         let current_fingerprint = self.execution_fingerprint_sha256(
@@ -513,9 +522,10 @@ impl RunComposition for ProductionComposition {
             &current_catalog_sha256,
         );
         if persisted_fingerprint != current_fingerprint {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 &run_id,
-                "run_resume_fingerprint_mismatch：production execution fingerprint does not match the persisted run",
+                RunApiErrorReason::ExecutionFingerprintMismatch,
+                "当前生产执行指纹与持久化运行不一致",
             ));
         }
         let capability = official_model_capabilities(&request.model)
@@ -556,9 +566,10 @@ impl RunComposition for ProductionComposition {
             invalid_request("run_continue_source_id_missing：source run has no durable id")
         })?;
         if source_request.environment.provider != DEEPSEEK_PROVIDER {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 &source_run_id,
-                "run_continue_provider_mismatch：source run provider is not the official DeepSeek production provider",
+                RunApiErrorReason::ProviderMismatch,
+                "来源运行未绑定官方 DeepSeek Provider",
             ));
         }
         if source_request
@@ -566,9 +577,10 @@ impl RunComposition for ProductionComposition {
             .execution_fingerprint_sha256
             .is_none()
         {
-            return Err(environment_mismatch(
+            return Err(environment_mismatch_reason(
                 &source_run_id,
-                "run_continue_fingerprint_missing：source run has no production execution fingerprint",
+                RunApiErrorReason::ExecutionFingerprintMissing,
+                "来源运行缺少生产执行指纹",
             ));
         }
         let workspace =
@@ -699,8 +711,9 @@ impl ProductionComposition {
         request_budget: SharedApiRequestBudget,
     ) -> Result<DeepSeekTransport, RunApiError> {
         let credential = self.credential.clone().ok_or_else(|| {
-            invalid_request(
-                "deepseek_credential_missing：该运行需要访问官方 DeepSeek API，但未配置测试或生产 Key",
+            invalid_request_reason(
+                RunApiErrorReason::DeepSeekCredentialMissing,
+                "该运行需要访问官方 DeepSeek API，但尚未配置 API Key",
             )
         })?;
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -976,18 +989,17 @@ fn ensure_task_verifiers_exact(
 fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunApiError> {
     let path = Path::new(raw);
     let canonical = path.canonicalize().map_err(|error| {
-        environment_mismatch(
+        environment_mismatch_reason(
             run_id,
-            format!(
-                "run_resume_workspace_mismatch：persisted workspace {} cannot be canonicalized: {error}",
-                path.display()
-            ),
+            RunApiErrorReason::WorkspaceMismatch,
+            format!("无法规范化持久化工作区 {}：{error}", path.display()),
         )
     })?;
     if !canonical.is_dir() || stable_path(&canonical) != raw {
-        return Err(environment_mismatch(
+        return Err(environment_mismatch_reason(
             run_id,
-            "run_resume_workspace_mismatch：persisted workspace is no longer the same canonical directory",
+            RunApiErrorReason::WorkspaceMismatch,
+            "持久化工作区已不是原来的规范目录",
         ));
     }
     Ok(canonical)
@@ -1089,9 +1101,33 @@ fn invalid_request(message: impl Into<String>) -> RunApiError {
     api_error(RunApiErrorCode::InvalidRequest, message, None, None)
 }
 
+fn invalid_request_reason(reason: RunApiErrorReason, message: impl Into<String>) -> RunApiError {
+    api_error_with_reason(
+        RunApiErrorCode::InvalidRequest,
+        Some(reason),
+        message,
+        None,
+        None,
+    )
+}
+
 fn environment_mismatch(run_id: &RunId, message: impl Into<String>) -> RunApiError {
     api_error(
         RunApiErrorCode::RunEnvironmentMismatch,
+        message,
+        Some(run_id.clone()),
+        None,
+    )
+}
+
+fn environment_mismatch_reason(
+    run_id: &RunId,
+    reason: RunApiErrorReason,
+    message: impl Into<String>,
+) -> RunApiError {
+    api_error_with_reason(
+        RunApiErrorCode::RunEnvironmentMismatch,
+        Some(reason),
         message,
         Some(run_id.clone()),
         None,
@@ -1799,7 +1835,10 @@ mod tests {
                 Err(error) => error,
             };
             assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
-            assert!(error.message.contains("deepseek_credential_missing"));
+            assert_eq!(
+                error.reason,
+                Some(RunApiErrorReason::DeepSeekCredentialMissing)
+            );
         }
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
     }
@@ -1854,7 +1893,10 @@ mod tests {
             Ok(_) => panic!("finished writer tool replay must bind live DeepSeek"),
             Err(error) => error,
         };
-        assert!(error.message.contains("deepseek_credential_missing"));
+        assert_eq!(
+            error.reason,
+            Some(RunApiErrorReason::DeepSeekCredentialMissing)
+        );
 
         mark_writer_finished(
             &mut replay,
@@ -2543,7 +2585,10 @@ mod tests {
             .await,
         );
         assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
-        assert!(error.message.contains("deepseek_credential_missing"));
+        assert_eq!(
+            error.reason,
+            Some(RunApiErrorReason::DeepSeekCredentialMissing)
+        );
         assert!(
             app.store
                 .list_root_runs(
@@ -2961,10 +3006,9 @@ mod tests {
             .await,
         );
         assert_eq!(catalog_error.code, RunApiErrorCode::RunEnvironmentMismatch);
-        assert!(
-            catalog_error
-                .message
-                .starts_with("run_resume_tool_catalog_mismatch：")
+        assert_eq!(
+            catalog_error.reason,
+            Some(RunApiErrorReason::ToolCatalogMismatch)
         );
 
         let tool_config = tool_config_for_run(
@@ -3013,10 +3057,9 @@ mod tests {
             missing_fingerprint_error.code,
             RunApiErrorCode::RunEnvironmentMismatch
         );
-        assert!(
-            missing_fingerprint_error
-                .message
-                .starts_with("run_resume_fingerprint_missing：")
+        assert_eq!(
+            missing_fingerprint_error.reason,
+            Some(RunApiErrorReason::ExecutionFingerprintMissing)
         );
 
         let fingerprint_run = seed_resume_mismatch(
@@ -3041,10 +3084,9 @@ mod tests {
             fingerprint_error.code,
             RunApiErrorCode::RunEnvironmentMismatch
         );
-        assert!(
-            fingerprint_error
-                .message
-                .starts_with("run_resume_fingerprint_mismatch：")
+        assert_eq!(
+            fingerprint_error.reason,
+            Some(RunApiErrorReason::ExecutionFingerprintMismatch)
         );
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
     }

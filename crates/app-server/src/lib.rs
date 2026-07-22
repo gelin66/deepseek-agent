@@ -637,6 +637,7 @@ fn invalid_response(
         result: RunCommandResult::Error {
             error: RunApiError {
                 code: RunApiErrorCode::InvalidRequest,
+                reason: None,
                 message: message.into().into_boxed_str(),
                 run_id,
                 terminal: None,
@@ -1349,6 +1350,7 @@ mod tests {
             result: RunCommandResult::Error {
                 error: RunApiError {
                     code: RunApiErrorCode::RunRecoveryRequired,
+                    reason: None,
                     message: "resume required".into(),
                     run_id: Some(RunId::from("run-1")),
                     terminal: None,
@@ -1427,6 +1429,7 @@ mod tests {
                 result: RunCommandResult::Error {
                     error: RunApiError {
                         code,
+                        reason: None,
                         message: "typed".into(),
                         run_id: None,
                         terminal: None,

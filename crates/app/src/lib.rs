@@ -16,7 +16,8 @@ use codewhale_protocol::agent_runtime::{
 use codewhale_protocol::run_api::{
     ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT, PendingCreationKind,
     PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunApiErrorCode,
-    RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
+    RunApiErrorReason, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
+    RunView, StartRunCommand,
 };
 use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
@@ -554,10 +555,11 @@ impl AgentApplication {
         if let Some(expected_workspace) = command.expected_workspace.as_deref()
             && expected_workspace != source.snapshot.request.environment.workspace
         {
-            return Err(api_error(
+            return Err(api_error_with_reason(
                 RunApiErrorCode::RunEnvironmentMismatch,
+                Some(RunApiErrorReason::WorkspaceMismatch),
                 format!(
-                    "run_continue_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
+                    "调用方工作区 {expected_workspace:?} 与持久化工作区 {:?} 不一致",
                     source.snapshot.request.environment.workspace
                 ),
                 Some(command.run_id.clone()),
@@ -869,10 +871,11 @@ impl AgentApplication {
         if let Some(expected_workspace) = expected_workspace
             && expected_workspace != replay.snapshot.request.environment.workspace
         {
-            return error_result(api_error(
+            return error_result(api_error_with_reason(
                 RunApiErrorCode::RunEnvironmentMismatch,
+                Some(RunApiErrorReason::WorkspaceMismatch),
                 format!(
-                    "run_resume_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
+                    "调用方工作区 {expected_workspace:?} 与持久化工作区 {:?} 不一致",
                     replay.snapshot.request.environment.workspace
                 ),
                 Some(run_id.clone()),
@@ -1381,8 +1384,19 @@ fn api_error(
     run_id: Option<RunId>,
     terminal: Option<TerminalState>,
 ) -> RunApiError {
+    api_error_with_reason(code, None, message, run_id, terminal)
+}
+
+fn api_error_with_reason(
+    code: RunApiErrorCode,
+    reason: Option<RunApiErrorReason>,
+    message: impl Into<String>,
+    run_id: Option<RunId>,
+    terminal: Option<TerminalState>,
+) -> RunApiError {
     RunApiError {
         code,
+        reason,
         message: message.into().into_boxed_str(),
         run_id,
         terminal: terminal.map(Box::new),
@@ -1399,6 +1413,7 @@ fn creation_error(
 ) -> RunApiError {
     RunApiError {
         code,
+        reason: None,
         message: message.into().into_boxed_str(),
         run_id,
         terminal: None,
@@ -1987,11 +2002,7 @@ mod tests {
             .await,
         );
         assert_eq!(mismatch.code, RunApiErrorCode::RunEnvironmentMismatch);
-        assert!(
-            mismatch
-                .message
-                .starts_with("run_resume_workspace_mismatch：")
-        );
+        assert_eq!(mismatch.reason, Some(RunApiErrorReason::WorkspaceMismatch));
         assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
         assert_eq!(
             store
@@ -3111,11 +3122,7 @@ mod tests {
             .await,
         );
         assert_eq!(mismatch.code, RunApiErrorCode::RunEnvironmentMismatch);
-        assert!(
-            mismatch
-                .message
-                .starts_with("run_resume_workspace_mismatch：")
-        );
+        assert_eq!(mismatch.reason, Some(RunApiErrorReason::WorkspaceMismatch));
         assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
     }
 
@@ -3186,10 +3193,9 @@ mod tests {
             active_mismatch.code,
             RunApiErrorCode::RunEnvironmentMismatch
         );
-        assert!(
-            active_mismatch
-                .message
-                .starts_with("run_resume_workspace_mismatch：")
+        assert_eq!(
+            active_mismatch.reason,
+            Some(RunApiErrorReason::WorkspaceMismatch)
         );
         assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
         assert_eq!(

@@ -16,7 +16,7 @@ use crate::agent_runtime::{
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 9;
+pub const RUN_API_SCHEMA_VERSION: u32 = 10;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -242,11 +242,31 @@ pub enum RunApiErrorCode {
     InvalidInteractionResponse,
 }
 
+/// Stable machine-readable cause for failures that share one broad API code.
+///
+/// Human text must remain presentation-only. Clients use this field instead
+/// of parsing prefixes or implementation details from `message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunApiErrorReason {
+    #[serde(rename = "deepseek_auto_route_failed")]
+    DeepSeekAutoRouteFailed,
+    #[serde(rename = "deepseek_credential_missing")]
+    DeepSeekCredentialMissing,
+    WorkspaceMismatch,
+    ProviderMismatch,
+    ToolCatalogMismatch,
+    ExecutionFingerprintMissing,
+    ExecutionFingerprintMismatch,
+}
+
 /// Typed Run API failure. Human-readable text is supplementary to `code`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RunApiError {
     pub code: RunApiErrorCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RunApiErrorReason>,
     pub message: Box<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
@@ -394,7 +414,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 9,
+                "schema_version": 10,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -713,6 +733,7 @@ mod tests {
 
         let error = RunApiError {
             code: RunApiErrorCode::RunRecoveryRequired,
+            reason: None,
             message: "不会重复路由".into(),
             run_id: Some(RunId::from("reserved-auto")),
             terminal: None,
@@ -753,6 +774,38 @@ mod tests {
             assert_eq!(
                 serde_json::from_value::<RunApiErrorCode>(json!(expected)).unwrap(),
                 code
+            );
+        }
+
+        let reasons = [
+            (
+                RunApiErrorReason::DeepSeekAutoRouteFailed,
+                "deepseek_auto_route_failed",
+            ),
+            (
+                RunApiErrorReason::DeepSeekCredentialMissing,
+                "deepseek_credential_missing",
+            ),
+            (RunApiErrorReason::WorkspaceMismatch, "workspace_mismatch"),
+            (RunApiErrorReason::ProviderMismatch, "provider_mismatch"),
+            (
+                RunApiErrorReason::ToolCatalogMismatch,
+                "tool_catalog_mismatch",
+            ),
+            (
+                RunApiErrorReason::ExecutionFingerprintMissing,
+                "execution_fingerprint_missing",
+            ),
+            (
+                RunApiErrorReason::ExecutionFingerprintMismatch,
+                "execution_fingerprint_mismatch",
+            ),
+        ];
+        for (reason, expected) in reasons {
+            assert_eq!(serde_json::to_value(reason).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_value::<RunApiErrorReason>(json!(expected)).unwrap(),
+                reason
             );
         }
     }
