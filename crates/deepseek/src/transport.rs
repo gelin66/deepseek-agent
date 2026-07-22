@@ -1748,6 +1748,12 @@ mod tests {
     fn stream_plan(root: &str) -> RequestPlan {
         RequestPlan {
             surface: ApiSurface::StandardChat,
+            tool_surface: Some(crate::ToolSurfaceDecision {
+                surface: ApiSurface::StandardChat,
+                strict_compatible: false,
+                strict_fallback: false,
+                reason: crate::ToolSurfaceReason::Disabled,
+            }),
             url: format!("{root}/chat/completions"),
             model: "deepseek-v4-pro".to_string(),
             body: json!({

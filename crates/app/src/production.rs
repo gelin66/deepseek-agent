@@ -1104,8 +1104,9 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
     use codewhale_deepseek::{
-        OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
-        OFFICIAL_V4_MAX_OUTPUT_TOKENS,
+        ApiSurface, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
+        OFFICIAL_V4_MAX_OUTPUT_TOKENS, RuntimeChatPlanInput, StrictSchemaIssue, ToolSurfaceReason,
+        plan_runtime_chat,
     };
     use codewhale_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
@@ -2106,32 +2107,7 @@ mod tests {
     }
 
     #[test]
-    fn m6_b1_v3_manifest_freezes_actual_actor_tool_definitions() {
-        let manifest: Value = serde_json::from_str(include_str!(
-            "../../../eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-        ))
-        .expect("parse M6-B1 v3 manifest");
-        let allowed = manifest["treatments"]["common_allowed_tools"]
-            .as_array()
-            .expect("common allowed tools")
-            .iter()
-            .map(|name| name.as_str().expect("tool name").to_owned())
-            .collect::<Vec<_>>();
-        let policy = ToolPolicy {
-            enabled: true,
-            allowed: Some(allowed),
-            denied: Vec::new(),
-        };
-        let single_mode: WriteExecutionMode = serde_json::from_value(
-            manifest["treatments"]["single"]["write_execution_mode"].clone(),
-        )
-        .expect("single write execution mode");
-        let writer_mode: WriteExecutionMode = serde_json::from_value(
-            manifest["treatments"]["writer"]["write_execution_mode"].clone(),
-        )
-        .expect("Writer write execution mode");
-        assert_eq!(single_mode, WriteExecutionMode::Root);
-        assert_eq!(writer_mode, WriteExecutionMode::IsolatedWriter);
+    fn actual_actor_catalogs_freeze_strict_fallback_without_touching_historical_manifests() {
         let temp = tempfile::tempdir().expect("temp workspace");
         let tool_config = tool_config_for_run(
             &ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
@@ -2145,97 +2121,123 @@ mod tests {
             Arc::new(NullEventSink),
             Arc::new(InMemoryRunStore::default()),
         );
-        let mut actual =
-            std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
+        let policy = ToolPolicy::default();
+        let catalogs = [
+            (
+                "root_headless",
+                runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
+                Some(("agent", "$/required", "all_properties_required")),
+            ),
+            (
+                "root_interactive",
+                runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
+                Some(("agent", "$/required", "all_properties_required")),
+            ),
+            (
+                "coordinator",
+                runtime.tool_definitions(
+                    &policy,
+                    None,
+                    ModelToolAuthority::Coordinator,
+                    0,
+                    4,
+                    false,
+                ),
+                Some(("agent", "$/required", "all_properties_required")),
+            ),
+            (
+                "read_only_child",
+                runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
+                Some(("agent", "$/required", "all_properties_required")),
+            ),
+            (
+                "read_only_depth_limit",
+                runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
+                Some((
+                    "file_search",
+                    "$/additionalProperties",
+                    "closed_object_required",
+                )),
+            ),
+            (
+                "isolated_writer",
+                runtime.tool_definitions(
+                    &policy,
+                    None,
+                    ModelToolAuthority::IsolatedWriter,
+                    1,
+                    1,
+                    false,
+                ),
+                Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
+            ),
+            ("terminal_empty", Vec::new(), None),
+        ];
 
-        for task_id in ["t1", "t2", "t3"] {
-            let verifier_id = format!("m6b-{task_id}-exact");
-            let definition: TaskDefinition = serde_json::from_value(json!({
-                "objective": "只用于冻结实际工具目录",
-                "constraints": [],
-                "non_goals": [],
-                "acceptance": [{
-                    "kind": "verifier",
-                    "id": format!("m6b-{task_id}"),
-                    "description": "冻结 verifier",
-                    "evidence_policy": if task_id == "t3" {
-                        "failed_write_pass"
-                    } else {
-                        "latest_pass"
-                    },
-                    "verifier": {
-                        "verifier_id": "run_verifiers",
-                        "parameters": {
-                            "profile": "exact",
-                            "level": "quick",
-                            "max_python_files": 200,
-                            "commands": [{
-                                "name": verifier_id,
-                                "program": "/usr/bin/python3",
-                                "args": ["-I", "-B", "_eval_verifier.py", "."],
-                                "cwd": ""
-                            }]
+        for (label, catalog, expected) in catalogs {
+            let request = ModelRequest {
+                run_id: RunId::from(format!("strict-matrix-{label}")),
+                parent_run_id: None,
+                actor: AgentActor::default(),
+                model: "deepseek-v4-pro".to_owned(),
+                system_prompt: codewhale_protocol::agent_runtime::SystemPrompt::from_text(
+                    "冻结实际工具目录",
+                ),
+                messages: Vec::new(),
+                tools: catalog.clone(),
+                reasoning_effort: ReasoningEffort::Off,
+                max_output_tokens: Some(64),
+                streaming: false,
+                request_number: 1,
+                attempt: 0,
+            };
+            let plan = plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: "https://api.deepseek.com",
+                    strict_enabled: true,
+                    wire_model: request.model.clone(),
+                    max_tokens: 64,
+                },
+                &request,
+            )
+            .expect("actual actor catalog has a deterministic request plan");
+            assert_eq!(plan.surface, ApiSurface::StandardChat, "{label}");
+            let decision = plan.tool_surface.expect("Chat decision");
+            match expected {
+                Some((tool_name, path, code)) => assert_eq!(
+                    decision.reason,
+                    ToolSurfaceReason::IncompatibleCatalog {
+                        tool_name: tool_name.to_owned(),
+                        issue: StrictSchemaIssue {
+                            path: path.to_owned(),
+                            code: code.to_owned(),
                         },
-                        "plan": {"steps": [{
-                            "id": format!("m6b-{task_id}-exact"),
-                            "program": "/usr/bin/python3",
-                            "args": ["-I", "-B", "_eval_verifier.py", "."],
-                            "cwd": "",
-                            "env": {},
-                            "timeout_ms": 600000
-                        }]}
-                    }
-                }]
-            }))
-            .expect("M6-B1 task definition");
-            let catalogs = [
-                (
-                    "single_root",
-                    runtime.tool_definitions(
-                        &policy,
-                        Some(&definition),
-                        ModelToolAuthority::root(single_mode),
-                        0,
-                        0,
-                        false,
-                    ),
+                    },
+                    "{label}"
                 ),
-                (
-                    "writer_root",
-                    runtime.tool_definitions(
-                        &policy,
-                        Some(&definition),
-                        ModelToolAuthority::root(writer_mode),
-                        0,
-                        1,
-                        false,
-                    ),
-                ),
-                (
-                    "writer_child",
-                    runtime.tool_definitions(
-                        &policy,
-                        Some(&definition),
-                        ModelToolAuthority::IsolatedWriter,
-                        1,
-                        1,
-                        false,
-                    ),
-                ),
-                ("terminal_empty", Vec::new()),
-            ];
-            for (catalog_key, catalog) in catalogs {
-                actual.entry(task_id.to_owned()).or_default().insert(
-                    catalog_key.to_owned(),
-                    canonical_tool_catalog_sha256(&catalog),
+                None => assert_eq!(decision.reason, ToolSurfaceReason::NoTools, "{label}"),
+            }
+
+            let wire_tools = plan.body.get("tools").and_then(Value::as_array);
+            if catalog.is_empty() {
+                assert!(wire_tools.is_none(), "{label}");
+                continue;
+            }
+            let wire_tools = wire_tools.expect("non-empty actor catalog reaches Chat");
+            assert_eq!(wire_tools.len(), catalog.len(), "{label}");
+            for (wire, canonical) in wire_tools.iter().zip(&catalog) {
+                assert_eq!(wire["function"]["name"], canonical.name, "{label}");
+                assert_eq!(
+                    wire["function"]["description"], canonical.description,
+                    "{label}"
                 );
+                assert_eq!(
+                    wire["function"]["parameters"], canonical.input_schema,
+                    "{label}"
+                );
+                assert!(wire["function"].get("strict").is_none(), "{label}");
             }
         }
-        assert_eq!(
-            manifest["frozen_hashes"]["ordered_tool_definition_sha256"],
-            serde_json::to_value(actual).expect("ordered definition hash map"),
-            "ordered model-visible tool definition hashes drifted"
-        );
     }
 
     fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {

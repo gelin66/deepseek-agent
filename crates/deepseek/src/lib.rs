@@ -63,6 +63,8 @@ pub enum ResponseMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestPlan {
     pub surface: ApiSurface,
+    /// Frozen decision for Chat tool routing. FIM has no tool surface.
+    pub tool_surface: Option<ToolSurfaceDecision>,
     pub url: String,
     pub model: String,
     pub body: Value,
@@ -190,28 +192,57 @@ impl fmt::Display for FimPlanError {
 
 impl std::error::Error for FimPlanError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictSchemaIssue {
+    pub path: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSurfaceReason {
+    Disabled,
+    NoTools,
+    Compatible,
+    IncompatibleCatalog {
+        tool_name: String,
+        issue: StrictSchemaIssue,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSurfaceDecision {
     pub surface: ApiSurface,
     pub strict_compatible: bool,
     pub strict_fallback: bool,
+    pub reason: ToolSurfaceReason,
 }
 
 /// Decide strict mode atomically for a complete DeepSeek tool catalog.
 ///
 /// A single incompatible schema keeps the entire catalog on ordinary Chat;
 /// callers must never drop individual tools to force Beta Strict mode.
-pub fn plan_tool_surface<'a>(
-    strict_enabled: bool,
-    schemas: impl IntoIterator<Item = &'a Value>,
-) -> ToolSurfaceDecision {
-    let mut schemas = schemas.into_iter().peekable();
-    let strict_requested = strict_enabled && schemas.peek().is_some();
-    let strict_compatible = strict_requested && schemas.all(strict_schema_supported);
+pub fn plan_tool_surface(strict_enabled: bool, tools: &[PlannedTool]) -> ToolSurfaceDecision {
+    let reason = if !strict_enabled {
+        ToolSurfaceReason::Disabled
+    } else if tools.is_empty() {
+        ToolSurfaceReason::NoTools
+    } else if let Some((tool, issue)) = tools
+        .iter()
+        .find_map(|tool| strict_schema_issue(&tool.input_schema).map(|issue| (tool, issue)))
+    {
+        ToolSurfaceReason::IncompatibleCatalog {
+            tool_name: tool.name.clone(),
+            issue,
+        }
+    } else {
+        ToolSurfaceReason::Compatible
+    };
+    let strict_compatible = reason == ToolSurfaceReason::Compatible;
     ToolSurfaceDecision {
         surface: chat_surface(strict_compatible),
         strict_compatible,
-        strict_fallback: strict_requested && !strict_compatible,
+        strict_fallback: matches!(reason, ToolSurfaceReason::IncompatibleCatalog { .. }),
+        reason,
     }
 }
 
@@ -225,10 +256,8 @@ pub fn plan_chat(
     strict_enabled: bool,
     input: ChatPlanInput,
 ) -> Result<RequestPlan, ChatPlanError> {
-    let tool_surface = plan_tool_surface(
-        strict_enabled,
-        input.tools.iter().flatten().map(|tool| &tool.input_schema),
-    );
+    let tool_surface =
+        plan_tool_surface(strict_enabled, input.tools.as_deref().unwrap_or_default());
     let streaming = input.response_mode == ResponseMode::Streaming;
     let mut body = json!({
         "model": input.model,
@@ -274,9 +303,11 @@ pub fn plan_chat(
         .expect("planner model is a JSON string")
         .to_owned();
     validate_exact_reasoning_replay(&body, &model, input.reasoning.thinking_enabled())?;
+    let surface = tool_surface.surface;
     Ok(RequestPlan {
-        surface: tool_surface.surface,
-        url: chat_url(root, tool_surface.surface),
+        surface,
+        tool_surface: Some(tool_surface),
+        url: chat_url(root, surface),
         model,
         reasoning_replay_tokens: reasoning_replay_tokens(&body),
         body,
@@ -345,6 +376,7 @@ pub fn plan_fim(
     }
     Ok(RequestPlan {
         surface: ApiSurface::Fim,
+        tool_surface: None,
         url: format!("{root}/beta/completions"),
         model: FIM_MODEL.to_owned(),
         body: json!({
@@ -619,92 +651,174 @@ fn reasoning_replay_tokens(body: &Value) -> Option<u32> {
 /// documented subset. Unsupported catalogs must fall back as a whole.
 #[must_use]
 pub fn strict_schema_supported(schema: &Value) -> bool {
-    schema.get("type").and_then(Value::as_str) == Some("object")
-        && strict_schema_node_supported(schema)
+    strict_schema_issue(schema).is_none()
 }
 
-fn strict_schema_node_supported(schema: &Value) -> bool {
+#[must_use]
+pub fn strict_schema_issue(schema: &Value) -> Option<StrictSchemaIssue> {
+    if schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Some(strict_issue("$", "root_object_required"));
+    }
+    diagnose_strict_schema_node(schema, schema, "$").err()
+}
+
+fn diagnose_strict_schema_node(
+    schema: &Value,
+    root: &Value,
+    path: &str,
+) -> Result<(), StrictSchemaIssue> {
     let Some(object) = schema.as_object() else {
-        return false;
+        return Err(strict_issue(path, "schema_object_required"));
     };
     if object
         .get("description")
-        .is_some_and(|description| !description.is_string())
-        || !strict_definitions_supported(object)
+        .is_some_and(|value| !value.is_string())
     {
-        return false;
+        return Err(strict_issue(
+            &format!("{path}/description"),
+            "invalid_description",
+        ));
+    }
+    if let Some(definitions) = object.get("$def") {
+        let definitions = definitions
+            .as_object()
+            .ok_or_else(|| strict_issue(&format!("{path}/$def"), "invalid_definitions"))?;
+        let mut names = definitions.keys().collect::<Vec<_>>();
+        names.sort_unstable();
+        for name in names {
+            diagnose_strict_schema_node(
+                &definitions[name],
+                root,
+                &format!("{path}/$def/{}", escape_json_pointer(name)),
+            )?;
+        }
     }
 
     if let Some(reference) = object.get("$ref") {
-        return reference.is_string() && strict_keys_supported(object, &["$ref", "description"]);
+        first_unsupported_key(object, &["$ref", "description"])
+            .map(|key| strict_issue(&format!("{path}/{key}"), "unsupported_keyword"))
+            .map_or(Ok(()), Err)?;
+        let reference = reference
+            .as_str()
+            .ok_or_else(|| strict_issue(&format!("{path}/$ref"), "invalid_ref"))?;
+        if !reference.starts_with("#/$def/") || root.pointer(&reference[1..]).is_none() {
+            return Err(strict_issue(&format!("{path}/$ref"), "invalid_ref"));
+        }
+        return Ok(());
     }
     if let Some(branches) = object.get("anyOf") {
-        let Some(branches) = branches.as_array().filter(|branches| !branches.is_empty()) else {
-            return false;
-        };
-        return strict_keys_supported(object, &["anyOf", "description", "$def"])
-            && branches.iter().all(strict_schema_node_supported);
+        first_unsupported_key(object, &["anyOf", "description", "$def"])
+            .map(|key| strict_issue(&format!("{path}/{key}"), "unsupported_keyword"))
+            .map_or(Ok(()), Err)?;
+        let branches = branches
+            .as_array()
+            .filter(|branches| !branches.is_empty())
+            .ok_or_else(|| strict_issue(&format!("{path}/anyOf"), "invalid_any_of"))?;
+        for (index, branch) in branches.iter().enumerate() {
+            diagnose_strict_schema_node(branch, root, &format!("{path}/anyOf/{index}"))?;
+        }
+        return Ok(());
     }
 
-    let Some(schema_type) = object.get("type").and_then(Value::as_str) else {
-        return false;
-    };
+    let schema_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| strict_issue(&format!("{path}/type"), "invalid_type"))?;
     if let Some(values) = object.get("enum")
         && !values.as_array().is_some_and(|values| !values.is_empty())
     {
-        return false;
+        return Err(strict_issue(&format!("{path}/enum"), "invalid_enum"));
     }
 
     match schema_type {
         "object" => {
-            if !strict_keys_supported(
-                object,
-                &[
-                    "type",
-                    "description",
-                    "properties",
-                    "required",
-                    "additionalProperties",
-                    "$def",
-                ],
-            ) || object.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-            {
-                return false;
+            let allowed = [
+                "type",
+                "description",
+                "properties",
+                "required",
+                "additionalProperties",
+                "$def",
+            ];
+            if let Some(key) = first_unsupported_key(object, &allowed) {
+                return Err(strict_issue(
+                    &format!("{path}/{key}"),
+                    "unsupported_keyword",
+                ));
             }
-            let Some(properties) = object.get("properties").and_then(Value::as_object) else {
-                return false;
-            };
-            let Some(required_values) = object.get("required").and_then(Value::as_array) else {
-                return false;
-            };
+            if object.get("additionalProperties").and_then(Value::as_bool) != Some(false) {
+                return Err(strict_issue(
+                    &format!("{path}/additionalProperties"),
+                    "closed_object_required",
+                ));
+            }
+            let properties = object
+                .get("properties")
+                .and_then(Value::as_object)
+                .ok_or_else(|| strict_issue(&format!("{path}/properties"), "invalid_properties"))?;
+            let required_values = object
+                .get("required")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    strict_issue(&format!("{path}/required"), "all_properties_required")
+                })?;
             let Some(mut required) = required_values
                 .iter()
                 .map(Value::as_str)
                 .collect::<Option<Vec<_>>>()
             else {
-                return false;
+                return Err(strict_issue(
+                    &format!("{path}/required"),
+                    "all_properties_required",
+                ));
             };
             let mut property_names = properties.keys().map(String::as_str).collect::<Vec<_>>();
             property_names.sort_unstable();
             required.sort_unstable();
-            required == property_names && properties.values().all(strict_schema_node_supported)
+            if required != property_names {
+                return Err(strict_issue(
+                    &format!("{path}/required"),
+                    "all_properties_required",
+                ));
+            }
+            for name in property_names {
+                diagnose_strict_schema_node(
+                    &properties[name],
+                    root,
+                    &format!("{path}/properties/{}", escape_json_pointer(name)),
+                )?;
+            }
+            Ok(())
         }
         "string" => {
-            strict_keys_supported(
+            diagnose_scalar_keys(
                 object,
+                path,
                 &["type", "description", "pattern", "format", "enum", "$def"],
-            ) && object.get("pattern").is_none_or(Value::is_string)
-                && strict_enum_values_match(object, Value::is_string)
-                && object.get("format").is_none_or(|format| {
-                    matches!(
-                        format.as_str(),
-                        Some("email" | "hostname" | "ipv4" | "ipv6" | "uuid")
-                    )
-                })
+            )?;
+            if object
+                .get("pattern")
+                .is_some_and(|value| !value.is_string())
+            {
+                return Err(strict_issue(&format!("{path}/pattern"), "invalid_pattern"));
+            }
+            if !strict_enum_values_match(object, Value::is_string) {
+                return Err(strict_issue(&format!("{path}/enum"), "invalid_enum"));
+            }
+            if !object.get("format").is_none_or(|format| {
+                matches!(
+                    format.as_str(),
+                    Some("email" | "hostname" | "ipv4" | "ipv6" | "uuid")
+                )
+            }) {
+                return Err(strict_issue(&format!("{path}/format"), "invalid_format"));
+            }
+            Ok(())
         }
         "number" | "integer" => {
-            strict_keys_supported(
+            diagnose_scalar_keys(
                 object,
+                path,
                 &[
                     "type",
                     "description",
@@ -718,7 +832,8 @@ fn strict_schema_node_supported(schema: &Value) -> bool {
                     "enum",
                     "$def",
                 ],
-            ) && [
+            )?;
+            if ![
                 "const",
                 "default",
                 "minimum",
@@ -729,34 +844,108 @@ fn strict_schema_node_supported(schema: &Value) -> bool {
             ]
             .iter()
             .all(|key| object.get(*key).is_none_or(Value::is_number))
-                && strict_enum_values_match(object, Value::is_number)
+            {
+                return Err(strict_issue(path, "invalid_number_constraint"));
+            }
+            if schema_type == "integer"
+                && [
+                    "const",
+                    "default",
+                    "minimum",
+                    "maximum",
+                    "exclusiveMinimum",
+                    "exclusiveMaximum",
+                    "multipleOf",
+                ]
+                .iter()
+                .any(|key| {
+                    object
+                        .get(*key)
+                        .is_some_and(|value| value.as_i64().is_none() && value.as_u64().is_none())
+                })
+            {
+                return Err(strict_issue(path, "invalid_integer_constraint"));
+            }
+            if object
+                .get("multipleOf")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| value <= 0.0)
+            {
+                return Err(strict_issue(
+                    &format!("{path}/multipleOf"),
+                    "invalid_multiple_of",
+                ));
+            }
+            if !strict_enum_values_match(object, |value| {
+                if schema_type == "integer" {
+                    value.as_i64().is_some() || value.as_u64().is_some()
+                } else {
+                    value.is_number()
+                }
+            }) {
+                return Err(strict_issue(&format!("{path}/enum"), "invalid_enum"));
+            }
+            Ok(())
         }
         "boolean" => {
-            strict_keys_supported(object, &["type", "description", "enum", "$def"])
-                && strict_enum_values_match(object, Value::is_boolean)
+            diagnose_scalar_keys(object, path, &["type", "description", "enum", "$def"])?;
+            if !strict_enum_values_match(object, Value::is_boolean) {
+                return Err(strict_issue(&format!("{path}/enum"), "invalid_enum"));
+            }
+            Ok(())
         }
         "array" => {
-            strict_keys_supported(object, &["type", "description", "items", "enum", "$def"])
-                && object
-                    .get("items")
-                    .is_some_and(strict_schema_node_supported)
-                && strict_enum_values_match(object, Value::is_array)
+            diagnose_scalar_keys(
+                object,
+                path,
+                &["type", "description", "items", "enum", "$def"],
+            )?;
+            let items = object
+                .get("items")
+                .ok_or_else(|| strict_issue(&format!("{path}/items"), "items_required"))?;
+            diagnose_strict_schema_node(items, root, &format!("{path}/items"))?;
+            if !strict_enum_values_match(object, Value::is_array) {
+                return Err(strict_issue(&format!("{path}/enum"), "invalid_enum"));
+            }
+            Ok(())
         }
-        _ => false,
+        _ => Err(strict_issue(&format!("{path}/type"), "unsupported_type")),
     }
 }
 
-fn strict_definitions_supported(object: &Map<String, Value>) -> bool {
-    let Some(definitions) = object.get("$def") else {
-        return true;
-    };
-    definitions
-        .as_object()
-        .is_some_and(|definitions| definitions.values().all(strict_schema_node_supported))
+fn diagnose_scalar_keys(
+    object: &Map<String, Value>,
+    path: &str,
+    allowed: &[&str],
+) -> Result<(), StrictSchemaIssue> {
+    match first_unsupported_key(object, allowed) {
+        Some(key) => Err(strict_issue(
+            &format!("{path}/{key}"),
+            "unsupported_keyword",
+        )),
+        None => Ok(()),
+    }
 }
 
-fn strict_keys_supported(object: &Map<String, Value>, allowed: &[&str]) -> bool {
-    object.keys().all(|key| allowed.contains(&key.as_str()))
+fn first_unsupported_key<'a>(object: &'a Map<String, Value>, allowed: &[&str]) -> Option<&'a str> {
+    let mut unsupported = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect::<Vec<_>>();
+    unsupported.sort_unstable();
+    unsupported.into_iter().next()
+}
+
+fn strict_issue(path: &str, code: &str) -> StrictSchemaIssue {
+    StrictSchemaIssue {
+        path: path.to_owned(),
+        code: code.to_owned(),
+    }
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
 }
 
 fn strict_enum_values_match(
@@ -1137,6 +1326,10 @@ mod tests {
         assert_eq!(plan.surface, ApiSurface::StrictChat);
         assert_eq!(plan.url, "https://api.deepseek.com/beta/chat/completions");
         assert_eq!(plan.body["tools"][0]["function"]["strict"], true);
+        assert_eq!(
+            plan.tool_surface.as_ref().map(|decision| &decision.reason),
+            Some(&ToolSurfaceReason::Compatible)
+        );
     }
 
     #[test]
@@ -1165,6 +1358,16 @@ mod tests {
 
         assert_eq!(plan.surface, ApiSurface::StandardChat);
         assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
+        assert_eq!(
+            plan.tool_surface.as_ref().map(|decision| &decision.reason),
+            Some(&ToolSurfaceReason::IncompatibleCatalog {
+                tool_name: "optional".to_owned(),
+                issue: StrictSchemaIssue {
+                    path: "$/required".to_owned(),
+                    code: "all_properties_required".to_owned(),
+                },
+            })
+        );
         assert_eq!(plan.body["tools"].as_array().unwrap().len(), 2);
         assert!(
             plan.body["tools"]
@@ -1173,6 +1376,76 @@ mod tests {
                 .iter()
                 .all(|tool| tool["function"].get("strict").is_none())
         );
+    }
+
+    #[test]
+    fn strict_schema_diagnostics_are_stable_for_documented_boundaries() {
+        for (schema, expected_path, expected_code) in [
+            (
+                json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+                "$/additionalProperties",
+                "closed_object_required",
+            ),
+            (
+                json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1}},
+                    "required": ["path"],
+                    "additionalProperties": false
+                }),
+                "$/properties/path/minLength",
+                "unsupported_keyword",
+            ),
+            (
+                json!({
+                    "type": "object",
+                    "properties": {"items": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+                    "required": ["items"],
+                    "additionalProperties": false
+                }),
+                "$/properties/items/minItems",
+                "unsupported_keyword",
+            ),
+            (
+                json!({
+                    "type": "object",
+                    "properties": {"path": {"$ref": "#/$def/missing"}},
+                    "required": ["path"],
+                    "additionalProperties": false,
+                    "$def": {"known": {"type": "string"}}
+                }),
+                "$/properties/path/$ref",
+                "invalid_ref",
+            ),
+        ] {
+            assert_eq!(
+                strict_schema_issue(&schema),
+                Some(StrictSchemaIssue {
+                    path: expected_path.to_owned(),
+                    code: expected_code.to_owned(),
+                })
+            );
+        }
+
+        let recursive = json!({
+            "type": "object",
+            "properties": {"node": {"$ref": "#/$def/node"}},
+            "required": ["node"],
+            "additionalProperties": false,
+            "$def": {
+                "node": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/$def/node"}},
+                    "required": ["next"],
+                    "additionalProperties": false
+                }
+            }
+        });
+        assert_eq!(strict_schema_issue(&recursive), None);
     }
 
     #[test]
