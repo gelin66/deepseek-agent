@@ -1032,13 +1032,11 @@ async fn stream_json_without_auto_rejects_a_hallucinated_unadvertised_write() {
     assert!(events.iter().any(|event| {
         event["type"] == "error"
             && event["code"] == "llm_invalid_output"
-            && event["error"]
-                .as_str()
-                .is_some_and(|error| error.contains("tool 'apply_patch' was not advertised"))
+            && event["error"] == "模型对未提供工具的请求返回了工具调用"
     }));
     assert!(
         events.iter().all(|event| event["type"] != "tool_result"),
-        "an unadvertised call must be rejected before tool execution: {events:#?}"
+        "a tool-free request must be rejected before tool execution: {events:#?}"
     );
 
     let requests = server
@@ -2408,7 +2406,7 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                 )
             });
             assert_eq!(event["schema"], "codewhale.exec-stream");
-            assert_eq!(event["schema_version"], 1);
+            assert_eq!(event["schema_version"], 2);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",
@@ -2877,12 +2875,13 @@ fn json_strings_contain(value: &Value, needle: &str) -> bool {
 
 fn agent_spawn_sse() -> String {
     let arguments = json!({
-        "name": "exec_acceptance_child",
         "prompt": format!("Return {MULTI_AGENT_CHILD_MARKER} exactly, then stop."),
         "type": "explore",
+        "workspace_access": "read_only",
         "fork_context": false,
         "max_steps": 2,
-        "wall_time_secs": 10
+        "wall_time_secs": 10,
+        "expected_artifact": MULTI_AGENT_CHILD_MARKER
     })
     .to_string();
 
@@ -2895,6 +2894,7 @@ fn agent_spawn_sse() -> String {
                 "index": 0,
                 "delta": {
                     "role": "assistant",
+                    "reasoning_content": "我需要委派一个只读子 Agent。",
                     "tool_calls": [{
                         "index": 0,
                         "id": MULTI_AGENT_SPAWN_CALL_ID,
@@ -2932,12 +2932,13 @@ fn agent_spawn_sse() -> String {
 
 fn nested_root_spawn_sse() -> String {
     let arguments = json!({
-        "name": "exec_nested_parent",
         "prompt": NESTED_PARENT_PROMPT,
         "type": "general",
+        "workspace_access": "read_only",
         "fork_context": false,
         "max_steps": 3,
-        "wall_time_secs": 12
+        "wall_time_secs": 12,
+        "expected_artifact": NESTED_PARENT_INTEGRATED_MARKER
     })
     .to_string();
 
@@ -2950,6 +2951,7 @@ fn nested_root_spawn_sse() -> String {
                 "index": 0,
                 "delta": {
                     "role": "assistant",
+                    "reasoning_content": "我需要委派一个只读父级子 Agent。",
                     "tool_calls": [{
                         "index": 0,
                         "id": NESTED_ROOT_SPAWN_CALL_ID,
@@ -2980,13 +2982,10 @@ fn nested_root_spawn_sse() -> String {
 
 fn nested_parent_spawn_response() -> ResponseTemplate {
     let arguments = json!({
-        "name": "exec_delayed_grandchild",
         "prompt": NESTED_GRANDCHILD_PROMPT,
         "type": "explore",
-        "workspace_policy": "shared",
-        "write_authority": "read_only",
+        "workspace_access": "read_only",
         "expected_artifact": "nested production evidence",
-        "deliberate": true,
         "fork_context": false,
         "max_steps": 2,
         "wall_time_secs": 10
@@ -3001,6 +3000,7 @@ fn nested_parent_spawn_response() -> ResponseTemplate {
             "message": {
                 "role": "assistant",
                 "content": null,
+                "reasoning_content": "我需要委派一个只读孙 Agent。",
                 "tool_calls": [{
                     "id": NESTED_GRANDCHILD_CALL_ID,
                     "type": "function",
@@ -3036,6 +3036,7 @@ fn hallucinated_unauthorized_write_sse() -> String {
                 "index": 0,
                 "delta": {
                     "role": "assistant",
+                    "reasoning_content": "我需要尝试调用写工具。",
                     "tool_calls": [{
                         "index": 0,
                         "id": UNAUTHORIZED_WRITE_CALL_ID,

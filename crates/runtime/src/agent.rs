@@ -719,10 +719,7 @@ impl AgentRuntime {
             }
             if !turn.tool_calls.is_empty() && turn.advertised_tool_names.is_empty() {
                 let terminal = self
-                    .settled_terminal(
-                        state,
-                        invalid_model("model returned a tool call for a tool-free request"),
-                    )
+                    .settled_terminal(state, invalid_model("模型对未提供工具的请求返回了工具调用"))
                     .await;
                 return terminal;
             }

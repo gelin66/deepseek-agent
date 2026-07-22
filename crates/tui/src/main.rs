@@ -5965,10 +5965,13 @@ async fn write_exec_stream_terminal(
 fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(event)?;
     if let Some(object) = value.as_object_mut() {
-        object.insert("schema_version".to_string(), serde_json::json!(1));
+        object.insert(
+            "schema_version".to_string(),
+            serde_json::json!(crate::exec_lifecycle_stream::EXEC_STREAM_SCHEMA_VERSION),
+        );
         object.insert(
             "schema".to_string(),
-            serde_json::json!("codewhale.exec-stream"),
+            serde_json::json!(crate::exec_lifecycle_stream::EXEC_STREAM_SCHEMA),
         );
     }
     Ok(value)
@@ -7552,7 +7555,7 @@ mod terminal_mode_tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(parsed["type"], "tool_result");
         assert_eq!(parsed["schema"], "codewhale.exec-stream");
-        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["schema_version"], 2);
         assert_eq!(parsed["duration_ms"], 1000);
         assert_eq!(parsed["side_effect_status"], "not_applied");
         assert_eq!(parsed["failure_code"], "stale_read");
@@ -7617,7 +7620,7 @@ mod terminal_mode_tests {
 
         assert_eq!(value["type"], "agent_lifecycle");
         assert_eq!(value["schema"], "codewhale.exec-stream");
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(
             value["runtime_event"],
             serde_json::to_value(stored).expect("canonical event serializes")

@@ -7,8 +7,8 @@
 use codewhale_protocol::agent_runtime::{RuntimeEventKind, StoredRuntimeEvent};
 use serde::Serialize;
 
-const EXEC_STREAM_SCHEMA: &str = "codewhale.exec-stream";
-const EXEC_STREAM_SCHEMA_VERSION: u32 = 1;
+pub(crate) const EXEC_STREAM_SCHEMA: &str = "codewhale.exec-stream";
+pub(crate) const EXEC_STREAM_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 struct AgentLifecycleStreamEvent<'a> {

@@ -73,6 +73,8 @@ ACTIVE_OUTPUT_STREAM: TextIO | None = None
 SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
+EXEC_STREAM_SCHEMA = "codewhale.exec-stream"
+EXEC_STREAM_SCHEMA_VERSION = 2
 SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10, 11, 12})
 # This evaluator intentionally reads the frozen M4 baseline and M5 candidate.
 # Product code itself keeps no old RuntimeEvent compatibility path.
@@ -785,7 +787,10 @@ class StreamReceipt:
             self.schema_errors += 1
             return
         self.last_type = event_type
-        if event.get("schema") != "codewhale.exec-stream" or event.get("schema_version") != 1:
+        if (
+            event.get("schema") != EXEC_STREAM_SCHEMA
+            or event.get("schema_version") != EXEC_STREAM_SCHEMA_VERSION
+        ):
             self.schema_errors += 1
 
         # A failed terminal has one narrow envelope: typed terminal metadata,
@@ -3748,8 +3753,8 @@ def aggregate_fixture_records() -> list[dict[str, Any]]:
 
 def stream_event(event_type: str, **fields: Any) -> dict[str, Any]:
     return {
-        "schema": "codewhale.exec-stream",
-        "schema_version": 1,
+        "schema": EXEC_STREAM_SCHEMA,
+        "schema_version": EXEC_STREAM_SCHEMA_VERSION,
         "type": event_type,
         **fields,
     }
@@ -5350,8 +5355,8 @@ class HarnessSelfTests(unittest.TestCase):
 
         def event(event_type: str, **fields: Any) -> dict[str, Any]:
             return {
-                "schema": "codewhale.exec-stream",
-                "schema_version": 1,
+                "schema": EXEC_STREAM_SCHEMA,
+                "schema_version": EXEC_STREAM_SCHEMA_VERSION,
                 "type": event_type,
                 **fields,
             }

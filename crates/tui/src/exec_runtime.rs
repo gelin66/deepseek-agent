@@ -26,7 +26,7 @@ use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, RuntimeFailure, RuntimeTimeoutPhase,
-    StoredRuntimeEvent, TerminalState, ToolPolicy, TranscriptEntry,
+    StoredRuntimeEvent, TerminalState, ToolOutcome, ToolPolicy, TranscriptEntry,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -1259,46 +1259,15 @@ impl<'a> RuntimeEventProjection<'a> {
                     occurred_at_unix_ms: event.occurred_at_unix_ms,
                     started_at: timestamp(event.occurred_at_unix_ms),
                 });
-                summary.tools.push(ExecToolEntry {
-                    name: name.clone(),
-                    success: outcome.is_success(),
-                    output: outcome.content.clone(),
-                    failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
-                    invocation_status: protocol_label(&outcome.invocation),
-                    transport_status: protocol_label(&outcome.transport),
-                    operation_status: protocol_label(&outcome.operation),
-                    side_effect_status: protocol_label(&outcome.side_effect),
-                    retry_disposition: protocol_label(&outcome.retry),
-                });
+                record_exec_tool_outcome(summary, transcript, call_id, name, outcome);
                 if format == ExecOutputFormat::StreamJson {
-                    exec_stream_line(&ExecStreamEvent::ToolResult {
-                        id: call_id.clone(),
-                        name: name.clone(),
-                        output: outcome.content.clone(),
-                        status: if outcome.is_success() {
-                            "success"
-                        } else {
-                            "error"
-                        }
-                        .to_owned(),
-                        started_at: start.started_at,
-                        completed_at: timestamp(event.occurred_at_unix_ms),
-                        duration_ms: event
-                            .occurred_at_unix_ms
-                            .saturating_sub(start.occurred_at_unix_ms),
-                        invocation_status: protocol_label(&outcome.invocation),
-                        transport_status: protocol_label(&outcome.transport),
-                        operation_status: protocol_label(&outcome.operation),
-                        side_effect_status: protocol_label(&outcome.side_effect),
-                        retry_disposition: protocol_label(&outcome.retry),
-                        failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
-                        truncated: None,
-                        artifact: outcome
-                            .artifacts
-                            .first()
-                            .and_then(|artifact| serde_json::to_value(artifact).ok()),
-                        result_metadata: outcome.metadata.clone(),
-                    })
+                    exec_stream_line(&exec_tool_result_stream_event(
+                        call_id,
+                        name,
+                        outcome,
+                        start,
+                        event.occurred_at_unix_ms,
+                    ))
                     .ok()
                 } else if !json_output {
                     Some(exec_tool_finished_line(
@@ -1394,6 +1363,66 @@ impl<'a> RuntimeEventProjection<'a> {
             return None;
         }
         bytes.map(|bytes| output.write_stdout(bytes))
+    }
+}
+
+fn record_exec_tool_outcome(
+    summary: &mut ExecSummary,
+    transcript: &mut CanonicalTranscript,
+    call_id: &str,
+    name: &str,
+    outcome: &ToolOutcome,
+) {
+    transcript.entries.push(TranscriptEntry::Tool {
+        call_id: call_id.to_owned(),
+        name: name.to_owned(),
+        outcome: Box::new(outcome.clone()),
+    });
+    summary.tools.push(ExecToolEntry {
+        name: name.to_owned(),
+        success: outcome.is_success(),
+        output: outcome.content.clone(),
+        failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
+        invocation_status: protocol_label(&outcome.invocation),
+        transport_status: protocol_label(&outcome.transport),
+        operation_status: protocol_label(&outcome.operation),
+        side_effect_status: protocol_label(&outcome.side_effect),
+        retry_disposition: protocol_label(&outcome.retry),
+    });
+}
+
+fn exec_tool_result_stream_event(
+    call_id: &str,
+    name: &str,
+    outcome: &ToolOutcome,
+    start: ToolStart,
+    completed_at_unix_ms: u64,
+) -> ExecStreamEvent {
+    ExecStreamEvent::ToolResult {
+        id: call_id.to_owned(),
+        name: name.to_owned(),
+        output: outcome.content.clone(),
+        status: if outcome.is_success() {
+            "success"
+        } else {
+            "error"
+        }
+        .to_owned(),
+        started_at: start.started_at,
+        completed_at: timestamp(completed_at_unix_ms),
+        duration_ms: completed_at_unix_ms.saturating_sub(start.occurred_at_unix_ms),
+        invocation_status: protocol_label(&outcome.invocation),
+        transport_status: protocol_label(&outcome.transport),
+        operation_status: protocol_label(&outcome.operation),
+        side_effect_status: protocol_label(&outcome.side_effect),
+        retry_disposition: protocol_label(&outcome.retry),
+        failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
+        truncated: None,
+        artifact: outcome
+            .artifacts
+            .first()
+            .and_then(|artifact| serde_json::to_value(artifact).ok()),
+        result_metadata: outcome.metadata.clone(),
     }
 }
 
@@ -1870,8 +1899,9 @@ fn runtime_input_analysis(transcript: &CanonicalTranscript) -> ExecStreamInputAn
             TranscriptEntry::Tool { outcome, .. } => {
                 analysis.tool_message_count += 1;
                 analysis.tool_result_count += 1;
+                let model_content = outcome.model_content();
                 add_text(
-                    &outcome.content,
+                    &model_content,
                     &mut analysis.tool_result_chars,
                     &mut analysis.tool_result_estimated_tokens,
                 );
@@ -1935,6 +1965,65 @@ fn unix_ms_now() -> u64 {
 mod tests {
     use super::*;
     use crate::config::SubagentsConfig;
+    use codewhale_runtime::{ToolFailureCode, ToolRetryDisposition, ToolSideEffectStatus};
+
+    #[test]
+    fn production_tool_projection_preserves_transcript_and_exact_model_feedback_size() {
+        let mut summary = ExecSummary::default();
+        let mut transcript = CanonicalTranscript::default();
+        let mut failure =
+            ToolOutcome::error("文件已变化").with_failure_code(ToolFailureCode::StaleRead);
+        failure.side_effect = ToolSideEffectStatus::NotApplied;
+        failure.retry = ToolRetryDisposition::AfterCorrection;
+        failure.validate().unwrap();
+
+        record_exec_tool_outcome(
+            &mut summary,
+            &mut transcript,
+            "call-stale",
+            "edit_file",
+            &failure,
+        );
+
+        assert_eq!(summary.tools.len(), 1);
+        assert_eq!(summary.tools[0].failure_code.as_deref(), Some("stale_read"));
+        assert!(matches!(
+            transcript.entries.as_slice(),
+            [TranscriptEntry::Tool { call_id, name, outcome }]
+                if call_id == "call-stale" && name == "edit_file" && outcome.as_ref() == &failure
+        ));
+        let analysis = runtime_input_analysis(&transcript);
+        let model_content = failure.model_content();
+        assert_eq!(analysis.tool_message_count, 1);
+        assert_eq!(analysis.tool_result_count, 1);
+        assert_eq!(analysis.tool_result_chars, model_content.chars().count());
+        assert_eq!(
+            analysis.tool_result_estimated_tokens,
+            estimate_receipt_text_tokens(&model_content)
+        );
+        assert!(analysis.tool_result_chars > failure.content.chars().count());
+
+        let stream = exec_tool_result_stream_event(
+            "call-stale",
+            "edit_file",
+            &failure,
+            ToolStart {
+                occurred_at_unix_ms: 1_000,
+                started_at: "1970-01-01T00:00:01+00:00".to_owned(),
+            },
+            1_025,
+        );
+        let value = crate::exec_stream_value(&stream).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["type"], "tool_result");
+        assert_eq!(value["failure_code"], "stale_read");
+        assert_eq!(value["invocation_status"], "accepted");
+        assert_eq!(value["transport_status"], "succeeded");
+        assert_eq!(value["operation_status"], "failed");
+        assert_eq!(value["side_effect_status"], "not_applied");
+        assert_eq!(value["retry_disposition"], "after_correction");
+        assert_eq!(value["duration_ms"], 25);
+    }
 
     #[test]
     fn json_tool_summary_projects_canonical_failure_facts() {

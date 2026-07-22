@@ -112,44 +112,6 @@ fn activity_group_renders_as_single_metadata_line() {
     assert!(!joined.contains("activity_group"));
 }
 
-// ---- Compact agent rendering ----
-//
-// The DelegateCard owns live state for spawned sub-agents; the
-// generic tool block previously duplicated that signal at 3-4 lines
-// per spawn. In live mode we now render a single compact line that
-// points at the spawned agent id; transcript-mode replay keeps the
-// full block so debug history is intact.
-
-#[test]
-fn extract_agent_id_pulls_id_from_json_output() {
-    let output =
-        r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#;
-    assert_eq!(super::extract_agent_id(output), Some("agent-abc12"));
-}
-
-#[test]
-fn extract_agent_id_handles_extra_whitespace() {
-    let output = r#"{
-        "agent_id"   :    "agent-xyz",
-        "model": "x"
-    }"#;
-    assert_eq!(super::extract_agent_id(output), Some("agent-xyz"));
-}
-
-#[test]
-fn extract_agent_id_returns_none_when_missing() {
-    let output = r#"{"nickname": "Orca", "model": "x"}"#;
-    assert!(super::extract_agent_id(output).is_none());
-    assert!(super::extract_agent_id("(not json)").is_none());
-    assert!(super::extract_agent_id("").is_none());
-}
-
-#[test]
-fn extract_agent_id_returns_none_for_empty_id() {
-    let output = r#"{"agent_id": "", "model": "x"}"#;
-    assert!(super::extract_agent_id(output).is_none());
-}
-
 #[test]
 fn agent_spawn_suppresses_generic_card_in_live_mode() {
     // #4133: spawn cards yield entirely to DelegateCard — no generic tool row.
@@ -170,59 +132,6 @@ fn agent_spawn_suppresses_generic_card_in_live_mode() {
         lines.is_empty(),
         "spawn generic tool card must be suppressed: {lines:?}"
     );
-}
-
-#[test]
-fn agent_inspection_renders_single_compact_line_in_live_mode() {
-    let cell = GenericToolCell {
-        name: "agent".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("action: peek agent_id: agent-abc12".to_string()),
-        output: Some(
-            r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#
-                .to_string(),
-        ),
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    assert_eq!(lines.len(), 1, "expected exactly 1 line, got {lines:?}");
-    let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-    assert!(
-        rendered.contains("agent-abc12"),
-        "expected agent id in header: {rendered:?}"
-    );
-    assert!(
-        rendered.contains("checking"),
-        "expected inspection status in header: {rendered:?}"
-    );
-    assert!(
-        !rendered.contains("args"),
-        "args should be hidden: {rendered:?}"
-    );
-}
-
-#[test]
-fn agent_pending_inspection_uses_fallback_token() {
-    // Pending inspection (no agent_id yet) still renders a compact check line.
-    let cell = GenericToolCell {
-        name: "agent".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("action: peek prompt: do thing".to_string()),
-        output: None,
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    assert_eq!(lines.len(), 1, "inspection must stay compact: {lines:?}");
-    let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-    assert!(
-        rendered.contains("checking") || rendered.contains("subagent"),
-        "{rendered:?}"
-    );
-    assert!(!rendered.contains('\u{2026}'), "{rendered:?}");
 }
 
 #[test]
@@ -260,59 +169,6 @@ fn other_tools_are_unaffected_by_agent_compact_path() {
     };
     let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
     assert_eq!(lines.len(), 1, "live tools should use compact rows");
-}
-
-#[test]
-fn agent_compact_header_omits_unknown_child_fallback() {
-    // #4148: an inspection whose identity can't be resolved must not leak the
-    // raw internal "unknown child" token into the default transcript.
-    let cell = GenericToolCell {
-        name: "agent".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("action: peek agent_type: delegate".to_string()),
-        output: None,
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    assert_eq!(lines.len(), 1, "inspection must stay compact: {lines:?}");
-    let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-    assert!(
-        !rendered.contains("unknown child"),
-        "raw fallback token must not leak: {rendered:?}"
-    );
-    assert!(
-        rendered.contains("subagent"),
-        "friendly fallback label should be shown: {rendered:?}"
-    );
-}
-
-#[test]
-fn agent_compact_header_does_not_duplicate_delegate_verb() {
-    // #4148: when the resolved identity collapses to the "delegate" verb, the
-    // compact inspection header must not render a redundant "delegate · delegate".
-    let cell = GenericToolCell {
-        name: "agent".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("action: peek role: delegate".to_string()),
-        output: None,
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    assert_eq!(lines.len(), 1, "inspection must stay compact: {lines:?}");
-    let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-    assert!(
-        !rendered.contains("delegate delegate"),
-        "no adjacent duplicate: {rendered:?}"
-    );
-    assert_eq!(
-        rendered.matches("delegate").count(),
-        1,
-        "verb must not be echoed by the summary: {rendered:?}"
-    );
 }
 
 // ---- #403 concise todo / checklist update rendering ----
@@ -853,19 +709,22 @@ fn generic_exec_shell_header_uses_run_family_and_command_summary() {
 
 #[test]
 fn generic_tool_cell_picks_family_from_tool_name() {
-    // Use an inspection call so the compact Delegate header still renders;
-    // spawn cards are suppressed entirely (#4133).
+    // A rejected launch has no DelegateCard, so the generic typed failure
+    // remains visible and still uses the Delegate family.
     let cell = GenericToolCell {
         name: "agent".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("action: peek foo".to_string()),
-        output: None,
+        status: ToolStatus::Failed,
+        input_summary: Some("prompt: inspect repository".to_string()),
+        output: Some(
+            "工具失败：code=invocation_rejected; operation=not_started; side_effect=not_applied; retry=after_correction。"
+                .to_string(),
+        ),
         prompts: None,
         output_summary: None,
         is_diff: false,
     };
     let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    assert_eq!(lines.len(), 1, "inspection must stay compact: {lines:?}");
+    assert!(!lines.is_empty(), "rejected agent call must remain visible");
     let header_visible: String = lines[0]
         .spans
         .iter()
@@ -1685,14 +1544,13 @@ fn joined_lines(cell: &GenericToolCell, mode: super::RenderMode) -> String {
 }
 
 #[test]
-fn unknown_tool_failure_collapses_to_one_line() {
+fn typed_tool_failure_renders_without_message_inference() {
     let cell = GenericToolCell {
         name: "item".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("status: pending".to_string()),
         output: Some(
-            "Tool 'item' is not available in the current tool catalog. \
-             Checklist entries are not separate tool calls."
+            "工具失败：code=unknown_tool; operation=not_started; side_effect=not_applied; retry=after_correction。\n恢复建议：只使用当前请求实际提供的工具名。\n工具不存在"
                 .to_string(),
         ),
         prompts: None,
@@ -1700,69 +1558,31 @@ fn unknown_tool_failure_collapses_to_one_line() {
         is_diff: false,
     };
     for mode in [super::RenderMode::Live, super::RenderMode::Transcript] {
-        let lines = cell.lines_with_mode(120, true, mode);
-        assert_eq!(
-            lines.len(),
-            1,
-            "unknown-tool failure should be a single header line in {mode:?}: {lines:?}"
-        );
         let joined = joined_lines(&cell, mode);
         assert!(
-            joined.contains("Tool 'item' is not available"),
-            "the catalog error is the useful part: {joined:?}"
-        );
-        assert!(
-            !joined.contains("name: item"),
-            "no name:/args:/result: block for unknown tools: {joined:?}"
+            joined.contains("code=unknown_tool")
+                && joined.contains("只使用当前请求实际提供的工具名"),
+            "typed failure must survive {mode:?}: {joined:?}"
         );
     }
 }
 
 #[test]
-fn agent_peek_renders_checked_not_done() {
+fn rejected_agent_call_remains_visible_without_a_child_lifecycle() {
     let cell = agent_cell(
-        Some("action: peek agent_id: agent_scout_1"),
-        ToolStatus::Success,
-        Some(r#"{"agent_id":"agent_scout_1","status":"running"}"#),
+        Some("prompt: inspect repository"),
+        ToolStatus::Failed,
+        Some(
+            "工具失败：code=invocation_rejected; operation=not_started; side_effect=not_applied; retry=after_correction。",
+        ),
     );
-    let joined = joined_lines(&cell, super::RenderMode::Live);
-    assert!(
-        joined.contains("checked") && joined.contains("agent_scout_1"),
-        "peek should read as a check, not a completed delegate: {joined:?}"
-    );
-    assert!(
-        !joined.contains("delegate done"),
-        "peek must not draw the spawn-completion line: {joined:?}"
-    );
-}
-
-#[test]
-fn agent_wait_renders_waited_label() {
-    let cell = agent_cell(
-        Some("action: wait"),
-        ToolStatus::Success,
-        Some(r#"{"action":"wait","settled":[{"agent_id":"agent_scout_1"}]}"#),
-    );
-    let joined = joined_lines(&cell, super::RenderMode::Live);
-    assert!(
-        joined.contains("waited"),
-        "wait cells should read as a join: {joined:?}"
-    );
-}
-
-#[test]
-fn agent_inspection_stays_compact_in_transcript_mode() {
-    let cell = agent_cell(
-        Some("action: status agent_id: agent_scout_1"),
-        ToolStatus::Success,
-        Some(r#"{"agent_id":"agent_scout_1","status":"running","terminal":false}"#),
-    );
-    let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
-    assert_eq!(
-        lines.len(),
-        1,
-        "status checks should not dump full projections in the pager: {lines:?}"
-    );
+    for mode in [super::RenderMode::Live, super::RenderMode::Transcript] {
+        let joined = joined_lines(&cell, mode);
+        assert!(
+            joined.contains("code=invocation_rejected"),
+            "rejected agent call disappeared in {mode:?}: {joined:?}"
+        );
+    }
 }
 
 #[test]

@@ -33,8 +33,6 @@ use thinking::{render_hidden_thinking_activity, render_thinking};
 use tool_output::{render_tool_output_mode, wrap_text};
 
 #[cfg(test)]
-use agent_activity::extract_agent_id;
-#[cfg(test)]
 use tool_run::ToolRunActivitySummary;
 pub use tool_run::{ToolRun, detect_tool_runs, tool_run_summary};
 
@@ -348,37 +346,11 @@ impl GenericToolCell {
             return agent_activity::render_activity_group(self, width);
         }
 
-        // Sub-agent launch already gets a dedicated `DelegateCard`
-        // that owns the live action tree, status, and final summary (#4133).
-        // Spawns therefore render nothing here in either mode — one visible
-        // artifact per delegated unit. Inspection/join calls (peek/status/
-        // wait) stay as a single compact line (#4112 dogfood A5).
-        if self.name == "agent" {
-            if agent_activity::is_agent_inspection(self) {
-                return agent_activity::render_agent_compact(self, low_motion);
-            }
-            // Spawn / start / run: suppress the tool card entirely.
+        // A launched child gets a dedicated DelegateCard. A rejected `agent`
+        // invocation has no child lifecycle and must keep this generic failure
+        // card, otherwise live and replay views erase the only diagnosis.
+        if self.name == "agent" && self.status != ToolStatus::Failed {
             return Vec::new();
-        }
-
-        // A call to a tool that doesn't exist carries exactly one useful
-        // fact: the catalog error. The full name:/args:/result: block turns
-        // each model slip into a four-line card (dogfood A5) — collapse it
-        // to a single header line in both render modes.
-        if self.status == ToolStatus::Failed
-            && let Some(output) = self.output.as_deref()
-            && output.contains("is not available in the current tool catalog")
-        {
-            let family = crate::tui::widgets::tool_card::tool_family_for_name(&self.name);
-            let summary = truncate_text(output.trim(), 200);
-            return wrap_card_rail(vec![render_tool_header_with_family_and_summary(
-                family,
-                Some(summary.as_str()),
-                tool_status_label(self.status),
-                self.status,
-                None,
-                low_motion,
-            )]);
         }
 
         // Live mode stays calm: successful tool calls collapse to one header

@@ -236,11 +236,30 @@ fn public_tool_result_should_report_malformed_arguments_for(
     let event = tool_result_event(world);
 
     assert_eq!(event.get("status").and_then(Value::as_str), Some("error"));
-    let output = event
-        .get("output")
-        .and_then(Value::as_str)
-        .expect("tool_result error output");
-    assert_malformed_arguments_text(output);
+    assert_eq!(
+        event.get("failure_code").and_then(Value::as_str),
+        Some("malformed_arguments")
+    );
+    assert_eq!(
+        event.get("invocation_status").and_then(Value::as_str),
+        Some("rejected")
+    );
+    assert_eq!(
+        event.get("transport_status").and_then(Value::as_str),
+        Some("not_started")
+    );
+    assert_eq!(
+        event.get("operation_status").and_then(Value::as_str),
+        Some("not_started")
+    );
+    assert_eq!(
+        event.get("side_effect_status").and_then(Value::as_str),
+        Some("not_applied")
+    );
+    assert_eq!(
+        event.get("retry_disposition").and_then(Value::as_str),
+        Some("after_correction")
+    );
 }
 
 #[then("CodeWhale should send the malformed argument error back to the mocked LLM")]
@@ -264,7 +283,8 @@ fn codewhale_should_send_malformed_argument_error_back_to_mocked_llm(
         .get("content")
         .and_then(serde_json::Value::as_str)
         .expect("tool result content");
-    assert_malformed_arguments_text(content);
+    assert!(content.contains("code=malformed_arguments"), "{content}");
+    assert!(content.contains("修正参数后再调用"), "{content}");
 }
 
 #[then(
@@ -513,6 +533,7 @@ fn tool_call_sse(tool_name: &str, arguments: &str) -> String {
             "choices": [{
                 "index": 0,
                 "delta": {
+                    "reasoning_content": "我需要调用工具检查工作区。",
                     "tool_calls": [{
                         "index": 0,
                         "id": TOOL_CALL_ID,
@@ -580,18 +601,6 @@ fn final_answer_sse(answer: &str) -> String {
         "data: [DONE]\n\n".to_string(),
     ]
     .join("")
-}
-
-fn assert_malformed_arguments_text(text: &str) {
-    let lower = text.to_ascii_lowercase();
-    assert!(
-        lower.contains("argument")
-            && (lower.contains("malformed")
-                || lower.contains("parse")
-                || lower.contains("json")
-                || lower.contains("invalid")),
-        "expected malformed argument error text:\n{text}"
-    );
 }
 
 fn sse_chunk(value: Value) -> String {

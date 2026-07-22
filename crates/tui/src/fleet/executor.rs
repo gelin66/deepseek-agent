@@ -22,6 +22,8 @@ use anyhow::Result;
 use codewhale_config::FleetExecConfig;
 use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerEventPayload};
 
+use crate::exec_lifecycle_stream::{EXEC_STREAM_SCHEMA, EXEC_STREAM_SCHEMA_VERSION};
+
 use super::host::{FleetHostAdapter, FleetWorkerCommand};
 use super::profile::AgentProfile;
 use super::worker_runtime::{
@@ -128,10 +130,19 @@ fn build_worker_exec_command_from_prompt(
 /// Map one `codewhale exec` stream-json line into a fleet ledger event.
 ///
 /// Returns `None` for lines that don't correspond to a worker lifecycle
-/// transition (e.g. `session_capture`, `metadata`). The exec event schema is
-/// `{"type": "...", ...}` (see `ExecStreamEvent` in `main.rs`).
+/// transition (e.g. `session_capture`, `metadata`). Only the exact current
+/// exec-stream envelope is accepted; a worker speaking an older or unversioned
+/// protocol cannot claim progress or completion.
 pub fn map_exec_stream_line(line: &str) -> Option<FleetWorkerEventPayload> {
     let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some(EXEC_STREAM_SCHEMA)
+        || value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(EXEC_STREAM_SCHEMA_VERSION))
+    {
+        return None;
+    }
     match value.get("type").and_then(serde_json::Value::as_str)? {
         "tool_use" => {
             let tool = value
@@ -383,6 +394,19 @@ mod tests {
     };
     use codewhale_protocol::fleet::{FleetTaskSpec, FleetTaskWorkerProfile};
     use std::collections::BTreeMap;
+
+    fn stream_line(mut value: serde_json::Value) -> String {
+        let object = value.as_object_mut().expect("stream fixture is an object");
+        object.insert(
+            "schema".to_owned(),
+            serde_json::Value::String(EXEC_STREAM_SCHEMA.to_owned()),
+        );
+        object.insert(
+            "schema_version".to_owned(),
+            serde_json::Value::from(EXEC_STREAM_SCHEMA_VERSION),
+        );
+        serde_json::to_string(&value).expect("serialize stream fixture")
+    }
 
     fn task(instructions: &str) -> FleetTaskSpec {
         FleetTaskSpec {
@@ -669,8 +693,13 @@ mod tests {
 
     #[test]
     fn stream_line_maps_tool_use_to_running_tool() {
-        let line = r#"{"type":"tool_use","name":"read_file","id":"call-7","input":{}}"#;
-        match map_exec_stream_line(line) {
+        let line = stream_line(serde_json::json!({
+            "type": "tool_use",
+            "name": "read_file",
+            "id": "call-7",
+            "input": {}
+        }));
+        match map_exec_stream_line(&line) {
             Some(FleetWorkerEventPayload::RunningTool { tool, call_id }) => {
                 assert_eq!(tool, "read_file");
                 assert_eq!(call_id.as_deref(), Some("call-7"));
@@ -681,19 +710,32 @@ mod tests {
 
     #[test]
     fn stream_line_maps_done_and_error() {
+        let done = stream_line(serde_json::json!({"type": "done"}));
         assert!(matches!(
-            map_exec_stream_line(r#"{"type":"done"}"#),
+            map_exec_stream_line(&done),
             Some(FleetWorkerEventPayload::Completed { .. })
         ));
-        match map_exec_stream_line(r#"{"type":"error","error":"boom"}"#) {
+        let error = stream_line(serde_json::json!({"type": "error", "error": "boom"}));
+        match map_exec_stream_line(&error) {
             Some(FleetWorkerEventPayload::Failed { reason, .. }) => assert_eq!(reason, "boom"),
             other => panic!("expected Failed, got {other:?}"),
         }
     }
 
     #[test]
-    fn stream_line_ignores_noise_and_bad_json() {
-        assert!(map_exec_stream_line(r#"{"type":"session_capture","content":"x"}"#).is_none());
+    fn stream_line_rejects_old_or_missing_envelopes_and_ignores_noise() {
+        let noise = stream_line(serde_json::json!({
+            "type": "session_capture",
+            "content": "x"
+        }));
+        assert!(map_exec_stream_line(&noise).is_none());
+        assert!(map_exec_stream_line(r#"{"type":"done"}"#).is_none());
+        assert!(
+            map_exec_stream_line(
+                r#"{"schema":"codewhale.exec-stream","schema_version":1,"type":"done"}"#
+            )
+            .is_none()
+        );
         assert!(map_exec_stream_line("not json").is_none());
         assert!(map_exec_stream_line("").is_none());
     }
@@ -726,7 +768,14 @@ mod tests {
     fn executor_runs_real_process_and_drains_stream_json_into_ledger_events() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut exec = FleetExecutor::new(tmp.path());
-        let script = r#"printf '{"type":"tool_use","name":"read_file","id":"c1","input":{}}\n'; printf '{"type":"done"}\n'"#;
+        let tool = stream_line(serde_json::json!({
+            "type": "tool_use",
+            "name": "read_file",
+            "id": "c1",
+            "input": {}
+        }));
+        let done = stream_line(serde_json::json!({"type": "done"}));
+        let script = format!("printf '%s\\n' '{tool}' '{done}'");
         let command = FleetWorkerCommand::new("sh", vec!["-c".to_string(), script.to_string()]);
         exec.start_worker_on_host("w1", &FleetHostSpec::Local, command, None)
             .unwrap();
@@ -777,8 +826,19 @@ mod tests {
 
         // Three healthy workers emit a tool_use + done; one injected-failure
         // worker emits an error event and exits non-zero.
-        let ok = r#"printf '{"type":"tool_use","name":"grep_files","id":"c","input":{}}\n{"type":"done"}\n'"#;
-        let bad = r#"printf '{"type":"error","error":"injected failure"}\n'; exit 7"#;
+        let ok_tool = stream_line(serde_json::json!({
+            "type": "tool_use",
+            "name": "grep_files",
+            "id": "c",
+            "input": {}
+        }));
+        let done = stream_line(serde_json::json!({"type": "done"}));
+        let ok = format!("printf '%s\\n' '{ok_tool}' '{done}'");
+        let error = stream_line(serde_json::json!({
+            "type": "error",
+            "error": "injected failure"
+        }));
+        let bad = format!("printf '%s\\n' '{error}'; exit 7");
         for id in ["w1", "w2", "w3"] {
             exec.start_worker_on_host(
                 id,

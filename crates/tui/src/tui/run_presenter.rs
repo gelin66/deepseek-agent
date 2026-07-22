@@ -600,7 +600,12 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
     } else {
         ToolStatus::Failed
     };
-    let output = (!outcome.content.is_empty()).then(|| outcome.content.clone());
+    let projected_content = if outcome.is_success() {
+        outcome.content.clone()
+    } else {
+        outcome.model_content()
+    };
+    let output = (!projected_content.is_empty()).then_some(projected_content);
     let summary = output.as_deref().map(summarize_tool_output);
     let is_diff = output.as_deref().is_some_and(output_looks_like_diff);
 
@@ -751,8 +756,8 @@ mod tests {
         ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
         PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
         RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
-        TerminalState, ToolInvocation, TranscriptEntry, Usage, WorkspaceAccess,
-        WriterIntegrationStatus, WriterResourceState,
+        TerminalState, ToolFailureCode, ToolInvocation, ToolRetryDisposition, ToolSideEffectStatus,
+        TranscriptEntry, Usage, WorkspaceAccess, WriterIntegrationStatus, WriterResourceState,
     };
     use codewhale_protocol::task::{
         AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
@@ -1108,6 +1113,98 @@ mod tests {
         assert_eq!(snapshot(&live), expected);
         assert_eq!(snapshot(&replay), expected);
         assert_eq!(snapshot(&rebuilt), expected);
+    }
+
+    #[test]
+    fn failed_tool_projection_keeps_typed_recovery_in_live_replay_and_rebuild() {
+        let run_id = RunId::from("run-failure");
+        let operation_id = OperationId("operation-edit".to_owned());
+        let call_id = "call-edit".to_owned();
+        let name = "edit_file".to_owned();
+        let arguments =
+            ToolArguments::parse(r#"{"path":"src/lib.rs","search":"旧","replace":"新"}"#);
+        let mut outcome = ToolOutcome::error("文件在读取后发生变化")
+            .with_failure_code(ToolFailureCode::StaleRead);
+        outcome.side_effect = ToolSideEffectStatus::NotApplied;
+        outcome.retry = ToolRetryDisposition::AfterCorrection;
+        outcome.validate().unwrap();
+        let expected_output = outcome.model_content();
+        let events = vec![
+            created(&run_id, Vec::new()),
+            stored(
+                &run_id,
+                2,
+                RuntimeEventKind::ToolPrepared {
+                    operation_id: operation_id.clone(),
+                    invocation: ToolInvocation {
+                        run_id: run_id.clone(),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    workspace_access: WorkspaceAccess::MayWrite,
+                },
+            ),
+            stored(
+                &run_id,
+                3,
+                RuntimeEventKind::ToolOutcomeCommitted {
+                    operation_id,
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    outcome: Box::new(outcome.clone()),
+                    workspace_state: None,
+                },
+            ),
+        ];
+
+        let mut live = app();
+        apply_events(&mut live, events.clone());
+        let mut replay = app();
+        apply_events(&mut replay, events);
+
+        let rebuilt_run_id = RunId::from("continued-failure");
+        let mut rebuilt_request = request(&rebuilt_run_id, "继续处理", "系统");
+        rebuilt_request.transcript.entries = vec![
+            TranscriptEntry::Assistant {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![ModelToolCall {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    arguments,
+                }],
+            },
+            TranscriptEntry::Tool {
+                call_id,
+                name,
+                outcome: Box::new(outcome),
+            },
+        ];
+        let mut rebuilt = app();
+        apply_events(
+            &mut rebuilt,
+            vec![stored(
+                &rebuilt_run_id,
+                1,
+                RuntimeEventKind::RunCreated {
+                    request: Box::new(rebuilt_request),
+                },
+            )],
+        );
+
+        let projected_output = |app: &App| {
+            app.history.iter().find_map(|cell| match cell {
+                HistoryCell::Tool(cell) if cell.name == "edit_file" => cell.output.clone(),
+                _ => None,
+            })
+        };
+        assert_eq!(projected_output(&live), Some(expected_output.clone()));
+        assert_eq!(projected_output(&replay), Some(expected_output.clone()));
+        assert_eq!(projected_output(&rebuilt), Some(expected_output.clone()));
+        assert!(expected_output.contains("code=stale_read"));
+        assert!(expected_output.contains("side_effect=not_applied"));
+        assert!(expected_output.contains("先重新读取"));
     }
 
     #[test]
