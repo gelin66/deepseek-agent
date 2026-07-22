@@ -644,6 +644,106 @@ fn request(input: &str) -> RunRequest {
     request
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ToolFailureActorCase {
+    Root,
+    ReadOnlyChild,
+    WriterChild,
+}
+
+impl ToolFailureActorCase {
+    fn authority(self) -> ModelToolAuthority {
+        match self {
+            Self::Root => ModelToolAuthority::RootWrite,
+            Self::ReadOnlyChild => ModelToolAuthority::ReadOnly,
+            Self::WriterChild => ModelToolAuthority::IsolatedWriter,
+        }
+    }
+}
+
+fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunRequest {
+    if matches!(actor, ToolFailureActorCase::Root) {
+        let mut root = request(objective);
+        root.limits.max_turns = 4;
+        root.limits.max_model_requests = 4;
+        root.limits.max_tool_calls = 4;
+        return root;
+    }
+
+    let child_run_id = RunId::new();
+    let parent_run_id = RunId::new();
+    let root_run_id = parent_run_id.clone();
+    let contract = TaskContract {
+        generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+        definition: TaskDefinition::host(objective),
+    };
+    let limits = RunLimits {
+        max_turns: 4,
+        max_model_requests: 4,
+        max_tool_calls: 4,
+        ..RunLimits::default()
+    };
+    let workspace = match actor {
+        ToolFailureActorCase::ReadOnlyChild => AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::ReadOnly,
+            root_workspace: "/workspace".to_owned(),
+            base_commit: "a".repeat(40),
+            worktree_path: None,
+            root_branch: None,
+            branch: None,
+            allowed_paths: Vec::new(),
+            owner_token: None,
+        },
+        ToolFailureActorCase::WriterChild => AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::IsolatedWrite,
+            root_workspace: "/workspace".to_owned(),
+            base_commit: "a".repeat(40),
+            worktree_path: Some("/workspace/.codewhale-writer/actor-failure".to_owned()),
+            root_branch: Some("deepseek-agent".to_owned()),
+            branch: Some("codewhale/writer/actor-failure".to_owned()),
+            allowed_paths: vec!["src/lib.rs".to_owned()],
+            owner_token: Some("actor-failure-owner".to_owned()),
+        },
+        ToolFailureActorCase::Root => unreachable!("root returned above"),
+    };
+    let task = AgentTask {
+        task_id: AgentTaskId::from(format!("actor-failure-{}", child_run_id.0)),
+        root_run_id,
+        parent_run_id: parent_run_id.clone(),
+        child_run_id: child_run_id.clone(),
+        call_id: "actor-failure-launch".to_owned(),
+        role: "conformance".to_owned(),
+        task_contract: contract.clone(),
+        workspace: workspace.clone(),
+        tool_policy: ToolPolicy::default(),
+        limits,
+        deadline_unix_ms: None,
+        expected_artifact: "修正后的只读工具结果".to_owned(),
+    };
+    let mut child = RunRequest::new(contract, "子 Agent 失败恢复系统提示");
+    child.run_id = Some(child_run_id);
+    child.parent_run_id = Some(parent_run_id);
+    child.streaming = false;
+    child.actor = AgentActor {
+        kind: AgentActorKind::Child,
+        depth: 1,
+    };
+    child.agent_task = Some(task);
+    child.tool_policy = ToolPolicy::default();
+    child.limits = limits;
+    child.environment.workspace = workspace.execution_workspace().to_owned();
+    child.environment.write_execution_mode = if matches!(actor, ToolFailureActorCase::WriterChild) {
+        WriteExecutionMode::IsolatedWriter
+    } else {
+        WriteExecutionMode::Root
+    };
+    child.environment.auto_approve = matches!(actor, ToolFailureActorCase::WriterChild);
+    child.context_policy = ContextPolicy {
+        hard_input_tokens: 900_000,
+    };
+    child
+}
+
 fn exact_run_tests_spec() -> VerifierSpec {
     VerifierSpec {
         verifier_id: "run_tests".to_owned(),
@@ -2435,6 +2535,130 @@ async fn readonly_executor_transport_failure_is_typed_and_recovers_on_the_next_m
     assert_eq!(outcome.failure_code, Some(ToolFailureCode::TransportFailed));
     assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplicable);
     assert_eq!(outcome.retry, ToolRetryDisposition::Safe);
+}
+
+#[tokio::test]
+async fn root_readonly_child_and_writer_share_tool_failure_correction_contract() {
+    for actor in [
+        ToolFailureActorCase::Root,
+        ToolFailureActorCase::ReadOnlyChild,
+        ToolFailureActorCase::WriterChild,
+    ] {
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let observed_model_calls = model_calls.clone();
+        let expected_actor = if matches!(actor, ToolFailureActorCase::Root) {
+            AgentActorKind::Root
+        } else {
+            AgentActorKind::Child
+        };
+        let model = Arc::new(MockModel::new(move |request| {
+            assert_eq!(request.actor.kind, expected_actor);
+            assert!(request.tools.iter().any(|tool| tool.name == "read"));
+            observed_model_calls.fetch_add(1, Ordering::AcqRel);
+            match request.request_number {
+                1 => ScriptResponse::Events(vec![completed(
+                    "",
+                    Some("先执行失败反例"),
+                    vec![call("failed", "read", "{not-json")],
+                    ModelFinishReason::ToolCalls,
+                )]),
+                2 => {
+                    let feedback = request
+                        .messages
+                        .iter()
+                        .find_map(|message| match message {
+                            ModelMessage::Tool {
+                                call_id, content, ..
+                            } if call_id == "failed" => Some(content.as_str()),
+                            _ => None,
+                        })
+                        .expect("typed failure reaches correction turn");
+                    assert!(feedback.contains("code=malformed_arguments"), "{feedback}");
+                    assert!(feedback.contains("operation=not_started"), "{feedback}");
+                    assert!(feedback.contains("retry=after_correction"), "{feedback}");
+                    assert!(!feedback.contains("{not-json"), "{feedback}");
+                    ScriptResponse::Events(vec![completed(
+                        "",
+                        Some("根据 typed 反馈修正参数"),
+                        vec![call("corrected", "read", r#"{ "path" : "src/lib.rs" }"#)],
+                        ModelFinishReason::ToolCalls,
+                    )])
+                }
+                3 => {
+                    assert!(request.messages.iter().any(|message| matches!(
+                        message,
+                        ModelMessage::Tool { call_id, content, .. }
+                            if call_id == "corrected" && content == "tool-result"
+                    )));
+                    ScriptResponse::Events(vec![completed(
+                        "失败已修正",
+                        None,
+                        Vec::new(),
+                        ModelFinishReason::Stop,
+                    )])
+                }
+                other => panic!("unexpected actor correction request {other}"),
+            }
+        }));
+        let (runtime, tools, _, store) = fixture(model);
+        let mut run_request = actor_failure_request(actor, &format!("actor={actor:?}"));
+        let definitions = runtime.tool_definitions(
+            &run_request.tool_policy,
+            run_request
+                .task_contract
+                .as_ref()
+                .map(|contract| &contract.definition),
+            actor.authority(),
+            run_request.actor.depth,
+            run_request.limits.max_depth,
+            run_request.environment.interactive,
+        );
+        run_request.environment.tool_catalog_sha256 =
+            Some(canonical_tool_catalog_sha256(&definitions));
+        let expected_request = run_request.clone();
+        let run_id = run_request.run_id.clone().expect("actor run id");
+        let created = store.create(run_request).await.unwrap();
+        store.release(&created.lease).await.unwrap();
+
+        let outcome = runtime.resume(run_id.clone()).wait().await.unwrap();
+
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::Completed { ref message, .. } if message == "失败已修正"
+        ));
+        assert_eq!(model_calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            tools
+                .calls
+                .lock()
+                .expect("tool call lock")
+                .iter()
+                .map(|call| call.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["corrected"]
+        );
+        let replay = store.load(&run_id).await.unwrap().expect("actor replay");
+        assert_eq!(replay.snapshot.request, expected_request);
+        let failed = replay
+            .snapshot
+            .transcript
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                TranscriptEntry::Tool {
+                    call_id, outcome, ..
+                } if call_id == "failed" => Some(outcome.as_ref()),
+                _ => None,
+            })
+            .expect("failed outcome");
+        assert_eq!(
+            failed.failure_code,
+            Some(ToolFailureCode::MalformedArguments)
+        );
+        assert_eq!(failed.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(failed.operation, ToolOperationStatus::NotStarted);
+        assert_eq!(failed.retry, ToolRetryDisposition::AfterCorrection);
+    }
 }
 
 #[tokio::test]
@@ -5585,6 +5809,78 @@ async fn logical_model_request_gate_does_not_report_physical_api_exhaustion() {
     assert_eq!(outcome.accounting.total_started(), 1);
     assert_eq!(outcome.accounting.exhausted_denied, 0);
     assert!(!outcome.accounting.budget_exhausted);
+}
+
+#[tokio::test]
+async fn repeated_identical_correctable_tool_failure_is_bounded_by_terminal_request() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        let request_number = request.request_number;
+        assert_eq!(
+            observed_calls.fetch_add(1, Ordering::AcqRel) as u32 + 1,
+            request_number,
+            "model request numbers must remain contiguous"
+        );
+        assert_eq!(
+            request.tools.is_empty(),
+            request_number == 3,
+            "only the reserved terminal turn may be tool-free"
+        );
+        let feedback = request
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                ModelMessage::Tool { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(feedback.len(), request_number.saturating_sub(1) as usize);
+        for content in feedback {
+            assert!(content.contains("code=malformed_arguments"), "{content}");
+            assert!(content.contains("retry=after_correction"), "{content}");
+            assert!(!content.contains("{not-json"), "{content}");
+        }
+        ScriptResponse::Events(vec![completed(
+            "",
+            Some("我将修正同一个参数错误"),
+            vec![call(
+                &format!("malformed-{request_number}"),
+                "read",
+                "{not-json",
+            )],
+            ModelFinishReason::ToolCalls,
+        )])
+    }));
+    let (runtime, tools, _, store) = fixture(model);
+    let mut limited = request("重复失败必须有界");
+    limited.limits.max_turns = 3;
+    limited.limits.max_model_requests = 3;
+    limited.limits.max_tool_calls = 8;
+    let run_id = limited.run_id.clone().expect("fixed run id");
+
+    let outcome = runtime.start(limited).wait().await.unwrap();
+
+    assert!(matches!(
+        &outcome.terminal,
+        TerminalState::Failed {
+            failure: RuntimeFailure::InvalidModelOutput { .. }
+        }
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+    assert!(tools.calls.lock().unwrap().is_empty());
+    assert_eq!(outcome.runtime_model_requests, 3);
+    let replay = store.load(&run_id).await.unwrap().expect("durable run");
+    assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
+    assert_eq!(replay.snapshot.tool_calls, 2);
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| event.event.is_terminal())
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

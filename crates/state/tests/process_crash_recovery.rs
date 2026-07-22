@@ -190,8 +190,10 @@ fn is_writer_resume_scenario(scenario: CrashScenario) -> bool {
 enum CrashScenario {
     ModelPrepared,
     ModelInFlight,
+    ToolPrepared,
     ToolInFlight,
     ToolInFlightControlRequested,
+    ToolOutcomeCommitted,
     ModelResponseCommitted,
     TerminalModelResponseCommitted,
     InteractionRequested,
@@ -231,8 +233,10 @@ impl CrashScenario {
         match self {
             Self::ModelPrepared => "model_prepared",
             Self::ModelInFlight => "model_in_flight",
+            Self::ToolPrepared => "tool_prepared",
             Self::ToolInFlight => "tool_in_flight",
             Self::ToolInFlightControlRequested => "tool_in_flight_control_requested",
+            Self::ToolOutcomeCommitted => "tool_outcome_committed",
             Self::ModelResponseCommitted => "model_response_committed",
             Self::TerminalModelResponseCommitted => "terminal_model_response_committed",
             Self::InteractionRequested => "interaction_requested",
@@ -272,8 +276,10 @@ impl CrashScenario {
         match value {
             "model_prepared" => Self::ModelPrepared,
             "model_in_flight" => Self::ModelInFlight,
+            "tool_prepared" => Self::ToolPrepared,
             "tool_in_flight" => Self::ToolInFlight,
             "tool_in_flight_control_requested" => Self::ToolInFlightControlRequested,
+            "tool_outcome_committed" => Self::ToolOutcomeCommitted,
             "model_response_committed" => Self::ModelResponseCommitted,
             "terminal_model_response_committed" => Self::TerminalModelResponseCommitted,
             "interaction_requested" => Self::InteractionRequested,
@@ -583,8 +589,12 @@ impl ModelPort for MarkerModel {
             CrashScenario::ToolInFlight | CrashScenario::ToolInFlightControlRequested
         ) || matches!(
             self.scenario,
-            CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
+            CrashScenario::ToolPrepared | CrashScenario::ToolOutcomeCommitted
         ) && request_number == 0
+            || matches!(
+                self.scenario,
+                CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
+            ) && request_number == 0
             || self.scenario == CrashScenario::TerminalModelResponseCommitted
         {
             ModelOutput {
@@ -1278,7 +1288,11 @@ impl ToolExecutor for MarkerTools {
     ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
         Ok((invocation.name == TOOL_NAME
             && !self.abort_after_side_effect
-            && self.cancel_control.is_none())
+            && self.cancel_control.is_none()
+            && !matches!(
+                self.scenario,
+                CrashScenario::ToolPrepared | CrashScenario::ToolOutcomeCommitted
+            ))
         .then(|| ToolApprovalPrompt {
             title: "确认写入测试标记".to_owned(),
             description: "验证审批恢复窗口".to_owned(),
@@ -1455,6 +1469,9 @@ impl RuntimeEventSink for CrashSink {
             CrashScenario::ModelInFlight => {
                 matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. })
             }
+            CrashScenario::ToolPrepared => {
+                matches!(event.event, RuntimeEventKind::ToolPrepared { .. })
+            }
             CrashScenario::ModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
             }
@@ -1475,6 +1492,11 @@ impl RuntimeEventSink for CrashSink {
             CrashScenario::ToolInFlightControlRequested => {
                 matches!(event.event, RuntimeEventKind::ControlRequested { .. })
             }
+            CrashScenario::ToolOutcomeCommitted => matches!(
+                event.event,
+                RuntimeEventKind::ToolOutcomeCommitted { ref call_id, .. }
+                    if call_id == "tool-call-1"
+            ),
             CrashScenario::SteerApplied => false,
             CrashScenario::CompactionCommitted => matches!(
                 event.event,
@@ -1782,6 +1804,37 @@ fn event_count(
         .iter()
         .filter(|event| predicate(&event.event))
         .count()
+}
+
+fn assert_tool_lifecycle_counts(
+    replay: &codewhale_runtime::RunReplay,
+    prepared: usize,
+    started: usize,
+    committed: usize,
+    terminal: usize,
+) {
+    assert_eq!(
+        event_count(replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolPrepared { .. }
+        )),
+        prepared
+    );
+    assert_eq!(
+        event_count(replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolExecutionStarted { .. }
+        )),
+        started
+    );
+    assert_eq!(
+        event_count(replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+        )),
+        committed
+    );
+    assert_eq!(event_count(replay, RuntimeEventKind::is_terminal), terminal);
 }
 
 fn assert_replay_prefix_preserved(
@@ -2097,6 +2150,43 @@ async fn model_request_in_flight_crash_is_not_reissued_after_reopen() {
 }
 
 #[tokio::test]
+async fn tool_prepared_sigkill_executes_once_after_sqlite_reopen() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::ToolPrepared);
+    assert_eq!(marker_count(&fixture.tool_marker), 0);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let prefix_store = StateStore::open(Some(fixture.db.clone())).expect("open prepared prefix");
+    let prefix = prefix_store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load prepared prefix")
+        .expect("prepared run exists");
+    assert_tool_lifecycle_counts(&prefix, 1, 0, 0, 0);
+    drop(prefix_store);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::ToolPrepared);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume prepared tool");
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected prepared resume outcome: {outcome:?}"
+    );
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+    assert_eq!(marker_count(&fixture.model_marker), 2);
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load completed prepared run")
+        .expect("completed prepared run exists");
+    assert_tool_lifecycle_counts(&replay, 1, 1, 1, 1);
+}
+
+#[tokio::test]
 async fn tool_side_effect_crash_is_not_executed_twice_after_reopen() {
     let fixture = CrashFixture::new();
     fixture.crash_child(CrashScenario::ToolInFlight);
@@ -2141,6 +2231,43 @@ async fn tool_side_effect_crash_is_not_executed_twice_after_reopen() {
         )),
         0
     );
+}
+
+#[tokio::test]
+async fn tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::ToolOutcomeCommitted);
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let prefix_store = StateStore::open(Some(fixture.db.clone())).expect("open outcome prefix");
+    let prefix = prefix_store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load outcome prefix")
+        .expect("outcome run exists");
+    assert_tool_lifecycle_counts(&prefix, 1, 1, 1, 0);
+    drop(prefix_store);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::ToolOutcomeCommitted);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume committed tool outcome");
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected committed outcome resume: {outcome:?}"
+    );
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+    assert_eq!(marker_count(&fixture.model_marker), 2);
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load resumed outcome run")
+        .expect("resumed outcome run exists");
+    assert_tool_lifecycle_counts(&replay, 1, 1, 1, 1);
 }
 
 #[tokio::test]
