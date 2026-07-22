@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m7-agent-convergence-plan.v1",
-  "status": "frozen_before_baseline_api",
+  "status": "refrozen_after_baseline_diagnostic_before_candidate_api",
   "date": "2026-07-22",
   "baseline_revision": "3351213b07a821954ac06200012f21e1b1f2b3d5",
   "claim": {
@@ -36,6 +36,12 @@
         "PYTHONDONTWRITEBYTECODE": "1"
       },
       "expected_effect": "实际 verifier verdict 为 passed 时 observation.spec 仍与 frozen verifier 不相等，Host fail closed 且 receipt_count=0。"
+    },
+    "measurement_correction": {
+      "reason": "首次 baseline diagnostic 暴露两个 Harness 观测缺陷：porcelain 首行前导空格被 strip 后又按三字符截取，ChildFinished 错用 child_run_id 而非 canonical call_id 关联。",
+      "scope": "仅修正 changed_files 与 read-only child 完成事件解析；任务、fixture、模型、预算、verifier、顺序和准入门槛均未改变。",
+      "invalidated_result": "eval/results/m7-a-baseline-diagnostic-v1.json",
+      "timing": "生产代码修改和 candidate live API 之前"
     },
     "secondary_deferred": [
       "ordinary ToolOutcome 投影到模型时丢失 typed fields",
@@ -300,8 +306,8 @@
     ]
   },
   "frozen_hashes": {
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:6ccd4823527abe87d211b80069afd0154f534395fcba8de4ce57fad6e2ace52e",
-    "harness_sha256": "sha256:b6696670ab0cb934c39e30b47fdf1314ecaf52e8d6b38be15d032b78d2f1560a",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:162bc694c2bf7295d285517f550a0b78da9ec565931a1a02933fdfd1df39a438",
+    "harness_sha256": "sha256:f9982bfe9b4b22b7794325119a387ee56609090ab4acabbfe20f54e0a448cc2b",
     "canary_helper_sha256": "sha256:fbeea1ce4951f450acb0534297d3f6bd619a6060c4cb67cde3c00a8a717fe68f",
     "schedule_sha256": "sha256:6cc1ec05469aa874e43bb4989e13b35a2eb753dcabe2506c289fdeaadc90ec37",
     "fixture_tree_sha256": {

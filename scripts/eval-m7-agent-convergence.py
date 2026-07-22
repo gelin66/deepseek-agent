@@ -166,7 +166,7 @@ def run_git(workspace: Path, *arguments: str, environment: dict[str, str] | None
         "git_failed",
         {"arguments_sha256": canonical_hash(list(arguments)), "returncode": result.returncode},
     )
-    return result.stdout.strip()
+    return result.stdout.rstrip()
 
 
 def materialize_fixture(task_id: str, destination: Path) -> str:
@@ -548,16 +548,22 @@ def child_summary(
                 "terminal": terminal_summary(child),
                 "tool": tool_summary(child_events),
                 "workspace_access": task.get("workspace", {}).get("access"),
-                "child_finished": len(
-                    [
-                        value
-                        for value in event_values(root_events, "child_finished")
-                        if value.get("child_run_id") == child_id
-                    ]
+                "child_finished": child_finish_count(
+                    root_events,
+                    task.get("call_id"),
                 ),
             }
         )
     return {"count": len(children), "children": children}
+
+
+def child_finish_count(root_events: list[dict[str, Any]], call_id: Any) -> int:
+    if not isinstance(call_id, str):
+        return 0
+    return sum(
+        value.get("call_id") == call_id
+        for value in event_values(root_events, "child_finished")
+    )
 
 
 def child_expectation_valid(task_id: str, summary: dict[str, Any]) -> bool:
@@ -578,15 +584,19 @@ def child_expectation_valid(task_id: str, summary: dict[str, Any]) -> bool:
     return False
 
 
-def changed_files(workspace: Path) -> list[str]:
-    lines = run_git(workspace, "status", "--porcelain=v1", "--untracked-files=all").splitlines()
+def parse_changed_files(porcelain: str) -> list[str]:
     paths = []
-    for line in lines:
+    for line in porcelain.splitlines():
         if not line:
             continue
         raw = line[3:]
         paths.append(raw.split(" -> ")[-1])
     return sorted(paths)
+
+
+def changed_files(workspace: Path) -> list[str]:
+    porcelain = run_git(workspace, "status", "--porcelain=v1", "--untracked-files=all")
+    return parse_changed_files(porcelain)
 
 
 def external_verifier(workspace: Path) -> dict[str, Any]:
@@ -994,6 +1004,27 @@ class HarnessTests(unittest.TestCase):
             caller["plan"]["steps"][0]["env"] = {"PYTHONDONTWRITEBYTECODE": "1"}
             self.assertEqual(caller, resolved)
 
+    def test_porcelain_parser_preserves_first_path_character(self) -> None:
+        self.assertEqual(
+            parse_changed_files(
+                " M slugify.py\n?? new.py\nR  old.py -> renamed.py\n",
+            ),
+            ["new.py", "renamed.py", "slugify.py"],
+        )
+
+    def test_child_finish_joins_on_canonical_call_id(self) -> None:
+        root_events = [
+            {
+                "event": {
+                    "kind": "child_finished",
+                    "call_id": "agent-call-1",
+                    "outcome": {},
+                }
+            }
+        ]
+        self.assertEqual(child_finish_count(root_events, "agent-call-1"), 1)
+        self.assertEqual(child_finish_count(root_events, "child-run-1"), 0)
+
     def test_summary_requires_three_more_verified_arms(self) -> None:
         arms = []
         for task_id in TASK_IDS:
@@ -1044,7 +1075,11 @@ def freeze_report() -> dict[str, Any]:
 
 
 def validate_frozen_manifest() -> None:
-    require(MANIFEST.get("status") == "frozen_before_baseline_api", "manifest_not_frozen")
+    require(
+        MANIFEST.get("status")
+        == "refrozen_after_baseline_diagnostic_before_candidate_api",
+        "manifest_not_frozen",
+    )
     expected = MANIFEST.get("frozen_hashes")
     require(isinstance(expected, dict), "frozen_hashes_missing")
     actual = freeze_report()
