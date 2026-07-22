@@ -1,8 +1,42 @@
 {
   "schema": "codewhale.eval.m7-agent-convergence-plan.v1",
-  "status": "refrozen_after_baseline_diagnostic_before_candidate_api",
+  "status": "frozen_before_candidate_live_api_after_harness_hardening",
   "date": "2026-07-22",
   "baseline_revision": "3351213b07a821954ac06200012f21e1b1f2b3d5",
+  "binary_identities": {
+    "baseline": {
+      "revision": "3351213b07a821954ac06200012f21e1b1f2b3d5",
+      "source_tree": "10e2f40fc4b4e087d06e85f75badf4dabb90b1b7",
+      "version": "codewhale 0.8.68 (3351213b07a8)",
+      "size_bytes": 14735664,
+      "sha256": "sha256:4a93608ff5c3d409c0a1d05457aa87f30e7daac754557c5c7ecb368324dfb57d"
+    },
+    "candidate": {
+      "revision": "24c8a530fd7ae200d823e07cce5d9c75ff2cc5ea",
+      "source_tree": "050691b10662bc31ba0405342a9e154c38a8e5a8",
+      "version": "codewhale 0.8.68 (24c8a530fd7a)",
+      "size_bytes": 16091840,
+      "sha256": "sha256:4173cc14aaf853674023cdfc53e331f42195486d5e0e2beb6f2aac6dd5e7d278"
+    }
+  },
+  "build_identity": {
+    "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+    "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "target": "aarch64-apple-darwin",
+    "release_command": "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=<external> cargo build --release --locked --bin codewhale"
+  },
+  "excluded_diagnostics": {
+    "invalid_v1": "eval/results/m7-a-baseline-diagnostic-v1.json",
+    "baseline_v2": {
+      "path": "eval/results/m7-a-baseline-diagnostic-v2.json",
+      "sha256": "sha256:a8d89ebd1b24deeb68fb2e4e2a11a2bd9a2f893bdc74276797bb33eb6f005",
+      "arms": 5,
+      "product_metric_eligible": false,
+      "excluded_from_formal": true
+    }
+  },
   "claim": {
     "name": "M7-A verifier contract convergence",
     "primary_problem": "TaskContract 中由调用方手写的 VerifierSpec.plan 与 crates/tools 实际解析并执行的 verifier plan 存在两个 owner；M6-B1 v3 已观察到 env 漂移导致 verifier passed 但 canonical receipt 必然为空。",
@@ -11,7 +45,9 @@
       "production application 在 RunCreated 和首个模型请求前解析并冻结实际 verifier spec",
       "Host verifier 执行复用同一解析器",
       "completion rejection 保留精确 typed 原因与 required transition",
-      "同 revision 恢复只接受真实 revision 变化或已记录的有效 mutation，不接受 verifier 引起的 generation 变化"
+      "同 revision 恢复只接受真实 revision 变化或已记录的有效 mutation，不接受 verifier 引起的 generation 变化",
+      "completion candidate 与 rejection 绑定 generation，crash/reopen 和 continuation 只重放当前 generation 的精确恢复事实",
+      "RuntimeEvent v14 与 State v19 持久化 typed rejection，并保留未知计费的 Run API v9 pending creation reservation"
     ],
     "old_paths_to_delete": [
       "production caller 和评测 Harness 手工复制 verifier env、timeout 与执行 plan",
@@ -63,7 +99,9 @@
     "formal_arms": 40,
     "diagnostic_baseline_runs_per_task": 1,
     "diagnostic_results_are_product_metric_eligible": false,
-    "candidate_identity_rule": "实现完成、离线门禁通过后冻结一个 clean revision；正式 live API 前补入不可变 candidate revision、binary SHA、Harness SHA、manifest content SHA 与 schedule SHA。",
+    "candidate_identity_rule": "clean candidate revision、source tree、binary SHA/size/version、Harness SHA、manifest content SHA 与 schedule SHA 均在任何 candidate live API 前冻结；Harness 先完成无凭据校验并复制 suite-owned binary，最后才读取 Key。",
+    "runtime_identity_rule": "每个 arm 必须从 canonical accounting.surface_usage 证明所有成功 inference responses 均为 deepseek-v4-flash Standard Chat，并证明 hard_request_limit=10、transport_retries=0 且 root.retries+child.retries 等于 transport_retries。surface bucket 为空表示身份未观测，baseline/candidate 都 hold；非空且观测到错误 surface/model、错误 hard limit、非零或归因不一致的 transport retry 时，baseline comparison hold，candidate 视为 treatment/safety identity 违约并 reject。",
+    "tree_budget_rule": "逻辑模型请求与工具调用按 root 加全部 child 的 canonical events 汇总；物理请求按共享 accounting.started 计数，transport retry 已包含在 started 中，不重复相加。",
     "pairing": "同一 task/run_index 的 baseline 与 candidate 构成一对；pair 内先后次序平衡交错，不替换或重采样失败 arm。",
     "round_order": [
       ["t1", "t2", "t3", "t4", "t5"],
@@ -72,6 +110,16 @@
       ["t2", "t3", "t4", "t5", "t1"]
     ],
     "pair_first_variant": "baseline when (run_index + task ordinal) is even, candidate otherwise"
+  },
+  "output_identities": {
+    "formal": {
+      "suite_id": "m7-a-agent-convergence-ab-v1-3351213b-vs-24c8a530",
+      "path": "eval/results/m7-a-agent-convergence-formal-3351213b-vs-24c8a530.json"
+    },
+    "diagnostic": {
+      "suite_id": "m7-a-baseline-diagnostic-v3-3351213b",
+      "path": "eval/results/m7-a-baseline-diagnostic-v3.json"
+    }
   },
   "protocol_schemas": {
     "baseline": {
@@ -86,17 +134,18 @@
     }
   },
   "resources": {
-    "max_physical_api_requests_per_arm": 10,
+    "max_physical_api_attempts_per_arm": 10,
     "max_logical_model_requests_per_arm": 10,
     "max_runtime_retries_per_arm": 1,
-    "transport_max_retries_per_request": 1,
+    "transport_max_retries_per_request": 0,
     "max_output_tokens_per_request": 8192,
     "max_tool_calls_per_arm": 24,
     "runtime_wall_time_seconds": 225,
     "harness_wall_time_seconds": 240,
-    "max_known_cost_usd_per_arm": 0.02,
-    "diagnostic_known_cost_usd": 0.12,
-    "formal_suite_known_cost_usd": 0.8,
+    "max_known_cost_nanousd_per_arm": 20000000,
+    "diagnostic_known_cost_nanousd": 120000000,
+    "formal_suite_known_cost_nanousd": 800000000,
+    "known_cost_threshold_semantics": "这些是按已结算 canonical accounting 执行的 stop-after 准入阈值，不是 provider 消费硬上限：一个已开始 arm 必须运行到可审计终态，因此可能在结算后跨过单 arm 或 suite 阈值；Harness 随后立即停止且不重采样。每个新 arm 前仍须预留 20000000 nanousd headroom。",
     "reasoning_effort": "high",
     "streaming": true,
     "auto_approve": true,
@@ -278,38 +327,56 @@
   ],
   "invalid_attempt_policy": {
     "maximum_reruns": 0,
+    "output_claim": "正式 output 与同名 .partial 必须在读取 Key 前均不存在；通过无凭据准入后先原子写入 0600 reservation。每个 active arm 在可能发出 API 前必须持久化 known_cost_is_lower_bound=true，只有完整 canonical accounting 落盘并清除 active_arm 后才能重算为 false。进程或主机中断后保留结果并判 hold，不续跑、不覆盖、不从头重采样。",
+    "key_read_failure": "output 已 claim 后若 Key 缺失、权限或格式不合格，写入不含凭据的 typed aborted_before_api 终态；不得执行 arm，也不得留下 abort=null 的歧义 reservation。",
     "unknown_billing": "保存当前 arm 后立即停止整个 suite；所有已知费用只作下界。",
     "unsealed_or_accounting_mismatch": "保存当前 arm 后立即停止整个 suite，不重采样。",
+    "known_cost_lower_bound": "只有 unknown billing、unpriced、unsealed、usage/request/surface totals 无法证明完整，或 arm reservation 后未取回 accounting 时标记费用下界；state schema、external verifier、surface/model treatment identity、预算 identity、墙钟或已知费用超限本身不把已闭合费用改成下界。",
     "fixture_or_identity_mismatch": "首个 API 请求前失败；不得读取 Key。",
     "product_failure_with_complete_measurement": "保留为正式失败，不替换样本。",
     "transport_or_runtime_failure": "按 production policy 记录；任何计费未知仍立即停止。",
     "secret_failure": "立即停止并删除未脱敏输出。"
   },
   "acceptance": {
+    "efficiency_minimum_dual_success_pairs": 15,
+    "efficiency_minimum_pairs_per_task": 3,
+    "efficiency_minimum_improvement_percent": 15,
+    "efficiency_max_regression_percent": 10,
+    "shrink_enabled": false,
     "hard_gates": [
       "false_success 为 0",
+      "Terminal=Completed 且确定性行为证据已完成但验收不成立时必须计为 false_success，不得被同时发生的 accounting、State 或 treatment identity 测量失败降级为 hold",
       "权限、allowed_paths、Host receipt、revision、artifact、lineage 与 accounting 门禁无回归",
       "candidate 每个任务 verified success 不低于 baseline",
       "每个成功 arm 只有一个与最新 revision 精确匹配的 canonical receipt",
+      "Completed 的 candidate、Host verification、artifact、receipt、lineage、Terminal message/details 与完整 canonical event payload 必须形成唯一闭环",
+      "read-only child 的冻结 AgentTask、RunCreated、Started、ResultCollected、Finished、child Terminal 与下一次 root model handoff 必须精确闭环",
       "candidate production TaskContract verifier spec 等于 crates/tools 实际 resolved observation spec",
+      "实际 surface/model、hard_request_limit 和 transport retry attribution 精确符合冻结 treatment；candidate 偏离直接 reject",
       "内部 verifier contract mismatch 在任何付费模型请求前失败",
       "同 revision 且无有效 mutation 时不得重复 Host verifier",
       "一个 Runtime、Orchestrator、RunStore、RuntimeEvent 与 completion owner 保持唯一"
     ],
-    "benefit": "aggregate verified_success 至少增加 3 arms；或者 verified_success 相同且充分的 dual-success pairs 中请求、Token、费用或时间成对中位数至少改善 15%，其他核心指标无明显回退。",
+    "benefit": "aggregate verified_success 至少增加 3 arms；或者 verified_success 相同、至少 15/20 个 dual-success pairs 且每任务至少 3/4 时，physical requests、input+output tokens、known USD cost、canonical Agent wall time 中至少一项成对中位数改善不低于 15%，其余各项回退不超过 10%。本候选是全局完成不变量，shrink 预注册为不可用。",
     "decision_order": [
-      "reject：任一安全硬门禁失败，或 candidate verified success 回退",
-      "hold：计量不完整、unknown billing 或正式 cell 不足",
+      "reject：任一安全硬门禁失败",
+      "hold：计量不完整、unknown billing 或正式 cell 不足；证据不完整时不据此判断 verified success 回退",
+      "reject：证据完整时 candidate 任一任务 verified success 回退",
       "keep：硬门禁全过且 benefit 成立",
-      "shrink：只在明确任务子集成立，且可收缩为确定性按需机制",
+      "shrink：本候选 shrink_enabled=false，不允许结果后挑选任务子集",
       "reject：证据完整但没有净收益；删除候选生产实现"
     ]
   },
   "frozen_hashes": {
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:162bc694c2bf7295d285517f550a0b78da9ec565931a1a02933fdfd1df39a438",
-    "harness_sha256": "sha256:f9982bfe9b4b22b7794325119a387ee56609090ab4acabbfe20f54e0a448cc2b",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:c2d0fd9d71a10426d77a1712704468ef158a0c1c327ecf1059391813fd12df19",
+    "harness_sha256": "sha256:e516d98e03611c83ececae515f5a70cdef3e4aca2e58f9853b7406bc56fed6bb",
     "canary_helper_sha256": "sha256:fbeea1ce4951f450acb0534297d3f6bd619a6060c4cb67cde3c00a8a717fe68f",
     "schedule_sha256": "sha256:6cc1ec05469aa874e43bb4989e13b35a2eb753dcabe2506c289fdeaadc90ec37",
+    "binary_identities_sha256": "sha256:03fc60704a57065e1776418be350204c312ec4e1e4f934eff791c79620a6eab8",
+    "build_inputs_sha256": {
+      "cargo_lock": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+      "rust_toolchain": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2"
+    },
     "fixture_tree_sha256": {
       "t1": "sha256:2ea8caed1e7f011dac3ceafb2c73c4fb9b59c0de2e41aa5071a4e7f8ba3dbe55",
       "t2": "sha256:83d536db3897e0fa2192220b3f91c5c0e696a101c8b7cb35dc9682e5298a8fc0",
@@ -323,6 +390,22 @@
       "t3": "sha256:1c4c5ecdd433e189956a661a897282de854101f21a580e015ebe3d4736624654",
       "t4": "sha256:d9b57f20f8fbc57200e3df272db2a0951b96bffd86ab653d26f2a6ccdc4ff648",
       "t5": "sha256:1bde82a1658924f9fd2a60daba5bb8ae288db8c3dbf1e45bac3e3b6ecc7fd077"
+    },
+    "runtime_task_definition_sha256": {
+      "baseline": {
+        "t1": "sha256:6c34556e0ca6e4bd0a2003c756cc7b6f03f204f0b76401a440f2356b0771fb7b",
+        "t2": "sha256:dcd8789109f45201186aa62e46375da7a2043f1e36670ff128dbf7c7dc99ff2e",
+        "t3": "sha256:1c4c5ecdd433e189956a661a897282de854101f21a580e015ebe3d4736624654",
+        "t4": "sha256:d9b57f20f8fbc57200e3df272db2a0951b96bffd86ab653d26f2a6ccdc4ff648",
+        "t5": "sha256:1bde82a1658924f9fd2a60daba5bb8ae288db8c3dbf1e45bac3e3b6ecc7fd077"
+      },
+      "candidate": {
+        "t1": "sha256:77bee0796eeac6ff6f627b3ba7651dfd03721d31b8390b7e64f30939ce2d0b9b",
+        "t2": "sha256:b2bca443140f266118d62a4e4f96afd99d590437507d2563f65ad83b777f9ff0",
+        "t3": "sha256:ad6fab8c00c66319b0b6b598959ccece5433ee47936e4086acb86910e0e09cc9",
+        "t4": "sha256:855661a828ae3db0ec2e8785d796cb3425439cfe9918b860945f03c3ff80dedc",
+        "t5": "sha256:c9b144f11ef4fab203a3909880cae355ed6b89c01863b85549da807bf75e242f"
+      }
     },
     "caller_verifier_spec_sha256": {
       "t1": "sha256:4442192d94349596b2bd421a3b5ddd5bb502c9a0ddb1f24133c3bf457026aeb6",
