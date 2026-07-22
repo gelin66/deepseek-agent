@@ -1,6 +1,4 @@
-use codewhale_protocol::agent_runtime::{
-    ToolArtifact, VerificationArtifactPayload,
-};
+use codewhale_protocol::agent_runtime::{ToolArtifact, VerificationArtifactPayload};
 use codewhale_protocol::task::{EvidenceReceipt, canonical_json};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -71,7 +69,10 @@ fn m7_a_v1_t1_artifact_and_receipt_have_frozen_identity() {
             .expect("artifact payload is valid");
     let artifact = ToolArtifact::inline_verification(payload);
     assert_eq!(artifact.id, regression["artifact_id"]);
-    assert_eq!(artifact.sha256.as_deref(), regression["artifact_sha256"].as_str());
+    assert_eq!(
+        artifact.sha256.as_deref(),
+        regression["artifact_sha256"].as_str()
+    );
     assert_eq!(artifact.byte_len, regression["artifact_byte_len"].as_u64());
     assert_eq!(
         canonical_bytes(artifact.inline_content.as_ref().expect("inline content")),
@@ -82,8 +83,8 @@ fn m7_a_v1_t1_artifact_and_receipt_have_frozen_identity() {
     );
     artifact.validate_inline_verification().unwrap();
 
-    let receipt: EvidenceReceipt = serde_json::from_value(regression["receipt"].clone())
-        .expect("evidence receipt is valid");
+    let receipt: EvidenceReceipt =
+        serde_json::from_value(regression["receipt"].clone()).expect("evidence receipt is valid");
     receipt.validate().unwrap();
     let receipt_value = serde_json::to_value(receipt).unwrap();
     let receipt_bytes = canonical_bytes(&receipt_value);

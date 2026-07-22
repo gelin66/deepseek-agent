@@ -836,6 +836,10 @@ impl VerificationArtifactPayload {
     }
 }
 
+fn canonical_verification_artifact_bytes(content: &Value) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&canonical_json(content))
+}
+
 impl ToolArtifact {
     const VERIFICATION_ID_PREFIX: &'static str = "verification-evidence:";
     const VERIFICATION_MEDIA_TYPE: &'static str = "application/vnd.codewhale.verification+json";
@@ -849,7 +853,7 @@ impl ToolArtifact {
             &serde_json::to_value(payload)
                 .expect("verification artifact payload JSON is serializable"),
         );
-        let bytes = serde_json::to_vec(&content)
+        let bytes = canonical_verification_artifact_bytes(&content)
             .expect("canonical verification evidence JSON is serializable");
         let sha256 = format_prefixed_sha256(&bytes);
         Self {
@@ -869,7 +873,7 @@ impl ToolArtifact {
             .inline_content
             .as_ref()
             .ok_or_else(|| "verification artifact is missing its inline payload".to_owned())?;
-        let bytes = serde_json::to_vec(&canonical_json(content))
+        let bytes = canonical_verification_artifact_bytes(content)
             .map_err(|error| format!("verification artifact cannot be encoded: {error}"))?;
         let sha256 = format_prefixed_sha256(&bytes);
         if self.status != ToolArtifactStatus::Available

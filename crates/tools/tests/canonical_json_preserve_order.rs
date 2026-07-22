@@ -1,8 +1,7 @@
 use codewhale_protocol::task::canonical_json;
 use serde_json::Value;
 
-const FIXTURE: &str =
-    include_str!("../../protocol/tests/fixtures/canonical-json-v1.json");
+const FIXTURE: &str = include_str!("../../protocol/tests/fixtures/canonical-json-v1.json");
 
 #[test]
 fn production_preserve_order_graph_matches_canonical_json_vectors() {

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 const DEFAULT_HOST_ACCEPTANCE_DESCRIPTION: &str = "由 Host 明确接受完成候选";
 
@@ -672,16 +672,20 @@ impl CompletionRejection {
     }
 }
 
-/// Recursively sort JSON object keys so callers compare the same exact
-/// verifier parameters independent of input key order.
+/// Recursively sort JSON object keys so semantic JSON values have one stable
+/// representation independent of insertion order or `serde_json::Map`'s
+/// Cargo-feature-selected backing type. Arrays and scalar values retain their
+/// original semantics.
 #[must_use]
 pub fn canonical_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
-            let sorted = map
-                .iter()
-                .map(|(key, value)| (key.clone(), canonical_json(value)))
-                .collect();
+            let mut entries = map.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
+            let mut sorted = Map::with_capacity(entries.len());
+            for (key, value) in entries {
+                sorted.insert(key.clone(), canonical_json(value));
+            }
             Value::Object(sorted)
         }
         Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
