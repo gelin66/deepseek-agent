@@ -1,0 +1,473 @@
+{
+  "schema": "codewhale.eval.m7-a2-agent-convergence-plan.v1",
+  "status": "frozen_before_m7_a2_live_api",
+  "date": "2026-07-22",
+  "baseline_revision": "18de2ad29a9db5780fcbe90e8ba0eef39225399f",
+  "binary_identities": {
+    "baseline": {
+        "revision": "18de2ad29a9db5780fcbe90e8ba0eef39225399f",
+        "source_tree": "99abedbcb9b2371a8bfd19645291823f4b7e9b2b",
+        "version": "codewhale 0.8.68 (18de2ad29a9d)",
+        "size_bytes": 16058768,
+        "sha256": "sha256:9c8d5b095222ac879ad5cf85f83bfe53b9e91dda88c4775f213fd02d3bdc0b3d"
+    },
+    "candidate": {
+        "revision": "c6a743040eae9548837849c6f58e5c638cc073cc",
+        "source_tree": "8615fd994a63ee50106b415cd43f1a10de814307",
+        "version": "codewhale 0.8.68 (c6a743040eae)",
+        "size_bytes": 16091840,
+        "sha256": "sha256:dd5becce5fb9ab50b1cf53de70918adb26c8da7957672817943c51f1d774445a"
+    }
+  },
+  "build_identity": {
+    "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+    "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "target": "aarch64-apple-darwin",
+    "release_command": "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=<external> cargo build --release --locked --bin codewhale"
+  },
+  "excluded_diagnostics": {
+    "invalid_v1": "eval/results/m7-a-baseline-diagnostic-v1.json",
+    "baseline_v2": {
+      "path": "eval/results/m7-a-baseline-diagnostic-v2.json",
+      "sha256": "sha256:a8d89ebd1b24deeb68fb2e4e2a11a2bd5fd9a2f893bdc74276797bb33eb6f005",
+      "arms": 5,
+      "product_metric_eligible": false,
+      "excluded_from_formal": true
+    },
+    "m7_a_v1_formal": {
+      "manifest_path": "eval/manifests/m7-a-agent-convergence-ab-v1.json",
+      "manifest_sha256": "sha256:1c50abf66fdca60eab275cdc87df77028b748d84f1bf2592ca753b85f95ef79a",
+      "result_path": "eval/results/m7-a-agent-convergence-formal-3351213b-vs-24c8a530.json",
+      "result_sha256": "sha256:27e38db2f33280528a1552a57c1bb705ef3ab9bd15bffdaa9552ba9958825af2",
+      "arms": 2,
+      "product_metric_eligible": false,
+      "decision": "hold",
+      "excluded_from_formal": true
+    }
+  },
+  "shared_canonical_json_fix": {
+    "contract": "codewhale.protocol.canonical-json.v1",
+    "vector_path": "crates/protocol/tests/fixtures/canonical-json-v1.json",
+    "vector_file_sha256": "sha256:15f8cafc890293ab991893dd72fb279edea6e2387794f98cbdfc6c1d7ca9e87d",
+    "patch_sha256": "sha256:688bf9100c6bf4d42227098a1d9a8140bd6ab7c3ffcb46d4b930452897323b13",
+    "stable_patch_id": "1625ec95e2068bd6b71c53434e655c34a4dc40cb",
+    "source_base": "d2aae8ba01093f6a6afdf9f5f0458bac9939a610",
+    "source_revision": "570212aeba3d8699fdd80dd152e60fa1c1f432cd",
+    "control_parent": "3351213b07a821954ac06200012f21e1b1f2b3d5",
+    "control_revision": "18de2ad29a9db5780fcbe90e8ba0eef39225399f",
+    "treatment_parent": "24c8a530fd7ae200d823e07cce5d9c75ff2cc5ea",
+    "treatment_revision": "c6a743040eae9548837849c6f58e5c638cc073cc",
+    "parent_delta_stable_patch_id": "57f8b1f7ecc022c89bb77f77b330a072e6cadfd1"
+  },
+  "claim": {
+    "name": "M7-A2 shared-correctness verifier contract convergence reevaluation",
+    "primary_problem": "TaskContract 中由调用方手写的 VerifierSpec.plan 与 crates/tools 实际解析并执行的 verifier plan 存在两个 owner；M6-B1 v3 已观察到 env 漂移导致 verifier passed 但 canonical receipt 必然为空。",
+    "candidate_scope": [
+      "crates/tools 成为完整 canonical VerifierSpec 的唯一解析 owner",
+      "production application 在 RunCreated 和首个模型请求前解析并冻结实际 verifier spec",
+      "Host verifier 执行复用同一解析器",
+      "completion rejection 保留精确 typed 原因与 required transition",
+      "同 revision 恢复只接受真实 revision 变化或已记录的有效 mutation，不接受 verifier 引起的 generation 变化",
+      "completion candidate 与 rejection 绑定 generation，crash/reopen 和 continuation 只重放当前 generation 的精确恢复事实",
+      "RuntimeEvent v14 与 State v19 持久化 typed rejection，并保留未知计费的 Run API v9 pending creation reservation"
+    ],
+    "old_paths_to_delete": [
+      "production caller 和评测 Harness 手工复制 verifier env、timeout 与执行 plan",
+      "seal_evidence_receipt 的无原因 Option 失败折叠",
+      "用完整 WorkspaceState generation 判断 verifier failure 后是否允许重复验证"
+    ],
+    "excluded": [
+      "任何 production system prompt 修改",
+      "Strict Function Calling 或 FIM",
+      "双 Writer、多 Writer、DAG、swarm 或第二 scheduler",
+      "Host 直接信任模型自述或放宽 EvidenceReceipt exact match",
+      "ContextBroker HostFacts canonical 化",
+      "read-only child crash recovery、delegate skill、handoff 或工具目录改造",
+      "Provider、UI、品牌、发布或兼容层清理"
+    ]
+  },
+  "diagnosis": {
+    "primary": {
+      "code": "verifier_plan_dual_owner",
+      "observed_frozen_step_env": {},
+      "observed_execution_step_env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "expected_effect": "实际 verifier verdict 为 passed 时 observation.spec 仍与 frozen verifier 不相等，Host fail closed 且 receipt_count=0。"
+    },
+    "measurement_correction": {
+      "reason": "首次 baseline diagnostic 暴露两个 Harness 观测缺陷：porcelain 首行前导空格被 strip 后又按三字符截取，ChildFinished 错用 child_run_id 而非 canonical call_id 关联。",
+      "scope": "仅修正 changed_files 与 read-only child 完成事件解析；任务、fixture、模型、预算、verifier、顺序和准入门槛均未改变。",
+      "invalidated_result": "eval/results/m7-a-baseline-diagnostic-v1.json",
+      "timing": "生产代码修改和 candidate live API 之前"
+    },
+    "secondary_deferred": [
+      "ordinary ToolOutcome 投影到模型时丢失 typed fields",
+      "HostFacts 非 canonical 临时尾消息破坏连续请求精确前缀",
+      "LatestPass 的模型主动 verifier 与 Host verifier 重复执行",
+      "read-only child terminal crash/reopen 无法精确汇聚",
+      "旧 delegate skill 与当前 read-only child schema 冲突",
+      "child handoff 缺少 task/call/artifact identity",
+      "production prompt 对 explicit isolated Writer 的描述不准确"
+    ]
+  },
+  "experiment": {
+    "kind": "code_revision_ab",
+    "model": "deepseek-v4-flash",
+    "api_surface": "standard_chat",
+    "prompt_policy": "baseline 与 candidate 使用各自 revision 未修改的 production prompt；candidate 不得修改 prompt",
+    "runs_per_variant_task": 4,
+    "formal_pairs": 20,
+    "formal_arms": 40,
+    "diagnostic_baseline_runs_per_task": 1,
+    "diagnostic_results_are_product_metric_eligible": false,
+    "candidate_identity_rule": "clean candidate revision、source tree、binary SHA/size/version、Harness SHA、manifest content SHA 与 schedule SHA 均在任何 candidate live API 前冻结；Harness 先完成无凭据校验并复制 suite-owned binary，最后才读取 Key。",
+    "runtime_identity_rule": "每个 arm 必须从 canonical accounting.surface_usage 证明所有成功 inference responses 均为 deepseek-v4-flash Standard Chat，并证明 hard_request_limit=10、transport_retries=0 且 root.retries+child.retries 等于 transport_retries。surface bucket 为空表示身份未观测，baseline/candidate 都 hold；非空且观测到错误 surface/model、错误 hard limit、非零或归因不一致的 transport retry 时，baseline comparison hold，candidate 视为 treatment/safety identity 违约并 reject。",
+    "tree_budget_rule": "逻辑模型请求与工具调用按 root 加全部 child 的 canonical events 汇总；物理请求按共享 accounting.started 计数，transport retry 已包含在 started 中，不重复相加。",
+    "pairing": "同一 task/run_index 的 baseline 与 candidate 构成一对；pair 内先后次序平衡交错，不替换或重采样失败 arm。",
+    "round_order": [
+      ["t1", "t2", "t3", "t4", "t5"],
+      ["t3", "t4", "t5", "t1", "t2"],
+      ["t5", "t1", "t2", "t3", "t4"],
+      ["t2", "t3", "t4", "t5", "t1"]
+    ],
+    "pair_first_variant": "baseline when (run_index + task ordinal) is even, candidate otherwise"
+  },
+  "output_identities": {
+    "formal": {
+      "suite_id": "m7-a2-agent-convergence-ab-v1-18de2ad2-vs-c6a74304",
+      "path": "eval/results/m7-a2-agent-convergence-formal-18de2ad2-vs-c6a74304.json"
+    },
+    "diagnostic": {
+      "suite_id": "m7-a2-control-diagnostic-v1-18de2ad2",
+      "path": "eval/results/m7-a2-control-diagnostic-v1.json"
+    }
+  },
+  "protocol_schemas": {
+    "baseline": {
+      "run_api": 9,
+      "runtime_event": 13,
+      "state": 18
+    },
+    "candidate": {
+      "run_api": 9,
+      "runtime_event": 14,
+      "state": 19
+    }
+  },
+  "resources": {
+    "max_physical_api_attempts_per_arm": 10,
+    "max_logical_model_requests_per_arm": 10,
+    "max_runtime_retries_per_arm": 1,
+    "transport_max_retries_per_request": 0,
+    "max_output_tokens_per_request": 8192,
+    "max_tool_calls_per_arm": 24,
+    "runtime_wall_time_seconds": 225,
+    "harness_wall_time_seconds": 240,
+    "max_known_cost_nanousd_per_arm": 20000000,
+    "diagnostic_known_cost_nanousd": 120000000,
+    "formal_suite_known_cost_nanousd": 800000000,
+    "known_cost_threshold_semantics": "这些是按已结算 canonical accounting 执行的 stop-after 准入阈值，不是 provider 消费硬上限：一个已开始 arm 必须运行到可审计终态，因此可能在结算后跨过单 arm 或 suite 阈值；Harness 随后立即停止且不重采样。每个新 arm 前仍须预留 20000000 nanousd headroom。",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_target_dir": "/private/tmp/codewhale-m7a2-target",
+    "cargo_incremental": "0"
+  },
+  "tool_policy": {
+    "root_tools": [
+      "agent",
+      "apply_patch",
+      "edit_file",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "readonly_child_tools": [
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file"
+    ],
+    "write_execution_mode": "root"
+  },
+  "verifier_request": {
+    "verifier_id": "run_verifiers",
+    "parameters_template": {
+      "profile": "exact",
+      "level": "quick",
+      "max_python_files": 200,
+      "commands": [
+        {
+          "name": "m7a-<task>-exact",
+          "program": "/usr/bin/python3",
+          "args": ["-I", "-B", "_eval_verifier.py", "."],
+          "cwd": ""
+        }
+      ]
+    },
+    "caller_plan_template": {
+      "steps": [
+        {
+          "id": "m7a-<task>-exact",
+          "program": "/usr/bin/python3",
+          "args": ["-I", "-B", "_eval_verifier.py", "."],
+          "cwd": "",
+          "env": {},
+          "timeout_ms": 600000
+        }
+      ]
+    },
+    "candidate_contract": "caller plan 是未受信任请求数据；candidate 必须在模型请求前用 crates/tools 实际 resolver 生成的 canonical plan 替换并冻结，不能靠 Harness 同步隐藏字段。"
+  },
+  "tasks": {
+    "t1": {
+      "name": "单文件确定性修复与过早完成反例",
+      "fixture": "eval/fixtures/m7-agent-convergence/t1-single-file",
+      "fixture_tree_sha256": "sha256:2ea8caed1e7f011dac3ceafb2c73c4fb9b59c0de2e41aa5071a4e7f8ba3dbe55",
+      "fixture_base_commit": "278e0b21ab2519cf7a59123d8bf5a40f9bbc89ef",
+      "objective": "修复 slugify.py：只保留 ASCII 字母和数字、所有其他连续分隔内容折叠为一个连字符、移除首尾连字符并转小写。只修改 slugify.py；修改前读取，完成由冻结 verifier 验收。",
+      "constraints": [
+        "保持 slugify(value: str) 签名",
+        "不得新增依赖或兼容层",
+        "只允许修改 slugify.py"
+      ],
+      "non_goals": ["修改 _eval_verifier.py 或 Git 元数据", "调用子 Agent"],
+      "acceptance_id": "m7a-t1",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": ["slugify.py"],
+      "expected_changed_files": ["slugify.py"],
+      "max_depth": 0,
+      "max_concurrent_children": 0,
+      "child_expectation": "forbidden"
+    },
+    "t2": {
+      "name": "多文件递归策略合并与真实回归测试",
+      "fixture": "eval/fixtures/m7-agent-convergence/t2-multi-file",
+      "fixture_tree_sha256": "sha256:83d536db3897e0fa2192220b3f91c5c0e696a101c8b7cb35dc9682e5298a8fc0",
+      "fixture_base_commit": "c0334e97216c8552fbb1afd84b70baecd573b676",
+      "objective": "实现 merge_policy 的递归字典合并：嵌套 dict 递归合并，列表与标量整体替换，且不修改任一输入；同时在 test_policy_merge.py 新增 test_nested_limits_are_merged 与 test_inputs_are_not_mutated 两个真实回归测试。必须同时修改两个目标文件。",
+      "constraints": [
+        "保持 merge_policy(base, override) 签名",
+        "不得依赖第三方包",
+        "只允许修改 policy_merge.py 和 test_policy_merge.py"
+      ],
+      "non_goals": ["修改 _eval_verifier.py 或 Git 元数据", "调用子 Agent"],
+      "acceptance_id": "m7a-t2",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": ["policy_merge.py", "test_policy_merge.py"],
+      "expected_changed_files": ["policy_merge.py", "test_policy_merge.py"],
+      "max_depth": 0,
+      "max_concurrent_children": 0,
+      "child_expectation": "forbidden"
+    },
+    "t3": {
+      "name": "修改前失败、有效写入、最终通过的恢复任务",
+      "fixture": "eval/fixtures/m7-agent-convergence/t3-failure-recovery",
+      "fixture_tree_sha256": "sha256:77ec1fc40fdd44f9f1da4a185bb349a27997345122e45bad7d20aa23fcce9cdc",
+      "fixture_base_commit": "75f858272ebbe4e59257550f0a9f87065b035d6c",
+      "objective": "修复 retry_delay.py 的 zero-based attempt 计算。必须先调用 run_verifiers 且只提交冻结 acceptance ID，观察确定性失败；再读取并修改 retry_delay.py；最后提出完成，由 Host 形成失败→有效修改→最终通过的 canonical 证据。",
+      "constraints": [
+        "attempt=0 必须返回 1，之后按 2 的幂增长并受 cap 限制",
+        "负数继续抛出 ValueError",
+        "只允许修改 retry_delay.py"
+      ],
+      "non_goals": ["修改 _eval_verifier.py 或 Git 元数据", "绕过或弱化失败验证", "调用子 Agent"],
+      "acceptance_id": "m7a-t3",
+      "evidence_policy": "failed_write_pass",
+      "allowed_paths": ["retry_delay.py"],
+      "expected_changed_files": ["retry_delay.py"],
+      "max_depth": 0,
+      "max_concurrent_children": 0,
+      "child_expectation": "forbidden"
+    },
+    "t4": {
+      "name": "仓库阅读控制任务：不应委派子 Agent",
+      "fixture": "eval/fixtures/m7-agent-convergence/t4-repository-reading",
+      "fixture_tree_sha256": "sha256:ab3b6ca83abe5de3697a43988a0585bca775595b42b13ae4a8d15d4d89472259",
+      "fixture_base_commit": "fa2e66c1082e4b82c0e95eaa9358dd0ae8d87d88",
+      "objective": "读取 config/base.json 与 config/local.json，按 local 对 base 做递归覆盖，然后实现 runtime_banner.py 返回精确的一行运行摘要。该任务足够小，应由 root 直接完成，不调用子 Agent。只修改 runtime_banner.py。",
+      "constraints": [
+        "摘要格式必须由仓库配置事实推导，不能硬改配置文件",
+        "保持 runtime_banner() 签名",
+        "只允许修改 runtime_banner.py"
+      ],
+      "non_goals": ["修改 config、_eval_verifier.py 或 Git 元数据", "调用子 Agent"],
+      "acceptance_id": "m7a-t4",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": ["runtime_banner.py"],
+      "expected_changed_files": ["runtime_banner.py"],
+      "max_depth": 1,
+      "max_concurrent_children": 1,
+      "child_expectation": "zero"
+    },
+    "t5": {
+      "name": "read-only 子 Agent 辅助多文件审计与 root 收敛",
+      "fixture": "eval/fixtures/m7-agent-convergence/t5-readonly-child",
+      "fixture_tree_sha256": "sha256:774d6c86919084105064142da8c4d8676cff5d950f94dae2865cb8d50d1506c0",
+      "fixture_base_commit": "8060cbcfbd54ec4c17fc54ed2a97dbb084a7f398",
+      "objective": "先启动且只启动一个 read_only 子 Agent，审计 specs/ 下三个组件的 minimum、共享 features 与稳定组件顺序；root 接收 handoff 后实现 compatibility.py。子 Agent 只读，root 只修改 compatibility.py，最终由冻结 verifier 验收。",
+      "constraints": [
+        "子 Agent workspace_access 必须为 read_only",
+        "子 Agent 只允许 git_diff、git_status、grep_files、list_dir、read_file",
+        "root 必须基于 handoff 收敛，不启动第二个 child",
+        "只允许修改 compatibility.py"
+      ],
+      "non_goals": ["isolated Writer", "修改 specs、_eval_verifier.py 或 Git 元数据"],
+      "acceptance_id": "m7a-t5",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": ["compatibility.py"],
+      "expected_changed_files": ["compatibility.py"],
+      "max_depth": 1,
+      "max_concurrent_children": 1,
+      "child_expectation": "exactly_one_read_only"
+    }
+  },
+  "measurements": [
+    "verified_success",
+    "false_success",
+    "terminal state 与 reason code",
+    "completion proposal/rejection 次数",
+    "Host verifier prepared/started/committed 与 receipt 数量",
+    "expected 与 observed VerifierSpec SHA-256",
+    "同 revision Host verifier 重复次数",
+    "named verifier 调用、verdict 与有效 mutation 次数",
+    "root/child 请求数与 retry",
+    "input/output/cache-hit/cache-miss/reasoning/replay tokens",
+    "已知费用与 wall time",
+    "工具名、typed outcome 计数与脱敏参数 SHA-256",
+    "child start/finish/handoff 与 read-only 权限",
+    "changed files、外部 exact verifier 和 workspace cleanliness"
+  ],
+  "invalid_attempt_policy": {
+    "maximum_reruns": 0,
+    "output_claim": "正式 output 与同名 .partial 必须在读取 Key 前均不存在；通过无凭据准入后先原子写入 0600 reservation。每个 active arm 在可能发出 API 前必须持久化 known_cost_is_lower_bound=true，只有完整 canonical accounting 落盘并清除 active_arm 后才能重算为 false。进程或主机中断后保留结果并判 hold，不续跑、不覆盖、不从头重采样。",
+    "key_read_failure": "output 已 claim 后若 Key 缺失、权限或格式不合格，写入不含凭据的 typed aborted_before_api 终态；不得执行 arm，也不得留下 abort=null 的歧义 reservation。",
+    "unknown_billing": "保存当前 arm 后立即停止整个 suite；所有已知费用只作下界。",
+    "unsealed_or_accounting_mismatch": "保存当前 arm 后立即停止整个 suite，不重采样。",
+    "known_cost_lower_bound": "只有 unknown billing、unpriced、unsealed、usage/request/surface totals 无法证明完整，或 arm reservation 后未取回 accounting 时标记费用下界；state schema、external verifier、surface/model treatment identity、预算 identity、墙钟或已知费用超限本身不把已闭合费用改成下界。",
+    "fixture_or_identity_mismatch": "首个 API 请求前失败；不得读取 Key。",
+    "product_failure_with_complete_measurement": "保留为正式失败，不替换样本。",
+    "transport_or_runtime_failure": "按 production policy 记录；任何计费未知仍立即停止。",
+    "secret_failure": "立即停止并删除未脱敏输出。"
+  },
+  "acceptance": {
+    "efficiency_minimum_dual_success_pairs": 15,
+    "efficiency_minimum_pairs_per_task": 3,
+    "efficiency_minimum_improvement_percent": 15,
+    "efficiency_max_regression_percent": 10,
+    "shrink_enabled": false,
+    "hard_gates": [
+      "false_success 为 0",
+      "Terminal=Completed 且确定性行为证据已完成但验收不成立时必须计为 false_success，不得被同时发生的 accounting、State 或 treatment identity 测量失败降级为 hold",
+      "权限、allowed_paths、Host receipt、revision、artifact、lineage 与 accounting 门禁无回归",
+      "candidate 每个任务 verified success 不低于 baseline",
+      "每个成功 arm 只有一个与最新 revision 精确匹配的 canonical receipt",
+      "Completed 的 candidate、Host verification、artifact、receipt、lineage、Terminal message/details 与完整 canonical event payload 必须形成唯一闭环",
+      "read-only child 的冻结 AgentTask、RunCreated、Started、ResultCollected、Finished、child Terminal 与下一次 root model handoff 必须精确闭环",
+      "candidate production TaskContract verifier spec 等于 crates/tools 实际 resolved observation spec",
+      "实际 surface/model、hard_request_limit 和 transport retry attribution 精确符合冻结 treatment；candidate 偏离直接 reject",
+      "内部 verifier contract mismatch 在任何付费模型请求前失败",
+      "同 revision 且无有效 mutation 时不得重复 Host verifier",
+      "一个 Runtime、Orchestrator、RunStore、RuntimeEvent 与 completion owner 保持唯一"
+    ],
+    "benefit": "aggregate verified_success 至少增加 3 arms；或者 verified_success 相同、至少 15/20 个 dual-success pairs 且每任务至少 3/4 时，physical requests、input+output tokens、known USD cost、canonical Agent wall time 中至少一项成对中位数改善不低于 15%，其余各项回退不超过 10%。本候选是全局完成不变量，shrink 预注册为不可用。",
+    "decision_order": [
+      "reject：任一安全硬门禁失败",
+      "hold：计量不完整、unknown billing 或正式 cell 不足；证据不完整时不据此判断 verified success 回退",
+      "reject：证据完整时 candidate 任一任务 verified success 回退",
+      "keep：硬门禁全过且 benefit 成立",
+      "shrink：本候选 shrink_enabled=false，不允许结果后挑选任务子集",
+      "reject：证据完整但没有净收益；删除候选生产实现"
+    ]
+  },
+  "frozen_hashes": {
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:ce379e0b4c050f5f9e45931b14db478ba6c210706819024354ed0c5cd71bbb19",
+    "harness_sha256": "sha256:8ecda93109cfd9f9a9f37dc5b1e2cf2b652a70b5b11b4e434ab747858e51ccd8",
+    "canary_helper_sha256": "sha256:fbeea1ce4951f450acb0534297d3f6bd619a6060c4cb67cde3c00a8a717fe68f",
+    "schedule_sha256": "sha256:6cc1ec05469aa874e43bb4989e13b35a2eb753dcabe2506c289fdeaadc90ec37",
+    "suite_schedule_sha256": "sha256:d71a9509c0ad9b520ccea0b5fddecf636f073a39dfa2fbc5b85d0155b895a6ff",
+    "canonical_json_vector_identity": {
+      "artifact_id": "verification-evidence:sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d",
+      "artifact_sha256": "sha256:e2147af90d902212a4836eab350c0a6806a1a8cb065d15afaf5aeaa5bcba870d",
+      "file_sha256": "sha256:15f8cafc890293ab991893dd72fb279edea6e2387794f98cbdfc6c1d7ca9e87d",
+      "receipt_sha256": "sha256:15192093f99995766739569ee4ebc34bf9a496bd7d53e58fe70156feb59fd07b",
+      "schema": "codewhale.protocol.canonical-json.v1",
+      "vectors_sha256": "sha256:12e670e787243cd6e8afa50a3df13093f601acb25eb8eb9c45cf09022677da77"
+    },
+    "shared_fix_identity": {
+      "changed_paths_sha256": "sha256:73e5e792acd768b8226727ba7a976ac7e516e6c5e0fb94e49ad1fb35f0ecbe27",
+      "control_parent": "3351213b07a821954ac06200012f21e1b1f2b3d5",
+      "control_revision": "18de2ad29a9db5780fcbe90e8ba0eef39225399f",
+      "numstat_sha256": "sha256:d985083cea06845d98eed0a0f2015f8f0ad75a2b23881c32e9ccc2fbc7fa54fa",
+      "parent_delta_stable_patch_id": "57f8b1f7ecc022c89bb77f77b330a072e6cadfd1",
+      "patch_sha256": "sha256:688bf9100c6bf4d42227098a1d9a8140bd6ab7c3ffcb46d4b930452897323b13",
+      "stable_patch_id": "1625ec95e2068bd6b71c53434e655c34a4dc40cb",
+      "treatment_parent": "24c8a530fd7ae200d823e07cce5d9c75ff2cc5ea",
+      "treatment_revision": "c6a743040eae9548837849c6f58e5c638cc073cc"
+    },
+    "prior_m7_a_v1": {
+      "manifest_sha256": "sha256:1c50abf66fdca60eab275cdc87df77028b748d84f1bf2592ca753b85f95ef79a",
+      "result_sha256": "sha256:27e38db2f33280528a1552a57c1bb705ef3ab9bd15bffdaa9552ba9958825af2"
+    },
+    "binary_identities_sha256": "sha256:e6cdffb7164c1e2d78179589f49df1a282af43fa906338da60a1bf902be5e885",
+    "build_inputs_sha256": {
+      "cargo_lock": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+      "rust_toolchain": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2"
+    },
+    "fixture_tree_sha256": {
+      "t1": "sha256:2ea8caed1e7f011dac3ceafb2c73c4fb9b59c0de2e41aa5071a4e7f8ba3dbe55",
+      "t2": "sha256:83d536db3897e0fa2192220b3f91c5c0e696a101c8b7cb35dc9682e5298a8fc0",
+      "t3": "sha256:77ec1fc40fdd44f9f1da4a185bb349a27997345122e45bad7d20aa23fcce9cdc",
+      "t4": "sha256:ab3b6ca83abe5de3697a43988a0585bca775595b42b13ae4a8d15d4d89472259",
+      "t5": "sha256:774d6c86919084105064142da8c4d8676cff5d950f94dae2865cb8d50d1506c0"
+    },
+    "task_definition_sha256": {
+      "t1": "sha256:6c34556e0ca6e4bd0a2003c756cc7b6f03f204f0b76401a440f2356b0771fb7b",
+      "t2": "sha256:dcd8789109f45201186aa62e46375da7a2043f1e36670ff128dbf7c7dc99ff2e",
+      "t3": "sha256:1c4c5ecdd433e189956a661a897282de854101f21a580e015ebe3d4736624654",
+      "t4": "sha256:d9b57f20f8fbc57200e3df272db2a0951b96bffd86ab653d26f2a6ccdc4ff648",
+      "t5": "sha256:1bde82a1658924f9fd2a60daba5bb8ae288db8c3dbf1e45bac3e3b6ecc7fd077"
+    },
+    "runtime_task_definition_sha256": {
+      "baseline": {
+        "t1": "sha256:6c34556e0ca6e4bd0a2003c756cc7b6f03f204f0b76401a440f2356b0771fb7b",
+        "t2": "sha256:dcd8789109f45201186aa62e46375da7a2043f1e36670ff128dbf7c7dc99ff2e",
+        "t3": "sha256:1c4c5ecdd433e189956a661a897282de854101f21a580e015ebe3d4736624654",
+        "t4": "sha256:d9b57f20f8fbc57200e3df272db2a0951b96bffd86ab653d26f2a6ccdc4ff648",
+        "t5": "sha256:1bde82a1658924f9fd2a60daba5bb8ae288db8c3dbf1e45bac3e3b6ecc7fd077"
+      },
+      "candidate": {
+        "t1": "sha256:77bee0796eeac6ff6f627b3ba7651dfd03721d31b8390b7e64f30939ce2d0b9b",
+        "t2": "sha256:b2bca443140f266118d62a4e4f96afd99d590437507d2563f65ad83b777f9ff0",
+        "t3": "sha256:ad6fab8c00c66319b0b6b598959ccece5433ee47936e4086acb86910e0e09cc9",
+        "t4": "sha256:855661a828ae3db0ec2e8785d796cb3425439cfe9918b860945f03c3ff80dedc",
+        "t5": "sha256:c9b144f11ef4fab203a3909880cae355ed6b89c01863b85549da807bf75e242f"
+      }
+    },
+    "caller_verifier_spec_sha256": {
+      "t1": "sha256:4442192d94349596b2bd421a3b5ddd5bb502c9a0ddb1f24133c3bf457026aeb6",
+      "t2": "sha256:e7614f62a8ce9faeb2b10d839eea77f17e21aeba9ca3a706b5662c8460b02563",
+      "t3": "sha256:b7271df4062f5ac4acf95c1212dfba95e1793c622a03dfe4018f183d034f0375",
+      "t4": "sha256:8de2cc42490b5a4f143efa4e87d3c0965ef8db314510f113e4014f3ccf047e5d",
+      "t5": "sha256:8255a5c1ab6964d4b46717b4d7d3db98ef76286b5ee687b41f18a035e0d45026"
+    },
+    "resolved_verifier_spec_sha256": {
+      "t1": "sha256:447685c580340ab99eda1fdf88402ea92d4a0a6eb48ae347f8cc77ed868624da",
+      "t2": "sha256:736b5867c147a3a8c6f14414e62f7eb5b33598d4c790704d4f0c52ff348342ef",
+      "t3": "sha256:a4f18f72cd25e92bba7ed998756e4fe65ce000f2dc8860d9f6b95b67d35a462a",
+      "t4": "sha256:f6022f3cfa3adcfc6b92dfe969588765f0bde1a214d32784ca07468e7f2a1382",
+      "t5": "sha256:994442f135cf7d1d95c42afc4ca2279bfb1d63bfde48d806c68fc1b0ad212e88"
+    }
+  }
+}

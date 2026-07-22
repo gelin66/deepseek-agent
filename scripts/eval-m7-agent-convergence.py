@@ -32,9 +32,17 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m7-a-agent-convergence-ab-v1.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 CANARY_PATH = ROOT / "scripts/eval-m6-writer-canary.py"
-RESULT_SCHEMA = "codewhale.eval.m7-agent-convergence.v2"
+CANONICAL_JSON_VECTOR_PATH = (
+    ROOT / "crates/protocol/tests/fixtures/canonical-json-v1.json"
+)
+PRIOR_V1_MANIFEST_PATH = ROOT / "eval/manifests/m7-a-agent-convergence-ab-v1.json"
+PRIOR_V1_RESULT_PATH = (
+    ROOT
+    / "eval/results/m7-a-agent-convergence-formal-3351213b-vs-24c8a530.json"
+)
+RESULT_SCHEMA = "codewhale.eval.m7-agent-convergence.v3"
 RUN_API_SCHEMA = 9
 MODEL = "deepseek-v4-flash"
 TASK_IDS = ("t1", "t2", "t3", "t4", "t5")
@@ -56,7 +64,7 @@ SECRET_FAILURES = {
     "key_in_state",
     "key_in_stderr",
 }
-FROZEN_STATUS = "frozen_before_candidate_live_api_after_harness_hardening"
+FROZEN_STATUS = "frozen_before_m7_a2_live_api"
 
 
 class EvaluationError(RuntimeError):
@@ -85,7 +93,22 @@ CANARY = load_module(CANARY_PATH, "codewhale_m7_run_api_support")
 
 def canonical_bytes(value: Any) -> bytes:
     return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def canonical_evidence_bytes(value: Any) -> bytes:
+    """Mirror codewhale-protocol canonical JSON v1 for evidence values."""
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
 
 
@@ -119,6 +142,114 @@ def git_tree(revision: str) -> str:
     return value
 
 
+def repository_git_bytes(*arguments: str, stdin: bytes | None = None) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=ROOT,
+        env=safe_env(),
+        input=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    require(result.returncode == 0, "shared_fix_git_identity_unavailable")
+    return result.stdout
+
+
+def stable_patch_id(diff: bytes) -> str:
+    output = repository_git_bytes("patch-id", "--stable", stdin=diff).decode().strip()
+    value = output.split(maxsplit=1)[0] if output else ""
+    require(
+        len(value) == 40 and all(character in "0123456789abcdef" for character in value),
+        "shared_fix_patch_id_invalid",
+    )
+    return value
+
+
+def shared_fix_identity() -> dict[str, Any]:
+    frozen = MANIFEST["shared_canonical_json_fix"]
+    control_parent = frozen["control_parent"]
+    control = frozen["control_revision"]
+    treatment_parent = frozen["treatment_parent"]
+    treatment = frozen["treatment_revision"]
+    source_base = frozen["source_base"]
+    source = frozen["source_revision"]
+    control_diff = repository_git_bytes("diff", "--binary", f"{control_parent}..{control}")
+    treatment_diff = repository_git_bytes(
+        "diff", "--binary", f"{treatment_parent}..{treatment}"
+    )
+    source_diff = repository_git_bytes("diff", "--binary", f"{source_base}..{source}")
+    control_patch_id = stable_patch_id(control_diff)
+    treatment_patch_id = stable_patch_id(treatment_diff)
+    original_delta = repository_git_bytes(
+        "diff", "--binary", f"{control_parent}..{treatment_parent}", "--", "Cargo.toml",
+        "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates"
+    )
+    fixed_delta = repository_git_bytes(
+        "diff", "--binary", f"{control}..{treatment}", "--", "Cargo.toml", "Cargo.lock",
+        "rust-toolchain.toml", ".cargo", "crates"
+    )
+    allowed_paths = [
+        "crates/protocol/src/agent_runtime.rs",
+        "crates/protocol/src/task.rs",
+        "crates/protocol/tests/canonical_json_contract.rs",
+        "crates/protocol/tests/fixtures/canonical-json-v1.json",
+        "crates/tools/tests/canonical_json_preserve_order.rs",
+    ]
+    control_paths = repository_git_bytes(
+        "diff", "--name-only", f"{control_parent}..{control}"
+    ).decode().splitlines()
+    treatment_paths = repository_git_bytes(
+        "diff", "--name-only", f"{treatment_parent}..{treatment}"
+    ).decode().splitlines()
+    control_numstat = repository_git_bytes(
+        "diff", "--numstat", f"{control_parent}..{control}"
+    )
+    treatment_numstat = repository_git_bytes(
+        "diff", "--numstat", f"{treatment_parent}..{treatment}"
+    )
+    require(
+        repository_git_bytes("rev-parse", f"{control}^").decode().strip()
+        == control_parent
+        and repository_git_bytes("rev-parse", f"{treatment}^").decode().strip()
+        == treatment_parent
+        and repository_git_bytes("rev-list", "--count", f"{control_parent}..{control}")
+        .decode()
+        .strip()
+        == "1"
+        and repository_git_bytes(
+            "rev-list", "--count", f"{treatment_parent}..{treatment}"
+        )
+        .decode()
+        .strip()
+        == "1"
+        and control_patch_id == treatment_patch_id == frozen["stable_patch_id"]
+        and sha256_bytes(source_diff) == frozen["patch_sha256"]
+        and control_paths == treatment_paths == allowed_paths
+        and control_numstat == treatment_numstat
+        and stable_patch_id(original_delta)
+        == stable_patch_id(fixed_delta)
+        == frozen["parent_delta_stable_patch_id"]
+        and git_tree(control) == MANIFEST["binary_identities"]["baseline"]["source_tree"]
+        and git_tree(treatment)
+        == MANIFEST["binary_identities"]["candidate"]["source_tree"]
+        and file_hash(CANONICAL_JSON_VECTOR_PATH) == frozen["vector_file_sha256"],
+        "shared_fix_fairness_mismatch",
+    )
+    return {
+        "control_parent": control_parent,
+        "control_revision": control,
+        "treatment_parent": treatment_parent,
+        "treatment_revision": treatment,
+        "patch_sha256": frozen["patch_sha256"],
+        "stable_patch_id": control_patch_id,
+        "changed_paths_sha256": canonical_hash(control_paths),
+        "numstat_sha256": sha256_bytes(control_numstat),
+        "parent_delta_stable_patch_id": stable_patch_id(original_delta),
+    }
+
+
 def remaining_timeout(deadline: float, maximum: float = 30.0) -> float:
     remaining = deadline - time.monotonic()
     require(remaining > 0, "arm_deadline_exceeded")
@@ -131,7 +262,7 @@ def load_manifest() -> dict[str, Any]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise EvaluationError("manifest_unavailable") from error
     require(
-        value.get("schema") == "codewhale.eval.m7-agent-convergence-plan.v1"
+        value.get("schema") == "codewhale.eval.m7-a2-agent-convergence-plan.v1"
         and tuple(value.get("tasks", {})) == TASK_IDS,
         "manifest_invalid",
     )
@@ -146,6 +277,63 @@ def manifest_content_hash() -> str:
     value = copy.deepcopy(MANIFEST)
     value.pop("frozen_hashes", None)
     return canonical_hash(value)
+
+
+def canonical_vector_identity() -> dict[str, Any]:
+    try:
+        fixture = json.loads(CANONICAL_JSON_VECTOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvaluationError("canonical_json_vector_unavailable") from error
+    require(
+        fixture.get("schema") == "codewhale.protocol.canonical-json.v1",
+        "canonical_json_vector_schema_invalid",
+    )
+    observed: list[dict[str, Any]] = []
+    for vector in fixture.get("vectors", []):
+        try:
+            value = json.loads(vector["input_json"])
+            encoded = canonical_evidence_bytes(value)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise EvaluationError("canonical_json_vector_invalid") from error
+        digest = sha256_bytes(encoded)
+        require(
+            encoded == vector.get("canonical", "").encode("utf-8")
+            and len(encoded) == vector.get("byte_len")
+            and digest == vector.get("sha256"),
+            "canonical_json_vector_mismatch",
+            {"id": vector.get("id")},
+        )
+        observed.append(
+            {
+                "id": vector.get("id"),
+                "byte_len": len(encoded),
+                "sha256": digest,
+            }
+        )
+    regression = fixture.get("m7_a_v1_t1", {})
+    artifact = canonical_evidence_bytes(regression.get("artifact_payload"))
+    artifact_digest = sha256_bytes(artifact)
+    receipt = canonical_evidence_bytes(regression.get("receipt"))
+    require(
+        artifact == regression.get("artifact_canonical", "").encode("utf-8")
+        and len(artifact) == regression.get("artifact_byte_len")
+        and artifact_digest == regression.get("artifact_sha256")
+        and regression.get("artifact_id")
+        == f"verification-evidence:{artifact_digest}"
+        and receipt == regression.get("receipt_canonical", "").encode("utf-8")
+        and len(receipt) == regression.get("receipt_byte_len")
+        and sha256_bytes(receipt) == regression.get("receipt_sha256"),
+        "canonical_json_m7_a_v1_regression_mismatch",
+    )
+    require(len(observed) >= 5, "canonical_json_vector_coverage_missing")
+    return {
+        "schema": fixture["schema"],
+        "file_sha256": file_hash(CANONICAL_JSON_VECTOR_PATH),
+        "vectors_sha256": canonical_hash(observed),
+        "artifact_sha256": artifact_digest,
+        "artifact_id": regression["artifact_id"],
+        "receipt_sha256": sha256_bytes(receipt),
+    }
 
 
 def fixture_path(task_id: str) -> Path:
@@ -593,7 +781,7 @@ def verifier_artifacts_available(
         content = artifact.get("inline_content")
         if not isinstance(content, dict):
             return False
-        encoded = canonical_bytes(content)
+        encoded = canonical_evidence_bytes(content)
         digest = sha256_bytes(encoded)
         if (
             artifact.get("status") != "available"
@@ -1212,7 +1400,12 @@ def evidence_lineage_valid(
     )
 
 
-def verification_summary(task_id: str, events: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]:
+def verification_summary(
+    task_id: str,
+    events: list[dict[str, Any]],
+    run: dict[str, Any],
+    expected_workspace: str,
+) -> dict[str, Any]:
     created = run_created(events)
     contract = created.get("task_contract", {})
     acceptance = contract.get("definition", {}).get("acceptance", [])
@@ -1284,6 +1477,19 @@ def verification_summary(task_id: str, events: list[dict[str, Any]], run: dict[s
     ledger_valid = event_ledger_valid(events, run)
     if not ledger_valid:
         chain_failures.append("event_ledger_mismatch")
+    root_start_identity_valid = bool(
+        created.get("model") == MODEL
+        and created.get("environment", {}).get("workspace") == expected_workspace
+        and created.get("parent_run_id") is None
+        and created.get("continued_from_run_id") is None
+        and created.get("actor") == {"kind": "root", "depth": 0}
+        and run.get("model") == MODEL
+        and run.get("workspace") == expected_workspace
+        and run.get("parent_run_id") is None
+        and run.get("continued_from_run_id") is None
+    )
+    if not root_start_identity_valid:
+        chain_failures.append("root_start_identity_mismatch")
     lifecycle_valid = True
     prepared_ids = [event.get("verification_id") for _, event in prepared]
     started_ids = [event.get("verification_id") for _, event in started]
@@ -1656,6 +1862,11 @@ def verification_summary(task_id: str, events: list[dict[str, Any]], run: dict[s
             **canonical_run,
         },
         "verification_attempts": verification_attempts,
+        "root_start_identity_valid": root_start_identity_valid,
+        "run_created_model": created.get("model"),
+        "run_created_workspace_sha256": canonical_hash(
+            created.get("environment", {}).get("workspace")
+        ),
         "run_created_contract_sha256": canonical_hash(contract),
         "run_created_task_definition_sha256": canonical_hash(
             contract.get("definition")
@@ -2190,7 +2401,12 @@ def execute_arm(
                 deadline,
             )
             accounting = usage_summary(run)
-            verification = verification_summary(task_id, root_events, run)
+            verification = verification_summary(
+                task_id,
+                root_events,
+                run,
+                str(workspace.resolve()),
+            )
             tools = tool_summary(root_events)
             external = external_verifier(workspace, deadline)
             changed = changed_files(workspace)
@@ -2216,6 +2432,7 @@ def execute_arm(
                 and state_summary["valid"]
                 and external["completed"]
                 and verification["ledger_valid"]
+                and verification["root_start_identity_valid"]
                 and all(
                     child["event_ledger_valid"] for child in children["children"]
                 )
@@ -2263,7 +2480,13 @@ def execute_arm(
                 "task_definition_sha256": verification[
                     "run_created_task_definition_sha256"
                 ],
-                "model": MODEL,
+                "model": verification["run_created_model"],
+                "root_workspace_sha256": verification[
+                    "run_created_workspace_sha256"
+                ],
+                "root_start_identity_valid": verification[
+                    "root_start_identity_valid"
+                ],
                 "api_surface": "standard_chat",
                 "terminal": terminal_summary(run),
                 "behavioral_verified": behavioral_verified,
@@ -2414,6 +2637,8 @@ def arm_measurement_failures(arm: dict[str, Any]) -> list[str]:
         or arm.get("fixture_tree_sha256") != MANIFEST["tasks"][arm["task_id"]]["fixture_tree_sha256"]
         or arm.get("task_definition_sha256")
         != canonical_hash(runtime_task_definition(arm["task_id"], arm["variant"]))
+        or arm.get("model") != MODEL
+        or arm.get("root_start_identity_valid") is not True
         or arm.get("protocol_schemas") != MANIFEST["protocol_schemas"][arm["variant"]]
     ):
         failures.append("arm_identity_mismatch")
@@ -2427,6 +2652,8 @@ def arm_safety_failures(arm: dict[str, Any]) -> list[str]:
     for field in ("path_authority_valid", "tool_authority_valid", "child_authority_valid"):
         if not arm[field]:
             failures.append(field)
+    if arm.get("root_start_identity_valid") is not True:
+        failures.append("root_start_identity_mismatch")
     if arm["variant"] == "candidate":
         if arm.get("task_definition_sha256") != canonical_hash(
             runtime_task_definition(arm["task_id"], "candidate")
@@ -2709,6 +2936,19 @@ def preflight_diagnostic_evidence() -> None:
         and evidence["excluded_from_formal"] is True,
         "baseline_diagnostic_identity_mismatch",
     )
+    prior = MANIFEST["excluded_diagnostics"]["m7_a_v1_formal"]
+    require(
+        PRIOR_V1_MANIFEST_PATH.is_file()
+        and file_hash(PRIOR_V1_MANIFEST_PATH) == prior["manifest_sha256"]
+        and PRIOR_V1_RESULT_PATH.is_file()
+        and file_hash(PRIOR_V1_RESULT_PATH) == prior["result_sha256"]
+        and stat.S_IMODE(PRIOR_V1_RESULT_PATH.stat().st_mode) == 0o600
+        and prior["arms"] == 2
+        and prior["product_metric_eligible"] is False
+        and prior["decision"] == "hold"
+        and prior["excluded_from_formal"] is True,
+        "m7_a_v1_identity_mismatch",
+    )
 
 
 def validate_fresh_output(path: Path) -> Path:
@@ -2893,6 +3133,17 @@ def run_suite(args: argparse.Namespace, *, formal: bool) -> dict[str, Any]:
             "harness_sha256": file_hash(Path(__file__)),
             "canary_helper_sha256": file_hash(CANARY_PATH),
             "schedule_sha256": canonical_hash(schedule),
+            "suite_schedule_sha256": canonical_hash(
+                {
+                    "suite_id": MANIFEST["output_identities"][
+                        "formal" if formal else "diagnostic"
+                    ]["suite_id"],
+                    "schedule": schedule,
+                }
+            ),
+            "canonical_json_vector_identity": canonical_vector_identity(),
+            "shared_fix_identity": shared_fix_identity(),
+            "prior_m7_a_v1_result_sha256": file_hash(PRIOR_V1_RESULT_PATH),
             "identities": identities,
             "model": MODEL,
             "api_surface": "standard_chat",
@@ -3062,6 +3313,9 @@ def synthetic_arm(
         "task_definition_sha256": canonical_hash(
             runtime_task_definition(task_id, variant)
         ),
+        "model": MODEL,
+        "root_workspace_sha256": "sha256:" + "a" * 64,
+        "root_start_identity_valid": True,
         "terminal": {"state": "completed" if verified or false_success else "blocked"},
         "behavioral_verified": verified,
         "behavior_evidence_known": True,
@@ -3175,7 +3429,7 @@ def synthetic_verifier_artifact(
         "verdict": verdict,
         "workspace_revision": revision,
     }
-    encoded = canonical_bytes(content)
+    encoded = canonical_evidence_bytes(content)
     digest = sha256_bytes(encoded)
     artifact_id = f"verification-evidence:{digest}"
     return artifact_id, {
@@ -3419,6 +3673,14 @@ class HarnessTests(unittest.TestCase):
     def test_frozen_manifest_matches_all_sources(self) -> None:
         validate_frozen_manifest()
 
+    def test_python_matches_protocol_canonical_json_vectors(self) -> None:
+        identity = canonical_vector_identity()
+        self.assertEqual(identity["schema"], "codewhale.protocol.canonical-json.v1")
+        self.assertEqual(
+            identity["artifact_id"],
+            f"verification-evidence:{identity['artifact_sha256']}",
+        )
+
     def test_fixture_hashes_and_initial_verifiers_are_frozen(self) -> None:
         for task_id in TASK_IDS:
             self.assertEqual(fixture_hash(task_id), MANIFEST["tasks"][task_id]["fixture_tree_sha256"])
@@ -3462,7 +3724,12 @@ class HarnessTests(unittest.TestCase):
         for task_id in TASK_IDS:
             with self.subTest(task_id=task_id):
                 events_value, run = synthetic_verification_chain(task_id)
-                summary = verification_summary(task_id, events_value, run)
+                summary = verification_summary(
+                    task_id,
+                    events_value,
+                    run,
+                    "/synthetic/workspace",
+                )
                 self.assertTrue(summary["ledger_valid"])
                 self.assertTrue(summary["verification_chain_valid"])
                 self.assertTrue(summary["artifact_closure_valid"])
@@ -3604,7 +3871,9 @@ class HarnessTests(unittest.TestCase):
         for sequence, stored in enumerate(events_value, 1):
             stored["sequence"] = sequence
         run["last_sequence"] = len(events_value)
-        summary = verification_summary("t1", events_value, run)
+        summary = verification_summary(
+            "t1", events_value, run, "/synthetic/workspace"
+        )
         self.assertEqual(summary["completion_rejections"], 1)
         self.assertEqual(summary["host_commit_count"], 2)
         self.assertTrue(summary["valid"])
@@ -3617,7 +3886,12 @@ class HarnessTests(unittest.TestCase):
         )
         rejection["required_transition"] = "host_verifier_execution_repair"
         self.assertFalse(
-            verification_summary("t1", tampered_events, tampered_run)["valid"]
+            verification_summary(
+                "t1",
+                tampered_events,
+                tampered_run,
+                "/synthetic/workspace",
+            )["valid"]
         )
         paired_tamper = copy.deepcopy(events_value)
         paired_rejection = next(
@@ -3630,7 +3904,12 @@ class HarnessTests(unittest.TestCase):
             required_transition="host_verifier_contract_repair",
         )
         self.assertFalse(
-            verification_summary("t1", paired_tamper, copy.deepcopy(run))["valid"]
+            verification_summary(
+                "t1",
+                paired_tamper,
+                copy.deepcopy(run),
+                "/synthetic/workspace",
+            )["valid"]
         )
         legacy_events = copy.deepcopy(events_value)
         for stored in legacy_events:
@@ -3643,7 +3922,12 @@ class HarnessTests(unittest.TestCase):
         for field in ("generation_id", "cause", "required_transition"):
             legacy_rejection.pop(field)
         self.assertTrue(
-            verification_summary("t1", legacy_events, copy.deepcopy(run))["valid"]
+            verification_summary(
+                "t1",
+                legacy_events,
+                copy.deepcopy(run),
+                "/synthetic/workspace",
+            )["valid"]
         )
 
     def test_canonical_verification_chain_rejects_independent_tampering(self) -> None:
@@ -3704,7 +3988,14 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(case=name):
                 events_value, run = synthetic_verification_chain("t1")
                 mutate(events_value, run)
-                self.assertFalse(verification_summary("t1", events_value, run)["valid"])
+                self.assertFalse(
+                    verification_summary(
+                        "t1",
+                        events_value,
+                        run,
+                        "/synthetic/workspace",
+                    )["valid"]
+                )
 
     def test_failed_write_pass_lineage_rejects_wrong_source_and_delegation(self) -> None:
         for case in ("source", "artifact", "delegated"):
@@ -3724,7 +4015,12 @@ class HarnessTests(unittest.TestCase):
                     commit["receipt"]["lineage"] = {
                         "policy": "delegated_failed_write_pass"
                     }
-                summary = verification_summary("t3", events_value, run)
+                summary = verification_summary(
+                    "t3",
+                    events_value,
+                    run,
+                    "/synthetic/workspace",
+                )
                 self.assertFalse(summary["lineage_valid"])
                 self.assertFalse(summary["valid"])
 
@@ -3737,7 +4033,9 @@ class HarnessTests(unittest.TestCase):
             and stored["event"].get("operation_id") == "operation-failure"
         )
         prepared["invocation"]["arguments"]["parsed"]["verifier_id"] = "wrong"
-        summary = verification_summary("t3", events_value, run)
+        summary = verification_summary(
+            "t3", events_value, run, "/synthetic/workspace"
+        )
         self.assertFalse(summary["lineage_valid"])
         self.assertFalse(summary["valid"])
 
@@ -3751,7 +4049,9 @@ class HarnessTests(unittest.TestCase):
         )
         mutation["operation"] = "failed"
         mutation["retry"] = "unsafe"
-        summary = verification_summary("t3", events_value, run)
+        summary = verification_summary(
+            "t3", events_value, run, "/synthetic/workspace"
+        )
         self.assertTrue(summary["lineage_valid"])
         self.assertTrue(summary["valid"])
 
@@ -3790,6 +4090,44 @@ class HarnessTests(unittest.TestCase):
             projection["run_terminal_projection_sha256"],
         )
 
+    def test_root_start_identity_rejects_synchronized_projection_tampering(self) -> None:
+        for case in ("model", "workspace", "continued_from", "parent_actor"):
+            with self.subTest(case=case):
+                events_value, run = synthetic_verification_chain("t1")
+                created = run_created(events_value)
+                if case == "model":
+                    created["model"] = "deepseek-reasoner"
+                    run["model"] = "deepseek-reasoner"
+                elif case == "workspace":
+                    created["environment"]["workspace"] = "/tampered/workspace"
+                    run["workspace"] = "/tampered/workspace"
+                elif case == "continued_from":
+                    created["continued_from_run_id"] = "prior-run"
+                    run["continued_from_run_id"] = "prior-run"
+                else:
+                    created["parent_run_id"] = "parent-run"
+                    created["actor"] = {"kind": "child", "depth": 1}
+                    run["parent_run_id"] = "parent-run"
+                    terminal = next(
+                        stored["event"]["outcome"]
+                        for stored in events_value
+                        if event_kind(stored) == "terminal"
+                    )
+                    terminal["parent_run_id"] = "parent-run"
+                summary = verification_summary(
+                    "t1",
+                    events_value,
+                    run,
+                    "/synthetic/workspace",
+                )
+                self.assertTrue(summary["ledger_valid"])
+                self.assertFalse(summary["root_start_identity_valid"])
+                self.assertIn(
+                    "root_start_identity_mismatch",
+                    summary["chain_failures"],
+                )
+                self.assertFalse(summary["valid"])
+
     def test_artifact_schema_rejects_rehashed_unknown_and_nul_payloads(self) -> None:
         def rebind(events_value: list[dict[str, Any]]) -> None:
             commit = next(
@@ -3799,7 +4137,7 @@ class HarnessTests(unittest.TestCase):
             )
             outcome = commit["outcome"]
             artifact = outcome["artifacts"][0]
-            encoded = canonical_bytes(artifact["inline_content"])
+            encoded = canonical_evidence_bytes(artifact["inline_content"])
             digest = sha256_bytes(encoded)
             artifact_id = f"verification-evidence:{digest}"
             artifact.update(id=artifact_id, sha256=digest, byte_len=len(encoded))
@@ -3828,7 +4166,12 @@ class HarnessTests(unittest.TestCase):
                     content["summary"] = "bad\0summary"
                 rebind(events_value)
                 self.assertFalse(
-                    verification_summary("t1", events_value, run)["valid"]
+                    verification_summary(
+                        "t1",
+                        events_value,
+                        run,
+                        "/synthetic/workspace",
+                    )["valid"]
                 )
 
     def test_porcelain_parser_preserves_first_path_character(self) -> None:
@@ -4363,7 +4706,7 @@ class HarnessTests(unittest.TestCase):
     def test_formal_output_identity_cannot_be_changed_to_resample(self) -> None:
         expected = (
             ROOT
-            / "eval/results/m7-a-agent-convergence-formal-3351213b-vs-24c8a530.json"
+            / "eval/results/m7-a2-agent-convergence-formal-18de2ad2-vs-c6a74304.json"
         ).resolve(strict=False)
         alternate = (
             ROOT / "eval/results" / f".m7-self-test-resample-{uuid.uuid4().hex}.json"
@@ -4616,11 +4959,21 @@ class HarnessTests(unittest.TestCase):
 
 def freeze_report() -> dict[str, Any]:
     schedule = formal_schedule()
+    suite_id = MANIFEST["output_identities"]["formal"]["suite_id"]
     return {
         "manifest_content_sha256": manifest_content_hash(),
         "harness_sha256": file_hash(Path(__file__)),
         "canary_helper_sha256": file_hash(CANARY_PATH),
         "schedule_sha256": canonical_hash(schedule),
+        "suite_schedule_sha256": canonical_hash(
+            {"suite_id": suite_id, "schedule": schedule}
+        ),
+        "canonical_json_vector_identity": canonical_vector_identity(),
+        "shared_fix_identity": shared_fix_identity(),
+        "prior_m7_a_v1": {
+            "manifest_sha256": file_hash(PRIOR_V1_MANIFEST_PATH),
+            "result_sha256": file_hash(PRIOR_V1_RESULT_PATH),
+        },
         "binary_identities_sha256": canonical_hash(MANIFEST["binary_identities"]),
         "build_inputs_sha256": {
             "cargo_lock": file_hash(ROOT / "Cargo.lock"),
@@ -4671,6 +5024,12 @@ def validate_frozen_manifest() -> None:
         "harness_sha256": actual["harness_sha256"],
         "canary_helper_sha256": actual["canary_helper_sha256"],
         "schedule_sha256": actual["schedule_sha256"],
+        "suite_schedule_sha256": actual["suite_schedule_sha256"],
+        "canonical_json_vector_identity": actual[
+            "canonical_json_vector_identity"
+        ],
+        "shared_fix_identity": actual["shared_fix_identity"],
+        "prior_m7_a_v1": actual["prior_m7_a_v1"],
         "binary_identities_sha256": actual["binary_identities_sha256"],
         "build_inputs_sha256": actual["build_inputs_sha256"],
         "fixture_tree_sha256": actual["fixture_tree_sha256"],
