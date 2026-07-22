@@ -1,0 +1,121 @@
+{
+  "schema": "codewhale.eval.m7-b-strict-admission.v2",
+  "evaluation_id": "m7-b-strict-admission-v2",
+  "date": "2026-07-22",
+  "status": "frozen_before_any_live_api",
+  "candidate_revision": "e6b4b64d37cc496dd7bd8a20dbf500be0413241b",
+  "candidate_parent": "11230b8de7240ba8d1e34edf373f9df819640a5a",
+  "claim": "判断六个冻结的默认 production actor 工具目录是否存在可归因的 Standard Chat 与 Beta Strict Chat treatment 差异",
+  "scope": "六个默认可执行 actor catalog 加一个 terminal no-tools catalog；不外推到任意自定义 ToolPolicy 子集",
+  "protocol_versions": {
+    "run_api": 10,
+    "runtime_event": 16,
+    "state": 21,
+    "exec_stream": 2
+  },
+  "decision_contract": {
+    "admitted": "所有待评测 actor 的同一 canonical catalog 在 strict_enabled=true 时实际选择 Strict Chat，且 control/treatment 只允许 surface 与 function.strict 不同",
+    "inadmissible": "任一待评测 actor 在 strict_enabled=true 时仍回退 Standard Chat，或为了进入 Strict 必须改变 canonical 工具参数合同",
+    "inadmissible_decision": "inadmissible_no_surface_delta",
+    "product_metric_eligible": false,
+    "live_api_allowed_when_inadmissible": false
+  },
+  "experiment_identity": {
+    "intended_control": "standard_chat",
+    "intended_treatment": "strict_chat",
+    "required_same_revision": true,
+    "required_same_binary": true,
+    "required_same_catalog": true,
+    "maximum_reruns": 0,
+    "official_api_request_limit_before_admission": 0,
+    "credential_access_before_admission": "forbidden"
+  },
+  "source_owners": [
+    {
+      "path": "crates/app/src/production.rs",
+      "sha256": "sha256:0fdeea5541e57d4d92029c02e9040d7b201f455891e14cf912e8455b1385795f"
+    },
+    {
+      "path": "crates/deepseek/src/lib.rs",
+      "sha256": "sha256:58b32c42708b8c072f471fa8763cb8abb8fe3e93ea57dcf24e3cc0623d05bd3b"
+    },
+    {
+      "path": "crates/tools/src/production.rs",
+      "sha256": "sha256:f05cb622ba1f06473fdc0ed555f2d8c3ecf0a9080ffc90aea633a66789edcaf4"
+    },
+    {
+      "path": "crates/runtime/src/agent.rs",
+      "sha256": "sha256:75114fb5dcf9c2bd0f90a6a5cab467d8927802507cb442e395520e4983196e78"
+    }
+  ],
+  "offline_tests": [
+    {
+      "package": "codewhale-app",
+      "filter": "actual_actor_catalogs_freeze_strict_fallback_without_touching_historical_manifests",
+      "evidence": "冻结真实 root、child、Writer 目录哈希、首个 Strict blocker、Standard fallback 和工具零丢失"
+    },
+    {
+      "package": "codewhale-app",
+      "filter": "standard_and_strict_candidate_send_the_same_fallback_catalog",
+      "evidence": "production loopback 证明 strict off/on 都发送 /v1/chat/completions、相同完整 tools，且无 function.strict"
+    }
+  ],
+  "actor_catalogs": [
+    {
+      "actor": "root_headless",
+      "catalog_sha256": "sha256:b2fe1b3abfb72e4eebb28f2a3ced08225c4941861c0b9cb8f6fc7a4add6df9b3",
+      "first_blocker": {"tool": "agent", "path": "$/required", "code": "all_properties_required"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "root_interactive",
+      "catalog_sha256": "sha256:90e9a19b10ad2997fec89ef96d2513ddc5b2682b2c8f13c88e3f4ff229200caa",
+      "first_blocker": {"tool": "agent", "path": "$/required", "code": "all_properties_required"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "coordinator",
+      "catalog_sha256": "sha256:0b66bd94fcfd644782ba24a37bc642e28c73b18f986a5a73101c9d275da2f1e4",
+      "first_blocker": {"tool": "agent", "path": "$/required", "code": "all_properties_required"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "read_only_child",
+      "catalog_sha256": "sha256:a9fdff5e75a6e1e833f2f7c6fb3bb84e1da0ffd1bcc2d2893cb975dbcee72cf9",
+      "first_blocker": {"tool": "agent", "path": "$/required", "code": "all_properties_required"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "read_only_depth_limit",
+      "catalog_sha256": "sha256:9abb08ef262ae9851c61e7ba99e10bcb091b3d5a8ece8beb8bc669c022bc447b",
+      "first_blocker": {"tool": "file_search", "path": "$/required", "code": "all_properties_required"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "isolated_writer",
+      "catalog_sha256": "sha256:0d10eda41159109d4e8cc70561c25dfc5685fa6bdc4653ef78c8e0c5ee6c61f5",
+      "first_blocker": {"tool": "apply_patch", "path": "$/oneOf", "code": "unsupported_keyword"},
+      "strict_enabled_surface": "standard_chat"
+    },
+    {
+      "actor": "terminal_empty",
+      "catalog_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "first_blocker": null,
+      "strict_enabled_surface": "standard_chat_no_tools"
+    }
+  ],
+  "semantic_blockers": [
+    "DeepSeek Strict 不支持 null，无法用 required + nullable 无损表达 optional",
+    "apply_patch.oneOf 表达 patch 与 changes 的 exactly-one 合同；anyOf 会改变语义",
+    "显式空数组、空字符串或 sentinel 与当前缺省行为不等价",
+    "机械删除 minItems、minLength 或 default 会降低 Standard Chat 的 schema 约束",
+    "新增第二套 wire schema 或归一化层会违反唯一 canonical catalog，并污染 A/B 归因"
+  ],
+  "expected_result": {
+    "admitted": false,
+    "decision": "inadmissible_no_surface_delta",
+    "official_api_requests": 0,
+    "credential_read": false,
+    "next_action": "保留 Beta Strict planner 和完整目录原子 Standard fallback；用户 Strict 开关已删除，未来仅在 canonical catalog 自然兼容后重新准入"
+  }
+}

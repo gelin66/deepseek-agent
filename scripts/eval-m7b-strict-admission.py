@@ -22,9 +22,26 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = ROOT / "eval" / "manifests" / "m7-b-strict-admission-v1.json"
-EXPECTED_SCHEMA = "codewhale.eval.m7-b-strict-admission.v1"
+DEFAULT_MANIFEST = ROOT / "eval" / "manifests" / "m7-b-strict-admission-v2.json"
+EXPECTED_SCHEMA = "codewhale.eval.m7-b-strict-admission.v2"
+EXPECTED_RESULT_SCHEMA = "codewhale.eval.m7-b-strict-admission-result.v2"
+EXPECTED_EVALUATION_ID = "m7-b-strict-admission-v2"
 EXPECTED_DECISION = "inadmissible_no_surface_delta"
+EXPECTED_PROTOCOL_VERSIONS = {
+    "run_api": 10,
+    "runtime_event": 16,
+    "state": 21,
+    "exec_stream": 2,
+}
+EXPECTED_ACTORS = {
+    "root_headless",
+    "root_interactive",
+    "coordinator",
+    "read_only_child",
+    "read_only_depth_limit",
+    "isolated_writer",
+    "terminal_empty",
+}
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -53,8 +70,12 @@ def load_manifest(path: Path) -> dict[str, Any]:
 def validate_manifest(manifest: dict[str, Any]) -> None:
     if manifest.get("schema") != EXPECTED_SCHEMA:
         raise AdmissionError("manifest_schema_mismatch")
+    if manifest.get("evaluation_id") != EXPECTED_EVALUATION_ID:
+        raise AdmissionError("evaluation_id_mismatch")
     if manifest.get("status") != "frozen_before_any_live_api":
         raise AdmissionError("manifest_not_frozen_before_live_api")
+    if manifest.get("protocol_versions") != EXPECTED_PROTOCOL_VERSIONS:
+        raise AdmissionError("protocol_versions_mismatch")
     revision = manifest.get("candidate_revision")
     parent = manifest.get("candidate_parent")
     if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
@@ -120,18 +141,24 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise AdmissionError("actor_name_invalid")
         if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
             raise AdmissionError("actor_catalog_sha256_invalid")
-        issue_count = actor.get("strict_issue_count")
-        if not isinstance(issue_count, int) or issue_count < 0:
-            raise AdmissionError("actor_issue_count_invalid")
+        if "strict_issue_count" in actor:
+            raise AdmissionError("unverified_strict_issue_count_forbidden")
         surface = actor.get("strict_enabled_surface")
-        if name != "terminal_empty":
+        blocker = actor.get("first_blocker")
+        if name == "terminal_empty":
+            if blocker is not None or surface != "standard_chat_no_tools":
+                raise AdmissionError("terminal_actor_contract_mismatch")
+        else:
             product_actors += 1
-            if issue_count == 0 or actor.get("first_blocker") is None:
+            if not isinstance(blocker, dict) or any(
+                not isinstance(blocker.get(field), str) or not blocker[field]
+                for field in ("tool", "path", "code")
+            ):
                 raise AdmissionError("product_actor_missing_strict_blocker")
             if surface != "standard_chat":
                 raise AdmissionError("unexpected_product_actor_surface")
         actor_names.add(name)
-    if product_actors != 6:
+    if product_actors != 6 or actor_names != EXPECTED_ACTORS:
         raise AdmissionError("product_actor_count_mismatch")
 
     expected = manifest.get("expected_result")
@@ -250,12 +277,14 @@ def write_exclusive_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def preflight(manifest_path: Path, output_path: Path, target_dir: Path) -> dict[str, Any]:
+    if output_path.exists():
+        raise AdmissionError("output_already_exists")
     manifest = load_manifest(manifest_path)
     repository = verify_repository(manifest)
     test_results = run_offline_tests(manifest, target_dir)
     result = {
-        "schema": "codewhale.eval.m7-b-strict-admission-result.v1",
-        "evaluation_id": "m7-b-strict-admission-v1",
+        "schema": EXPECTED_RESULT_SCHEMA,
+        "evaluation_id": manifest["evaluation_id"],
         "manifest": {
             "path": str(manifest_path.relative_to(ROOT)),
             "sha256": sha256_file(manifest_path),
@@ -312,6 +341,12 @@ class HarnessTests(unittest.TestCase):
         manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
         manifest["actor_catalogs"][0]["first_blocker"] = None
         with self.assertRaisesRegex(AdmissionError, "product_actor_missing_strict_blocker"):
+            validate_manifest(manifest)
+
+    def test_unverified_issue_count_is_rejected(self) -> None:
+        manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+        manifest["actor_catalogs"][0]["strict_issue_count"] = 1
+        with self.assertRaisesRegex(AdmissionError, "unverified_strict_issue_count_forbidden"):
             validate_manifest(manifest)
 
     def test_output_is_exclusive_and_private(self) -> None:
