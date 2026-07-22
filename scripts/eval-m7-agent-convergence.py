@@ -56,6 +56,27 @@ USAGE_FIELDS = (
     "reasoning_tokens",
     "reasoning_replay_tokens",
 )
+RESPONSE_EVIDENCE_FIELDS = (
+    "response_headers_received",
+    "content_observed",
+    "reasoning_observed",
+    "tool_call_observed",
+    "tool_call_id_observed",
+    "tool_call_name_observed",
+    "tool_call_arguments_observed",
+    "finish_reason_observed",
+    "finish_reason_trusted",
+    "usage_received",
+    "stream_done_received",
+)
+MODEL_RETRY_STOP_REASONS = {
+    "actionable_output",
+    "unsafe_replay",
+    "not_retryable",
+    "failure_changed",
+    "retry_limit_reached",
+    "model_request_budget_exceeded",
+}
 SECRET_FAILURES = {
     "key_in_argv",
     "key_in_fixture",
@@ -65,6 +86,7 @@ SECRET_FAILURES = {
     "key_in_stderr",
 }
 FROZEN_STATUS = "frozen_before_m7_a2_live_api"
+LIVE_REEVALUATION_STATUS = "inadmissible_shared_fix_noncommutative"
 
 
 class EvaluationError(RuntimeError):
@@ -271,6 +293,14 @@ def load_manifest() -> dict[str, Any]:
 
 MANIFEST = load_manifest()
 RESOURCES = MANIFEST["resources"]
+
+
+def require_live_reevaluation_admissible() -> None:
+    """Prevent the evolved M7-A3 auditor from reusing the frozen M7-A2 suite."""
+    raise EvaluationError(
+        "m7_a3_formal_reevaluation_inadmissible",
+        {"status": LIVE_REEVALUATION_STATUS},
+    )
 
 
 def manifest_content_hash() -> str:
@@ -581,9 +611,209 @@ def terminal_summary(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def model_failure_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    projected = []
+    for stored in events:
+        if event_kind(stored) != "model_request_failed":
+            continue
+        event = stored.get("event", {})
+        failure = event.get("failure", {})
+        response = failure.get("response", {})
+        retry = event.get("retry", {})
+        response_shape_valid = bool(
+            isinstance(response, dict)
+            and set(response) == set(RESPONSE_EVIDENCE_FIELDS)
+            and all(type(response.get(field)) is bool for field in RESPONSE_EVIDENCE_FIELDS)
+        )
+        response_projection = {
+            field: response.get(field) if isinstance(response, dict) else None
+            for field in RESPONSE_EVIDENCE_FIELDS
+        }
+        prior_attempt_events = [
+            prior.get("event", {})
+            for prior in events
+            if isinstance(prior.get("sequence"), int)
+            and isinstance(stored.get("sequence"), int)
+            and prior["sequence"] < stored["sequence"]
+            and prior.get("event", {}).get("attempt_id") == event.get("attempt_id")
+        ]
+        durable_delta_consistent = bool(
+            (
+                not any(
+                    prior.get("kind") == "content_delta" and prior.get("delta")
+                    for prior in prior_attempt_events
+                )
+                or response_projection["content_observed"]
+            )
+            and (
+                not any(
+                    prior.get("kind") == "reasoning_delta" and prior.get("delta")
+                    for prior in prior_attempt_events
+                )
+                or response_projection["reasoning_observed"]
+            )
+        )
+        actionable = bool(
+            response_projection["content_observed"]
+            or response_projection["reasoning_observed"]
+            or response_projection["tool_call_observed"]
+        )
+        replay_safe = bool(
+            not actionable
+            and not response_projection["finish_reason_observed"]
+            and not response_projection["stream_done_received"]
+        )
+        tool_fragments_valid = bool(
+            not (
+                response_projection["tool_call_id_observed"]
+                or response_projection["tool_call_name_observed"]
+                or response_projection["tool_call_arguments_observed"]
+            )
+            or response_projection["tool_call_observed"]
+        )
+        trusted_finish_valid = bool(
+            not response_projection["finish_reason_trusted"]
+            or (
+                response_projection["finish_reason_observed"]
+                and response_projection["stream_done_received"]
+            )
+        )
+        headers_valid = bool(
+            not (
+                actionable
+                or response_projection["finish_reason_observed"]
+                or response_projection["usage_received"]
+                or response_projection["stream_done_received"]
+            )
+            or response_projection["response_headers_received"]
+        )
+        decision = retry.get("decision") if isinstance(retry, dict) else None
+        reason = retry.get("reason") if isinstance(retry, dict) else None
+        prepared = retry.get("prepared") if isinstance(retry, dict) else None
+        prepared_shape_valid = bool(
+            isinstance(prepared, dict)
+            and set(prepared) == {"attempt_id", "request"}
+            and isinstance(prepared.get("attempt_id"), str)
+            and prepared["attempt_id"].strip()
+            and isinstance(prepared.get("request"), dict)
+        )
+        retry_shape_valid = bool(
+            isinstance(retry, dict)
+            and (
+                (
+                    decision == "retry"
+                    and set(retry) == {"decision", "prepared"}
+                    and prepared_shape_valid
+                )
+                or (
+                    decision == "stop"
+                    and set(retry) == {"decision", "reason"}
+                    and reason in MODEL_RETRY_STOP_REASONS
+                )
+            )
+        )
+        retry_safety_valid = bool(
+            (
+                decision == "retry"
+                and replay_safe
+                and failure.get("retryable") is True
+                and prepared_shape_valid
+            )
+            or (
+                decision == "stop"
+                and (
+                    (actionable and reason == "actionable_output")
+                    or (not actionable and not replay_safe and reason == "unsafe_replay")
+                    or (
+                        replay_safe
+                        and failure.get("retryable") is False
+                        and reason == "not_retryable"
+                    )
+                    or (
+                        replay_safe
+                        and failure.get("retryable") is True
+                        and reason
+                        in {
+                            "failure_changed",
+                            "retry_limit_reached",
+                            "model_request_budget_exceeded",
+                        }
+                    )
+                )
+            )
+        )
+        shape_valid = bool(
+            isinstance(event.get("attempt_id"), str)
+            and event["attempt_id"].strip()
+            and isinstance(failure, dict)
+            and isinstance(failure.get("code"), str)
+            and failure["code"].strip()
+            and failure.get("category")
+            in {
+                "transport",
+                "timeout",
+                "stream_stall",
+                "rate_limit",
+                "authentication",
+                "protocol",
+                "service",
+                "cancelled",
+                "unknown",
+            }
+            and isinstance(failure.get("message"), str)
+            and type(failure.get("retryable")) is bool
+            and type(failure.get("retry_safe")) is bool
+            and type(failure.get("actionable_output")) is bool
+            and response_shape_valid
+            and failure.get("actionable_output") == actionable
+            and failure.get("retry_safe") == replay_safe
+            and tool_fragments_valid
+            and trusted_finish_valid
+            and headers_valid
+            and durable_delta_consistent
+            and retry_shape_valid
+            and retry_safety_valid
+        )
+        prepared_attempt_id = (
+            prepared.get("attempt_id") if isinstance(prepared, dict) else None
+        )
+        projected.append(
+            {
+                "sequence": stored.get("sequence"),
+                "attempt_id_sha256": sha256_bytes(event["attempt_id"].encode())
+                if isinstance(event.get("attempt_id"), str)
+                else None,
+                "code": failure.get("code"),
+                "category": failure.get("category"),
+                "message_sha256": sha256_bytes(failure["message"].encode())
+                if isinstance(failure.get("message"), str)
+                else None,
+                "retryable": failure.get("retryable"),
+                "retry_safe": failure.get("retry_safe"),
+                "actionable_output": failure.get("actionable_output"),
+                "response": response_projection,
+                "retry_decision": decision,
+                "retry_stop_reason": reason,
+                "prepared_attempt_id_sha256": sha256_bytes(
+                    prepared_attempt_id.encode()
+                )
+                if isinstance(prepared_attempt_id, str)
+                else None,
+                "durable_delta_consistent": durable_delta_consistent,
+                "shape_valid": shape_valid,
+            }
+        )
+    return {
+        "count": len(projected),
+        "shape_valid": all(failure["shape_valid"] for failure in projected),
+        "failures": projected,
+    }
+
+
 def usage_summary(run: dict[str, Any]) -> dict[str, Any]:
     accounting = run.get("accounting", {})
-    usage = run.get("usage", {})
+    accounting_usage = accounting.get("usage", {})
+    committed_usage = run.get("usage", {})
     root = accounting.get("root", {})
     child = accounting.get("child", {})
     surface_usage = accounting.get("surface_usage", [])
@@ -608,7 +838,12 @@ def usage_summary(run: dict[str, Any]) -> dict[str, Any]:
             "incomplete_responses": int(accounting.get("incomplete_responses", 0)),
             "unpriced_usage_responses": int(accounting.get("unpriced_usage_responses", 0)),
             "records_after_seal": int(accounting.get("records_after_seal", 0)),
-            "usage": {field: int(usage.get(field, 0)) for field in USAGE_FIELDS},
+            "usage": {
+                field: int(accounting_usage.get(field, 0)) for field in USAGE_FIELDS
+            },
+            "committed_usage": {
+                field: int(committed_usage.get(field, 0)) for field in USAGE_FIELDS
+            },
             "cost_nanousd": int(accounting.get("cost_nanousd", 0)),
             "cost_nanocny": int(accounting.get("cost_nanocny", 0)),
             "complete": accounting.get("complete"),
@@ -638,11 +873,30 @@ def usage_summary(run: dict[str, Any]) -> dict[str, Any]:
         field: sum(bucket["usage"][field] for bucket in result["surface_usage"])
         for field in USAGE_FIELDS
     }
+    surface_response_count = sum(
+        bucket["response_count"] for bucket in result["surface_usage"]
+    )
+    surface_usage_response_count = sum(
+        bucket["usage_response_count"] for bucket in result["surface_usage"]
+    )
+    result["surface_response_count"] = surface_response_count
+    result["surface_usage_response_count"] = surface_usage_response_count
+    result["committed_usage_valid"] = all(
+        result["committed_usage"][field] <= result["usage"][field]
+        for field in USAGE_FIELDS
+    )
     result["surface_totals_valid"] = (
-        sum(bucket["response_count"] for bucket in result["surface_usage"])
-        == result["usage_responses"]
-        and sum(bucket["usage_response_count"] for bucket in result["surface_usage"])
-        == result["usage_responses"]
+        surface_usage_response_count == result["usage_responses"]
+        and all(
+            bucket["usage_response_count"] <= bucket["response_count"]
+            for bucket in result["surface_usage"]
+        )
+        and result["usage_responses"] <= surface_response_count
+        and surface_response_count
+        <= result["usage_responses"]
+        + result["usage_missing_responses"]
+        + result["incomplete_responses"]
+        and surface_response_count <= requests["completed"]
         and surface_usage_sum == result["usage"]
         and sum(bucket["cost_nanousd"] for bucket in result["surface_usage"])
         == result["cost_nanousd"]
@@ -693,6 +947,7 @@ def usage_summary(run: dict[str, Any]) -> dict[str, Any]:
         and result["incomplete_responses"] == 0
         and result["unpriced_usage_responses"] == 0
         and result["records_after_seal"] == 0
+        and result["committed_usage_valid"]
         and result["surface_totals_valid"]
         and result["retry_attribution_valid"]
     )
@@ -2035,6 +2290,7 @@ def child_summary(
                     [child.get("parent_run_id"), root_events[0].get("run_id")]
                 ),
                 "terminal": terminal_summary(child),
+                "model_failures": model_failure_summary(child_events),
                 "tool": tool_summary(child_events),
                 "event_counts": counts,
                 "event_ledger_valid": event_ledger_valid(child_events, child),
@@ -2059,6 +2315,12 @@ def child_summary(
         ),
         "tool_calls": sum(
             child["event_counts"].get("tool_prepared", 0) for child in children
+        ),
+        "model_failure_count": sum(
+            child["model_failures"]["count"] for child in children
+        ),
+        "model_failure_evidence_valid": all(
+            child["model_failures"]["shape_valid"] for child in children
         ),
     }
 
@@ -2401,6 +2663,7 @@ def execute_arm(
                 deadline,
             )
             accounting = usage_summary(run)
+            model_failures = model_failure_summary(root_events)
             verification = verification_summary(
                 task_id,
                 root_events,
@@ -2433,8 +2696,11 @@ def execute_arm(
                 and external["completed"]
                 and verification["ledger_valid"]
                 and verification["root_start_identity_valid"]
+                and model_failures["shape_valid"]
                 and all(
-                    child["event_ledger_valid"] for child in children["children"]
+                    child["event_ledger_valid"]
+                    and child["model_failures"]["shape_valid"]
+                    for child in children["children"]
                 )
             )
             behavioral_verified = (
@@ -2495,6 +2761,7 @@ def execute_arm(
                 "verified_success": verified,
                 "false_success": false_success,
                 "accounting": accounting,
+                "model_failures": model_failures,
                 "verification": verification,
                 "tool": tools,
                 "child": children,
@@ -2590,6 +2857,7 @@ def accounting_cost_is_lower_bound(accounting: dict[str, Any]) -> bool:
         or accounting.get("records_after_seal", 0) > 0
         or requests.get("started") != requests.get("completed")
         or requests.get("in_flight") != 0
+        or accounting.get("committed_usage_valid") is False
         or accounting.get("surface_totals_valid") is False
     )
 
@@ -3075,6 +3343,7 @@ def has_cost_headroom(known_cost_nanousd: int, maximum_cost_nanousd: int) -> boo
 
 
 def run_suite(args: argparse.Namespace, *, formal: bool) -> dict[str, Any]:
+    require_live_reevaluation_admissible()
     require(args.acknowledge_cost, "cost_acknowledgement_required")
     require(args.key_file is not None, "key_file_required")
     validate_frozen_manifest()
@@ -3322,6 +3591,7 @@ def synthetic_arm(
         "measurement_valid": True,
         "verified_success": verified,
         "false_success": false_success,
+        "model_failures": {"count": 0, "shape_valid": True, "failures": []},
         "accounting": {
             "valid": True,
             "hard_request_limit": RESOURCES["max_physical_api_attempts_per_arm"],
@@ -3361,6 +3631,8 @@ def synthetic_arm(
                 }
             ],
             "surface_totals_valid": True,
+            "surface_response_count": requests,
+            "surface_usage_response_count": requests,
             "surface_identity_observed": True,
             "surface_identity_mismatch": False,
             "surface_identity_valid": True,
@@ -3670,8 +3942,23 @@ def synthetic_verification_chain(
 
 
 class HarnessTests(unittest.TestCase):
-    def test_frozen_manifest_matches_all_sources(self) -> None:
-        validate_frozen_manifest()
+    def test_m7_a2_frozen_manifest_rejects_evolved_harness(self) -> None:
+        with self.assertRaisesRegex(EvaluationError, "frozen_hash_mismatch") as caught:
+            validate_frozen_manifest()
+        self.assertIn("harness_sha256", caught.exception.details["mismatched"])
+
+    def test_m7_a3_live_reevaluation_is_inadmissible_before_key(self) -> None:
+        with mock.patch.object(CANARY, "read_key") as read_key:
+            with self.assertRaisesRegex(
+                EvaluationError,
+                "m7_a3_formal_reevaluation_inadmissible",
+            ) as caught:
+                run_suite(argparse.Namespace(), formal=True)
+        self.assertEqual(
+            caught.exception.details["status"],
+            LIVE_REEVALUATION_STATUS,
+        )
+        read_key.assert_not_called()
 
     def test_python_matches_protocol_canonical_json_vectors(self) -> None:
         identity = canonical_vector_identity()
@@ -4527,6 +4814,138 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(has_cost_headroom(780_000_000, 800_000_000))
         self.assertFalse(has_cost_headroom(780_000_001, 800_000_000))
 
+    def test_incomplete_response_keeps_distinct_surface_and_usage_counts(self) -> None:
+        accounting_usage = {field: 0 for field in USAGE_FIELDS}
+        accounting_usage["input_tokens"] = 10
+        accounting_usage["output_tokens"] = 2
+        run = {
+            "accounting": {
+                "hard_request_limit": RESOURCES["max_physical_api_attempts_per_arm"],
+                "root": {"started": 4, "completed": 4, "in_flight": 0, "retries": 0},
+                "child": {"started": 0, "completed": 0, "in_flight": 0, "retries": 0},
+                "transport_retries": 0,
+                "billing_unknown_attempts": 0,
+                "usage_responses": 3,
+                "usage_missing_responses": 0,
+                "incomplete_responses": 1,
+                "unpriced_usage_responses": 0,
+                "records_after_seal": 0,
+                "usage": accounting_usage,
+                "cost_nanousd": 7,
+                "cost_nanocny": 11,
+                "complete": False,
+                "usage_complete": False,
+                "billing_unknown": False,
+                "unpriced": False,
+                "sealed": True,
+                "surface_usage": [
+                    {
+                        "surface": "standard_chat",
+                        "model": MODEL,
+                        "response_count": 4,
+                        "usage_response_count": 3,
+                        "usage": accounting_usage,
+                        "cost_nanousd": 7,
+                        "cost_nanocny": 11,
+                    }
+                ],
+            },
+            "usage": {},
+            "runtime_retries": 0,
+        }
+        summary = usage_summary(run)
+        self.assertEqual(summary["surface_response_count"], 4)
+        self.assertEqual(summary["surface_usage_response_count"], 3)
+        self.assertEqual(summary["usage"], accounting_usage)
+        self.assertEqual(
+            summary["committed_usage"],
+            {field: 0 for field in USAGE_FIELDS},
+        )
+        self.assertTrue(summary["committed_usage_valid"])
+        self.assertTrue(summary["surface_totals_valid"])
+        self.assertFalse(summary["valid"])
+        self.assertTrue(accounting_cost_is_lower_bound(summary))
+
+        run["accounting"]["surface_usage"][0]["response_count"] = 5
+        self.assertFalse(usage_summary(run)["surface_totals_valid"])
+
+        run["accounting"]["surface_usage"][0]["response_count"] = 4
+        run["usage"]["input_tokens"] = 11
+        invalid_committed = usage_summary(run)
+        self.assertFalse(invalid_committed["committed_usage_valid"])
+        self.assertTrue(accounting_cost_is_lower_bound(invalid_committed))
+
+    def test_model_failure_projection_is_typed_and_redacts_raw_message(self) -> None:
+        response = {field: False for field in RESPONSE_EVIDENCE_FIELDS}
+        response.update(
+            {
+                "response_headers_received": True,
+                "tool_call_observed": True,
+                "tool_call_arguments_observed": True,
+            }
+        )
+        events = [
+            {
+                "sequence": 4,
+                "event": {
+                    "kind": "model_request_failed",
+                    "attempt_id": "attempt-secret-id",
+                    "failure": {
+                        "code": "deepseek_stream_incomplete",
+                        "category": "protocol",
+                        "message": "raw provider detail /sensitive/workspace",
+                        "retryable": True,
+                        "retry_safe": False,
+                        "actionable_output": True,
+                        "response": response,
+                    },
+                    "retry": {
+                        "decision": "stop",
+                        "reason": "actionable_output",
+                    },
+                },
+            }
+        ]
+        summary = model_failure_summary(events)
+        self.assertEqual(summary["count"], 1)
+        self.assertTrue(summary["shape_valid"])
+        encoded = canonical_bytes(summary)
+        self.assertNotIn(b"raw provider detail", encoded)
+        self.assertNotIn(b"attempt-secret-id", encoded)
+        self.assertEqual(
+            summary["failures"][0]["response"]["tool_call_arguments_observed"],
+            True,
+        )
+
+        invalid = copy.deepcopy(events)
+        invalid[0]["event"]["failure"]["retry_safe"] = True
+        self.assertFalse(model_failure_summary(invalid)["shape_valid"])
+
+        missing_stop_reason = copy.deepcopy(events)
+        missing_stop_reason[0]["event"]["retry"] = {"decision": "stop"}
+        self.assertFalse(model_failure_summary(missing_stop_reason)["shape_valid"])
+
+        unknown_stop_reason = copy.deepcopy(events)
+        unknown_stop_reason[0]["event"]["retry"]["reason"] = "unknown_reason"
+        self.assertFalse(model_failure_summary(unknown_stop_reason)["shape_valid"])
+
+        safe_retry = copy.deepcopy(events)
+        retry_response = {field: False for field in RESPONSE_EVIDENCE_FIELDS}
+        safe_retry[0]["event"]["failure"].update(
+            retry_safe=True,
+            actionable_output=False,
+            response=retry_response,
+        )
+        safe_retry[0]["event"]["retry"] = {
+            "decision": "retry",
+            "prepared": {"attempt_id": "next-attempt", "request": {}},
+        }
+        self.assertTrue(model_failure_summary(safe_retry)["shape_valid"])
+
+        empty_prepared = copy.deepcopy(safe_retry)
+        empty_prepared[0]["event"]["retry"]["prepared"] = {}
+        self.assertFalse(model_failure_summary(empty_prepared)["shape_valid"])
+
     def test_physical_attempts_are_not_double_counted_with_transport_retries(self) -> None:
         run = {
             "accounting": {
@@ -4755,6 +5174,10 @@ class HarnessTests(unittest.TestCase):
                     "expected_output_path",
                     return_value=output.resolve(strict=False),
                 ),
+                mock.patch.object(
+                    sys.modules[__name__], "require_live_reevaluation_admissible"
+                ),
+                mock.patch.object(sys.modules[__name__], "validate_frozen_manifest"),
                 mock.patch.object(sys.modules[__name__], "preflight_fixtures"),
                 mock.patch.object(sys.modules[__name__], "preflight_diagnostic_evidence"),
                 mock.patch.object(CANARY, "read_key") as read_key,
@@ -4807,6 +5230,12 @@ class HarnessTests(unittest.TestCase):
                         sys.modules[__name__],
                         "expected_output_path",
                         return_value=output.resolve(strict=False),
+                    ),
+                    mock.patch.object(
+                        sys.modules[__name__], "require_live_reevaluation_admissible"
+                    ),
+                    mock.patch.object(
+                        sys.modules[__name__], "validate_frozen_manifest"
                     ),
                     mock.patch.object(sys.modules[__name__], "preflight_fixtures"),
                     mock.patch.object(sys.modules[__name__], "preflight_diagnostic_evidence"),
@@ -4871,6 +5300,10 @@ class HarnessTests(unittest.TestCase):
                     "expected_output_path",
                     return_value=output.resolve(strict=False),
                 ),
+                mock.patch.object(
+                    sys.modules[__name__], "require_live_reevaluation_admissible"
+                ),
+                mock.patch.object(sys.modules[__name__], "validate_frozen_manifest"),
                 mock.patch.object(sys.modules[__name__], "preflight_fixtures"),
                 mock.patch.object(sys.modules[__name__], "preflight_diagnostic_evidence"),
                 mock.patch.object(
@@ -4932,6 +5365,10 @@ class HarnessTests(unittest.TestCase):
                     "expected_output_path",
                     return_value=output.resolve(strict=False),
                 ),
+                mock.patch.object(
+                    sys.modules[__name__], "require_live_reevaluation_admissible"
+                ),
+                mock.patch.object(sys.modules[__name__], "validate_frozen_manifest"),
                 mock.patch.object(sys.modules[__name__], "preflight_fixtures"),
                 mock.patch.object(sys.modules[__name__], "preflight_diagnostic_evidence"),
                 mock.patch.object(
