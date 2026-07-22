@@ -6,9 +6,10 @@
 统一、可恢复、可验证、支持单 Agent 与多 Agent 的 Rust 运行时，并让 CLI、TUI 和
 Headless API 共用它。
 
-> 当前处于产品基线与架构迁移阶段。现有可执行文件、配置目录和部分文档仍使用
-> `codewhale` 名称；生产 Agent loop 也仍位于 `crates/tui`。仓库不会把目标架构写成
-> 已经完成的能力。
+> 当前处于 M7 DeepSeek 专项调优阶段。现有可执行文件、配置目录和部分外围文档仍使用
+> `codewhale` 名称，但 exec、app-server 与交互 TUI 已统一到
+> `AgentApplication -> AgentRuntime -> RunStore`。仓库不会把尚未完成的 Provider 清理、
+> FIM 编辑或产品化写成现有能力。
 
 ## 从这里开始
 
@@ -50,16 +51,18 @@ Evaluation 决定能力是否值得保留，当前架构文档只描述尚未迁
 
 ## 当前已有能力
 
-CodeWhale 底座已经包含大量真实能力：
+- exec、app-server 与交互 TUI 使用同一 production application/runtime/store；
+- 根 Agent、只读子 Agent和隔离 Writer 使用同一个 `AgentRuntime`；
+- 单 Writer 由唯一 Orchestrator 完成 worktree、diff、verify、integrate 和 cleanup；
+- 固定生产工具目录、typed `ToolOutcome`、TaskContract、EvidenceReceipt 与 Host 终态；
+- DeepSeek Standard Chat、reasoning/tool history exact replay、完整 stream/usage evidence；
+- hard-limit 本地上下文压缩、持久恢复、approval、steer、cancel 和 canonical Run API；
+- Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。
 
-- 流式 Agent、工具调用、steer、cancel、compaction 和恢复；
-- 文件读写、patch、shell、git 和测试工具；
-- Skills、MCP 和本地 runtime API；
-- 子 Agent、预算、mailbox、checkpoint 和 worktree 基础；
-- DeepSeek reasoning replay、Strict Function Calling、FIM 和 cache 相关实现。
-
-当前主要问题不是功能数量，而是这些能力分散在 TUI、core、subagent、Workflow、
-Fleet、Lane 和多套状态系统中。开发路线会逐条迁移并删除旧路径，而不是继续叠加。
+DeepSeek Beta Strict planner 仍保留，但 M7-B 证明六个默认可执行 actor 的完整工具目录均会
+无损回退 Standard Chat，因此 Strict 当前不是生产默认，也没有用户开关。Beta FIM 只有
+独立 request-planning/transport 基础，没有 canonical production 编辑调用方；下一切片将
+独立比较 `apply_patch`、`edit_file` 与 FIM，而不是恢复旧 `FimEditTool`。
 
 ## 当前本地开发
 
@@ -95,8 +98,8 @@ Focused 检查：
 ./scripts/dev-deepseek-agent.sh focused
 ```
 
-当前 DeepSeek WIP 已被保存，但尚未通过新的产品评测门禁。它包含协议、Agent
-可靠性和独立模型评审实验，后续会按 [Roadmap](docs/product/ROADMAP.md) 分开验证。
+每项 DeepSeek 能力按 [Roadmap](docs/product/ROADMAP.md) 独立冻结、评测和取舍；协议 canary
+不等于真实编码收益，缺少 treatment surface 时不会为了运行 A/B 而读取 Key 或调用 API。
 
 ## 开发原则
 
@@ -112,8 +115,9 @@ Focused 检查：
 
 ## 项目状态
 
-M0 仓库整理和文档基线已经完成，当前里程碑是 M1：建立可重复的 DeepSeek 能力基准。具体状态和下一步只
-在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker 或 handoff 文件。
+M0-M6 的主要 canonical 迁移已完成，当前里程碑是 M7 DeepSeek 专项调优。具体状态和下一步
+只在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker 或 handoff
+文件。
 
 ## 来源与许可
 

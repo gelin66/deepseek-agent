@@ -65,12 +65,14 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v9, State schema is v20, and RuntimeEvent is v15. State
-  v20 persists and rebuilds the exact advertised tool catalog, typed DeepSeek
-  response/failure evidence, retry decision, Writer lifecycle, and terminal
-  accounting. It directly retires incompatible v19 materialized runs while
-  preserving safe pending Run API creation recovery; no compatibility reader
-  or dual write exists.
+- Current Run API is v10, State schema is v21, RuntimeEvent is v16, and the
+  compact exec stream is v2. State v21 persists and rebuilds the exact tool
+  catalog advertised by the latest model request, typed DeepSeek response and
+  tool-failure evidence, retry decision, Writer lifecycle, and terminal
+  accounting. It directly retires every pre-v16 materialized run because
+  historical failed ToolOutcome values cannot gain a stable failure code
+  without guessing, while preserving recoverable pending Start intents; no
+  compatibility reader or dual write exists.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
@@ -94,6 +96,19 @@ Changing one of these constraints requires evidence and a new ADR.
   v14/v19 treatment cannot receive a byte-equivalent v15/v20 correctness patch
   while preserving the original production delta. No Key or API was used;
   the M7-A product conclusion remains `hold`.
+- M7-B kept the official Beta Strict planner, whole-catalog compatibility
+  diagnostics, and atomic lossless Standard fallback. All six frozen default
+  executable actor catalogs still select Standard Chat when Strict is
+  requested, so the formal live A/B is `inadmissible_no_surface_delta`: no
+  credential read, API request, release binary, or product metric. The inert
+  user Strict toggle is deleted. RuntimeEvent v16/State v21 now require a
+  stable failure code for every unsuccessful ToolOutcome, preserve exact
+  actor tool/reasoning replay, and pass root/read-only/Writer plus SIGKILL
+  recovery conformance. Do not weaken schemas, add a second wire catalog, or
+  restore a Strict product mode to force Beta admission. Post-decision
+  checkpoint `4e3536f1` removes redundant derived decision state and proves
+  exact RequestPlan reconstruction after SQLite reopen without changing the
+  frozen candidate, manifest, raw, or wire behavior.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

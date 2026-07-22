@@ -3,10 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M6-A 单 Writer isolated worktree canonical lifecycle 已接入
-- 更新日期：2026-07-21
-- schema：`Run API`（`schema_version = 7`）、`RuntimeEvent`（writer/reader v10）、
-  `State`（schema v15）
+- 状态：M7-B Strict 目录准入与 typed 工具失败恢复已接入
+- 更新日期：2026-07-23
+- schema：`Run API`（`schema_version = 10`）、`RuntimeEvent`（writer/reader v16）、
+  `State`（schema v21）、`codewhale.exec-stream`（v2）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -111,7 +111,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 10,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -163,7 +163,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 10,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -221,7 +221,7 @@ Agent，也不是同 run 的 `resume`。
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 10,
   "request_id": "continue-42",
   "command": {
     "kind": "continue",
@@ -270,7 +270,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 10,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -297,7 +297,7 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 10,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -336,7 +336,21 @@ invalid_interaction_response
 run_store_failed
 ```
 
-HTTP status 只是 transport 映射，程序判断必须以 `result.kind` 和 `error.code` 为准。
+共享 broad code 的失败还可携带稳定 `error.reason`：
+
+```text
+deepseek_auto_route_failed
+deepseek_credential_missing
+workspace_mismatch
+provider_mismatch
+tool_catalog_mismatch
+execution_fingerprint_missing
+execution_fingerprint_mismatch
+```
+
+启动、继续和恢复时的 DeepSeek credential/auto-route 失败不得只藏在人类 message 中。
+HTTP status 只是 transport 映射，程序判断必须以 `result.kind`、`error.code` 和可选
+`error.reason` 为准，不能解析中文消息前缀。
 
 ## 5. Event replay 与 SSE
 
@@ -403,8 +417,8 @@ prepared/in-flight/failed 生命周期。事件持久化精确 source projection
 因此 production 调用图只剩普通 Agent request 的一个 `ModelPort::stream` 调用点。
 
 RuntimeEvent v9 继续收缩协议：删除手动/threshold trigger、特殊 compaction ID、独立
-compaction purpose 和 compaction terminal。后续 v10 直接替代 v9；当前 writer 与
-reducer/Store reader 只接受 v10，不保留旧 event schema 兼容路径。
+compaction purpose 和 compaction terminal。v10 当时直接替代 v9；当前 writer 与
+reducer/Store reader 只接受 v16，不保留旧 event schema 兼容路径。
 
 RuntimeEvent v10 建立唯一 Writer lifecycle：
 
@@ -419,15 +433,34 @@ RuntimeEvent v10 建立唯一 Writer lifecycle：
 - Writer receipt 不能完成 root；只有集成后最新根 generation/revision 上的新
   EvidenceReceipt 可以满足 root TaskContract。
 
-Run API v7 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio；没有新增
-presentation-local worktree command、第二事件总线或兼容 alias。State schema v15 继续复用
-canonical event/snapshot/lease，而不是增加 Orchestrator 私有 ledger。
+RuntimeEvent v11-v14 依次把显式 Writer admission、verifier evidence policy/temporal
+progress、精确 cleanup disposition 和 completion rejection 原因/required transition 变成
+canonical facts；旧 event shape 直接退役，不保留兼容 reader。
+
+RuntimeEvent v15 记录完整 DeepSeek response closure、脱敏 partial-output evidence、usage
+观察和 replay-safe retry。RuntimeEvent v16 进一步要求每个失败 `ToolOutcome` 都携带稳定
+`failure_code`，并保留 invocation、transport、operation、side effect、retry、evidence、
+artifact 和 workspace revision。模型可见失败反馈只由该 outcome 确定性生成；成功输出保持
+原样。`ToolPrepared` 后 crash 不能重复不安全调用，`ToolOutcomeCommitted` 后恢复只回放
+已提交结果。
+
+M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
+持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
+`strict_tools` policy。DeepSeek surface 与 fallback reason 不重复写入 State；SQLite 重开后
+由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
+request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
+
+Run API v10 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
+事件总线或兼容 alias。State schema v21 复用 canonical event/snapshot/lease，并直接退役
+全部 pre-v16 materialized run，因为历史失败无法无猜测补齐 v16 failure code；只保留可
+独立恢复的 pending Start intent。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v15（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v21（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved

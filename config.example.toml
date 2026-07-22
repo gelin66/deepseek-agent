@@ -26,7 +26,9 @@ provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
-# Strict Chat and FIM select their Beta surfaces per request; keep the root stable.
+# Ordinary production Chat/tools currently use Standard Chat. Strict and FIM
+# remain internal protocol surfaces, not configurable user modes; keep the
+# official root stable.
 # Optional custom model request headers for OpenAI-compatible gateways.
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" }

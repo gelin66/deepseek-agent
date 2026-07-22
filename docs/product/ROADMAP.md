@@ -23,14 +23,17 @@
   M7-A3 已在 `e98ca5ae` 建立不完整 stream 的 typed evidence、增量 usage accounting 与
   replay-safe retry；完整离线门禁通过。旧 control/treatment 无法同时承载字节等价修复并
   保持原 production delta，因此 formal 复评在读取 Key 前判定 `inadmissible`，M7-A 产品
-  结论继续 `hold`。当前 Run API v9、RuntimeEvent v15、State schema v20。CLI、TUI、本地 API 与
+  结论继续 `hold`。M7-B 已完成 canonical Strict 目录判定与 typed 工具失败恢复；六个默认
+  可执行 actor 在 Strict 候选下仍全部原子回退 Standard，因此 live A/B 判定
+  `inadmissible_no_surface_delta`，未读取 Key、未调用官方 API，用户 Strict 开关已删除。
+  当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-22
+- 上次更新：2026-07-23
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -267,9 +270,11 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 
 尚未完成的验收事实：
 
-- 缺少覆盖 canonical Runtime 到官方 production sender 的 Standard/Strict/FIM surface 矩阵；
-- 多轮 exact reasoning replay、transport retry、畸形/不完整响应和 FIM 事务性写入仍需在
-  production path 形成垂直证据；
+- Standard 与 Strict-candidate 原子 fallback 已有 canonical Runtime 到 production sender
+  loopback；默认 actor 没有真实 Strict surface，FIM 仍缺 production caller，因此完整
+  Standard/Strict/FIM live surface 矩阵尚不能成立；
+- 多轮 exact reasoning/tool history replay、畸形/不完整 Chat response 与 replay-safe retry
+  已有 production/crash 证据；FIM 完整 response parser 和事务性写入仍需独立垂直切片；
 - 切换后的官方 DeepSeek live canary 尚未重跑。
 
 因此 M2-A 当前只能标记为“代码接入完成、production-path/live gate pending”，不能标记
@@ -1354,8 +1359,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 机制：`8ab0e145` 为每个 root/child 预留一个可退还逻辑请求许可；descendant/child 先
   join，再发 `tools=[]` 的最终请求。无最终容量时不得先写 `ChildStarted`；恢复按该请求
   实际 advertised catalog 拒绝未授权工具；硬限制以内的自动 compaction 不得消耗最后许可。
-- 持久协议：RuntimeEvent 保持 v6；State schema v10 引入并由当前 v12 保留最近模型请求
-  实际 advertised tool catalog 的持久化与重建。
+- 持久协议：RuntimeEvent v6 / State schema v10 引入最近模型请求实际 advertised tool
+  catalog 的持久化与重建；当前 RuntimeEvent v16 / State v21 仍保留该事实。
 - 离线证据：Runtime conformance 51/51、State `run_store` 18/18，并覆盖嵌套 join、tool-free
   final、prepared/replay、无容量零 lifecycle 和 compaction 不偷取许可。
 - 真实 A/B：相对 `0ae9cb7f` 的 exact-pair、single/multi、3/cell 官方 DeepSeek A/B 为
@@ -1721,6 +1726,46 @@ patch-id 和原 production delta 不变。Harness 已在任何 output/Key/API �
 创建新 formal manifest 或 raw。M7-A 继续 `hold`；若未来重评，必须从共同 corrected base
 定义新的 treatment delta，不得冒充旧 delta。完整证据见
 [M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
+
+### M7-B：Strict 工具调用准入与失败恢复闭环
+
+M7-B 从 `7ae5b268` 开始，保留 `crates/tools` 的唯一 production schema owner，并让
+`crates/deepseek` 只对每次真实 advertised catalog 做整组确定性 compatibility 判定。
+兼容时仍能规划官方 Beta Strict Chat；任一工具不兼容时整组原子回退 Standard Chat，工具
+数量、名称、顺序、schema 和语义均不改变。畸形或不完整 tool-call fragment 现在 fail
+closed；reasoning 与 tool-call 历史按 actor turn 精确回放。
+
+RuntimeEvent v16 / State schema v21 为所有失败的 `ToolOutcome` 强制持久化稳定
+`failure_code`，并继续分别表达 invocation、transport、operation、side effect、retry、
+evidence、artifact 与 workspace revision。模型只收到一份确定性的中文失败摘要与恢复建议，
+稳定 code/字段保持英文。root、read-only child 和显式单 Writer 共用同一 conformance；
+进程级 SIGKILL 证明 `ToolPrepared` 与 `ToolOutcomeCommitted` 两侧恢复不会重复执行工具。
+TUI 与 exec-stream v2 只投影 canonical 事实，不拥有第二套失败分类。
+
+当次实际 advertised catalog 只随完整 `ModelRequestPrepared` 持久化一次，State 另存 catalog
+hash，execution fingerprint 绑定 `strict_tools` policy；surface 与 fallback reason 由唯一
+DeepSeek planner 确定性派生，不建立第二份状态。production composition 的 SQLite reopen
+测试已经证明 exact request 逐字段一致、完整 `RequestPlan` 重建一致，并证明 strict policy
+变化会改变 fingerprint，恢复不能静默换策略。
+
+最终冻结的六个默认可执行 actor catalog 均没有真实 Strict surface：root/coordinator/
+read-only child 首先受 `agent` 或 `file_search` 的 required 语义阻断，isolated Writer 首先受
+`apply_patch.oneOf` 阻断。删除这些约束、引入 nullable/sentinel、建立第二套 wire schema
+或丢弃工具都会改变生产合同，因此不被接受。terminal no-tools 目录没有函数调用，也不构成
+Strict treatment。
+
+准入 Harness 在 release build、Key 和官方 API 前得到
+`inadmissible_no_surface_delta`：formal A/B 为 0 arms，`product_metric_eligible=false`，
+官方 API 请求 0，credential read 为 false。结论是保留官方 Beta Strict planner、确定性
+compatibility diagnostics 与无损 Standard fallback；Strict 不成为默认产品路径，不提供
+用户开关，不建立 schema transformer。准入冻结后的 `4e3536f1` 只删除可推导的 Strict
+decision 布尔值和零调用 wrapper，并增加 SQLite reopen 重建证明，没有修改 frozen
+candidate、manifest、raw 或 wire 行为。完整身份和非结论见
+[M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
+
+下一独立产品切片进入 `apply_patch/edit_file/FIM` 编辑能力审计与准入。它必须先测量真实
+编辑失败，再决定是否建立最小 canonical FIM 调用方；不得恢复已经删除的 `FimEditTool`，
+也不得把 FIM 混入 Strict、Provider 清理、多 Writer或产品化。
 
 ### 调优
 

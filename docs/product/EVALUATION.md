@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-22
+- 上次更新：2026-07-23
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -342,7 +342,7 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 #### 2026-07-19 M5-A 机制与真实 A/B 证据
 
 M5-A 被测 checkpoint 实现了上述 canonical 边界：当时的 Run API v5、RuntimeEvent v7、
-State schema v12；当前 v9/v14/v19 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
+State schema v12；当前 v10/v16/v21 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
 模型 `Stop` 只产生 completion candidate，Runtime 是
 唯一 EvidenceReceipt 与 Completed owner。结构化 task 的 constraints、non-goals 和
 acceptance description 已进入确定性的 model-visible canonical transcript。显式 verifier
@@ -478,7 +478,8 @@ no_key_replay
 - terminal 的 exactly-once 只指 RunStore 中恰好一个 canonical terminal event。stdout、
   NDJSON 与其他事件 sink 是至少一次投影，进程中断后可以重放。canonical event envelope
   暴露 `run_id + sequence + event_id` 时，消费者可据此去重；当前紧凑
-  `codewhale.exec-stream` v1 并未在每条展示事件上承诺这些字段，必须按至少一次输出消费，
+  `codewhale.exec-stream` v2 虽新增 canonical 工具失败字段，仍未在每条展示事件上承诺
+  envelope identity，必须按至少一次输出消费，
   不能把重复投影误报为第二个持久终态。需要逐事件去重的调用方应读取 canonical event
   记录；若未来给紧凑流增加 envelope identity，必须升级并测试机器协议版本。
 - terminal 后的 no-key replay 必须在不读取凭据、不发模型请求、不执行工具的情况下重放
@@ -790,6 +791,48 @@ Key、未调用官方 API、未创建新 formal manifest/binary/raw。
 **hold**，不能把 M7-A2 的方向性前缀结果升级为 keep。未来若重评，必须从共同的 corrected
 base 冻结一个新的 treatment delta。完整记录见
 [M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
+
+### 9.8 M7-B Strict 工具目录准入与失败恢复结论（2026-07-22）
+
+M7-B 没有把 Strict 当成用户模式或预设收益。`crates/tools` 继续唯一拥有 production tool
+schema；`crates/deepseek` 对每次请求实际 advertised 的整组目录做确定性 compatibility
+判定。只有整组兼容才规划 Beta Strict Chat；否则同一目录原子回退 Standard Chat，数量、
+名称、顺序、schema 与语义不得变化。畸形或不完整 tool-call fragment fail closed，thinking
+reasoning 与 tool-call history 按 actor turn 精确回放。
+
+RuntimeEvent v16 / State schema v21 为每个失败 `ToolOutcome` 强制要求稳定
+`failure_code`，并独立保留 invocation、transport、operation、side effect、retry、evidence、
+artifact 和 workspace revision。模型可见失败 envelope 使用简短中文摘要与恢复建议，稳定
+code/字段保持英文；成功工具输出不改写。root、read-only child、isolated Writer 共用同一
+Runtime conformance，真实 SIGKILL/reopen 覆盖 `ToolPrepared` 与
+`ToolOutcomeCommitted` 两侧，证明 crash 后不重复已执行工具或已提交 outcome。
+
+持久化只保存唯一输入事实：RuntimeEvent 中的完整 `ModelRequestPrepared`（含 actual advertised
+catalog）、catalog hash，以及绑定 `strict_tools` 的 execution fingerprint；不重复保存
+provider 派生的 surface/reason。production composition 的 SQLite reopen 反例证明 exact
+request 和目录逐字段一致，唯一 DeepSeek planner 重建出的完整 `RequestPlan` 也一致；切换
+strict policy 会改变 fingerprint，因此恢复不能在不同 policy 下静默重建。
+
+正式准入 manifest 冻结了六个默认可执行 actor 目录和一个 terminal no-tools 目录。六个
+可执行目录在 `strict_enabled=true` 时仍全部选择 Standard Chat：root、interactive root、
+coordinator 和 read-only child 首先受 `agent` 的 required 语义阻断，depth-limit child 受
+`file_search` required 阻断，isolated Writer 受 `apply_patch.oneOf` 阻断。删除这些约束、
+把 optional 改成 sentinel/空值、弱化 `oneOf`、丢弃工具或建立第二份 wire schema 都会改变
+canonical 工具合同，不能成为 treatment。terminal no-tools 不执行函数调用，也不能提供
+Strict 收益样本。
+
+因此 Harness 在 release binary、credential 和官方 API 前给出
+`inadmissible_no_surface_delta`：formal A/B 未开始、0 arms、maximum reruns 0、
+`product_metric_eligible=false`、official API requests 0、credential read false。本结论
+不声称 Strict 有收益或回归，也不外推到任意自定义 `ToolPolicy` 子集。
+
+保留项是官方 Beta Strict planner、整组 compatibility diagnostics、无损 Standard fallback、
+typed 失败恢复、exact replay 与 actor/crash conformance；不准入项是当前生产 Strict 默认
+和当前无 surface delta 的 live A/B；拒绝项是 schema transformer、第二工具目录和弱化工具
+合同；已删除项是无执行差异的用户 Strict 开关及无消费者重复路径。冻结结论后的
+`4e3536f1` 又移除可推导的 Strict decision 布尔值与零调用 wrapper，并补充 SQLite reopen
+证明；它不修改 frozen candidate、manifest、raw 或 wire 行为。完整冻结身份、哈希与非结论见
+[M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
 
 ## 10. 结果与决策记录
 

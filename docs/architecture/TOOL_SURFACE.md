@@ -49,13 +49,22 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 完成请求与响应，TUI 只投影和提交用户选择。
 
 每次模型请求实际 advertised 的完整工具目录会持久化到 RunStore。恢复时按这份目录
-判定调用是否合法，不能靠当前进程猜测或 TUI 私有缓存。
+判定调用是否合法，不能靠当前进程猜测或 TUI 私有缓存。State 不重复持久化 provider 派生
+的 surface/fallback reason；唯一 DeepSeek planner 从重开的 exact `ModelRequestPrepared`
+确定性重建完整 `RequestPlan`，`execution_fingerprint` 则绑定当时的 `strict_tools` policy，
+配置漂移会在恢复边界 fail closed。
 
 ## 4. DeepSeek 协议语义
 
 - 普通 Chat 与普通工具调用走官方标准 Chat surface。
 - 只有整份请求目录都满足 strict schema 时，才使用 DeepSeek Beta Strict Function
   Calling；任一工具不兼容就整目录回退到普通工具调用，不能静默丢工具。
+- M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍选择 Standard Chat：root、
+  coordinator 和普通 read-only child 首先受 `agent` required 语义阻断，depth-limit child
+  受 `file_search` required 阻断，isolated Writer 受 `apply_patch.oneOf` 阻断。当前没有
+  production Strict treatment surface，也没有用户 Strict 开关。
+- fallback 必须保留工具数量、名称、顺序和完整 schema；不得通过删除 required/oneOf、
+  nullable/sentinel 转换、第二份 wire catalog 或工具裁剪进入 Beta。
 - Beta FIM 是独立的 Completions surface，不是工具目录成员。
 - 工具目录和稳定提示词前缀会影响 DeepSeek context cache，因此不增加无收益别名或
   每轮漂移的描述。
@@ -67,8 +76,14 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
   不产生副作用。
 - `exec_shell` schema 只有 `command`、可选 `timeout_ms` 和可选 `cwd`。旧后台、TTY、
   stdin 和 wait/interact alias 不在生产目录。
-- 取消、超时、操作状态、重试建议、副作用状态、evidence 和 artifact 都进入 typed
-  `ToolOutcome`，而不是藏在展示文本中。
+- 取消、超时、稳定 `failure_code`、invocation、transport、operation、重试建议、副作用
+  状态、evidence、artifact 和 workspace revision 都进入 typed `ToolOutcome`，而不是藏在
+  展示文本中。失败 code 覆盖 malformed/schema/invocation rejected/missing/invalid、unknown
+  tool、workspace precondition/stale read、ambiguous edit、patch parse、operation/transport、
+  side-effect ambiguous 和 verifier failure。
+- 失败反馈由 canonical outcome 确定性生成：中文摘要说明失败与恢复动作，英文 code/字段
+  保持稳定；成功结果不改写。Runtime 不自动重复可能有副作用的调用，恢复也不重复已经
+  执行的工具或已提交的 outcome。
 - `run_verifiers` 是当前确定性验证入口。模型自评不是确定性证据，也不能单独令 Host
   接受完成。
 

@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-22
+- 快照日期：2026-07-23
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -18,6 +18,10 @@
 - M7-A2 evaluator checkpoint：`1077fe93`
 - M7-A3 incomplete stream correctness checkpoint：`e98ca5ae`
 - M7-A3 Harness checkpoint：`db381889`
+- M7-B production/code conformance checkpoint：`11230b8d`
+- M7-B final production candidate：`e6b4b64d`
+- M7-B final admission Harness checkpoint：`7e7eaadf`
+- M7-B post-decision shrink / SQLite reopen proof：`4e3536f1`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -28,8 +32,10 @@
   shared-fix 复评；正式 suite 在 7/40 arms 后因一个真实 incomplete response/accounting
   停止，仍为 `hold`、不具备产品指标资格。M7-A3 已补齐 typed stream failure、增量 usage
   accounting 与 replay-safe retry；完整离线门禁通过，但旧 control/treatment 无法建立保持
-  原 production delta 的公平 shared fix，因此没有读取 Key 或执行 live 复评，M7-A 继续 `hold`
-- 当前协议：Run API v9、RuntimeEvent v15、State schema v20
+  原 production delta 的公平 shared fix，因此没有读取 Key 或执行 live 复评，M7-A 继续
+  `hold`。M7-B 已完成 Strict 整目录判定和 typed 工具失败恢复；六个默认可执行 actor 均无
+  Strict treatment surface，正式 live A/B 在 credential/API 前判定不准入
+- 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
 
@@ -86,7 +92,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。RuntimeEvent v15 与 State schema v20 继续持久化 completion rejection 的 typed
+推断已被替代。RuntimeEvent v16 与 State schema v21 继续持久化 completion rejection 的 typed
 `cause` 和 `required_transition`，恢复只能消费当前 generation 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
 
@@ -170,7 +176,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue 通过 State schema v20 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v21 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -194,7 +200,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v15 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+RuntimeEvent v16 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -269,7 +275,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v15 / State v20 的 canonical facts。
+post-integration verification 都是 RuntimeEvent v16 / State v21 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -296,7 +302,10 @@ EvidenceReceipt 可以满足 root TaskContract。
 - 官方模型 capability、output limit 和 pricing fixture。
 
 普通工具调用不因存在工具就误走 Beta；只有整组 schema strict-compatible 时使用
-Beta Strict Chat。FIM 仍是独立 Beta Completions request-planning surface；当前没有
+Beta Strict Chat。M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍原子回退
+Standard Chat；当前生产没有真实 Strict surface，也没有用户 Strict 开关。fallback 保留
+完整工具数量、名称、顺序与 schema，不通过第二份 wire schema 或语义弱化进入 Beta。
+FIM 仍是独立 Beta Completions request-planning surface；当前没有
 canonical production FIM 编辑调用方或完整 response parser，因此不能宣称事务性 FIM
 编辑已经可用。Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache API。
 
@@ -317,8 +326,12 @@ Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启�
 交互 root run 还会追加 Runtime 内建 `request_user_input`；child run 强制非交互。该能力
 不增加固定 Host 工具数量，approval 也是工具执行前置协议，不是模型可见的新工具。
 
-所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、operation、retry、
-side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRegistry` 已
+所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、transport、operation、
+retry、side effect、evidence、artifact 和 workspace revision。失败 outcome 必须携带稳定
+`failure_code`；模型看到唯一中文摘要和恢复建议，英文 code/字段保持稳定，成功结果不改写。
+Runtime 只按当次实际 advertised catalog 接受工具调用，crash/reopen 不重放已执行工具或
+已提交 outcome。root、read-only child 和 isolated Writer 使用同一失败恢复 conformance。
+旧 TUI child `ToolRegistry` 已
 删除。TUI 下仍编译的其他宽工具实现不代表 canonical production catalog 会自动扩大，
 其余无消费者模块按独立调用方切片继续清理。
 
@@ -326,9 +339,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v20；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v21；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v15；
+- 当前 canonical RuntimeEvent writer/reader 为 v16；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -348,6 +361,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
   `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；
 - v20 直接退役不兼容的 v19 materialized run/finalized creation，同时保留可安全恢复的
   pending Run API creation；不提供兼容 reader、alias 或双写；
+- v21 直接退役全部 pre-v16 materialized run，因为历史失败无法无猜测补齐
+  `failure_code`；只保留可从 canonical command 重建的 pending Start intent，不分类历史
+  错误文本，不建立兼容 reader；
 - no-key terminal replay。
 
 旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
@@ -375,9 +391,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v9 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v10 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v15；
+  writer/reader 为 v16；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -968,6 +984,39 @@ output/Key/API 前拒绝不可采信的 live 复评。
 binary 或 raw，也没有读取 Key。M7-A 产品结论继续 `hold`。完整实现、离线门禁与公平性边界见
 [M7-A3 DeepSeek 不完整流式响应诊断与安全恢复](../../eval/summaries/m7-a3-incomplete-stream-recovery-2026-07-22.md)。
 
+M7-B 继续使用同一 production composition，没有增加 Runtime、Store、Provider、模型可见
+工具或第二目录。`crates/deepseek` 的 compatibility planner 对当次实际 advertised catalog
+给出首个 typed blocker；完整目录兼容时才能选择 Beta Strict Chat，任何不兼容都原子回退
+Standard Chat。malformed 或不完整 tool-call response 不再被当作可执行调用；reasoning 与
+tool-call history 精确绑定 actor turn 回放。
+
+当次完整 `ModelRequestPrepared` 是实际 advertised catalog 的唯一持久输入，State 同时保留
+catalog hash；execution fingerprint 绑定 `strict_tools` policy。surface 与 fallback reason
+不作为第二份派生状态重复写入，而由唯一 DeepSeek planner 在重开后确定性重建。production
+composition 的 SQLite reopen 测试已证明 exact request 与完整 `RequestPlan`（含 surface、
+reason、endpoint、body）前后一致，且 strict policy 改变会产生不同 fingerprint。
+
+当前六个默认可执行 actor 的 frozen catalog 均回退 Standard：root headless、interactive、
+coordinator 与 read-only child 的首个 blocker 是 `agent` required 合同；depth-limit child
+是 `file_search` required；isolated Writer 是 `apply_patch.oneOf`。这些都是当前工具语义，
+不能通过删除约束、空值/sentinel、schema 转换或工具裁剪无损消除。terminal no-tools 目录
+没有 Strict function call treatment。该结论只覆盖冻结的默认 actor 目录，不外推任意自定义
+`ToolPolicy` 子集。
+
+RuntimeEvent v16 / State v21 把每个失败 `ToolOutcome.failure_code` 变成强制 canonical
+事实，并保留 invocation、transport、operation、side effect、retry、evidence、artifact、
+workspace revision。TUI、JSON summary 与 exec-stream v2 只投影这些事实；旧本地 Strict
+开关及其配置/UI 链已物理删除。actor conformance、重复失败上限和真实进程 SIGKILL/reopen
+门禁均通过。
+
+最终 admission 结果为 `inadmissible_no_surface_delta`：0 formal arms、0 official API
+requests、credential read false、`product_metric_eligible=false`。因此保留 planner、诊断、
+无损 fallback 和 typed recovery；Strict 不成为当前默认产品路径，不执行 live Standard/
+Strict A/B，也不建立 schema transformer。冻结结论后的 `4e3536f1` 只删除两个可推导的
+Strict decision 布尔值与一个零调用包装函数，并补充 SQLite reopen 重建证明；wire 行为、
+冻结 candidate、manifest 和 raw 未改。完整证据见
+[M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -989,6 +1038,8 @@ binary 或 raw，也没有读取 Key。M7-A 产品结论继续 `hold`。完整�
 - M7-A verifier 单 owner 与 typed recovery 已证明提高完整正式任务集的 verified success 或
   效率；A2 虽修复 v1 canonical JSON 口径并观察到 T1–T3 `0/3 -> 3/3`，但正式 suite 因
   incomplete response 只执行 7/40 arms，T4 mate、T5 和 read-only child 均无本次 live 证据；
+- M7-B 已证明 Strict 提高或降低 verified success、参数正确率、Token、时间或费用；当前
+  production actor 没有真实 Strict treatment surface，因此本阶段没有执行产品 A/B；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B

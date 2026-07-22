@@ -2670,7 +2670,8 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 # Save it with: codewhale auth set --provider deepseek
 
 # Official DeepSeek API root (default: https://api.deepseek.com)
-# Standard Chat, Beta Strict Chat, and Beta FIM are selected per request.
+# Ordinary production Chat/tools currently use Standard Chat. Strict and FIM
+# are internal protocol surfaces, not configurable user modes.
 # base_url = "https://api.deepseek.com"
 
 # Default model
@@ -4319,7 +4320,8 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
 api_key = "{api_key}"
 
 # Official DeepSeek API root (default: https://api.deepseek.com)
-# Standard Chat, Beta Strict Chat, and Beta FIM are selected per request.
+# Ordinary production Chat/tools currently use Standard Chat. Strict and FIM
+# are internal protocol surfaces, not configurable user modes.
 # base_url = "https://api.deepseek.com"
 
 # Default model
