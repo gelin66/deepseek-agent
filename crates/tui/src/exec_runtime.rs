@@ -990,7 +990,10 @@ pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConn
     let retry = config.retry_policy();
     let connection = DeepSeekConnectionConfig {
         endpoint,
-        strict_tools: config.strict_tool_mode.unwrap_or(false),
+        // M7-B found no production actor catalog with a real Strict surface
+        // delta. Keep the Beta planner available to explicit protocol tests,
+        // but do not expose an inert product switch.
+        strict_tools: false,
         response_header_timeout: Duration::from_secs(45),
         stream_idle_timeout: Duration::from_secs(config.stream_chunk_timeout_secs()),
         retry: TransportRetryPolicy {
@@ -1984,6 +1987,13 @@ mod tests {
             startup_failure_for_run_api(&legacy_text_only),
             ExecStartupFailure::InvalidArguments
         );
+    }
+
+    #[test]
+    fn production_config_has_no_user_strict_surface_toggle() {
+        let connection = deepseek_connection_config(&Config::default()).expect("DeepSeek config");
+
+        assert!(!connection.strict_tools);
     }
 
     #[test]

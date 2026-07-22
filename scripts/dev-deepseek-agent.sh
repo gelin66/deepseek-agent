@@ -15,7 +15,6 @@ run_focused_tests() {
     "tui::run_projection::tests"
     "tui::run_presenter::tests"
     "tui::ui::tests::canonical_"
-    "strict_tool_mode_doctor"
   )
 
   # Cargo exits successfully when a filter matches zero tests. Refuse that

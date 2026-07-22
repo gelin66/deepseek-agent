@@ -383,31 +383,6 @@ request headers. The residual generic config schema can still parse
 capability and must not be relied on. MCP HTTP headers are a separate transport
 configuration and are unaffected.
 
-### DeepSeek strict tool schemas
-
-The official DeepSeek API exposes strict function-schema validation on the
-`/beta` chat route:
-
-```toml
-provider = "deepseek"
-base_url = "https://api.deepseek.com"
-strict_tool_mode = true
-```
-
-CodeWhale preflights the complete active tool catalog. When every schema is
-compatible it sends every function with `strict = true` to Beta Chat; if one
-schema is not compatible, the complete request uses Standard Chat and the
-original tool catalog stays available. The official root remains stable in
-both cases. Strict validation does not imply `tool_choice = "required"`: the
-model may still answer without a tool call. Model discovery and health checks
-continue to use `/v1/models`.
-
-This setting controls the Beta strict-schema guarantee, not basic tool-call
-availability. Standard DeepSeek chat routes can still call tools; CodeWhale
-removes only the unsupported `strict` flag when the final route is not Beta.
-Nested `anyOf` remains available because DeepSeek explicitly includes it in the
-Beta strict subset.
-
 To bootstrap MCP and skills directories at their resolved paths, run `codewhale-tui setup`.
 To only scaffold MCP, run `codewhale-tui mcp init`.
 

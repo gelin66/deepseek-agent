@@ -2688,20 +2688,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         crate::utils::redact_url_for_display(&api_target.base_url)
     );
     println!("  · model: {}", api_target.model);
+    println!("  · 连通性探针仅验证 Standard Chat，不代表 Agent 或 Strict 能力");
     let tls_status = doctor_tls_status(config);
     if !tls_status.certificate_verification {
         println!("  ! {}", tls_status.message);
         println!("    Prefer SSL_CERT_FILE with a trusted custom CA bundle when possible.");
     }
-    let strict_tool_mode = doctor_strict_tool_mode_status(config);
-    let strict_icon = match strict_tool_mode.status {
-        "catalog_dependent" => "·".truecolor(sky_r, sky_g, sky_b),
-        _ => "·".dimmed(),
-    };
-    println!(
-        "  {} 严格工具调用：{}",
-        strict_icon, strict_tool_mode.message
-    );
     let capability = crate::config::provider_capability(config.api_provider(), &api_target.model);
     if let Some(alias) = capability.alias_deprecation.as_ref() {
         println!(
@@ -4052,7 +4044,6 @@ fn run_doctor_json(
     let plugins_dir = default_plugins_dir();
 
     let api_target = doctor_api_target(config);
-    let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let tls_status = doctor_tls_status(config);
     let (code_home, legacy_home) = doctor_state_roots();
     let legacy_state_report = doctor_legacy_state_report(&code_home, &legacy_home);
@@ -4070,11 +4061,6 @@ fn run_doctor_json(
         "base_url": crate::utils::redact_url_for_display(&api_target.base_url),
         "default_text_model": api_target.model,
         "route": doctor_route_report(config),
-        "strict_tool_mode": {
-            "enabled": strict_tool_mode.enabled,
-            "status": strict_tool_mode.status,
-            "message": strict_tool_mode.message,
-        },
         "tls": {
             "certificate_verification": tls_status.certificate_verification,
             "insecure_skip_tls_verify": tls_status.insecure_skip_tls_verify,
@@ -4316,36 +4302,12 @@ struct DoctorApiTarget {
     model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DoctorStrictToolModeStatus {
-    enabled: bool,
-    status: &'static str,
-    message: String,
-}
-
 fn doctor_api_target(config: &Config) -> DoctorApiTarget {
     let provider = config.api_provider();
     DoctorApiTarget {
         provider: provider.as_str(),
         base_url: config.deepseek_base_url(),
         model: config.default_model(),
-    }
-}
-
-fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus {
-    if !config.strict_tool_mode.unwrap_or(false) {
-        return DoctorStrictToolModeStatus {
-            enabled: false,
-            status: "disabled",
-            message: "未启用；当前使用 Standard Chat 普通工具调用".to_string(),
-        };
-    }
-
-    DoctorStrictToolModeStatus {
-        enabled: true,
-        status: "catalog_dependent",
-        message: "已启用候选；每次请求仅在完整工具目录兼容时使用 Beta Strict Chat，否则保留全部工具并回退 Standard Chat；Doctor 本次未携带工具目录，不能证明实际使用 Strict"
-            .to_string(),
     }
 }
 
@@ -4433,7 +4395,6 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
 
     let connection = crate::exec_runtime::deepseek_connection_config(config)?;
     let root = connection.endpoint.root().to_owned();
-    let strict_tools = connection.strict_tools;
     let request_budget = SharedApiRequestBudget::new(
         NonZeroU32::new(1).expect("Doctor DeepSeek 探针请求预算必须非零"),
     );
@@ -4452,7 +4413,7 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
     let model = official_model_capabilities(probe_model)?.model;
     let plan = plan_chat(
         &root,
-        strict_tools,
+        false,
         ChatPlanInput {
             model: model.to_owned(),
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
@@ -6676,54 +6637,10 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_reports_disabled_by_default() {
-        let config = Config::default();
-
-        let status = doctor_strict_tool_mode_status(&config);
-
-        assert!(!status.enabled);
-        assert_eq!(status.status, "disabled");
-        assert_eq!(
-            status.message,
-            "未启用；当前使用 Standard Chat 普通工具调用"
-        );
-    }
-
-    #[test]
     fn doctor_xiaomi_base_url_is_ascii_case_insensitive() {
         assert!(doctor_xiaomi_mimo_base_url_uses_token_plan(
             "HTTPS://TOKEN-PLAN-CN.XIAOMIMIMO.COM/V1/"
         ));
-    }
-
-    #[test]
-    fn strict_tool_mode_doctor_reports_catalog_dependent_candidate() {
-        let config = Config {
-            strict_tool_mode: Some(true),
-            ..Default::default()
-        };
-
-        let status = doctor_strict_tool_mode_status(&config);
-
-        assert!(status.enabled);
-        assert_eq!(status.status, "catalog_dependent");
-        assert!(status.message.contains("完整工具目录兼容"));
-        assert!(status.message.contains("保留全部工具"));
-    }
-
-    #[test]
-    fn strict_tool_mode_doctor_does_not_infer_surface_from_endpoint() {
-        let config = Config {
-            strict_tool_mode: Some(true),
-            provider: Some("vllm".to_string()),
-            ..Default::default()
-        };
-
-        let status = doctor_strict_tool_mode_status(&config);
-
-        assert_eq!(status.status, "catalog_dependent");
-        assert!(status.message.contains("Beta Strict Chat"));
-        assert!(status.message.contains("Standard Chat"));
     }
 
     #[test]

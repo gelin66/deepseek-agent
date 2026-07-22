@@ -7,11 +7,6 @@ base_url = "https://api.deepseek.com"
 default_text_model = "deepseek-v4-pro"
 reasoning_effort = "max"
 
-# DeepSeek strict schemas use Beta Chat. The request planner selects that
-# surface atomically; if any active tool is incompatible, the whole request
-# stays on Standard Chat with every original tool preserved.
-strict_tool_mode = true
-
 allow_shell = true
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"

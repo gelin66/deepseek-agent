@@ -1106,11 +1106,6 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub mcp_oauth_callback_port: Option<u16>,
     pub mcp_oauth_callback_url: Option<String>,
-    /// When true, atomically opt a fully compatible function catalog into
-    /// DeepSeek beta strict schema validation. This never forces a tool call;
-    /// `tool_choice` remains automatic. If one schema is incompatible, the
-    /// complete request stays non-strict and schemas remain unchanged.
-    pub strict_tool_mode: Option<bool>,
     /// Additional user-owned system-prompt sources concatenated in declared
     /// order (#454). Paths are expanded via `expand_path` so `~` and env vars
     /// work. Project-scope config is not allowed to set this field; the TUI
@@ -3947,7 +3942,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         fleet: override_cfg.fleet.or(base.fleet),
         subagents: override_cfg.subagents.or(base.subagents),
-        strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
     }
 }
 
