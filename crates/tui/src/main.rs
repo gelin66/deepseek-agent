@@ -2695,17 +2695,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     }
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let strict_icon = match strict_tool_mode.status {
-        "route_ready_catalog_dependent" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
-        "fallback_non_beta" | "custom_endpoint" => "!".truecolor(sky_r, sky_g, sky_b),
+        "catalog_dependent" => "·".truecolor(sky_r, sky_g, sky_b),
         _ => "·".dimmed(),
     };
     println!(
-        "  {} strict_tool_mode: {}",
+        "  {} 严格工具调用：{}",
         strict_icon, strict_tool_mode.message
     );
-    if let Some(recommended) = strict_tool_mode.recommended_base_url.as_ref() {
-        println!("    Use `base_url = \"{recommended}\"` for DeepSeek strict schemas.");
-    }
     let capability = crate::config::provider_capability(config.api_provider(), &api_target.model);
     if let Some(alias) = capability.alias_deprecation.as_ref() {
         println!(
@@ -4077,9 +4073,7 @@ fn run_doctor_json(
         "strict_tool_mode": {
             "enabled": strict_tool_mode.enabled,
             "status": strict_tool_mode.status,
-            "function_strict_sent": strict_tool_mode.function_strict_sent,
             "message": strict_tool_mode.message,
-            "recommended_base_url": strict_tool_mode.recommended_base_url,
         },
         "tls": {
             "certificate_verification": tls_status.certificate_verification,
@@ -4326,9 +4320,7 @@ struct DoctorApiTarget {
 struct DoctorStrictToolModeStatus {
     enabled: bool,
     status: &'static str,
-    function_strict_sent: bool,
     message: String,
-    recommended_base_url: Option<String>,
 }
 
 fn doctor_api_target(config: &Config) -> DoctorApiTarget {
@@ -4345,40 +4337,15 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
         return DoctorStrictToolModeStatus {
             enabled: false,
             status: "disabled",
-            function_strict_sent: false,
-            message: "disabled".to_string(),
-            recommended_base_url: None,
+            message: "未启用；当前使用 Standard Chat 普通工具调用".to_string(),
         };
     }
 
-    let target = doctor_api_target(config);
-    let provider = config.api_provider();
-    let path_suffix = config
-        .provider_config_for(provider)
-        .and_then(|provider| provider.path_suffix.as_deref());
-    let official_deepseek_route = matches!(
-        provider,
-        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
-    ) && path_suffix.is_none()
-        && codewhale_deepseek::official_root(&target.base_url).is_some();
-    if official_deepseek_route {
-        DoctorStrictToolModeStatus {
-            enabled: true,
-            status: "route_ready_catalog_dependent",
-            function_strict_sent: false,
-            message: "official DeepSeek planner will select Beta Strict Chat only when every active tool schema matches DeepSeek's strict subset; otherwise it keeps all tools on Standard Chat"
-                .to_string(),
-            recommended_base_url: None,
-        }
-    } else {
-        DoctorStrictToolModeStatus {
-            enabled: true,
-            status: "custom_endpoint",
-            function_strict_sent: false,
-            message: "custom endpoint selected; function.strict remains catalog-dependent and endpoint support cannot be verified by doctor"
-                .to_string(),
-            recommended_base_url: None,
-        }
+    DoctorStrictToolModeStatus {
+        enabled: true,
+        status: "catalog_dependent",
+        message: "已启用候选；每次请求仅在完整工具目录兼容时使用 Beta Strict Chat，否则保留全部工具并回退 Standard Chat；Doctor 本次未携带工具目录，不能证明实际使用 Strict"
+            .to_string(),
     }
 }
 
@@ -5988,9 +5955,13 @@ enum ExecStreamEvent {
         started_at: String,
         completed_at: String,
         duration_ms: u64,
+        invocation_status: String,
+        transport_status: String,
+        operation_status: String,
         side_effect_status: String,
+        retry_disposition: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        error_category: Option<String>,
+        failure_code: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         truncated: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -6712,8 +6683,10 @@ mod doctor_endpoint_tests {
 
         assert!(!status.enabled);
         assert_eq!(status.status, "disabled");
-        assert!(!status.function_strict_sent);
-        assert!(status.recommended_base_url.is_none());
+        assert_eq!(
+            status.message,
+            "未启用；当前使用 Standard Chat 普通工具调用"
+        );
     }
 
     #[test]
@@ -6724,7 +6697,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_accepts_default_official_root() {
+    fn strict_tool_mode_doctor_reports_catalog_dependent_candidate() {
         let config = Config {
             strict_tool_mode: Some(true),
             ..Default::default()
@@ -6733,59 +6706,24 @@ mod doctor_endpoint_tests {
         let status = doctor_strict_tool_mode_status(&config);
 
         assert!(status.enabled);
-        assert_eq!(status.status, "route_ready_catalog_dependent");
-        assert!(!status.function_strict_sent);
-        assert!(status.message.contains("official DeepSeek planner"));
-        assert!(status.message.contains("every active tool schema"));
-        assert!(status.recommended_base_url.is_none());
+        assert_eq!(status.status, "catalog_dependent");
+        assert!(status.message.contains("完整工具目录兼容"));
+        assert!(status.message.contains("保留全部工具"));
     }
 
     #[test]
-    fn strict_tool_mode_doctor_accepts_explicit_official_root() {
+    fn strict_tool_mode_doctor_does_not_infer_surface_from_endpoint() {
         let config = Config {
             strict_tool_mode: Some(true),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            ..Default::default()
-        };
-
-        let status = doctor_strict_tool_mode_status(&config);
-
-        assert_eq!(status.status, "route_ready_catalog_dependent");
-        assert!(!status.function_strict_sent);
-        assert!(status.message.contains("Beta Strict Chat"));
-        assert!(status.recommended_base_url.is_none());
-    }
-
-    #[test]
-    fn strict_tool_mode_doctor_accepts_deepseek_cn_alias_default_endpoint() {
-        let config = Config {
-            provider: Some("deepseek-cn".to_string()),
-            strict_tool_mode: Some(true),
-            ..Default::default()
-        };
-
-        let status = doctor_strict_tool_mode_status(&config);
-
-        assert_eq!(status.status, "route_ready_catalog_dependent");
-        assert!(!status.function_strict_sent);
-        assert!(status.message.contains("official DeepSeek planner"));
-        assert!(status.recommended_base_url.is_none());
-    }
-
-    #[test]
-    fn strict_tool_mode_doctor_marks_custom_endpoint_as_forwarded() {
-        let config = Config {
             provider: Some("vllm".to_string()),
-            strict_tool_mode: Some(true),
             ..Default::default()
         };
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "custom_endpoint");
-        assert!(!status.function_strict_sent);
-        assert!(status.message.contains("custom endpoint"));
-        assert!(status.message.contains("catalog-dependent"));
+        assert_eq!(status.status, "catalog_dependent");
+        assert!(status.message.contains("Beta Strict Chat"));
+        assert!(status.message.contains("Standard Chat"));
     }
 
     #[test]
@@ -7675,13 +7613,17 @@ mod terminal_mode_tests {
         let event = ExecStreamEvent::ToolResult {
             id: "call_1".to_string(),
             name: "read_file".to_string(),
-            output: "line 1\nline 2".to_string(),
-            status: "success".to_string(),
+            output: "读取依据已失效".to_string(),
+            status: "error".to_string(),
             started_at: "2026-07-13T00:00:00Z".to_string(),
             completed_at: "2026-07-13T00:00:01Z".to_string(),
             duration_ms: 1000,
-            side_effect_status: "not_started".to_string(),
-            error_category: None,
+            invocation_status: "accepted".to_string(),
+            transport_status: "succeeded".to_string(),
+            operation_status: "failed".to_string(),
+            side_effect_status: "not_applied".to_string(),
+            retry_disposition: "after_correction".to_string(),
+            failure_code: Some("stale_read".to_string()),
             truncated: Some(false),
             artifact: None,
             result_metadata: None,
@@ -7695,7 +7637,35 @@ mod terminal_mode_tests {
         assert_eq!(parsed["schema"], "codewhale.exec-stream");
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["duration_ms"], 1000);
-        assert_eq!(parsed["side_effect_status"], "not_started");
+        assert_eq!(parsed["side_effect_status"], "not_applied");
+        assert_eq!(parsed["failure_code"], "stale_read");
+    }
+
+    #[test]
+    fn successful_exec_tool_result_omits_failure_code() {
+        let event = ExecStreamEvent::ToolResult {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            output: "line 1\nline 2".to_string(),
+            status: "success".to_string(),
+            started_at: "2026-07-13T00:00:00Z".to_string(),
+            completed_at: "2026-07-13T00:00:01Z".to_string(),
+            duration_ms: 1000,
+            invocation_status: "accepted".to_string(),
+            transport_status: "succeeded".to_string(),
+            operation_status: "succeeded".to_string(),
+            side_effect_status: "not_applicable".to_string(),
+            retry_disposition: "not_needed".to_string(),
+            failure_code: None,
+            truncated: Some(false),
+            artifact: None,
+            result_metadata: None,
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+
+        assert_eq!(value["type"], "tool_result");
+        assert!(value.get("failure_code").is_none());
     }
 
     #[test]

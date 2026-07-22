@@ -1109,6 +1109,13 @@ struct ExecToolEntry {
     name: String,
     success: bool,
     output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+    invocation_status: String,
+    transport_status: String,
+    operation_status: String,
+    side_effect_status: String,
+    retry_disposition: String,
 }
 
 #[derive(Serialize)]
@@ -1252,6 +1259,12 @@ impl<'a> RuntimeEventProjection<'a> {
                     name: name.clone(),
                     success: outcome.is_success(),
                     output: outcome.content.clone(),
+                    failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
+                    invocation_status: protocol_label(&outcome.invocation),
+                    transport_status: protocol_label(&outcome.transport),
+                    operation_status: protocol_label(&outcome.operation),
+                    side_effect_status: protocol_label(&outcome.side_effect),
+                    retry_disposition: protocol_label(&outcome.retry),
                 });
                 if format == ExecOutputFormat::StreamJson {
                     exec_stream_line(&ExecStreamEvent::ToolResult {
@@ -1269,14 +1282,12 @@ impl<'a> RuntimeEventProjection<'a> {
                         duration_ms: event
                             .occurred_at_unix_ms
                             .saturating_sub(start.occurred_at_unix_ms),
+                        invocation_status: protocol_label(&outcome.invocation),
+                        transport_status: protocol_label(&outcome.transport),
+                        operation_status: protocol_label(&outcome.operation),
                         side_effect_status: protocol_label(&outcome.side_effect),
-                        error_category: (!outcome.is_success()).then(|| {
-                            format!(
-                                "transport_{}_operation_{}",
-                                protocol_label(&outcome.transport),
-                                protocol_label(&outcome.operation)
-                            )
-                        }),
+                        retry_disposition: protocol_label(&outcome.retry),
+                        failure_code: outcome.failure_code.map(|code| code.as_str().to_owned()),
                         truncated: None,
                         artifact: outcome
                             .artifacts
@@ -1920,6 +1931,30 @@ fn unix_ms_now() -> u64 {
 mod tests {
     use super::*;
     use crate::config::SubagentsConfig;
+
+    #[test]
+    fn json_tool_summary_projects_canonical_failure_facts() {
+        let entry = ExecToolEntry {
+            name: "edit_file".to_owned(),
+            success: false,
+            output: "读取依据已失效".to_owned(),
+            failure_code: Some("stale_read".to_owned()),
+            invocation_status: "accepted".to_owned(),
+            transport_status: "succeeded".to_owned(),
+            operation_status: "failed".to_owned(),
+            side_effect_status: "not_applied".to_owned(),
+            retry_disposition: "after_correction".to_owned(),
+        };
+
+        let value = serde_json::to_value(entry).expect("tool summary serializes");
+
+        assert_eq!(value["failure_code"], "stale_read");
+        assert_eq!(value["invocation_status"], "accepted");
+        assert_eq!(value["transport_status"], "succeeded");
+        assert_eq!(value["operation_status"], "failed");
+        assert_eq!(value["side_effect_status"], "not_applied");
+        assert_eq!(value["retry_disposition"], "after_correction");
+    }
 
     #[test]
     fn canonical_terminal_rejects_an_already_latched_process_signal() {
