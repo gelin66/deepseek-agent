@@ -234,6 +234,13 @@ pub trait ToolExecutor: Send + Sync {
         WorkspaceAccess::MayWrite
     }
 
+    /// Reject malformed or schema-invalid arguments before execution starts.
+    /// The concrete executor remains the sole owner of argument semantics;
+    /// Runtime only commits the returned canonical outcome.
+    fn preflight(&self, _invocation: &ToolInvocation) -> Option<ToolOutcome> {
+        None
+    }
+
     /// Observe the current canonical workspace revision. Runtime owns the
     /// monotonic workspace generation and never trusts a tool-supplied epoch.
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {

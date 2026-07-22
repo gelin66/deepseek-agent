@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use codewhale_protocol::agent_runtime::{
-    ToolArtifact, ToolEvidence, ToolEvidenceStatus, VerificationArtifactPayload,
+    ToolArtifact, ToolEvidence, ToolEvidenceStatus, ToolFailureCode, VerificationArtifactPayload,
 };
 use codewhale_protocol::task::{
     VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision,
@@ -60,6 +60,9 @@ pub fn attach_verifier_observation(
     if !verdict_matches_outcome {
         reject_verification_artifact(result);
         return;
+    }
+    if matches!(verdict, VerifierVerdict::Failed) {
+        result.failure_code = Some(ToolFailureCode::VerifierFailed);
     }
     let observation = match (revision_before, revision_after) {
         (Ok(before), Ok(after)) if before == after => Ok((after, verifier)),

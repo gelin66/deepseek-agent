@@ -204,26 +204,22 @@ impl ProductionToolContext {
         };
 
         let Some(prior) = prior else {
-            return Err(ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because it has not been read in this session. \
-                 Recovery: call read_file with path=\"{requested_path}\" to inspect the current contents, \
-                 then retry edit_file with a unique search string.",
+            return Err(ToolError::workspace_precondition(format!(
+                "edit_file 拒绝修改 {}：本次运行尚未读取该文件（path=\"{requested_path}\"）",
                 path.display()
             )));
         };
 
         let current = file_read_snapshot(path).map_err(|error| {
-            ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because the file could not be checked for staleness ({error}). \
-                 Recovery: call read_file with path=\"{requested_path}\" again, then retry edit_file.",
+            ToolError::workspace_precondition(format!(
+                "edit_file 无法确认 {} 是否仍为已读取版本（path=\"{requested_path}\"）：{error}",
                 path.display()
             ))
         })?;
 
         if current != prior {
-            return Err(ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because it changed since the last read_file call. \
-                 Recovery: call read_file with path=\"{requested_path}\" again and retry with the current contents.",
+            return Err(ToolError::stale_read(format!(
+                "edit_file 拒绝修改 {}：文件在最近一次 read_file 后已经变化（path=\"{requested_path}\"）",
                 path.display()
             )));
         }
@@ -404,7 +400,7 @@ impl ProductionToolContext {
 
 fn isolated_writer_write_denied(path: &Path) -> ToolError {
     ToolError::permission_denied(format!(
-        "isolated_writer_write_denied：隔离 Writer 只能修改其 worktree 内的普通文件，拒绝路径 {}",
+        "隔离 Writer 只能修改其 worktree 内的普通文件，拒绝路径 {}",
         path.display()
     ))
 }
@@ -576,7 +572,7 @@ mod tests {
                 .require_fresh_file_read(&file, "source.rs")
                 .expect_err("unread file")
                 .to_string()
-                .contains("not been read")
+                .contains("尚未读取")
         );
 
         context.clone().note_file_read(&file);
@@ -590,7 +586,7 @@ mod tests {
                 .require_fresh_file_read(&file, "source.rs")
                 .expect_err("stale file")
                 .to_string()
-                .contains("changed since")
+                .contains("已经变化")
         );
     }
 
@@ -645,7 +641,7 @@ mod tests {
                 .require_fresh_file_read(&child_file, "source.rs")
                 .expect_err("rebound context must read child file")
                 .to_string()
-                .contains("not been read")
+                .contains("尚未读取")
         );
     }
 }

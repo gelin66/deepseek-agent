@@ -723,6 +723,65 @@ fn decode_creation_intent(
     }))
 }
 
+/// State v21 cannot replay pre-v16 tool failures, so all materialized runs are
+/// retired. Keep only pending Start intents whose canonical command and stored
+/// metadata can still reconstruct a valid root creation without a source run.
+pub(super) fn retain_recoverable_start_creation_intents(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), RunStoreError> {
+    let mut statement = tx
+        .prepare(
+            r#"
+            SELECT command_id, run_id, creation_kind, workspace, source_run_id, command_json
+            FROM agent_run_creations
+            "#,
+        )
+        .map_err(backend)?;
+    let mut rows = statement.query([]).map_err(backend)?;
+    let mut retire = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        let command_id = row.get::<_, String>(0).map_err(backend)?;
+        let run_id = RunId(row.get::<_, String>(1).map_err(backend)?);
+        let creation_kind = row.get::<_, Option<String>>(2).map_err(backend)?;
+        let workspace = row.get::<_, Option<String>>(3).map_err(backend)?;
+        let source_run_id = row.get::<_, Option<String>>(4).map_err(backend)?;
+        let command_json = row.get::<_, Option<String>>(5).map_err(backend)?;
+
+        let recoverable = decode_creation_intent(
+            &run_id,
+            creation_kind,
+            workspace,
+            source_run_id,
+            command_json,
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|intent| {
+            matches!(intent.kind, PendingCreationKind::Start)
+                && matches!(
+                    intent.command,
+                    codewhale_protocol::run_api::RunCommand::Start(command)
+                        if !command.workspace.trim().is_empty()
+                            && command.task.validate().is_ok()
+                )
+        });
+        if !recoverable {
+            retire.push(command_id);
+        }
+    }
+    drop(rows);
+    drop(statement);
+
+    for command_id in retire {
+        tx.execute(
+            "DELETE FROM agent_run_creations WHERE command_id = ?1",
+            params![command_id],
+        )
+        .map_err(backend)?;
+    }
+    Ok(())
+}
+
 const fn encode_creation_kind(kind: PendingCreationKind) -> &'static str {
     match kind {
         PendingCreationKind::Start => "start",

@@ -717,19 +717,11 @@ impl AgentRuntime {
                 let terminal = self.settled_terminal(state, invalid_model(message)).await;
                 return terminal;
             }
-            if let Some(call) = turn.tool_calls.iter().find(|call| {
-                !turn
-                    .advertised_tool_names
-                    .iter()
-                    .any(|advertised| advertised == &call.name)
-            }) {
+            if !turn.tool_calls.is_empty() && turn.advertised_tool_names.is_empty() {
                 let terminal = self
                     .settled_terminal(
                         state,
-                        invalid_model(format!(
-                            "tool '{}' was not advertised by this model request",
-                            call.name
-                        )),
+                        invalid_model("model returned a tool call for a tool-free request"),
                     )
                     .await;
                 return terminal;
@@ -828,7 +820,15 @@ impl AgentRuntime {
                         .await;
                     return terminal;
                 }
-                match Box::pin(self.execute_call(state, call, budget, control, deadline)).await {
+                let advertised = turn
+                    .advertised_tool_names
+                    .iter()
+                    .any(|name| name == &call.name);
+                match Box::pin(
+                    self.execute_call(state, call, advertised, budget, control, deadline),
+                )
+                .await
+                {
                     Ok(()) => {}
                     Err(terminal) => {
                         return self.settled_terminal(state, terminal).await;
@@ -1338,6 +1338,7 @@ impl AgentRuntime {
         self: &Arc<Self>,
         state: &mut RunState,
         call: ModelToolCall,
+        advertised: bool,
         budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
@@ -1348,11 +1349,22 @@ impl AgentRuntime {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
         };
+        let authority = ModelToolAuthority::for_request(&state.snapshot.request);
+        let builtin_input = parse_runtime_builtin_input(
+            &call,
+            matches!(authority, ModelToolAuthority::Coordinator),
+        );
         let execution_invocation = resolve_named_verifier_invocation(
             state.snapshot.request.task_contract.as_ref(),
             &invocation,
         );
-        let workspace_access = if call.name == AGENT_TOOL_NAME {
+        let workspace_access = if let Ok(Some(RuntimeBuiltinInput::Agent(launch))) = &builtin_input
+        {
+            match launch.workspace_access {
+                AgentWorkspaceAccess::ReadOnly => WorkspaceAccess::ReadOnly,
+                AgentWorkspaceAccess::IsolatedWrite => WorkspaceAccess::MayWrite,
+            }
+        } else if call.name == AGENT_TOOL_NAME {
             agent_tool_workspace_access(&call)
         } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
             WorkspaceAccess::ReadOnly
@@ -1399,49 +1411,63 @@ impl AgentRuntime {
         };
 
         let mut terminal_after_result = None;
-        let outcome = if !state.snapshot.request.tool_policy.permits(&call.name) {
+        let outcome = if !advertised {
             ToolOutcome::rejected(
-                format!("tool_not_allowed：工具 '{}' 未获准调用", call.name),
-                ToolRetryDisposition::NotRetryable,
-            )
-        } else if let Err(message) = &execution_invocation {
-            ToolOutcome::rejected(
-                format!("named_verifier_invalid：{message}"),
+                format!("工具 '{}' 不在当前请求实际提供的工具目录中。", call.name),
                 ToolRetryDisposition::AfterCorrection,
             )
-        } else if !if call.name == AGENT_TOOL_NAME {
-            ModelToolAuthority::for_request(&state.snapshot.request).permits_agent(workspace_access)
-        } else {
-            ModelToolAuthority::for_request(&state.snapshot.request)
-                .permits_direct_invocation(workspace_access)
-        } {
+            .with_failure_code(ToolFailureCode::UnknownTool)
+        } else if !state.snapshot.request.tool_policy.permits(&call.name) {
             ToolOutcome::rejected(
-                format!(
-                    "actor_capability_denied：当前 Agent actor 无权执行工具 '{}' 的工作区能力",
-                    call.name
-                ),
+                format!("工具 '{}' 未获准调用。", call.name),
                 ToolRetryDisposition::NotRetryable,
             )
         } else if call.arguments.parsed.is_none() {
             ToolOutcome::rejected(
-                format!(
-                    "invalid_arguments：JSON 参数格式错误：{}",
-                    call.arguments.raw
-                ),
+                "JSON 参数格式错误，请重新生成有效对象。",
                 ToolRetryDisposition::AfterCorrection,
             )
+            .with_failure_code(ToolFailureCode::MalformedArguments)
+        } else if let Err(message) = &execution_invocation {
+            ToolOutcome::rejected(
+                format!("冻结 verifier 调用无效：{message}"),
+                ToolRetryDisposition::AfterCorrection,
+            )
+        } else if let Err(error) = &builtin_input {
+            runtime_builtin_input_outcome(error)
+        } else if !if call.name == AGENT_TOOL_NAME {
+            authority.permits_agent(workspace_access)
+        } else {
+            authority.permits_direct_invocation(workspace_access)
+        } {
+            ToolOutcome::rejected(
+                format!(
+                    "当前 Agent actor 无权执行工具 '{}' 所需的工作区能力。",
+                    call.name
+                ),
+                ToolRetryDisposition::NotRetryable,
+            )
+        } else if call.name != AGENT_TOOL_NAME
+            && call.name != REQUEST_USER_INPUT_TOOL_NAME
+            && let Some(outcome) = self.tools.preflight(
+                execution_invocation
+                    .as_ref()
+                    .expect("named verifier resolution was checked before tool preflight"),
+            )
+        {
+            outcome
         } else if call.name == AGENT_TOOL_NAME {
-            if !operation_started {
-                self.publish(
-                    state,
-                    RuntimeEventKind::ToolExecutionStarted {
-                        operation_id: operation_id.clone(),
-                    },
-                )
+            let Ok(Some(RuntimeBuiltinInput::Agent(launch))) = &builtin_input else {
+                unreachable!("agent input was validated before child launch")
+            };
+            let operation = ToolOperationCursor {
+                id: &operation_id,
+                started: operation_started,
+            };
+            let execution = ChildExecutionBounds { budget, deadline };
+            match Box::pin(self.launch_child(state, &call, launch, operation, execution, control))
                 .await
-                .map_err(store_terminal)?;
-            }
-            match Box::pin(self.launch_child(state, &call, budget, control, deadline)).await {
+            {
                 Ok(outcome) => outcome,
                 Err(terminal) => {
                     terminal_after_result = Some(terminal);
@@ -1451,12 +1477,10 @@ impl AgentRuntime {
                         .iter()
                         .any(|lifecycle| lifecycle.task.call_id == call.id)
                     {
-                        cancelled_tool_outcome(
-                            "agent_lifecycle_stopped：子 Agent 生命周期未能安全完成",
-                        )
+                        cancelled_tool_outcome("子 Agent 生命周期未能安全完成。")
                     } else {
                         ToolOutcome::rejected(
-                            "agent_preflight_failed：子 Agent 在产生生命周期副作用前被 Host 拒绝",
+                            "子 Agent 在产生生命周期副作用前被 Host 拒绝。",
                             ToolRetryDisposition::NotRetryable,
                         )
                     }
@@ -1467,71 +1491,44 @@ impl AgentRuntime {
                 || state.snapshot.request.actor.kind != AgentActorKind::Root
             {
                 ToolOutcome::rejected(
-                    "interaction_unavailable：当前运行没有可响应 request_user_input 的交互客户端",
+                    "当前运行没有可响应 request_user_input 的交互客户端。",
                     ToolRetryDisposition::AfterCorrection,
                 )
             } else {
-                let Some(arguments) = call.arguments.parsed.as_ref() else {
-                    unreachable!("malformed arguments were rejected before interaction dispatch")
+                let Ok(Some(RuntimeBuiltinInput::UserInput(request))) = &builtin_input else {
+                    unreachable!("request_user_input was validated before interaction dispatch")
                 };
-                let request = match serde_json::from_value::<UserInputRequest>(arguments.clone()) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        return self
-                            .commit_tool_outcome(
-                                state,
-                                operation_id,
-                                &call,
-                                ToolOutcome::rejected(
-                                    format!(
-                                        "invalid_arguments：request_user_input 参数无效：{error}"
-                                    ),
-                                    ToolRetryDisposition::AfterCorrection,
-                                ),
-                            )
-                            .await;
-                    }
-                };
-                if let Err(message) = request.validate() {
-                    ToolOutcome::rejected(
-                        format!("invalid_arguments：request_user_input 参数无效：{message}"),
-                        ToolRetryDisposition::AfterCorrection,
+                match self
+                    .wait_for_interaction(
+                        state,
+                        &operation_id,
+                        UserInteractionPrompt::UserInput {
+                            request: request.clone(),
+                        },
+                        control,
+                        deadline,
                     )
-                } else {
-                    match self
-                        .wait_for_interaction(
-                            state,
-                            &operation_id,
-                            UserInteractionPrompt::UserInput { request },
-                            control,
-                            deadline,
+                    .await
+                    .map_err(store_terminal)?
+                {
+                    InteractionWaitResult::Resolved(UserInteractionResponse::Answered {
+                        answers,
+                    }) => ToolOutcome::json(&json!({"answers": answers})).unwrap_or_else(|error| {
+                        ToolOutcome::error(format!("无法编码用户回答：{error}"))
+                    }),
+                    InteractionWaitResult::Resolved(UserInteractionResponse::Cancelled) => {
+                        ToolOutcome::rejected(
+                            "用户取消了本次澄清请求。",
+                            ToolRetryDisposition::AfterCorrection,
                         )
-                        .await
-                        .map_err(store_terminal)?
-                    {
-                        InteractionWaitResult::Resolved(UserInteractionResponse::Answered {
-                            answers,
-                        }) => ToolOutcome::json(&json!({"answers": answers})).unwrap_or_else(
-                            |error| {
-                                ToolOutcome::error(format!("user_input_encoding_failed：{error}"))
-                            },
-                        ),
-                        InteractionWaitResult::Resolved(UserInteractionResponse::Cancelled) => {
-                            ToolOutcome::rejected(
-                                "user_input_cancelled：用户取消了本次澄清请求",
-                                ToolRetryDisposition::AfterCorrection,
-                            )
-                        }
-                        InteractionWaitResult::Resolved(_) => ToolOutcome::rejected(
-                            "interaction_mismatch：request_user_input 收到了错误类型的响应",
-                            ToolRetryDisposition::NotRetryable,
-                        ),
-                        InteractionWaitResult::Terminal(terminal) => {
-                            terminal_after_result = Some(terminal);
-                            cancelled_tool_outcome(
-                                "user_input_interrupted：等待用户输入时运行已停止",
-                            )
-                        }
+                    }
+                    InteractionWaitResult::Resolved(_) => ToolOutcome::rejected(
+                        "request_user_input 收到了错误类型的交互响应。",
+                        ToolRetryDisposition::NotRetryable,
+                    ),
+                    InteractionWaitResult::Terminal(terminal) => {
+                        terminal_after_result = Some(terminal);
+                        cancelled_tool_outcome("等待用户输入时运行已停止。")
                     }
                 }
             }
@@ -1548,7 +1545,7 @@ impl AgentRuntime {
                             operation_id,
                             &call,
                             ToolOutcome::rejected(
-                                format!("{}：工具授权预检失败：{}", error.code, error.message),
+                                format!("工具授权预检失败：{}", error.message),
                                 ToolRetryDisposition::NotRetryable,
                             ),
                         )
@@ -1558,7 +1555,7 @@ impl AgentRuntime {
             let rejected = if let Some(prompt) = approval {
                 if !state.snapshot.request.environment.interactive {
                     Some(ToolOutcome::rejected(
-                        "approval_required：当前非交互运行无法批准该工具调用",
+                        "当前非交互运行无法批准该工具调用。",
                         ToolRetryDisposition::AfterCorrection,
                     ))
                 } else {
@@ -1594,13 +1591,13 @@ impl AgentRuntime {
                             ))
                         }
                         InteractionWaitResult::Resolved(_) => Some(ToolOutcome::rejected(
-                            "interaction_mismatch：工具审批收到了错误类型的响应",
+                            "工具审批收到了错误类型的交互响应。",
                             ToolRetryDisposition::NotRetryable,
                         )),
                         InteractionWaitResult::Terminal(terminal) => {
                             terminal_after_result = Some(terminal);
-                            Some(cancelled_tool_outcome(
-                                "tool_approval_interrupted：等待工具审批时运行已停止",
+                            Some(cancelled_before_execution_outcome(
+                                "等待工具审批时运行已停止。",
                             ))
                         }
                     }
@@ -1631,8 +1628,8 @@ impl AgentRuntime {
                         result = &mut execution => break match result {
                             Ok(outcome) => outcome,
                             Err(error) => ToolOutcome::transport_failure(format!(
-                                "{}：工具执行失败：{}",
-                                error.code, error.message
+                                "工具执行失败：{}",
+                                error.message
                             )),
                         },
                         command = control.recv() => if let Some(command) = command {
@@ -1642,9 +1639,9 @@ impl AgentRuntime {
                                     cancellation.cancel();
                                     let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
                                     let message = if matches!(terminal, TerminalState::Interrupted) {
-                                        "tool_interrupted：工具执行已中断"
+                                        "工具执行已中断。"
                                     } else {
-                                        "tool_cancelled：工具执行已取消"
+                                        "工具执行已取消。"
                                     };
                                     terminal_after_result = Some(terminal);
                                     break cancelled_tool_outcome(message);
@@ -1655,7 +1652,7 @@ impl AgentRuntime {
                             cancellation.cancel();
                             let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
                             terminal_after_result = Some(timeout_terminal(state, deadline));
-                            break cancelled_tool_outcome("tool_deadline_exceeded：工具执行超过本次运行期限");
+                            break cancelled_tool_outcome("工具执行超过本次运行期限。");
                         }
                     }
                 }
@@ -1790,50 +1787,34 @@ impl AgentRuntime {
         self: &Arc<Self>,
         state: &mut RunState,
         call: &ModelToolCall,
-        budget: &Arc<RuntimeBudget>,
+        launch: &AgentLaunchRequest,
+        operation: ToolOperationCursor<'_>,
+        execution: ChildExecutionBounds<'_>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
-        deadline: Option<u64>,
     ) -> Result<ToolOutcome, TerminalState> {
+        let ChildExecutionBounds { budget, deadline } = execution;
         if state.snapshot.request.actor.depth >= state.snapshot.request.limits.max_depth {
             return Ok(ToolOutcome::rejected(
                 format!(
-                    "child_depth_limit：已达到子 Agent 深度上限 {}",
+                    "已达到子 Agent 深度上限 {}。",
                     state.snapshot.request.limits.max_depth
                 ),
                 ToolRetryDisposition::NotRetryable,
             ));
         }
-        let Some(arguments) = call.arguments.parsed.as_ref() else {
-            return Ok(ToolOutcome::rejected(
-                format!(
-                    "invalid_arguments：JSON 参数格式错误：{}",
-                    call.arguments.raw
-                ),
-                ToolRetryDisposition::AfterCorrection,
-            ));
-        };
-        let launch = match AgentLaunchRequest::parse(arguments) {
-            Ok(launch) => launch,
-            Err(message) => {
-                return Ok(ToolOutcome::rejected(
-                    format!("invalid_arguments：{message}"),
-                    ToolRetryDisposition::AfterCorrection,
-                ));
-            }
-        };
         let writer = launch.workspace_access == AgentWorkspaceAccess::IsolatedWrite;
         if writer
             && state.snapshot.request.environment.write_execution_mode
                 != WriteExecutionMode::IsolatedWriter
         {
             return Ok(ToolOutcome::rejected(
-                "writer_not_enabled：当前运行未显式启用隔离 Writer",
+                "当前运行未显式启用隔离 Writer。",
                 ToolRetryDisposition::NotRetryable,
             ));
         }
         if writer && state.snapshot.request.actor.depth != 0 {
             return Ok(ToolOutcome::rejected(
-                "writer_root_only：M6-A 隔离写入只允许由 root Agent 启动",
+                "隔离写入只允许由 root Agent 启动。",
                 ToolRetryDisposition::NotRetryable,
             ));
         }
@@ -1844,20 +1825,20 @@ impl AgentRuntime {
             })
         {
             return Ok(ToolOutcome::rejected(
-                "writer_single_root_limit：M6-A 每个 root run 只允许冻结一个隔离 writer 任务",
+                "每个 root run 只允许冻结一个隔离 Writer 任务。",
                 ToolRetryDisposition::NotRetryable,
             ));
         }
         if writer && !state.snapshot.request.environment.auto_approve {
             return Ok(ToolOutcome::rejected(
-                "writer_requires_auto_approve：隔离写入子 Agent 只接受 Host 已显式启用的自动批准运行",
+                "隔离写入子 Agent 只接受 Host 已显式启用的自动批准运行。",
                 ToolRetryDisposition::NotRetryable,
             ));
         }
         let writer_acceptance = if writer {
             let Some(contract) = state.snapshot.request.task_contract.as_ref() else {
                 return Ok(ToolOutcome::rejected(
-                    "writer_requires_exact_verifier：父任务没有冻结 TaskContract",
+                    "父任务没有冻结 TaskContract，无法启动隔离 Writer。",
                     ToolRetryDisposition::NotRetryable,
                 ));
             };
@@ -1870,24 +1851,13 @@ impl AgentRuntime {
                 .collect::<Vec<_>>();
             if verifier.len() != 1 {
                 return Ok(ToolOutcome::rejected(
-                    "writer_requires_exact_verifier：隔离写入子 Agent 要求父任务恰好冻结一个 exact Verifier acceptance",
+                    "隔离写入子 Agent 要求父任务恰好冻结一个 exact Verifier acceptance。",
                     ToolRetryDisposition::NotRetryable,
                 ));
             }
             Some(verifier.into_iter().next().expect("one verifier"))
         } else {
             None
-        };
-        let prompt = arguments
-            .get("prompt")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|prompt| !prompt.is_empty());
-        let Some(prompt) = prompt else {
-            return Ok(ToolOutcome::rejected(
-                "invalid_arguments：agent 需要非空的 prompt",
-                ToolRetryDisposition::AfterCorrection,
-            ));
         };
         if writer
             && let Some(existing) = state
@@ -1898,14 +1868,20 @@ impl AgentRuntime {
                 .cloned()
         {
             return Box::pin(self.recover_writer_lifecycle(
-                state, call, existing, budget, control, deadline, arguments,
+                state,
+                call,
+                existing,
+                budget,
+                control,
+                deadline,
+                launch.fork_context,
             ))
             .await;
         }
         let Some(child_lease) = budget.reserve_child() else {
             return Ok(ToolOutcome::rejected(
                 format!(
-                    "child_concurrency_limit：已达到子 Agent 并发上限 {}",
+                    "已达到子 Agent 并发上限 {}。",
                     state.snapshot.request.limits.max_concurrent_children
                 ),
                 ToolRetryDisposition::AfterCorrection,
@@ -1914,7 +1890,7 @@ impl AgentRuntime {
         let Some(child_terminal_model_request) = budget.reserve_terminal_model_request() else {
             return Ok(ToolOutcome::rejected(
                 format!(
-                    "model_request_capacity：共享逻辑模型请求预算 {} 无法为子 Agent 保留最终产物请求",
+                    "共享逻辑模型请求预算 {} 无法为子 Agent 保留最终产物请求。",
                     state.snapshot.request.limits.max_model_requests
                 ),
                 ToolRetryDisposition::NotRetryable,
@@ -1929,28 +1905,20 @@ impl AgentRuntime {
         let child_depth = state.snapshot.request.actor.depth.saturating_add(1);
 
         let mut child_policy = state.snapshot.request.tool_policy.clone();
-        if let Some(requested) = arguments.get("allowed_tools").and_then(Value::as_array) {
-            let requested = requested
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
+        if let Some(requested) = &launch.allowed_tools {
             child_policy.allowed = Some(match child_policy.allowed.take() {
                 Some(parent) => parent
                     .into_iter()
                     .filter(|name| requested.iter().any(|candidate| candidate == name))
                     .collect(),
-                None => requested,
+                None => requested.clone(),
             });
         }
-        let role = arguments
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("general");
+        let role = launch.role.as_str();
         let child_input = if launch.expected_artifact.is_empty() {
-            prompt.to_owned()
+            launch.prompt.clone()
         } else {
-            format!("{prompt}\n期望产物：{}", launch.expected_artifact)
+            format!("{}\n期望产物：{}", launch.prompt, launch.expected_artifact)
         };
         let mut system_prompt = state
             .snapshot
@@ -1976,17 +1944,17 @@ impl AgentRuntime {
             cache_control: PromptCacheControl::Volatile,
         });
         let mut child_limits = state.snapshot.request.limits;
-        if let Some(max_steps) = arguments.get("max_steps").and_then(Value::as_u64) {
-            let max_steps = u32::try_from(max_steps.max(1)).unwrap_or(u32::MAX);
+        if let Some(max_steps) = launch.max_steps {
+            let max_steps = u32::try_from(max_steps).unwrap_or(u32::MAX);
             child_limits.max_turns = child_limits.max_turns.min(max_steps);
         }
-        if let Some(max_depth) = arguments.get("max_depth").and_then(Value::as_u64) {
+        if let Some(max_depth) = launch.max_depth {
             let requested_absolute =
                 child_depth.saturating_add(max_depth.min(u64::from(u8::MAX)) as u8);
             child_limits.max_depth = child_limits.max_depth.min(requested_absolute);
         }
-        if let Some(wall_time_secs) = arguments.get("wall_time_secs").and_then(Value::as_u64) {
-            let requested = wall_time_secs.max(1).saturating_mul(1_000);
+        if let Some(wall_time_secs) = launch.wall_time_secs {
+            let requested = wall_time_secs.saturating_mul(1_000);
             child_limits.wall_time_ms = Some(
                 child_limits
                     .wall_time_ms
@@ -1998,10 +1966,7 @@ impl AgentRuntime {
             child_limits.wall_time_ms,
             now_unix_ms(),
         );
-        let fork_context = arguments
-            .get("fork_context")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let fork_context = launch.fork_context;
         let transcript = if fork_context {
             let mut transcript = state.snapshot.transcript.clone();
             if matches!(
@@ -2034,7 +1999,7 @@ impl AgentRuntime {
         let workspace = if writer {
             let Some(orchestrator) = self.orchestrator.as_ref() else {
                 return Ok(ToolOutcome::rejected(
-                    "writer_orchestrator_unavailable：当前 composition 未配置隔离写入 Orchestrator",
+                    "当前 composition 未配置隔离写入 Orchestrator。",
                     ToolRetryDisposition::NotRetryable,
                 ));
             };
@@ -2107,6 +2072,16 @@ impl AgentRuntime {
         };
         task.validate()
             .map_err(|message| orchestration_recovery(&task_id, "invalid_agent_task", message))?;
+        if !operation.started {
+            self.publish(
+                state,
+                RuntimeEventKind::ToolExecutionStarted {
+                    operation_id: operation.id.clone(),
+                },
+            )
+            .await
+            .map_err(store_terminal)?;
+        }
         self.publish(
             state,
             RuntimeEventKind::AgentTaskPrepared {
@@ -2259,7 +2234,7 @@ impl AgentRuntime {
         budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
-        arguments: &Value,
+        fork_context: bool,
     ) -> Result<ToolOutcome, TerminalState> {
         let task = lifecycle.task.clone();
         if task.workspace.access != AgentWorkspaceAccess::IsolatedWrite || task.call_id != call.id {
@@ -2341,7 +2316,7 @@ impl AgentRuntime {
             budget,
             control,
             deadline,
-            arguments,
+            fork_context,
         ))
         .await?;
         Box::pin(self.finish_writer_lifecycle(
@@ -2365,7 +2340,7 @@ impl AgentRuntime {
         budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
-        arguments: &Value,
+        fork_context: bool,
     ) -> Result<RecoveredWriterChild, TerminalState> {
         let mut parent_terminal = None;
         let mut child_replay = self.store.load(&task.child_run_id).await.map_err(|error| {
@@ -2440,7 +2415,7 @@ impl AgentRuntime {
                         "恢复尚未创建的 writer child 时无法保留最终模型请求",
                     )
                 })?;
-                let mut child_request = recovered_writer_request(state, task, arguments);
+                let mut child_request = recovered_writer_request(state, task, fork_context);
                 child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
                 child_runtime.start_inner(
                     child_request,
@@ -3897,7 +3872,7 @@ impl AgentRuntime {
             .execute(invocation, CancellationToken::default())
             .await
             .unwrap_or_else(|error| {
-                ToolOutcome::transport_failure(format!("{}：{}", error.code, error.message))
+                ToolOutcome::transport_failure(format!("Host verifier 执行失败：{}", error.message))
             });
         let workspace_state_after = self.observe_workspace_state(state, true).await;
         let seal = crate::store::seal_evidence_receipt(
@@ -4080,6 +4055,18 @@ struct ModelTurnOutput {
     tool_calls: Vec<ModelToolCall>,
     finish_reason: ModelFinishReason,
     advertised_tool_names: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ToolOperationCursor<'a> {
+    id: &'a OperationId,
+    started: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ChildExecutionBounds<'a> {
+    budget: &'a Arc<RuntimeBudget>,
+    deadline: Option<u64>,
 }
 
 impl ModelTurnOutput {
@@ -4606,82 +4593,212 @@ fn resolve_named_verifier_invocation(
 }
 
 #[derive(Debug)]
+enum RuntimeBuiltinInput {
+    Agent(AgentLaunchRequest),
+    UserInput(UserInputRequest),
+}
+
+#[derive(Debug)]
+struct RuntimeBuiltinInputError {
+    code: ToolFailureCode,
+    message: String,
+}
+
+impl RuntimeBuiltinInputError {
+    fn schema(message: impl Into<String>) -> Self {
+        Self {
+            code: ToolFailureCode::SchemaValidation,
+            message: message.into(),
+        }
+    }
+
+    fn missing(field: &str) -> Self {
+        Self {
+            code: ToolFailureCode::MissingField,
+            message: format!("缺少必填字段 '{field}'。"),
+        }
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: ToolFailureCode::InvalidField,
+            message: message.into(),
+        }
+    }
+}
+
+fn runtime_builtin_input_outcome(error: &RuntimeBuiltinInputError) -> ToolOutcome {
+    ToolOutcome::rejected(error.message.clone(), ToolRetryDisposition::AfterCorrection)
+        .with_failure_code(error.code)
+}
+
+fn parse_runtime_builtin_input(
+    call: &ModelToolCall,
+    allow_isolated_writer: bool,
+) -> Result<Option<RuntimeBuiltinInput>, RuntimeBuiltinInputError> {
+    let Some(arguments) = call.arguments.parsed.as_ref() else {
+        return Ok(None);
+    };
+    match call.name.as_str() {
+        AGENT_TOOL_NAME => AgentLaunchRequest::parse(arguments, allow_isolated_writer)
+            .map(RuntimeBuiltinInput::Agent)
+            .map(Some),
+        REQUEST_USER_INPUT_TOOL_NAME => {
+            let object = arguments.as_object().ok_or_else(|| {
+                RuntimeBuiltinInputError::schema("request_user_input 参数必须是 JSON 对象。")
+            })?;
+            if !object.contains_key("questions") {
+                return Err(RuntimeBuiltinInputError::missing("questions"));
+            }
+            let request: UserInputRequest =
+                serde_json::from_value(arguments.clone()).map_err(|error| {
+                    RuntimeBuiltinInputError::schema(format!(
+                        "request_user_input 参数不符合工具 schema：{error}"
+                    ))
+                })?;
+            request.validate().map_err(|message| {
+                RuntimeBuiltinInputError::invalid(format!("request_user_input 参数无效：{message}"))
+            })?;
+            Ok(Some(RuntimeBuiltinInput::UserInput(request)))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[derive(Debug)]
 struct AgentLaunchRequest {
+    prompt: String,
+    role: String,
     workspace_access: AgentWorkspaceAccess,
     allowed_paths: Vec<String>,
+    fork_context: bool,
+    allowed_tools: Option<Vec<String>>,
+    max_steps: Option<u64>,
+    max_depth: Option<u64>,
+    wall_time_secs: Option<u64>,
     expected_artifact: String,
 }
 
 impl AgentLaunchRequest {
-    fn parse(arguments: &Value) -> Result<Self, String> {
-        let workspace_access = match arguments
-            .get("workspace_access")
-            .and_then(Value::as_str)
-            .unwrap_or("read_only")
+    const FIELDS: [&'static str; 10] = [
+        "prompt",
+        "type",
+        "workspace_access",
+        "allowed_paths",
+        "fork_context",
+        "allowed_tools",
+        "max_steps",
+        "max_depth",
+        "wall_time_secs",
+        "expected_artifact",
+    ];
+
+    fn parse(
+        arguments: &Value,
+        allow_isolated_writer: bool,
+    ) -> Result<Self, RuntimeBuiltinInputError> {
+        let object = arguments
+            .as_object()
+            .ok_or_else(|| RuntimeBuiltinInputError::schema("agent 参数必须是 JSON 对象。"))?;
+        if let Some(field) = object
+            .keys()
+            .find(|field| !Self::FIELDS.contains(&field.as_str()))
         {
-            "read_only" => AgentWorkspaceAccess::ReadOnly,
-            "isolated_write" => AgentWorkspaceAccess::IsolatedWrite,
-            other => {
-                return Err(format!(
-                    "workspace_access '{other}' 无效，只接受 read_only 或 isolated_write"
-                ));
-            }
-        };
-        let requested_paths = arguments
-            .get("allowed_paths")
-            .map(|paths| {
-                paths
-                    .as_array()
-                    .ok_or_else(|| "allowed_paths 必须是字符串数组".to_owned())?
-                    .iter()
-                    .map(|path| {
-                        path.as_str()
-                            .map(str::trim)
-                            .filter(|path| !path.is_empty())
-                            .map(str::to_owned)
-                            .ok_or_else(|| "allowed_paths 只能包含非空字符串".to_owned())
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
+            return Err(RuntimeBuiltinInputError::schema(format!(
+                "agent 不接受字段 '{field}'。"
+            )));
+        }
+
+        let prompt = object
+            .get("prompt")
+            .ok_or_else(|| RuntimeBuiltinInputError::missing("prompt"))?
+            .as_str()
+            .ok_or_else(|| RuntimeBuiltinInputError::schema("prompt 必须是字符串。"))?
+            .trim()
+            .to_owned();
+        if prompt.is_empty() {
+            return Err(RuntimeBuiltinInputError::invalid("prompt 不能为空。"));
+        }
+        let role = optional_builtin_string(object, "type")?
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .unwrap_or("general")
+            .to_owned();
+        let workspace_access =
+            match optional_builtin_string(object, "workspace_access")?.unwrap_or("read_only") {
+                "read_only" => AgentWorkspaceAccess::ReadOnly,
+                "isolated_write" => AgentWorkspaceAccess::IsolatedWrite,
+                other => {
+                    return Err(RuntimeBuiltinInputError::schema(format!(
+                        "workspace_access '{other}' 无效，只接受 read_only 或 isolated_write。"
+                    )));
+                }
+            };
+        if workspace_access == AgentWorkspaceAccess::IsolatedWrite && !allow_isolated_writer {
+            return Err(RuntimeBuiltinInputError::schema(
+                "当前请求的 agent schema 只允许 workspace_access='read_only'。",
+            ));
+        }
+        let requested_paths =
+            optional_builtin_string_array(object, "allowed_paths")?.unwrap_or_default();
+        if object.contains_key("allowed_paths") && requested_paths.is_empty() {
+            return Err(RuntimeBuiltinInputError::schema(
+                "allowed_paths 至少需要一个路径。",
+            ));
+        }
         let mut canonical_paths = BTreeSet::new();
         for requested in requested_paths {
+            let requested = requested.trim();
+            if requested.is_empty() {
+                return Err(RuntimeBuiltinInputError::invalid(
+                    "allowed_paths 只能包含非空字符串。",
+                ));
+            }
             let mut parts = Vec::new();
-            for component in std::path::Path::new(&requested).components() {
+            for component in std::path::Path::new(requested).components() {
                 match component {
                     Component::Normal(part) => {
                         let part = part.to_str().ok_or_else(|| {
-                            "allowed_paths 必须使用有效 UTF-8 相对路径".to_owned()
+                            RuntimeBuiltinInputError::invalid(
+                                "allowed_paths 必须使用有效 UTF-8 相对路径。",
+                            )
                         })?;
                         parts.push(part);
                     }
                     Component::CurDir => {}
                     Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                        return Err(format!(
-                            "allowed_paths 中的 '{requested}' 必须保持工作区相对且不能包含 .."
-                        ));
+                        return Err(RuntimeBuiltinInputError::invalid(format!(
+                            "allowed_paths 中的 '{requested}' 必须保持工作区相对且不能包含 ..。"
+                        )));
                     }
                 }
             }
             if parts.is_empty() {
-                return Err("allowed_paths 不能包含空路径或工作区根目录".to_owned());
+                return Err(RuntimeBuiltinInputError::invalid(
+                    "allowed_paths 不能包含空路径或工作区根目录。",
+                ));
             }
-            canonical_paths.insert(parts.join("/"));
+            if !canonical_paths.insert(parts.join("/")) {
+                return Err(RuntimeBuiltinInputError::schema(
+                    "allowed_paths 不能包含重复路径。",
+                ));
+            }
         }
         let allowed_paths = canonical_paths.into_iter().collect::<Vec<_>>();
         match workspace_access {
             AgentWorkspaceAccess::ReadOnly if !allowed_paths.is_empty() => {
-                return Err("read_only 子 Agent 不得提供 allowed_paths".to_owned());
+                return Err(RuntimeBuiltinInputError::invalid(
+                    "read_only 子 Agent 不得提供 allowed_paths。",
+                ));
             }
             AgentWorkspaceAccess::IsolatedWrite if allowed_paths.is_empty() => {
-                return Err("isolated_write 子 Agent 必须提供非空 allowed_paths".to_owned());
+                return Err(RuntimeBuiltinInputError::invalid(
+                    "isolated_write 子 Agent 必须提供非空 allowed_paths。",
+                ));
             }
             _ => {}
         }
-        let expected_artifact = arguments
-            .get("expected_artifact")
-            .and_then(Value::as_str)
+        let expected_artifact = optional_builtin_string(object, "expected_artifact")?
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or(if workspace_access == AgentWorkspaceAccess::IsolatedWrite {
@@ -4690,12 +4807,104 @@ impl AgentLaunchRequest {
                 "结构化调查结果"
             })
             .to_owned();
+        let allowed_tools = optional_builtin_string_array(object, "allowed_tools")?;
+        if allowed_tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(|tool| tool.trim().is_empty()))
+        {
+            return Err(RuntimeBuiltinInputError::invalid(
+                "allowed_tools 只能包含非空工具名。",
+            ));
+        }
+        let max_steps = optional_builtin_u64(object, "max_steps")?;
+        if max_steps == Some(0) {
+            return Err(RuntimeBuiltinInputError::schema("max_steps 必须至少为 1。"));
+        }
+        let max_depth = optional_builtin_u64(object, "max_depth")?;
+        let wall_time_secs = optional_builtin_u64(object, "wall_time_secs")?;
+        if wall_time_secs == Some(0) {
+            return Err(RuntimeBuiltinInputError::schema(
+                "wall_time_secs 必须至少为 1。",
+            ));
+        }
         Ok(Self {
+            prompt,
+            role,
             workspace_access,
             allowed_paths,
+            fork_context: optional_builtin_bool(object, "fork_context")?.unwrap_or(false),
+            allowed_tools,
+            max_steps,
+            max_depth,
+            wall_time_secs,
             expected_artifact,
         })
     }
+}
+
+fn optional_builtin_string<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<&'a str>, RuntimeBuiltinInputError> {
+    object
+        .get(field)
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| RuntimeBuiltinInputError::schema(format!("{field} 必须是字符串。")))
+        })
+        .transpose()
+}
+
+fn optional_builtin_string_array(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<Vec<String>>, RuntimeBuiltinInputError> {
+    object
+        .get(field)
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| {
+                    RuntimeBuiltinInputError::schema(format!("{field} 必须是字符串数组。"))
+                })?
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_owned).ok_or_else(|| {
+                        RuntimeBuiltinInputError::schema(format!("{field} 只能包含字符串。"))
+                    })
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn optional_builtin_u64(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<u64>, RuntimeBuiltinInputError> {
+    object
+        .get(field)
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                RuntimeBuiltinInputError::schema(format!("{field} 必须是非负整数。"))
+            })
+        })
+        .transpose()
+}
+
+fn optional_builtin_bool(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<bool>, RuntimeBuiltinInputError> {
+    object
+        .get(field)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| RuntimeBuiltinInputError::schema(format!("{field} 必须是布尔值。")))
+        })
+        .transpose()
 }
 
 fn agent_tool_workspace_access(call: &ModelToolCall) -> WorkspaceAccess {
@@ -4867,7 +5076,7 @@ fn cleanup_uncertainty_code(result: &WriterCleanupResult) -> Option<&str> {
     }
 }
 
-fn recovered_writer_request(state: &RunState, task: &AgentTask, arguments: &Value) -> RunRequest {
+fn recovered_writer_request(state: &RunState, task: &AgentTask, fork_context: bool) -> RunRequest {
     let mut system_prompt = state
         .snapshot
         .transcript
@@ -4885,10 +5094,6 @@ fn recovered_writer_request(state: &RunState, task: &AgentTask, arguments: &Valu
         ),
         cache_control: PromptCacheControl::Volatile,
     });
-    let fork_context = arguments
-        .get("fork_context")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let transcript = if fork_context {
         let mut transcript = state.snapshot.transcript.clone();
         if matches!(
@@ -5034,7 +5239,7 @@ fn recovered_finished_outcome(lifecycle: &AgentTaskLifecycle) -> Result<AgentOut
 
 fn writer_failure_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome {
     let mut tool_outcome = ToolOutcome::error(format!(
-        "writer_child_not_completed：writer child {} 以 {} 结束，未集成",
+        "Writer 子 Agent {} 以{}状态结束，未执行集成",
         task.child_run_id,
         terminal_state_label(&outcome.terminal)
     ));
@@ -5056,30 +5261,26 @@ fn writer_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome 
         Some(diff_sha256),
     ) = (&outcome.details.integration, &outcome.details.diff_sha256)
     else {
-        return ToolOutcome::recovery_ambiguous(
-            "writer_integration_missing：writer 完成结果缺少 Host integration facts",
-        );
+        return ToolOutcome::recovery_ambiguous("Writer 完成结果缺少 Host 集成事实");
     };
-    let mut tool_outcome = ToolOutcome::success(format!(
-        "writer_integrated：Host 已集成 writer commit {writer_commit}"
-    ))
-    .with_side_effect(ToolSideEffectStatus::Applied)
-    .with_evidence(ToolEvidence {
-        status: ToolEvidenceStatus::Produced,
-        references: outcome
-            .details
-            .evidence
-            .iter()
-            .map(|receipt| receipt.id.0.clone())
-            .collect(),
-    })
-    .with_metadata(json!({
-        "task_id": task.task_id,
-        "child_run_id": task.child_run_id,
-        "writer_commit": writer_commit,
-        "diff_sha256": diff_sha256,
-        "changed_files": outcome.details.changed_files,
-    }));
+    let mut tool_outcome = ToolOutcome::success(format!("Host 已集成 Writer 提交 {writer_commit}"))
+        .with_side_effect(ToolSideEffectStatus::Applied)
+        .with_evidence(ToolEvidence {
+            status: ToolEvidenceStatus::Produced,
+            references: outcome
+                .details
+                .evidence
+                .iter()
+                .map(|receipt| receipt.id.0.clone())
+                .collect(),
+        })
+        .with_metadata(json!({
+            "task_id": task.task_id,
+            "child_run_id": task.child_run_id,
+            "writer_commit": writer_commit,
+            "diff_sha256": diff_sha256,
+            "changed_files": outcome.details.changed_files,
+        }));
     if let WorkspaceRevision::Known { sha256 } = &root_workspace_state.revision {
         tool_outcome.workspace_revision = Some(sha256.clone());
     }
@@ -5431,6 +5632,14 @@ mod actor_capability_tests {
 
     use super::*;
 
+    fn builtin_call(name: &str, arguments: Value) -> ModelToolCall {
+        ModelToolCall {
+            id: format!("{name}-call"),
+            name: name.to_owned(),
+            arguments: ToolArguments::from_value(arguments),
+        }
+    }
+
     fn named_contract() -> TaskContract {
         TaskContract {
             generation_id: TaskGenerationId::from("generation"),
@@ -5482,6 +5691,139 @@ mod actor_capability_tests {
         );
         assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::ReadOnly));
         assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::MayWrite));
+    }
+
+    #[test]
+    fn agent_builtin_strictly_parses_every_advertised_field() {
+        let call = builtin_call(
+            AGENT_TOOL_NAME,
+            json!({
+                "prompt": " 调查调用链 ",
+                "type": "reviewer",
+                "workspace_access": "isolated_write",
+                "allowed_paths": ["src/lib.rs", "tests/case.rs"],
+                "fork_context": true,
+                "allowed_tools": ["read_file", "apply_patch"],
+                "max_steps": 3,
+                "max_depth": 0,
+                "wall_time_secs": 30,
+                "expected_artifact": " verified diff "
+            }),
+        );
+        let Some(RuntimeBuiltinInput::Agent(parsed)) =
+            parse_runtime_builtin_input(&call, true).expect("valid agent input")
+        else {
+            panic!("expected parsed agent input")
+        };
+        assert_eq!(parsed.prompt, "调查调用链");
+        assert_eq!(parsed.role, "reviewer");
+        assert_eq!(parsed.workspace_access, AgentWorkspaceAccess::IsolatedWrite);
+        assert_eq!(parsed.allowed_paths, ["src/lib.rs", "tests/case.rs"]);
+        assert!(parsed.fork_context);
+        assert_eq!(
+            parsed.allowed_tools,
+            Some(vec!["read_file".to_owned(), "apply_patch".to_owned()])
+        );
+        assert_eq!(parsed.max_steps, Some(3));
+        assert_eq!(parsed.max_depth, Some(0));
+        assert_eq!(parsed.wall_time_secs, Some(30));
+        assert_eq!(parsed.expected_artifact, "verified diff");
+    }
+
+    #[test]
+    fn agent_builtin_rejects_isolated_write_when_catalog_is_read_only() {
+        let definition = agent_tool_definition(false);
+        assert_eq!(
+            definition.input_schema["properties"]["workspace_access"]["enum"],
+            json!(["read_only"])
+        );
+
+        let call = builtin_call(
+            AGENT_TOOL_NAME,
+            json!({
+                "prompt": "修改文件",
+                "workspace_access": "isolated_write",
+                "allowed_paths": ["src/lib.rs"]
+            }),
+        );
+        let error = parse_runtime_builtin_input(&call, false)
+            .expect_err("read-only catalog must reject isolated writer input");
+        assert_eq!(error.code, ToolFailureCode::SchemaValidation);
+        let outcome = runtime_builtin_input_outcome(&error);
+        assert_eq!(
+            outcome.failure_code,
+            Some(ToolFailureCode::SchemaValidation)
+        );
+        assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(outcome.operation, ToolOperationStatus::NotStarted);
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+        assert!(outcome.validate().is_ok(), "{outcome:?}");
+    }
+
+    #[test]
+    fn runtime_builtins_reject_schema_drift_before_dispatch() {
+        let cases = [
+            (
+                builtin_call(AGENT_TOOL_NAME, json!({})),
+                ToolFailureCode::MissingField,
+            ),
+            (
+                builtin_call(AGENT_TOOL_NAME, json!({"prompt":"x","extra":true})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(
+                    AGENT_TOOL_NAME,
+                    json!({"prompt":"x","allowed_tools":"read_file"}),
+                ),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(AGENT_TOOL_NAME, json!({"prompt":"x","max_steps":"1"})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(AGENT_TOOL_NAME, json!({"prompt":"x","fork_context":"true"})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(AGENT_TOOL_NAME, json!({"prompt":"x","max_steps":0})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(
+                    AGENT_TOOL_NAME,
+                    json!({
+                        "prompt":"x",
+                        "workspace_access":"isolated_write",
+                        "allowed_paths":["src/lib.rs","src/lib.rs"]
+                    }),
+                ),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                builtin_call(REQUEST_USER_INPUT_TOOL_NAME, json!({})),
+                ToolFailureCode::MissingField,
+            ),
+            (
+                builtin_call(
+                    REQUEST_USER_INPUT_TOOL_NAME,
+                    json!({"questions":[],"extra":true}),
+                ),
+                ToolFailureCode::SchemaValidation,
+            ),
+        ];
+
+        for (call, expected) in cases {
+            let error = parse_runtime_builtin_input(&call, true).expect_err("input must fail");
+            assert_eq!(error.code, expected, "{}: {}", call.name, error.message);
+            let outcome = runtime_builtin_input_outcome(&error);
+            assert_eq!(outcome.failure_code, Some(expected));
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected);
+            assert_eq!(outcome.operation, ToolOperationStatus::NotStarted);
+            assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+            assert!(outcome.validate().is_ok(), "{outcome:?}");
+        }
     }
 
     #[test]
@@ -5558,6 +5900,15 @@ fn signal_ready(
 fn cancelled_tool_outcome(content: impl Into<String>) -> ToolOutcome {
     let mut outcome = ToolOutcome::recovery_ambiguous(content);
     outcome.operation = ToolOperationStatus::Cancelled;
+    outcome
+}
+
+fn cancelled_before_execution_outcome(content: impl Into<String>) -> ToolOutcome {
+    let mut outcome = ToolOutcome::error(content);
+    outcome.transport = ToolTransportStatus::NotStarted;
+    outcome.operation = ToolOperationStatus::Cancelled;
+    outcome.side_effect = ToolSideEffectStatus::NotApplied;
+    outcome.retry = ToolRetryDisposition::Safe;
     outcome
 }
 

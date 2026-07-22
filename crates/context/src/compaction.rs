@@ -455,7 +455,7 @@ fn project_entry(entry: &TranscriptEntry) -> Option<ModelMessage> {
         } => Some(ModelMessage::Tool {
             call_id: call_id.clone(),
             name: name.clone(),
-            content: outcome.content.clone(),
+            content: outcome.model_content(),
         }),
         TranscriptEntry::ChildOutcome {
             handoff_content, ..

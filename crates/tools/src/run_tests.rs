@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use codewhale_protocol::agent_runtime::{
-    ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
+    ToolFailureCode, ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
 use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,7 @@ pub(crate) async fn execute_run_tests(
         .map_err(|error| ToolError::execution_failed(error.to_string()))?;
     outcome.side_effect = ToolSideEffectStatus::Indeterminate;
     if !result.success {
+        outcome.failure_code = Some(ToolFailureCode::OperationFailed);
         outcome.operation = ToolOperationStatus::Failed;
         outcome.retry = ToolRetryDisposition::Unsafe;
     }

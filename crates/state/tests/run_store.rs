@@ -9,7 +9,7 @@ use codewhale_protocol::agent_runtime::{
     ToolPolicy,
 };
 use codewhale_protocol::run_api::{
-    PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
+    ContinueRunCommand, PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::{
     AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
@@ -237,6 +237,22 @@ fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
         workspace: workspace.to_owned(),
         source_run_id: None,
         command: RunCommand::Start(command),
+    }
+}
+
+fn continuation_creation_intent(
+    workspace: &str,
+    source_run_id: RunId,
+) -> codewhale_runtime::CreationIntent {
+    codewhale_runtime::CreationIntent {
+        kind: PendingCreationKind::Continue,
+        workspace: workspace.to_owned(),
+        source_run_id: Some(source_run_id.clone()),
+        command: RunCommand::Continue(ContinueRunCommand {
+            run_id: source_run_id,
+            task: TaskDefinition::host("继续实现功能"),
+            expected_workspace: Some(workspace.to_owned()),
+        }),
     }
 }
 
@@ -966,6 +982,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
     .await;
 
     let tool_outcome = ToolOutcome {
+        failure_code: None,
         invocation: ToolInvocationStatus::Accepted,
         transport: ToolTransportStatus::Succeeded,
         operation: ToolOperationStatus::Succeeded,
@@ -2333,7 +2350,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2425,7 +2442,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
 }
 
 #[tokio::test]
@@ -2497,7 +2514,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
 }
 
 #[tokio::test]
@@ -2541,7 +2558,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
 }
 
 #[tokio::test]
@@ -2622,7 +2639,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2738,7 +2755,7 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_thread_metadat
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -2839,7 +2856,7 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
@@ -2853,6 +2870,210 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
         })
         .expect("count retired runs"),
         0
+    );
+}
+
+#[tokio::test]
+async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
+    let path = temp_state_path("v20_typed_tool_failure_cutover");
+    let workspace = "/tmp/v20-typed-tool-failure";
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+
+    let finalized_command_id = CommandId::from("v20-finalized-command");
+    let finalized_run_id = RunId::from("v20-finalized-run");
+    store
+        .reserve_creation(
+            &finalized_command_id,
+            "sha256:v20-finalized-command",
+            finalized_run_id.clone(),
+            creation_intent(workspace),
+        )
+        .await
+        .expect("reserve creation that becomes materialized");
+    let finalized = store
+        .create(request(&finalized_run_id.0, workspace))
+        .await
+        .expect("materialize v20 run and finalize its creation receipt");
+
+    let pending_start_id = CommandId::from("v20-pending-start");
+    let pending_start_intent = creation_intent(workspace);
+    let pending_start = store
+        .reserve_creation(
+            &pending_start_id,
+            "sha256:v20-pending-start",
+            RunId::from("v20-pending-start-run"),
+            pending_start_intent.clone(),
+        )
+        .await
+        .expect("reserve pending start");
+
+    let pending_continue_id = CommandId::from("v20-pending-continue");
+    let pending_continue_intent = continuation_creation_intent(workspace, finalized_run_id.clone());
+    store
+        .reserve_creation(
+            &pending_continue_id,
+            "sha256:v20-pending-continue",
+            RunId::from("v20-pending-continue-run"),
+            pending_continue_intent.clone(),
+        )
+        .await
+        .expect("reserve pending continuation");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare exact v20 fixture");
+    conn.execute_batch(
+        r#"
+        INSERT INTO threads (
+            id, preview, ephemeral, model_provider, created_at, updated_at,
+            status, cwd, cli_version, source, archived
+        ) VALUES (
+            'v20-retained-thread', 'local metadata survives v21', 0, 'deepseek', 1, 1,
+            'idle', '/tmp/v20-typed-tool-failure', 'test', 'interactive', 0
+        );
+        "#,
+    )
+    .expect("insert retained local metadata");
+    conn.execute(
+        "UPDATE agent_run_events
+         SET schema_version = 15,
+             event_json = '{\"kind\":\"tool_outcome_committed\",\"legacy\":true}'
+         WHERE run_id = ?1",
+        [&finalized.lease.run_id.0],
+    )
+    .expect("write incompatible v15 tool outcome rows");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"v20_without_failure_code\"}'
+         WHERE run_id = ?1",
+        [&finalized.lease.run_id.0],
+    )
+    .expect("write incompatible v20 snapshot");
+
+    let valid_start_json = serde_json::to_string(&pending_start_intent.command)
+        .expect("serialize canonical pending Start");
+    let invalid_creation_ids = [
+        "v20-null-kind",
+        "v20-null-workspace",
+        "v20-start-with-source",
+        "v20-invalid-command-json",
+    ];
+    for (index, command_id) in invalid_creation_ids.iter().enumerate() {
+        let creation_kind = (index != 0).then_some("start");
+        let stored_workspace = (index != 1).then_some(workspace);
+        let source_run_id = (index == 2).then_some(finalized_run_id.0.as_str());
+        let command_json = if index == 3 {
+            "{not-json"
+        } else {
+            valid_start_json.as_str()
+        };
+        conn.execute(
+            r#"
+            INSERT INTO agent_run_creations(
+                command_id, command_sha256, run_id, created_at_unix_ms,
+                creation_kind, workspace, source_run_id, command_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                command_id,
+                format!("sha256:{command_id}"),
+                format!("{command_id}-run"),
+                100 + index as i64,
+                creation_kind,
+                stored_workspace,
+                source_run_id,
+                command_json,
+            ],
+        )
+        .expect("insert unrecoverable v20 creation");
+    }
+    conn.pragma_update(None, "user_version", 20)
+        .expect("mark exact v20 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v21 cutover");
+    assert!(
+        reopened
+            .load(&finalized.lease.run_id)
+            .await
+            .expect("query retired v20 run")
+            .is_none()
+    );
+    assert!(
+        reopened
+            .creation(&finalized_command_id)
+            .await
+            .expect("query retired finalized receipt")
+            .is_none()
+    );
+    let retained_start = reopened
+        .creation(&pending_start_id)
+        .await
+        .expect("read pending start")
+        .expect("pending start survives");
+    assert_eq!(retained_start, pending_start.reservation);
+    assert_eq!(retained_start.intent, Some(pending_start_intent));
+    assert!(
+        reopened
+            .creation(&pending_continue_id)
+            .await
+            .expect("read retired pending continuation")
+            .is_none(),
+        "continuation cannot survive after its source run is retired"
+    );
+    for command_id in invalid_creation_ids {
+        assert!(
+            reopened
+                .creation(&CommandId::from(command_id))
+                .await
+                .expect("query retired malformed creation")
+                .is_none(),
+            "unrecoverable creation {command_id} must be retired"
+        );
+    }
+    assert_eq!(
+        reopened
+            .get_thread("v20-retained-thread")
+            .expect("read retained thread")
+            .expect("local metadata survives")
+            .preview,
+        "local metadata survives v21"
+    );
+    drop(reopened);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("repeat v21 reopen");
+    assert_eq!(
+        reopened
+            .creation(&pending_start_id)
+            .await
+            .expect("read start after second reopen"),
+        Some(retained_start)
+    );
+    assert!(
+        reopened
+            .creation(&pending_continue_id)
+            .await
+            .expect("read continuation after second reopen")
+            .is_none()
+    );
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v21 database");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("read v21 version"),
+        21
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retired runs"),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retained pending starts"),
+        1
     );
 }
 
@@ -2892,7 +3113,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     for column in [
         "creation_kind",
         "workspace",
@@ -2931,7 +3152,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
 }
 
 #[tokio::test]
@@ -2955,7 +3176,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
 }
 
 #[tokio::test]
@@ -3047,7 +3268,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -3101,7 +3322,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -3170,7 +3391,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 20);
+    assert_eq!(user_version, 21);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3286,7 +3507,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -3620,7 +3841,8 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         workspace_revision: workspace.revision.clone(),
     });
     let artifact_id = artifact.id.clone();
-    let mut outcome = ToolOutcome::error("deterministic verifier failed");
+    let mut outcome = ToolOutcome::error("deterministic verifier failed")
+        .with_failure_code(codewhale_runtime::ToolFailureCode::VerifierFailed);
     outcome.side_effect = ToolSideEffectStatus::NotApplied;
     outcome.workspace_revision = Some("sha256:broken".to_owned());
     outcome.evidence = ToolEvidence {
@@ -3693,6 +3915,12 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
     assert_eq!(progress.acceptance_id, AcceptanceId::from("tests"));
     assert_eq!(progress.failure.workspace_state, failed_workspace);
     assert!(progress.mutation.is_none());
+    assert!(sqlite_replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+            if outcome.failure_code
+                == Some(codewhale_runtime::ToolFailureCode::VerifierFailed)
+    )));
     drop(sqlite);
     let reopened = StateStore::open(Some(path)).expect("reopen temporal SQLite store");
     let reopened_replay = reopened
@@ -3845,13 +4073,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 21)
+    conn.pragma_update(None, "user_version", 22)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 20")
+            .contains("newer than supported version 21")
     );
 }

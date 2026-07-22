@@ -93,23 +93,40 @@ pub enum ApprovalRequirement {
 /// Errors that can occur during tool execution.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolError {
-    #[error("Failed to validate input: {message}")]
+    #[error("工具参数不符合 schema：{message}")]
+    SchemaValidation { message: String },
+    #[error("工具参数无效：{message}")]
     InvalidInput { message: String },
-    #[error("Failed to validate input: missing required field '{field}'")]
+    #[error("工具参数无效：缺少必填字段 '{field}'")]
     MissingField { field: String },
-    #[error("Failed to resolve path '{}': path escapes workspace", path.display())]
+    #[error("路径解析失败：'{}' 超出工作区", path.display())]
     PathEscape { path: PathBuf },
-    #[error("Failed to execute tool: {message}")]
+    #[error("工具执行失败：{message}")]
     ExecutionFailed { message: String },
-    #[error("Failed to execute tool: operation timed out after {seconds}s")]
+    #[error("工具执行失败：操作在 {seconds} 秒后超时")]
     Timeout { seconds: u64 },
-    #[error("Failed to locate tool: {message}")]
+    #[error("找不到工具：{message}")]
     NotAvailable { message: String },
-    #[error("Failed to authorize tool execution: {message}")]
+    #[error("工具执行未获授权：{message}")]
     PermissionDenied { message: String },
+    #[error("工作区前置条件不满足：{message}")]
+    WorkspacePrecondition { message: String },
+    #[error("工作区在读取后发生变化：{message}")]
+    StaleRead { message: String },
+    #[error("编辑目标不唯一：{message}")]
+    AmbiguousEdit { message: String },
+    #[error("Patch 参数无效：{message}")]
+    PatchParse { message: String },
 }
 
 impl ToolError {
+    #[must_use]
+    pub fn schema_validation(msg: impl Into<String>) -> Self {
+        Self::SchemaValidation {
+            message: msg.into(),
+        }
+    }
+
     #[must_use]
     pub fn invalid_input(msg: impl Into<String>) -> Self {
         Self::InvalidInput {
@@ -149,6 +166,34 @@ impl ToolError {
             message: msg.into(),
         }
     }
+
+    #[must_use]
+    pub fn workspace_precondition(msg: impl Into<String>) -> Self {
+        Self::WorkspacePrecondition {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn stale_read(msg: impl Into<String>) -> Self {
+        Self::StaleRead {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn ambiguous_edit(msg: impl Into<String>) -> Self {
+        Self::AmbiguousEdit {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn patch_parse(msg: impl Into<String>) -> Self {
+        Self::PatchParse {
+            message: msg.into(),
+        }
+    }
 }
 
 /// Helper to extract a required string field from JSON input.
@@ -164,7 +209,7 @@ pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'
             ToolError::missing_field(field)
         } else {
             let hint = format!(
-                "missing required field '{field}'. Input provided: {}",
+                "缺少必填字段 '{field}'。已提供字段：{}",
                 provided.join(", ")
             );
             ToolError::invalid_input(hint)
@@ -264,19 +309,16 @@ mod tests {
         let input = json!({"path": "src/lib.rs", "content": "new body"});
         let err = required_str(&input, "replace").expect_err("replace is missing");
         let message = err.to_string();
-        assert!(message.contains("missing required field 'replace'"));
-        assert!(message.contains("Input provided:"));
+        assert!(message.contains("缺少必填字段 'replace'"));
+        assert!(message.contains("已提供字段："));
         assert!(message.contains("path"));
         assert!(message.contains("content"));
     }
 
     #[test]
-    fn tool_error_display_matches_legacy_text() {
+    fn tool_error_display_is_chinese_and_keeps_field_name() {
         let err = ToolError::missing_field("path");
-        assert_eq!(
-            err.to_string(),
-            "Failed to validate input: missing required field 'path'"
-        );
+        assert_eq!(err.to_string(), "工具参数无效：缺少必填字段 'path'");
     }
 
     #[test]
@@ -290,10 +332,7 @@ mod tests {
         let err = ToolError::not_available("custom tool not found");
 
         assert!(matches!(err, ToolError::NotAvailable { .. }));
-        assert_eq!(
-            err.to_string(),
-            "Failed to locate tool: custom tool not found"
-        );
+        assert_eq!(err.to_string(), "找不到工具：custom tool not found");
     }
 
     #[test]
@@ -301,10 +340,7 @@ mod tests {
         let err = ToolError::permission_denied("unauthorized user");
 
         assert!(matches!(err, ToolError::PermissionDenied { .. }));
-        assert_eq!(
-            err.to_string(),
-            "Failed to authorize tool execution: unauthorized user"
-        );
+        assert_eq!(err.to_string(), "工具执行未获授权：unauthorized user");
     }
 
     #[test]
@@ -314,7 +350,7 @@ mod tests {
         assert!(
             matches!(err, ToolError::ExecutionFailed { ref message } if message == "process crashed")
         );
-        assert_eq!(err.to_string(), "Failed to execute tool: process crashed");
+        assert_eq!(err.to_string(), "工具执行失败：process crashed");
     }
 
     #[test]
@@ -332,9 +368,6 @@ mod tests {
     fn tool_error_path_escape_display() {
         let path = std::path::PathBuf::from("../outside");
         let err = ToolError::path_escape(path);
-        assert_eq!(
-            err.to_string(),
-            "Failed to resolve path '../outside': path escapes workspace"
-        );
+        assert_eq!(err.to_string(), "路径解析失败：'../outside' 超出工作区");
     }
 }

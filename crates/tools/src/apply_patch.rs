@@ -1020,7 +1020,7 @@ fn format_hunk_no_match_error(
             let expected_preview = preview_expected_lines(hunk, HUNK_PREVIEW_LINES).join("\n");
             let file_preview = snippet_around(lines, *adjusted_line, SNIPPET_RADIUS).join("\n");
             format!(
-                "could not find matching context near line {expected_line} (searched around line {adjusted_line} with offset {offset:+} and fuzz up to {max_fuzz}). Expected context preview:\n{expected_preview}\nFile snippet near line {adjusted_line}:\n{file_preview}\nHints: ensure the patch matches the current file contents, increase `fuzz`, or regenerate the patch."
+                "在第 {expected_line} 行附近找不到匹配上下文（实际搜索第 {adjusted_line} 行附近，偏移 {offset:+}，最大 fuzz={max_fuzz}）。期望上下文：\n{expected_preview}\n当前文件片段：\n{file_preview}"
             )
         }
     }
@@ -1046,11 +1046,11 @@ fn apply_hunks_to_lines(
             }
             Err(e) => {
                 let detail = format_hunk_no_match_error(lines, hunk, &e, fuzz);
-                return Err(ToolError::execution_failed(format!(
-                    "Failed to apply hunk {}/{} for `{}`: {}",
+                return Err(ToolError::workspace_precondition(format!(
+                    "无法对 `{}` 应用第 {}/{} 个 hunk：{}",
+                    file_label,
                     idx + 1,
                     hunks.len(),
-                    file_label,
                     detail
                 )));
             }

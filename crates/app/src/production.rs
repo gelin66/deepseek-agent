@@ -1113,8 +1113,8 @@ mod tests {
         AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting, ModelFinishReason,
         ModelOutput, ModelRequest, ModelStreamEvent, OperationId, PendingRuntimeEvent,
         RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits, RuntimeEventKind, TerminalState,
-        ToolArguments, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, Usage,
-        WorkspaceAccess, WriteExecutionMode,
+        ToolArguments, ToolDefinition, ToolFailureCode, ToolInvocation, ToolOutcome, ToolPolicy,
+        Usage, WorkspaceAccess, WriteExecutionMode,
     };
     use codewhale_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -2153,11 +2153,7 @@ mod tests {
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
-                Some((
-                    "file_search",
-                    "$/additionalProperties",
-                    "closed_object_required",
-                )),
+                Some(("file_search", "$/required", "all_properties_required")),
             ),
             (
                 "isolated_writer",
@@ -3102,7 +3098,11 @@ mod tests {
             .await
             .expect("isolated edit invocation");
         assert!(!isolated_edit.is_success());
-        assert!(isolated_edit.content.contains("has not been read"));
+        assert_eq!(
+            isolated_edit.failure_code,
+            Some(ToolFailureCode::WorkspacePrecondition)
+        );
+        assert!(isolated_edit.content.contains("尚未读取"));
         assert_eq!(
             std::fs::read_to_string(&file).expect("unchanged"),
             "old value\n"

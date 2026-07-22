@@ -2119,18 +2119,18 @@ async fn isolated_writer_requires_explicit_product_admission() {
     assert!(replay.events.iter().any(|event| matches!(
         &event.event,
         RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
-            if outcome.content.contains("actor_capability_denied")
-                && outcome.invocation == ToolInvocationStatus::Rejected
+            if outcome.invocation == ToolInvocationStatus::Rejected
                 && outcome.side_effect == ToolSideEffectStatus::NotApplied
+                && outcome.failure_code == Some(ToolFailureCode::SchemaValidation)
+                && outcome.content.contains("只允许 workspace_access='read_only'")
     )));
 }
 
 #[tokio::test]
 async fn isolated_writer_requires_auto_approve_and_one_exact_verifier() {
-    for (exact, auto_approve, expected_error) in [
-        (true, false, "writer_requires_auto_approve"),
-        (false, true, "writer_requires_exact_verifier"),
-    ] {
+    for (exact, auto_approve, expected_message) in
+        [(true, false, "自动批准"), (false, true, "exact Verifier")]
+    {
         let RuntimeFixture {
             runtime,
             orchestrator,
@@ -2149,9 +2149,10 @@ async fn isolated_writer_requires_auto_approve_and_one_exact_verifier() {
         assert!(replay.events.iter().any(|event| matches!(
             &event.event,
             RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
-                if outcome.content.contains(expected_error)
+                if outcome.content.contains(expected_message)
                     && outcome.invocation == ToolInvocationStatus::Rejected
                     && outcome.side_effect == ToolSideEffectStatus::NotApplied
+                    && outcome.failure_code == Some(ToolFailureCode::InvocationRejected)
         )));
     }
 }
@@ -2204,9 +2205,10 @@ async fn one_root_rejects_a_second_writer_in_the_same_batch_or_a_later_turn() {
                 workspace_state: None,
                 ..
             } if call_id == "writer-two"
-                && outcome.content.contains("writer_single_root_limit")
+                && outcome.content.contains("只允许冻结一个隔离 Writer")
                 && outcome.invocation == ToolInvocationStatus::Rejected
                 && outcome.side_effect == ToolSideEffectStatus::NotApplied
+                && outcome.failure_code == Some(ToolFailureCode::InvocationRejected)
         )));
     }
 }

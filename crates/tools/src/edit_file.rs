@@ -5,9 +5,7 @@ use std::fs;
 use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
 use serde_json::Value;
 
-use crate::{
-    ProductionToolContext, ToolError, ToolOutcome, make_unified_diff, optional_bool, required_str,
-};
+use crate::{ProductionToolContext, ToolError, ToolOutcome, make_unified_diff, required_str};
 
 /// Execute the production search-and-replace operation.
 pub fn execute_edit_file(
@@ -17,8 +15,6 @@ pub fn execute_edit_file(
     let path_str = required_str(&input, "path")?;
     let search = required_str(&input, "search")?;
     let replace = required_str(&input, "replace")?;
-    let _fuzz = optional_bool(&input, "fuzz", false);
-
     if search == replace {
         return Err(ToolError::invalid_input(
             "search and replace are identical, no change intended",
@@ -51,8 +47,8 @@ pub fn execute_edit_file(
                 let punct_matches = punctuation_normalized_matches(&contents, search);
                 match punct_matches.as_slice() {
                     [] => {
-                        return Err(ToolError::invalid_input(format!(
-                            "Search string not found in {}. Recovery: call read_file with path=\"{path_str}\" to inspect the current contents, then retry with a search string copied from the file.",
+                        return Err(ToolError::workspace_precondition(format!(
+                            "edit_file 在 {} 中找不到 search 指定的内容（path=\"{path_str}\"）",
                             file_path.display(),
                         )));
                     }
@@ -62,26 +58,25 @@ pub fn execute_edit_file(
                         (updated, 1, Some("punctuation"))
                     }
                     _ => {
-                        return Err(ToolError::invalid_input(format!(
-                            "edit_file search is non-unique after punctuation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                        return Err(ToolError::ambiguous_edit(format!(
+                            "edit_file 对 search 做标点归一化后在 {} 中匹配到 {} 处（path=\"{path_str}\"）",
+                            file_path.display(),
                             punct_matches.len(),
-                            file_path.display()
                         )));
                     }
                 }
             }
             _ => {
-                return Err(ToolError::invalid_input(format!(
-                    "edit_file search is non-unique after indentation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                return Err(ToolError::ambiguous_edit(format!(
+                    "edit_file 对 search 做缩进归一化后在 {} 中匹配到 {} 处（path=\"{path_str}\"）",
+                    file_path.display(),
                     indent_matches.len(),
-                    file_path.display()
                 )));
             }
         }
     } else if count > 1 {
-        return Err(ToolError::invalid_input(format!(
-            "edit_file search is non-unique: matched {count} locations in {}. \
-                 Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+        return Err(ToolError::ambiguous_edit(format!(
+            "edit_file 的 search 在 {} 中匹配到 {count} 处（path=\"{path_str}\"）",
             file_path.display()
         )));
     } else {
@@ -521,8 +516,8 @@ mod tests {
             .await
             .expect_err("edit without read should fail");
         let message = err.to_string();
-        assert!(message.contains("not been read"), "{message}");
-        assert!(message.contains("read_file"), "{message}");
+        assert!(message.contains("尚未读取"), "{message}");
+        assert!(message.contains("path=\"blind.txt\""), "{message}");
 
         let unchanged = fs::read_to_string(&test_file).expect("read");
         assert_eq!(unchanged, "hello world");
@@ -546,8 +541,8 @@ mod tests {
             .await
             .expect_err("stale read should fail");
         let message = err.to_string();
-        assert!(message.contains("changed since"), "{message}");
-        assert!(message.contains("read_file"), "{message}");
+        assert!(message.contains("已经变化"), "{message}");
+        assert!(message.contains("path=\"stale.txt\""), "{message}");
 
         let unchanged = fs::read_to_string(&test_file).expect("read");
         assert_eq!(unchanged, "alpha beta gamma");
@@ -570,40 +565,29 @@ mod tests {
             .await
             .expect_err("non-unique exact match should fail");
         let message = err.to_string();
-        assert!(message.contains("non-unique"), "{message}");
-        assert!(message.contains("matched 2"), "{message}");
-        assert!(message.contains("read_file"), "{message}");
+        assert!(message.contains("匹配到 2 处"), "{message}");
+        assert!(message.contains("path=\"multi.txt\""), "{message}");
 
         let unchanged = fs::read_to_string(&test_file).expect("read");
         assert_eq!(unchanged, "hello world hello");
     }
 
     #[tokio::test]
-    async fn test_edit_file_accepts_omitted_and_explicit_fuzz() {
+    async fn test_edit_file_exact_match_needs_no_legacy_fuzz_switch() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ProductionToolContext::new(tmp.path().to_path_buf());
         let tool = TestEditFileTool;
 
-        for (file_name, fuzz) in [
-            ("fuzz_omitted.txt", None),
-            ("fuzz_false.txt", Some(false)),
-            ("fuzz_true.txt", Some(true)),
-        ] {
+        for file_name in ["exact-a.txt", "exact-b.txt", "exact-c.txt"] {
             let test_file = tmp.path().join(file_name);
             fs::write(&test_file, "hello world").expect("write");
             read_before_edit(&ctx, file_name).await;
 
-            let mut input = serde_json::Map::from_iter([
-                ("path".to_string(), json!(file_name)),
-                ("search".to_string(), json!("hello")),
-                ("replace".to_string(), json!("hi")),
-            ]);
-            if let Some(fuzz) = fuzz {
-                input.insert("fuzz".to_string(), json!(fuzz));
-            }
-
             let result = tool
-                .execute(Value::Object(input), &ctx)
+                .execute(
+                    json!({"path": file_name, "search": "hello", "replace": "hi"}),
+                    &ctx,
+                )
                 .await
                 .expect("execute");
 
@@ -638,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_fuzz_tolerates_leading_whitespace() {
+    async fn test_edit_file_automatic_fallback_tolerates_leading_whitespace() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ProductionToolContext::new(tmp.path().to_path_buf());
 
@@ -656,8 +640,7 @@ mod tests {
                 json!({
                     "path": "fuzzy.txt",
                     "search": "if true {\n    let value = 1;\n}",
-                    "replace": "    if true {\n        let value = 2;\n    }",
-                    "fuzz": true
+                    "replace": "    if true {\n        let value = 2;\n    }"
                 }),
                 &ctx,
             )
@@ -674,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_fuzz_tolerates_leading_whitespace_after_multibyte_start() {
+    async fn test_edit_file_automatic_fallback_handles_multibyte_prefix() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ProductionToolContext::new(tmp.path().to_path_buf());
 
@@ -688,8 +671,7 @@ mod tests {
                 json!({
                     "path": "fuzzy_cjk.txt",
                     "search": "    数据",
-                    "replace": "记录",
-                    "fuzz": true
+                    "replace": "记录"
                 }),
                 &ctx,
             )
@@ -703,7 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_fuzz_tolerates_smart_quote_substitution() {
+    async fn test_edit_file_automatic_fallback_tolerates_smart_quotes() {
         // The file on disk has ASCII quotes. The search comes from a
         // browser paste with curly quotes. Exact match fails; the
         // punctuation-normalized fallback should still land the edit.
@@ -721,8 +703,7 @@ mod tests {
                     "path": "smart.rs",
                     // \u{201C} \u{201D} are the curly double-quote pair.
                     "search": "let s = \u{201C}hello world\u{201D};",
-                    "replace": "let s = \"hello universe\";",
-                    "fuzz": true
+                    "replace": "let s = \"hello universe\";"
                 }),
                 &ctx,
             )
@@ -740,7 +721,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_fuzz_tolerates_smart_quote_after_multibyte_start() {
+    async fn test_edit_file_automatic_fallback_handles_smart_quote_after_multibyte_start() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ProductionToolContext::new(tmp.path().to_path_buf());
 
@@ -754,8 +735,7 @@ mod tests {
                 json!({
                     "path": "smart_cjk.md",
                     "search": "数据 \u{201C}x\u{201D}",
-                    "replace": "数据 y",
-                    "fuzz": true
+                    "replace": "数据 y"
                 }),
                 &ctx,
             )
@@ -769,7 +749,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_fuzz_tolerates_em_dash_and_nbsp() {
+    async fn test_edit_file_automatic_fallback_tolerates_em_dash_and_nbsp() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ProductionToolContext::new(tmp.path().to_path_buf());
 
@@ -786,8 +766,7 @@ mod tests {
                     // Search uses em-dash + NBSP, common after a copy-paste
                     // from a styled document.
                     "search": "alpha\u{00A0}\u{2014}\u{00A0}beta",
-                    "replace": "alpha - gamma",
-                    "fuzz": true
+                    "replace": "alpha - gamma"
                 }),
                 &ctx,
             )
@@ -819,8 +798,8 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not found"));
-        assert!(err.to_string().contains("read_file"));
+        assert!(err.to_string().contains("找不到 search 指定的内容"));
+        assert!(err.to_string().contains("path=\"no_match.txt\""));
     }
 
     #[tokio::test]
@@ -877,11 +856,11 @@ mod tests {
         let err = result.unwrap_err().to_string();
         // The error must name both the missing field AND the provided ones.
         assert!(
-            err.contains("missing required field 'replace'"),
+            err.contains("缺少必填字段 'replace'"),
             "error must name the missing field: {err}"
         );
         assert!(
-            err.contains("Input provided:") || err.contains("provided:"),
+            err.contains("已提供字段："),
             "error must list the fields the model did supply: {err}"
         );
     }

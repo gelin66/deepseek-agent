@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 15;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 15;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 16;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 16;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -816,6 +816,51 @@ pub enum ToolRetryDisposition {
     NotRetryable,
 }
 
+/// Stable, model- and evaluator-visible reason for an unsuccessful tool call.
+///
+/// Lifecycle, side effects, and retry safety remain owned by their existing
+/// typed fields; this enum only supplies the missing causal identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFailureCode {
+    MalformedArguments,
+    SchemaValidation,
+    InvocationRejected,
+    UnknownTool,
+    MissingField,
+    InvalidField,
+    WorkspacePrecondition,
+    StaleRead,
+    AmbiguousEdit,
+    PatchParse,
+    OperationFailed,
+    TransportFailed,
+    SideEffectAmbiguous,
+    VerifierFailed,
+}
+
+impl ToolFailureCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedArguments => "malformed_arguments",
+            Self::SchemaValidation => "schema_validation",
+            Self::InvocationRejected => "invocation_rejected",
+            Self::UnknownTool => "unknown_tool",
+            Self::MissingField => "missing_field",
+            Self::InvalidField => "invalid_field",
+            Self::WorkspacePrecondition => "workspace_precondition",
+            Self::StaleRead => "stale_read",
+            Self::AmbiguousEdit => "ambiguous_edit",
+            Self::PatchParse => "patch_parse",
+            Self::OperationFailed => "operation_failed",
+            Self::TransportFailed => "transport_failed",
+            Self::SideEffectAmbiguous => "side_effect_ambiguous",
+            Self::VerifierFailed => "verifier_failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEvidenceStatus {
@@ -948,6 +993,8 @@ impl ToolArtifact {
 /// use the typed lifecycle, retry, evidence, artifact, and revision fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<ToolFailureCode>,
     pub invocation: ToolInvocationStatus,
     pub transport: ToolTransportStatus,
     pub operation: ToolOperationStatus,
@@ -1020,6 +1067,7 @@ impl ToolOutcome {
     #[must_use]
     pub fn success(content: impl Into<String>) -> Self {
         Self {
+            failure_code: None,
             invocation: ToolInvocationStatus::Accepted,
             transport: ToolTransportStatus::Succeeded,
             operation: ToolOperationStatus::Succeeded,
@@ -1037,6 +1085,7 @@ impl ToolOutcome {
     #[must_use]
     pub fn error(content: impl Into<String>) -> Self {
         Self {
+            failure_code: Some(ToolFailureCode::OperationFailed),
             invocation: ToolInvocationStatus::Accepted,
             transport: ToolTransportStatus::Succeeded,
             operation: ToolOperationStatus::Failed,
@@ -1054,6 +1103,7 @@ impl ToolOutcome {
     #[must_use]
     pub fn rejected(content: impl Into<String>, retry: ToolRetryDisposition) -> Self {
         Self {
+            failure_code: Some(ToolFailureCode::InvocationRejected),
             invocation: ToolInvocationStatus::Rejected,
             transport: ToolTransportStatus::NotStarted,
             operation: ToolOperationStatus::NotStarted,
@@ -1071,6 +1121,7 @@ impl ToolOutcome {
     #[must_use]
     pub fn transport_failure(content: impl Into<String>) -> Self {
         Self {
+            failure_code: Some(ToolFailureCode::TransportFailed),
             invocation: ToolInvocationStatus::Accepted,
             transport: ToolTransportStatus::Failed,
             operation: ToolOperationStatus::Indeterminate,
@@ -1088,6 +1139,7 @@ impl ToolOutcome {
     #[must_use]
     pub fn recovery_ambiguous(content: impl Into<String>) -> Self {
         Self {
+            failure_code: Some(ToolFailureCode::SideEffectAmbiguous),
             invocation: ToolInvocationStatus::Accepted,
             transport: ToolTransportStatus::Indeterminate,
             operation: ToolOperationStatus::Indeterminate,
@@ -1107,6 +1159,49 @@ impl ToolOutcome {
         self.invocation == ToolInvocationStatus::Accepted
             && self.transport == ToolTransportStatus::Succeeded
             && self.operation == ToolOperationStatus::Succeeded
+    }
+
+    /// Render the sole model-visible failure envelope used by root and child
+    /// requests. Successful tool output remains byte-for-byte unchanged.
+    #[must_use]
+    pub fn model_content(&self) -> String {
+        let Some(code) = self.failure_code else {
+            return self.content.clone();
+        };
+        let recovery = match code {
+            ToolFailureCode::MalformedArguments
+            | ToolFailureCode::SchemaValidation
+            | ToolFailureCode::MissingField
+            | ToolFailureCode::InvalidField
+            | ToolFailureCode::PatchParse => "修正参数后再调用；不要原样重复。",
+            ToolFailureCode::InvocationRejected => match self.retry {
+                ToolRetryDisposition::AfterCorrection => "根据 Host 拒绝原因修正调用后再试。",
+                _ => "当前 Host 不接受该调用；不要原样重复。",
+            },
+            ToolFailureCode::WorkspacePrecondition | ToolFailureCode::StaleRead => {
+                "先重新读取相关文件或工作区状态，再根据最新内容修正调用。"
+            }
+            ToolFailureCode::AmbiguousEdit => "先读取更多上下文，再使用唯一且更精确的编辑范围。",
+            ToolFailureCode::UnknownTool => "只使用当前请求实际提供的工具名。",
+            ToolFailureCode::TransportFailed | ToolFailureCode::SideEffectAmbiguous => {
+                "副作用状态无法安全确认；不要自动重放，等待 Host recovery 或人工处理。"
+            }
+            ToolFailureCode::VerifierFailed => "根据确定性 verifier 结果修改工作区后重新验证。",
+            ToolFailureCode::OperationFailed => match self.retry {
+                ToolRetryDisposition::AfterCorrection => "根据错误详情修正操作后再调用。",
+                ToolRetryDisposition::Safe => "已确认没有副作用，可以安全重试。",
+                _ => "不要盲目重试；先根据错误详情选择修正或停止。",
+            },
+        };
+        format!(
+            "工具失败：code={}; operation={}; side_effect={}; retry={}。\n恢复建议：{}\n{}",
+            code.as_str(),
+            tool_operation_status_name(self.operation),
+            tool_side_effect_status_name(self.side_effect),
+            tool_retry_disposition_name(self.retry),
+            recovery,
+            self.content
+        )
     }
 
     /// A deterministic verifier may report external side effects as
@@ -1139,6 +1234,62 @@ impl ToolOutcome {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.is_success() && self.failure_code.is_some() {
+            return Err("a successful tool outcome cannot carry a failure code".to_owned());
+        }
+        if !self.is_success() && self.failure_code.is_none() {
+            return Err("an unsuccessful tool outcome requires a failure code".to_owned());
+        }
+        if matches!(
+            self.failure_code,
+            Some(
+                ToolFailureCode::MalformedArguments
+                    | ToolFailureCode::SchemaValidation
+                    | ToolFailureCode::InvocationRejected
+                    | ToolFailureCode::UnknownTool
+                    | ToolFailureCode::MissingField
+                    | ToolFailureCode::PatchParse
+            )
+        ) && self.invocation != ToolInvocationStatus::Rejected
+        {
+            return Err("a preflight failure code requires a rejected invocation".to_owned());
+        }
+        if matches!(
+            self.failure_code,
+            Some(
+                ToolFailureCode::WorkspacePrecondition
+                    | ToolFailureCode::StaleRead
+                    | ToolFailureCode::AmbiguousEdit
+                    | ToolFailureCode::VerifierFailed
+            )
+        ) && (self.invocation != ToolInvocationStatus::Accepted
+            || self.transport != ToolTransportStatus::Succeeded
+            || self.operation != ToolOperationStatus::Failed)
+        {
+            return Err(
+                "an observed tool-operation failure code requires accepted/failed lifecycle facts"
+                    .to_owned(),
+            );
+        }
+        if self.failure_code == Some(ToolFailureCode::TransportFailed)
+            && (self.invocation != ToolInvocationStatus::Accepted
+                || self.transport != ToolTransportStatus::Failed
+                || self.operation != ToolOperationStatus::Indeterminate)
+        {
+            return Err(
+                "a transport failure code requires accepted/failed/indeterminate lifecycle facts"
+                    .to_owned(),
+            );
+        }
+        if self.failure_code == Some(ToolFailureCode::SideEffectAmbiguous)
+            && (self.side_effect != ToolSideEffectStatus::Indeterminate
+                || self.retry != ToolRetryDisposition::Unsafe)
+        {
+            return Err(
+                "a side-effect ambiguity requires indeterminate effects and unsafe retry"
+                    .to_owned(),
+            );
+        }
         if self.invocation == ToolInvocationStatus::Rejected
             && (self.transport != ToolTransportStatus::NotStarted
                 || self.operation != ToolOperationStatus::NotStarted
@@ -1197,6 +1348,12 @@ impl ToolOutcome {
     }
 
     #[must_use]
+    pub fn with_failure_code(mut self, failure_code: ToolFailureCode) -> Self {
+        self.failure_code = Some(failure_code);
+        self
+    }
+
+    #[must_use]
     pub fn with_side_effect(mut self, side_effect: ToolSideEffectStatus) -> Self {
         self.side_effect = side_effect;
         self
@@ -1206,6 +1363,35 @@ impl ToolOutcome {
     pub fn with_evidence(mut self, evidence: ToolEvidence) -> Self {
         self.evidence = evidence;
         self
+    }
+}
+
+fn tool_operation_status_name(status: ToolOperationStatus) -> &'static str {
+    match status {
+        ToolOperationStatus::NotStarted => "not_started",
+        ToolOperationStatus::Succeeded => "succeeded",
+        ToolOperationStatus::Failed => "failed",
+        ToolOperationStatus::Cancelled => "cancelled",
+        ToolOperationStatus::Indeterminate => "indeterminate",
+    }
+}
+
+fn tool_side_effect_status_name(status: ToolSideEffectStatus) -> &'static str {
+    match status {
+        ToolSideEffectStatus::NotApplicable => "not_applicable",
+        ToolSideEffectStatus::NotApplied => "not_applied",
+        ToolSideEffectStatus::Applied => "applied",
+        ToolSideEffectStatus::Indeterminate => "indeterminate",
+    }
+}
+
+fn tool_retry_disposition_name(retry: ToolRetryDisposition) -> &'static str {
+    match retry {
+        ToolRetryDisposition::NotNeeded => "not_needed",
+        ToolRetryDisposition::AfterCorrection => "after_correction",
+        ToolRetryDisposition::Safe => "safe",
+        ToolRetryDisposition::Unsafe => "unsafe",
+        ToolRetryDisposition::NotRetryable => "not_retryable",
     }
 }
 
@@ -1752,7 +1938,7 @@ impl CanonicalTranscript {
                 } => Some(ModelMessage::Tool {
                     call_id: call_id.clone(),
                     name: name.clone(),
-                    content: outcome.content.clone(),
+                    content: outcome.model_content(),
                 }),
                 TranscriptEntry::ChildOutcome {
                     handoff_content, ..
@@ -2994,8 +3180,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 15);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 15);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 16);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 16);
     }
 
     #[test]
@@ -3451,13 +3637,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_outcome_axes_are_typed_independent_and_round_trip() {
+    fn valid_tool_outcome_axes_round_trip() {
         let outcome = ToolOutcome {
+            failure_code: Some(ToolFailureCode::OperationFailed),
             invocation: ToolInvocationStatus::Accepted,
             transport: ToolTransportStatus::Succeeded,
             operation: ToolOperationStatus::Failed,
             side_effect: ToolSideEffectStatus::Applied,
-            retry: ToolRetryDisposition::Safe,
+            retry: ToolRetryDisposition::NotRetryable,
             evidence: ToolEvidence {
                 status: ToolEvidenceStatus::Produced,
                 references: vec!["test://cargo/unit".into()],
@@ -3472,17 +3659,18 @@ mod tests {
             }],
             workspace_revision: Some("revision-7".into()),
             verifier_observation: None,
-            content: "operation failed after applying a side effect".into(),
+            content: "操作失败，且副作用已经发生".into(),
             metadata: Some(serde_json::json!({"tool_specific": true})),
         };
 
         assert!(!outcome.is_success());
+        assert!(outcome.validate().is_ok());
         let encoded = serde_json::to_value(&outcome).unwrap();
         assert_eq!(encoded["invocation"], "accepted");
         assert_eq!(encoded["transport"], "succeeded");
         assert_eq!(encoded["operation"], "failed");
         assert_eq!(encoded["side_effect"], "applied");
-        assert_eq!(encoded["retry"], "safe");
+        assert_eq!(encoded["retry"], "not_retryable");
         assert_eq!(encoded["evidence"]["status"], "produced");
         assert_eq!(encoded["artifacts"][0]["status"], "available");
         assert_eq!(encoded["workspace_revision"], "revision-7");
@@ -3504,6 +3692,42 @@ mod tests {
         assert_eq!(ambiguous.operation, ToolOperationStatus::Indeterminate);
         assert_eq!(ambiguous.side_effect, ToolSideEffectStatus::Indeterminate);
         assert_eq!(ambiguous.retry, ToolRetryDisposition::Unsafe);
+    }
+
+    #[test]
+    fn model_tool_failure_feedback_is_typed_concise_and_chinese() {
+        let mut failure = ToolOutcome::error("文件自上次读取后已改变")
+            .with_failure_code(ToolFailureCode::StaleRead);
+        failure.side_effect = ToolSideEffectStatus::NotApplied;
+        failure.retry = ToolRetryDisposition::AfterCorrection;
+        assert!(failure.validate().is_ok());
+        assert_eq!(
+            failure.model_content(),
+            "工具失败：code=stale_read; operation=failed; side_effect=not_applied; retry=after_correction。\n恢复建议：先重新读取相关文件或工作区状态，再根据最新内容修正调用。\n文件自上次读取后已改变"
+        );
+
+        let success = ToolOutcome::success("原样成功结果");
+        assert!(success.validate().is_ok());
+        assert_eq!(success.model_content(), "原样成功结果");
+
+        let mut invalid = failure.clone();
+        invalid.failure_code = None;
+        assert!(invalid.validate().is_err());
+        let invalid = success.with_failure_code(ToolFailureCode::OperationFailed);
+        assert!(invalid.validate().is_err());
+
+        let invalid = ToolOutcome::error("unknown after execution")
+            .with_failure_code(ToolFailureCode::UnknownTool);
+        assert!(invalid.validate().is_err());
+        let invalid = ToolOutcome::rejected(
+            "transport cannot be a preflight rejection",
+            ToolRetryDisposition::NotRetryable,
+        )
+        .with_failure_code(ToolFailureCode::TransportFailed);
+        assert!(invalid.validate().is_err());
+        let mut invalid = ToolOutcome::recovery_ambiguous("unsafe side effect");
+        invalid.side_effect = ToolSideEffectStatus::NotApplied;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

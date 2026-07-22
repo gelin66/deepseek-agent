@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 20;
+const STATE_SCHEMA_VERSION: u32 = 21;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -392,6 +392,24 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-response-evidence canonical run state")?;
         }
+        if user_version < 21 {
+            // RuntimeEvent v16 makes a stable failure code mandatory for
+            // every unsuccessful ToolOutcome. Historical text cannot be
+            // classified without guessing, so retire incompatible runs while
+            // preserving only pending Start intents. A pending Continue is
+            // not independently recoverable after its source run is retired.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire unrecoverable pre-tool-failure creations")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-intent creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-tool-failure canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -557,6 +575,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 20)
                 .context("failed to commit response evidence state cutover")?;
             user_version = 20;
+        }
+        if user_version < 21 {
+            tx.pragma_update(None, "user_version", 21)
+                .context("failed to commit typed tool failure state cutover")?;
+            user_version = 21;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

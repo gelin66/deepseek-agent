@@ -309,6 +309,45 @@ struct CorrectableVerifierTools {
     calls: Mutex<Vec<String>>,
 }
 
+#[derive(Default)]
+struct RejectingPreflightTools {
+    executions: AtomicUsize,
+}
+
+#[async_trait]
+impl ToolExecutor for RejectingPreflightTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![definition("read")]
+    }
+
+    fn definition_workspace_access(&self, _name: &str) -> WorkspaceAccess {
+        WorkspaceAccess::ReadOnly
+    }
+
+    fn workspace_access(&self, _invocation: &ToolInvocation) -> WorkspaceAccess {
+        WorkspaceAccess::ReadOnly
+    }
+
+    fn preflight(&self, _invocation: &ToolInvocation) -> Option<ToolOutcome> {
+        Some(
+            ToolOutcome::rejected(
+                "schema rejected before execution",
+                ToolRetryDisposition::AfterCorrection,
+            )
+            .with_failure_code(ToolFailureCode::SchemaValidation),
+        )
+    }
+
+    async fn execute(
+        &self,
+        _invocation: ToolInvocation,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolOutcome, ToolExecutionError> {
+        self.executions.fetch_add(1, Ordering::AcqRel);
+        Ok(ToolOutcome::success("must not execute"))
+    }
+}
+
 #[async_trait]
 impl ToolExecutor for VerifierTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
@@ -441,12 +480,13 @@ impl ToolExecutor for MockTools {
             definition("run_verifiers"),
             definition("slow"),
             definition("write"),
+            definition("write_approval"),
         ]
     }
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
-            "write" | "run_tests" | "run_verifiers" => WorkspaceAccess::MayWrite,
+            "write" | "write_approval" | "run_tests" | "run_verifiers" => WorkspaceAccess::MayWrite,
             _ => WorkspaceAccess::ReadOnly,
         }
     }
@@ -459,11 +499,15 @@ impl ToolExecutor for MockTools {
         &self,
         invocation: &ToolInvocation,
     ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
-        Ok((invocation.name == "approval").then(|| ToolApprovalPrompt {
-            title: "确认测试工具".to_owned(),
-            description: "测试工具必须在显式批准后执行。".to_owned(),
-            risk: ApprovalRisk::Elevated,
-        }))
+        Ok(
+            matches!(invocation.name.as_str(), "approval" | "write_approval").then(|| {
+                ToolApprovalPrompt {
+                    title: "确认测试工具".to_owned(),
+                    description: "测试工具必须在显式批准后执行。".to_owned(),
+                    risk: ApprovalRisk::Elevated,
+                }
+            }),
+        )
     }
 
     async fn execute(
@@ -1187,6 +1231,59 @@ async fn approval_is_durable_and_precedes_every_tool_side_effect() {
 }
 
 #[tokio::test]
+async fn cancelling_write_approval_before_execution_proves_no_side_effect() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![completed(
+            "",
+            None,
+            vec![call(
+                "write-approval-call",
+                "write_approval",
+                r#"{"path":"src/lib.rs"}"#,
+            )],
+            ModelFinishReason::ToolCalls,
+        )])
+    }));
+    let (runtime, tools, sink, store) = fixture(model);
+    let mut run_request = request("取消待审批的写工具");
+    run_request.environment.interactive = true;
+    let run = runtime.start(run_request);
+    let run_id = run.run_id.clone();
+    let control = run.control();
+    sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
+        .await;
+    let before = store
+        .load(&run_id)
+        .await
+        .unwrap()
+        .expect("run before cancellation")
+        .snapshot
+        .workspace_state;
+
+    control.cancel().unwrap();
+    assert_eq!(run.wait().await.unwrap().terminal, TerminalState::Cancelled);
+    assert!(tools.calls.lock().unwrap().is_empty());
+
+    let replay = store.load(&run_id).await.unwrap().expect("cancelled run");
+    assert_eq!(replay.snapshot.workspace_state, before);
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+    );
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { call_id, outcome, workspace_state, .. }
+            if call_id == "write-approval-call"
+                && outcome.operation == ToolOperationStatus::Cancelled
+                && outcome.side_effect == ToolSideEffectStatus::NotApplied
+                && outcome.retry == ToolRetryDisposition::Safe
+                && workspace_state.is_none()
+    )));
+}
+
+#[tokio::test]
 async fn pending_approval_replays_without_reasking_and_resumes_each_safe_window_once() {
     for resolved_before_resume in [false, true] {
         let store = Arc::new(InMemoryRunStore::default());
@@ -1300,7 +1397,8 @@ async fn request_user_input_submit_and_cancel_are_canonical_tool_outcomes() {
                 })
                 .expect("user input tool outcome");
             if cancel {
-                assert!(content.contains("user_input_cancelled"));
+                assert!(content.contains("用户取消了本次澄清请求"));
+                assert!(content.contains("code=invocation_rejected"));
             } else {
                 assert!(content.contains("自定义范围"));
             }
@@ -1365,7 +1463,75 @@ async fn request_user_input_submit_and_cancel_are_canonical_tool_outcomes() {
 }
 
 #[tokio::test]
-async fn malformed_advertised_tool_returns_result_without_losing_raw() {
+async fn runtime_builtin_schema_failures_commit_before_any_execution_start() {
+    for (tool_name, arguments, expected_code) in [
+        (
+            AGENT_TOOL_NAME,
+            r#"{"prompt":"调查","allowed_tools":"read"}"#,
+            ToolFailureCode::SchemaValidation,
+        ),
+        (
+            REQUEST_USER_INPUT_TOOL_NAME,
+            r#"{"questions":[],"extra":true}"#,
+            ToolFailureCode::SchemaValidation,
+        ),
+    ] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let script_requests = requests.clone();
+        let model = Arc::new(MockModel::new(move |request| {
+            if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+                return ScriptResponse::Events(vec![completed(
+                    "",
+                    None,
+                    vec![call("invalid-builtin", tool_name, arguments)],
+                    ModelFinishReason::ToolCalls,
+                )]);
+            }
+            let content = request
+                .messages
+                .iter()
+                .find_map(|message| match message {
+                    ModelMessage::Tool {
+                        call_id, content, ..
+                    } if call_id == "invalid-builtin" => Some(content.as_str()),
+                    _ => None,
+                })
+                .expect("typed builtin failure reaches the next model request");
+            assert!(
+                content.contains(&format!("code={}", expected_code.as_str())),
+                "{content}"
+            );
+            ScriptResponse::Events(vec![completed(
+                "已修正",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        }));
+        let (runtime, tools, sink, _) = fixture(model);
+        let mut run_request = request("builtin schema preflight");
+        run_request.environment.interactive = tool_name == REQUEST_USER_INPUT_TOOL_NAME;
+        let outcome = runtime.start(run_request).wait().await.unwrap();
+        assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+        assert!(tools.calls.lock().unwrap().is_empty());
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+        );
+        assert!(sink.events().iter().any(|event| matches!(
+            &event.event,
+            RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+                if outcome.failure_code == Some(expected_code)
+                    && outcome.invocation == ToolInvocationStatus::Rejected
+                    && outcome.operation == ToolOperationStatus::NotStarted
+        )));
+    }
+}
+
+#[tokio::test]
+async fn malformed_advertised_tool_returns_typed_feedback_without_leaking_raw() {
     let calls = Arc::new(AtomicUsize::new(0));
     let script_calls = calls.clone();
     let model = Arc::new(MockModel::new(move |request| {
@@ -1389,7 +1555,10 @@ async fn malformed_advertised_tool_returns_result_without_losing_raw() {
             .collect::<Vec<_>>();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "bad-json");
-        assert!(results[0].1.contains("{not-json"));
+        assert!(results[0].1.contains("code=malformed_arguments"));
+        assert!(results[0].1.contains("side_effect=not_applied"));
+        assert!(results[0].1.contains("retry=after_correction"));
+        assert!(!results[0].1.contains("{not-json"));
         ScriptResponse::Events(vec![completed(
             "recovered",
             None,
@@ -1416,6 +1585,126 @@ async fn malformed_advertised_tool_returns_result_without_losing_raw() {
         TranscriptEntry::Assistant { tool_calls, .. }
             if tool_calls[0].arguments.raw == "{not-json"
     )));
+}
+
+#[tokio::test]
+async fn executor_preflight_rejection_commits_without_execution_started() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let script_requests = requests.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("schema-call", "read", r#"{"path":7}"#)],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        let feedback = request
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                ModelMessage::Tool {
+                    call_id, content, ..
+                } if call_id == "schema-call" => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("preflight rejection is projected to the next request");
+        assert!(feedback.contains("code=schema_validation"));
+        assert!(feedback.contains("operation=not_started"));
+        ScriptResponse::Events(vec![completed(
+            "已修正",
+            None,
+            vec![],
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let tools = Arc::new(RejectingPreflightTools::default());
+    let sink = Arc::new(CollectSink::default());
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(model, tools.clone(), sink.clone(), store));
+
+    let outcome = runtime
+        .start(request("schema preflight"))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(tools.executions.load(Ordering::Acquire), 0);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::ToolPrepared { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+            .count(),
+        0
+    );
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+            if outcome.failure_code == Some(ToolFailureCode::SchemaValidation)
+                && outcome.invocation == ToolInvocationStatus::Rejected
+    )));
+}
+
+#[tokio::test]
+async fn unadvertised_tool_returns_corrective_result_instead_of_ending_the_run() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("unknown-call", "invented_tool", "{}")],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        let feedback = request
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                ModelMessage::Tool {
+                    call_id, content, ..
+                } if call_id == "unknown-call" => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("unknown tool receives one canonical tool result");
+        assert!(feedback.contains("code=unknown_tool"));
+        assert!(feedback.contains("operation=not_started"));
+        assert!(feedback.contains("side_effect=not_applied"));
+        ScriptResponse::Events(vec![completed(
+            "recovered",
+            None,
+            vec![],
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, tools, _, store) = fixture(model);
+    let outcome = runtime.start(request("unknown tool")).wait().await.unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert!(
+        replay
+            .snapshot
+            .transcript
+            .entries
+            .iter()
+            .any(|entry| matches!(
+                entry,
+                TranscriptEntry::Tool { outcome, .. }
+                    if outcome.failure_code == Some(ToolFailureCode::UnknownTool)
+                        && outcome.invocation == ToolInvocationStatus::Rejected
+            ))
+    );
 }
 
 #[tokio::test]
@@ -4004,9 +4293,10 @@ async fn child_without_terminal_capacity_has_no_child_lifecycle() {
                 assert!(request.tools.is_empty());
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
-                    ModelMessage::Tool { call_id, content, .. }
+                        ModelMessage::Tool { call_id, content, .. }
                         if call_id == "no-capacity-child"
-                            && content.contains("model_request_capacity")
+                            && content.contains("code=invocation_rejected")
+                            && content.contains("模型请求预算")
                 )));
                 ScriptResponse::Events(vec![completed(
                     "容量拒绝已处理",
@@ -4236,9 +4526,10 @@ async fn shared_capacity_rejects_second_same_turn_child_without_fake_lifecycle()
                 assert!(request.tools.is_empty());
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
-                    ModelMessage::Tool { call_id, content, .. }
+                        ModelMessage::Tool { call_id, content, .. }
                         if call_id == "capacity-child-two"
-                            && content.contains("model_request_capacity")
+                            && content.contains("code=invocation_rejected")
+                            && content.contains("模型请求预算")
                 )));
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
@@ -4428,8 +4719,10 @@ async fn child_limit_rejects_second_same_turn_spawn_without_fake_lifecycle_and_r
                 let denied = request.messages.iter().any(|message| {
                     matches!(
                         message,
-                    ModelMessage::Tool { call_id, content, .. }
-                        if call_id == "agent-2" && content.contains("child_concurrency_limit")
+                        ModelMessage::Tool { call_id, content, .. }
+                        if call_id == "agent-2"
+                            && content.contains("code=invocation_rejected")
+                            && content.contains("子 Agent 并发上限")
                     )
                 });
                 assert!(denied);

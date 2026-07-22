@@ -36,12 +36,12 @@ use codewhale_runtime::{
     PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RunStoreError,
     RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage,
     TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolDefinition, ToolEvidence,
-    ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
-    UserInteractionResponse, VerificationArtifactPayload, WorkspaceState, WriteExecutionMode,
-    WriterArtifactState, WriterBinding, WriterCleanupMode, WriterCleanupOwnership,
-    WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope,
-    WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState, WriterSeal,
-    reduce_events, writer_path_set_sha256,
+    ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolFailureCode, ToolInvocation,
+    ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload, WorkspaceState,
+    WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
+    WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
+    WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState,
+    WriterSeal, reduce_events, writer_path_set_sha256,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -1349,6 +1349,7 @@ impl ToolExecutor for MarkerTools {
             let artifact_id = artifact.id.clone();
             let mut outcome = if failed {
                 ToolOutcome::error("deterministic Host verifier failed")
+                    .with_failure_code(ToolFailureCode::VerifierFailed)
             } else {
                 ToolOutcome::success("deterministic Host verifier passed")
             };
@@ -4395,6 +4396,15 @@ async fn assert_temporal_sigkill_recovery(scenario: CrashScenario) {
                 if name == TEMPORAL_WRITE_TOOL
         )),
         1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { outcome, .. }
+                if outcome.failure_code == Some(ToolFailureCode::VerifierFailed)
+        )),
+        1,
+        "the committed failed verifier must retain its typed cause across SIGKILL and reopen"
     );
     assert_eq!(
         event_count(&after, |event| matches!(

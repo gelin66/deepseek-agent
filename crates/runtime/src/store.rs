@@ -990,6 +990,25 @@ pub fn apply_event(
                     "tool outcome identity does not match prepared call",
                 ));
             }
+            if pending.state == DurableActionState::InFlight
+                && (outcome.invocation == ToolInvocationStatus::Rejected
+                    || outcome.transport == ToolTransportStatus::NotStarted
+                    || outcome.operation == ToolOperationStatus::NotStarted)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "an in-flight tool cannot commit a preflight rejection lifecycle",
+                ));
+            }
+            if pending.state == DurableActionState::Prepared
+                && pending.interaction.is_none()
+                && outcome.invocation != ToolInvocationStatus::Rejected
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "an unstarted tool can only commit a preflight rejection",
+                ));
+            }
             if let Some(interaction) = &pending.interaction {
                 match (
                     &interaction.request.prompt,
@@ -4946,9 +4965,6 @@ mod tests {
                 },
                 workspace_access: WorkspaceAccess::ReadOnly,
             },
-            RuntimeEventKind::ToolExecutionStarted {
-                operation_id: OperationId("agent-operation".to_owned()),
-            },
         ];
         let mut rejected = prefix.clone();
         rejected.push(RuntimeEventKind::ToolOutcomeCommitted {
@@ -4976,7 +4992,45 @@ mod tests {
         assert!(matches!(
             error,
             RunStoreError::Corrupt { message, .. }
-                if message.contains("prove preflight rejection")
+                if message.contains("unstarted tool can only commit a preflight rejection")
+        ));
+    }
+
+    #[test]
+    fn in_flight_tool_cannot_claim_a_preflight_rejection() {
+        let kinds = vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: "call-1".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"path":"missing"})),
+                },
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("operation".to_owned()),
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("operation".to_owned()),
+                call_id: "call-1".to_owned(),
+                name: "read_file".to_owned(),
+                outcome: Box::new(ToolOutcome::rejected(
+                    "preflight failure after execution started",
+                    ToolRetryDisposition::AfterCorrection,
+                )),
+                workspace_state: None,
+            },
+        ];
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("in-flight tool cannot commit a preflight rejection")
         ));
     }
 

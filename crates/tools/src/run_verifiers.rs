@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use codewhale_protocol::agent_runtime::{
-    ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
+    ToolFailureCode, ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
 use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
@@ -390,6 +390,7 @@ fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolOutcome, Tool
         .map(|mut outcome| {
             outcome.side_effect = ToolSideEffectStatus::Indeterminate;
             if !output.success {
+                outcome.failure_code = Some(ToolFailureCode::OperationFailed);
                 outcome.operation = ToolOperationStatus::Failed;
                 outcome.retry = ToolRetryDisposition::Unsafe;
             }

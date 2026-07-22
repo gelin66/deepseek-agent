@@ -60,6 +60,22 @@ pub(crate) trait ExecShellHost: Send + Sync {
     }
 }
 
+enum ExecShellAdmission {
+    Ready {
+        execpolicy_decision: Option<ExecShellPolicyDecision>,
+        safety_level: SafetyLevel,
+    },
+    Rejected(Box<ToolOutcome>),
+}
+
+fn admission_rejected_after_start(outcome: ToolOutcome) -> ToolOutcome {
+    let mut observed = ToolOutcome::error(outcome.content);
+    observed.side_effect = ToolSideEffectStatus::NotApplied;
+    observed.retry = outcome.retry;
+    observed.metadata = outcome.metadata;
+    observed
+}
+
 /// Default host for direct production-operation tests and callers without an
 /// optional exec policy.
 #[cfg(test)]
@@ -460,42 +476,61 @@ async fn wait_for_managed_foreground(
     }
 }
 
-/// Execute `exec_shell` and return the canonical tool outcome.
-pub(crate) async fn execute_exec_shell(
-    input: Value,
+/// Reject policy- or safety-denied shell input before the Runtime records an
+/// execution start. Returning `None` means the command may proceed; it does
+/// not execute or otherwise mutate the workspace.
+pub(crate) fn preflight_exec_shell(
+    input: &Value,
     context: &ProductionToolContext,
     options: &ExecShellOptions,
     host: &dyn ExecShellHost,
-) -> Result<ToolOutcome, ToolError> {
-    let command = required_str(&input, "command")?;
+) -> Result<Option<ToolOutcome>, ToolError> {
+    match evaluate_exec_shell_admission(input, context, options, host)? {
+        ExecShellAdmission::Ready { .. } => Ok(None),
+        ExecShellAdmission::Rejected(outcome) => Ok(Some(*outcome)),
+    }
+}
+
+fn evaluate_exec_shell_admission(
+    input: &Value,
+    context: &ProductionToolContext,
+    options: &ExecShellOptions,
+    host: &dyn ExecShellHost,
+) -> Result<ExecShellAdmission, ToolError> {
+    let command = required_str(input, "command")?;
     match options.shell_policy {
         ShellPolicy::None => {
-            return Ok(ToolOutcome::rejected(
-                "Shell tools are disabled by the active permission profile.",
-                ToolRetryDisposition::NotRetryable,
-            ));
+            return Ok(ExecShellAdmission::Rejected(Box::new(
+                ToolOutcome::rejected(
+                    "当前权限配置已禁用 Shell 工具。",
+                    ToolRetryDisposition::NotRetryable,
+                ),
+            )));
         }
-        ShellPolicy::ReadOnly if !exec_shell_input_is_parallel_readonly(&input) => {
-            return Ok(ToolOutcome::rejected(
-                "只读 Shell 策略已阻止该命令。请改用非修改型检查命令，或切换到可写模式后重试。",
-                ToolRetryDisposition::NotRetryable,
-            ));
+        ShellPolicy::ReadOnly if !exec_shell_input_is_parallel_readonly(input) => {
+            return Ok(ExecShellAdmission::Rejected(Box::new(
+                ToolOutcome::rejected(
+                    "只读 Shell 策略已阻止该命令。请改用非修改型检查命令，或切换到可写模式后重试。",
+                    ToolRetryDisposition::NotRetryable,
+                ),
+            )));
         }
         ShellPolicy::ReadOnly | ShellPolicy::Full => {}
     }
-    let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
     let execpolicy_decision = host.evaluate_exec_policy(command)?;
     if let Some(ExecShellPolicyDecision::Deny(reason)) = execpolicy_decision.as_ref() {
-        return Ok(ToolOutcome::rejected(
-            format!("BLOCKED: {reason}"),
-            ToolRetryDisposition::NotRetryable,
-        )
-        .with_metadata(json!({
-            "execpolicy": {
-                "decision": "deny",
-                "reason": reason,
-            }
-        })));
+        return Ok(ExecShellAdmission::Rejected(Box::new(
+            ToolOutcome::rejected(
+                format!("执行策略拒绝该命令：{reason}"),
+                ToolRetryDisposition::NotRetryable,
+            )
+            .with_metadata(json!({
+                "execpolicy": {
+                    "decision": "deny",
+                    "reason": reason,
+                }
+            })),
+        )));
     }
 
     let safety = analyze_command(command);
@@ -504,21 +539,50 @@ pub(crate) async fn execute_exec_shell(
         let suggestions = if safety.suggestions.is_empty() {
             String::new()
         } else {
-            format!("\nSuggestions: {}", safety.suggestions.join("; "))
+            format!("\n建议：{}", safety.suggestions.join("; "))
         };
-        return Ok(ToolOutcome::rejected(
-            format!(
-                "BLOCKED: This command was blocked for safety reasons.\n\nReasons: {reasons}{suggestions}\n\nNote: allow_shell=true exposes shell tools, but it does not disable built-in shell safety validation."
-            ),
-            ToolRetryDisposition::AfterCorrection,
-        )
-        .with_metadata(json!({
-            "safety_level": "dangerous",
-            "blocked": true,
-            "reasons": safety.reasons,
-            "suggestions": safety.suggestions,
-        })));
+        return Ok(ExecShellAdmission::Rejected(Box::new(
+            ToolOutcome::rejected(
+                format!("命令被内建安全检查拒绝。原因：{reasons}{suggestions}"),
+                ToolRetryDisposition::AfterCorrection,
+            )
+            .with_metadata(json!({
+                "safety_level": "dangerous",
+                "blocked": true,
+                "reasons": safety.reasons,
+                "suggestions": safety.suggestions,
+            })),
+        )));
     }
+    Ok(ExecShellAdmission::Ready {
+        execpolicy_decision,
+        safety_level: safety.level,
+    })
+}
+
+/// Execute `exec_shell` and return the canonical tool outcome.
+pub(crate) async fn execute_exec_shell(
+    input: Value,
+    context: &ProductionToolContext,
+    options: &ExecShellOptions,
+    host: &dyn ExecShellHost,
+) -> Result<ToolOutcome, ToolError> {
+    let (execpolicy_decision, safety_level) =
+        match evaluate_exec_shell_admission(&input, context, options, host)? {
+            ExecShellAdmission::Ready {
+                execpolicy_decision,
+                safety_level,
+            } => (execpolicy_decision, safety_level),
+            // Runtime already committed ToolExecutionStarted after the
+            // canonical preflight. Re-evaluate dynamic policy immediately
+            // before spawning the process to close a TOCTOU window, but do
+            // not emit the impossible Rejected/NotStarted lifecycle here.
+            ExecShellAdmission::Rejected(outcome) => {
+                return Ok(admission_rejected_after_start(*outcome));
+            }
+        };
+    let command = required_str(&input, "command")?;
+    let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
 
     let policy_override = options.elevated_sandbox_policy.clone();
     let working_dir = match input.get("cwd").and_then(Value::as_str) {
@@ -599,7 +663,7 @@ pub(crate) async fn execute_exec_shell(
             "summary": summary,
             "stdout_summary": stdout_summary,
             "stderr_summary": stderr_summary,
-            "safety_level": format!("{:?}", safety.level),
+            "safety_level": format!("{:?}", safety_level),
             "canceled": false,
             "sandbox_backend": "opensandbox",
         });
@@ -701,7 +765,7 @@ pub(crate) async fn execute_exec_shell(
                 "summary": summary,
                 "stdout_summary": stdout_summary,
                 "stderr_summary": stderr_summary,
-                "safety_level": format!("{:?}", safety.level),
+                "safety_level": format!("{:?}", safety_level),
                 "canceled": was_cancelled,
                 "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
                     ExecShellPolicyDecision::Allow => json!({"decision": "allow"}),

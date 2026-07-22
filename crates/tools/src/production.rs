@@ -9,8 +9,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
-    ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolOperationStatus, ToolRetryDisposition,
-    ToolSideEffectStatus, WorkspaceAccess,
+    ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolFailureCode, ToolOperationStatus,
+    ToolRetryDisposition, ToolSideEffectStatus, WorkspaceAccess,
 };
 use codewhale_protocol::task::VerifierSpec;
 use codewhale_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
@@ -25,12 +25,14 @@ use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
     exec_shell_input_is_parallel_readonly, execute_exec_shell, new_shared_shell_manager,
+    preflight_exec_shell,
 };
 use crate::{
     ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
     execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
     execute_grep_files, execute_list_dir, execute_read_file, execute_run_tests,
-    execute_run_verifiers, resolve_run_tests_spec, resolve_run_verifiers_spec,
+    execute_run_verifiers, preflight_apply_patch, resolve_run_tests_spec,
+    resolve_run_verifiers_spec,
 };
 
 pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
@@ -183,8 +185,7 @@ impl ProductionToolConfig {
         rebound.follow_symlinks = false;
         rebound.auto_approve = true;
         rebound.elevated_sandbox_policy = Some(ExecutionSandboxPolicy::isolated_writer(workspace));
-        rebound.shell_network_denied_hint =
-            Some("isolated_writer_network_denied：Writer Agent 禁止网络访问".to_owned());
+        rebound.shell_network_denied_hint = Some("隔离 Writer Agent 禁止访问网络".to_owned());
         rebound.sandbox_backend = None;
         rebound
     }
@@ -431,7 +432,7 @@ impl ProductionToolExecutor {
         verifier_id: &str,
         parameters: Value,
     ) -> Result<VerifierSpec, ToolError> {
-        validate_input_shape(verifier_id, &parameters)?;
+        validate_production_input(verifier_id, &parameters)?;
         match verifier_id {
             "run_tests" => resolve_run_tests_spec(parameters),
             "run_verifiers" => {
@@ -451,20 +452,78 @@ impl ProductionToolExecutor {
 
     fn unavailable(name: &str) -> ToolOutcome {
         ToolOutcome::rejected(
-            format!("tool_not_available：工具 '{name}' 未在生产 AgentRuntime 工具目录中提供"),
+            format!("工具 '{name}' 未在生产 AgentRuntime 工具目录中提供"),
             ToolRetryDisposition::NotRetryable,
         )
+        .with_failure_code(ToolFailureCode::UnknownTool)
     }
 
-    fn tool_error_outcome(error: ToolError) -> ToolOutcome {
+    fn preflight_error_outcome(error: ToolError) -> ToolOutcome {
+        let code = match error {
+            ToolError::SchemaValidation { .. } => ToolFailureCode::SchemaValidation,
+            ToolError::MissingField { .. } => ToolFailureCode::MissingField,
+            ToolError::PatchParse { .. } => ToolFailureCode::PatchParse,
+            ToolError::NotAvailable { .. } => ToolFailureCode::UnknownTool,
+            ToolError::InvalidInput { .. } | ToolError::PathEscape { .. } => {
+                ToolFailureCode::InvalidField
+            }
+            ToolError::PermissionDenied { .. } => ToolFailureCode::InvocationRejected,
+            ToolError::WorkspacePrecondition { .. }
+            | ToolError::StaleRead { .. }
+            | ToolError::AmbiguousEdit { .. }
+            | ToolError::Timeout { .. }
+            | ToolError::ExecutionFailed { .. } => ToolFailureCode::OperationFailed,
+        };
+        ToolOutcome::rejected(error.to_string(), ToolRetryDisposition::AfterCorrection)
+            .with_failure_code(code)
+    }
+
+    /// Convert an error observed after `ToolExecutionStarted`. Even a
+    /// correctable input-semantic failure is now an accepted operation that
+    /// failed without applying a side effect; it can no longer claim the
+    /// preflight-only Rejected/NotStarted lifecycle.
+    fn execution_error_outcome(error: ToolError) -> ToolOutcome {
         match &error {
-            ToolError::InvalidInput { .. }
+            ToolError::SchemaValidation { .. }
+            | ToolError::InvalidInput { .. }
             | ToolError::MissingField { .. }
-            | ToolError::PathEscape { .. } => {
-                ToolOutcome::rejected(error.to_string(), ToolRetryDisposition::AfterCorrection)
+            | ToolError::PathEscape { .. }
+            | ToolError::PatchParse { .. } => {
+                // PatchParse is emitted only by preflight. A caller that
+                // skips preflight receives an observed invalid operation,
+                // never the preflight-only PatchParse lifecycle.
+                let mut outcome = ToolOutcome::error(error.to_string())
+                    .with_failure_code(ToolFailureCode::InvalidField);
+                outcome.side_effect = ToolSideEffectStatus::NotApplied;
+                outcome.retry = ToolRetryDisposition::AfterCorrection;
+                outcome
+            }
+            ToolError::WorkspacePrecondition { .. } => {
+                let mut outcome = ToolOutcome::error(error.to_string())
+                    .with_failure_code(ToolFailureCode::WorkspacePrecondition);
+                outcome.side_effect = ToolSideEffectStatus::NotApplied;
+                outcome.retry = ToolRetryDisposition::AfterCorrection;
+                outcome
+            }
+            ToolError::StaleRead { .. } => {
+                let mut outcome = ToolOutcome::error(error.to_string())
+                    .with_failure_code(ToolFailureCode::StaleRead);
+                outcome.side_effect = ToolSideEffectStatus::NotApplied;
+                outcome.retry = ToolRetryDisposition::AfterCorrection;
+                outcome
+            }
+            ToolError::AmbiguousEdit { .. } => {
+                let mut outcome = ToolOutcome::error(error.to_string())
+                    .with_failure_code(ToolFailureCode::AmbiguousEdit);
+                outcome.side_effect = ToolSideEffectStatus::NotApplied;
+                outcome.retry = ToolRetryDisposition::AfterCorrection;
+                outcome
             }
             ToolError::NotAvailable { .. } | ToolError::PermissionDenied { .. } => {
-                ToolOutcome::rejected(error.to_string(), ToolRetryDisposition::NotRetryable)
+                let mut outcome = ToolOutcome::error(error.to_string());
+                outcome.side_effect = ToolSideEffectStatus::NotApplied;
+                outcome.retry = ToolRetryDisposition::NotRetryable;
+                outcome
             }
             ToolError::Timeout { .. } => {
                 let mut outcome = ToolOutcome::error(error.to_string());
@@ -482,7 +541,6 @@ impl ProductionToolExecutor {
         input: Value,
         context: &ProductionToolContext,
     ) -> Result<ToolOutcome, ToolError> {
-        validate_input_shape(name, &input)?;
         match name {
             "apply_patch" => execute_apply_patch(input, context),
             "edit_file" => execute_edit_file(input, context),
@@ -531,6 +589,41 @@ impl ToolExecutor for ProductionToolExecutor {
             }
             _ => WorkspaceAccess::MayWrite,
         }
+    }
+
+    fn preflight(&self, invocation: &ToolInvocation) -> Option<ToolOutcome> {
+        if !PRODUCTION_TOOL_NAMES.contains(&invocation.name.as_str()) {
+            return Some(Self::unavailable(&invocation.name));
+        }
+        let Some(input) = invocation.arguments.parsed.as_ref() else {
+            return Some(
+                ToolOutcome::rejected(
+                    format!(
+                        "工具 '{}' 的 JSON 参数格式错误，请重新生成有效对象。",
+                        invocation.name
+                    ),
+                    ToolRetryDisposition::AfterCorrection,
+                )
+                .with_failure_code(ToolFailureCode::MalformedArguments),
+            );
+        };
+        if let Err(error) = validate_production_input(&invocation.name, input) {
+            return Some(Self::preflight_error_outcome(error));
+        }
+        if invocation.name == "apply_patch"
+            && let Err(error) = preflight_apply_patch(input)
+        {
+            return Some(Self::preflight_error_outcome(ToolError::patch_parse(
+                error.to_string(),
+            )));
+        }
+        if invocation.name == "exec_shell" {
+            return match preflight_exec_shell(input, &self.context, &self.shell, &self.shell_host) {
+                Ok(outcome) => outcome,
+                Err(error) => Some(Self::preflight_error_outcome(error)),
+            };
+        }
+        None
     }
 
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
@@ -587,23 +680,24 @@ impl ToolExecutor for ProductionToolExecutor {
         invocation: ToolInvocation,
         cancellation: CancellationToken,
     ) -> Result<ToolOutcome, ToolExecutionError> {
+        // AgentRuntime owns the durable preflight boundary. Re-running it
+        // here could produce Rejected/NotStarted after Runtime has already
+        // committed ToolExecutionStarted. Keep this boundary defensive, but
+        // represent callers that skipped preflight as an observed operation
+        // failure rather than corrupting the lifecycle.
         if !PRODUCTION_TOOL_NAMES.contains(&invocation.name.as_str()) {
-            return Ok(Self::unavailable(&invocation.name));
+            return Ok(Self::execution_error_outcome(ToolError::not_available(
+                format!("工具 '{}' 不在固定生产目录中", invocation.name),
+            )));
         }
         let Some(input) = invocation.arguments.parsed else {
-            return Ok(ToolOutcome::rejected(
-                format!(
-                    "invalid_arguments：工具 '{}' 的 JSON 参数格式错误：{}",
-                    invocation.name, invocation.arguments.raw
-                ),
-                ToolRetryDisposition::AfterCorrection,
-            ));
+            return Ok(Self::execution_error_outcome(ToolError::invalid_input(
+                "JSON 参数格式错误",
+            )));
         };
         if cancellation.is_cancelled() {
-            let mut outcome = ToolOutcome::error(format!(
-                "tool_cancelled：工具 '{}' 在执行前已取消",
-                invocation.name
-            ));
+            let mut outcome =
+                ToolOutcome::error(format!("工具 '{}' 在执行前已取消", invocation.name));
             outcome.operation = ToolOperationStatus::Cancelled;
             outcome.side_effect = ToolSideEffectStatus::NotApplied;
             outcome.retry = ToolRetryDisposition::Safe;
@@ -617,7 +711,7 @@ impl ToolExecutor for ProductionToolExecutor {
         tokio::select! {
             result = &mut execution => Ok(match result {
                 Ok(outcome) => outcome,
-                Err(error) => Self::tool_error_outcome(error),
+                Err(error) => Self::execution_error_outcome(error),
             }),
             () = cancellation.cancelled() => {
                 tool_cancellation.cancel();
@@ -628,10 +722,10 @@ impl ToolExecutor for ProductionToolExecutor {
                         }
                         Ok(outcome)
                     },
-                    Ok(Err(error)) => Ok(Self::tool_error_outcome(error)),
+                    Ok(Err(error)) => Ok(Self::execution_error_outcome(error)),
                     Err(_) => {
                         let mut outcome = ToolOutcome::recovery_ambiguous(format!(
-                            "tool_cancel_timeout：工具 '{}' 收到取消后未在 5 秒内停止",
+                            "工具 '{}' 收到取消后未在 5 秒内停止",
                             invocation.name
                         ));
                         outcome.operation = ToolOperationStatus::Cancelled;
@@ -713,59 +807,189 @@ fn definition(name: &str, description: &str, input_schema: Value) -> ToolDefinit
     }
 }
 
-fn validate_input_shape(name: &str, input: &Value) -> Result<(), ToolError> {
-    let Some(object) = input.as_object() else {
-        return Err(ToolError::invalid_input("tool input must be a JSON object"));
-    };
-    let allowed: &[&str] = match name {
-        "apply_patch" => &["path", "patch", "changes", "fuzz", "create_if_missing"],
-        "edit_file" => &["path", "search", "replace"],
-        "exec_shell" => &["command", "timeout_ms", "cwd"],
-        "file_search" => &["query", "path", "limit", "extensions", "exclude"],
-        "git_diff" => &["path", "cached", "unified"],
-        "git_status" | "list_dir" => &["path"],
-        "grep_files" => &[
-            "pattern",
-            "path",
-            "include",
-            "exclude",
-            "context_lines",
-            "case_insensitive",
-            "max_results",
-        ],
-        "read_file" => &["path", "start_line", "max_lines", "pages"],
-        "run_tests" => &["args", "all_features"],
-        "run_verifiers" => &["profile", "level", "max_python_files", "commands"],
-        _ => unreachable!("unknown production tool validated: {name}"),
-    };
-    let unknown: Vec<_> = object
-        .keys()
-        .filter(|key| !allowed.contains(&key.as_str()))
-        .cloned()
-        .collect();
-    if !unknown.is_empty() {
-        return Err(ToolError::invalid_input(format!(
-            "tool '{name}' does not accept field(s): {}",
-            unknown.join(", ")
+fn validate_production_input(name: &str, input: &Value) -> Result<(), ToolError> {
+    let definition = production_tool_definitions()
+        .into_iter()
+        .find(|definition| definition.name == name)
+        .ok_or_else(|| ToolError::not_available(format!("未知生产工具 '{name}'")))?;
+    validate_schema_value(input, &definition.input_schema, "$")
+}
+
+fn validate_schema_value(value: &Value, schema: &Value, path: &str) -> Result<(), ToolError> {
+    const SUPPORTED_SCHEMA_KEYS: [&str; 13] = [
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "oneOf",
+        "enum",
+        "minimum",
+        "maximum",
+        "minLength",
+        "minItems",
+        "items",
+        "default",
+        "description",
+    ];
+    if let Some(key) = schema.as_object().and_then(|schema| {
+        schema
+            .keys()
+            .find(|key| !SUPPORTED_SCHEMA_KEYS.contains(&key.as_str()))
+    }) {
+        return Err(ToolError::schema_validation(format!(
+            "schema 在 {path} 使用未实现的约束 '{key}'"
         )));
+    }
+    let schema_type = schema.get("type").and_then(Value::as_str);
+    let type_matches = match schema_type {
+        Some("object") => value.is_object(),
+        Some("array") => value.is_array(),
+        Some("string") => value.is_string(),
+        Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
+        Some("boolean") => value.is_boolean(),
+        Some(other) => {
+            return Err(ToolError::schema_validation(format!(
+                "schema 在 {path} 使用不支持的类型 '{other}'"
+            )));
+        }
+        None => true,
+    };
+    if !type_matches {
+        return Err(ToolError::schema_validation(format!(
+            "字段 {path} 类型错误，期望 {}",
+            schema_type.unwrap_or("有效 JSON")
+        )));
+    }
+
+    if let Some(values) = schema.get("enum").and_then(Value::as_array)
+        && !values.contains(value)
+    {
+        return Err(ToolError::schema_validation(format!(
+            "字段 {path} 不在允许的枚举值中"
+        )));
+    }
+
+    if let Some(number) = value.as_f64() {
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+            && number < minimum
+        {
+            return Err(ToolError::schema_validation(format!(
+                "字段 {path} 小于允许的最小值 {minimum}"
+            )));
+        }
+        if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64)
+            && number > maximum
+        {
+            return Err(ToolError::schema_validation(format!(
+                "字段 {path} 大于允许的最大值 {maximum}"
+            )));
+        }
+    }
+
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
+            && length < minimum
+        {
+            return Err(ToolError::schema_validation(format!(
+                "字段 {path} 长度小于允许的最小值 {minimum}"
+            )));
+        }
+    }
+
+    if let Some(object) = value.as_object() {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for field in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(field) {
+                    return Err(ToolError::missing_field(format!("{path}/{field}")));
+                }
+            }
+        }
+        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+            let mut unknown = object
+                .keys()
+                .filter(|field| {
+                    properties.is_none_or(|properties| !properties.contains_key(*field))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            unknown.sort();
+            if !unknown.is_empty() {
+                return Err(ToolError::invalid_input(format!(
+                    "对象 {path} 不接受字段：{}",
+                    unknown.join(", ")
+                )));
+            }
+        }
+        for (field, field_value) in object {
+            if let Some(field_schema) = properties.and_then(|properties| properties.get(field)) {
+                validate_schema_value(field_value, field_schema, &format!("{path}/{field}"))?;
+            }
+        }
+        if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+            if branches.iter().any(|branch| {
+                branch
+                    .as_object()
+                    .is_none_or(|branch| branch.keys().any(|key| key != "required"))
+            }) {
+                return Err(ToolError::schema_validation(format!(
+                    "schema 在 {path} 使用了未实现的 oneOf 分支"
+                )));
+            }
+            let matches = branches
+                .iter()
+                .filter(|branch| {
+                    branch
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|required| {
+                            required
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .all(|field| object.contains_key(field))
+                        })
+                })
+                .count();
+            if matches != 1 {
+                return Err(ToolError::schema_validation(format!(
+                    "对象 {path} 必须且只能满足一个 oneOf 参数分支"
+                )));
+            }
+        }
+    }
+    if let Some(items) = value.as_array() {
+        let length = items.len() as u64;
+        if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
+            && length < minimum
+        {
+            return Err(ToolError::schema_validation(format!(
+                "数组 {path} 少于允许的最小元素数 {minimum}"
+            )));
+        }
+        if let Some(item_schema) = schema.get("items") {
+            for (index, item) in items.iter().enumerate() {
+                validate_schema_value(item, item_schema, &format!("{path}/{index}"))?;
+            }
+        }
     }
     Ok(())
 }
 
 fn apply_patch_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"changes":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},"fuzz":{"type":"integer"},"create_if_missing":{"type":"boolean"}},"oneOf":[{"required":["patch"]},{"required":["changes"]}]})
+    json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"changes":{"type":"array","minItems":1,"items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}},"fuzz":{"type":"integer"},"create_if_missing":{"type":"boolean"}},"oneOf":[{"required":["patch"]},{"required":["changes"]}],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}},"required":["path","search","replace"]})
+    json!({"type":"object","properties":{"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}},"required":["path","search","replace"],"additionalProperties":false})
 }
 
 fn exec_shell_schema() -> Value {
-    json!({"type":"object","properties":{"command":{"type":"string"},"timeout_ms":{"type":"integer"},"cwd":{"type":"string"}},"required":["command"]})
+    json!({"type":"object","properties":{"command":{"type":"string"},"timeout_ms":{"type":"integer"},"cwd":{"type":"string"}},"required":["command"],"additionalProperties":false})
 }
 
 fn file_search_schema() -> Value {
-    json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"limit":{"type":"integer"},"extensions":{"type":"array","items":{"type":"string"}},"exclude":{"type":"array","items":{"type":"string"}}},"required":["query"]})
+    json!({"type":"object","properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"limit":{"type":"integer"},"extensions":{"type":"array","items":{"type":"string"}},"exclude":{"type":"array","items":{"type":"string"}}},"required":["query"],"additionalProperties":false})
 }
 
 fn git_diff_schema() -> Value {
@@ -777,15 +1001,15 @@ fn git_status_schema() -> Value {
 }
 
 fn grep_files_schema() -> Value {
-    json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"array","items":{"type":"string"}},"exclude":{"type":"array","items":{"type":"string"}},"context_lines":{"type":"integer"},"case_insensitive":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":100}},"required":["pattern"]})
+    json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"array","items":{"type":"string"}},"exclude":{"type":"array","items":{"type":"string"}},"context_lines":{"type":"integer"},"case_insensitive":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":100}},"required":["pattern"],"additionalProperties":false})
 }
 
 fn list_dir_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"}}})
+    json!({"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false})
 }
 
 fn read_file_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"max_lines":{"type":"integer"},"pages":{"type":"string"}},"required":["path"]})
+    json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"max_lines":{"type":"integer","minimum":1},"pages":{"type":"string"}},"required":["path"],"additionalProperties":false})
 }
 
 fn run_tests_schema() -> Value {
@@ -1017,7 +1241,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hidden_fields_are_typed_rejections() {
+    async fn hidden_fields_are_typed_preflight_rejections() {
         let temp = tempfile::tempdir().unwrap();
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(temp.path()).with_shell_policy(ShellPolicy::Full),
@@ -1034,12 +1258,8 @@ mod tests {
             ("run_verifiers", "background"),
         ] {
             let outcome = executor
-                .execute(
-                    invocation(tool, json!({field: true})),
-                    CancellationToken::default(),
-                )
-                .await
-                .unwrap();
+                .preflight(&invocation(tool, json!({field: true})))
+                .expect("hidden field must fail before execution starts");
             assert_eq!(
                 outcome.invocation,
                 ToolInvocationStatus::Rejected,
@@ -1050,31 +1270,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_unknown_and_pre_cancel_are_normal_outcomes() {
+    async fn malformed_unknown_and_pre_cancel_have_typed_outcomes() {
         let temp = tempfile::tempdir().unwrap();
         let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
         let unknown = executor
-            .execute(
-                invocation("write_file", json!({})),
-                CancellationToken::default(),
-            )
-            .await
-            .unwrap();
+            .preflight(&invocation("write_file", json!({})))
+            .expect("unknown tool must fail preflight");
         assert_eq!(unknown.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(unknown.failure_code, Some(ToolFailureCode::UnknownTool));
 
         let malformed = executor
-            .execute(
-                ToolInvocation {
-                    run_id: RunId::from("run-1"),
-                    call_id: "bad".to_string(),
-                    name: "list_dir".to_string(),
-                    arguments: ToolArguments::parse("{"),
-                },
-                CancellationToken::default(),
-            )
-            .await
-            .unwrap();
+            .preflight(&ToolInvocation {
+                run_id: RunId::from("run-1"),
+                call_id: "bad".to_string(),
+                name: "list_dir".to_string(),
+                arguments: ToolArguments::parse("{"),
+            })
+            .expect("malformed arguments must fail preflight");
         assert_eq!(malformed.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(
+            malformed.failure_code,
+            Some(ToolFailureCode::MalformedArguments)
+        );
+        assert!(!malformed.content.contains('{'));
 
         let cancellation = CancellationToken::default();
         cancellation.cancel();
@@ -1088,7 +1306,204 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_fixed_name_has_direct_dispatch_and_aliases_do_not() {
+    async fn production_failure_matrix_preserves_code_side_effect_and_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("owned.txt");
+        std::fs::write(&path, "same\nsame\n").unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
+
+        let missing = executor
+            .preflight(&invocation("edit_file", json!({})))
+            .expect("missing field must fail preflight");
+        assert_eq!(missing.failure_code, Some(ToolFailureCode::MissingField));
+        assert_eq!(missing.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(missing.side_effect, ToolSideEffectStatus::NotApplied);
+
+        let extra = executor
+            .preflight(&invocation(
+                "read_file",
+                json!({"path":"owned.txt","bogus":true}),
+            ))
+            .expect("extra field must fail preflight");
+        assert_eq!(extra.failure_code, Some(ToolFailureCode::InvalidField));
+        assert_eq!(extra.invocation, ToolInvocationStatus::Rejected);
+
+        let read = executor
+            .execute(
+                invocation("read_file", json!({"path":"owned.txt"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success());
+        let ambiguous = executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({"path":"owned.txt","search":"same","replace":"changed"}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ambiguous.failure_code, Some(ToolFailureCode::AmbiguousEdit));
+        assert_eq!(ambiguous.operation, ToolOperationStatus::Failed);
+        assert_eq!(ambiguous.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(ambiguous.retry, ToolRetryDisposition::AfterCorrection);
+
+        std::fs::write(&path, "external\n").unwrap();
+        let stale = executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({"path":"owned.txt","search":"same","replace":"changed"}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.failure_code, Some(ToolFailureCode::StaleRead));
+        assert_eq!(stale.operation, ToolOperationStatus::Failed);
+        assert_eq!(stale.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(stale.retry, ToolRetryDisposition::AfterCorrection);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "external\n");
+    }
+
+    #[test]
+    fn schema_and_patch_preflight_reject_before_any_operation_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
+        let cases = [
+            (
+                invocation("read_file", json!([])),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("edit_file", json!({})),
+                ToolFailureCode::MissingField,
+            ),
+            (
+                invocation("read_file", json!({"path": 7})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("read_file", json!({"path":"a","extra":true})),
+                ToolFailureCode::InvalidField,
+            ),
+            (
+                invocation("git_diff", json!({"unified":-1})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("git_diff", json!({"unified":51})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("run_verifiers", json!({"profile":"invalid"})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation(
+                    "run_verifiers",
+                    json!({"commands":[{"name":"missing-program"}]}),
+                ),
+                ToolFailureCode::MissingField,
+            ),
+            (
+                invocation("apply_patch", json!({})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("apply_patch", json!({"patch":"x","changes":[]})),
+                ToolFailureCode::SchemaValidation,
+            ),
+            (
+                invocation("apply_patch", json!({"patch":"not a unified patch"})),
+                ToolFailureCode::PatchParse,
+            ),
+        ];
+        for (invocation, expected_code) in cases {
+            let name = invocation.name.clone();
+            let outcome = executor
+                .preflight(&invocation)
+                .unwrap_or_else(|| panic!("{name} input unexpectedly passed preflight"));
+            assert_eq!(outcome.failure_code, Some(expected_code), "{name}");
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected, "{name}");
+            assert_eq!(outcome.operation, ToolOperationStatus::NotStarted, "{name}");
+            assert_eq!(
+                outcome.side_effect,
+                ToolSideEffectStatus::NotApplied,
+                "{name}"
+            );
+            assert!(outcome.validate().is_ok(), "{name}: {outcome:?}");
+        }
+
+        for invocation in [
+            invocation("git_diff", json!({"unified":0})),
+            invocation("git_diff", json!({"unified":50})),
+            invocation(
+                "apply_patch",
+                json!({"changes":[{"path":"new.txt","content":"ok\n"}]}),
+            ),
+        ] {
+            assert!(
+                executor.preflight(&invocation).is_none(),
+                "{} valid boundary input was rejected",
+                invocation.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_after_start_is_accepted_failed_and_not_applied() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("owned.txt"), "same\n").unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
+        let read = executor
+            .execute(
+                invocation("read_file", json!({"path":"owned.txt"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success());
+
+        for invocation in [
+            invocation(
+                "edit_file",
+                json!({"path":"owned.txt","search":"same","replace":"same"}),
+            ),
+            invocation("grep_files", json!({"pattern":"["})),
+        ] {
+            assert!(executor.preflight(&invocation).is_none());
+            let name = invocation.name.clone();
+            let outcome = executor
+                .execute(invocation, CancellationToken::default())
+                .await
+                .unwrap();
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Accepted, "{name}");
+            assert_eq!(outcome.operation, ToolOperationStatus::Failed, "{name}");
+            assert_eq!(
+                outcome.side_effect,
+                ToolSideEffectStatus::NotApplied,
+                "{name}"
+            );
+            assert_eq!(
+                outcome.retry,
+                ToolRetryDisposition::AfterCorrection,
+                "{name}"
+            );
+            assert_eq!(outcome.failure_code, Some(ToolFailureCode::InvalidField));
+            assert!(outcome.validate().is_ok(), "{name}: {outcome:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("owned.txt")).unwrap(),
+            "same\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_fixed_name_has_direct_dispatch_and_aliases_fail_preflight() {
         let temp = tempfile::tempdir().unwrap();
         let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
         for name in PRODUCTION_TOOL_NAMES {
@@ -1097,24 +1512,17 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                !serde_json::to_string(&outcome)
-                    .unwrap()
-                    .contains("tool_not_available"),
+                outcome.failure_code != Some(ToolFailureCode::UnknownTool),
                 "fixed tool {name} did not reach its direct implementation"
             );
         }
 
         for alias in ["write_file", "task_shell_start", "exec_shell_wait"] {
             let outcome = executor
-                .execute(invocation(alias, json!({})), CancellationToken::default())
-                .await
-                .unwrap();
-            assert!(
-                serde_json::to_string(&outcome)
-                    .unwrap()
-                    .contains("tool_not_available"),
-                "stale alias {alias} unexpectedly dispatched"
-            );
+                .preflight(&invocation(alias, json!({})))
+                .expect("stale alias must fail before dispatch");
+            assert_eq!(outcome.failure_code, Some(ToolFailureCode::UnknownTool));
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected);
         }
     }
 
@@ -1147,11 +1555,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(edit.operation, ToolOperationStatus::Failed);
-        assert!(
-            edit.content.contains("has not been read"),
-            "{}",
-            edit.content
+        assert_eq!(
+            edit.failure_code,
+            Some(ToolFailureCode::WorkspacePrecondition)
         );
+        assert_eq!(edit.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(edit.retry, ToolRetryDisposition::AfterCorrection);
+        assert!(edit.content.contains("尚未读取"), "{}", edit.content);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "before\n");
     }
 
@@ -1206,11 +1616,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(edit.operation, ToolOperationStatus::Failed);
-        assert!(
-            edit.content.contains("has not been read"),
-            "{}",
-            edit.content
+        assert_eq!(
+            edit.failure_code,
+            Some(ToolFailureCode::WorkspacePrecondition)
         );
+        assert!(edit.content.contains("尚未读取"), "{}", edit.content);
         assert_eq!(
             std::fs::read_to_string(root.path().join("owned.txt")).unwrap(),
             "root\n"
@@ -1289,12 +1699,16 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 outcome.invocation,
-                ToolInvocationStatus::Rejected,
+                ToolInvocationStatus::Accepted,
                 "{}",
                 outcome.content
             );
+            assert_eq!(outcome.operation, ToolOperationStatus::Failed);
+            assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+            assert_eq!(outcome.failure_code, Some(ToolFailureCode::OperationFailed));
+            assert!(outcome.validate().is_ok(), "{}", outcome.content);
             assert!(
-                outcome.content.contains("isolated_writer_write_denied"),
+                outcome.content.contains("隔离 Writer 只能修改"),
                 "{}",
                 outcome.content
             );
@@ -1354,9 +1768,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(denied.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(denied.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(denied.operation, ToolOperationStatus::Failed);
+        assert_eq!(denied.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(denied.failure_code, Some(ToolFailureCode::OperationFailed));
+        assert!(denied.validate().is_ok(), "{}", denied.content);
         assert!(
-            denied.content.contains("isolated_writer_write_denied"),
+            denied.content.contains("隔离 Writer 只能修改"),
             "{}",
             denied.content
         );
@@ -1488,7 +1906,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn production_exec_policy_deny_survives_direct_executor_cutover() {
+    async fn exec_policy_deny_is_rejected_preflight_and_safe_after_start() {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("blocked");
         let policy = ProductionExecPolicySnapshot {
@@ -1506,17 +1924,28 @@ mod tests {
                 .with_shell_policy(ShellPolicy::Full)
                 .with_exec_policy(Some(policy)),
         );
+        let invocation = invocation(
+            "exec_shell",
+            json!({"command": format!("touch {}", marker.display())}),
+        );
+        let rejected = executor
+            .preflight(&invocation)
+            .expect("policy must reject before execution starts");
+        assert_eq!(rejected.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(rejected.retry, ToolRetryDisposition::NotRetryable);
+        assert!(!marker.exists());
+
+        // Direct execution models a dynamic policy change after Runtime's
+        // preflight. It must remain side-effect free without claiming the
+        // impossible Rejected/NotStarted lifecycle after a start event.
         let outcome = executor
-            .execute(
-                invocation(
-                    "exec_shell",
-                    json!({"command": format!("touch {}", marker.display())}),
-                ),
-                CancellationToken::default(),
-            )
+            .execute(invocation, CancellationToken::default())
             .await
             .unwrap();
-        assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected);
+        assert_eq!(outcome.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(outcome.operation, ToolOperationStatus::Failed);
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(outcome.failure_code, Some(ToolFailureCode::OperationFailed));
         assert_eq!(outcome.retry, ToolRetryDisposition::NotRetryable);
         assert!(!marker.exists());
         assert_eq!(
