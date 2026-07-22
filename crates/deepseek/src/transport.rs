@@ -1010,6 +1010,12 @@ pub fn decode_tool_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::num::NonZeroU32;
+    use std::thread;
+
+    use futures_util::StreamExt;
     use serde_json::json;
 
     #[test]
@@ -1102,6 +1108,103 @@ mod tests {
     }
 
     #[test]
+    fn sse_completion_requires_done_after_a_supported_finish_reason() {
+        let mut missing_done = SseParser::new("deepseek-v4-pro".to_string(), 0);
+        missing_done
+            .push_frame(
+                r#"{"choices":[{"delta":{"content":"完成"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":2,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":8}}"#,
+            )
+            .expect("valid finish frame");
+        assert!(matches!(
+            missing_done.finish(),
+            Err(DeepSeekTransportError::StreamIncomplete)
+        ));
+
+        let mut done_without_finish = SseParser::new("deepseek-v4-pro".to_string(), 0);
+        done_without_finish
+            .push_frame("[DONE]")
+            .expect("valid done frame");
+        assert!(matches!(
+            done_without_finish.finish(),
+            Err(DeepSeekTransportError::StreamIncomplete)
+        ));
+    }
+
+    #[test]
+    fn sse_failure_evidence_distinguishes_content_reasoning_and_tool_fragments() {
+        let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 0);
+        parser
+            .push_frame(
+                r#"{"choices":[{"delta":{"content":"部分正文","reasoning_content":"部分推理","tool_calls":[{"index":0,"id":"call-partial","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}"#,
+            )
+            .expect("valid partial frame");
+
+        let evidence = parser.failure_evidence();
+        assert!(evidence.content_observed);
+        assert!(evidence.reasoning_observed);
+        assert!(evidence.tool_call_observed);
+        assert!(evidence.tool_call_id_observed);
+        assert!(evidence.tool_call_name_observed);
+        assert!(evidence.tool_call_arguments_observed);
+        assert!(evidence.actionable_output());
+        assert!(!evidence.finish_reason_trusted);
+        assert!(!evidence.usage_received);
+    }
+
+    #[test]
+    fn sse_rejects_data_after_done_in_the_same_buffer() {
+        let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 0);
+        parser
+            .push_frame(r#"{"choices":[{"delta":{"content":"完成"},"finish_reason":"stop"}]}"#)
+            .expect("valid finish frame");
+        parser.push_frame("[DONE]").expect("valid done frame");
+        assert!(matches!(
+            parser.push_frame(
+                r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":8}}"#
+            ),
+            Err(DeepSeekTransportError::InvalidJson(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn abnormal_eof_after_usage_preserves_exact_usage_and_never_commits_output() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"部分\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_cache_hit_tokens\":4,\"prompt_cache_miss_tokens\":8}}\n\n",
+        );
+        let (transport, budget, root, server) = fixture_stream_transport(body);
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        let mut completed = false;
+        let mut failure = None;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ModelStreamEvent::Completed { .. }) => completed = true,
+                Ok(_) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+        server.join().expect("fixture server");
+
+        assert!(
+            !completed,
+            "EOF without [DONE] must not commit model output"
+        );
+        assert!(matches!(
+            failure,
+            Some(DeepSeekTransportError::StreamIncomplete)
+        ));
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.usage_responses, 1);
+        assert_eq!(usage.incomplete_responses, 1);
+        assert_eq!(usage.usage.input_tokens, 12);
+        assert_eq!(usage.usage.output_tokens, 2);
+        assert!(!usage.usage_complete());
+    }
+
+    #[test]
     fn sse_error_and_unknown_finish_reason_are_typed() {
         let mut parser = SseParser::new("deepseek-v4-pro".to_string(), 0);
         assert!(matches!(
@@ -1120,5 +1223,67 @@ mod tests {
             assert_eq!(decode_tool_name(&encode_tool_name(name)), name);
         }
         assert_eq!(decode_tool_name("webx00002Erun"), "web.run");
+    }
+
+    fn fixture_stream_transport(
+        body: &'static str,
+    ) -> (
+        DeepSeekTransport,
+        SharedApiRequestBudget,
+        String,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stream fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).expect("read request");
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            )
+            .expect("write stream fixture");
+        });
+        let budget = SharedApiRequestBudget::new(NonZeroU32::new(4).unwrap());
+        let root = format!("http://{address}/v1");
+        let transport = DeepSeekConnectionConfig {
+            endpoint: DeepSeekEndpoint::loopback_fixture(&root).expect("loopback root"),
+            strict_tools: false,
+            response_header_timeout: Duration::from_secs(1),
+            stream_idle_timeout: Duration::from_secs(1),
+            retry: TransportRetryPolicy::disabled(),
+        }
+        .bind(
+            reqwest::Client::new(),
+            DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            budget.clone(),
+        )
+        .expect("fixture transport");
+        (transport, budget, root, server)
+    }
+
+    fn stream_plan(root: &str) -> RequestPlan {
+        RequestPlan {
+            surface: ApiSurface::StandardChat,
+            url: format!("{root}/chat/completions"),
+            model: "deepseek-v4-pro".to_string(),
+            body: json!({
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "fixture"}],
+                "stream": true,
+                "stream_options": {"include_usage": true}
+            }),
+            response_mode: ResponseMode::Streaming,
+            reasoning_replay_tokens: None,
+        }
     }
 }
