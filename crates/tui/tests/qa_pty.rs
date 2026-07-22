@@ -106,7 +106,7 @@ fn spawn_approval_fixture_server() -> anyhow::Result<(String, std::thread::JoinH
                             "id":"chatcmpl-approval",
                             "object":"chat.completion.chunk",
                             "model":"deepseek-v4-flash",
-                            "choices":[{"index":0,"delta":{"tool_calls":[{
+                            "choices":[{"index":0,"delta":{"reasoning_content":"fixture approval reasoning","tool_calls":[{
                                 "index":0,
                                 "id":"call_approval_pty",
                                 "type":"function",

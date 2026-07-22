@@ -784,6 +784,7 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             "workspace_observed",
             "model_request_prepared",
             "model_request_in_flight",
+            "reasoning_delta",
             "model_response_committed",
             "tool_prepared",
             "tool_execution_started",
@@ -1258,6 +1259,7 @@ fn read_file_sse() -> String {
                 "index": 0,
                 "delta": {
                     "role": "assistant",
+                    "reasoning_content": "读取指定文件以确认内容",
                     "tool_calls": [{
                         "index": 0,
                         "id": TOOL_CALL_ID,
