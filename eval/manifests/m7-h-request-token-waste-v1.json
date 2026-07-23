@@ -40,6 +40,16 @@
     "failure": "hard-limit compaction was prepared with the full ordinary tool catalog before the Runtime selected the reserved terminal tools=[] request",
     "failing_test": "terminal_no_tools_catalog_is_selected_before_hard_limit_compaction",
     "production_catalog_test": "production::tests::production_catalog_is_not_used_to_compact_a_terminal_no_tools_request",
+    "offline_ab": {
+      "task": "terminal_no_tools_catalog_is_selected_before_hard_limit_compaction",
+      "model": "deterministic OneShotModel fixture",
+      "total_model_request_budget": 1,
+      "maximum_reruns": 0,
+      "baseline_binary_sha256": "11a9f7c54ff364cc19be1b2b53d2c1f3fe997869f31865799bcc10d2f27db82b",
+      "candidate_binary_sha256": "6412b8d76e05f982a36b47c7ada70ce414c87d06b1ae31d9921da70cbd85660a",
+      "separate_target_directories": true,
+      "discarded_shared_target_reuse": true
+    },
     "baseline": {
       "revision": "1943df4c",
       "terminal": "context_limit_exceeded",
