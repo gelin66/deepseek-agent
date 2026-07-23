@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v1",
-  "status": "frozen_offline_not_live_admitted",
+  "status": "frozen_live_admitted",
   "date": "2026-07-24",
   "claim": {
     "name": "M8-D 中文原生 production prompt 收敛",
@@ -263,7 +263,9 @@
     "Writer worktree/seal/integrate/verify/cleanup lifecycle"
   ],
   "admission": {
-    "live_api_admitted": false,
+    "live_api_admitted": true,
+    "admitted_on": "2026-07-24",
+    "admission_evidence": "prompt-only production delta、官方 V4-Flash 协议与价格、immutable binary/source identity、focused、Harness、production loopback、三角色 SQLite/SIGKILL、workspace clippy/test、fmt 与 diff 门禁全部通过；Key 仍未读取。",
     "credential_read": false,
     "official_api_requests": 0,
     "pre_key": [
@@ -331,6 +333,6 @@
     "harness_sha256": "sha256:decfff8b3b04d14543dd6b1db3be8a023ab9cd92b0e71a8562419a6448149968",
     "harness_test_sha256": "sha256:ba9a9abd6c8885b817c529b6d75d679461b858cac3123748971cb2854c52f1a1",
     "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:778013467c30f1f54e7c8660f29d15da747f09af7293898bec87cb5be56d9919"
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:d7ee4b6d7c43e8157f71e60044ccfd15cf02cf13c0ee4f5da8e633827efca6f4"
   }
 }
