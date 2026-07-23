@@ -1,0 +1,211 @@
+{
+  "schema": "codewhale.eval.m7-f-context-cache-prefix.v1",
+  "status": "frozen_offline_audit_no_live_admission",
+  "date": "2026-07-23",
+  "claim": {
+    "name": "M7-F canonical context-cache prefix audit",
+    "primary_problem": "DeepSeek 自动上下文缓存只命中完整匹配的已持久化 cache-prefix unit。CodeWhale 每个 ModelRequest 都在 canonical transcript 后临时追加 Host facts；下一轮 transcript 不含上一轮 Host facts，因此它不是上一轮 wire input + model output 的严格延伸，可能使同一 run 的缓存前缀推进落后一轮。",
+    "acceptance": "用真实 AgentApplication -> AgentRuntime -> RunStore -> DeepSeek RequestPlan loopback 冻结逐请求消息、工具目录、system blocks、reasoning replay 与 SQLite reopen 身份；精确定位首个必要/非必要 break。只有不改变模型可见语义、freshness、evidence、权限、exact replay、billing truth 的 treatment 才可进入 live 准入。",
+    "single_owner": "crates/context owns prompt bytes and Host-fact projection; crates/deepseek owns exact Chat wire planning and usage parsing; AgentRuntime and RunStore own exact ModelRequest/event/replay truth.",
+    "replacement": "没有通过全部语义与 replay 门禁的 treatment 不替代当前 projection。M7-F 不把 cache-control metadata、prompt hash 或离线最长公共前缀估算当成官方 cache hit。",
+    "cutover_deletion": "若没有可归因 production wire delta，删除所有实验性 production branch，只保留协议合同测试、离线 manifest/result 与结论；不读取 Key、不调用官方 API。"
+  },
+  "source_identity": {
+    "starting_revision": "8285a883322fa9b0040fba26ef833ee9808001eb",
+    "starting_tree_clean": true,
+    "branch": "deepseek-agent",
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+    "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
+    "m7_e_summary_sha256": "sha256:88c55e3667b90429aa1820c0042704a0e19228dda7bdf01a8316f9dec5f2bd2b",
+    "audited_owner_sha256": {
+      "protocol_agent_runtime": "sha256:a12f4a3f8013ac3c7f74ab85d0c356c4006bec38dfc91cd98f61da1f523056b4",
+      "context_compaction": "sha256:6f335a20bee0f8b3d6efc1ab81035e31e88dc5a44786bf172be22e515f7de220",
+      "context_prompts": "sha256:e3c36fd0cf090081f1056b6d9818768df2833a85083611fe43ac0b047edb5c72",
+      "runtime_agent": "sha256:75114fb5dcf9c2bd0f90a6a5cab467d8927802507cb442e395520e4983196e78",
+      "deepseek_planner": "sha256:dc9f4ed7f6bbf53a2dbf9696dc5ff9c2ff05ea980b2e34f68f2df8876f0a1fc2",
+      "deepseek_transport": "sha256:8b3cb8b4f46023e101ca7cb2591582d991f56fc1414d1b0609bc7f675f5d7e5a",
+      "deepseek_pricing": "sha256:78d794a0c44b5db3c1b91605ac4b7c1d718388d52761a6f355f0a4fa1bd72e89"
+    }
+  },
+  "official_protocol_review": {
+    "reviewed_on": "2026-07-23",
+    "context_caching": "https://api-docs.deepseek.com/guides/kv_cache/",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "change_log": "https://api-docs.deepseek.com/updates/",
+    "rules": {
+      "enabled": "automatic for every user without a manual cache API",
+      "match": "a hit requires a full match of an already persisted cache-prefix unit",
+      "persistence": [
+        "end of user input",
+        "end of model output",
+        "a common prefix detected across requests",
+        "fixed token intervals for long inputs or outputs"
+      ],
+      "best_effort": true,
+      "usage_identity": "prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens",
+      "retention": "usually hours to days and not guaranteed"
+    },
+    "pricing_fixture_usd_per_million_tokens": {
+      "deepseek-v4-flash": {
+        "cache_hit_input": "0.0028",
+        "cache_miss_input": "0.14",
+        "output": "0.28"
+      },
+      "deepseek-v4-pro": {
+        "cache_hit_input": "0.003625",
+        "cache_miss_input": "0.435",
+        "output": "0.87"
+      }
+    },
+    "model_fixture": {
+      "current_models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "deprecated_aliases": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "alias_deprecation_at_utc": "2026-07-24T15:59:00Z"
+    }
+  },
+  "canonical_baseline": {
+    "system_prompt": {
+      "owner": "crates/context/src/prompts.rs",
+      "block_order": [
+        "stable constitution: base prompt + project context + user constitution + optional project pack + output discipline + skills + fixed Simplified Chinese contract",
+        "volatile workspace fragment",
+        "volatile permissions fragment",
+        "volatile route fragment",
+        "optional volatile topology/skills-tools/token-budget fragments"
+      ],
+      "wire_fact": "crates/deepseek joins every block into one system message with a fixed separator; PromptCacheControl is not a provider field and creates no physical wire cache boundary."
+    },
+    "messages": {
+      "history": "ContextBroker projects canonical transcript entries in order and preserves complete reasoning/tool groups.",
+      "host_facts": "task generation, acceptance IDs, workspace generation/revision, current receipt and unresolved completion/verifier facts are rendered as the final user message of every request.",
+      "provenance": "the Host-facts tail has no canonical transcript index and is not replayed as history in the next request.",
+      "reasoning": "assistant reasoning_content and raw tool arguments are replayed exactly when required by DeepSeek."
+    },
+    "tools": {
+      "owner": "crates/tools",
+      "order": "fixed production definitions are prefix-stable and alphabetical",
+      "planner": "the exact canonical catalog is persisted in ModelRequestPrepared and deterministically rebuilt after SQLite reopen"
+    }
+  },
+  "offline_matrix": [
+    {
+      "id": "p1_same_run_read_only_turns",
+      "fact": "same root, same system, same catalog, unchanged workspace, two read-only tool turns",
+      "measure": "whether request N+1 is an exact extension of request N input plus committed assistant/tool output; first differing message and UTF-8 boundary"
+    },
+    {
+      "id": "p2_workspace_mutation",
+      "fact": "successful edit advances workspace generation/revision",
+      "measure": "the revision delta must remain in the latest Host-facts tail and must not move before canonical history"
+    },
+    {
+      "id": "p3_verifier_failure_recovery",
+      "fact": "failed verifier, later edit, later pass and EvidenceReceipt",
+      "measure": "fresh rejection/failure/receipt facts remain visible and latest-revision completion stays fail closed"
+    },
+    {
+      "id": "p4_same_workspace_cross_run",
+      "fact": "same task and same absolute workspace, distinct Host generation/run identity",
+      "measure": "first semantic break after exact task_generation normalization; raw identity remains distinct"
+    },
+    {
+      "id": "p5_equal_content_different_workspace",
+      "fact": "same fixture bytes in different canonical absolute workspace slots",
+      "measure": "workspace revision and any system/project-context differences are not normalized away"
+    },
+    {
+      "id": "p6_actor_catalogs",
+      "fact": "root, read-only child, explicit isolated Writer and terminal empty catalog",
+      "measure": "role prompt/catalog differences are intentional authority boundaries, not cache defects"
+    },
+    {
+      "id": "p7_compaction",
+      "fact": "hard-limit local projection keeps mandatory task, mutation and evidence facts",
+      "measure": "compaction is an intentional semantic context delta and exact projection digest survives replay"
+    },
+    {
+      "id": "p8_retry_and_reopen",
+      "fact": "same prepared request retry and SQLite/process reopen",
+      "measure": "attempt changes do not mutate exact messages/system/tools; uncertain side effects do not replay writes"
+    },
+    {
+      "id": "p9_reasoning_tool_replay",
+      "fact": "assistant reasoning, multiple tool calls and deferred child handoff",
+      "measure": "no cache treatment may reorder or drop required DeepSeek reasoning/tool adjacency"
+    },
+    {
+      "id": "p10_no_write_counterexample",
+      "fact": "read-only investigation/completion",
+      "measure": "no cache optimization manufactures a workspace mutation, receipt or false completion"
+    }
+  ],
+  "measurement": {
+    "authoritative_input": "persisted ModelRequestPrepared plus deterministic crates/deepseek RequestPlan; raw HTTP loopback body must equal the rebuilt plan",
+    "prefix_levels": [
+      "system block identity",
+      "wire message object identity",
+      "first differing message role",
+      "common UTF-8 bytes within equal-role text",
+      "catalog identity",
+      "surface/model/thinking/max_tokens/streaming identity"
+    ],
+    "non_claims": [
+      "UTF-8 common bytes are not DeepSeek tokenizer tokens",
+      "a common prefix is not a cache hit until the provider reports prompt_cache_hit_tokens",
+      "PromptCacheControl metadata is not sent to DeepSeek",
+      "body JSON key order is not assumed to be the provider cache key",
+      "best-effort cache retention prevents treating a single miss as a deterministic regression"
+    ]
+  },
+  "treatment_gate": {
+    "required_before_production_code": [
+      "a named non-essential first break with an exact production caller",
+      "a wire delta visible in RequestPlan and raw loopback HTTP",
+      "byte-for-byte preservation of every model-visible semantic fact modulo explicitly approved order",
+      "fresh workspace/evidence/permission facts",
+      "exact reasoning/tool replay and crash/reopen equivalence",
+      "no second Runtime, Store, request truth, tool directory, model loop or product mode"
+    ],
+    "forbidden_shortcuts": [
+      "moving dynamic Host facts earlier in the prompt",
+      "dropping workspace revision, receipt, verifier failure or completion rejection",
+      "persisting stale Host facts as ordinary user instructions without a typed supersession contract",
+      "splitting system messages based on generic OpenAI assumptions",
+      "reordering tool schemas when the official cache key treatment is unspecified",
+      "using aggregate historical cache ratios as a same-binary treatment result"
+    ],
+    "live_api_admitted": false,
+    "credential_rule": "Do not read /Users/gelin/Desktop/codewhale/key.txt unless a successor manifest freezes a real production wire delta and all offline gates pass.",
+    "current_candidate": "none"
+  },
+  "resources": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7f-target",
+    "network": "official documentation only",
+    "deepseek_api_requests": 0,
+    "raw_mode": "ignored_0600_if_a_future_successor_is_live"
+  },
+  "decision_threshold": {
+    "reliability": [
+      "verified success does not decrease",
+      "false success does not increase",
+      "latest workspace revision verifier completion remains mandatory",
+      "root/read-only child/Writer conformance has no critical regression"
+    ],
+    "efficiency": "At least one of cache-hit input, total input, requests, wall time or cost improves stably without a hidden transfer cost.",
+    "complexity": "Any added state or code must be explained by a concrete break and deleted if the wire/metric gain is absent.",
+    "no_delta": "hold_or_reject_without_key"
+  }
+}

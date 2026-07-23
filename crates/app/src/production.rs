@@ -1148,9 +1148,9 @@ mod tests {
     use codewhale_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
         AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, ModelAccounting,
-        ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent, ModelToolCall, OperationId,
-        PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits,
-        RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
+        ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
+        ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
+        RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
         ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
     };
     use codewhale_protocol::run_api::{
@@ -2668,6 +2668,169 @@ mod tests {
         assert_eq!(reopened_replay.events, replay.events);
         assert_eq!(reopened_replay.snapshot, replay.snapshot);
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m7f_production_loopback_freezes_host_fact_suffix_cache_break() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "read-value",
+                "read_file",
+                json!({"path":"value.txt"}),
+                10,
+                2,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "edit-value",
+                "edit_file",
+                json!({"path":"value.txt","search":"before","replace":"after"}),
+                11,
+                3,
+            ),
+            thinking_response("deepseek-v4-pro", "修改完成", 12, 2),
+        ])
+        .await;
+        let root = server.root.clone();
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join("value.txt"), "before\n").expect("value fixture");
+        initialize_git_fixture(&workspace);
+
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.tool_policy.allowed = Some(vec!["edit_file".to_owned(), "read_file".to_owned()]);
+        command.limits.wall_time_ms = Some(30_000);
+        let state_path = temp.path().join("state.db");
+        let app = AgentApplication::production(config(&state_path, connection(&root, false), true))
+            .expect("production app");
+        let run = run_result(
+            app.execute(envelope("m7f-host-fact-suffix", RunCommand::Start(command)))
+                .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let captured = server.finish().await;
+        let requests = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ModelRequestPrepared { request, .. } => Some(request.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(requests.len(), 3);
+        assert_eq!(captured.len(), requests.len());
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.messages.len())
+                .collect::<Vec<_>>(),
+            [2, 4, 6]
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.request_number)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(
+            std::fs::read(workspace.join("value.txt")).expect("final bytes"),
+            b"after\n"
+        );
+
+        let capability = official_model_capabilities("deepseek-v4-pro")
+            .expect("official production model capability");
+        for (request, captured) in requests.iter().zip(&captured) {
+            let max_tokens = capability
+                .resolve_output_tokens(request.max_output_tokens)
+                .expect("production output limit");
+            let plan = plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: &root,
+                    strict_enabled: false,
+                    wire_model: capability.model.to_owned(),
+                    max_tokens,
+                },
+                request,
+            )
+            .expect("canonical request has a deterministic plan");
+            assert_eq!(captured.path, "/v1/chat/completions");
+            assert_eq!(captured.body, plan.body);
+        }
+
+        let host_facts = requests
+            .iter()
+            .map(|request| match request.messages.last() {
+                Some(ModelMessage::User { content })
+                    if content.starts_with("## 当前 Host 事实") =>
+                {
+                    content
+                }
+                other => panic!("request must end in Host facts, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            host_facts[0], host_facts[1],
+            "a read-only turn must not manufacture a workspace/fact delta"
+        );
+        assert_ne!(
+            host_facts[1], host_facts[2],
+            "the successful edit must advance the latest workspace revision"
+        );
+        assert!(host_facts.iter().all(|facts| {
+            facts.contains("task_generation:")
+                && facts.contains("workspace_generation:")
+                && facts.contains("workspace_revision:")
+        }));
+
+        for pair in requests.windows(2) {
+            let previous = pair[0];
+            let next = pair[1];
+            let common_messages = previous
+                .messages
+                .iter()
+                .zip(&next.messages)
+                .take_while(|(left, right)| left == right)
+                .count();
+            assert_eq!(previous.system_prompt, next.system_prompt);
+            assert_eq!(previous.tools, next.tools);
+            assert_eq!(common_messages, previous.messages.len() - 1);
+            assert_eq!(
+                &previous.messages[..previous.messages.len() - 1],
+                &next.messages[..previous.messages.len() - 1],
+                "the canonical history before the ephemeral Host-facts tail must stay prefix-stable"
+            );
+            assert_ne!(
+                previous.messages.last(),
+                next.messages.get(previous.messages.len() - 1),
+                "the next request does not retain the prior request-boundary Host-facts unit"
+            );
+            assert!(matches!(
+                next.messages.get(previous.messages.len() - 1),
+                Some(ModelMessage::Assistant { .. })
+            ));
+        }
+
+        drop(app);
+        let reopened = StateStore::open(Some(state_path)).expect("reopen StateStore");
+        let reopened_replay = reopened
+            .load(&run.run_id)
+            .await
+            .expect("load reopened run")
+            .expect("reopened run exists");
+        assert_eq!(reopened_replay.events, replay.events);
+        assert_eq!(reopened_replay.snapshot, replay.snapshot);
     }
 
     fn prepared_request(replay: &RunReplay) -> ModelRequest {

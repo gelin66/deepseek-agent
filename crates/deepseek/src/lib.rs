@@ -1017,9 +1017,9 @@ mod tests {
         ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
     };
     use codewhale_runtime::{
-        AgentActor, CanonicalTranscript, ContextPolicy, ModelToolCall, RunId, TaskContract,
-        TaskDefinition, TaskGenerationId, ToolArguments, ToolDefinition, ToolOutcome,
-        TranscriptEntry, WorkspaceRevision, WorkspaceState,
+        AgentActor, CanonicalTranscript, ContextPolicy, ModelToolCall, PromptCacheControl, RunId,
+        SystemPromptBlock, TaskContract, TaskDefinition, TaskGenerationId, ToolArguments,
+        ToolDefinition, ToolOutcome, TranscriptEntry, WorkspaceRevision, WorkspaceState,
     };
 
     use super::*;
@@ -1102,6 +1102,59 @@ mod tests {
         assert_eq!(
             plan.body["messages"][1]["tool_calls"][0]["function"]["arguments"],
             "{ \"z\" : 1, \"path\" : \"src/lib.rs\", \"a\" : 2 }"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_control_is_host_metadata_not_a_wire_boundary() {
+        let mut request = runtime_request(false);
+        request.system_prompt = SystemPrompt {
+            blocks: vec![
+                SystemPromptBlock {
+                    text: "稳定 constitution".to_owned(),
+                    cache_control: PromptCacheControl::Stable,
+                },
+                SystemPromptBlock {
+                    text: "<!-- cw:ctx:workspace -->\nworkspace facts".to_owned(),
+                    cache_control: PromptCacheControl::Volatile,
+                },
+                SystemPromptBlock {
+                    text: "<!-- cw:ctx:route -->\nroute facts".to_owned(),
+                    cache_control: PromptCacheControl::Volatile,
+                },
+            ],
+        };
+
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: false,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .expect("cache-control metadata has a deterministic Chat plan");
+        let messages = plan.body["messages"].as_array().expect("wire messages");
+
+        assert_eq!(
+            messages[0],
+            json!({
+                "role": "system",
+                "content": "稳定 constitution\n\n---\n\n<!-- cw:ctx:workspace -->\nworkspace facts\n\n---\n\n<!-- cw:ctx:route -->\nroute facts"
+            })
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "system")
+                .count(),
+            1
+        );
+        assert!(
+            !serde_json::to_string(&plan.body)
+                .expect("serialize request body")
+                .contains("cache_control")
         );
     }
 
