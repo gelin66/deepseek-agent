@@ -59,7 +59,7 @@
     }
   ],
   "source_identity": {
-    "harness_revision": "pending"
+    "harness_revision": "445c5663c2442060bdae81e646d78bb375fc4776"
   },
   "experiment": {
     "kind": "same_revision_same_binary_prompt_treatment_ab_v4",
@@ -86,9 +86,9 @@
     "git diff --check"
   ],
   "frozen_hashes": {
-    "harness_sha256": "pending",
-    "harness_test_sha256": "pending",
-    "schedule_sha256": "pending",
-    "manifest_content_sha256_excluding_frozen_hashes": "pending"
+    "harness_sha256": "sha256:b76223544fa93a6467656160e7acd7193a604f44a12447f5e81130d8836382b2",
+    "harness_test_sha256": "sha256:f2e2e7b4868349aaec670f83644dd855052c118d428b8d7cb718f19f2b2d751c",
+    "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:695560654976c6549d789efcbd472b832ed9dfa30c2a05fa04a30b05df67f44c"
   }
 }
