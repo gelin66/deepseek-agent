@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v3",
-  "status": "draft_measurement_correction",
+  "status": "frozen_offline_pending",
   "date": "2026-07-24",
   "base_manifest": {
     "path": "eval/manifests/m8-d-prompt-ab-v2.json",
@@ -40,7 +40,7 @@
     }
   ],
   "source_identity": {
-    "harness_revision": "pending"
+    "harness_revision": "cc8a9aae754a839137fe561a697af6cf76cb3313"
   },
   "experiment": {
     "kind": "same_revision_same_binary_prompt_treatment_ab_v3",
@@ -67,9 +67,9 @@
     "git diff --check"
   ],
   "frozen_hashes": {
-    "harness_sha256": "pending",
-    "harness_test_sha256": "pending",
-    "schedule_sha256": "pending",
-    "manifest_content_sha256_excluding_frozen_hashes": "pending"
+    "harness_sha256": "sha256:1a3ab6d71d13ed547b84eab2bbf4997af4ee617fe7c910ea32e258c7d71a54e9",
+    "harness_test_sha256": "sha256:30e6d06593613cec0bd7d7f9c18e5a08fba54f9cb35b9f6614db47ef5e5bb2af",
+    "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:00d23f92defcb73d930182e47e62f3b80871c4ae4522147883361bc4b7c75734"
   }
 }
