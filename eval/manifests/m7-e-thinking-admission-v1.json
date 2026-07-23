@@ -1,0 +1,240 @@
+{
+  "schema": "codewhale.eval.m7-e-thinking-admission.v1",
+  "status": "frozen_before_any_m7_e_live_api",
+  "date": "2026-07-23",
+  "claim": {
+    "name": "M7-E default thinking admission",
+    "primary_problem": "现有已验证生产样本中 reasoning 约占 output 的一半，reasoning replay 还进入后续 input；当前默认 Auto 会启用 thinking，但没有同 binary 产品证据证明这部分成本带来相称 verified success。",
+    "single_owner": "crates/deepseek owns official reasoning planning, parsing and accounting; AgentRuntime and RunStore own exact request, event and terminal truth.",
+    "treatment": "同一 immutable binary 仅把 StartRunCommand.reasoning_effort 从 high 改为 off；不修改模型、提示、任务、工具目录、预算、Runtime、RunStore、completion 或 verifier。",
+    "replacement": "只有正式 paired A/B 满足全部硬门禁和收益标准时，才把 production 默认从当前 Auto/thinking-enabled 收敛到 off；否则不修改默认。",
+    "cutover_deletion": "不新增产品模式或模型可见工具；若证据不支持接管，删除仅为实验引入的 production 默认分支，保留协议合同测试、manifest、脱敏结果和结论。"
+  },
+  "source_identity": {
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "starting_revision": "7b8b485154d55b3e6a3d1a78599efaaff850b932",
+    "starting_tree_clean": true,
+    "formal_revision_rule": "formal --revision 必须等于 clean git HEAD；suite-owned binary 的 --version revision、SHA-256、size 与 source tree 必须在读取 Key 前冻结并写入 reservation。",
+    "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+    "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2"
+  },
+  "official_protocol_review": {
+    "reviewed_on": "2026-07-23",
+    "thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing",
+    "change_log": "https://api-docs.deepseek.com/updates/",
+    "fixture": {
+      "model": "deepseek-v4-flash",
+      "thinking_high": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      },
+      "thinking_off": {
+        "thinking": {
+          "type": "disabled"
+        },
+        "reasoning_effort": null
+      },
+      "prices_usd_per_million_tokens": {
+        "cache_hit_input": "0.0028",
+        "cache_miss_input": "0.14",
+        "output": "0.28"
+      }
+    }
+  },
+  "prior_evidence": {
+    "m7_a2_successful_candidate": {
+      "result": "eval/results/m7-a2-agent-convergence-formal-18de2ad2-vs-c6a74304.json",
+      "runs": 3,
+      "requests": 17,
+      "input_tokens": 71070,
+      "output_tokens": 6019,
+      "reasoning_tokens": 3042,
+      "reasoning_replay_tokens": 7263,
+      "cost_nanousd": 4452426
+    },
+    "eager_join_complete_formal": {
+      "result": "eval/results/eager-join-exact-ab-20260718T020753Z.jsonl",
+      "runs": 24,
+      "verified": 24,
+      "requests": 154,
+      "input_tokens": 577774,
+      "output_tokens": 43398,
+      "reasoning_tokens": 21349,
+      "reasoning_replay_tokens": 27629,
+      "cost_usd": "0.0200186672"
+    },
+    "selection_reason": "thinking high/off 是现有唯一 production request surface：可在同一 binary、同一 Standard Chat/tool catalog 上形成可归因 treatment；Writer 已正式负向，Strict/FIM 无 surface delta，incomplete-stream 已完成正确性切片但没有新产品 delta。"
+  },
+  "task_source": {
+    "manifest": "eval/manifests/m7-a2-agent-convergence-ab-v1.json",
+    "sha256": "sha256:ec30735bc68428c00135ecfaa44b31f6ae60a83a9aa775dfb9d635a6da253d94",
+    "fields": [
+      "tasks",
+      "tool_policy",
+      "verifier_request"
+    ],
+    "task_ids": [
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5"
+    ],
+    "reuse_contract": "Harness 只复用冻结任务、fixture、权限和 deterministic verifier 数据，不导入或降级历史 executor/event projector。"
+  },
+  "experiment": {
+    "kind": "same_binary_request_treatment_ab",
+    "model": "deepseek-v4-flash",
+    "api_surface": "standard_chat",
+    "variants": {
+      "reasoning_high": "high",
+      "reasoning_off": "off"
+    },
+    "runs_per_variant_task": 3,
+    "formal_pairs": 15,
+    "formal_arms": 30,
+    "maximum_reruns": 0,
+    "pairing": "同一 task/run_index 构成一对；pair 内 variant 先后按 run_index + task ordinal 奇偶平衡，不替换失败 arm。",
+    "round_order": [
+      [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      [
+        "t3",
+        "t4",
+        "t5",
+        "t1",
+        "t2"
+      ],
+      [
+        "t5",
+        "t1",
+        "t2",
+        "t3",
+        "t4"
+      ]
+    ],
+    "writer": "excluded_explicit_only_prior_negative_evidence",
+    "request_delta_allowlist": [
+      "RunRequest.reasoning_effort",
+      "ModelRequest.reasoning_effort",
+      "body.thinking",
+      "body.reasoning_effort",
+      "assistant.reasoning_content replay",
+      "assistant content null/empty placeholder induced by reasoning replay"
+    ]
+  },
+  "resources": {
+    "max_physical_api_attempts_per_arm": 10,
+    "max_logical_model_requests_per_arm": 10,
+    "max_runtime_retries_per_arm": 0,
+    "transport_max_retries_per_request": 0,
+    "max_output_tokens_per_request": 8192,
+    "max_tool_calls_per_arm": 24,
+    "runtime_wall_time_seconds": 225,
+    "harness_wall_time_seconds": 240,
+    "max_known_cost_nanousd_per_arm": 20000000,
+    "formal_suite_known_cost_nanousd": 600000000,
+    "streaming": true,
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_target_dir": "/private/tmp/codewhale-m7e-target",
+    "cargo_incremental": "0"
+  },
+  "measurements": [
+    "verified_success and false_success",
+    "terminal state and typed failure",
+    "root/read-only child request and retry counts",
+    "input/output/cache-hit/cache-miss/reasoning/replay tokens",
+    "surface/model response counts and known cost",
+    "model turns, tool calls and typed tool failures",
+    "Host verifier receipt and latest workspace revision",
+    "external deterministic verifier and changed-file policy",
+    "wall time",
+    "crash/reopen exact request and RequestPlan evidence"
+  ],
+  "admission": {
+    "pre_key": [
+      "clean revision and immutable binary identity frozen",
+      "planner proves high/off only the allowlisted reasoning delta",
+      "exact high/off ModelRequest and RequestPlan rebuild after SQLite reopen",
+      "current Run API v10 and RuntimeEvent v16 Harness self-tests pass",
+      "fixture, verifier, schedule, output permissions, key non-disclosure and accounting abort tests pass",
+      "all required offline Cargo gates pass"
+    ],
+    "abort_suite_immediately": [
+      "unknown billing, unpriced usage, unsealed or incomplete accounting",
+      "surface/model/request budget/retry identity mismatch",
+      "binary/revision/task/fixture/schedule mismatch",
+      "credential appears in argv, protocol, output, stderr, state or workspace",
+      "side-effect ambiguity or output reservation ambiguity"
+    ],
+    "no_live_rule": "任一 pre-key 门禁不成立则不读取 Key、不调用官方 API并形成 hold/reject。"
+  },
+  "acceptance": {
+    "hard_gates": [
+      "两个 variant 每个 task 均有 3 个正式 arm，maximum_reruns=0",
+      "reasoning_off 每个 task verified success 不低于 reasoning_high",
+      "false success 不增加且两个 variant aggregate false success 均为 0",
+      "root/read-only child、权限、allowed paths、receipt、latest revision 与 external verifier 无关键回归",
+      "所有 response 均为 deepseek-v4-flash Standard Chat，high/off 除 reasoning treatment 外身份相同",
+      "accounting sealed、complete、usage_complete、billing known、priced 且 totals 闭合",
+      "reasoning_off 的 reasoning_tokens 与 reasoning_replay_tokens 均为 0",
+      "一个 Runtime、RunStore、工具目录与 completion owner 保持唯一"
+    ],
+    "benefit": "verified success 相同或更高时，15 个 pair 中至少 12 个 dual-success，且 input+output tokens、known cost、physical requests 或 wall time至少一项 paired median 改善不低于 15%；其余核心效率指标 paired median 回退不超过 10%。",
+    "decision_order": [
+      "reject：任一安全或 false-success 硬门禁失败",
+      "hold：accounting、billing、identity 或正式 cell 不完整",
+      "reject：证据完整时 reasoning_off 任一 task verified success 回退",
+      "keep：全部硬门禁通过且 benefit 成立，随后以最小默认切换并删除旧默认选择",
+      "hold：成功不回退但净收益证据不足，默认不变",
+      "reject：证据完整且无净收益或有稳定隐藏转移成本，默认不变"
+    ]
+  },
+  "output": {
+    "directory": "eval/raw",
+    "name_template": "m7-e-thinking-formal-<revision8>-v1.json",
+    "mode": "0600",
+    "replace": false,
+    "reservation_before_key": true,
+    "redacted": true,
+    "tracked_summary_only": true
+  },
+  "offline_gates": [
+    "python3 scripts/test-eval-m7e-thinking.py",
+    "python3 scripts/eval-m7e-thinking.py freeze-report",
+    "cargo fmt --all -- --check",
+    "cargo test -p codewhale-deepseek --locked high_and_off",
+    "cargo test -p codewhale-app --locked high_and_off_request_plans_rebuild_exactly_after_sqlite_reopen",
+    "cargo check -p codewhale-deepseek --locked",
+    "cargo check -p codewhale-app --locked",
+    "./scripts/dev-deepseek-agent.sh focused",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "cargo test --workspace --locked",
+    "production-path loopback",
+    "process-level crash/reopen",
+    "Harness self-test",
+    "git diff --check"
+  ],
+  "frozen_hashes": {
+    "harness_sha256": "sha256:2d8baa0f3c0105f797beca88aed30c273826fe851496419b9f291d28654dc284",
+    "harness_test_sha256": "sha256:7cb73dedf78e60b000acd2be54559bb5c401447a00f26c85000052112a1c60a8",
+    "schedule_sha256": "sha256:47cc8f79905caff0dcf3b3968dca2748fae68df3446166bee3601ee5268367bc",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:29ce9b15b8d4b35eba1e843fef5d502c38ea41149096eb2a3ec140663d4f0b3c"
+  }
+}

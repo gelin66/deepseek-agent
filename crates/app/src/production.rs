@@ -2686,17 +2686,17 @@ mod tests {
         state_path: &Path,
         root: &str,
         strict_tools: bool,
+        reasoning_effort: ReasoningEffort,
         request_id: &str,
     ) -> (RunReplay, RunReplay) {
         let app =
             AgentApplication::production(config(state_path, connection(root, strict_tools), true))
                 .expect("production app");
+        let mut command = start_command(workspace, Some("deepseek-v4-pro"));
+        command.reasoning_effort = reasoning_effort;
         let run = run_result(
-            app.execute(envelope(
-                request_id,
-                RunCommand::Start(start_command(workspace, Some("deepseek-v4-pro"))),
-            ))
-            .await,
+            app.execute(envelope(request_id, RunCommand::Start(command)))
+                .await,
         );
         let before_reopen = wait_terminal(app.store.as_ref(), &run.run_id).await;
         drop(app);
@@ -3266,6 +3266,7 @@ mod tests {
             &strict_state.join("state.db"),
             &root,
             true,
+            ReasoningEffort::High,
             "m7b-strict-reopen",
         )
         .await;
@@ -3274,6 +3275,7 @@ mod tests {
             &standard_state.join("state.db"),
             &root,
             false,
+            ReasoningEffort::High,
             "m7b-standard-fingerprint",
         )
         .await;
@@ -3358,6 +3360,105 @@ mod tests {
             strict_environment.execution_fingerprint_sha256,
             standard_environment.execution_fingerprint_sha256,
             "resume identity must bind the strict_tools policy used to rebuild the plan"
+        );
+    }
+
+    #[tokio::test]
+    async fn high_and_off_request_plans_rebuild_exactly_after_sqlite_reopen() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        let high_state = temp.path().join("high-state");
+        let off_state = temp.path().join("off-state");
+        for directory in [&workspace, &high_state, &off_state] {
+            std::fs::create_dir(directory).expect("create fixture directory");
+        }
+        let server = MockDeepSeekServer::start(vec![
+            response("deepseek-v4-pro", "完成", 10, 2),
+            response("deepseek-v4-pro", "完成", 10, 2),
+        ])
+        .await;
+        let root = server.root.clone();
+
+        let (high_before, high_reopened) = run_and_reopen_plan_fixture(
+            &workspace,
+            &high_state.join("state.db"),
+            &root,
+            false,
+            ReasoningEffort::High,
+            "m7e-high-reopen",
+        )
+        .await;
+        let (off_before, off_reopened) = run_and_reopen_plan_fixture(
+            &workspace,
+            &off_state.join("state.db"),
+            &root,
+            false,
+            ReasoningEffort::Off,
+            "m7e-off-reopen",
+        )
+        .await;
+        let captured = server.finish().await;
+
+        let high_request = prepared_request(&high_before);
+        let high_reopened_request = prepared_request(&high_reopened);
+        let off_request = prepared_request(&off_before);
+        let off_reopened_request = prepared_request(&off_reopened);
+        assert_eq!(high_reopened_request, high_request);
+        assert_eq!(off_reopened_request, off_request);
+        assert_eq!(high_request.reasoning_effort, ReasoningEffort::High);
+        assert_eq!(off_request.reasoning_effort, ReasoningEffort::Off);
+
+        let capability = official_model_capabilities(&high_request.model)
+            .expect("official production model capability");
+        let max_tokens = capability
+            .resolve_output_tokens(high_request.max_output_tokens)
+            .expect("production output limit");
+        let plan_input = || RuntimeChatPlanInput {
+            root: &root,
+            strict_enabled: false,
+            wire_model: capability.model.to_owned(),
+            max_tokens,
+        };
+        let high_plan =
+            plan_runtime_chat(plan_input(), &high_reopened_request).expect("reopened high plan");
+        let off_plan =
+            plan_runtime_chat(plan_input(), &off_reopened_request).expect("reopened off plan");
+
+        assert_eq!(high_plan.surface, ApiSurface::StandardChat);
+        assert_eq!(off_plan.surface, ApiSurface::StandardChat);
+        assert_eq!(high_plan.body["thinking"], json!({"type": "enabled"}));
+        assert_eq!(high_plan.body["reasoning_effort"], "high");
+        assert_eq!(off_plan.body["thinking"], json!({"type": "disabled"}));
+        assert!(off_plan.body.get("reasoning_effort").is_none());
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].path, "/v1/chat/completions");
+        assert_eq!(captured[1].path, "/v1/chat/completions");
+        assert_eq!(captured[0].body, high_plan.body);
+        assert_eq!(captured[1].body, off_plan.body);
+        assert_eq!(
+            high_reopened
+                .snapshot
+                .request
+                .environment
+                .tool_catalog_sha256,
+            off_reopened
+                .snapshot
+                .request
+                .environment
+                .tool_catalog_sha256
+        );
+        assert_eq!(
+            high_reopened
+                .snapshot
+                .request
+                .environment
+                .execution_fingerprint_sha256,
+            off_reopened
+                .snapshot
+                .request
+                .environment
+                .execution_fingerprint_sha256,
+            "the Host execution fingerprint must not invent a second owner for persisted reasoning effort"
         );
     }
 

@@ -1316,6 +1316,60 @@ mod tests {
     }
 
     #[test]
+    fn high_and_off_runtime_plans_differ_only_by_official_reasoning_fields() {
+        fn without_reasoning_fields(mut body: Value) -> Value {
+            let object = body.as_object_mut().expect("chat body object");
+            object.remove("thinking");
+            object.remove("reasoning_effort");
+            for message in object["messages"]
+                .as_array_mut()
+                .expect("chat messages array")
+            {
+                let message = message.as_object_mut().expect("chat message object");
+                message.remove("reasoning_content");
+                if message.get("role") == Some(&json!("assistant"))
+                    && message.get("content") == Some(&json!(""))
+                {
+                    message.insert("content".to_owned(), Value::Null);
+                }
+            }
+            body
+        }
+
+        let mut high_request = runtime_request(true);
+        high_request.reasoning_effort = ReasoningEffort::High;
+        let mut off_request = high_request.clone();
+        off_request.reasoning_effort = ReasoningEffort::Off;
+        let input = || RuntimeChatPlanInput {
+            root: "https://api.deepseek.com",
+            strict_enabled: false,
+            wire_model: high_request.model.clone(),
+            max_tokens: 64,
+        };
+
+        let high = plan_runtime_chat(input(), &high_request).expect("high reasoning plan");
+        let off = plan_runtime_chat(input(), &off_request).expect("off reasoning plan");
+
+        assert_eq!(high.surface, ApiSurface::StandardChat);
+        assert_eq!(off.surface, ApiSurface::StandardChat);
+        assert_eq!(high.url, off.url);
+        assert_eq!(high.model, off.model);
+        assert_eq!(high.response_mode, off.response_mode);
+        assert_eq!(high.tool_surface, off.tool_surface);
+        assert_eq!(high.body["thinking"], json!({"type": "enabled"}));
+        assert_eq!(high.body["reasoning_effort"], "high");
+        assert_eq!(off.body["thinking"], json!({"type": "disabled"}));
+        assert!(off.body.get("reasoning_effort").is_none());
+        assert!(high.body["messages"][1].get("reasoning_content").is_some());
+        assert!(off.body["messages"][1].get("reasoning_content").is_none());
+        assert_eq!(
+            without_reasoning_fields(high.body),
+            without_reasoning_fields(off.body),
+            "the M7-E treatment must not change model, prompt, tools, budgets, or transport"
+        );
+    }
+
+    #[test]
     fn compacted_context_reaches_beta_chat_without_rewriting_reasoning_or_tools() {
         let task_contract = TaskContract {
             generation_id: TaskGenerationId::from("task-wire-compaction"),
