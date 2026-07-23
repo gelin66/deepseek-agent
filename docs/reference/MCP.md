@@ -202,14 +202,14 @@ Official docs: <https://huggingface.co/docs/hub/hf-mcp-server>
 
 Default path:
 
-- `~/.codewhale/mcp.json` (`~/.deepseek/mcp.json` is still read when the CodeWhale file is absent)
+- `~/.codewhale/mcp.json`
 - A trusted workspace may add `.codewhale/mcp.json`; read-only inventory and
   live diagnostic commands merge it with the resolved global configuration.
 
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+- Env: `CODEWHALE_MCP_CONFIG=/path/to/mcp.json`
 
 `codewhale mcp init` (and `codewhale setup --mcp`) writes to this resolved
 path.

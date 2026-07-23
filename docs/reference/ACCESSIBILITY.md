@@ -2,7 +2,7 @@
 
 > Category: current user reference.
 
-DeepSeek-TUI runs in a terminal, so the platform's own accessibility
+CodeWhale TUI runs in a terminal, so the platform's own accessibility
 stack (screen readers, magnifiers, terminal-level themes) does most
 of the work. The TUI provides a small set of toggles that reduce
 visual motion and density for screen-reader and low-motion users.
@@ -74,15 +74,10 @@ override is reapplied on each launch.
   service (e.g. macOS Terminal.app, iTerm2, Ghostty, Windows
   Terminal) will pass the rendered content straight through.
 * If you find a UI surface that still produces motion when
-  `low_motion = true`, please file an issue against
-  [`PRIOR: Screen-reader / accessibility flag`](https://github.com/Hmbown/CodeWhale/issues/450)
-  with a screenshot or terminal recording.
+  `low_motion = true`, report it in the CodeWhale owner repository with a
+  screenshot or terminal recording.
 
 ## Related issues / history
 
-* [#450](https://github.com/Hmbown/CodeWhale/issues/450) —
-  documenting the existing flag, adding the `NO_ANIMATIONS`
-  startup overlay, and writing this page.
-* [#449](https://github.com/Hmbown/CodeWhale/issues/449) —
-  footer statusline now uses the active theme's contrast pair
-  instead of a bespoke palette.
+The imported upstream issue links were removed at the V1 product-identity
+cutover. This page describes only current CodeWhale behavior.

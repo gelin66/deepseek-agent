@@ -7,21 +7,20 @@ CodeWhale. Read [AGENTS.md](AGENTS.md), the
 
 ## Prerequisites
 
-- Rust 1.88 or newer;
+- the exact Rust toolchain pinned by `rust-toolchain.toml`;
 - Cargo and Git;
 - a DeepSeek API key only for explicitly enabled live canaries.
 
 ## Setup
 
 ```bash
-rustup default stable
 cargo build -p codewhale-cli -p codewhale-tui --locked
 ```
 
 Current focused gate:
 
 ```bash
-./scripts/dev-deepseek-agent.sh focused
+./scripts/dev-codewhale.sh focused
 ```
 
 ## Change requirements

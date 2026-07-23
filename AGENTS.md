@@ -207,7 +207,7 @@ git diff --check
 Focused current WIP gate:
 
 ```bash
-./scripts/dev-deepseek-agent.sh focused
+./scripts/dev-codewhale.sh focused
 ```
 
 Targeted Rust work:

@@ -1,15 +1,14 @@
-# DeepSeek Agent（工作名称）
+# CodeWhale
 
-一个以 CodeWhale Rust 源码为底座、面向官方 DeepSeek API 的本地编码 Agent 产品。
+一个面向官方 DeepSeek API 的 Rust-native、本地优先编码 Agent。
 
 目标不是继续扩展通用模型兼容，也不是把多个 Agent 项目拼接在一起；目标是形成一套
 统一、可恢复、可验证、支持单 Agent 与多 Agent 的 Rust 运行时，并让 CLI、TUI 和
 Headless API 共用它。
 
-> 当前处于 M7 DeepSeek 专项调优阶段。现有可执行文件、配置目录和部分外围文档仍使用
-> `codewhale` 名称，但 exec、app-server 与交互 TUI 已统一到
-> `AgentApplication -> AgentRuntime -> RunStore`。仓库不会把尚未完成的 Provider 清理、
-> FIM 编辑或产品化写成现有能力。
+exec、app-server 与交互 TUI 已统一到
+`AgentApplication -> AgentRuntime -> RunStore`。产品二进制固定为 `codewhale` 与
+`codewhale-tui`，产品状态只写入 `~/.codewhale`（或显式 `CODEWHALE_HOME`）。
 
 ## 从这里开始
 
@@ -64,12 +63,11 @@ DeepSeek Beta Strict planner 仍保留，但 M7-B 证明六个默认可执行 ac
 独立 request-planning/transport 基础，没有 canonical production 编辑调用方；下一切片将
 独立比较 `apply_patch`、`edit_file` 与 FIM，而不是恢复旧 `FimEditTool`。
 
-## 当前本地开发
+## 本地开发与交付
 
-要求 Rust 1.88 或更高版本。当前二进制名称在产品化里程碑前仍保持 CodeWhale：
+仓库使用 `rust-toolchain.toml` 固定 Rust 1.97.0。源码构建：
 
 ```bash
-rustup default stable
 cargo build -p codewhale-cli -p codewhale-tui --locked
 ```
 
@@ -79,10 +77,10 @@ API Key 只放在环境或系统凭据存储中：
 export DEEPSEEK_API_KEY='your-key'
 ```
 
-当前 DeepSeek 配置样例：
+当前配置样例：
 
 ```text
-config.deepseek-agent.example.toml
+config.example.toml
 ```
 
 运行当前本地入口：
@@ -95,7 +93,31 @@ cargo run -p codewhale-cli --locked -- exec --auto "inspect this repository"
 Focused 检查：
 
 ```bash
-./scripts/dev-deepseek-agent.sh focused
+./scripts/dev-codewhale.sh focused
+```
+
+生成 checksum-bound 本地包（命令只使用已锁定、已缓存依赖，不访问网络）：
+
+```bash
+CARGO_TARGET_DIR=/private/tmp/codewhale-delivery-target \
+  ./scripts/codewhale-delivery.sh package --output-dir dist
+```
+
+安装、验证、回滚与卸载：
+
+```bash
+artifact="$(find dist -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
+./scripts/codewhale-delivery.sh install --artifact "$artifact" --prefix "$HOME/.local"
+./scripts/codewhale-delivery.sh verify --prefix "$HOME/.local"
+./scripts/codewhale-delivery.sh rollback --prefix "$HOME/.local"
+./scripts/codewhale-delivery.sh uninstall --prefix "$HOME/.local"
+```
+
+安装器只管理指定 prefix 下的两个程序和 immutable release 目录；卸载不会读取或删除
+`CODEWHALE_HOME`。完整离线生命周期自测：
+
+```bash
+./scripts/test-codewhale-delivery.sh
 ```
 
 每项 DeepSeek 能力按 [Roadmap](docs/product/ROADMAP.md) 独立冻结、评测和取舍；协议 canary
@@ -115,9 +137,9 @@ Focused 检查：
 
 ## 项目状态
 
-M0-M6 的主要 canonical 迁移已完成，当前里程碑是 M7 DeepSeek 专项调优。具体状态和下一步
-只在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker 或 handoff
-文件。
+M0-M7 的主要 canonical 迁移与专项评测已完成，当前里程碑是 M8 V1 产品化。具体状态和
+下一步只在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker
+或 handoff 文件。
 
 ## 来源与许可
 

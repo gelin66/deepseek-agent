@@ -48,10 +48,11 @@
   证据不准入双 Writer。M7-A 保持 `hold`；M7-B 已完成 Strict 目录准入与 typed 工具失败
   恢复，因六个默认可执行 actor 均无 Strict treatment surface 而未执行 live A/B。下一独立
   切片审计并比较 `apply_patch`、`edit_file` 与 FIM 编辑能力。
-- 本地 focused 检查脚本：`../scripts/dev-deepseek-agent.sh`。
+- 本地 focused 检查脚本：`../scripts/dev-codewhale.sh`。
 - M1 离线能力基线：`../eval/README.md`。
-- 当前配置样例：`../config.deepseek-agent.example.toml`。
-- 当前二进制和状态目录仍保留 CodeWhale 名称，直到产品化里程碑统一修改。
+- 当前配置样例：`../config.example.toml`。
+- 本地包与安装生命周期：`../scripts/codewhale-delivery.sh`；
+  macOS/Linux 自测：`../scripts/test-codewhale-delivery.sh`。
 
 ## 4. 历史和待清理资料
 

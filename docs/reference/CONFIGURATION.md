@@ -9,9 +9,9 @@ The canonical user file is:
 ~/.codewhale/config.toml
 ```
 
-Override it with `--config`, `CODEWHALE_CONFIG_PATH`, or
-`DEEPSEEK_CONFIG_PATH`. An explicit `CODEWHALE_HOME` is an isolation boundary:
-CodeWhale does not fall back to ambient state outside that directory.
+Override it with `--config` or `CODEWHALE_CONFIG_PATH`. An explicit
+`CODEWHALE_HOME` is an isolation boundary: CodeWhale does not fall back to
+ambient state outside that directory.
 
 See [`config.example.toml`](../../config.example.toml) for a complete current
 example.
@@ -149,13 +149,13 @@ reasoning_effort = "max"
 Important environment overrides include:
 
 ```text
-CODEWHALE_VERBOSITY / DEEPSEEK_VERBOSITY
-DEEPSEEK_OUTPUT_MODE
-DEEPSEEK_LOG_LEVEL
-DEEPSEEK_TELEMETRY
-DEEPSEEK_APPROVAL_POLICY
-DEEPSEEK_SANDBOX_MODE
-DEEPSEEK_YOLO
+CODEWHALE_VERBOSITY
+CODEWHALE_OUTPUT_MODE
+CODEWHALE_LOG_LEVEL
+CODEWHALE_TELEMETRY
+CODEWHALE_APPROVAL_POLICY
+CODEWHALE_SANDBOX_MODE
+CODEWHALE_YOLO
 ```
 
 `--yolo` is an explicit startup override for automatic approval and
@@ -231,7 +231,7 @@ JSON document. MCP OAuth is unrelated to DeepSeek model authentication.
 Environment override:
 
 ```text
-CODEWHALE_MCP_CONFIG / DEEPSEEK_MCP_CONFIG
+CODEWHALE_MCP_CONFIG
 ```
 
 ## Context and subagents
@@ -350,12 +350,12 @@ and apply safe local tool/Fleet settings. It cannot change:
 Values that would weaken the current approval or sandbox posture are ignored
 or rejected.
 
-## State and migration
+## State
 
-Canonical state lives under `$CODEWHALE_HOME` or `~/.codewhale`. Existing
-product-state migration from `~/.deepseek` remains separate from model
-Provider configuration. State and config paths reject symlinked files,
-absolute injected subdirectories, and `..` traversal.
+Canonical state lives under `$CODEWHALE_HOME` or `~/.codewhale`. Retired
+`.deepseek` product state and product environment aliases are not read,
+migrated, or modified. State and config paths reject symlinked files, absolute
+injected subdirectories, and `..` traversal.
 
 Config writes are atomic, owner-only, preserve comments where possible, and
 create one `.bak` copy before replacing an existing file.
