@@ -194,6 +194,16 @@ class M7EThinkingHarnessTests(unittest.TestCase):
             HARNESS.accounting_abort_code(self.manifest, arm),
             "aborted_side_effect_ambiguous",
         )
+        arm["tool"]["outcomes"][0].update(
+            {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "retry": "not_needed",
+                "failure_code": None,
+            }
+        )
+        self.assertIsNone(HARNESS.accounting_abort_code(self.manifest, arm))
 
     def test_surface_totals_and_off_reasoning_are_fail_closed(self) -> None:
         wrong_surface = run_view(effort="off")
