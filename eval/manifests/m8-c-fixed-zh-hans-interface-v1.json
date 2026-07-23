@@ -1,0 +1,224 @@
+{
+  "schema": "codewhale.eval.m8-c-fixed-zh-hans-interface.v1",
+  "suite_id": "m8-c-fixed-zh-hans-interface-e99bf6c7-v1",
+  "frozen_at_utc": "2026-07-23T16:30:00Z",
+  "production_revision": "e99bf6c7cf19608a4c0b772f98f6e3023560c68b",
+  "production_tree": "e1b768c84f9ac37f39f83be267d41aedf5ebd9d8",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree_before_cutover": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock": {
+      "path": "Cargo.lock",
+      "sha256": "0699519a54e34db65457a56c143be8bfd89fdb96bdae7dde01a7a2540788f4ba"
+    },
+    "rust_toolchain": {
+      "path": "rust-toolchain.toml",
+      "sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+      "required_rustc": "1.97.0 (2d8144b78 2026-07-07)"
+    },
+    "baseline_catalog": {
+      "path": "crates/tui/locales/zh-Hans.json",
+      "sha256": "7d1848d63e98044272a88bc95fba2c1ce214ade31288d5409f4f39cf1e516b85",
+      "keys": 167
+    }
+  },
+  "audit": {
+    "production_composition": "AgentApplication -> AgentRuntime -> RunStore",
+    "retained_entry_points": [
+      "codewhale CLI dispatcher",
+      "codewhale-tui interactive foreground",
+      "codewhale exec text and stream-json",
+      "codewhale doctor text and JSON",
+      "codewhale app-server HTTP/SSE and stdio",
+      "root, read-only child and explicit Writer projections"
+    ],
+    "observed_gaps": [
+      "the only zh-Hans catalog and MessageId owner are private to the TUI binary, so the CLI cannot consume them",
+      "top-level and delegated Clap help still contains English descriptions, headings, value names and examples",
+      "Doctor text output still contains English section labels, recovery suggestions and status summaries",
+      "some CLI/TUI startup, configuration and Headless error chains still use English Host-generated prefixes",
+      "canonical Run API and app-server errors are English machine values and must not be translated in place",
+      "raw provider, tool, stdout, stderr, code, diff, path, command, flag, model and identifier content requires an explicit non-translation boundary",
+      "existing CJK unit coverage is broad but not tied to the retained fixed-zh-Hans product scenarios or installed binaries"
+    ],
+    "excluded_treatments": [
+      "Agent prompt or model-output translation",
+      "DeepSeek request, response, model, reasoning, tool, retry or accounting changes",
+      "MCP capability changes",
+      "RepoGraph",
+      "multi-Writer or generic DAG",
+      "model selection",
+      "Runtime, RunStore or protocol schema changes"
+    ]
+  },
+  "slices": [
+    {
+      "id": "S1",
+      "problem": "The accepted fixed-language contract has one TUI-private catalog, while the real CLI and Headless entry points still own English product text.",
+      "acceptance": [
+        "one zh-Hans.json and one MessageId/tr owner are shared by CLI and TUI",
+        "top-level, retained subcommand and delegated TUI help use Chinese explanatory text while command, flag and value identities remain exact",
+        "missing credential, invalid configuration, removed command and startup failures have a Chinese Host summary with raw technical detail retained",
+        "no locale state, LANG/LC detection, language selector, second catalog or translation model call exists"
+      ],
+      "owner": "one shared compile-time product message module consumed by crates/cli and crates/tui",
+      "replaces": [
+        "crates/tui-private localization owner",
+        "direct CLI and Headless Host-generated product strings covered by the catalog"
+      ],
+      "evidence": [
+        "catalog exact-parity and caller tests",
+        "Clap help snapshots under non-Chinese LANG/LC",
+        "process tests for credential, config and retired-command recovery"
+      ],
+      "cutover_deletion": [
+        "TUI-private catalog wrapper",
+        "covered direct English literals and duplicate tests"
+      ]
+    },
+    {
+      "id": "S2",
+      "problem": "Doctor, canonical recovery and multi-Agent status mix localized text with English Host chrome even though their durable and raw facts are already canonical.",
+      "acceptance": [
+        "Doctor human output, canonical cancel/resume/reopen and root/read-only/Writer status are understandable in Simplified Chinese",
+        "Doctor --json, exec stream-json, HTTP/SSE and stdio field names and enum values stay schema-stable",
+        "provider/tool/stdout/stderr payloads, paths, code and diffs remain byte-preserved",
+        "false success, terminal evidence and latest-revision completion semantics are unchanged"
+      ],
+      "owner": "thin CLI/TUI presentation callers using the shared message owner",
+      "replaces": [
+        "direct retained Doctor and canonical status chrome",
+        "duplicate Host summaries for the same retained outcome"
+      ],
+      "evidence": [
+        "text/JSON paired Doctor fixtures",
+        "exec text/stream-json parity",
+        "root/read-only/Writer and crash/reopen conformance",
+        "raw-byte sentinel fixtures"
+      ],
+      "cutover_deletion": [
+        "covered direct literals and unreachable duplicate message ids"
+      ]
+    },
+    {
+      "id": "S3",
+      "problem": "The product has generic CJK tests and a delivery chain, but no frozen product-level fixed-language leakage/layout/artifact gate.",
+      "acceptance": [
+        "retained scenarios have zero unapproved English product-text leaks",
+        "80 and 120 column rendering preserves CJK width, wrapping, truncation and interactive hit targets",
+        "the installed two-binary artifact passes the same help, Doctor, Headless and identity checks offline",
+        "source and runtime checks prove one catalog, no locale and no protocol/raw mutation"
+      ],
+      "owner": "M8-C evaluation fixtures calling production parsers, renderers, binaries and the existing delivery owner",
+      "replaces": [
+        "ad hoc source grep and unit-only localization claims"
+      ],
+      "evidence": [
+        "L01-L14 matrix",
+        "installed-artifact process checks",
+        "focused, targeted and full offline gates"
+      ],
+      "cutover_deletion": [
+        "temporary audit binaries, install roots, homes, targets and logs"
+      ]
+    }
+  ],
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8c-target",
+    "cargo_net_offline": true,
+    "result_path": "eval/results/m8-c-fixed-zh-hans-interface-e99bf6c7-v1.json",
+    "result_mode": "0600",
+    "overwrite": false
+  },
+  "matrix": [
+    {
+      "id": "L01",
+      "case": "single catalog and fixed language",
+      "expected": "exactly one zh-Hans catalog, exhaustive MessageId mapping, no locale state/detection/switching or translation request"
+    },
+    {
+      "id": "L02",
+      "case": "CLI and delegated help",
+      "expected": "Chinese explanatory text under foreign LANG/LC while command names, flags and value identities remain exact"
+    },
+    {
+      "id": "L03",
+      "case": "first run, API key, trust and invalid configuration",
+      "expected": "Chinese actionable recovery before network or Run creation; secrets remain redacted"
+    },
+    {
+      "id": "L04",
+      "case": "Doctor human report",
+      "expected": "retained local identity, route, credential and recovery facts are understandable in Chinese without release discovery"
+    },
+    {
+      "id": "L05",
+      "case": "Doctor JSON stability",
+      "expected": "machine field names and stable values match the frozen pre-cutover contract"
+    },
+    {
+      "id": "L06",
+      "case": "Headless text and stream-json",
+      "expected": "text chrome is Chinese; stream schema, event kinds, tool/model identifiers and accounting fields are unchanged"
+    },
+    {
+      "id": "L07",
+      "case": "HTTP/SSE and stdio",
+      "expected": "Run API v10 envelopes, error codes, cursors and stored event JSON remain schema-stable"
+    },
+    {
+      "id": "L08",
+      "case": "interactive canonical commands and approvals",
+      "expected": "help, approval, request-user-input, cancel and terminal chrome use Chinese with command and tool identities preserved"
+    },
+    {
+      "id": "L09",
+      "case": "failure and recovery",
+      "expected": "budget, timeout, transport, context, resume/reopen and verifier failures provide Chinese Host summaries and retain raw detail"
+    },
+    {
+      "id": "L10",
+      "case": "multi-Agent state",
+      "expected": "root, read-only child and explicit Writer lifecycle projections use Chinese chrome with canonical actor/state values unchanged"
+    },
+    {
+      "id": "L11",
+      "case": "CJK layout",
+      "expected": "80/120 columns preserve width, wrapping, truncation, cursor and mouse/keyboard hit targets"
+    },
+    {
+      "id": "L12",
+      "case": "raw preservation",
+      "expected": "provider/tool payloads, stdout/stderr, paths, code, diff and arbitrary Unicode sentinels remain byte-identical"
+    },
+    {
+      "id": "L13",
+      "case": "installed package",
+      "expected": "offline installed codewhale and codewhale-tui have matching source identity and pass retained help/Doctor/Headless checks"
+    },
+    {
+      "id": "L14",
+      "case": "complexity and cleanup",
+      "expected": "one message owner remains; no duplicate Runtime/Store/protocol/mode is added; temporary state is precisely removed"
+    }
+  ],
+  "credential_admission": {
+    "status": "blocked_no_material_model_treatment",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "read_key_before_admission": false,
+    "official_api_requests_allowed": false,
+    "reason": "M8-C changes Host presentation only; offline fixtures, loopback and installed binaries provide stronger attribution than paid model requests.",
+    "stop_on": [
+      "unexpected_network_requirement",
+      "protocol_schema_change",
+      "raw_output_mutation",
+      "source_identity_mismatch"
+    ]
+  }
+}
