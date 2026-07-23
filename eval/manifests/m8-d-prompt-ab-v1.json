@@ -278,7 +278,7 @@
     "cargo test -p codewhale-app --locked m8d_prompt_treatment",
     "cargo check -p codewhale-context --locked",
     "cargo check -p codewhale-app --locked",
-    "./scripts/dev-deepseek-agent.sh focused",
+    "./scripts/dev-codewhale.sh focused",
     "cargo clippy --workspace --all-targets --locked -- -D warnings",
     "cargo test --workspace --locked",
     "production-path loopback",
@@ -290,6 +290,6 @@
     "harness_sha256": "sha256:decfff8b3b04d14543dd6b1db3be8a023ab9cd92b0e71a8562419a6448149968",
     "harness_test_sha256": "sha256:ba9a9abd6c8885b817c529b6d75d679461b858cac3123748971cb2854c52f1a1",
     "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:e3b9a92ad1c908b44488c4fcce6dd2a110aabfa25e230cc4def84c7da97f1f22"
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:b38fb823039c48b3196df0a5730ccc8346078e2b0706410709a700e26fde61fa"
   }
 }
