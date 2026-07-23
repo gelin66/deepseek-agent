@@ -1,0 +1,5 @@
+{
+  "component": "state",
+  "minimum": 5,
+  "features": ["evidence_receipts", "crash_replay", "deadline_cancel"]
+}

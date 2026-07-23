@@ -1,0 +1,5 @@
+{
+  "component": "runtime",
+  "minimum": 4,
+  "features": ["tool_calls", "evidence_receipts", "deadline_cancel"]
+}

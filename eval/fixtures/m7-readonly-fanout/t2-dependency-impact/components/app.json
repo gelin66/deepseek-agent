@@ -1,0 +1,4 @@
+{
+  "component": "app",
+  "depends_on": ["runtime", "state", "tools"]
+}

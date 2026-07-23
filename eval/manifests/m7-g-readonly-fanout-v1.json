@@ -1,0 +1,174 @@
+{
+  "schema": "codewhale.eval.m7-g-readonly-fanout.v1",
+  "status": "frozen_offline_before_treatment_and_live_api",
+  "date": "2026-07-23",
+  "claim": {
+    "name": "M7-G canonical read-only fan-out capability and benefit audit",
+    "primary_problem": "The canonical runtime already launches multiple same-turn read-only children before joining them, but current evidence proves only event ordering. Historical multi-agent evidence contains exactly one child and cannot attribute any wall-time or task-success gain to fan-out.",
+    "acceptance": "Prove overlapping production HTTP requests, complete typed handoffs, shared accounting, cancellation/partial-failure behavior, and exact SQLite reopen. Then compare the same immutable binary on the same task prompt, model, total budget, and maximum_reruns=0 with the agent surface disabled versus exactly two explicitly admitted read-only children.",
+    "single_owner": "crates/runtime AgentRuntime owns child scheduling and join; crates/state RunStore owns durable truth; crates/app owns production composition; the evaluation harness may only project canonical Run API and event facts.",
+    "replacement": "No production path is replaced unless evidence identifies a concrete scheduler defect. The treatment uses the existing canonical agent tool and RunLimits only.",
+    "cutover_deletion": "If live admission or stable net benefit fails, delete any experiment-only production branch and retain only the contract test, frozen fixtures/manifest/result, and decision summary."
+  },
+  "source_identity": {
+    "starting_revision": "ccb83e0bea2a34274a9d2d94100399195cd00d83",
+    "starting_tree_clean": true,
+    "branch": "deepseek-agent",
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
+    "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
+    "audited_owner_sha256": {
+      "protocol_agent_runtime": "sha256:a12f4a3f8013ac3c7f74ab85d0c356c4006bec38dfc91cd98f61da1f523056b4",
+      "runtime_agent": "sha256:75114fb5dcf9c2bd0f90a6a5cab467d8927802507cb442e395520e4983196e78",
+      "runtime_store_reducer": "sha256:a3a60faa9f44443f96d8f43cf1392c6d6d0753c0cca6b0f94cfac589af484dec",
+      "app_production_composition": "sha256:7ce3458f5d882b97de5c4fd9fbf4d94f3be5f00ab469e7c4a4b65d47cb38f96e",
+      "state_store": "sha256:e17d3f9cab3369ea5767b0abd6fc31a1fb3e2f51c9224bdd7830df8f33e4dbf5"
+    }
+  },
+  "official_protocol_review": {
+    "reviewed_on": "2026-07-23",
+    "tool_calls": "https://api-docs.deepseek.com/guides/tool_calls",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "frozen_rules": {
+      "chat_response_can_contain": "one or more tool calls",
+      "provider_parallel_tool_call_switch": "not documented; CodeWhale must not invent one",
+      "reasoning_replay": "reasoning_content is replayed exactly across tool-call turns",
+      "model": "deepseek-v4-flash",
+      "pricing_usd_per_million_tokens": {
+        "cache_hit_input": "0.0028",
+        "cache_miss_input": "0.14",
+        "output": "0.28"
+      },
+      "documented_concurrency": 2500
+    }
+  },
+  "baseline_diagnosis": {
+    "production_call_graph": "AgentApplication -> AgentRuntime; every same-response agent call durably prepares and starts one child, read-only starts return immediately into pending_children, and join_children runs only after the complete tool-call batch.",
+    "join_order": "pending children are durably settled in launch order even though their model requests may overlap.",
+    "shared_budget": "root and every child reserve from one RuntimeBudget for model requests, tools, wall deadline, and child capacity.",
+    "reopen_contract": "an uncollected read-only child at process loss fails closed as RecoveryRequired/ChildRun; it is never blindly restarted.",
+    "historical_evidence": {
+      "source": "eval/results/eager-join-exact-ab-20260718T020753Z.jsonl",
+      "read_only_children_per_multi_run": 1,
+      "formal_verified_success": {
+        "single_candidate": "6/6",
+        "multi_candidate": "6/6"
+      },
+      "candidate_means": {
+        "single_tokens": 17636,
+        "single_wall_time_ms": 12990,
+        "single_cost_usd": "0.000433",
+        "multi_tokens": 32510,
+        "multi_wall_time_ms": 28790,
+        "multi_cost_usd": "0.001146"
+      },
+      "conclusion": "This evidence supports eager join mechanics only and contains no fan-out treatment."
+    }
+  },
+  "offline_matrix": [
+    "two same-turn read-only child HTTP requests are simultaneously in flight through AgentApplication production composition",
+    "both AgentTaskPrepared and ChildStarted events precede the first ChildFinished",
+    "each child has one canonical RunStore run and terminal outcome",
+    "both typed handoffs are present before one root integration request",
+    "root plus children share complete usage and request accounting",
+    "one child failure is returned without losing the sibling handoff",
+    "deadline/cancel settles every pending child",
+    "SQLite reopen reproduces exact root and child snapshots/events",
+    "process loss with an uncollected read-only child is RecoveryRequired and issues no duplicate model or tool side effect"
+  ],
+  "tasks": [
+    {
+      "id": "t1-capability-intersection",
+      "fixture": "eval/fixtures/m7-readonly-fanout/t1-capability-intersection",
+      "fixture_tree_sha256": "sha256:80b250a1c3bf0bf56e7d611889ba8b1d284909ae0cdc5737c5aa0339aa69d816",
+      "target": "compatibility.py",
+      "partitions": [
+        "parser and runtime specifications",
+        "state specification and repository contract"
+      ]
+    },
+    {
+      "id": "t2-dependency-impact",
+      "fixture": "eval/fixtures/m7-readonly-fanout/t2-dependency-impact",
+      "fixture_tree_sha256": "sha256:d7b23e344a2d74e5f428a46e19193404c3d9c0e70699415f100832786ae15e46",
+      "target": "impact.py",
+      "partitions": [
+        "protocol/runtime/state dependency half",
+        "tools/app/tui dependency half"
+      ]
+    },
+    {
+      "id": "t3-policy-resolution",
+      "fixture": "eval/fixtures/m7-readonly-fanout/t3-policy-resolution",
+      "fixture_tree_sha256": "sha256:b95b19b16a1c53ed51649c901b879a717ac8ea72c5b1805bd2e9236617a6b33a",
+      "target": "policy.py",
+      "partitions": [
+        "base and region policy semantics",
+        "tenant overrides and locked-key counterexamples"
+      ]
+    }
+  ],
+  "experiment": {
+    "kind": "same_binary_surface_ab",
+    "variants": {
+      "control": {
+        "agent_tool": "not advertised",
+        "max_depth": 0,
+        "max_concurrent_children": 0
+      },
+      "treatment": {
+        "agent_tool": "canonical production definition advertised",
+        "required_children": 2,
+        "workspace_access": "read_only",
+        "max_depth": 1,
+        "max_concurrent_children": 2
+      }
+    },
+    "same_across_arms": [
+      "immutable binary and source revision",
+      "task definition and user prompt",
+      "deepseek-v4-flash",
+      "reasoning effort high",
+      "max output tokens",
+      "hard API request limit",
+      "turn/tool/wall budget",
+      "fixture bytes and deterministic verifier",
+      "maximum_reruns=0"
+    ],
+    "runs_per_variant_task": 3,
+    "formal_pairs": 9,
+    "formal_arms": 18,
+    "pair_order": "balanced alternating within each task/run index",
+    "live_api_admitted": false
+  },
+  "metrics": [
+    "verified success and false success",
+    "first-pass implementation/verifier success",
+    "root and child model requests",
+    "tool calls and failed tool outcomes",
+    "input/output/reasoning/cache tokens",
+    "wall time",
+    "USD/CNY cost and accounting completeness",
+    "two-child admission and handoff completeness",
+    "deadline/cancel/partial-failure/reopen disposition"
+  ],
+  "decision_threshold": {
+    "reliability": "verified success must not decrease and false success must not increase",
+    "fanout": "every treatment arm must prove exactly two same-turn read-only children and complete handoffs",
+    "efficiency": "wall time must improve stably at pair and aggregate levels; added tokens, requests, and cost are explicit transfer costs and must not erase the verified-task gain",
+    "complexity": "no second runtime/store/model loop/tool catalog/product mode/general DAG or Writer concurrency",
+    "no_delta_or_unknown_billing": "hold_or_reject_without_further_paid_requests"
+  },
+  "resources": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7g-target",
+    "raw_mode": "ignored_0600",
+    "credential_rule": "Read /Users/gelin/Desktop/codewhale/key.txt only after the offline matrix, immutable binary identity, schedule, cost ceiling, and accounting checks pass."
+  }
+}

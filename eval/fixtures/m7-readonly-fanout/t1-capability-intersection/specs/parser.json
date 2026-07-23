@@ -1,0 +1,5 @@
+{
+  "component": "parser",
+  "minimum": 3,
+  "features": ["reasoning_replay", "tool_calls", "evidence_receipts"]
+}

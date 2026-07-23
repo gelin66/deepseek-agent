@@ -1,0 +1,11 @@
+{
+  "provider": "other",
+  "runtime": {
+    "limits": {
+      "requests": 12
+    }
+  },
+  "display": {
+    "compact": true
+  }
+}

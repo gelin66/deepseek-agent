@@ -1,0 +1,4 @@
+{
+  "component": "runtime",
+  "depends_on": ["protocol"]
+}

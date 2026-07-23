@@ -1,0 +1,15 @@
+{
+  "provider": "deepseek",
+  "locked_keys": ["provider", "runtime.store"],
+  "runtime": {
+    "store": "sqlite",
+    "limits": {
+      "requests": 8,
+      "children": 1
+    }
+  },
+  "display": {
+    "language": "zh-CN",
+    "compact": false
+  }
+}

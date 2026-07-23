@@ -1,0 +1,11 @@
+{
+  "runtime": {
+    "store": "memory",
+    "limits": {
+      "children": 2
+    }
+  },
+  "display": {
+    "theme": "underwater"
+  }
+}
