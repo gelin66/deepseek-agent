@@ -1,0 +1,71 @@
+{
+  "schema": "codewhale.eval.m7-h-request-token-waste.v1",
+  "suite_id": "m7-h-request-token-waste-eb8763a1-v1",
+  "maximum_reruns": 0,
+  "source_revision": "48a0b44df2b8b0ba0f292af943a78d020484133e",
+  "failing_contract_revision": "1943df4c",
+  "candidate_revision": "eb8763a1",
+  "sources": [
+    {
+      "id": "terminal_permit_v1",
+      "path": "eval/results/terminal-permit-exact-ab-20260718T010143Z.jsonl",
+      "sha256": "771c0ae5cb13a66db2aa2ce026c75781dc2316d02c922db62ac835464bcf83e0",
+      "mode": "0600",
+      "record_class": "historical_product_metric"
+    },
+    {
+      "id": "eager_join_v1",
+      "path": "eval/results/eager-join-exact-ab-20260718T020753Z.jsonl",
+      "sha256": "b89bada15af198125242ba0200f1f120ac0d4ed4128a9e5fe5ea29e4b226c8dd",
+      "mode": "0600",
+      "record_class": "historical_product_metric"
+    },
+    {
+      "id": "writer_v2",
+      "path": "eval/results/m6-b1-writer-benefit-ab.json",
+      "sha256": "cd9c81bf07e3e45a1f4fd9f631544a36d0c8ac4b0e08b75701b30e6eef1de8b5",
+      "mode": "0600",
+      "record_class": "historical_product_metric"
+    },
+    {
+      "id": "m7_a2_partial",
+      "path": "eval/results/m7-a2-agent-convergence-formal-18de2ad2-vs-c6a74304.json",
+      "sha256": "ca3eeaaa7a2e46914d262549dab57c57fe23bfd7a94678002a81f405f80ffbbc",
+      "mode": "0600",
+      "record_class": "historical_partial_ineligible"
+    }
+  ],
+  "counterexample": {
+    "owner": "crates/runtime",
+    "failure": "hard-limit compaction was prepared with the full ordinary tool catalog before the Runtime selected the reserved terminal tools=[] request",
+    "failing_test": "terminal_no_tools_catalog_is_selected_before_hard_limit_compaction",
+    "production_catalog_test": "production::tests::production_catalog_is_not_used_to_compact_a_terminal_no_tools_request",
+    "baseline": {
+      "revision": "1943df4c",
+      "terminal": "context_limit_exceeded",
+      "logical_model_requests": 0,
+      "physical_model_requests": 0
+    },
+    "candidate": {
+      "revision": "eb8763a1",
+      "terminal": "completed",
+      "logical_model_requests": 1,
+      "physical_model_requests": 1,
+      "advertised_tools": 0,
+      "context_compactions": 0
+    },
+    "replacement": "request catalog selection now precedes deterministic hard-limit estimation and compaction",
+    "deleted_path": "the separate pre-model-turn full-catalog compaction decision"
+  },
+  "credential_policy": {
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_allowed": false,
+    "official_api_requests_allowed": false,
+    "reason": "the retained claim is deterministic Host correctness, not a model strategy or efficiency treatment"
+  },
+  "output": {
+    "path": "eval/results/m7-h-request-token-waste-eb8763a1-v1.json",
+    "mode": "0600",
+    "overwrite": false
+  }
+}
