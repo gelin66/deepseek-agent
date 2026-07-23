@@ -4,6 +4,22 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if command -v rustup >/dev/null 2>&1; then
+  pinned_channel="$(
+    awk -F '"' '/^channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml
+  )"
+  if ! rustup toolchain list | awk '{ print $1 }' |
+    grep -Eq "^${pinned_channel}(-|$)"; then
+    stable_version="$(rustup run stable rustc --version | awk '{ print $2; exit }')"
+    if [[ "$stable_version" == "$pinned_channel" ]]; then
+      export RUSTUP_TOOLCHAIN=stable
+    else
+      echo "pinned Rust $pinned_channel is not installed" >&2
+      exit 1
+    fi
+  fi
+fi
+
 mode="${1:-focused}"
 test_args=(-p codewhale-tui --bin codewhale-tui --locked)
 

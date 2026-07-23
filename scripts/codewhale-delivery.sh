@@ -79,6 +79,52 @@ host_target() {
   esac
 }
 
+pinned_rust_channel() {
+  awk '
+    /^\[toolchain\]$/ { in_toolchain = 1; next }
+    /^\[/ && in_toolchain { exit }
+    in_toolchain && /^channel[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*"/, "", value)
+      sub(/".*$/, "", value)
+      print value
+      exit
+    }
+  ' rust-toolchain.toml
+}
+
+select_installed_pinned_toolchain() {
+  local expected candidate version_output actual_version
+  expected="$(pinned_rust_channel)"
+  [ -n "$expected" ] || die "rust-toolchain.toml has no pinned channel"
+  if command -v rustup >/dev/null 2>&1; then
+    candidate="$(
+      rustup toolchain list |
+        awk -v expected="$expected" '
+          $1 == expected || index($1, expected "-") == 1 { print $1; exit }
+        '
+    )"
+    if [ -z "$candidate" ] &&
+      version_output="$(rustup run stable rustc --version 2>/dev/null)" &&
+      [ "$(printf '%s\n' "$version_output" | awk '{ print $2; exit }')" = "$expected" ]; then
+      candidate="stable"
+    fi
+    [ -n "$candidate" ] ||
+      die "pinned Rust $expected is not installed (network installation is never automatic)"
+    version_output="$(rustup run "$candidate" rustc --version)"
+    actual_version="$(printf '%s\n' "$version_output" | awk '{ print $2; exit }')"
+    [ "$actual_version" = "$expected" ] ||
+      die "installed toolchain $candidate is Rust $actual_version, expected $expected"
+    export RUSTUP_TOOLCHAIN="$candidate"
+  else
+    require_command rustc
+    version_output="$(rustc --version)"
+    actual_version="$(printf '%s\n' "$version_output" | awk '{ print $2; exit }')"
+    [ "$actual_version" = "$expected" ] ||
+      die "installed rustc is $actual_version, expected $expected"
+  fi
+}
+
 absolute_existing_file() {
   local path="$1"
   local parent base
@@ -276,6 +322,7 @@ package_command() {
     require_command cargo
     require_command git
     require_command rustc
+    select_installed_pinned_toolchain
     [ -z "$(git status --porcelain=v1)" ] ||
       die "source package requires a clean Git worktree"
     version="${version:-$(workspace_version)}"
