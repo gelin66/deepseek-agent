@@ -91,6 +91,15 @@
   本切片没有模型 treatment，Key 未读取、官方 API 请求 0；一次候选后只读 metadata
   断言因漏设 toolchain override 触发 rustup 更新探测并立即中断，不能把整个 Agent session
   表述为从未尝试外网，但冻结的交付路径仍由 OS 网络隔离证明。
+  M8-C 接着从 clean `e99bf6c7` 把 TUI 私有的 167-key catalog 收敛为 CLI/TUI 共享的唯一
+  427-key fixed `zh-Hans` owner，并汉化保留的 Clap help、Doctor、Headless/recovery、
+  `request_user_input` 和多 Agent Host chrome。命令/flag/enum、Doctor JSON、NDJSON、
+  HTTP/SSE/stdio、模型/工具 ID、路径、代码和 raw provider/tool/stdout/stderr 保持稳定；
+  `crates/protocol`、`runtime`、`state`、`app-server` 相对 baseline 零差异。L01-L14、
+  foreign locale、80/120 列 CJK、两次 hermetic TUI、crash/reopen 和真实 `44b17940`
+  安装包回归全部通过。决策为
+  `keep_single_fixed_zh_hans_owner / shrink_duplicate_product_text_paths`；没有模型
+  treatment，Key 未读取、官方 API 请求 0。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -205,7 +214,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only 配置/入口与 M8-B 产品身份/本地交付已完成） | 自己的品牌、配置、CI、打包和开发流程完整 |
+| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only、M8-B 身份/交付、M8-C fixed zh-Hans 已完成；M8-D prompt A/B 待执行） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2176,10 +2185,41 @@ owner，结果记录明确披露，不能扩张为整个 session 的 no-network 
 **保留唯一 CodeWhale 身份与交付 owner，收缩/删除 imported delivery 路径**。完整结果见
 [M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
 
-下一切片单独建立 fixed `zh-Hans` 产品界面：先冻结 CLI/TUI/Headless/Doctor/错误恢复/
+随后 M8-C 单独建立 fixed `zh-Hans` 产品界面：冻结 CLI/TUI/Headless/Doctor/错误恢复/
 多 Agent 状态的真实 user-facing caller、英文泄漏、CJK 宽度和 machine-protocol 稳定矩阵；
 只翻译 Host 生成且保留的文本，不改变 raw provider/tool output，也不混入中文 Agent prompt
-A/B、MCP、RepoGraph、多 Writer 或模型选择。
+A/B、MCP、RepoGraph、多 Writer 或模型选择。该切片现已按下节完成。
+
+### M8-C：固定 zh-Hans 产品界面
+
+M8-C 从 clean `e99bf6c7` 冻结 L01-L14，并以 `crates/localization` 建立 CLI/TUI 共享的唯一
+compile-time message owner。原 TUI 私有 `localization.rs` 与 167-key catalog 已删除；
+candidate `44b17940` 的共享 catalog 为 427 keys。真实 CLI/TUI/app-server help、Doctor、
+Headless/recovery、`request_user_input` 与多 Agent Host chrome 固定为中文，不读取
+`LANG/LC`，也没有语言选择、第二 catalog 或 translation model call。
+
+machine/raw 边界保持不变：命令、flags、enum、Doctor JSON、exec stream-json、
+HTTP/SSE/stdio、模型/工具 ID、路径、代码、diff 和 raw provider/parser/tool/stdout/stderr
+不被后处理翻译。`crates/protocol`、`crates/runtime`、`crates/state`、`crates/app-server`
+相对 baseline 的 diff 为 0，Run API v10、RuntimeEvent v16、State v21、exec-stream v2 与
+`AgentApplication -> AgentRuntime -> RunStore` 未改变。
+
+L01-L14 全部通过；foreign locale 的真实安装包、80/120 列 help 与
+`request_user_input`、中文 PTY、root/read-only/Writer、process crash/SQLite reopen、
+workspace Clippy/test 和两次 hermetic TUI 均通过。真实 locked/offline artifact 绑定
+candidate `44b17940`、tree `f4444098`，两项 installed binary 的 version 身份一致。
+相对 baseline 共 31 files、`+2,741/-963`，净增加 1,778 行；该正增量只作为一个共享
+427-key interface contract 与测试的成本记录，不作为能力指标。
+
+产品决策为 **保留唯一 fixed zh-Hans owner，收缩/删除重复产品文案路径**。本切片没有
+模型 treatment，Key 未读取、官方 API 请求 0，也不声明 verified coding success、Token、
+时间或费用改善。完整结果见
+[M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
+
+下一切片为 M8-D：重新审计 current production prompt 与历史被拒绝候选，先冻结版本、
+immutable binary、任务/角色/预算/计费和 verifier 身份，只对 DeepSeek 可见 system prompt
+形成单一可归因 treatment；不能把 Host UI 翻译、Runtime/Store、工具 schema、权限或预算
+变化混入 A/B。只有无 unknown billing 且存在真实 prompt surface delta 时才读取 Key。
 
 ### 调优
 
@@ -2199,7 +2239,8 @@ A/B、MCP、RepoGraph、多 Writer 或模型选择。
 
 - 遗留 historical evidence 和最终不再需要的导入资料；
 - 无接线 stub、旧语义适配层和新旧双路径；
-- fixed `zh-Hans` 完成后只保留仍有真实 caller 的文案 owner。
+- fixed `zh-Hans` 已收敛为一个共享 owner；后续只删除失去真实 caller 的 message id，
+  不恢复 TUI 私有 catalog 或 locale 状态。
 
 Telegram、Feishu、bridge-core、remote-setup 调用面和 Tencent Lighthouse 部署链已在 M4-B
 因 app-server 旧控制面删除而同步物理删除，不再列为 M7 待办。

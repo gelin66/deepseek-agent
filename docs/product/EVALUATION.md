@@ -1261,6 +1261,71 @@ manifest、ignored result 与完整结论：
 - `eval/results/m8-b-product-delivery-2ed3efe3-v1.json`；
 - [M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
 
+### 9.19 M8-C 固定 zh-Hans 产品界面（2026-07-23）
+
+M8-C manifest 固定 clean production baseline `e99bf6c7`、Run API v10、RuntimeEvent v16、
+State v21、exec-stream v2、外部 target `/private/tmp/codewhale-m8c-target`、
+`CARGO_NET_OFFLINE=true` 和 `maximum_reruns=0`。L01-L14 覆盖：
+
+1. 恰好一个 shared `zh-Hans` catalog/MessageId owner，无 locale 检测/选择或翻译请求；
+2. CLI、TUI、exec、app-server help 在 foreign locale 下使用中文且身份不变；
+3. 首启、无 Key、invalid config、retired command、Headless 与 typed recovery；
+4. Doctor human/JSON、exec text/stream-json、HTTP/SSE/stdio paired stability；
+5. approval、`request_user_input`、root/read-only/Writer 与 crash/reopen；
+6. 80/120 列 CJK width/wrap/cursor/hit target 和 raw sentinel；
+7. real installed two-binary artifact identity、verify 与 uninstall/data boundary；
+8. TUI 私有 localization owner 物理删除，canonical Runtime/Store/protocol 零差异。
+
+六个 code/cutover 提交为 `062a747d`、`af8b7c3e`、`413d4ae1`、`6d7ebe74`、
+`23e33980`、`44b17940`。candidate 相对 `e99bf6c7` 共 31 files、2,741 insertions、
+963 deletions，净增加 1,778 行；catalog 从 TUI 私有 167 keys 收敛为共享 427 keys。
+正增量只记录一个 exhaustive interface contract、真实 caller 迁移和回归测试成本，不作为
+Agent 能力收益。
+
+真实 macOS locked/offline source artifact：
+
+- file：`codewhale-0.8.68-aarch64-apple-darwin-44b17940846c.tar.gz`；
+- size：17,733,507 bytes；
+- SHA-256：`0578404370cf07af86d73e2d8f6a5c15cefa62e888319fbc6382b705678b660c`；
+- manifest identity：candidate `44b17940846ceb5f946337623e7554768ee2e75e`、tree
+  `f44440985c27640f7388c0edc76768841851aa66`、Cargo.lock
+  `be75e11ee7b1a879908cd5a4ae8a615a45d965d63822115c8de2db7e1294eeac`；
+- binaries：`codewhale` 15,827,216 bytes、`codewhale-tui` 22,588,464 bytes。
+
+artifact install/verify 后，两个 `--version`、CLI/TUI/app-server help、Doctor text/JSON、
+missing Key 和 retired command 在 `LANG=C/LC_ALL=C` 下通过；uninstall 删除程序并保留
+隔离 `CODEWHALE_HOME`。冻结 representative outputs 的非白名单英文产品文案泄漏为 0；
+白名单只包含技术身份、machine fields/status 和 raw 外部内容，不做全仓 ASCII 扫描。
+
+ignored result：
+
+- path：`eval/results/m8-c-fixed-zh-hans-interface-e99bf6c7-v1.json`；
+- mode/size：`0600` / 8,986 bytes；
+- SHA-256：`a07596ffb0d7ca18398fa0a90a53946199712fa4ad6ffe9bc02ff08091df7ee2`；
+- manifest SHA-256：`d92792d8e5de7b869c0def6a003a3421f74edf85fd8e3c8539e0cdeaf4ad48e9`；
+- 14/14 matrix cases passed；
+- `credential_read=false`、`official_api_requests=0`；
+- `material_model_treatment=false`、`product_metric_eligible=false`。
+
+最终门禁包含 fixed-zh-Hans static/targeted、focused、fmt、workspace strict Clippy/test、
+TUI hermetic 两次（每次 889 passed、1 ignored）、canonical/QA/release PTY、exec acceptance、
+HTTP/stdio parity、app-server、root/read-only/Writer、process SIGKILL/SQLite reopen、
+delivery self-test 与真实 artifact lifecycle；全部通过。`crates/protocol`、
+`crates/runtime`、`crates/state`、`crates/app-server` 相对 baseline 的 diff 为 0。
+
+结论为
+**keep_single_fixed_zh_hans_owner / shrink_duplicate_product_text_paths**：保留一个 CLI/TUI
+共享 compile-time catalog、Host-owned 中文 help/Doctor/recovery/multi-Agent chrome、明确
+raw/machine 非翻译边界和 CJK/installed-artifact 门禁；删除 TUI 私有 wrapper/catalog 与
+覆盖到的 direct English owner。不报告 verified coding success、Token、时间或 API cost
+改善，也不声称中文 Agent prompt 已获得收益。
+
+manifest、ignored result 与完整结论：
+
+- `eval/manifests/m8-c-fixed-zh-hans-interface-v1.json`；
+- `eval/results/m8-c-fixed-zh-hans-interface-e99bf6c7-v1.json`；
+- [M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

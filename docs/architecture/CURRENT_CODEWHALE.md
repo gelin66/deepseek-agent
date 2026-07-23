@@ -45,6 +45,8 @@
 - M8-B imported updater deletion：`ccc98245`
 - M8-B CodeWhale state-path cutover：`d792113e`
 - M8-B reproducible delivery candidate：`307f6c09`
+- M8-C shared fixed zh-Hans owner：`062a747d`
+- M8-C fixed zh-Hans production candidate：`44b17940`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -102,6 +104,13 @@
   container `--network none` 下通过；用户数据保持不变。没有模型 treatment，Key 未读取、
   官方 API 请求 0。一次候选后 metadata 断言的 rustup 更新探测被立即中断并记录，不能把
   delivery no-network evidence 扩张为整个 Agent session 的 no-network 结论。
+  M8-C 随后把 TUI 私有 localization wrapper/catalog 收敛为 CLI/TUI 共享的唯一 fixed
+  `zh-Hans` owner；CLI/TUI/app-server help、Doctor、Headless/recovery、
+  `request_user_input` 与多 Agent Host chrome 使用同一 427-key catalog。machine JSON/
+  NDJSON/API、命令/flag/enum、模型/工具 ID、路径、代码和 raw provider/tool/stdout/stderr
+  保持原样。L01-L14、foreign locale、80/120 列 CJK、两次 TUI、crash/reopen 与真实
+  `44b17940` 安装包回归通过；protocol/runtime/state/app-server 相对 baseline 零差异。
+  没有模型 treatment，Key 未读取、官方 API 请求 0。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -512,6 +521,7 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
 | `tui` | exec/interactive canonical projection + Provider 遗留 | 删除剩余非 DeepSeek 产品面 |
+| `localization` | CLI/TUI 共享 fixed `zh-Hans` compile-time message owner | 只删除失去真实 caller 的 message id，不增加 locale |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
 迁移后没有保留兼容 crate 或空壳。
@@ -1328,15 +1338,45 @@ rollback 不重建，uninstall 只删除程序和 delivery metadata。macOS real
 1,702 行，Run API v10、RuntimeEvent v16、State v21、exec-stream v2 未变。完整事实见
 [M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
 
+M8-C 没有改变 model setup、canonical execution 或 delivery owner。产品文本链现在是：
+
+```text
+crates/localization/locales/zh-Hans.json
+  -> crates/localization::{MessageId, tr, tr_args}
+  -> crates/cli + crates/tui
+  -> codewhale + codewhale-tui
+```
+
+这是固定语言 compile-time owner，不读取 `LANG/LC`，没有 locale 配置、语言切换、第二
+catalog 或 translation model call。真实 Clap parser、Doctor、Headless errors、
+`request_user_input`、approval、canonical status 与多 Agent chrome 使用同一 message
+truth；模型提供的问题/选项、provider/tool 输出、stdout/stderr、路径、代码和 diff 原样
+投影。Doctor JSON、exec stream-json、HTTP/SSE/stdio 字段/enum 和 stored event JSON 不做
+本地化。
+
+旧 `crates/tui/src/localization.rs` 和 `crates/tui/locales/zh-Hans.json` 已物理删除。
+shared catalog 由 baseline 167 keys 扩展为 427 keys；静态 gate 要求 catalog/MessageId
+exact parity、恰好一个 catalog/rust-i18n owner，并拒绝 locale detection/switching 回流。
+80/120 列的 Clap help 与 `request_user_input` 以 Unicode display width 验证；真实中文 PTY
+继续覆盖 composer/cursor/hit target。candidate `44b17940` 的 installed 两项 binary 在
+`LANG=C/LC_ALL=C` 下通过 help、Doctor text/JSON、missing Key、retired command 和
+uninstall，manifest 精确绑定 tree `f4444098`。
+
+M8-C 相对 `e99bf6c7` 为 31 files、`+2,741/-963`，净增加 1,778 行；正增量来自一个共享
+427-key interface contract 与真实 caller/回归测试，不作为 Agent 能力指标。
+`crates/protocol`、`crates/runtime`、`crates/state`、`crates/app-server` 相对 baseline
+零差异，Run API v10、RuntimeEvent v16、State v21、exec-stream v2 未变。完整事实见
+[M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
 - hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
   可靠性保留，不支持这些效率结论；
-- fixed `zh-Hans` 全产品界面、中文帮助/错误恢复英文泄漏门禁或中文 Agent prompt A/B
-  已完成；M8-B 只完成产品 identity 与本地 delivery，Linux source release build 仍只由
-  CI matrix 拥有而非本机观察；
+- 中文 Agent prompt A/B 已获得收益；M8-C 只完成 fixed `zh-Hans` Host 产品界面和
+  machine/raw 非翻译边界，不改变模型可见 system prompt；Linux source release build
+  仍只由 CI matrix 拥有而非本机观察；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
