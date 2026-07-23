@@ -2258,13 +2258,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:c514d10264b6cfbc3499da6d2f07b20d1ec5d5db7dd95b7fc1481e5ecf61ba68",
+                "sha256:1ce588b2a0131123a05601e4a9de2210a70811c13a8b0abcbf7e80ea12943169",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:e7e23f60a681055147fea6267a7e7cfd3406086c836b85b1850145f67f2deacf",
+                "sha256:071c9ead38da6df790d48b06e7f12d6c6f1ae7f9ef71b96588a463c9d00595ef",
             ),
             (
                 "coordinator",
@@ -2302,7 +2302,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:7201ff882188ca6dc73c72d9cb99d160b188c4b584a2d48c5b359660a756cb7d",
+                "sha256:feb2c7bf376ae3e4a69194a1c3ddb6a8fe871e9d333c98026ea03e02d40c8785",
             ),
             (
                 "terminal_empty",

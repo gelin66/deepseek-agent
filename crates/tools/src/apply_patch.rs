@@ -129,6 +129,7 @@ struct FilePatch {
     hunks: Vec<Hunk>,
     delete_after: bool,
     create_if_missing: bool,
+    create_from_null: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +162,8 @@ struct PatchStatsExt {
 struct PatchShape {
     has_hunks: bool,
     header_files: Vec<String>,
+    has_create_header: bool,
+    has_delete_header: bool,
 }
 
 impl PatchShape {
@@ -230,6 +233,7 @@ pub fn execute_apply_patch(
             hunks,
             delete_after: false,
             create_if_missing,
+            create_from_null: false,
         }],
         ApplyPatchPreflightKind::FilePatches(file_patches) => file_patches,
     };
@@ -275,6 +279,17 @@ fn preflight_apply_patch_plan(input: &Value) -> Result<ApplyPatchPreflightPlan, 
     let create_if_missing = optional_bool(input, "create_if_missing", false);
 
     if let Some(changes_value) = input.get("changes") {
+        let mut ignored_controls = ["path", "patch", "fuzz", "create_if_missing"]
+            .into_iter()
+            .filter(|field| input.get(*field).is_some())
+            .collect::<Vec<_>>();
+        ignored_controls.sort_unstable();
+        if !ignored_controls.is_empty() {
+            return Err(ToolError::invalid_input(format!(
+                "`changes` cannot be combined with patch-only fields: {}",
+                ignored_controls.join(", ")
+            )));
+        }
         return Ok(ApplyPatchPreflightPlan {
             summary: preflight_changes(changes_value)?,
             kind: ApplyPatchPreflightKind::Changes,
@@ -461,7 +476,7 @@ fn parse_unified_diff_files(
 
         if let Some(stripped) = line.strip_prefix("+++ ") {
             let new_path = Some(stripped.trim().to_string());
-            let (path, delete_after, create_flag) =
+            let (path, delete_after, create_flag, create_from_null) =
                 resolve_diff_paths(old_path.as_deref(), new_path.as_deref(), create_if_missing)?;
             old_path = None;
             if let Some(file) = current.take() {
@@ -472,6 +487,7 @@ fn parse_unified_diff_files(
                 hunks: Vec::new(),
                 delete_after,
                 create_if_missing: create_flag,
+                create_from_null,
             });
             continue;
         }
@@ -503,7 +519,7 @@ fn resolve_diff_paths(
     old_path: Option<&str>,
     new_path: Option<&str>,
     create_if_missing: bool,
-) -> Result<(String, bool, bool), ToolError> {
+) -> Result<(String, bool, bool, bool), ToolError> {
     let old_norm = old_path.and_then(normalize_diff_path);
     let new_norm = new_path.and_then(normalize_diff_path);
     if let (Some(old), Some(new)) = (&old_norm, &new_norm)
@@ -514,11 +530,12 @@ fn resolve_diff_paths(
         )));
     }
     let delete_after = new_norm.is_none();
-    let create_flag = create_if_missing || old_norm.is_none();
+    let create_from_null = old_norm.is_none() && new_norm.is_some();
+    let create_flag = create_if_missing || create_from_null;
     let path = new_norm
         .or(old_norm)
         .ok_or_else(|| ToolError::invalid_input("Patch is missing both old and new file paths"))?;
-    Ok((path, delete_after, create_flag))
+    Ok((path, delete_after, create_flag, create_from_null))
 }
 
 fn normalize_diff_path(raw: &str) -> Option<String> {
@@ -642,6 +659,7 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
     let mut shape = PatchShape::default();
     let mut seen = HashSet::new();
     let mut old_path: Option<String> = None;
+    let mut saw_old_header = false;
     let mut hunk_old_remaining = 0usize;
     let mut hunk_new_remaining = 0usize;
 
@@ -661,12 +679,17 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
         }
 
         if let Some(stripped) = line.strip_prefix("--- ") {
+            saw_old_header = true;
             old_path = normalize_diff_path(stripped);
             continue;
         }
 
         if let Some(stripped) = line.strip_prefix("+++ ") {
             let new_path = normalize_diff_path(stripped);
+            if saw_old_header {
+                shape.has_create_header |= old_path.is_none() && new_path.is_some();
+                shape.has_delete_header |= old_path.is_some() && new_path.is_none();
+            }
             let resolved = new_path.or(old_path.clone());
             if let Some(path) = resolved
                 && seen.insert(path.clone())
@@ -674,6 +697,7 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
                 shape.header_files.push(path);
             }
             old_path = None;
+            saw_old_header = false;
         }
     }
 
@@ -712,6 +736,11 @@ fn validate_patch_shape(shape: &PatchShape, path_override: Option<&str>) -> Resu
     }
 
     match path_override {
+        Some(_) if shape.has_create_header || shape.has_delete_header => {
+            Err(ToolError::invalid_input(
+                "`path` cannot override a patch with `/dev/null` create/delete headers; remove `path` so the header operation remains explicit",
+            ))
+        }
         Some(_) if shape.file_count() > 1 => Err(ToolError::invalid_input(format!(
             "Patch references multiple files ({}) but `path` was provided. Remove `path` to apply a multi-file patch, or provide a single-file patch.",
             format_file_list(&shape.header_files),
@@ -892,6 +921,14 @@ fn build_pending_writes_from_patches(
             .ok()
             .map(|metadata| metadata.permissions());
 
+        if file_patch.create_from_null && original.is_some() {
+            return Err(ToolError::workspace_precondition(format!(
+                "Patch declares `{}` as a new file, but the target already exists at `{}`",
+                file_patch.path,
+                resolved.display(),
+            )));
+        }
+
         if original.is_none() && !file_patch.create_if_missing {
             return Err(ToolError::execution_failed(format!(
                 "File `{}` does not exist at `{}`. Set create_if_missing=true for new files or include headers for file creation.",
@@ -917,6 +954,13 @@ fn build_pending_writes_from_patches(
 
         let apply_stats =
             apply_hunks_to_lines(&mut lines, &file_patch.hunks, fuzz, &file_patch.path)?;
+        if file_patch.delete_after && !lines.is_empty() {
+            return Err(ToolError::invalid_input(format!(
+                "Delete patch for `{}` leaves {} line(s); a `/dev/null` target must remove the complete file content",
+                file_patch.path,
+                lines.len()
+            )));
+        }
         stats.stats.hunks_applied += apply_stats.hunks_applied;
         stats.stats.hunks_total += file_patch.hunks.len();
         stats.stats.fuzz_used += apply_stats.fuzz_used;
@@ -1394,6 +1438,92 @@ mod tests {
             b"old\n"
         );
         assert!(!workspace.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_patch_only_controls_with_changes() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("value.txt");
+        fs::write(&path, "original\n").expect("fixture");
+
+        for extra in [
+            json!({"path":"ignored.txt"}),
+            json!({"fuzz":1}),
+            json!({"create_if_missing":true}),
+        ] {
+            let mut input = json!({
+                "changes":[{"path":"value.txt","content":"changed\n"}]
+            });
+            input
+                .as_object_mut()
+                .expect("object")
+                .extend(extra.as_object().expect("extra object").clone());
+
+            let error = execute_apply_patch(input, &context)
+                .expect_err("patch-only controls must not be ignored for changes");
+
+            assert!(matches!(error, ToolError::InvalidInput { .. }));
+            assert_eq!(fs::read(&path).expect("unchanged bytes"), b"original\n");
+        }
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_path_override_for_create_or_delete_headers() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let target = workspace.path().join("target.txt");
+        fs::write(&target, "old\n").expect("fixture");
+
+        let delete_patch = "--- a/target.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-old\n";
+        let delete_error =
+            execute_apply_patch(json!({"path":"target.txt","patch":delete_patch}), &context)
+                .expect_err("path override must not erase delete-header semantics");
+        assert!(matches!(delete_error, ToolError::InvalidInput { .. }));
+        assert_eq!(fs::read(&target).expect("unchanged target"), b"old\n");
+
+        let create_patch = "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,1 @@\n+new\n";
+        let create_error = execute_apply_patch(
+            json!({"path":"override.txt","patch":create_patch}),
+            &context,
+        )
+        .expect_err("path override must not erase create-header semantics");
+        assert!(matches!(create_error, ToolError::InvalidInput { .. }));
+        assert!(!workspace.path().join("new.txt").exists());
+        assert!(!workspace.path().join("override.txt").exists());
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_delete_hunks_that_leave_content() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let target = workspace.path().join("target.txt");
+        fs::write(&target, "first\nsecond\n").expect("fixture");
+        let patch = "--- a/target.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-first\n";
+
+        let error = execute_apply_patch(json!({"patch":patch}), &context)
+            .expect_err("delete header must remove the complete file content");
+
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
+        assert_eq!(
+            fs::read(&target).expect("unchanged target"),
+            b"first\nsecond\n"
+        );
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_create_header_when_target_exists() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let target = workspace.path().join("target.txt");
+        fs::write(&target, "existing\n").expect("fixture");
+        let patch = "--- /dev/null\n+++ b/target.txt\n@@ -0,0 +1,1 @@\n+created\n";
+
+        let error = execute_apply_patch(json!({"patch":patch}), &context)
+            .expect_err("create header must not modify an existing target");
+
+        assert!(matches!(error, ToolError::WorkspacePrecondition { .. }));
+        assert_eq!(fs::read(&target).expect("unchanged target"), b"existing\n");
     }
 
     #[test]

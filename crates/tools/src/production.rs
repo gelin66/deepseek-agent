@@ -605,9 +605,12 @@ impl ToolExecutor for ProductionToolExecutor {
         if invocation.name == "apply_patch"
             && let Err(error) = preflight_apply_patch(input)
         {
-            return Some(Self::preflight_error_outcome(ToolError::patch_parse(
-                error.to_string(),
-            )));
+            let error = if input.get("changes").is_some() {
+                error
+            } else {
+                ToolError::patch_parse(error.to_string())
+            };
+            return Some(Self::preflight_error_outcome(error));
         }
         if invocation.name == "exec_shell" {
             return match preflight_exec_shell(input, &self.context, &self.shell, &self.shell_host) {
@@ -738,7 +741,7 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         definition(
             "apply_patch",
-            "用 unified diff 或完整文件内容原子修改一个或多个工作区文件；patch 与 changes 二选一，适合结构性、多处或跨文件变更。",
+            "用 unified diff 或 changes 完整内容修改工作区文件；每个文件原子发布，跨文件普通失败会回滚但崩溃窗口不是事务。patch 与 changes 二选一，path/fuzz/create_if_missing 仅适用于 patch。",
             apply_patch_schema(),
         ),
         definition(
@@ -1498,6 +1501,26 @@ mod tests {
             (
                 invocation("apply_patch", json!({"patch":"not a unified patch"})),
                 ToolFailureCode::PatchParse,
+            ),
+            (
+                invocation(
+                    "apply_patch",
+                    json!({
+                        "changes":[{"path":"value.txt","content":"changed\n"}],
+                        "fuzz":1
+                    }),
+                ),
+                ToolFailureCode::InvalidField,
+            ),
+            (
+                invocation(
+                    "apply_patch",
+                    json!({"changes":[
+                        {"path":"same.txt","content":"one\n"},
+                        {"path":"same.txt","content":"two\n"}
+                    ]}),
+                ),
+                ToolFailureCode::InvalidField,
             ),
         ];
         for (invocation, expected_code) in cases {

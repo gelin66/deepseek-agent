@@ -52,18 +52,32 @@ fn write_atomic_inner(
     #[cfg(test)]
     maybe_stop_for_crash_fixture("before_persist");
 
-    if let Some(expected) = expected {
-        match expected {
-            Some(expected) => match std::fs::read(path) {
+    match expected {
+        Some(Some(expected)) => {
+            match std::fs::read(path) {
                 Ok(current) if current == expected => {}
                 _ => return Err(AtomicWriteError::Conflict),
-            },
-            None if path.exists() => return Err(AtomicWriteError::Conflict),
-            _ => {}
+            }
+            // This is an optimistic exact-byte precondition followed by an
+            // atomic replacement. It is not a filesystem compare-and-swap:
+            // an uncooperative external writer can still race this rename.
+            temporary.persist(path).map_err(|error| error.error)?;
+        }
+        Some(None) => {
+            // Unlike an existence check followed by rename, noclobber keeps
+            // concurrent file creation from being overwritten.
+            temporary.persist_noclobber(path).map_err(|error| {
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    AtomicWriteError::Conflict
+                } else {
+                    AtomicWriteError::Io(error.error)
+                }
+            })?;
+        }
+        None => {
+            temporary.persist(path).map_err(|error| error.error)?;
         }
     }
-
-    temporary.persist(path).map_err(|error| error.error)?;
     #[cfg(test)]
     maybe_stop_for_crash_fixture("after_persist");
     if let Ok(directory) = std::fs::File::open(parent) {
@@ -148,6 +162,19 @@ mod tests {
 
         assert!(matches!(error, AtomicWriteError::Conflict));
         assert_eq!(fs::read(path).expect("unchanged"), b"current");
+    }
+
+    #[test]
+    fn checked_create_never_clobbers_an_existing_target() {
+        let workspace = tempdir().expect("workspace");
+        let path = workspace.path().join("value.txt");
+        fs::write(&path, b"external").expect("external fixture");
+
+        let error = write_atomic_if_unchanged(&path, None, b"candidate", None)
+            .expect_err("checked create must not replace an existing target");
+
+        assert!(matches!(error, AtomicWriteError::Conflict));
+        assert_eq!(fs::read(path).expect("external bytes survive"), b"external");
     }
 
     #[cfg(unix)]
