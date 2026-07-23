@@ -8,6 +8,7 @@
 - 当前 production actor catalog 冻结：`6a27fb85`
 - 最终离线 Harness revision：`9cba8b53f02d9d457575711ecfe6a08342334d83`
 - 结论后只读复核与残余 correctness 修复：`1cb65b82`
+- 结论后 clean Harness checkpoint：`27a6d31dc97432d103becd908e67f1615a138618`
 - manifest：`eval/manifests/m7-c-edit-baseline-v1.json`
 - manifest canonical-content SHA-256：`4d5457db2e7fc075fbecf925f89d45ea412a9aace515da1b4cfb0b3a03755c55`
 - manifest raw-file SHA-256：`24ecf8252c192136edfd122919a0a5aab5a0c42ae9a9799f808febc26e825277`
@@ -157,6 +158,14 @@ headless、root interactive 与 isolated Writer 目录 hash 随这一真实 wire
 M7-B manifest 仍保持不可变。定向门禁为 13 个 M7-C apply-patch 用例、2 个 checked-publish
 用例、canonical preflight 与 actor catalog identity 全部通过；完整 tools crate 为 347 passed、
 1 ignored external helper，集成测试另 1 passed。
+
+clean `27a6d31d` 的当前 Harness 再次通过 8/8 gates；source before/after revision 均为
+`27a6d31dc97432d103becd908e67f1615a138618`，tree 均为
+`107668d633601997d2f251fb1ca164d2e4a2829c`，dirty false，API requests 0，credential read
+false。0600 临时 result SHA-256 为
+`55ae56e6c199a6382e1e5d02697a3d1d4e3dd81d43e28f714deea425e1f66fab`，按清理合同不提交。
+当前 `focused`、fmt、workspace clippy `-D warnings`、workspace tests 和 `git diff --check`
+也全部通过。
 
 这里同时纠正两处证据口径：
 
