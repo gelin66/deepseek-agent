@@ -1,0 +1,241 @@
+{
+  "schema": "codewhale.eval.m8-b-product-delivery.v1",
+  "suite_id": "m8-b-product-delivery-2ed3efe3-v1",
+  "frozen_at_utc": "2026-07-23T14:17:27Z",
+  "production_revision": "2ed3efe3ce56475549e2382f3d2c41ff39286e54",
+  "production_tree": "7e5162411663de5ecb3232cdfe96bd00c6b918bc",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree_before_cutover": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock": {
+      "path": "Cargo.lock",
+      "sha256": "b4924d818f3e39218bd733c18c562b5874bb7f1a4b7cadb98257f3570872b1a3"
+    },
+    "rust_toolchain": {
+      "path": "rust-toolchain.toml",
+      "sha256": "e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
+      "baseline_channel": "stable",
+      "baseline_host_rustc": "1.97.0 (2d8144b78 2026-07-07)"
+    }
+  },
+  "audit": {
+    "production_composition": "AgentApplication -> AgentRuntime -> RunStore",
+    "retained_binaries": [
+      "codewhale",
+      "codewhale-tui"
+    ],
+    "observed_delivery_gaps": [
+      "no canonical package/install/upgrade/rollback/uninstall owner",
+      "workspace repository metadata points at the imported upstream",
+      "rust-toolchain.toml follows moving stable instead of an exact toolchain",
+      "CI covers Ubuntu checks only and does not exercise shipped artifacts or install lifecycle",
+      "doctor still queries imported-upstream GitHub release metadata and advertises the deleted update command",
+      "crates/release combines dead updater/CNB discovery with TUI TLS helpers",
+      "the codew binary and DEEPSEEK_* product overrides preserve duplicate product entry points",
+      "legacy ~/.deepseek and DEEPSEEK_CONFIG_PATH readers can silently change the active product state"
+    ],
+    "remote_facts": {
+      "origin": "https://github.com/gelin66/deepseek-agent.git",
+      "upstream_fetch": "https://github.com/Hmbown/CodeWhale.git",
+      "upstream_push": "DISABLED",
+      "policy": "origin is the owner repository; upstream is read-only source history and never a release source"
+    }
+  },
+  "slices": [
+    {
+      "id": "S1",
+      "problem": "Build metadata, binary discovery, package metadata and help still expose imported DeepSeek-era product aliases and an extra codew executable.",
+      "acceptance": [
+        "CodeWhale is the single product identity in package descriptions, embedded build metadata and User-Agent strings",
+        "the shipped binary set is exactly codewhale plus codewhale-tui",
+        "CODEWHALE_BUILD_SHA and CODEWHALE_TUI_BIN are the only product overrides",
+        "old product aliases fail closed and no deleted npm/Homebrew/update path is advertised"
+      ],
+      "owner": "workspace package metadata plus crates/build-support and crates/cli",
+      "replaces": [
+        "DEEPSEEK_BUILD_SHA and DEEPSEEK_BUILD_VERSION",
+        "DEEPSEEK_TUI_BIN",
+        "codew compatibility binary",
+        "imported-upstream package descriptions and install hints"
+      ],
+      "evidence": [
+        "cargo metadata binary/repository assertion",
+        "build metadata override tests",
+        "CLI parser, sibling discovery and help tests"
+      ],
+      "cutover_deletion": [
+        "crates/cli/src/bin/codew_legacy_shim.rs",
+        "codew Cargo target",
+        "old product env readers and help text"
+      ]
+    },
+    {
+      "id": "S2",
+      "problem": "The release crate's only release-metadata caller is doctor, while its real TLS callers are owned by the TUI; this preserves imported GitHub/CNB update behavior without an updater.",
+      "acceptance": [
+        "doctor is deterministic and performs no release metadata request",
+        "retained MCP/OAuth/Fleet HTTP clients still use the TUI TLS owner",
+        "no imported GitHub/CNB release URL, channel, mirror or updater hint remains in production source",
+        "crates/release and its now-unused dependencies are physically deleted"
+      ],
+      "owner": "crates/tui TLS and doctor surfaces",
+      "replaces": [
+        "codewhale-release",
+        "doctor latest-release lookup",
+        "CNB and imported-upstream release discovery"
+      ],
+      "evidence": [
+        "TUI targeted tests and check",
+        "offline doctor process test",
+        "source and dependency absence gates"
+      ],
+      "cutover_deletion": [
+        "crates/release",
+        "codewhale-release dependency",
+        "release discovery and updater-only semver code"
+      ]
+    },
+    {
+      "id": "S3",
+      "problem": "Product-owned config, state, settings, secrets and diagnostics still consult legacy ~/.deepseek paths and DeepSeek-branded product environment aliases.",
+      "acceptance": [
+        "new and existing V1 runs read and write only CODEWHALE_HOME, CODEWHALE_CONFIG_PATH and ~/.codewhale",
+        "legacy paths and product env aliases are ignored or explicitly rejected without mutation",
+        "uninstall preserves canonical user data and never touches ~/.deepseek",
+        "DeepSeek API protocol variables such as DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL remain unchanged"
+      ],
+      "owner": "crates/config for canonical product paths; each state consumer uses that owner",
+      "replaces": [
+        "~/.deepseek config/state/settings/secrets fallbacks and migration",
+        "DEEPSEEK_CONFIG_PATH, DEEPSEEK_HOME and DEEPSEEK_SECRET_BACKEND product aliases",
+        "legacy state Doctor projection"
+      ],
+      "evidence": [
+        "isolated HOME and explicit CODEWHALE_HOME tests",
+        "old-path rejection and no-mutation tests",
+        "config, secrets, context, CLI and TUI targeted tests"
+      ],
+      "cutover_deletion": [
+        "legacy path resolvers and migration structs",
+        "legacy state Doctor report",
+        "legacy product env readers and compatibility tests"
+      ]
+    },
+    {
+      "id": "S4",
+      "problem": "There is no reproducible local artifact and lifecycle owner, and CI cannot prove installation, upgrade, rollback, uninstall, checksum or data-retention behavior on macOS and Linux.",
+      "acceptance": [
+        "one delivery owner packages the exact two release binaries with source identity and SHA-256 checksums",
+        "install and upgrade use immutable version directories plus an atomic current switch",
+        "rollback restores the previous installed version and uninstall removes programs while preserving user data",
+        "the full lifecycle works from a local artifact with network disabled on macOS and Linux",
+        "CI runs the same lifecycle owner and uploads checksum-bound artifacts"
+      ],
+      "owner": "scripts/codewhale-delivery.sh and .github/workflows/ci.yml",
+      "replaces": [
+        "ad hoc cargo install instructions",
+        "moving-stable build identity",
+        "Ubuntu-only source validation without shipped-artifact proof"
+      ],
+      "evidence": [
+        "scripts/test-codewhale-delivery.sh",
+        "artifact checksum corruption rejection",
+        "fresh install, upgrade, rollback and uninstall process checks",
+        "macOS current-host lifecycle and Linux CI matrix contract"
+      ],
+      "cutover_deletion": [
+        "duplicate example config and old development script name",
+        "stale install/update documentation",
+        "unwired release and cloud deployment references"
+      ]
+    }
+  ],
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8b-target",
+    "cargo_net_offline": true,
+    "result_path": "eval/results/m8-b-product-delivery-2ed3efe3-v1.json",
+    "result_mode": "0600",
+    "overwrite": false
+  },
+  "matrix": [
+    {
+      "id": "D01",
+      "case": "clean source build",
+      "expected": "exact pinned Rust toolchain builds codewhale and codewhale-tui from Cargo.lock offline"
+    },
+    {
+      "id": "D02",
+      "case": "artifact identity",
+      "expected": "package metadata binds version, target, source revision, source tree and the exact two binaries"
+    },
+    {
+      "id": "D03",
+      "case": "checksum",
+      "expected": "valid local artifact installs; any changed archive or binary is rejected before activation"
+    },
+    {
+      "id": "D04",
+      "case": "fresh install and first run",
+      "expected": "isolated prefix installs both binaries and --version succeeds without network or user-state creation"
+    },
+    {
+      "id": "D05",
+      "case": "upgrade",
+      "expected": "a second immutable version activates atomically and records one previous version"
+    },
+    {
+      "id": "D06",
+      "case": "rollback",
+      "expected": "the previous complete release is atomically reactivated without rebuilding or network"
+    },
+    {
+      "id": "D07",
+      "case": "uninstall and data retention",
+      "expected": "installed programs and delivery metadata are removed while CODEWHALE_HOME remains byte-identical"
+    },
+    {
+      "id": "D08",
+      "case": "offline/no-network",
+      "expected": "package, install, doctor, upgrade, rollback and uninstall need no release metadata request"
+    },
+    {
+      "id": "D09",
+      "case": "platform contract",
+      "expected": "the lifecycle owner admits macOS and Linux targets and rejects unsupported or mismatched targets"
+    },
+    {
+      "id": "D10",
+      "case": "legacy rejection",
+      "expected": "old binary/env/config/state/release aliases do not select, migrate or mutate production behavior"
+    },
+    {
+      "id": "D11",
+      "case": "canonical runtime parity",
+      "expected": "Run API v10, RuntimeEvent v16, State v21 and exec-stream v2 remain unchanged across installed entry points"
+    },
+    {
+      "id": "D12",
+      "case": "physical cleanup",
+      "expected": "no release crate, imported upstream/CNB updater, duplicate delivery owner or unconnected deploy asset remains"
+    }
+  ],
+  "credential_admission": {
+    "status": "blocked_no_material_model_treatment",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "read_key_before_admission": false,
+    "official_api_requests_allowed": false,
+    "reason": "M8-B changes only local product identity and delivery; paid model traffic cannot add attribution.",
+    "stop_on": [
+      "unexpected_network_requirement",
+      "protocol_schema_change",
+      "canonical_runtime_owner_change",
+      "artifact_identity_ambiguity"
+    ]
+  }
+}
