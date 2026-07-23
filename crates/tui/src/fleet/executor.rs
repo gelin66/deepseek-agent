@@ -48,7 +48,7 @@ pub fn build_worker_exec_command_with_profiles(
         std::slice::from_ref(task_spec),
         agent_profiles,
     )?;
-    let (worker_model, _worker_provider) =
+    let worker_model =
         fleet_worker_launch_route(task_spec, agent_profiles, model.unwrap_or_default());
     let worker_reasoning_effort = fleet_worker_launch_reasoning_effort(task_spec, agent_profiles);
     Ok(build_worker_exec_command_from_prompt(
@@ -434,7 +434,6 @@ mod tests {
                 },
                 loadout: FleetLoadout::Inherit,
                 model: None,
-                provider: None,
                 reasoning_effort: None,
                 permissions: FleetProfilePermissions::default(),
                 delegation: FleetDelegationHints::default(),
@@ -513,48 +512,7 @@ mod tests {
         assert!(prompt.contains("Focus on defects, regressions, and missing tests."));
     }
 
-    #[test]
-    fn worker_command_rejects_retired_profile_provider() {
-        let mut task = task("audit");
-        task.worker.as_mut().unwrap().agent_profile = Some("cross".to_string());
-
-        let mut profile = agent_profile("cross", "scout", "Read first.");
-        profile.profile.provider = Some("openrouter".to_string());
-        profile.profile.model = Some("glm-5.2".to_string());
-        profile.profile.reasoning_effort = Some("max".to_string());
-
-        let error = build_worker_exec_command_with_profiles(
-            "codewhale",
-            &task,
-            &FleetExecConfig::default(),
-            Some("deepseek-v4-pro"), // parent/session model on provider A.
-            &[profile],
-        )
-        .expect_err("retired provider must fail");
-        assert!(error.to_string().contains("retired provider"));
-    }
-
-    #[test]
-    fn worker_command_rejects_custom_profile_provider_name() {
-        let mut task = task("format");
-        task.worker.as_mut().unwrap().agent_profile = Some("local".to_string());
-
-        let mut profile = agent_profile("local", "formatter", "Keep edits tight.");
-        profile.profile.provider = Some("lm-studio".to_string());
-        profile.profile.model = Some("qwen-2.5-7b".to_string());
-
-        let error = build_worker_exec_command_with_profiles(
-            "codewhale",
-            &task,
-            &FleetExecConfig::default(),
-            Some("deepseek-v4-pro"),
-            &[profile],
-        )
-        .expect_err("custom provider must fail");
-        assert!(error.to_string().contains("retired provider"));
-    }
-
-    /// A worker with no provider pin launches on the one DeepSeek route.
+    /// A worker launches on the one DeepSeek route without provider state.
     #[test]
     fn worker_command_without_profile_provider_omits_provider_and_keeps_run_model() {
         let cmd = build_worker_exec_command_with_profiles(

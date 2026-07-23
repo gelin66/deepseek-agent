@@ -15,7 +15,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_deepseek::official_model_capabilities;
 use dotenvy::dotenv;
 use wait_timeout::ChildExt;
 
@@ -758,12 +757,7 @@ fn resolve_exec_model(config: &Config, explicit_model: Option<&str>) -> String {
 }
 
 fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
-    let Some(configured_model) = config
-        .providers
-        .as_ref()
-        .and_then(|providers| providers.deepseek.model.as_deref())
-        .or(config.default_text_model.as_deref())
-    else {
+    let Some(configured_model) = config.default_text_model.as_deref() else {
         return Ok(crate::config::DEFAULT_TEXT_MODEL.to_owned());
     };
     let configured_model = configured_model.trim();
@@ -771,17 +765,9 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
         return Ok("auto".to_owned());
     }
 
-    let model = crate::config::normalize_model_name(configured_model).ok_or_else(|| {
-        anyhow!(
-            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {configured_model}。"
-        )
-    })?;
-    official_model_capabilities(&model).map_err(|_| {
-        anyhow!(
-            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {configured_model}。"
-        )
-    })?;
-    Ok(model)
+    crate::config::normalize_model_name(configured_model).ok_or_else(|| {
+        anyhow!("交互式 Agent 只接受官方 DeepSeek 模型 ID；当前模型为 {configured_model}。")
+    })
 }
 
 fn exec_model_env_override() -> Option<String> {
@@ -1969,16 +1955,12 @@ fn resolve_api_key_source(config: &Config) -> ApiKeySource {
         }
     }
 
-    let provider_config_key = config
-        .transitional_deepseek_config()
-        .and_then(|entry| entry.api_key.as_ref())
-        .is_some_and(|k| !k.trim().is_empty());
     let root_deepseek_key = config
         .api_key
         .as_ref()
         .is_some_and(|k| !k.trim().is_empty());
 
-    if provider_config_key || root_deepseek_key {
+    if root_deepseek_key {
         ApiKeySource::Config
     } else if deepseek_env_key_source().is_some() {
         ApiKeySource::Env
@@ -5531,7 +5513,7 @@ mod m8a_deepseek_only_entry_tests {
         };
         let error = resolve_interactive_deepseek_model(&config)
             .expect_err("foreign model must fail before runtime launch");
-        assert!(error.to_string().contains("只支持"));
+        assert!(error.to_string().contains("DeepSeek"));
     }
 
     #[test]

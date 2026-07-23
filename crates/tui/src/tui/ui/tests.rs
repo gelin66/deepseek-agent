@@ -24,7 +24,6 @@ fn create_test_app() -> App {
     let mut app = App::new(options, &Config::default());
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
-    app.active_route_limits = None;
     app.status_message = None;
     app
 }
@@ -47,16 +46,7 @@ fn interactive_tui_entry_rejects_provider_or_model_truth_mismatch_before_termina
         resume_session_id: None,
         initial_input: None,
     };
-    let foreign_provider = Config {
-        provider: Some("openrouter".to_owned()),
-        ..Config::default()
-    };
-    let error = validate_interactive_tui_entry(&foreign_provider, &options)
-        .expect_err("foreign provider must fail before terminal setup");
-    assert!(error.to_string().contains("只支持官方 DeepSeek Provider"));
-
     let deepseek = Config {
-        provider: Some("deepseek".to_owned()),
         default_text_model: Some("deepseek-v4-pro".to_owned()),
         ..Config::default()
     };
@@ -489,10 +479,7 @@ fn canonical_start_command_honors_disabled_subagents() {
 
 #[test]
 fn canonical_start_command_projects_exact_model_or_auto() {
-    let config = Config {
-        provider: Some("deepseek".to_owned()),
-        ..Config::default()
-    };
+    let config = Config::default();
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_owned();
     app.auto_model = false;

@@ -7,8 +7,6 @@ use std::time::Instant;
 
 use ratatui::layout::Rect;
 
-use codewhale_config::route::RouteLimits;
-
 use crate::config::{Config, DEFAULT_TEXT_MODEL, has_api_key};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
@@ -811,8 +809,6 @@ pub struct App {
     /// When true, the model is auto-selected based on request complexity
     /// rather than using a fixed model. The `/model auto` command sets this.
     pub auto_model: bool,
-    /// Resolved provider/model route limits for the active runtime route.
-    pub active_route_limits: Option<RouteLimits>,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Ctrl+T; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
@@ -1014,11 +1010,6 @@ impl App {
             ui_theme = ui_theme.with_background_color(background);
         }
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
-        let active_context_window_override = config.context_window_override();
-        let active_route_limits = active_context_window_override.map(|window| RouteLimits {
-            context_tokens: Some(u64::from(window)),
-            ..RouteLimits::default()
-        });
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1110,7 +1101,6 @@ impl App {
             last_status_message_seen: None,
             model,
             auto_model,
-            active_route_limits,
             reasoning_effort,
             workspace,
             config_path,

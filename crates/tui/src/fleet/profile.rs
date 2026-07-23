@@ -59,10 +59,6 @@ struct AgentProfileToml {
     loadout: Option<String>,
     #[serde(default, alias = "model_hint", alias = "model_id")]
     model: Option<String>,
-    /// Optional explicit provider assertion. Only `"deepseek"` is accepted;
-    /// stale foreign pins fail before worker launch.
-    #[serde(default)]
-    provider: Option<String>,
     /// Optional saved thinking tier for this profile (#4137). TOML may use
     /// the canonical `reasoning_effort` spelling or the UI-facing `thinking`
     /// / `reasoning` aliases; loading normalizes to a canonical setting label.
@@ -230,10 +226,6 @@ fn agent_profile_from_toml(path: &Path, parsed: AgentProfileToml) -> Result<Agen
     let model = non_empty_trimmed(parsed.model.as_deref()).map(str::to_string);
     validate_agent_profile_model_hint(path, model.as_deref())?;
 
-    let provider = non_empty_trimmed(parsed.provider.as_deref())
-        .map(str::to_string)
-        .map(|provider| validate_agent_profile_provider(path, &provider).map(|()| provider))
-        .transpose()?;
     let reasoning_effort =
         normalize_agent_profile_reasoning_effort(path, parsed.reasoning_effort.as_deref())?;
 
@@ -254,7 +246,6 @@ fn agent_profile_from_toml(path: &Path, parsed: AgentProfileToml) -> Result<Agen
         },
         loadout,
         model,
-        provider,
         reasoning_effort,
         permissions: FleetProfilePermissions::default(),
         delegation: FleetDelegationHints::default(),
@@ -331,19 +322,7 @@ fn validate_agent_profile_model_hint(path: &Path, value: Option<&str>) -> Result
     };
     if crate::config::normalize_model_name(value).is_none() {
         bail!(
-            "agent profile {} model must be auto, deepseek-v4-pro, or deepseek-v4-flash",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-/// Reject stale provider pins before a Fleet worker can be launched.
-fn validate_agent_profile_provider(path: &Path, value: &str) -> Result<()> {
-    let trimmed = value.trim();
-    if !trimmed.eq_ignore_ascii_case("deepseek") {
-        bail!(
-            "agent profile {} provider must be deepseek; other providers are retired",
+            "agent profile {} model must be auto or an official DeepSeek model id",
             path.display()
         );
     }
@@ -582,7 +561,7 @@ models = ["glm-5.2", "deepseek-v4-pro"]
         write_profile(
             &agents_dir,
             "scout.toml",
-            "id = \"scout\"\nrole_hint = \"scout\"\nprovider = \"deepseek\"\nmodel = \"deepseek-v4-flash\"\n",
+            "id = \"scout\"\nrole_hint = \"scout\"\nmodel = \"deepseek-v4-flash\"\n",
         );
 
         let (profiles, issues) = load_workspace_agent_profiles_tolerant(tmp.path())
@@ -737,7 +716,7 @@ model = "deepseek-v4-flash"
         );
 
         let error = load_agent_profile_file(&path).expect_err("provider must fail");
-        assert!(error.to_string().contains("provider must be deepseek"));
+        assert!(error.to_string().contains("unknown field `provider`"));
     }
 
     #[test]
@@ -754,7 +733,7 @@ model = "deepseek-v4-flash"
         );
 
         let error = load_agent_profile_file(&path).expect_err("provider must fail");
-        assert!(error.to_string().contains("provider must be deepseek"));
+        assert!(error.to_string().contains("unknown field `provider`"));
     }
 
     #[test]
@@ -773,7 +752,7 @@ model = "deepseek-v4-flash"
         let err = load_agent_profile_file(&path).unwrap_err().to_string();
 
         assert!(
-            err.contains("provider must be deepseek"),
+            err.contains("unknown field `provider`"),
             "unexpected error: {err}"
         );
     }
@@ -815,7 +794,7 @@ model = "deepseek-v4-pro api_key=secret"
         let err = load_agent_profile_file(&path).unwrap_err().to_string();
 
         assert!(
-            err.contains("model must be auto"),
+            err.contains("official DeepSeek model"),
             "unexpected error: {err}"
         );
     }

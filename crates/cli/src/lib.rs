@@ -17,8 +17,8 @@ use codewhale_app_server::{
     run_stdio as run_app_server_stdio,
 };
 use codewhale_config::{
-    CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
-    load_prompt_preferences,
+    CliRuntimeOverrides, ConfigStore, ResolvedRuntimeOptions, RuntimeApiKeySource,
+    canonical_deepseek_model, is_official_deepseek_base_url, load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use codewhale_protocol::run_api::{
@@ -861,11 +861,9 @@ fn run() -> Result<()> {
 
     let mut store = ConfigStore::load(cli.config.clone())?;
     let runtime_overrides = CliRuntimeOverrides {
-        provider: None,
         model: cli.model.clone(),
         api_key: cli.api_key.clone(),
         base_url: cli.base_url.clone(),
-        auth_mode: None,
         output_mode: cli.output_mode.clone(),
         log_level: cli.log_level.clone(),
         telemetry: cli.telemetry,
@@ -985,14 +983,7 @@ fn resolve_runtime_for_dispatch_with_secrets(
 ) -> Result<ResolvedRuntimeOptions> {
     let mut resolved = store
         .config
-        .resolve_runtime_options_with_secrets(runtime_overrides, secrets);
-
-    if resolved.provider != ProviderKind::Deepseek {
-        bail!(
-            "CodeWhale 仅支持官方 DeepSeek；当前配置的 provider={}。请删除 provider 配置或设为 deepseek",
-            resolved.provider.as_str()
-        );
-    }
+        .resolve_runtime_options_with_secrets(runtime_overrides, secrets)?;
 
     if resolved.api_key_source == Some(RuntimeApiKeySource::Keyring)
         && deepseek_config_api_key(store).is_none()
@@ -1076,7 +1067,6 @@ fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
 fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -> Result<()> {
     clear_deepseek_api_key_from_config(store);
     let _ = secrets.delete("deepseek");
-    store.config.auth_mode = None;
     store.save()?;
     println!("已删除 DeepSeek 凭据");
     Ok(())
@@ -1090,36 +1080,21 @@ fn no_keyring_secrets() -> Secrets {
 }
 
 fn write_deepseek_api_key_to_config(store: &mut ConfigStore, api_key: &str) {
-    store.config.auth_mode = Some("api_key".to_string());
-    store.config.provider = ProviderKind::Deepseek;
-    store.config.providers.deepseek.api_key = Some(api_key.to_string());
     store.config.api_key = Some(api_key.to_string());
     if store.config.default_text_model.is_none() {
-        store.config.default_text_model = Some(
-            store
-                .config
-                .providers
-                .deepseek
-                .model
-                .clone()
-                .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
-        );
+        store.config.default_text_model = Some("deepseek-v4-pro".to_string());
     }
 }
 
 fn clear_deepseek_api_key_from_config(store: &mut ConfigStore) {
-    store.config.providers.deepseek.api_key = None;
     store.config.api_key = None;
 }
 
 fn deepseek_config_api_key(store: &ConfigStore) -> Option<&str> {
     store
         .config
-        .providers
-        .deepseek
         .api_key
         .as_deref()
-        .or(store.config.api_key.as_deref())
         .filter(|value| !value.trim().is_empty())
 }
 
@@ -1284,18 +1259,6 @@ fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result
     }
 }
 
-fn canonical_deepseek_model(model: &str) -> Result<&str> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        bail!("DeepSeek 模型名不能为空");
-    }
-    Ok(match trimmed.to_ascii_lowercase().as_str() {
-        "pro" | "deepseek-v4pro" => "deepseek-v4-pro",
-        "flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner" => "deepseek-v4-flash",
-        _ => trimmed,
-    })
-}
-
 fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<()> {
     match command {
         ModelCommand::List => {
@@ -1316,7 +1279,7 @@ fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<(
         }
         ModelCommand::Set { model } => {
             let canonical = canonical_deepseek_model(&model)?;
-            store.config.default_text_model = Some(canonical.to_string());
+            store.config.default_text_model = Some(canonical.clone());
             store.save()?;
             println!("已将默认 DeepSeek 模型设为 `{canonical}`");
             Ok(())
@@ -1575,27 +1538,11 @@ fn production_application_config(
     resolved_runtime: &ResolvedRuntimeOptions,
     transport_max_retries: Option<u32>,
 ) -> Result<ProductionApplicationConfig> {
-    if resolved_runtime.provider != ProviderKind::Deepseek {
-        bail!("app-server only supports the official DeepSeek provider");
-    }
     let base_url = resolved_runtime.base_url.trim_end_matches('/');
-    if ![
-        "https://api.deepseek.com",
-        "https://api.deepseek.com/v1",
-        "https://api.deepseek.com/beta",
-    ]
-    .iter()
-    .any(|official| base_url.eq_ignore_ascii_case(official))
-    {
+    if !is_official_deepseek_base_url(base_url) {
         bail!(
             "app-server only supports the official DeepSeek endpoint; configured base URL is {base_url}"
         );
-    }
-    if resolved_runtime.insecure_skip_tls_verify {
-        bail!("app-server refuses insecure TLS for the official DeepSeek endpoint");
-    }
-    if !resolved_runtime.http_headers.is_empty() {
-        bail!("app-server does not forward custom Provider HTTP headers");
     }
 
     let prompt = ProductionPromptConfig {
@@ -2041,9 +1988,9 @@ mod tests {
 
         let saved = std::fs::read_to_string(path).unwrap();
         assert!(saved.contains("test-deepseek-secret"));
-        assert!(saved.contains("[providers.deepseek]"));
+        assert!(saved.contains("api_key = \"test-deepseek-secret\""));
+        assert!(!saved.contains("[providers"));
         assert!(!saved.contains("openai"));
-        assert_eq!(store.config.provider, ProviderKind::Deepseek);
     }
 
     #[test]
@@ -2051,14 +1998,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
         std::fs::write(&path, "provider = \"openai\"\n").unwrap();
-        let mut store = ConfigStore::load(Some(path)).unwrap();
-        let error = resolve_runtime_for_dispatch_with_secrets(
-            &mut store,
-            &CliRuntimeOverrides::default(),
-            &no_keyring_secrets(),
-        )
-        .expect_err("foreign provider must fail before child spawn");
-        assert!(error.to_string().contains("仅支持官方 DeepSeek"));
+        let error = ConfigStore::load(Some(path))
+            .expect_err("foreign provider must fail during config admission");
+        assert!(error.to_string().contains("配置不兼容"));
     }
 
     #[test]
@@ -2124,10 +2066,12 @@ mod tests {
 
     #[test]
     fn m8a_app_server_accepts_only_official_deepseek_route() {
-        let mut resolved = ConfigStore::load(None)
+        let directory = tempfile::tempdir().unwrap();
+        let mut resolved = ConfigStore::load(Some(directory.path().join("config.toml")))
             .unwrap()
             .config
-            .resolve_runtime_options(&CliRuntimeOverrides::default());
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .unwrap();
         resolved.base_url = "https://example.com/v1".to_string();
         let error = match production_application_config(&resolved, None) {
             Ok(_) => panic!("foreign endpoint must fail before app construction"),

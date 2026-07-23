@@ -27,13 +27,13 @@ fn m8a_model_aliases_are_bounded_to_official_ids() {
 }
 
 #[test]
-fn m8a_foreign_provider_is_rejected() {
-    let config = Config {
-        provider: Some("openrouter".to_string()),
-        ..Config::default()
-    };
-    let error = config.validate().expect_err("foreign provider must fail");
-    assert!(error.to_string().contains("只支持官方 DeepSeek"));
+fn m8a_retired_provider_key_is_rejected_even_when_named_deepseek() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("config.toml");
+    fs::write(&path, "provider = \"deepseek\"\n")?;
+    let error = Config::load(Some(path), None).expect_err("provider key must fail");
+    assert!(format!("{error:#}").contains("provider"));
+    Ok(())
 }
 
 #[test]
@@ -53,17 +53,10 @@ api_key = "not-a-real-key"
 }
 
 #[test]
-fn m8a_provider_scoped_values_precede_root_defaults() {
+fn m8a_root_values_are_the_only_model_configuration() {
     let config = Config {
-        base_url: Some("https://root.invalid".to_string()),
-        default_text_model: Some("deepseek-v4-flash".to_string()),
-        providers: Some(TransitionalDeepSeekTable {
-            deepseek: DeepSeekConfig {
-                base_url: Some("https://api.deepseek.com/v1".to_string()),
-                model: Some("pro".to_string()),
-                ..DeepSeekConfig::default()
-            },
-        }),
+        base_url: Some("https://api.deepseek.com/v1".to_string()),
+        default_text_model: Some("pro".to_string()),
         ..Config::default()
     };
     assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");

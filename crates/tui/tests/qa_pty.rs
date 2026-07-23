@@ -204,12 +204,8 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression for v0.8.61 startup: the dispatcher-side config writer produced
-/// camelCase keys plus `[features.enabled]`, while the TUI config reader only
-/// accepted snake_case and flat `[features]` booleans. That failed before the
-/// TUI log initialized and looked like an interactive launch crash from the
-/// facade. Boot through a real PTY and prove early init reaches the trust
-/// prompt and accepts input.
+/// The dispatcher and TUI read the same canonical root DeepSeek keys. Boot
+/// through a real PTY and prove early init reaches the trust prompt.
 #[test]
 fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -217,15 +213,10 @@ fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Re
     std::fs::write(
         ws.home().join(".codewhale").join("config.toml"),
         r#"
-provider = "deepseek"
-apiKey = "deepseek-test-key"
-defaultTextModel = "deepseek-v4-pro"
-authMode = "api_key"
+api_key = "deepseek-test-key"
+default_text_model = "deepseek-v4-pro"
 
-[providers.deepseek]
-apiKey = "deepseek-test-key"
-
-[features.enabled]
+[features]
 subagents = true
 "#,
     )?;

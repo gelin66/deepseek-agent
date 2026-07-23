@@ -188,7 +188,6 @@ impl FleetRoster {
                 },
                 loadout,
                 model: None,
-                provider: None,
                 reasoning_effort: None,
                 permissions: FleetProfilePermissions::default(),
                 delegation: FleetDelegationHints::default(),
@@ -249,7 +248,6 @@ mod tests {
             },
             loadout: FleetLoadout::Inherit,
             model: model.map(str::to_string),
-            provider: None,
             reasoning_effort: None,
             permissions: FleetProfilePermissions::default(),
             delegation: FleetDelegationHints::default(),
@@ -425,14 +423,13 @@ mod tests {
         write_workspace_profile(
             tmp.path(),
             "scout.toml",
-            "id = \"scout\"\nrole_hint = \"scout\"\nprovider = \"deepseek\"\nmodel = \"deepseek-v4-flash\"\n",
+            "id = \"scout\"\nrole_hint = \"scout\"\nmodel = \"deepseek-v4-flash\"\n",
         );
 
         let roster = FleetRoster::load(&FleetConfigToml::default(), tmp.path());
 
         let scout = member(&roster, "scout");
         assert_eq!(scout.origin, ProfileOrigin::Workspace);
-        assert_eq!(scout.profile.provider.as_deref(), Some("deepseek"));
         assert_eq!(scout.profile.model.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(
             member(&roster, "reviewer").origin,

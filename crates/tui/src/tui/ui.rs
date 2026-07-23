@@ -1723,10 +1723,7 @@ pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = crate::route_budget::route_context_window_tokens(app.effective_model_for_budget());
     let max_i64 = i64::from(max);
     let used = app
         .session

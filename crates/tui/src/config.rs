@@ -98,10 +98,23 @@ pub fn canonical_model_name(model: &str) -> Option<&'static str> {
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
     let trimmed = model.trim();
+    if !trimmed
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return None;
+    }
     if trimmed.eq_ignore_ascii_case("auto") {
         return Some("auto".to_string());
     }
-    canonical_model_name(trimmed).map(str::to_string)
+    canonical_model_name(trimmed)
+        .map(str::to_string)
+        .or_else(|| {
+            trimmed
+                .to_ascii_lowercase()
+                .starts_with("deepseek-")
+                .then(|| trimmed.to_string())
+        })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,41 +174,9 @@ impl SkillsConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeepSeekConfig {
-    #[serde(alias = "apiKey")]
-    pub api_key: Option<String>,
-    #[serde(alias = "baseUrl")]
-    pub base_url: Option<String>,
-    pub model: Option<String>,
-    #[serde(
-        default,
-        alias = "contextWindow",
-        alias = "context_window_tokens",
-        alias = "contextWindowTokens",
-        alias = "context_length",
-        alias = "contextLength"
-    )]
-    pub context_window: Option<u32>,
-    #[serde(alias = "insecureSkipTlsVerify")]
-    pub insecure_skip_tls_verify: Option<bool>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TransitionalDeepSeekTable {
-    #[serde(default)]
-    pub deepseek: DeepSeekConfig,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
-    pub provider: Option<String>,
-    #[serde(alias = "apiKey")]
     pub api_key: Option<String>,
-    #[serde(alias = "baseUrl")]
     pub base_url: Option<String>,
-    #[serde(alias = "defaultTextModel")]
     pub default_text_model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub skills_dir: Option<String>,
@@ -223,10 +204,6 @@ pub struct Config {
     pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
     pub tui: Option<TuiConfig>,
-    #[serde(default)]
-    // M8-A S2/S3 cutover adapter: this reads only `[providers.deepseek]`
-    // while the shared config owner is narrowed. S3 deletes this field.
-    pub providers: Option<TransitionalDeepSeekTable>,
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
@@ -263,24 +240,40 @@ impl Config {
             }
             _ => Config::default(),
         };
+        for name in ["CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER"] {
+            if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
+                anyhow::bail!(
+                    "环境变量 {name} 已删除；CodeWhale 固定使用官方 DeepSeek，请移除该变量。"
+                );
+            }
+        }
         apply_env_overrides(&mut config);
         config.validate()?;
         Ok(config)
     }
 
     pub fn validate(&self) -> Result<()> {
-        if let Some(provider) = self.provider.as_deref()
-            && !provider.trim().eq_ignore_ascii_case(DEEPSEEK_PROVIDER_ID)
-        {
-            anyhow::bail!(
-                "只支持官方 DeepSeek Provider；当前配置为 '{provider}'。请删除该 Provider 配置。"
-            );
-        }
         for retired in [
+            "apiKey",
+            "baseUrl",
+            "defaultTextModel",
+            "provider",
+            "providers",
             "fallback_providers",
             "fallbackProviders",
+            "model",
             "models",
             "model_catalog",
+            "auth",
+            "auth_mode",
+            "authMode",
+            "http_headers",
+            "httpHeaders",
+            "insecure_skip_tls_verify",
+            "insecureSkipTlsVerify",
+            "path_suffix",
+            "pathSuffix",
+            "harness_profiles",
         ] {
             if self.extra.contains_key(retired) {
                 anyhow::bail!(
@@ -300,8 +293,8 @@ impl Config {
                 "不支持模型 '{model}'；仅支持 auto、deepseek-v4-pro 或 deepseek-v4-flash。"
             );
         }
-        if let Some(provider) = self.providers.as_ref() {
-            provider.validate()?;
+        if let Some(base_url) = self.base_url.as_deref() {
+            codewhale_config::validate_deepseek_base_url(base_url)?;
         }
         if let Some(features) = &self.features {
             for key in features.entries.keys() {
@@ -346,41 +339,23 @@ impl Config {
         Ok(())
     }
 
-    pub(crate) fn transitional_deepseek_config(&self) -> Option<&DeepSeekConfig> {
-        self.providers.as_ref().map(|providers| &providers.deepseek)
-    }
-
     #[must_use]
     pub fn insecure_skip_tls_verify(&self) -> bool {
-        self.transitional_deepseek_config()
-            .and_then(|provider| provider.insecure_skip_tls_verify)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
-    pub(crate) fn context_window_override(&self) -> Option<u32> {
-        self.transitional_deepseek_config()
-            .and_then(|provider| provider.context_window)
-            .filter(|window| *window > 0)
+        false
     }
 
     #[must_use]
     pub fn default_model(&self) -> String {
         let selected = self
-            .transitional_deepseek_config()
-            .and_then(|provider| provider.model.as_deref())
-            .or(self.default_text_model.as_deref())
+            .default_text_model
+            .as_deref()
             .unwrap_or(DEFAULT_TEXT_MODEL);
         normalize_model_name(selected).unwrap_or_else(|| selected.trim().to_string())
     }
 
     #[must_use]
     pub fn deepseek_base_url(&self) -> String {
-        let configured = self
-            .transitional_deepseek_config()
-            .and_then(|provider| provider.base_url.as_deref())
-            .or(self.base_url.as_deref())
-            .map(str::to_string);
+        let configured = self.base_url.as_deref().map(str::to_string);
         let environment = std::env::var("CODEWHALE_BASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -404,13 +379,6 @@ impl Config {
         if let Some(key) = self
             .api_key
             .as_deref()
-            .filter(|key| !key.trim().is_empty() && *key != API_KEYRING_SENTINEL)
-        {
-            return Ok(key.to_string());
-        }
-        if let Some(key) = self
-            .transitional_deepseek_config()
-            .and_then(|provider| provider.api_key.as_deref())
             .filter(|key| !key.trim().is_empty() && *key != API_KEYRING_SENTINEL)
         {
             return Ok(key.to_string());
@@ -629,43 +597,35 @@ fn reject_foreign_provider_declarations(contents: &str) -> Result<()> {
     if let Some(profiles) = root.get("profiles").and_then(toml::Value::as_table) {
         for profile in profiles.values().filter_map(toml::Value::as_table) {
             reject_foreign_provider_table(profile)?;
+            for key in [
+                "api_key",
+                "apiKey",
+                "base_url",
+                "baseUrl",
+                "default_text_model",
+                "defaultTextModel",
+            ] {
+                if profile.contains_key(key) {
+                    anyhow::bail!(
+                        "profile 不能设置 '{key}'；DeepSeek credential、endpoint 和 model 只允许根级配置。"
+                    );
+                }
+            }
         }
     }
     Ok(())
 }
 
 fn reject_foreign_provider_table(table: &toml::Table) -> Result<()> {
-    if let Some(provider) = table.get("provider").and_then(toml::Value::as_str)
-        && !provider.trim().eq_ignore_ascii_case(DEEPSEEK_PROVIDER_ID)
-    {
+    if table.contains_key("provider") {
+        anyhow::bail!("只支持官方 DeepSeek Provider；配置项 'provider' 已删除，请移除该配置。");
+    }
+    if table.contains_key("providers") {
         anyhow::bail!(
-            "只支持官方 DeepSeek Provider；当前配置为 '{provider}'。请删除该 Provider 配置。"
+            "配置表 [providers.*] 已删除；请改用根级 api_key、base_url 和 default_text_model。"
         );
     }
-    if let Some(providers) = table.get("providers").and_then(toml::Value::as_table)
-        && let Some(provider) = providers
-            .keys()
-            .find(|provider| !provider.eq_ignore_ascii_case(DEEPSEEK_PROVIDER_ID))
-    {
-        anyhow::bail!("只支持官方 DeepSeek Provider；配置表 [providers.{provider}] 已删除。");
-    }
     Ok(())
-}
-
-impl TransitionalDeepSeekTable {
-    fn validate(&self) -> Result<()> {
-        if self.deepseek.context_window == Some(0) {
-            anyhow::bail!("providers.deepseek.context_window 必须大于 0");
-        }
-        if let Some(model) = self.deepseek.model.as_deref()
-            && normalize_model_name(model).is_none()
-        {
-            anyhow::bail!(
-                "不支持 providers.deepseek.model='{model}'；仅支持 auto、deepseek-v4-pro 或 deepseek-v4-flash。"
-            );
-        }
-        Ok(())
-    }
 }
 
 fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
@@ -699,10 +659,9 @@ fn merge_config(base: Config, selected: Config) -> Config {
     let mut extra = base.extra;
     extra.extend(selected.extra);
     Config {
-        provider: selected.provider.or(base.provider),
-        api_key: selected.api_key.or(base.api_key),
-        base_url: selected.base_url.or(base.base_url),
-        default_text_model: selected.default_text_model.or(base.default_text_model),
+        api_key: base.api_key,
+        base_url: base.base_url,
+        default_text_model: base.default_text_model,
         reasoning_effort: selected.reasoning_effort.or(base.reasoning_effort),
         skills_dir: selected.skills_dir.or(base.skills_dir),
         mcp_config_path: selected.mcp_config_path.or(base.mcp_config_path),
@@ -726,7 +685,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
         retry: selected.retry.or(base.retry),
         features: merge_features(base.features, selected.features),
         tui: selected.tui.or(base.tui),
-        providers: merge_providers(base.providers, selected.providers),
         skills: selected.skills.or(base.skills),
         search: selected.search.or(base.search),
         context: ContextConfig {
@@ -752,35 +710,7 @@ fn merge_features(
     }
 }
 
-fn merge_providers(
-    base: Option<TransitionalDeepSeekTable>,
-    selected: Option<TransitionalDeepSeekTable>,
-) -> Option<TransitionalDeepSeekTable> {
-    match (base, selected) {
-        (None, None) => None,
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (Some(base), Some(selected)) => Some(TransitionalDeepSeekTable {
-            deepseek: DeepSeekConfig {
-                api_key: selected.deepseek.api_key.or(base.deepseek.api_key),
-                base_url: selected.deepseek.base_url.or(base.deepseek.base_url),
-                model: selected.deepseek.model.or(base.deepseek.model),
-                context_window: selected
-                    .deepseek
-                    .context_window
-                    .or(base.deepseek.context_window),
-                insecure_skip_tls_verify: selected
-                    .deepseek
-                    .insecure_skip_tls_verify
-                    .or(base.deepseek.insecure_skip_tls_verify),
-            },
-        }),
-    }
-}
-
 fn apply_env_overrides(config: &mut Config) {
-    if let Some(provider) = env_override("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
-        config.provider = Some(provider);
-    }
     if let Some(base_url) = env_override("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
         config.base_url = Some(base_url);
     }
@@ -1123,10 +1053,6 @@ pub fn has_config_api_key(config: &Config) -> bool {
         .api_key
         .as_deref()
         .is_some_and(|key| !key.trim().is_empty() && key != API_KEYRING_SENTINEL)
-        || config
-            .transitional_deepseek_config()
-            .and_then(|provider| provider.api_key.as_deref())
-            .is_some_and(|key| !key.trim().is_empty() && key != API_KEYRING_SENTINEL)
 }
 
 #[must_use]
@@ -1160,8 +1086,7 @@ pub fn clear_api_key() -> Result<()> {
         return Ok(());
     }
     crate::config_persistence::mutate_config_document(&path, |doc| {
-        crate::config_persistence::remove_document_key(doc, &["api_key"])?;
-        crate::config_persistence::remove_document_key(doc, &["providers", "deepseek", "api_key"])
+        crate::config_persistence::remove_document_key(doc, &["api_key"])
     })
     .with_context(|| format!("写入配置失败：{}", path.display()))?;
     log_sensitive_event(

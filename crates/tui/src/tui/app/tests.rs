@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{Config, DeepSeekConfig, TransitionalDeepSeekTable};
+use crate::config::Config;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::history::HistoryCell;
 
@@ -44,24 +44,13 @@ fn initial_input_prefill_waits_for_manual_submit() {
 #[test]
 fn m8a_app_projection_is_deepseek_only() {
     let config = Config {
-        providers: Some(TransitionalDeepSeekTable {
-            deepseek: DeepSeekConfig {
-                api_key: Some("fixture-key".to_string()),
-                context_window: Some(900_000),
-                ..DeepSeekConfig::default()
-            },
-        }),
+        api_key: Some("fixture-key".to_string()),
         ..Config::default()
     };
     let mut options = test_options(false);
     options.model = "deepseek-v4-flash".to_string();
     let app = App::new(options, &config);
     assert_eq!(app.model, "deepseek-v4-flash");
-    assert_eq!(
-        app.active_route_limits
-            .and_then(|limits| limits.context_tokens),
-        Some(900_000)
-    );
 }
 
 #[test]
