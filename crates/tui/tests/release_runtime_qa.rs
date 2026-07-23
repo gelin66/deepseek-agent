@@ -255,7 +255,6 @@ async fn underwater_footer_moves_from_working_through_one_shot_completion() -> R
 
     let ws = make_sealed_workspace()?;
     let mut tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
@@ -303,7 +302,6 @@ async fn underwater_configured_themes_emit_each_palette_to_the_terminal() -> Res
             format!("theme = \"{theme}\"\n"),
         )?;
         let mut tui = common_tui_builder(&ws)
-            .env("CODEWHALE_PROVIDER", "deepseek")
             .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
             .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
             .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
@@ -352,13 +350,11 @@ async fn release_multi_terminal_deepseek_routes_stay_isolated() -> Result<()> {
 
     let ws = make_sealed_workspace()?;
     let mut flash_tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", flash_server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_FLASH_MODEL)
         .spawn()?;
     let mut pro_tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", pro_server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
@@ -466,7 +462,6 @@ async fn release_six_child_fanout_keeps_typing_render_and_esc_cancel_live() -> R
         "[subagents]\nmax_concurrent = 6\nmax_depth = 1\n",
     )?;
     let mut tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
@@ -571,7 +566,6 @@ async fn release_queued_steering_enter_applies_with_clear_status() -> Result<()>
 
     let ws = make_sealed_workspace()?;
     let mut tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
@@ -661,7 +655,6 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
         format!("[subagents]\nmax_concurrent = {WORKERS}\nmax_depth = 1\n"),
     )?;
     let mut tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
         .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
         .env("DEEPSEEK_BASE_URL", server.uri())
         .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)

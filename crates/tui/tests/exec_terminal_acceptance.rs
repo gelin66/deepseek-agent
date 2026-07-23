@@ -2612,6 +2612,7 @@ impl LoopbackSseServer {
                 handler.join().expect("stalled SSE connection thread");
             }
         });
+        wait_for_loopback_sse_server(address);
 
         Self {
             address,
@@ -2637,6 +2638,32 @@ impl Drop for LoopbackSseServer {
             worker.join().expect("stalled SSE server thread");
         }
     }
+}
+
+fn wait_for_loopback_sse_server(address: std::net::SocketAddr) {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .expect("connect stalled SSE readiness probe");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set stalled SSE readiness timeout");
+    stream
+        .write_all(
+            b"GET /v1/models HTTP/1.1\r\n\
+Host: localhost\r\n\
+Connection: close\r\n\
+\r\n",
+        )
+        .and_then(|()| stream.flush())
+        .expect("write stalled SSE readiness probe");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("read stalled SSE readiness response");
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "stalled SSE readiness probe failed: {}",
+        String::from_utf8_lossy(&response)
+    );
 }
 
 fn serve_loopback_sse_connection(

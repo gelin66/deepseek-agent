@@ -269,6 +269,19 @@ fn m8a_fleet_profiles_reject_provider_pins() {
 }
 
 #[test]
+fn m8a_shipped_example_matches_the_deepseek_only_schema() {
+    let config: ConfigToml = toml::from_str(include_str!("../../../config.example.toml")).unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        config.default_text_model.as_deref(),
+        Some("deepseek-v4-pro")
+    );
+    assert!(config.fleet.is_some());
+    assert!(!config.extras.contains_key("provider"));
+    assert!(!config.extras.contains_key("providers"));
+}
+
+#[test]
 fn comments_survive_a_deepseek_only_config_update() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.toml");

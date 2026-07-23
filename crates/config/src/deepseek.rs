@@ -551,7 +551,6 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
     }
 }
 
-#[must_use]
 pub fn canonical_deepseek_model(model: &str) -> Result<String> {
     let trimmed = model.trim();
     if trimmed.is_empty() {

@@ -114,3 +114,13 @@ fn m8a_subagent_limits_have_one_provider_independent_owner() {
     assert_eq!(config.max_subagents(), 3);
     assert_eq!(config.subagent_max_spawn_depth(), 2);
 }
+
+#[test]
+fn m8a_shipped_example_loads_through_the_interactive_entry() {
+    let parsed: ConfigFile =
+        toml::from_str(include_str!("../../../../config.example.toml")).unwrap();
+    let config = apply_profile(parsed, None).unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.default_model(), "deepseek-v4-pro");
+    assert!(config.fleet.is_some());
+}
