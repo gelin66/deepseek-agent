@@ -5613,6 +5613,202 @@ async fn two_same_batch_children_join_before_one_root_integration_request() {
 }
 
 #[tokio::test]
+async fn same_batch_partial_child_failure_preserves_the_sibling_handoff() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let roots = root_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => {
+            let first = request.messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::User { content } if content.contains("partition one")
+                )
+            });
+            if first {
+                ScriptResponse::OpenError(ModelPortError::new(
+                    "child_fixture_failed",
+                    ModelErrorCategory::Service,
+                    "first partition failed",
+                    false,
+                ))
+            } else {
+                ScriptResponse::Events(vec![completed(
+                    "partition two fact",
+                    None,
+                    vec![],
+                    ModelFinishReason::Stop,
+                )])
+            }
+        }
+        AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![
+                    call(
+                        "partial-child-one",
+                        "agent",
+                        r#"{"prompt":"partition one","max_steps":1}"#,
+                    ),
+                    call(
+                        "partial-child-two",
+                        "agent",
+                        r#"{"prompt":"partition two","max_steps":1}"#,
+                    ),
+                ],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                let handoffs = request
+                    .messages
+                    .iter()
+                    .filter_map(|message| match message {
+                        ModelMessage::User { content }
+                            if content.contains("kind=\"subagent_completion\"") =>
+                        {
+                            Some(content)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(handoffs.len(), 2);
+                assert!(handoffs.iter().any(|content| {
+                    content.contains("failed") && content.contains("child_fixture_failed")
+                }));
+                assert!(
+                    handoffs
+                        .iter()
+                        .any(|content| content.contains("partition two fact"))
+                );
+                ScriptResponse::Events(vec![completed(
+                    "保留成功 sibling 事实并显式报告另一分区失败",
+                    None,
+                    vec![],
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected root request"),
+        },
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut run_request = request("partial child failure");
+    run_request.limits.max_turns = 2;
+    run_request.limits.max_model_requests = 4;
+    run_request.limits.max_model_retries = 0;
+    run_request.limits.max_concurrent_children = 2;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
+    let child_terminals = sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event.event {
+            RuntimeEventKind::ChildFinished { outcome, .. } => Some(outcome.terminal),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_terminals.len(), 2);
+    assert!(
+        child_terminals
+            .iter()
+            .any(|terminal| matches!(terminal, TerminalState::Failed { .. }))
+    );
+    assert!(
+        child_terminals
+            .iter()
+            .any(|terminal| matches!(terminal, TerminalState::Completed { .. }))
+    );
+    assert_eq!(outcome.accounting.child.started, 2);
+    assert_eq!(outcome.accounting.child.completed, 2);
+    assert_eq!(outcome.accounting.child.in_flight, 0);
+}
+
+#[tokio::test]
+async fn cancelling_same_batch_fanout_settles_every_pending_child() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let roots = root_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => ScriptResponse::Events(vec![StreamStep::delayed(
+            Duration::from_secs(5),
+            ModelStreamEvent::Completed {
+                output: model_output("too late", None, vec![], ModelFinishReason::Stop),
+            },
+        )]),
+        AgentActorKind::Root => {
+            assert_eq!(roots.fetch_add(1, Ordering::AcqRel), 0);
+            ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![
+                    call(
+                        "cancel-child-one",
+                        "agent",
+                        r#"{"prompt":"one","max_steps":1}"#,
+                    ),
+                    call(
+                        "cancel-child-two",
+                        "agent",
+                        r#"{"prompt":"two","max_steps":1}"#,
+                    ),
+                ],
+                ModelFinishReason::ToolCalls,
+            )])
+        }
+    }));
+    let (runtime, _, sink, store) = fixture(model);
+    let mut run_request = request("cancel fanout");
+    run_request.limits.max_turns = 2;
+    run_request.limits.max_model_requests = 4;
+    run_request.limits.max_model_retries = 0;
+    run_request.limits.max_concurrent_children = 2;
+    let run = runtime.start(run_request);
+    let run_id = run.run_id.clone();
+    let control = run.control();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if sink
+                .events()
+                .iter()
+                .filter(|event| matches!(event.event, RuntimeEventKind::ChildStarted { .. }))
+                .count()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both children start");
+    control.cancel().expect("cancel root fan-out");
+    let outcome = run.wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Cancelled));
+    assert_eq!(root_calls.load(Ordering::Acquire), 1);
+    assert_eq!(outcome.accounting.child.started, 2);
+    assert_eq!(outcome.accounting.child.completed, 2);
+    assert_eq!(outcome.accounting.child.in_flight, 0);
+    let replay = store.load(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::ChildFinished { .. }))
+            .count(),
+        2
+    );
+    assert!(replay.snapshot.agent_tasks.iter().all(|lifecycle| {
+        lifecycle
+            .finished
+            .as_ref()
+            .is_some_and(|finished| matches!(finished.outcome.terminal, TerminalState::Cancelled))
+    }));
+}
+
+#[tokio::test]
 async fn child_limit_rejects_second_same_turn_spawn_without_fake_lifecycle_and_releases_on_join() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
