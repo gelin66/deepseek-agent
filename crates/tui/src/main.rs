@@ -5,6 +5,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use std::borrow::Cow;
 use std::io::{self, IsTerminal, Read};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
@@ -13,16 +14,14 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use dotenvy::dotenv;
 use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 use codewhale_context::{project_context, prompts, skills as skill_context};
-
-use rust_i18n::i18n;
-i18n!("locales", fallback = ["zh-Hans"]);
+use codewhale_localization::{MessageId, tr};
 
 mod audit;
 mod config;
@@ -36,7 +35,6 @@ mod execpolicy;
 mod features;
 mod fleet;
 mod hashing;
-mod localization;
 mod logging;
 mod mcp;
 mod palette;
@@ -1009,6 +1007,115 @@ enum SandboxCommand {
 
 const CODEWHALE_MAIN_STACK_BYTES: usize = 16 * 1024 * 1024;
 
+fn tui_command_message(name: &str) -> Option<MessageId> {
+    Some(match name {
+        "doctor" => MessageId::CliCommandDoctor,
+        "session-diagnostics" => MessageId::CliCommandSessionDiagnostics,
+        "setup" => MessageId::CliCommandSetup,
+        "completions" => MessageId::CliCommandCompletions,
+        "init" => MessageId::CliCommandInit,
+        "login" => MessageId::CliCommandLogin,
+        "logout" => MessageId::CliCommandLogout,
+        "exec" => MessageId::CliCommandExec,
+        "fleet" => MessageId::CliCommandFleet,
+        "pr" => MessageId::CliCommandPr,
+        "mcp" => MessageId::CliCommandMcp,
+        "execpolicy" => MessageId::CliCommandExecPolicy,
+        "features" => MessageId::CliCommandFeatures,
+        "sandbox" => MessageId::CliCommandSandbox,
+        "resume" => MessageId::CliCommandResume,
+        _ => return None,
+    })
+}
+
+fn localize_tui_command(command: &mut clap::Command) {
+    let mut localized = command
+        .clone()
+        .help_template(tr(MessageId::CliHelpTemplate).into_owned())
+        .disable_help_subcommand(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .long_about(None);
+    localized = localized.arg(
+        clap::Arg::new("help")
+            .short('h')
+            .long("help")
+            .action(clap::ArgAction::Help)
+            .help(tr(MessageId::CliArgHelp).into_owned()),
+    );
+    if command.get_version().is_some() {
+        localized = localized.arg(
+            clap::Arg::new("version")
+                .short('V')
+                .long("version")
+                .action(clap::ArgAction::Version)
+                .help(tr(MessageId::CliArgVersion).into_owned()),
+        );
+    }
+    if command.get_name() == "codewhale-tui" {
+        localized = localized.about(tr(MessageId::CliAbout).into_owned());
+    } else if let Some(message) = tui_command_message(command.get_name()) {
+        localized = localized.about(tr(message).into_owned());
+    }
+
+    let arg_messages = [
+        ("workspace", MessageId::CliArgWorkspace),
+        ("continue_session", MessageId::CliArgContinue),
+        ("prompt", MessageId::CliArgPrompt),
+        ("api_key", MessageId::CliArgApiKey),
+        ("json", MessageId::CliArgJson),
+        ("enable", MessageId::CliArgEnableFeature),
+        ("disable", MessageId::CliArgDisableFeature),
+        ("max_subagents", MessageId::CliArgMaxSubagents),
+        ("config", MessageId::CliArgConfig),
+        ("verbose", MessageId::CliArgVerbose),
+        ("profile", MessageId::CliArgProfile),
+        ("resume", MessageId::CliArgResume),
+        ("mouse_capture", MessageId::CliArgMouseCapture),
+        ("no_mouse_capture", MessageId::CliArgNoMouseCapture),
+        ("skip_onboarding", MessageId::CliArgSkipOnboarding),
+        ("no_project_config", MessageId::CliArgNoProjectConfig),
+    ];
+    for (id, message) in arg_messages {
+        if localized
+            .get_arguments()
+            .any(|argument| argument.get_id() == id)
+        {
+            localized = localized.mut_arg(id, |argument| argument.help(tr(message).into_owned()));
+        }
+    }
+
+    *command = localized;
+    for child in command.get_subcommands_mut() {
+        localize_tui_command(child);
+    }
+}
+
+fn localized_tui_command() -> clap::Command {
+    let mut command = Cli::command();
+    localize_tui_command(&mut command);
+    command
+}
+
+fn parse_tui_cli() -> Cli {
+    let matches = match localized_tui_command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.exit()
+        }
+        Err(error) => {
+            eprintln!("{}", tr(MessageId::CliArgumentError));
+            error.exit()
+        }
+    };
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 fn main() -> Result<()> {
     // Match the dispatcher entrypoint: Unix shells and supervisors may inherit
     // SIGPIPE ignored, which turns short pipelines such as `codewhale doctor |
@@ -1109,7 +1216,7 @@ async fn run_async_main() -> Result<()> {
     // around enable_raw_mode / disable_raw_mode, the external-editor
     // suspend path, and SIGTERM / SIGHUP from the OS.
     dotenv().ok();
-    let cli = Cli::parse();
+    let cli = parse_tui_cli();
     // Engine-backed Headless exec installs its own structured controller.
     // Other commands retain the emergency terminal-restoration behavior.
     if !matches!(&cli.command, Some(Commands::Exec(_))) {
@@ -2141,7 +2248,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     println!(
         "{}",
-        "codewhale Doctor"
+        tr(MessageId::DoctorTitle)
             .truecolor(accent_r, accent_g, accent_b)
             .bold()
     );
@@ -2149,18 +2256,21 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!();
 
     // Version info
-    println!("{}", "Version Information:".bold());
+    println!("{}", tr(MessageId::DoctorSectionVersion).bold());
     println!("  codewhale-tui: {}", env!("CODEWHALE_BUILD_VERSION"));
     println!("  rust: {}", rustc_version());
     println!();
 
-    println!("{}", "Delivery:".bold());
-    println!("  · installed build: {}", env!("CODEWHALE_BUILD_VERSION"));
-    println!("  · update discovery: disabled (install a verified local CodeWhale package)");
+    println!("{}", tr(MessageId::DoctorSectionDelivery).bold());
+    println!(
+        "  · {}",
+        tr(MessageId::DoctorInstalledBuild).replace("{version}", env!("CODEWHALE_BUILD_VERSION"))
+    );
+    println!("  · {}", tr(MessageId::DoctorUpdateDiscoveryDisabled));
     println!();
 
     // Configuration summary
-    println!("{}", "Configuration:".bold());
+    println!("{}", tr(MessageId::DoctorSectionConfiguration).bold());
     let config_path = config_path_override
         .map(PathBuf::from)
         .or_else(|| codewhale_config::resolve_config_path(None).ok())
@@ -2172,26 +2282,34 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     if config_path.exists() {
         println!(
-            "  {} config.toml found at {}",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&config_path)
+            tr(MessageId::DoctorConfigFound)
+                .replace("{path}", &crate::utils::display_path(&config_path))
         );
     } else {
         println!(
-            "  {} config.toml not found at {} (using defaults/env)",
+            "  {} {}",
             "!".truecolor(sky_r, sky_g, sky_b),
-            crate::utils::display_path(&config_path)
+            tr(MessageId::DoctorConfigNotFound)
+                .replace("{path}", &crate::utils::display_path(&config_path))
         );
     }
-    println!("  workspace: {}", crate::utils::display_path(workspace));
+    println!(
+        "  {}",
+        tr(MessageId::DoctorWorkspace).replace("{path}", &crate::utils::display_path(workspace))
+    );
     println!("  {}", doctor_search_provider_line(config));
 
     // Canonical product state root
     println!();
-    println!("{}", "State Root:".bold());
+    println!("{}", tr(MessageId::DoctorSectionStateRoot).bold());
     let code_home =
         codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
-    println!("  active: {}", crate::utils::display_path(&code_home));
+    println!(
+        "  {}",
+        tr(MessageId::DoctorStateActive).replace("{path}", &crate::utils::display_path(&code_home))
+    );
 
     let (setup_state, setup_source) = doctor_setup_state(config, workspace);
     print_doctor_setup_report(
@@ -2205,7 +2323,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Check API keys
     println!();
-    println!("{}", "API Keys:".bold());
+    println!("{}", tr(MessageId::DoctorSectionApiKeys).bold());
 
     // DeepSeek state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
@@ -2222,46 +2340,58 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         "·".dimmed()
     };
     println!(
-        "  {} deepseek: env={}, config={}",
+        "  {} {}",
         icon,
-        if in_env { "yes" } else { "no" },
-        if in_config { "yes" } else { "no" }
+        tr(MessageId::DoctorDeepseekKeyState)
+            .replace("{env}", if in_env { "是" } else { "否" })
+            .replace("{config}", if in_config { "是" } else { "否" })
     );
-    println!("  · credential precedence: ~/.codewhale/config.toml, OS keyring, then env");
+    println!("  · {}", tr(MessageId::DoctorCredentialPrecedence));
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
         let source_label = match api_key_source {
             ApiKeySource::Config => "config.toml",
             ApiKeySource::Keyring => "OS keyring",
-            ApiKeySource::Env => "environment",
-            ApiKeySource::Missing => "unknown source",
+            ApiKeySource::Env => "DEEPSEEK_API_KEY",
+            ApiKeySource::Missing => "未知来源",
         };
         println!(
-            "  {} active provider key resolved from {source_label}",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+            "  {} {}",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            tr(MessageId::DoctorActiveKeySource).replace("{source}", source_label)
         );
         true
     } else {
         println!(
-            "  {} active provider key not configured",
-            "✗".truecolor(red_r, red_g, red_b)
+            "  {} {}",
+            "✗".truecolor(red_r, red_g, red_b),
+            tr(MessageId::DoctorActiveKeyMissing)
         );
-        println!("    Run 'codewhale auth set' to save a key to ~/.codewhale/config.toml.");
+        println!("    {}", tr(MessageId::DoctorSaveKeyHint));
         false
     };
 
     // API connectivity test
     println!();
-    println!("{}", "API Connectivity:".bold());
+    println!("{}", tr(MessageId::DoctorSectionApiConnectivity).bold());
     let api_target = doctor_api_target(config);
-    println!("  · provider: {}", api_target.provider);
     println!(
-        "  · base_url: {}",
-        crate::utils::redact_url_for_display(&api_target.base_url)
+        "  · {}",
+        tr(MessageId::DoctorProvider).replace("{provider}", api_target.provider)
     );
-    println!("  · model: {}", api_target.model);
-    println!("  · 连通性探针仅验证 Standard Chat，不代表 Agent 或 Strict 能力");
+    println!(
+        "  · {}",
+        tr(MessageId::DoctorBaseUrl).replace(
+            "{base_url}",
+            &crate::utils::redact_url_for_display(&api_target.base_url)
+        )
+    );
+    println!(
+        "  · {}",
+        tr(MessageId::DoctorModel).replace("{model}", &api_target.model)
+    );
+    println!("  · {}", tr(MessageId::DoctorConnectivityScope));
     let tls_status = doctor_tls_status(config);
     if !tls_status.certificate_verification {
         println!("  ! {}", tls_status.message);
@@ -2275,66 +2405,67 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     }
     if has_api_key {
-        print!("  {} Testing connection...", "·".dimmed());
+        print!(
+            "  {} {}",
+            "·".dimmed(),
+            tr(MessageId::DoctorTestingConnection)
+        );
         use std::io::Write;
         std::io::stdout().flush().ok();
 
         match test_api_connectivity(config).await {
             Ok(()) => {
                 println!(
-                    "\r  {} API connection successful",
-                    "✓".truecolor(aqua_r, aqua_g, aqua_b)
+                    "\r  {} {}",
+                    "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorConnectionSuccessful)
                 );
             }
             Err(e) => {
                 let error_msg = e.to_string();
                 println!(
-                    "\r  {} API connection failed",
-                    "✗".truecolor(red_r, red_g, red_b)
+                    "\r  {} {}",
+                    "✗".truecolor(red_r, red_g, red_b),
+                    tr(MessageId::DoctorConnectionFailed)
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                    println!(
-                        "    Invalid API key. Check `codewhale auth status`, DEEPSEEK_API_KEY, or config.toml"
-                    );
+                    println!("    {}", tr(MessageId::DoctorInvalidApiKey));
                     if matches!(api_key_source, ApiKeySource::Keyring) {
-                        println!(
-                            "    The rejected key came from the OS keyring via the dispatcher."
-                        );
-                        println!(
-                            "    Run `codewhale auth status` to inspect config/keyring/env sources."
-                        );
+                        println!("    {}", tr(MessageId::DoctorRejectedKeyFromKeyring));
+                        println!("    {}", tr(MessageId::DoctorInspectCredentialSources));
                     } else if matches!(api_key_source, ApiKeySource::Env) {
-                        println!(
-                            "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
-                        );
-                        println!(
-                            "    Run `codewhale auth set` to save a config key that overrides stale env."
-                        );
+                        println!("    {}", tr(MessageId::DoctorRejectedKeyFromEnv));
+                        println!("    {}", tr(MessageId::DoctorSaveConfigKeyOverridesEnv));
                     }
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
-                    println!(
-                        "    API key lacks permissions. Verify key is active at platform.deepseek.com"
-                    );
+                    println!("    {}", tr(MessageId::DoctorApiKeyPermissionDenied));
                 } else if error_msg.contains("timeout") || error_msg.contains("Timeout") {
                     for line in doctor_timeout_recovery_lines(config) {
                         println!("    {line}");
                     }
                 } else if error_msg.contains("dns") || error_msg.contains("resolve") {
-                    println!("    DNS resolution failed. Check your network connection");
+                    println!("    {}", tr(MessageId::DoctorDnsFailure));
                 } else if error_msg.contains("connect") {
-                    println!("    Connection failed. Check firewall settings or try again");
+                    println!("    {}", tr(MessageId::DoctorConnectFailure));
                 } else {
-                    println!("    Error: {error_msg}");
+                    println!(
+                        "    {}",
+                        tr(MessageId::DoctorRawError).replace("{error}", &error_msg)
+                    );
                 }
             }
         }
     } else {
-        println!("  {} Skipped (no API key configured)", "·".dimmed());
+        println!(
+            "  {} {}",
+            "·".dimmed(),
+            tr(MessageId::DoctorConnectionSkipped)
+        );
     }
 
     // MCP configuration
     println!();
-    println!("{}", "MCP Servers:".bold());
+    println!("{}", tr(MessageId::DoctorSectionMcpServers).bold());
     let mcp_config_path = config.mcp_config_path();
     let project_mcp_config_path = crate::mcp::workspace_mcp_config_path(workspace);
     if mcp_config_path.exists() {
@@ -2345,9 +2476,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     } else {
         println!(
-            "  {} MCP config not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&mcp_config_path)
+            tr(MessageId::DoctorMcpConfigMissing)
+                .replace("{path}", &crate::utils::display_path(&mcp_config_path))
         );
     }
     if project_mcp_config_path.exists() {
@@ -2358,24 +2490,32 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     } else {
         println!(
-            "  {} Project MCP config not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&project_mcp_config_path)
+            tr(MessageId::DoctorProjectMcpConfigMissing).replace(
+                "{path}",
+                &crate::utils::display_path(&project_mcp_config_path)
+            )
         );
     }
 
     match crate::mcp::load_config_with_workspace(&mcp_config_path, workspace) {
         Ok(cfg) if cfg.servers.is_empty() => {
-            println!("  {} 0 merged server(s) configured", "·".dimmed());
+            println!(
+                "  {} {}",
+                "·".dimmed(),
+                tr(MessageId::DoctorMcpMergedCount).replace("{count}", "0")
+            );
             if !mcp_config_path.exists() && !project_mcp_config_path.exists() {
-                println!("    Run `codewhale mcp init` or add `.codewhale/mcp.json`.");
+                println!("    {}", tr(MessageId::DoctorMcpInitHint));
             }
         }
         Ok(cfg) => {
             println!(
-                "  {} {} merged server(s) configured",
+                "  {} {}",
                 "·".dimmed(),
-                cfg.servers.len()
+                tr(MessageId::DoctorMcpMergedCount)
+                    .replace("{count}", &cfg.servers.len().to_string())
             );
             for (name, server) in &cfg.servers {
                 let status = doctor_check_mcp_server(server);
@@ -2419,7 +2559,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Skills configuration
     println!();
-    println!("{}", "Skills:".bold());
+    println!("{}", tr(MessageId::DoctorSectionSkills).bold());
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
@@ -2452,63 +2592,88 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     if local_skills_dir.exists() {
         println!(
-            "  {} local skills dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&local_skills_dir),
-            describe_dir(&local_skills_dir)
+            tr(MessageId::DoctorDirectoryFound)
+                .replace("{label}", "workspace Skills")
+                .replace("{path}", &crate::utils::display_path(&local_skills_dir))
+                .replace("{count}", &describe_dir(&local_skills_dir).to_string())
         );
     } else {
         println!(
-            "  {} local skills dir not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&local_skills_dir)
+            tr(MessageId::DoctorDirectoryMissing)
+                .replace("{label}", "workspace Skills")
+                .replace("{path}", &crate::utils::display_path(&local_skills_dir))
         );
     }
 
     if agents_skills_dir.exists() {
         println!(
-            "  {} .agents skills dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&agents_skills_dir),
-            describe_dir(&agents_skills_dir)
+            tr(MessageId::DoctorDirectoryFound)
+                .replace("{label}", ".agents Skills")
+                .replace("{path}", &crate::utils::display_path(&agents_skills_dir))
+                .replace("{count}", &describe_dir(&agents_skills_dir).to_string())
         );
     } else {
         println!(
-            "  {} .agents skills dir not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&agents_skills_dir)
+            tr(MessageId::DoctorDirectoryMissing)
+                .replace("{label}", ".agents Skills")
+                .replace("{path}", &crate::utils::display_path(&agents_skills_dir))
         );
     }
 
     if let Some(agents_global_skills_dir) = agents_global_skills_dir.as_ref() {
         if agents_global_skills_dir.exists() {
             println!(
-                "  {} global .agents skills dir found at {} ({} items)",
+                "  {} {}",
                 "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(agents_global_skills_dir),
-                describe_dir(agents_global_skills_dir)
+                tr(MessageId::DoctorDirectoryFound)
+                    .replace("{label}", "global .agents Skills")
+                    .replace(
+                        "{path}",
+                        &crate::utils::display_path(agents_global_skills_dir)
+                    )
+                    .replace(
+                        "{count}",
+                        &describe_dir(agents_global_skills_dir).to_string()
+                    )
             );
         } else {
             println!(
-                "  {} global .agents skills dir not found at {}",
+                "  {} {}",
                 "·".dimmed(),
-                crate::utils::display_path(agents_global_skills_dir)
+                tr(MessageId::DoctorDirectoryMissing)
+                    .replace("{label}", "global .agents Skills")
+                    .replace(
+                        "{path}",
+                        &crate::utils::display_path(agents_global_skills_dir)
+                    )
             );
         }
     }
 
     if global_skills_dir.exists() {
         println!(
-            "  {} global skills dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&global_skills_dir),
-            describe_dir(&global_skills_dir)
+            tr(MessageId::DoctorDirectoryFound)
+                .replace("{label}", "global Skills")
+                .replace("{path}", &crate::utils::display_path(&global_skills_dir))
+                .replace("{count}", &describe_dir(&global_skills_dir).to_string())
         );
     } else {
         println!(
-            "  {} global skills dir not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&global_skills_dir)
+            tr(MessageId::DoctorDirectoryMissing)
+                .replace("{label}", "global Skills")
+                .replace("{path}", &crate::utils::display_path(&global_skills_dir))
         );
     }
 
@@ -2517,25 +2682,30 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // the report with false-positive "absent" lines.
     if opencode_skills_dir.exists() {
         println!(
-            "  {} .opencode skills dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&opencode_skills_dir),
-            describe_dir(&opencode_skills_dir)
+            tr(MessageId::DoctorDirectoryFound)
+                .replace("{label}", ".opencode Skills")
+                .replace("{path}", &crate::utils::display_path(&opencode_skills_dir))
+                .replace("{count}", &describe_dir(&opencode_skills_dir).to_string())
         );
     }
     if claude_skills_dir.exists() {
         println!(
-            "  {} .claude skills dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&claude_skills_dir),
-            describe_dir(&claude_skills_dir)
+            tr(MessageId::DoctorDirectoryFound)
+                .replace("{label}", ".claude Skills")
+                .replace("{path}", &crate::utils::display_path(&claude_skills_dir))
+                .replace("{count}", &describe_dir(&claude_skills_dir).to_string())
         );
     }
 
     println!(
-        "  {} selected skills dir: {}",
+        "  {} {}",
         "·".dimmed(),
-        crate::utils::display_path(&selected_skills_dir)
+        tr(MessageId::DoctorSelectedSkillsDirectory)
+            .replace("{path}", &crate::utils::display_path(&selected_skills_dir))
     );
     if !agents_skills_dir.exists()
         && !local_skills_dir.exists()
@@ -2544,28 +2714,30 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             .is_some_and(|dir| dir.exists())
         && !global_skills_dir.exists()
     {
-        println!("    Run `codewhale setup --skills` (or add --local for ./skills).");
+        println!("    {}", tr(MessageId::DoctorSkillsSetupHint));
     }
 
     // Plugins directory
     println!();
-    println!("{}", "Plugins:".bold());
+    println!("{}", tr(MessageId::DoctorSectionPlugins).bold());
     let plugins_dir = default_plugins_dir();
     if plugins_dir.exists() {
         let count = count_dir_entries(&plugins_dir);
         println!(
-            "  {} plugins dir found at {} ({} items)",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&plugins_dir),
-            count
+            tr(MessageId::DoctorPluginsFound)
+                .replace("{path}", &crate::utils::display_path(&plugins_dir))
+                .replace("{count}", &count.to_string())
         );
     } else {
         println!(
-            "  {} plugins dir not found at {}",
+            "  {} {}",
             "·".dimmed(),
-            crate::utils::display_path(&plugins_dir)
+            tr(MessageId::DoctorPluginsMissing)
+                .replace("{path}", &crate::utils::display_path(&plugins_dir))
         );
-        println!("    Run `codewhale setup --plugins` to scaffold a starter dir.");
+        println!("    {}", tr(MessageId::DoctorPluginsHint));
     }
 
     // Tool dependencies — probe external binaries that individual
@@ -2573,22 +2745,31 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // reading) so users see explicit ✓/✗ rather than the tool failing
     // at execution time with "program not found". New in v0.8.31.
     println!();
-    println!("{}", "Tool Dependencies:".bold());
+    println!("{}", tr(MessageId::DoctorSectionToolDependencies).bold());
 
     match crate::dependencies::resolve_python_interpreter() {
         Some(name) => println!(
-            "  {} Python: {} → code_execution tool registered",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            name
+            tr(MessageId::DoctorPythonAvailable).replace("{path}", &name)
         ),
         None => {
             println!(
-                "  {} Python: not found (tried {:?})",
+                "  {} {}",
                 "✗".truecolor(red_r, red_g, red_b),
-                crate::dependencies::PYTHON_CANDIDATES,
+                tr(MessageId::DoctorPythonMissing).replace(
+                    "{candidates}",
+                    &format!("{:?}", crate::dependencies::PYTHON_CANDIDATES)
+                )
             );
-            println!("    code_execution tool is NOT advertised to the model on this install.");
-            println!("    Install Python 3 and ensure one of those names is on PATH:");
+            println!(
+                "    {}",
+                tr(MessageId::DoctorToolNotAdvertised).replace("{tool}", "code_execution")
+            );
+            println!(
+                "    {}",
+                tr(MessageId::DoctorInstallDependencyHint).replace("{dependency}", "Python 3")
+            );
             match std::env::consts::OS {
                 "macos" => {
                     println!("      brew install python@3.12   (or download from python.org)")
@@ -2606,13 +2787,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     match crate::dependencies::resolve_pandoc() {
         Some(_) => println!(
-            "  {} pandoc: present → pandoc_convert tool registered",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            tr(MessageId::DoctorPandocAvailable)
         ),
         None => {
-            println!("  {} pandoc: not found (optional)", "·".dimmed(),);
+            println!("  {} {}", "·".dimmed(), tr(MessageId::DoctorPandocMissing));
             println!(
-                "    pandoc_convert tool is NOT advertised to the model. Install pandoc to enable:"
+                "    {}",
+                tr(MessageId::DoctorToolNotAdvertised).replace("{tool}", "pandoc_convert")
             );
             match std::env::consts::OS {
                 "macos" => println!("      brew install pandoc"),
@@ -2631,13 +2814,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(
-                    "  {} OCR: macOS Vision + tesseract available → image_ocr/read_file screenshot OCR enabled",
+                    "  {} {}",
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorOcrAvailable)
                 );
             } else {
                 println!(
-                    "  {} tesseract: present → image_ocr/read_file screenshot OCR enabled",
+                    "  {} {}",
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorTesseractAvailable)
                 );
             }
         }
@@ -2687,8 +2872,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 );
             } else {
                 println!(
-                    "  {} pdftotext: available (optional — pure-Rust extractor is the default in v0.8.32)",
+                    "  {} {}",
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorPdftotextAvailable)
                 );
                 println!(
                     "    Set `prefer_external_pdftotext = true` in settings.toml for column-heavy PDFs."
@@ -2716,12 +2902,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 }
             } else {
                 println!(
-                    "  {} pdftotext: not found (optional — pure-Rust extractor is the default in v0.8.32)",
+                    "  {} {}",
                     "·".dimmed(),
+                    tr(MessageId::DoctorPdftotextMissing)
                 );
-                println!(
-                    "    Install Poppler only if you want to opt into pdftotext for column-heavy PDFs."
-                );
+                println!("    {}", tr(MessageId::DoctorPdftotextOptionalHint));
             }
         }
     }
@@ -2730,7 +2915,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // signals checked by `Settings::apply_env_overrides` so users
     // can see at a glance which a11y/compat overrides fired.
     println!();
-    println!("{}", "Terminal Quirks:".bold());
+    println!("{}", tr(MessageId::DoctorSectionTerminalQuirks).bold());
     let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     let term_program_lc = term_program.to_ascii_lowercase();
     let mut any_quirk = false;
@@ -2770,35 +2955,43 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     }
     if !any_quirk {
         println!(
-            "  {} no env-driven terminal-quirk overrides active",
-            "·".dimmed()
+            "  {} {}",
+            "·".dimmed(),
+            tr(MessageId::DoctorTerminalNoOverrides)
         );
     }
 
     // Platform and sandbox checks
     println!();
-    println!("{}", "Platform:".bold());
-    println!("  OS: {}", std::env::consts::OS);
-    println!("  Arch: {}", std::env::consts::ARCH);
+    println!("{}", tr(MessageId::DoctorSectionPlatform).bold());
+    println!(
+        "  {}",
+        tr(MessageId::DoctorOs).replace("{os}", std::env::consts::OS)
+    );
+    println!(
+        "  {}",
+        tr(MessageId::DoctorArch).replace("{arch}", std::env::consts::ARCH)
+    );
 
     let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!(
-            "  {} sandbox available: {}",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            kind
+            tr(MessageId::DoctorSandboxAvailable).replace("{kind}", &kind.to_string())
         );
     } else {
         println!(
-            "  {} sandbox not available (commands run best-effort)",
-            "!".truecolor(sky_r, sky_g, sky_b)
+            "  {} {}",
+            "!".truecolor(sky_r, sky_g, sky_b),
+            tr(MessageId::DoctorSandboxUnavailable)
         );
     }
 
     println!();
     println!(
         "{}",
-        "All checks complete!"
+        tr(MessageId::DoctorComplete)
             .truecolor(aqua_r, aqua_g, aqua_b)
             .bold()
     );
@@ -2885,28 +3078,43 @@ fn print_doctor_setup_report(
     };
 
     println!();
-    println!("{}", "Setup State:".bold());
-    println!("  · source: {source}");
+    println!("{}", tr(MessageId::DoctorSectionSetupState).bold());
+    let source_label = match source {
+        "persisted" => tr(MessageId::DoctorSourcePersisted),
+        "derived" => tr(MessageId::DoctorSourceDerived),
+        _ => Cow::Borrowed(source),
+    };
     println!(
-        "  {first_run_icon} first-run: {}",
-        doctor_ready_label(first_run_ready)
+        "  · {}",
+        tr(MessageId::DoctorSetupSource).replace("{source}", source_label.as_ref())
     );
     println!(
-        "  {update_icon} update checkpoint {}: {}",
-        LEGACY_SETUP_CHECKPOINT_VERSION,
-        doctor_ready_label(update_ready)
+        "  {first_run_icon} {}",
+        tr(MessageId::DoctorFirstRun)
+            .replace("{status}", doctor_ready_label(first_run_ready).as_ref())
     );
     println!(
-        "  {operate_icon} operate/fleet: {}",
-        doctor_ready_label(operate_ready)
+        "  {update_icon} {}",
+        tr(MessageId::DoctorUpdateCheckpoint)
+            .replace("{version}", LEGACY_SETUP_CHECKPOINT_VERSION)
+            .replace("{status}", doctor_ready_label(update_ready).as_ref())
     );
     println!(
-        "  · constitution autonomy: {} (guidance only)",
-        doctor_constitution_autonomy_preference_id()
+        "  {operate_icon} {}",
+        tr(MessageId::DoctorOperateFleet)
+            .replace("{status}", doctor_ready_label(operate_ready).as_ref())
     );
     println!(
-        "  · runtime posture: {}",
-        doctor_runtime_posture_line(config, workspace)
+        "  · {}",
+        tr(MessageId::DoctorConstitutionAutonomy).replace(
+            "{value}",
+            localized_autonomy_preference(doctor_constitution_autonomy_preference()).as_ref()
+        )
+    );
+    println!(
+        "  · {}",
+        tr(MessageId::DoctorRuntimePosture)
+            .replace("{value}", &doctor_runtime_posture_line(config, workspace))
     );
     let consistency = doctor_setup_consistency(state, source);
     if consistency["status"] == "inconsistent" {
@@ -2926,17 +3134,23 @@ fn print_doctor_setup_report(
             consistency["repair"].as_str().unwrap_or("/setup"),
         );
     }
-    println!(
-        "  · next actions: /constitution (standing law), /setup report (readiness), codewhale auth status/set (DeepSeek credentials), /model (official model), edit ~/.codewhale/config.toml (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
-    );
+    println!("  · {}", tr(MessageId::DoctorNextActions));
     for step in codewhale_config::SetupStep::ALL {
         let entry = state.steps.get(&step);
         let required = entry.is_some_and(|entry| entry.required);
         let version = entry.and_then(|entry| entry.version.as_deref());
         let result = entry.and_then(|entry| entry.result.as_deref());
-        let required_label = if required { "required" } else { "optional" };
-        let version_label = version.unwrap_or("unversioned");
-        let result_label = result.unwrap_or("no result");
+        let required_label = if required {
+            tr(MessageId::DoctorRequired)
+        } else {
+            tr(MessageId::DoctorOptional)
+        };
+        let version_label = version
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| tr(MessageId::DoctorUnversioned).into_owned());
+        let result_label = result
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| tr(MessageId::DoctorNoResult).into_owned());
         println!(
             "    · {}: {} ({required_label}, {version_label}, {result_label})",
             setup_step_id(step),
@@ -2945,8 +3159,12 @@ fn print_doctor_setup_report(
     }
 }
 
-fn doctor_ready_label(ready: bool) -> &'static str {
-    if ready { "ready" } else { "needs action" }
+fn doctor_ready_label(ready: bool) -> Cow<'static, str> {
+    if ready {
+        tr(MessageId::DoctorReady)
+    } else {
+        tr(MessageId::DoctorNeedsAction)
+    }
 }
 
 /// Detect half-applied setup persistence (#3410).
@@ -3034,29 +3252,42 @@ fn autonomy_preference_id(preference: codewhale_config::AutonomyPreference) -> &
     }
 }
 
+fn localized_autonomy_preference(
+    preference: codewhale_config::AutonomyPreference,
+) -> Cow<'static, str> {
+    match preference {
+        codewhale_config::AutonomyPreference::Unspecified => {
+            tr(MessageId::DoctorAutonomyUnspecified)
+        }
+        codewhale_config::AutonomyPreference::Cautious => tr(MessageId::DoctorAutonomyCautious),
+        codewhale_config::AutonomyPreference::Balanced => tr(MessageId::DoctorAutonomyBalanced),
+        codewhale_config::AutonomyPreference::Autonomous => tr(MessageId::DoctorAutonomyAutonomous),
+    }
+}
+
 fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     let approval = config.approval_policy.as_deref().unwrap_or("on-request");
     let approval_source = if config.approval_policy.is_some() {
-        "config"
+        tr(MessageId::DoctorSourceConfig)
     } else {
-        "default"
+        tr(MessageId::DoctorSourceDefault)
     };
     let allow_shell = config.interactive_allow_shell();
     let allow_shell_source = if config.allow_shell.is_some() {
-        "config"
+        tr(MessageId::DoctorSourceConfig)
     } else {
-        "interactive default"
+        tr(MessageId::DoctorSourceInteractiveDefault)
     };
     let sandbox = config.sandbox_mode.as_deref().unwrap_or("workspace-write");
     let sandbox_source = if config.sandbox_mode.is_some() {
-        "config"
+        tr(MessageId::DoctorSourceConfig)
     } else {
-        "default"
+        tr(MessageId::DoctorSourceDefault)
     };
     let trust = if crate::tui::onboarding::needs_trust(workspace) {
-        "workspace not elevated"
+        tr(MessageId::DoctorWorkspaceNotTrusted)
     } else {
-        "workspace trusted"
+        tr(MessageId::DoctorWorkspaceTrusted)
     };
 
     format!(
@@ -3587,17 +3818,15 @@ fn doctor_search_provider_line(config: &Config) -> String {
             crate::config::SearchProviderSource::Default
         )
     ) {
-        "; set [search] provider = \"bing\" | \"tavily\" | \"bocha\" to switch"
+        tr(MessageId::DoctorSearchProviderSwitchHint)
     } else {
-        ""
+        Cow::Borrowed("")
     };
 
-    format!(
-        "search_provider: {} (source: {}{})",
-        search_provider.provider.as_str(),
-        search_provider.source.as_str(),
-        switch_hint
-    )
+    tr(MessageId::DoctorSearchProvider)
+        .replace("{provider}", search_provider.provider.as_str())
+        .replace("{source}", search_provider.source.as_str())
+        .replace("{hint}", switch_hint.as_ref())
 }
 
 fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
@@ -3652,27 +3881,15 @@ fn doctor_tls_status(config: &Config) -> DoctorTlsStatus {
 
 fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     let target = doctor_api_target(config);
-    let mut lines = vec![format!(
-        "Connection timed out while reaching {}.",
-        target.base_url
-    )];
+    let mut lines = vec![tr(MessageId::DoctorTimeout).replace("{base_url}", &target.base_url)];
 
     if target.base_url.contains("api.deepseek.com") {
-        lines.push(
-            "If this is a loopback fixture, set its HTTPS base URL in ~/.codewhale/config.toml and rerun `codewhale doctor`."
-                .to_string(),
-        );
+        lines.push(tr(MessageId::DoctorTimeoutOfficialHint).into_owned());
     } else {
-        lines.push(
-            "Confirm the configured DeepSeek fixture endpoint serves `/v1/models` and `/v1/chat/completions`."
-                .to_string(),
-        );
+        lines.push(tr(MessageId::DoctorTimeoutFixtureHint).into_owned());
     }
 
-    lines.push(
-        "Run `codewhale doctor --json` and include `base_url`, `default_text_model`, and `api_connectivity` when filing an issue."
-            .to_string(),
-    );
+    lines.push(tr(MessageId::DoctorTimeoutReportHint).into_owned());
     lines
 }
 
@@ -5248,5 +5465,58 @@ mod m8a_deepseek_only_entry_tests {
         assert_eq!(route["provider"], "deepseek");
         assert_eq!(route["wire_protocol"], "chat_completions");
         assert_eq!(route["auth"]["scheme"], "bearer");
+    }
+}
+
+#[cfg(test)]
+mod m8c_fixed_zh_hans_help_tests {
+    use super::*;
+
+    fn help_for(argv: &[&str]) -> String {
+        localized_tui_command()
+            .try_get_matches_from(argv)
+            .expect_err("--help must stop parsing")
+            .to_string()
+    }
+
+    #[test]
+    fn direct_tui_help_uses_the_shared_fixed_catalog() {
+        let help = help_for(&["codewhale-tui", "--help"]);
+        assert!(help.contains("面向官方 DeepSeek API 的本地终端编码 Agent"));
+        assert!(help.contains("用法："));
+        assert!(help.contains("检查本地配置、凭据、运行环境与恢复建议"));
+        for stable in ["doctor", "exec", "resume", "--workspace", "--prompt"] {
+            assert!(help.contains(stable), "stable identity missing: {stable}");
+        }
+        for leak in [
+            "CodeWhale terminal coding agent",
+            "Run system diagnostics",
+            "Run a non-interactive prompt",
+            "Resume a canonical Agent run",
+        ] {
+            assert!(!help.contains(leak), "English product text leaked: {leak}");
+        }
+    }
+
+    #[test]
+    fn fixed_zh_hans_help_respects_80_and_120_column_widths() {
+        use unicode_width::UnicodeWidthStr;
+
+        for width in [80usize, 120] {
+            let help = localized_tui_command()
+                .term_width(width)
+                .try_get_matches_from(["codewhale-tui", "--help"])
+                .expect_err("--help must stop parsing")
+                .to_string();
+            assert!(help.contains("文件工具使用的工作区目录"));
+            assert!(!help.contains('\u{fffd}'));
+            for line in help.lines() {
+                assert!(
+                    line.width() <= width,
+                    "rendered help width {} exceeds {width}: {line:?}",
+                    line.width()
+                );
+            }
+        }
     }
 }

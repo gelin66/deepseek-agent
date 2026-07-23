@@ -8,12 +8,12 @@ pub use status_indicator::header_status_indicator_frame;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::underwater::ShellPhase;
+use codewhale_localization::{MessageId, tr};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -945,8 +945,7 @@ impl Renderable for ComposerWidget<'_> {
             };
             let hint_line = if !self.slash_menu_entries.is_empty() {
                 Some(Line::from(Span::styled(
-                    self.app
-                        .tr(crate::localization::MessageId::ComposerSlashMenuHint),
+                    self.app.tr(MessageId::ComposerSlashMenuHint),
                     Style::default().fg(self.app.ui_theme.text_hint),
                 )))
             } else {
@@ -2018,7 +2017,7 @@ fn placeholder_visual_lines_for(placeholder: &str, content_width: usize) -> usiz
 }
 
 pub(crate) fn composer_empty_hint_text(app: &App) -> Cow<'static, str> {
-    app.tr(crate::localization::MessageId::ComposerPlaceholder)
+    app.tr(MessageId::ComposerPlaceholder)
 }
 
 pub(crate) fn empty_composer_visual_rows(

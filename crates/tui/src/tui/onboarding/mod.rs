@@ -14,9 +14,9 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
+use codewhale_localization::{MessageId, tr};
 
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
@@ -270,9 +270,9 @@ pub fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::localization::tr;
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::canonical_commands::matching_command_infos;
+    use codewhale_localization::tr;
     use std::collections::HashSet;
     use std::path::PathBuf;
 

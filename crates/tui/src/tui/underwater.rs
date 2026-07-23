@@ -17,8 +17,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{MessageId, tr};
 use crate::tui::{app::App, approval::ApprovalMode, views::ModalKind};
+use codewhale_localization::{MessageId, tr};
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.

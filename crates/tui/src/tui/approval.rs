@@ -21,9 +21,9 @@
 //! constructed (see `tui/ui.rs`); this module always assumes the user is
 //! being asked.
 
-use crate::localization::{MessageId, tr};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
+use codewhale_localization::{MessageId, tr};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use serde_json::Value;

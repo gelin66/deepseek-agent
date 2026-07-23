@@ -3,10 +3,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::markdown_render;
 use crate::tui::ui_text::truncate_line_to_width;
+use codewhale_localization::{MessageId, tr};
 
 /// Reasoning header opener. Replaces the spinner glyph on thinking cells —
 /// reasoning is a slow exhale, not a tool spin.

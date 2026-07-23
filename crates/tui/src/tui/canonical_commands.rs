@@ -4,7 +4,7 @@
 //! dispatch intent. Commands from the retired TUI engine must not be surfaced
 //! here until they have an equivalent `AgentApplication` command.
 
-use crate::localization::{MessageId, tr};
+use codewhale_localization::{MessageId, tr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CanonicalSlashCommand {

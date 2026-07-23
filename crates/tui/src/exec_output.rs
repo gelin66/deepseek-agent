@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::localization::{MessageId, tr};
+use codewhale_localization::{MessageId, tr};
 
 /// Typed terminal reasons exposed by the headless output protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

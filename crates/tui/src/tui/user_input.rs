@@ -400,7 +400,10 @@ impl ModalView for UserInputView {
                 self.selected == confirm_index,
                 confirm_number,
                 "Confirm selection".to_string(),
-                format!("Submit {} selected", self.multi_pending.len()),
+                codewhale_localization::tr(
+                    codewhale_localization::MessageId::UserInputSubmitSelected,
+                )
+                .replace("{count}", &self.multi_pending.len().to_string()),
                 false,
             );
         }

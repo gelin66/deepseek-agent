@@ -817,6 +817,7 @@ dependencies = [
  "codewhale-config",
  "codewhale-execpolicy",
  "codewhale-lane",
+ "codewhale-localization",
  "codewhale-protocol",
  "codewhale-runtime",
  "codewhale-secrets",
@@ -902,6 +903,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "codewhale-localization"
+version = "0.8.68"
+dependencies = [
+ "rust-i18n",
+ "serde_json",
 ]
 
 [[package]]
@@ -1026,6 +1035,7 @@ dependencies = [
  "codewhale-config",
  "codewhale-context",
  "codewhale-deepseek",
+ "codewhale-localization",
  "codewhale-protocol",
  "codewhale-runtime",
  "codewhale-secrets",
@@ -1051,7 +1061,6 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "rmcp",
- "rust-i18n",
  "rustls",
  "schemars",
  "schemaui",

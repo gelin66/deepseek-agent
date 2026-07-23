@@ -18,6 +18,7 @@ codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-app-server = { path = "../app-server", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }
 codewhale-lane = { path = "../lane", version = "0.8.68" }
+codewhale-localization = { path = "../localization", version = "0.8.68" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-secrets = { path = "../secrets", version = "0.8.68" }

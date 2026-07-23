@@ -34,7 +34,7 @@ use serde_json::Value;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::exec_lifecycle_stream::{agent_lifecycle_stream_line, is_agent_lifecycle_event};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
-use crate::localization::{MessageId, tr};
+use codewhale_localization::{MessageId, tr};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
@@ -704,10 +704,16 @@ pub(crate) async fn run_exec_runtime(
             output_failure.get_or_insert(error);
         }
         if let Some(error) = output_failure {
-            bail!("exec output failed: {error}");
+            bail!(
+                "{}",
+                tr(MessageId::ExecOutputFailed).replace("{error}", &error.to_string())
+            );
         }
         if let Some(error) = terminal_projection.error {
-            bail!("exec runtime failed: {error}");
+            bail!(
+                "{}",
+                tr(MessageId::ExecRuntimeFailed).replace("{error}", &error.to_string())
+            );
         }
         Ok(())
     }

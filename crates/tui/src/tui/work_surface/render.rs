@@ -8,9 +8,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::MessageId;
 use crate::tui::app::App;
 use crate::tui::ui_text::truncate_line_to_width;
+use codewhale_localization::MessageId;
 
 use super::model::{WorkRow, WorkSurfacePlacement, WorkTone, project};
 

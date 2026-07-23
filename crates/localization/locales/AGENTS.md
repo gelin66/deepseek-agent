@@ -1,4 +1,4 @@
-# crates/tui/locales — agent guidance
+# crates/localization/locales — agent guidance
 
 `zh-Hans.json` is the sole user-facing message catalog. This is a deliberate
 single-user product boundary, not a fallback locale.

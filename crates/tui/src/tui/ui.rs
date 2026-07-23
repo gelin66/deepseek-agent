@@ -44,7 +44,6 @@ use tracing;
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::config::Config;
-use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::prompts;
 use crate::settings::Settings;
@@ -56,6 +55,7 @@ use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::user_input::UserInputView;
+use codewhale_localization::{MessageId, tr};
 
 use super::app::{App, OnboardingState, ReasoningEffort, StatusToastLevel, TuiOptions};
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};

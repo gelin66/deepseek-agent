@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use codewhale_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
 use codewhale_app_server::{
@@ -19,6 +19,7 @@ use codewhale_config::{
     canonical_deepseek_model, is_official_deepseek_base_url, load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use codewhale_localization::{MessageId, tr};
 use codewhale_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -759,9 +760,15 @@ pub fn run_cli() -> std::process::ExitCode {
             // users hit "failed to parse config at <path>" with no
             // hint that the real error was a stray BOM or unbalanced
             // quote a few lines down.
-            eprintln!("error: {err}");
+            eprintln!(
+                "{}",
+                tr(MessageId::CliErrorPrefix).replace("{error}", &err.to_string())
+            );
             for cause in err.chain().skip(1) {
-                eprintln!("  caused by: {cause}");
+                eprintln!(
+                    "  {}",
+                    tr(MessageId::CliCausedByPrefix).replace("{error}", &cause.to_string())
+                );
             }
             std::process::ExitCode::FAILURE
         }
@@ -823,8 +830,116 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn cli_command_message(name: &str) -> Option<MessageId> {
+    Some(match name {
+        "doctor" => MessageId::CliCommandDoctor,
+        "runs" => MessageId::CliCommandRuns,
+        "resume" => MessageId::CliCommandResume,
+        "init" => MessageId::CliCommandInit,
+        "setup" => MessageId::CliCommandSetup,
+        "exec" => MessageId::CliCommandExec,
+        "fleet" => MessageId::CliCommandFleet,
+        "lane" => MessageId::CliCommandLane,
+        "mcp" => MessageId::CliCommandMcp,
+        "features" => MessageId::CliCommandFeatures,
+        "completions" => MessageId::CliCommandCompletions,
+        "login" => MessageId::CliCommandLogin,
+        "logout" => MessageId::CliCommandLogout,
+        "auth" => MessageId::CliCommandAuth,
+        "config" => MessageId::CliCommandConfig,
+        "model" => MessageId::CliCommandModel,
+        "thread" => MessageId::CliCommandThread,
+        "sandbox" => MessageId::CliCommandSandbox,
+        "app-server" => MessageId::CliCommandAppServer,
+        "completion" => MessageId::CliCommandCompletion,
+        _ => return None,
+    })
+}
+
+fn localize_cli_command(command: &mut clap::Command) {
+    let mut localized = command
+        .clone()
+        .help_template(tr(MessageId::CliHelpTemplate).into_owned())
+        .disable_help_subcommand(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .long_about(None);
+    localized = localized.arg(
+        clap::Arg::new("help")
+            .short('h')
+            .long("help")
+            .action(clap::ArgAction::Help)
+            .help(tr(MessageId::CliArgHelp).into_owned()),
+    );
+    if command.get_version().is_some() {
+        localized = localized.arg(
+            clap::Arg::new("version")
+                .short('V')
+                .long("version")
+                .action(clap::ArgAction::Version)
+                .help(tr(MessageId::CliArgVersion).into_owned()),
+        );
+    }
+    if command.get_name() == "codewhale" {
+        localized = localized.about(tr(MessageId::CliAbout).into_owned());
+    } else if let Some(message) = cli_command_message(command.get_name()) {
+        localized = localized.about(tr(message).into_owned());
+    }
+
+    let arg_messages = [
+        ("verbosity", MessageId::CliArgVerbosity),
+        ("workspace", MessageId::CliArgWorkspace),
+        ("continue_session", MessageId::CliArgContinue),
+        ("prompt", MessageId::CliArgPrompt),
+        ("prompt_flag", MessageId::CliArgPrompt),
+        ("api_key", MessageId::CliArgApiKey),
+        ("json", MessageId::CliArgJson),
+        ("limit", MessageId::CliArgLimit),
+        ("config", MessageId::CliArgConfig),
+        ("profile", MessageId::CliArgProfile),
+    ];
+    for (id, message) in arg_messages {
+        if localized
+            .get_arguments()
+            .any(|argument| argument.get_id() == id)
+        {
+            localized = localized.mut_arg(id, |argument| argument.help(tr(message).into_owned()));
+        }
+    }
+
+    *command = localized;
+    for child in command.get_subcommands_mut() {
+        localize_cli_command(child);
+    }
+}
+
+fn localized_cli_command() -> clap::Command {
+    let mut command = Cli::command();
+    localize_cli_command(&mut command);
+    command
+}
+
+fn parse_cli() -> Cli {
+    let matches = match localized_cli_command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.exit()
+        }
+        Err(error) => {
+            eprintln!("{}", tr(MessageId::CliArgumentError));
+            error.exit()
+        }
+    };
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    let mut cli = parse_cli();
     // Clap intentionally accepts free-form root prompts. Reject retired
     // top-level command spellings before config, TUI, Store, or model setup so
     // an old command can never become an accidental paid prompt.
@@ -945,9 +1060,7 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
             });
     if !prompt.is_empty() {
         if cli.continue_session {
-            bail!(
-                "`codewhale --continue` resumes the interactive TUI. Use `codewhale exec --continue <PROMPT>` to continue a session non-interactively."
-            );
+            bail!("{}", tr(MessageId::CliContinueInteractiveConflict));
         }
         forwarded.push("--prompt".to_string());
         forwarded.push(prompt);
@@ -1015,7 +1128,8 @@ fn reject_exec_global_flags(args: &[String]) -> Result<()> {
         let flag = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
         if GLOBAL_ONLY_FLAGS.contains(&flag) {
             bail!(
-                "{flag} must be placed before `exec`.\n\nUse:\n  codewhale {flag} <value> exec \"<prompt>\""
+                "{}",
+                tr(MessageId::CliExecFlagPlacement).replace("{flag}", flag)
             );
         }
     }
@@ -1186,7 +1300,7 @@ fn prompt_api_key() -> Result<String> {
     let mut buf = String::new();
     io::stdin()
         .read_line(&mut buf)
-        .context("failed to read API key from stdin")?;
+        .context(tr(MessageId::CliReadApiKeyFailed).into_owned())?;
     let key = buf.trim().to_string();
     if key.is_empty() {
         bail!("DeepSeek API Key 不能为空");
@@ -1220,18 +1334,21 @@ fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result
                 println!("{value}");
                 return Ok(());
             }
-            bail!("key not found: {key}");
+            bail!(
+                "{}",
+                tr(MessageId::CliConfigKeyNotFound).replace("{key}", &key)
+            );
         }
         ConfigCommand::Set { key, value } => {
             store.config.set_value(&key, &value)?;
             store.save()?;
-            println!("set {key}");
+            println!("{}", tr(MessageId::CliConfigSet).replace("{key}", &key));
             Ok(())
         }
         ConfigCommand::Unset { key } => {
             store.config.unset_value(&key)?;
             store.save()?;
-            println!("unset {key}");
+            println!("{}", tr(MessageId::CliConfigUnset).replace("{key}", &key));
             Ok(())
         }
         ConfigCommand::List => {
@@ -1312,32 +1429,44 @@ fn run_thread_command(command: ThreadCommand) -> Result<()> {
         }
         ThreadCommand::Archive { thread_id } => {
             state.mark_archived(&thread_id)?;
-            println!("archived {thread_id}");
+            println!(
+                "{}",
+                tr(MessageId::CliThreadArchived).replace("{thread_id}", &thread_id)
+            );
             Ok(())
         }
         ThreadCommand::Unarchive { thread_id } => {
             state.mark_unarchived(&thread_id)?;
-            println!("unarchived {thread_id}");
+            println!(
+                "{}",
+                tr(MessageId::CliThreadUnarchived).replace("{thread_id}", &thread_id)
+            );
             Ok(())
         }
         ThreadCommand::SetName { thread_id, name } => {
-            let mut thread = state
-                .get_thread(&thread_id)?
-                .with_context(|| format!("thread not found: {thread_id}"))?;
+            let mut thread = state.get_thread(&thread_id)?.with_context(|| {
+                tr(MessageId::CliThreadNotFound).replace("{thread_id}", &thread_id)
+            })?;
             thread.name = Some(name);
             thread.updated_at = chrono::Utc::now().timestamp();
             state.upsert_thread(&thread)?;
-            println!("renamed {thread_id}");
+            println!(
+                "{}",
+                tr(MessageId::CliThreadRenamed).replace("{thread_id}", &thread_id)
+            );
             Ok(())
         }
         ThreadCommand::ClearName { thread_id } => {
-            let mut thread = state
-                .get_thread(&thread_id)?
-                .with_context(|| format!("thread not found: {thread_id}"))?;
+            let mut thread = state.get_thread(&thread_id)?.with_context(|| {
+                tr(MessageId::CliThreadNotFound).replace("{thread_id}", &thread_id)
+            })?;
             thread.name = None;
             thread.updated_at = chrono::Utc::now().timestamp();
             state.upsert_thread(&thread)?;
-            println!("cleared name for {thread_id}");
+            println!(
+                "{}",
+                tr(MessageId::CliThreadNameCleared).replace("{thread_id}", &thread_id)
+            );
             Ok(())
         }
     }
@@ -1493,14 +1622,14 @@ fn run_app_server_command(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("failed to create tokio runtime")?;
+        .context(tr(MessageId::CliAppServerRuntimeFailed).into_owned())?;
     let application = Arc::new(AgentApplication::production(
         production_application_config(resolved_runtime, args.transport_max_retries)?,
     )?);
     if args.stdio {
         return runtime
             .block_on(run_app_server_stdio(application))
-            .context("canonical app-server stdio transport failed");
+            .context(tr(MessageId::CliAppServerStdioFailed).into_owned());
     }
 
     let listen = SocketAddr::new(
@@ -1519,7 +1648,9 @@ fn run_app_server_command(
                 ..AppServerOptions::default()
             },
         ))
-        .with_context(|| format!("canonical app-server HTTP listener failed at {listen}"))
+        .with_context(|| {
+            tr(MessageId::CliAppServerHttpFailed).replace("{listen}", &listen.to_string())
+        })
 }
 
 fn production_application_config(
@@ -1529,13 +1660,14 @@ fn production_application_config(
     let base_url = resolved_runtime.base_url.trim_end_matches('/');
     if !is_official_deepseek_base_url(base_url) {
         bail!(
-            "app-server only supports the official DeepSeek endpoint; configured base URL is {base_url}"
+            "{}",
+            tr(MessageId::CliAppServerOfficialEndpointOnly).replace("{base_url}", base_url)
         );
     }
 
     let prompt = ProductionPromptConfig {
         preferences: load_prompt_preferences()
-            .context("failed to load production prompt preferences")?,
+            .context(tr(MessageId::CliPromptPreferencesFailed).into_owned())?,
         verbosity: resolved_runtime.verbosity.clone(),
         ..ProductionPromptConfig::default()
     };
@@ -1727,7 +1859,7 @@ fn exit_with_tui_status(status: std::process::ExitStatus) -> Result<()> {
     if let Some(code) = tui_child_exit_code(status) {
         std::process::exit(code);
     }
-    bail!("codewhale-tui terminated without an exit code")
+    bail!("{}", tr(MessageId::CliTuiNoExitCode))
 }
 
 fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
@@ -1773,7 +1905,8 @@ fn locate_sibling_tui_binary() -> Result<PathBuf> {
         );
     }
 
-    let current = std::env::current_exe().context("failed to locate current executable path")?;
+    let current =
+        std::env::current_exe().context(tr(MessageId::CliCurrentExecutableFailed).into_owned())?;
     if let Some(found) = sibling_tui_candidate(&current) {
         return Ok(found);
     }
@@ -1819,10 +1952,10 @@ fn read_api_key_from_stdin() -> Result<String> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
-        .context("failed to read api key from stdin")?;
+        .context(tr(MessageId::CliReadApiKeyFailed).into_owned())?;
     let key = input.trim().to_string();
     if key.is_empty() {
-        bail!("empty API key provided");
+        bail!("{}", tr(MessageId::CliEmptyApiKey));
     }
     Ok(key)
 }
@@ -1839,7 +1972,9 @@ mod tests {
     }
 
     fn help_for(argv: &[&str]) -> String {
-        let err = Cli::try_parse_from(argv).expect_err("--help 应终止解析");
+        let err = localized_cli_command()
+            .try_get_matches_from(argv)
+            .expect_err("--help 应终止解析");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         err.to_string()
     }
@@ -1902,6 +2037,28 @@ mod tests {
         assert!(auth.contains("clear"));
         assert!(!auth.contains("--provider"));
         assert!(!auth.contains("list"));
+    }
+
+    #[test]
+    fn m8c_cli_help_uses_fixed_zh_hans_without_changing_command_ids() {
+        let help = help_for(&["codewhale", "--help"]);
+        assert!(help.contains("面向官方 DeepSeek API 的本地终端编码 Agent"));
+        assert!(help.contains("用法："));
+        assert!(help.contains("检查本地配置、凭据、运行环境与恢复建议"));
+        for stable in ["doctor", "exec", "app-server", "--workspace", "--verbosity"] {
+            assert!(
+                help.contains(stable),
+                "stable CLI identity missing: {stable}"
+            );
+        }
+        for leak in [
+            "Run CodeWhale diagnostics",
+            "Run a non-interactive prompt",
+            "Run the canonical local Run API",
+            "Controls transcript and output verbosity",
+        ] {
+            assert!(!help.contains(leak), "English product text leaked: {leak}");
+        }
     }
 
     #[test]

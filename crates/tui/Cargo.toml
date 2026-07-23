@@ -26,6 +26,7 @@ codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }
 codewhale-context = { path = "../context", version = "0.8.68" }
 codewhale-deepseek = { path = "../deepseek", version = "0.8.68" }
+codewhale-localization = { path = "../localization", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-runtime = { path = "../runtime", version = "0.8.68" }
 codewhale-state = { path = "../state", version = "0.8.68" }
@@ -75,7 +76,6 @@ ignore = "0.4"
 parking_lot = "0.12"
 pdf-extract = { version = "0.12", optional = true }
 sha2.workspace = true
-rust-i18n = "4.1.0"
 shell-words = "1.1.1"
 mimalloc.workspace = true
 

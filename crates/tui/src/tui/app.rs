@@ -8,7 +8,6 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, has_api_key};
-use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::CostCurrency;
 use crate::settings::Settings;
@@ -19,6 +18,7 @@ use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptScroll;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
+use codewhale_localization::{MessageId, tr};
 
 // === Types ===
 
@@ -1179,7 +1179,8 @@ impl App {
     pub fn finish_onboarding_without_feature_intro(&mut self) {
         self.onboarding = OnboardingState::None;
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
+            self.status_message =
+                Some(tr(MessageId::TuiOnboardingMarkFailed).replace("{error}", &err.to_string()));
         }
         self.needs_redraw = true;
     }
@@ -1818,7 +1819,7 @@ impl App {
             self.input = full_input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
             self.cursor_position = char_count(&self.input);
             self.push_status_toast(
-                format!("Failed to create paste directory: {e}"),
+                tr(MessageId::TuiPasteDirectoryFailed).replace("{error}", &e.to_string()),
                 StatusToastLevel::Error,
                 Some(8_000),
             );
@@ -1830,7 +1831,7 @@ impl App {
             self.input = full_input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
             self.cursor_position = char_count(&self.input);
             self.push_status_toast(
-                format!("Failed to write paste file: {e}"),
+                tr(MessageId::TuiPasteWriteFailed).replace("{error}", &e.to_string()),
                 StatusToastLevel::Error,
                 Some(8_000),
             );

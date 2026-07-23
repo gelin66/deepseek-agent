@@ -6,10 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
+use codewhale_localization::{MessageId, tr};
 
 mod agent_activity;
 mod archived_context;
