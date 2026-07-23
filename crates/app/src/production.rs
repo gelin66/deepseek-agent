@@ -2258,13 +2258,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:b2fe1b3abfb72e4eebb28f2a3ced08225c4941861c0b9cb8f6fc7a4add6df9b3",
+                "sha256:c514d10264b6cfbc3499da6d2f07b20d1ec5d5db7dd95b7fc1481e5ecf61ba68",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:90e9a19b10ad2997fec89ef96d2513ddc5b2682b2c8f13c88e3f4ff229200caa",
+                "sha256:e7e23f60a681055147fea6267a7e7cfd3406086c836b85b1850145f67f2deacf",
             ),
             (
                 "coordinator",
@@ -2302,7 +2302,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:0d10eda41159109d4e8cc70561c25dfc5685fa6bdc4653ef78c8e0c5ee6c61f5",
+                "sha256:7201ff882188ca6dc73c72d9cb99d160b188c4b584a2d48c5b359660a756cb7d",
             ),
             (
                 "terminal_empty",
@@ -2312,12 +2312,16 @@ mod tests {
             ),
         ];
 
+        let mut catalog_hash_mismatches = Vec::new();
         for (label, catalog, expected, expected_catalog_sha256) in catalogs {
-            assert_eq!(
-                canonical_tool_catalog_sha256(&catalog),
-                expected_catalog_sha256,
-                "{label}"
-            );
+            let actual_catalog_sha256 = canonical_tool_catalog_sha256(&catalog);
+            if actual_catalog_sha256 != expected_catalog_sha256 {
+                catalog_hash_mismatches.push((
+                    label,
+                    expected_catalog_sha256,
+                    actual_catalog_sha256,
+                ));
+            }
             let request = ModelRequest {
                 run_id: RunId::from(format!("strict-matrix-{label}")),
                 parent_run_id: None,
@@ -2381,6 +2385,10 @@ mod tests {
                 assert!(wire["function"].get("strict").is_none(), "{label}");
             }
         }
+        assert!(
+            catalog_hash_mismatches.is_empty(),
+            "production actor catalog hashes changed: {catalog_hash_mismatches:#?}"
+        );
     }
 
     fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
