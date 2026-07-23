@@ -204,6 +204,41 @@ class M7EThinkingHarnessTests(unittest.TestCase):
             }
         )
         self.assertIsNone(HARNESS.accounting_abort_code(self.manifest, arm))
+        arm["tool"]["outcomes"][0].update(
+            {
+                "operation": "failed",
+                "side_effect": "indeterminate",
+                "retry": "unsafe",
+                "failure_code": "verifier_failed",
+            }
+        )
+        self.assertEqual(
+            HARNESS.accounting_abort_code(self.manifest, arm),
+            "aborted_side_effect_ambiguous",
+        )
+        arm.update(
+            {
+                "task_id": "t3",
+                "verification": {"valid": True, "temporal_valid": False},
+            }
+        )
+        self.assertEqual(
+            HARNESS.accounting_abort_code(self.manifest, arm),
+            "aborted_side_effect_ambiguous",
+        )
+        arm["verification"]["temporal_valid"] = True
+        self.assertIsNone(HARNESS.accounting_abort_code(self.manifest, arm))
+        arm["tool"]["outcomes"][0].update(
+            {
+                "transport": "indeterminate",
+                "operation": "indeterminate",
+                "failure_code": "side_effect_ambiguous",
+            }
+        )
+        self.assertEqual(
+            HARNESS.accounting_abort_code(self.manifest, arm),
+            "aborted_side_effect_ambiguous",
+        )
 
     def test_surface_totals_and_off_reasoning_are_fail_closed(self) -> None:
         wrong_surface = run_view(effort="off")

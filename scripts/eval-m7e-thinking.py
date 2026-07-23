@@ -30,11 +30,11 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v2.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v3.json"
 TASK_SOURCE_PATH = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 TEST_PATH = ROOT / "scripts/test-eval-m7e-thinking.py"
-SCHEMA = "codewhale.eval.m7-e-thinking-admission.v2"
-RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v2"
+SCHEMA = "codewhale.eval.m7-e-thinking-admission.v3"
+RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v3"
 RUN_API = 10
 EVENT_API = 16
 STATE_SCHEMA = 21
@@ -1323,8 +1323,20 @@ def accounting_abort_code(
             and outcome.get("retry") == "not_needed"
             and outcome.get("failure_code") is None
         )
-        if not succeeded and (
-            outcome.get("operation") == "indeterminate"
+        expected_t3_verifier_failure = (
+            arm.get("task_id") == "t3"
+            and arm.get("verification", {}).get("valid") is True
+            and arm.get("verification", {}).get("temporal_valid") is True
+            and outcome.get("invocation") == "accepted"
+            and outcome.get("transport") == "succeeded"
+            and outcome.get("operation") == "failed"
+            and outcome.get("side_effect") == "indeterminate"
+            and outcome.get("retry") == "unsafe"
+            and outcome.get("failure_code") == "verifier_failed"
+        )
+        if not succeeded and not expected_t3_verifier_failure and (
+            outcome.get("transport") == "indeterminate"
+            or outcome.get("operation") == "indeterminate"
             or outcome.get("side_effect") == "indeterminate"
             or outcome.get("failure_code") == "side_effect_ambiguous"
         ):
