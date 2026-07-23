@@ -1115,6 +1115,52 @@ Token、时间、费用或一般任务成功率收益。manifest 与 observer：
 完整实现、离线矩阵、门禁、官方资料和非结论见
 [M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论](../../eval/summaries/m7-h-request-token-waste-2026-07-23.md)。
 
+### 9.16 M7-I near-limit context/request budget 基线（2026-07-23）
+
+M7-I manifest 固定 clean production baseline `6e9e9b7b`、tree
+`d360072e4d2af26612061d6e47d620682a585853`、Run API v10、RuntimeEvent v16、
+State v21、exec-stream v2、外部 target
+`/private/tmp/codewhale-m7i-target` 与 `maximum_reruns=0`。13 项矩阵覆盖：
+
+1. root ordinary 与 reserved terminal `tools=[]` 请求；
+2. ordinary/terminal compaction success 与 mandatory facts over limit；
+3. Runtime logical request budget、DeepSeek physical admission budget、partial failure 与
+   cancel；
+4. compaction commit 后 SIGKILL/SQLite reopen；
+5. read-only child、explicit Writer 的 actor catalog、context estimate 与 RequestPlan；
+6. 真实临时 Git workspace、production composition 与 latest-revision deterministic
+   verifier。
+
+`f8d0b242` 增加两个缺失的 current-revision 断言。production-composition 测试把每个 actor
+的完整 `ModelRequestPrepared` 写入 StateStore，SQLite reopen 后逐字段相等，重算的
+ContextBroker estimate 与 DeepSeek `RequestPlan` 也完全相同；root 有普通写工具，
+read-only child 无写工具，explicit Writer 有写工具，二者仍使用角色对应的 agent
+admission。Runtime 测试则让 mandatory task constraints 单独超过 hard limit，结果为 typed
+`ContextLimitExceeded(hard_limit=1000)`，ModelPort 调用、logical/physical request、
+compaction 和 prepared request 全部为 0。`b1894069` 只修复测试代码的 strict Clippy
+表达式，不改变这些断言或 production 行为。
+
+Harness 不实现 estimator、reducer、planner 或 terminal classifier，只运行 16 个 exact
+Rust test filters 并记录进程 verdict。formal output 在 clean `f8d0b242` 前后保持同 revision
+与 tree，13/13 cases、16/16 gates 通过。ignored result：
+
+- 路径：`eval/results/m7-i-near-limit-context-6e9e9b7b-v1.json`；
+- mode/size：`0600` / 3,616 bytes；
+- SHA-256：`aac12ec7c16b8ce28d5acf0cd2b5753297a838b12d68fbd46382ab3edfd5dc2c`；
+- `credential_read=false`、`official_api_requests=0`、`network_accessed=false`；
+- `material_production_delta=false`、`product_metric_eligible=false`。
+
+结论为 **close_request_token_optimization_and_admit_m8_cleanup**。本切片没有模型 treatment，
+付费请求不能增加归因力，因此未读取 Key、未调用 API。它只建立 current v16/v21 correctness
+baseline；不证明一般任务的 Token、请求、wall time、费用或 verified success 已改善，也不
+把 historical zero compaction/hard-budget 样本扩张为频率结论。manifest 与 Harness：
+
+- `eval/manifests/m7-i-near-limit-context-v1.json`；
+- `scripts/eval-m7i-near-limit.py`。
+
+完整身份、调用图、门禁和非结论见
+[M7-I near-limit context/request budget 结论](../../eval/summaries/m7-i-near-limit-context-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -34,6 +34,10 @@
 - M7-G formal candidate：`062623e6`
 - M7-G post-decision Harness hardening：`8763722c`
 - M7-G2 fail-before-loss observer checkpoint：`f89dafc5`
+- M7-H terminal catalog correctness checkpoint：`eb8763a1`
+- M7-H final decision checkpoint：`e46ae822`
+- M7-I current-revision baseline checkpoint：`f8d0b242`
+- M7-I test-only strict lint checkpoint：`b1894069`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -70,7 +74,13 @@
   verifier snapshot、最后才派生 arm result；11 个 observer exception/raw/SIGKILL window
   全部离线通过。旧 raw 保持 immutable unknown billing。由于 M7-G candidate 后没有新的
   fan-out production delta，本阶段未读取 Key、未调用 API，paid successor 判定
-  `inadmissible_no_new_production_delta`；下一切片转向 Agent request/Token budget。
+  `inadmissible_no_new_production_delta`。M7-H 随后修复 terminal `tools=[]` hard-limit
+  admission 错用 ordinary catalog 的确定性 Host 缺陷，但没有发现可准入的 broader
+  request/Token model treatment。M7-I 在 current v16/v21 上把分散的 near-limit evidence
+  冻结为 13 项矩阵和 16 个 exact gates；root、read-only child、explicit Writer 的 actual
+  catalog、context estimate 与 DeepSeek RequestPlan 均能从 SQLite reopen 精确重建，
+  mandatory facts 超限在 0 次模型请求前 fail closed。没有新的 production delta，Key 未读、
+  API/网络请求为 0；M7 request/Token 调优关闭，M8 DeepSeek-only 产品清理已准入。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1208,6 +1218,36 @@ M7-H 没有读取 credential、调用官方 API 或改变默认 reasoning。Deep
 live_inadmissible_no_model_treatment`。完整矩阵与证据边界见
 [M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论](../../eval/summaries/m7-h-request-token-waste-2026-07-23.md)。
 
+M7-I 同样没有新增 production owner、事件、schema、预算或模型策略。current 请求事实链仍是：
+
+```text
+AgentRuntime permit + actor catalog
+  -> ContextBroker effective_context / estimate / optional compaction
+  -> RuntimeEvent v16 ModelRequestPrepared
+  -> State v21 reducer / SQLite reopen
+  -> DeepSeek RequestPlan
+```
+
+`ModelRequestPrepared` 已包含完整 canonical `ModelRequest`；`ContextCompactionCommitted`
+包含 source digest、before/after estimate、projection、usage 与 matching tools。StateStore
+只重放这些既有事件，DeepSeek planner 只从 reopened `ModelRequest` 派生 endpoint/body/
+response mode。M7-I Harness 不保存第二份 terminal permit、estimated-token 或 planner
+decision。
+
+新增 app regression 在真实临时 Git workspace 中让 root、read-only child 和 explicit
+Writer 分别准备请求，写入 StateStore 后关闭并 reopen，再逐 actor 比较 request、catalog、
+effective estimate 和 DeepSeek RequestPlan。角色权限保持来自同一 production catalog：
+root/Writer 可见其 admitted 写能力，read-only child 不可见写工具。新增 Runtime regression
+证明 mandatory facts 自身超过 hard limit 时直接提交 typed terminal；不会先压缩、准备请求
+或调用 ModelPort。
+
+其余 ordinary/terminal compaction、logical/physical budget、partial failure、cancel、
+SIGKILL/reopen 与 production Git/verifier loopback 由既有 canonical tests 共同覆盖。
+13 项 manifest 对 16 个 exact filters 的 clean formal run 全部通过；本切片只补 coverage，
+没有 material production delta、credential read、API request 或 network access。决策为
+`close_request_token_optimization_and_admit_m8_cleanup`。完整事实见
+[M7-I near-limit context/request budget 结论](../../eval/summaries/m7-i-near-limit-context-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1245,6 +1285,9 @@ live_inadmissible_no_model_treatment`。完整矩阵与证据边界见
 - M7-H 已证明当前 Agent 在一般编码任务上减少模型请求、reasoning/replay Token、时间或
   费用；它只修复一个 terminal no-tools hard-limit admission 反例，历史矩阵也没有
   compaction/hard-budget 样本；
+- M7-I 已证明 near-limit 路径在一般任务中的出现频率或效率收益；它只证明 current v16/v21
+  的 actual catalog、context estimate、compaction/request ordering、预算失败与 reopen
+  correctness 可复现，没有 production treatment 或产品指标；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B

@@ -62,6 +62,14 @@
   observer-only revision 不能成为新 candidate；paid successor 在 Key/API 前判定
   `inadmissible_no_new_production_delta`，read-only child 继续 explicit-only。下一切片转向
   Agent 请求与 Token 预算反例。
+  M7-H 随后从 canonical request/Token 浪费矩阵定位并修复 terminal `tools=[]` 请求错误使用
+  ordinary catalog 做 hard-limit admission 的确定性 Host 缺陷；更广泛的模型请求/Token
+  优化没有可归因 treatment，继续 `hold`。M7-I 又在 current RuntimeEvent v16/State v21 上
+  冻结 13 项 near-limit 矩阵与 16 个 exact gates：root、read-only child、explicit Writer
+  的 actual catalog、context estimate 与 DeepSeek `RequestPlan` 均可从 SQLite reopen 的
+  `ModelRequestPrepared` 精确重建，mandatory facts 超限在 0 次模型请求前 typed fail
+  closed。没有发现新的 production 反例或 material delta，因此关闭 M7 request/Token 调优，
+  不读取 Key、不调用 API，准入 M8 DeepSeek-only 产品清理。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -175,8 +183,8 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-G2 已闭合 observer durability；fan-out 无新 production delta，paid successor 不准入） | 其他 Provider 和重复产品外壳被删除 |
-| M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
+| M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
+| M8 | V1 本地产品化 | 已准入（先做 DeepSeek-only 配置/Provider 遗留清理） | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2055,6 +2063,40 @@ State v21、exec-stream v2、默认 reasoning、预算、root/read-only/Writer a
 compaction 与 hard-budget boundary 的可复现 near-limit coverage；不得新增可由
 `ModelRequestPrepared`/RunStore 重建的第二状态真相。只有该覆盖出现新的真实 production
 反例时才改机制；否则关闭 request/Token 调优并转入 M8 准入清理。
+
+### M7-I：near-limit context/request budget 可复现闭环
+
+M7-I 从 clean `6e9e9b7b`、tree `d360072e4d2af26612061d6e47d620682a585853`
+开始。只读调用图确认唯一事实链未分叉：Runtime 选择 ordinary/terminal permit 与实际
+catalog，ContextBroker 用同一 catalog 估算并按需压缩，RuntimeEvent v16 持久化
+`ContextCompactionCommitted` 和完整 `ModelRequestPrepared`，State v21 reducer/SQLite
+reopen 重建请求，DeepSeek planner 再从该 `ModelRequest` 确定性生成 `RequestPlan`。
+
+`f8d0b242` 只增加 current-revision coverage、冻结 manifest 和只读 Harness，没有修改
+production Rust、协议或 schema。新增 production-composition 回归在真实临时 Git workspace
+中覆盖 root、read-only child、explicit Writer，逐 actor 证明 actual catalog、effective
+context estimate 和 DeepSeek `RequestPlan` 在 SQLite reopen 前后精确一致；另一个 Runtime
+回归证明 mandatory facts 超限返回 typed `ContextLimitExceeded`，且
+`ModelRequestPrepared`、compaction 和 ModelPort 调用均为 0。`b1894069` 只收敛测试代码的
+strict Clippy 表达式，不改变语义。
+
+冻结的 13 项矩阵覆盖 ordinary/terminal、普通与 terminal compaction、mandatory facts
+over limit、逻辑/物理请求预算、partial failure、cancel、compaction SIGKILL/reopen、
+read-only child、Writer 和真实 Git/verifier loopback。Harness 在 clean `f8d0b242` 上以
+`maximum_reruns=0` 完成 16/16 exact gates；ignored `0600` result 为 3,616 bytes，
+SHA-256 `aac12ec7c16b8ce28d5acf0cd2b5753297a838b12d68fbd46382ab3edfd5dc2c`。
+focused、fmt、workspace Clippy/test 和 Harness self-test/formal 均通过。
+
+产品决策为 **close request/Token optimization / admit M8 cleanup**。本切片没有 material
+production delta，没有模型、提示词、reasoning、catalog、预算、context policy 或 Provider
+surface treatment，因此 `product_metric_eligible=false`；Key 未读取，官方 API 请求和网络
+访问均为 0。M7-I 只证明 current v16/v21 near-limit correctness 可复现，不声明 Token、
+时间、费用或一般任务成功率收益。完整身份、矩阵、门禁与非结论见
+[M7-I near-limit context/request budget 结论](../../eval/summaries/m7-i-near-limit-context-2026-07-23.md)。
+
+下一切片进入 M8，先审计 DeepSeek-only credential/config/model/Doctor/onboarding/help 的真实
+production caller 与 generic Provider 遗留；每个 caller 切换到唯一 DeepSeek owner 后物理
+删除旧路径，不把品牌改名、发布或新模型选择系统混入同一切片。
 
 ### 调优
 
