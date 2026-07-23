@@ -293,6 +293,8 @@ struct MockTools {
     slow_cancelled: AtomicBool,
 }
 
+struct HugeCatalogTools;
+
 struct VerifierTools {
     spec: VerifierSpec,
     revision: Mutex<String>,
@@ -312,6 +314,33 @@ struct CorrectableVerifierTools {
 #[derive(Default)]
 struct RejectingPreflightTools {
     executions: AtomicUsize,
+}
+
+#[async_trait]
+impl ToolExecutor for HugeCatalogTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "huge_read".to_owned(),
+            description: "x".repeat(20_000),
+            input_schema: json!({"type": "object"}),
+        }]
+    }
+
+    fn definition_workspace_access(&self, _name: &str) -> WorkspaceAccess {
+        WorkspaceAccess::ReadOnly
+    }
+
+    fn workspace_access(&self, _invocation: &ToolInvocation) -> WorkspaceAccess {
+        WorkspaceAccess::ReadOnly
+    }
+
+    async fn execute(
+        &self,
+        _invocation: ToolInvocation,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolOutcome, ToolExecutionError> {
+        panic!("terminal no-tools request must not execute a tool")
+    }
 }
 
 #[async_trait]
@@ -7908,6 +7937,51 @@ fn long_transcript(turns: usize) -> CanonicalTranscript {
         });
     }
     CanonicalTranscript { entries }
+}
+
+#[tokio::test]
+async fn terminal_no_tools_catalog_is_selected_before_hard_limit_compaction() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        observed_calls.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            request.tools.is_empty(),
+            "the reserved terminal request must advertise its actual empty catalog"
+        );
+        ScriptResponse::Events(vec![completed(
+            "无工具终局请求完成",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let sink = Arc::new(CollectSink::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        Arc::new(HugeCatalogTools),
+        sink.clone(),
+        Arc::new(InMemoryRunStore::default()),
+    ));
+    let mut run_request = request("终局请求不应按未广告的巨大工具目录压缩");
+    run_request.context_policy = ContextPolicy {
+        hard_input_tokens: 2_000,
+    };
+    run_request.limits.max_turns = 1;
+    run_request.limits.max_model_requests = 1;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(outcome.runtime_model_requests, 1);
+    assert!(
+        !sink.events().iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::ContextCompactionCommitted { .. }
+        )),
+        "a terminal request that fits without tools must not compact against an unadvertised catalog"
+    );
 }
 
 #[tokio::test]
