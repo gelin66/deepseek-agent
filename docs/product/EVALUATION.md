@@ -883,6 +883,36 @@ tools crate 均通过。
 manifest 保持不可变并在 summary 中记录勘误。该修复仍没有 FIM treatment surface，因此
 不授权 credential/API 或 live A/B。
 
+### 9.10 M7-D RuntimeEvent v16 编辑失败观测闭环（2026-07-23）
+
+M7-D 审计发现 `5bb9b577` 的单变体 WIP 不能成为正式 production failure baseline：它把
+v16 事件降级给 v14 evaluator、按 `call_id` 而非 `operation_id` 配对、忽略 Started、
+读取错误的 workspace revision，并把其他路径或同批成功误算为模型恢复。更重要的是，它在
+没有 treatment delta 时仍提供 Key/API 入口。
+
+`7ddf3bba` 删除历史 executor adapter 和 live credential 路径，建立只投影 canonical
+RuntimeEvent v16 的 evaluator。恢复现在要求同 run、同工具、同结构化 target 且至少有一个
+介于失败 Outcome 与后续成功 Prepared 之间的新模型请求；无法解析 target 的 patch 保持
+unscorable。任何不成功 outcome 必须有 stable failure code；indeterminate side effect 与
+Started 无 Outcome 均作为 transaction ambiguity 事实，但 normal run 不估计 crash 频率。
+
+首个 clean suite 在 workspace-test exit 101 后停止并保留 0600 raw。CLI 同时暴露第二缺陷：
+nested self-test `pass` 掩盖 aggregate failure；hash-only output 也无法定位具体失败 test。
+不改源码的同命令诊断随后通过，故不得猜测或抹除首个失败。`cf9b3fd6` 冻结新的非覆盖 v2
+suite：aggregate `passed` 唯一决定状态，失败 gate 在 0600 ignored record 内保留有界 tail。
+
+v2 的 14/14 clean gates 全部通过：15 项 evaluator regression、M7-C tools/app loopback、
+root/read-only、explicit Writer、Prepared/Started/Outcome crash/reopen、app-server
+SIGKILL、focused、fmt、workspace clippy/test 和 diff check。before/after 都是
+`cf9b3fd6248ef07a4333e60f940c8e63ba7852f5` / tree
+`f48fe5e5e4a2a8aec391fdeaba2c7463e0e1f5f1`，dirty false；credential read false，
+official API requests 0。
+
+产品结论为 `keep_observer / shrink_live_harness / hold_editor_treatment`。这只证明 evaluator
+能够可信观察未来的 v16 ledger，不证明当前主要产品损失在编辑、不产生付费模型指标，也不
+准入 FIM、transaction state 或另一编辑策略。完整身份与首个失败记录见
+[M7-D RuntimeEvent v16 编辑失败观测闭环](../../eval/summaries/m7-d-edit-observation-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

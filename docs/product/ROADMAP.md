@@ -31,7 +31,10 @@
   12/12；真实 production loopback、Writer、SIGKILL/reopen 与全 workspace 门禁通过。
   当前没有 canonical FIM caller 或同 binary treatment surface，因此 FIM live A/B 同样在
   credential/API 前判定 `inadmissible_no_surface_delta`；Key 未读取，FIM production 接入
-  继续 `hold`。CLI direct apply 与 TUI-local eval/edit 绕行已物理删除。
+  继续 `hold`。CLI direct apply 与 TUI-local eval/edit 绕行已物理删除。M7-D 又审计并
+  替换了单变体观测 WIP：v16->v14 降级、历史 executor monkeypatch、错位 recovery/revision、
+  无 delta live/Key 路径已删除；`cf9b3fd6` 的 v16-native Harness 14/14 clean gates 通过。
+  没有新的 production 模型失败样本或 treatment delta，编辑/FIM treatment 继续 `hold`。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -1815,6 +1818,37 @@ exact-byte precondition，外部不守约 writer 仍可竞争 check/rename；del
 所以 frozen E10 的 generation 文案只描述 direct-tools fixture，不是 production Runtime 合同。
 这些勘误不产生 FIM treatment；Key 仍未读取，live 仍为
 `inadmissible_no_surface_delta`。
+
+### M7-D：RuntimeEvent v16 编辑失败观测闭环
+
+M7-D 从 M7-C post-audit `61597f59` 与 WIP `5bb9b577` 开始。WIP 会把
+RuntimeEvent v16 的 schema number 改为 v14 后交给历史 M7-A evaluator，按 `call_id` 配对
+lifecycle，从旧 `ToolOutcome.workspace_revision` 取 revision，并把任意后续成功当恢复。
+它还允许任意 result 文件名和 replace 写入，并在没有 control/treatment delta 时提供读取
+Key 的单变体 `live`。
+
+`7ddf3bba` 把 Harness 切换为独立 v16-native projector：Prepared/Started/Outcome 只按
+`operation_id` 绑定；所有失败必须有 v16 `failure_code`；Runtime revision 只取事件级
+`workspace_state.revision`；恢复必须同 run、同工具、同结构化目标并经过新的模型请求。
+无法从 structured arguments 得到目标的 patch header 保持 `unscorable`，不复制第二 patch
+parser；indeterminate side effect 与 Started 无 Outcome 分开计入 transaction ambiguity。
+历史 executor import、全局 monkeypatch、stale binary identity、`live`/Key/cost/schedule 和
+replace output 已物理删除。
+
+首个 clean `7ddf3bba` suite 的 13/14 gates 通过，workspace test exit 101；它正确 exit 1，
+但 CLI 因 nested self-test status 错印 `pass`，且 hash-only 记录无法定位失败 test。原
+0600 raw 保留，随后同命令诊断运行完整通过。`cf9b3fd6` 冻结新 v2 suite，使 aggregate
+`passed` 成为唯一 CLI status，并只在失败时向 0600 ignored record 写入每流最多 64 KiB
+诊断 tail。v2 在同一 clean revision/tree 上 14/14 通过，覆盖 15 项 projector regression、
+root/read-only、explicit Writer、三段工具 crash、app-server SIGKILL、focused、fmt、
+workspace clippy/test 与 diff check；credential read false、official API requests 0。
+
+决策为 **keep v16-native offline observer；shrink/delete no-delta live Harness；hold
+editor/FIM treatments**。本切片关闭的是 evaluation truth 损失，production Rust 增量为 0，
+不提供新的模型编辑失败频率或收益。下一候选必须先有真实反例支持并形成同 binary
+control/treatment delta；否则关闭编辑路线，转向证据更强的非编辑损失。完整身份、首个失败
+记录和非结论见
+[M7-D RuntimeEvent v16 编辑失败观测闭环](../../eval/summaries/m7-d-edit-observation-2026-07-23.md)。
 
 ### 调优
 

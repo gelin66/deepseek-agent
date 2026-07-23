@@ -24,6 +24,8 @@
 - M7-B post-decision shrink / SQLite reopen proof：`4e3536f1`
 - M7-C canonical tools correctness checkpoint：`7613073c`
 - M7-C non-canonical edit cutover / final Harness checkpoint：`9cba8b53`
+- M7-D v16-native observation projector checkpoint：`7ddf3bba`
+- M7-D failure-truth / final Harness checkpoint：`cf9b3fd6`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -39,7 +41,10 @@
   Strict treatment surface，正式 live A/B 在 credential/API 前判定不准入。M7-C 已完成
   canonical 编辑基线和 Host correctness 修复；tools contract 从 3/12 到 12/12，CLI direct
   apply 与 TUI-local eval/edit 绕行已删除。production 没有 canonical FIM caller，FIM live
-  A/B 同样在 credential/API 前判定无 surface delta，Key 未读取
+  A/B 同样在 credential/API 前判定无 surface delta，Key 未读取。M7-D 已把单变体
+  observation WIP 收敛为 v16-native offline projector，删除 v14 adapter、历史 executor
+  monkeypatch 和无 delta live/Key 路径；final Harness 14/14 clean gates 通过，但没有新的
+  production 模型样本或 editor treatment admission
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1060,6 +1065,19 @@ freshness 的当前边界是 exact-byte check 后 atomic rename；外部不守�
 check/rename，删除同理存在 check/remove 窗口。Started 的 `MayWrite` 即使 outcome 未应用、
 revision 未变，也会推进 workspace generation；这与 direct-tools no-op fixture 不推进任何
 Runtime generation 的历史测试边界不同。
+
+M7-D 没有增加 production owner。`scripts/eval-m7d-edit-observation.py` 只接受
+`StoredRuntimeEvent.schema_version=16`，按 `operation_id` 投影 edit Prepared/Started/Outcome，
+并从 `ToolOutcomeCommitted.workspace_state.revision` 取 Runtime revision。recovery 只有在同
+run、同工具、同结构化 target 且经过新的 `ModelRequestPrepared` 时成立；patch header target
+无法由 structured arguments 确认时保持 unscorable。committed indeterminate side effect 与
+Started 无 Outcome 分开记录，normal run 不估计 crash frequency。
+
+该 evaluator 不导入历史 M7-A executor，不调用工具或编辑器，也没有 transport、Key、计费、
+release binary 或 result replace 路径。首个 clean suite 的 workspace-test exit 101 被保留；
+诊断复跑通过。final `cf9b3fd6` v2 suite 修正 aggregate status 和有界失败 tail 后 14/14 gates
+通过。当前事实只支持 keep offline observer、删除 no-delta live Harness 和 hold editor/FIM
+treatment；不支持任何模型能力或效率收益。
 
 ## 7. 明确非结论
 
