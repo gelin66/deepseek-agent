@@ -2016,6 +2016,46 @@ hard-budget exhaustion；只有真实反例支持 material production delta 后�
 建立新的 paid suite。完整身份、raw hash、官方复核和非结论见
 [M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
 
+### M7-H：canonical request/Token 浪费矩阵与 terminal catalog 修复
+
+M7-H 从 clean `48a0b44d` 开始，不预设多请求、reasoning replay、compaction 或预算上调能
+提高产品指标。冻结 observer 只投影已有 canonical evidence：terminal-permit、eager-join、
+M6-B1 Writer 和 M7-A2 partial。12 个分组中的 root/child logical
+`ModelRequestPrepared` 与 physical started request 差异为 0；现有样本没有观察到 compaction
+或 hard-budget exhaustion。Writer 数据可精确归因 root/child reasoning 与 replay，旧 exec
+raw 只能保留为 unattributed；旧 schema 也没有逐请求 terminal catalog identity，不能从历史
+结果反推当前 near-limit 行为。
+
+只读调用图发现一个独立的确定性 Host 反例：旧 `AgentRuntime` 在判断下一次请求是否使用
+reserved terminal `tools=[]` 之前，先用完整 ordinary catalog 估算 hard limit 并尝试
+compaction。因而一个实际 terminal no-tools 请求本可装入上下文时，仍可能在 0 次模型请求前
+错误落为 `ContextLimitExceeded`。失败契约先在 `1943df4c` 冻结；`eb8763a1` 把 catalog
+选择移到唯一 hard-limit/compaction 决策之前，并删除旧的 pre-model-turn full-catalog
+分支与一次性 control enum，production Rust 为 `+15/-56`。真实
+`ProductionToolExecutor` catalog 回归位于 `b1a01ce9`。
+
+离线 A/B 使用同一 deterministic model、同一 1-request 总预算、`maximum_reruns=0` 和两个
+独立构建目录：baseline binary
+`11a9f7c54ff364cc19be1b2b53d2c1f3fe997869f31865799bcc10d2f27db82b`
+稳定失败，candidate binary
+`6412b8d76e05f982a36b47c7ada70ce414c87d06b1ae31d9921da70cbd85660a`
+稳定通过并只准备 1 个空 catalog 请求。首次共享 Cargo target 的候选运行复用了基线 binary，
+已明确作废且不进入证据。最终 ignored `0600` observer result 为 12,546 bytes，SHA-256
+`cdad0a5e91594d30c548ede92d0b7eee74f8bbec4a861f59dac90d9d2feea1d6`。
+
+产品决策为 **keep deterministic Runtime correctness fix / hold broader request-token
+optimization / live inadmissible_no_model_treatment**。该变化修复 Host admission，不是新的
+模型策略、工具 surface 或效率 treatment；付费请求无法增加归因力，因此没有读取 Key、
+没有调用官方 API，也不声明 Token、时间或费用收益。Run API v10、RuntimeEvent v16、
+State v21、exec-stream v2、默认 reasoning、预算、root/read-only/Writer admission 均不变。
+完整矩阵、门禁、官方协议复核与非结论见
+[M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论](../../eval/summaries/m7-h-request-token-waste-2026-07-23.md)。
+
+下一切片只补当前 v16/v21 production trace 对 per-request context estimate、actual catalog、
+compaction 与 hard-budget boundary 的可复现 near-limit coverage；不得新增可由
+`ModelRequestPrepared`/RunStore 重建的第二状态真相。只有该覆盖出现新的真实 production
+反例时才改机制；否则关闭 request/Token 调优并转入 M8 准入清理。
+
 ### 调优
 
 - `apply_patch/search-replace/FIM` A/B；

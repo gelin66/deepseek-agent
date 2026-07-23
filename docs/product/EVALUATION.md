@@ -1068,6 +1068,53 @@ revision、suite/output/binary 从 position 1 运行完整 9 对 / 18 arms。
 完整身份、fault matrix、raw hash、门禁和非结论见
 [M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
 
+### 9.15 M7-H request/Token 浪费矩阵与 terminal catalog（2026-07-23）
+
+M7-H manifest 固定 `maximum_reruns=0`，对四份既有 canonical evidence 做 SHA-256 输入
+校验和只读投影。矩阵覆盖 79 个历史 run record、root/read-only child/explicit Writer、
+logical/physical requests、reasoning/replay、handoff integration、compaction、hard-budget
+exhaustion 与旧 schema 可观测边界。各分组 logical/physical request 差异均为 0；四份数据的
+compaction 和 hard-budget exhaustion 均为 0，因此只能证明样本中未观察到，不能证明这些
+路径没有浪费。旧 exec raw 不含逐请求 advertised catalog，统一标记
+`terminal_catalog_unobservable`，不猜测 terminal permit。
+
+可精确归因的 Writer v2 记录包含 root/child 共 285 个请求、59,500 reasoning tokens、
+136,139 reasoning replay tokens；M7-A2 partial 包含 50 个 root 请求、16,638 reasoning、
+40,310 replay。eager-join 与 terminal-permit 的旧 aggregate usage 分别保留 21,349/27,629
+和 11,683/22,814 reasoning/replay，但不可按 actor 拆分。这些重叠历史 suite 不能相加为
+总体频率，也不能把官方要求的 tool-call reasoning replay 直接判为可删除浪费。
+
+新的 deterministic counterexample 冻结一项同任务对照：
+
+| 项目 | baseline `1943df4c` | candidate `eb8763a1` |
+|---|---:|---:|
+| actual terminal catalog | `tools=[]` | `tools=[]` |
+| model request budget | 1 | 1 |
+| prepared / physical requests | 0 / 0 | 1 / 1 |
+| compaction | 0 | 0 |
+| terminal | `ContextLimitExceeded` | `Completed` |
+| exact regression | fail | pass |
+
+两个 arm 分别编译到独立 target，binary SHA-256 为
+`11a9f7c54ff364cc19be1b2b53d2c1f3fe997869f31865799bcc10d2f27db82b` 和
+`6412b8d76e05f982a36b47c7ada70ce414c87d06b1ae31d9921da70cbd85660a`；共享 target artifact
+复用的一次候选运行作废。真实 fixed production catalog 另有 app composition 回归，证明
+hard boundary 只按最终请求目录估算，且不生成虚假 compaction event。
+
+保留判定只覆盖 deterministic Host correctness。候选没有改变模型、reasoning、提示词、
+预算、工具目录或 provider surface，故不存在可付费比较的模型 treatment；Key/API 在
+credential gate 前保持未使用，`product_metric_eligible=false`。结论是
+**keep fix / hold broader optimization / live inadmissible_no_model_treatment**，不报告
+Token、时间、费用或一般任务成功率收益。manifest 与 observer：
+
+- `eval/manifests/m7-h-request-token-waste-v1.json`；
+- `scripts/eval-m7h-request-token-waste.py`；
+- ignored `0600` result SHA-256
+  `cdad0a5e91594d30c548ede92d0b7eee74f8bbec4a861f59dac90d9d2feea1d6`。
+
+完整实现、离线矩阵、门禁、官方资料和非结论见
+[M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论](../../eval/summaries/m7-h-request-token-waste-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -1182,6 +1182,32 @@ credential read、API request 或 paid binary，决策为
 `live_successor_inadmissible_no_new_production_delta`。完整事实见
 [M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
 
+M7-H 没有新增 production owner、事件或持久状态。`AgentRuntime` 仍为 root、
+read-only child 和 explicit Writer 各保留一次可归还的 terminal model permit；只有
+`ModelRequestPrepared` 落盘后它才成为 logical request，DeepSeek inference lease 开始后才
+成为 physical attempt。离线矩阵中所有可观测分组的 logical/physical actor request 数一致，
+没有发现第二模型循环或隐藏重试。
+
+当前 `run_until_terminal` 先根据实际 permit 选择 ordinary catalog 或 reserved terminal
+`tools=[]`，然后用该 exact catalog 构造 `effective_context`、判断 hard limit 并在必要时提交
+唯一 `ContextCompactionCommitted`。旧实现曾在选择 terminal permit 之前用 full ordinary
+catalog 做这一步，导致 near-limit no-tools 请求可能在 0 次请求前被错误拒绝。
+`eb8763a1` 删除了该 pre-model-turn 分支与 `ContextCompactionControl`，没有改变
+`ModelRequest`、RuntimeEvent v16、State v21、Run API v10 或 exec-stream v2。
+
+失败契约同时覆盖 synthetic huge catalog 与 fixed `ProductionToolExecutor` catalog。
+baseline/candidate 独立离线 binary 在同一 1-request budget 下分别 fail/pass；prepared
+terminal request 的 catalog 为空、没有虚假 compaction，SQLite replay 仍由既有
+`ModelRequestPrepared` 和 compaction reducer 合同重建。historical raw 中没有 compaction/
+hard-budget 样本，旧 schema 也没有 per-request terminal catalog，因此当前只能保留该
+deterministic correctness 修复，不能宣称广泛 request/Token 效率收益。
+
+M7-H 没有读取 credential、调用官方 API 或改变默认 reasoning。DeepSeek thinking tool-call
+历史要求完整回传对应 `reasoning_content`；现有 reasoning replay 不能因绝对 Token 较大就
+删除。产品决策为 `keep_fix / hold_broader_optimization /
+live_inadmissible_no_model_treatment`。完整矩阵与证据边界见
+[M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论](../../eval/summaries/m7-h-request-token-waste-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1216,6 +1242,9 @@ credential read、API request 或 paid binary，决策为
   产生可用 arm，首个联网 arm 的 billing 也未落盘；
 - M7-G2 observer durability 已产生新的 fan-out product candidate 或允许补算/重跑 M7-G；
   它只证明未来 evaluator 必须先保存 Store truth，paid successor 仍不准入；
+- M7-H 已证明当前 Agent 在一般编码任务上减少模型请求、reasoning/replay Token、时间或
+  费用；它只修复一个 terminal no-tools hard-limit admission 反例，历史矩阵也没有
+  compaction/hard-budget 样本；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
