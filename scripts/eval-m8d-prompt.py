@@ -28,14 +28,14 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v1.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v2.json"
 TEST_PATH = ROOT / "scripts/test-eval-m8d-prompt.py"
 M7E_PATH = ROOT / "scripts/eval-m7e-thinking.py"
 CANDIDATE_PROMPT_PATH = ROOT / "eval/fixtures/m8-d-prompt/v1/constitution.md"
 SINGLE_TASK_SOURCE = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 WRITER_TASK_SOURCE = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-SCHEMA = "codewhale.eval.m8-d-prompt-ab.v1"
-RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v1"
+SCHEMA = "codewhale.eval.m8-d-prompt-ab.v2"
+RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v2"
 VARIANTS = ("baseline", "candidate")
 RUN_API = 10
 EVENT_API = 16
@@ -1336,6 +1336,167 @@ def probe_binary(path: Path, revision: str) -> dict[str, Any]:
     }
 
 
+def activation_identity_matches(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> bool:
+    before_prompt = baseline.get("prompt", {})
+    after_prompt = candidate.get("prompt", {})
+    return bool(
+        baseline.get("non_prompt") == candidate.get("non_prompt")
+        and before_prompt.get("prefix_valid") is True
+        and after_prompt.get("prefix_valid") is True
+        and before_prompt.get("stable_block_sha256")
+        != after_prompt.get("stable_block_sha256")
+        and before_prompt.get("stable_suffix_sha256")
+        == after_prompt.get("stable_suffix_sha256")
+        and before_prompt.get("remaining_blocks_sha256")
+        == after_prompt.get("remaining_blocks_sha256")
+        and before_prompt.get("block_count") == after_prompt.get("block_count")
+        and before_prompt.get("cache_controls")
+        == after_prompt.get("cache_controls")
+    )
+
+
+def probe_process_prompt_activation(
+    binary: Path,
+    manifest: dict[str, Any],
+    tasks: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_text = (
+        ROOT / manifest["prompt_treatment"]["baseline"]["source"]
+    ).read_text(encoding="utf-8")
+    candidate_text = CANDIDATE_PROMPT_PATH.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="codewhale-m8d-activation-") as raw:
+        root = Path(raw)
+        workspace = root / "workspace"
+        M7E.materialize_fixture(tasks, "t1", workspace)
+        variants: dict[str, dict[str, Any]] = {}
+        for variant in VARIANTS:
+            state_root = root / variant
+            home = state_root / "home"
+            codewhale_home = state_root / "codewhale"
+            xdg = state_root / "xdg"
+            for directory in (home, codewhale_home, xdg):
+                directory.mkdir(parents=True)
+            environment = {
+                **M7E.safe_env(),
+                "HOME": str(home),
+                "CODEWHALE_HOME": str(codewhale_home),
+                "XDG_CONFIG_HOME": str(xdg),
+                "DEEPSEEK_API_KEY": "offline-m8d-activation-key",
+                "HTTPS_PROXY": "http://127.0.0.1:1",
+                "HTTP_PROXY": "http://127.0.0.1:1",
+                "ALL_PROXY": "http://127.0.0.1:1",
+                "https_proxy": "http://127.0.0.1:1",
+                "http_proxy": "http://127.0.0.1:1",
+                "all_proxy": "http://127.0.0.1:1",
+                "NO_PROXY": "",
+                "no_proxy": "",
+            }
+            if variant == "candidate":
+                override = codewhale_home / "prompts/constitution.md"
+                override.parent.mkdir(parents=True)
+                shutil.copy2(CANDIDATE_PROMPT_PATH, override)
+                override.chmod(0o600)
+                environment["CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE"] = "1"
+            process = start_process(
+                binary,
+                workspace,
+                environment,
+                state_root / "app-server.stderr",
+                0,
+            )
+            client: Any = None
+            try:
+                client = M7E.StdioClient(process, b"offline-m8d-activation-key")
+                envelope = start_envelope(
+                    manifest,
+                    tasks,
+                    "t1",
+                    workspace,
+                    f"m8d-v2-activation-{variant}",
+                )
+                envelope["command"]["max_api_requests"] = 1
+                envelope["command"]["limits"].update(
+                    {
+                        "max_turns": 1,
+                        "max_model_requests": 1,
+                        "max_model_retries": 0,
+                        "max_tool_calls": 0,
+                        "wall_time_ms": 15000,
+                    }
+                )
+                result = client.call(envelope, 15)
+                require(
+                    result.get("kind") == "run"
+                    and isinstance(result.get("run"), dict)
+                    and isinstance(result["run"].get("run_id"), str),
+                    "activation_run_missing",
+                )
+                run_id = result["run"]["run_id"]
+                events = M7E.fetch_events(
+                    client,
+                    run_id,
+                    time.monotonic() + 15,
+                    f"m8d-v2-activation-{variant}",
+                )
+                created = M7E.event_values(events, "run_created")
+                require(
+                    len(created) == 1 and isinstance(created[0].get("request"), dict),
+                    "activation_run_created_missing",
+                )
+                request = created[0]["request"]
+                task_contract = request.get("task_contract", {})
+                variants[variant] = {
+                    "prompt": prompt_signature(
+                        request, variant, baseline_text, candidate_text
+                    ),
+                    "non_prompt": {
+                        "model": request.get("model"),
+                        "reasoning_effort": request.get("reasoning_effort"),
+                        "max_output_tokens": request.get("max_output_tokens"),
+                        "streaming": request.get("streaming"),
+                        "actor": request.get("actor"),
+                        "tool_policy_sha256": canonical_hash(
+                            request.get("tool_policy")
+                        ),
+                        "limits_sha256": canonical_hash(request.get("limits")),
+                        "context_policy_sha256": canonical_hash(
+                            request.get("context_policy")
+                        ),
+                        "task_definition_sha256": canonical_hash(
+                            task_contract.get("definition")
+                        ),
+                        "workspace": request.get("environment", {}).get(
+                            "workspace"
+                        ),
+                        "tool_catalog_sha256": request.get("environment", {}).get(
+                            "tool_catalog_sha256"
+                        ),
+                        "execution_fingerprint_sha256": request.get(
+                            "environment", {}
+                        ).get("execution_fingerprint_sha256"),
+                    },
+                }
+            finally:
+                if client is not None:
+                    client.close()
+                M7E.stop_process(process)
+        require(
+            activation_identity_matches(
+                variants["baseline"], variants["candidate"]
+            ),
+            "process_prompt_activation_invalid",
+        )
+        return {
+            "network": "blocked_by_loopback_proxy",
+            "external_api_requests": 0,
+            "same_non_prompt_identity": True,
+            "variants": variants,
+        }
+
+
 def preflight_identity(
     manifest: dict[str, Any],
     tasks: dict[str, Any],
@@ -1405,6 +1566,7 @@ def preflight_identity(
         source_tree == source.get("candidate_source_tree"),
         "candidate_source_tree_mismatch",
     )
+    activation = probe_process_prompt_activation(codewhale, manifest, tasks)
     return {
         "revision": revision,
         "source_tree": source_tree,
@@ -1422,6 +1584,7 @@ def preflight_identity(
             task_id: canonical_hash(task_definition(manifest, tasks, task_id))
             for task_id in tasks["tasks"]
         },
+        "process_prompt_activation": activation,
     }
 
 

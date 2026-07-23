@@ -76,6 +76,15 @@ class PromptHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest, self.tasks = M8D.load_manifest(frozen=False)
 
+    def test_v2_never_reuses_the_aborted_v1_suite_identity(self) -> None:
+        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v2")
+        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v2")
+        self.assertEqual(
+            self.manifest["prior_attempt"]["status"],
+            "aborted_measurement_invalid",
+        )
+        self.assertEqual(self.manifest["experiment"]["maximum_reruns"], 0)
+
     def test_candidate_is_exactly_one_constitution_replacement(self) -> None:
         baseline = (
             ROOT / self.manifest["prompt_treatment"]["baseline"]["source"]
@@ -165,6 +174,21 @@ class PromptHarnessTests(unittest.TestCase):
             "stable_block_sha256"
         ] = "sha256:baseline"
         self.assertFalse(M8D.paired_identity_matches(baseline, changed))
+
+    def test_process_activation_identity_allows_only_constitution_delta(self) -> None:
+        baseline = {
+            "non_prompt": {"model": "deepseek-v4-flash", "tools": "same"},
+            "prompt": prompt_fingerprint("sha256:baseline")["prompt"],
+        }
+        candidate = deepcopy(baseline)
+        candidate["prompt"]["stable_block_sha256"] = "sha256:candidate"
+        self.assertTrue(M8D.activation_identity_matches(baseline, candidate))
+        changed = deepcopy(candidate)
+        changed["non_prompt"]["tools"] = "changed"
+        self.assertFalse(M8D.activation_identity_matches(baseline, changed))
+        changed = deepcopy(candidate)
+        changed["prompt"]["stable_suffix_sha256"] = "changed"
+        self.assertFalse(M8D.activation_identity_matches(baseline, changed))
 
     def test_prompt_signature_binds_prefix_and_preserves_suffix(self) -> None:
         baseline = "BASE"
