@@ -1,0 +1,216 @@
+{
+  "schema": "codewhale.eval.m8-a-deepseek-only-entry.v1",
+  "suite_id": "m8-a-deepseek-only-entry-8b650356-v1",
+  "frozen_at_utc": "2026-07-23T00:00:00Z",
+  "production_revision": "8b65035696842ad67cac32f114820746ca64128b",
+  "production_tree": "b0b57dc6385ea0fa57034224ddc3db9a9426ff24",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree_before_cutover": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock": "Cargo.lock",
+    "rust_toolchain": "rust-toolchain.toml"
+  },
+  "audit": {
+    "production_composition": "AgentApplication -> AgentRuntime -> RunStore",
+    "retained_entry_points": [
+      "codewhale exec",
+      "codewhale app-server HTTP/SSE and stdio",
+      "interactive codewhale-tui"
+    ],
+    "observed_generic_surfaces": [
+      "CLI ProviderArg and generic login/auth/model commands",
+      "crates/agent static cross-provider ModelRegistry",
+      "TUI ApiProvider, provider credential/OAuth adapters, route/catalog/pricing UI",
+      "crates/config ProviderKind, provider metadata, catalog, pricing and route resolver"
+    ],
+    "already_fail_closed": [
+      "codewhale exec rejects non-DeepSeek before AgentApplication construction",
+      "app-server rejects non-official DeepSeek provider, endpoint, TLS bypass and custom headers",
+      "interactive TUI admits only official DeepSeek provider/model before canonical Run creation"
+    ]
+  },
+  "slices": [
+    {
+      "id": "S1",
+      "problem": "CLI still exposes and resolves 34 Provider identities, generic OAuth/keyring status and a cross-provider model registry before delegating to the DeepSeek-only production application.",
+      "acceptance": [
+        "CLI help, login, logout, auth, model and runtime overrides are DeepSeek-only",
+        "credential precedence is explicit CLI -> config -> keyring -> DEEPSEEK_API_KEY and never crosses Provider slots",
+        "foreign provider input fails before TUI spawn, RunStore creation or network",
+        "human output is zh-Hans and secrets remain redacted"
+      ],
+      "owner": "crates/cli using the narrow DeepSeek config/secret contract in crates/config",
+      "replaces": [
+        "ProviderArg",
+        "generic auth provider loops and OAuth-file probes",
+        "codewhale-agent ModelRegistry"
+      ],
+      "evidence": [
+        "CLI parser/help matrix",
+        "credential precedence and redaction tests",
+        "child environment projection tests",
+        "no-spawn rejection test"
+      ],
+      "cutover_deletion": [
+        "crates/agent",
+        "codewhale-agent CLI dependency",
+        "generic CLI provider/OAuth/model code and tests"
+      ]
+    },
+    {
+      "id": "S2",
+      "problem": "The TUI retains a second 35-value Provider identity, Provider-specific OAuth/route/catalog/pricing logic and Doctor/onboarding branches although every retained Agent path is DeepSeek-only.",
+      "acceptance": [
+        "interactive, exec and Doctor consume one DeepSeek-only configuration",
+        "first start, no-key, invalid endpoint/model and resume fail or recover consistently in zh-Hans",
+        "onboarding names only DeepSeek and writes the canonical credential slot",
+        "HTTP/stdio machine protocol remains byte-schema compatible"
+      ],
+      "owner": "crates/tui as a thin client; crates/app and crates/deepseek remain production owners",
+      "replaces": [
+        "TUI ApiProvider and provider profiles",
+        "OpenAI Codex, Kimi and xAI model-auth adapters",
+        "generic route, catalog, pricing and billing presentation"
+      ],
+      "evidence": [
+        "TUI config and Doctor tests",
+        "real PTY first-start/no-key checks",
+        "exec/interactive production composition tests",
+        "run surface parity integration test"
+      ],
+      "cutover_deletion": [
+        "TUI provider OAuth files and dependencies",
+        "TUI route/catalog/provider-lake/pricing modules without retained DeepSeek consumers",
+        "provider-specific help, Doctor and onboarding branches"
+      ]
+    },
+    {
+      "id": "S3",
+      "problem": "crates/config still serializes generic Provider truth, catalogs, pricing, aliases and route resolution that no retained production caller may use after S1/S2.",
+      "acceptance": [
+        "ConfigToml has one DeepSeek credential/endpoint/model owner and rejects foreign provider configuration",
+        "project config cannot change credential, endpoint or Provider identity",
+        "all retained non-Provider config consumers continue to compile and pass",
+        "no compatibility reader, dual write or fallback Provider chain remains"
+      ],
+      "owner": "crates/config",
+      "replaces": [
+        "ProviderKind and Provider metadata registry",
+        "ProvidersToml cross-provider tables",
+        "generic catalog, pricing, model-reference and route modules"
+      ],
+      "evidence": [
+        "isolated HOME config matrix",
+        "precedence and foreign-config rejection tests",
+        "workspace clippy/test",
+        "dependency and source grep gates"
+      ],
+      "cutover_deletion": [
+        "generic Provider modules and fixtures",
+        "provider fallback config",
+        "unconsumed route/catalog/pricing/model aliases",
+        "obsolete Cargo dependencies"
+      ]
+    }
+  ],
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8a-target",
+    "cargo_net_offline": true,
+    "result_path": "eval/results/m8-a-deepseek-only-entry-8b650356-v1.json",
+    "result_mode": "0600",
+    "overwrite": false
+  },
+  "matrix": [
+    {
+      "id": "P01",
+      "surface": "CLI",
+      "case": "isolated first start",
+      "expected": "creates only the canonical config path with a DeepSeek-only template and no network"
+    },
+    {
+      "id": "P02",
+      "surface": "CLI/TUI/app-server",
+      "case": "missing credential",
+      "expected": "same zh-Hans recovery contract before any official request"
+    },
+    {
+      "id": "P03",
+      "surface": "CLI/TUI",
+      "case": "foreign provider flag, env or config",
+      "expected": "typed or explicit rejection before spawn, RunStore and network"
+    },
+    {
+      "id": "P04",
+      "surface": "CLI/TUI",
+      "case": "foreign or invalid model",
+      "expected": "reject before model request while preserving future official DeepSeek model IDs"
+    },
+    {
+      "id": "P05",
+      "surface": "CLI/TUI/app-server",
+      "case": "credential precedence",
+      "expected": "explicit CLI -> config -> keyring -> DEEPSEEK_API_KEY with source reported and secret redacted"
+    },
+    {
+      "id": "P06",
+      "surface": "CLI/TUI/app-server",
+      "case": "endpoint and TLS",
+      "expected": "official endpoint by default; loopback only in explicit offline fixtures; TLS bypass/custom headers rejected in production"
+    },
+    {
+      "id": "P07",
+      "surface": "resume/reopen",
+      "case": "resume without new credential or with identity mismatch",
+      "expected": "SQLite truth is unchanged and no duplicate request/write occurs"
+    },
+    {
+      "id": "P08",
+      "surface": "interactive TUI",
+      "case": "first-run onboarding",
+      "expected": "DeepSeek-only zh-Hans credential and trust flow with no Provider picker"
+    },
+    {
+      "id": "P09",
+      "surface": "Doctor",
+      "case": "offline configuration report",
+      "expected": "DeepSeek-only route/auth/model facts; no generic Provider/OAuth/catalog UI"
+    },
+    {
+      "id": "P10",
+      "surface": "exec/HTTP/stdio",
+      "case": "canonical Run parity",
+      "expected": "Run API v10, RuntimeEvent v16, State v21 and exec-stream v2 unchanged"
+    },
+    {
+      "id": "P11",
+      "surface": "root/read-only child/Writer",
+      "case": "actor conformance",
+      "expected": "same canonical DeepSeek backend, Runtime and Store with explicit Writer admission unchanged"
+    },
+    {
+      "id": "P12",
+      "surface": "source/dependencies",
+      "case": "physical cleanup",
+      "expected": "no generic model Provider, Provider OAuth, model catalog/pricing alias or duplicate route owner remains"
+    }
+  ],
+  "credential_admission": {
+    "status": "blocked_no_material_model_treatment",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "read_key_before_admission": false,
+    "official_api_requests_allowed": false,
+    "reason": "M8-A changes local configuration and entry ownership, not model behavior; offline and loopback evidence is sufficient.",
+    "stop_on": [
+      "unexpected_network_requirement",
+      "unknown_billing",
+      "identity_mismatch",
+      "protocol_schema_change"
+    ]
+  }
+}

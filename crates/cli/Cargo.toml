@@ -19,7 +19,6 @@ path = "src/bin/codew_legacy_shim.rs"
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-codewhale-agent = { path = "../agent", version = "0.8.68" }
 codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-app-server = { path = "../app-server", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }

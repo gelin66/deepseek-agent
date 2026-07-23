@@ -11,15 +11,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_agent::ModelRegistry;
 use codewhale_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
 use codewhale_app_server::{
     AppServerOptions, DEFAULT_MAX_BODY_BYTES, run as run_app_server,
     run_stdio as run_app_server_stdio,
 };
 use codewhale_config::{
-    CliRuntimeOverrides, ConfigStore, ProviderKind, ProviderSource, ResolvedRuntimeOptions,
-    RuntimeApiKeySource, load_prompt_preferences,
+    CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
+    load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use codewhale_protocol::run_api::{
@@ -28,104 +27,6 @@ use codewhale_protocol::run_api::{
 };
 use codewhale_secrets::Secrets;
 use codewhale_state::{StateStore, ThreadListFilters};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ProviderArg {
-    Deepseek,
-    NvidiaNim,
-    Openai,
-    Atlascloud,
-    WanjieArk,
-    Volcengine,
-    Openrouter,
-    XiaomiMimo,
-    Novita,
-    Fireworks,
-    Siliconflow,
-    #[value(
-        alias = "silicon-flow-cn",
-        alias = "siliconflow-CN",
-        alias = "silicon_flow_cn",
-        alias = "siliconflow_cn",
-        alias = "siliconflow-china",
-        alias = "siliconflow_china"
-    )]
-    SiliconflowCn,
-    Arcee,
-    Moonshot,
-    Sglang,
-    Vllm,
-    Ollama,
-    Huggingface,
-    Together,
-    OpenaiCodex,
-    Anthropic,
-    #[value(alias = "open-model", alias = "open_model")]
-    Openmodel,
-    Zai,
-    Stepfun,
-    Minimax,
-    #[value(
-        alias = "minimax_anthropic",
-        alias = "mini-max-anthropic",
-        alias = "mini_max_anthropic"
-    )]
-    MinimaxAnthropic,
-    #[value(alias = "deep-infra", alias = "deep_infra")]
-    Deepinfra,
-    #[value(alias = "fugu", alias = "sakana-ai", alias = "sakana_ai")]
-    Sakana,
-    #[value(alias = "long-cat", alias = "meituan-longcat", alias = "meituan")]
-    LongCat,
-    #[value(
-        alias = "meta-ai",
-        alias = "meta_ai",
-        alias = "meta-model-api",
-        alias = "muse",
-        alias = "muse-spark"
-    )]
-    Meta,
-    #[value(alias = "x-ai", alias = "x_ai", alias = "grok")]
-    Xai,
-}
-
-impl From<ProviderArg> for ProviderKind {
-    fn from(value: ProviderArg) -> Self {
-        match value {
-            ProviderArg::Deepseek => ProviderKind::Deepseek,
-            ProviderArg::NvidiaNim => ProviderKind::NvidiaNim,
-            ProviderArg::Openai => ProviderKind::Openai,
-            ProviderArg::Atlascloud => ProviderKind::Atlascloud,
-            ProviderArg::WanjieArk => ProviderKind::WanjieArk,
-            ProviderArg::Volcengine => ProviderKind::Volcengine,
-            ProviderArg::Openrouter => ProviderKind::Openrouter,
-            ProviderArg::XiaomiMimo => ProviderKind::XiaomiMimo,
-            ProviderArg::Novita => ProviderKind::Novita,
-            ProviderArg::Fireworks => ProviderKind::Fireworks,
-            ProviderArg::Siliconflow => ProviderKind::Siliconflow,
-            ProviderArg::SiliconflowCn => ProviderKind::SiliconflowCN,
-            ProviderArg::Arcee => ProviderKind::Arcee,
-            ProviderArg::Moonshot => ProviderKind::Moonshot,
-            ProviderArg::Sglang => ProviderKind::Sglang,
-            ProviderArg::Vllm => ProviderKind::Vllm,
-            ProviderArg::Ollama => ProviderKind::Ollama,
-            ProviderArg::Huggingface => ProviderKind::Huggingface,
-            ProviderArg::Together => ProviderKind::Together,
-            ProviderArg::OpenaiCodex => ProviderKind::OpenaiCodex,
-            ProviderArg::Anthropic => ProviderKind::Anthropic,
-            ProviderArg::Openmodel => ProviderKind::Openmodel,
-            ProviderArg::Zai => ProviderKind::Zai,
-            ProviderArg::Stepfun => ProviderKind::Stepfun,
-            ProviderArg::Minimax => ProviderKind::Minimax,
-            ProviderArg::MinimaxAnthropic => ProviderKind::MinimaxAnthropic,
-            ProviderArg::Deepinfra => ProviderKind::Deepinfra,
-            ProviderArg::Sakana => ProviderKind::Sakana,
-            ProviderArg::LongCat => ProviderKind::LongCat,
-            ProviderArg::Meta => ProviderKind::Meta,
-            ProviderArg::Xai => ProviderKind::Xai,
-        }
-    }
-}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -139,12 +40,6 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     profile: Option<String>,
-    #[arg(
-        long,
-        value_enum,
-        help = "Advanced provider selector for non-TUI registry/config commands"
-    )]
-    provider: Option<ProviderArg>,
     #[arg(long)]
     model: Option<String>,
     #[arg(long = "output-mode")]
@@ -196,8 +91,6 @@ struct Cli {
 enum Commands {
     /// Run CodeWhale diagnostics.
     Doctor(TuiPassthroughArgs),
-    /// List live provider API models via the TUI binary.
-    Models(TuiPassthroughArgs),
     /// 列出当前工作区的 canonical Agent 运行。
     Runs(RunsArgs),
     /// 恢复指定 canonical Agent 运行，或使用 --last。
@@ -252,15 +145,15 @@ Runtime, not Fleet.
     Features(TuiPassthroughArgs),
     /// Generate shell completions for the TUI binary.
     Completions(TuiPassthroughArgs),
-    /// Configure provider credentials.
+    /// 保存 DeepSeek API Key。
     Login(LoginArgs),
-    /// Remove saved authentication state.
+    /// 删除已保存的 DeepSeek 凭据。
     Logout,
-    /// Manage authentication credentials and provider mode.
+    /// 查看或管理 DeepSeek 凭据。
     Auth(AuthArgs),
     /// Read/write/list config values.
     Config(ConfigArgs),
-    /// Resolve or list available models across providers.
+    /// 查看或设置 DeepSeek 模型。
     Model(ModelArgs),
     /// Manage thread/session metadata and resume/fork flows.
     Thread(ThreadArgs),
@@ -679,8 +572,6 @@ fn run_lane_log_proxy_command(args: LaneLogProxyArgs) -> Result<()> {
 
 #[derive(Debug, Args)]
 struct LoginArgs {
-    #[arg(long, value_enum, hide = true)]
-    provider: Option<ProviderArg>,
     #[arg(long)]
     api_key: Option<String>,
 }
@@ -693,23 +584,12 @@ struct AuthArgs {
 
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
-    /// Sign in to xAI/Grok with an SSH-friendly device code.
-    #[command(name = "xai-device")]
-    XaiDevice,
-    /// Show current provider and credential source state.
-    /// Without `--provider`, shows all known providers.
-    /// With `--provider`, shows detailed status for that provider.
-    Status {
-        /// Show status for a specific provider only.
-        #[arg(long, value_enum)]
-        provider: Option<ProviderArg>,
-    },
-    /// Save an API key to the shared user config file. Reads from
+    /// 显示 DeepSeek 凭据来源，不显示凭据内容。
+    Status,
+    /// 保存 DeepSeek API Key。读取
     /// `--api-key`, `--api-key-stdin`, or prompts on stdin when
     /// neither is given. Does not echo the key.
     Set {
-        #[arg(long, value_enum)]
-        provider: ProviderArg,
         /// Inline value (discouraged — appears in shell history).
         #[arg(long)]
         api_key: Option<String>,
@@ -717,20 +597,10 @@ enum AuthCommand {
         #[arg(long = "api-key-stdin", default_value_t = false)]
         api_key_stdin: bool,
     },
-    /// Report whether a provider has a key configured. Never prints
-    /// the value; just `set` / `not set` plus the source layer.
-    Get {
-        #[arg(long, value_enum)]
-        provider: ProviderArg,
-    },
-    /// Delete a provider's key from config and secret-store storage.
-    Clear {
-        #[arg(long, value_enum)]
-        provider: ProviderArg,
-    },
-    /// List all known providers with their auth state, without
-    /// revealing keys.
-    List,
+    /// 显示 DeepSeek API Key 是否已配置。
+    Get,
+    /// 从配置文件和凭据存储中删除 DeepSeek API Key。
+    Clear,
     /// Advanced: migrate config-file keys into a platform credential store.
     #[command(hide = true)]
     Migrate {
@@ -763,17 +633,14 @@ struct ModelArgs {
 
 #[derive(Debug, Subcommand)]
 enum ModelCommand {
-    List {
-        #[arg(long, value_enum)]
-        provider: Option<ProviderArg>,
-    },
+    List,
     Resolve {
         model: Option<String>,
-        #[arg(long, value_enum)]
-        provider: Option<ProviderArg>,
     },
     /// Set the default model (e.g. "pro", "flash", "deepseek-v4-pro").
-    Set { model: String },
+    Set {
+        model: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -994,7 +861,7 @@ fn run() -> Result<()> {
 
     let mut store = ConfigStore::load(cli.config.clone())?;
     let runtime_overrides = CliRuntimeOverrides {
-        provider: cli.provider.map(Into::into),
+        provider: None,
         model: cli.model.clone(),
         api_key: cli.api_key.clone(),
         base_url: cli.base_url.clone(),
@@ -1009,72 +876,56 @@ fn run() -> Result<()> {
     };
     match command {
         Some(Commands::Doctor(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
-        }
-        Some(Commands::Models(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
         }
         Some(Commands::Runs(_)) => {
             unreachable!("canonical runs command dispatched before ConfigStore")
         }
         Some(Commands::Resume(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("resume", args))
         }
         Some(Commands::Init(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("init", args))
         }
         Some(Commands::Setup(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("setup", args))
         }
         Some(Commands::Exec(args)) => {
             reject_exec_global_flags(&args.args)?;
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_exec_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
         }
         Some(Commands::Fleet(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("fleet", args))
         }
         Some(Commands::LaneLogProxy(_)) => unreachable!("lane log proxy dispatched above"),
         Some(Commands::Lane(args)) => run_lane_command(args),
         Some(Commands::Mcp(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
         }
         Some(Commands::Features(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
         }
         Some(Commands::Completions(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("completions", args))
         }
         Some(Commands::Login(args)) => run_login_command(&mut store, args),
         Some(Commands::Logout) => run_logout_command(&mut store),
-        Some(Commands::Auth(args)) => match args.command {
-            AuthCommand::XaiDevice => {
-                let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-                delegate_to_tui(
-                    &cli,
-                    &resolved_runtime,
-                    vec!["auth".to_string(), "xai-device".to_string()],
-                )
-            }
-            command => run_auth_command(&mut store, command),
-        },
+        Some(Commands::Auth(args)) => run_auth_command(&mut store, args.command),
         Some(Commands::Config(args)) => run_config_command(&mut store, args.command),
-        Some(Commands::Model(args)) => {
-            run_model_command(&mut store, args.command, runtime_overrides.provider)
-        }
+        Some(Commands::Model(args)) => run_model_command(&mut store, args.command),
         Some(Commands::Thread(args)) => run_thread_command(args.command),
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             run_app_server_command(&resolved_runtime, args)
         }
         Some(Commands::Completion { .. }) => {
@@ -1082,7 +933,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         None => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             let forwarded = root_tui_passthrough(&cli)?;
             delegate_to_tui(&cli, &resolved_runtime, forwarded)
         }
@@ -1122,7 +973,7 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
 fn resolve_runtime_for_dispatch(
     store: &mut ConfigStore,
     runtime_overrides: &CliRuntimeOverrides,
-) -> ResolvedRuntimeOptions {
+) -> Result<ResolvedRuntimeOptions> {
     let runtime_secrets = Secrets::auto_detect();
     resolve_runtime_for_dispatch_with_secrets(store, runtime_overrides, &runtime_secrets)
 }
@@ -1131,34 +982,41 @@ fn resolve_runtime_for_dispatch_with_secrets(
     store: &mut ConfigStore,
     runtime_overrides: &CliRuntimeOverrides,
     secrets: &Secrets,
-) -> ResolvedRuntimeOptions {
+) -> Result<ResolvedRuntimeOptions> {
     let mut resolved = store
         .config
         .resolve_runtime_options_with_secrets(runtime_overrides, secrets);
 
+    if resolved.provider != ProviderKind::Deepseek {
+        bail!(
+            "CodeWhale 仅支持官方 DeepSeek；当前配置的 provider={}。请删除 provider 配置或设为 deepseek",
+            resolved.provider.as_str()
+        );
+    }
+
     if resolved.api_key_source == Some(RuntimeApiKeySource::Keyring)
-        && !provider_config_set(store, resolved.provider)
+        && deepseek_config_api_key(store).is_none()
         && let Some(api_key) = resolved.api_key.clone()
     {
-        write_provider_api_key_to_config(store, resolved.provider, &api_key);
+        write_deepseek_api_key_to_config(store, &api_key);
         match store.save() {
             Ok(()) => {
                 eprintln!(
-                    "info: recovered API key from secret store and saved it to {}",
+                    "信息：已从系统凭据存储恢复 DeepSeek API Key，并保存到 {}",
                     store.path().display()
                 );
                 resolved.api_key_source = Some(RuntimeApiKeySource::ConfigFile);
             }
             Err(err) => {
                 eprintln!(
-                    "warning: recovered API key from secret store but failed to save {}: {err}",
+                    "警告：已从系统凭据存储恢复 DeepSeek API Key，但无法保存到 {}：{err}",
                     store.path().display()
                 );
             }
         }
     }
 
-    resolved
+    Ok(resolved)
 }
 
 fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
@@ -1169,7 +1027,7 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
 }
 
 fn reject_exec_global_flags(args: &[String]) -> Result<()> {
-    const GLOBAL_ONLY_FLAGS: &[&str] = &["--provider", "--model", "--api-key", "--base-url"];
+    const GLOBAL_ONLY_FLAGS: &[&str] = &["--model", "--api-key", "--base-url"];
 
     for arg in args {
         if arg == "--" {
@@ -1195,29 +1053,19 @@ fn run_login_command_with_secrets(
     args: LoginArgs,
     secrets: &Secrets,
 ) -> Result<()> {
-    let provider: ProviderKind = args.provider.unwrap_or(ProviderArg::Deepseek).into();
-    store.config.provider = provider;
-
     let api_key = match args.api_key {
         Some(v) => v,
         None => read_api_key_from_stdin()?,
     };
-    write_provider_api_key_to_config(store, provider, &api_key);
-    let keyring_saved = write_provider_api_key_to_keyring(secrets, provider, &api_key);
+    write_deepseek_api_key_to_config(store, &api_key);
+    let keyring_saved = secrets.set("deepseek", &api_key).is_ok();
     store.save()?;
     let destination = if keyring_saved {
         format!("{} and {}", store.path().display(), secrets.backend_name())
     } else {
         store.path().display().to_string()
     };
-    if provider == ProviderKind::Deepseek {
-        println!("logged in using API key mode (deepseek); saved key to {destination}");
-    } else {
-        println!(
-            "logged in using API key mode ({}); saved key to {destination}",
-            provider.as_str(),
-        );
-    }
+    println!("已保存 DeepSeek API Key：{destination}");
     Ok(())
 }
 
@@ -1226,25 +1074,12 @@ fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
 }
 
 fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -> Result<()> {
-    let active_provider = store.config.provider;
-    store.config.api_key = None;
-    for provider in ProviderKind::ALL {
-        clear_provider_api_key_from_config(store, provider);
-    }
-    clear_provider_api_key_from_keyring(secrets, active_provider);
+    clear_deepseek_api_key_from_config(store);
+    let _ = secrets.delete("deepseek");
     store.config.auth_mode = None;
     store.save()?;
-    println!("logged out");
+    println!("已删除 DeepSeek 凭据");
     Ok(())
-}
-
-/// Map [`ProviderKind`] to the canonical provider credential slot.
-fn provider_slot(provider: ProviderKind) -> &'static str {
-    match provider {
-        // Keep the historical shared credential slot for the China endpoint.
-        ProviderKind::SiliconflowCN => "siliconflow",
-        _ => provider.provider().id(),
-    }
 }
 
 #[cfg(test)]
@@ -1254,329 +1089,64 @@ fn no_keyring_secrets() -> Secrets {
     ))
 }
 
-fn write_provider_api_key_to_config(
-    store: &mut ConfigStore,
-    provider: ProviderKind,
-    api_key: &str,
-) {
+fn write_deepseek_api_key_to_config(store: &mut ConfigStore, api_key: &str) {
     store.config.auth_mode = Some("api_key".to_string());
-    store.config.providers.for_provider_mut(provider).api_key = Some(api_key.to_string());
-    if provider == ProviderKind::Deepseek {
-        store.config.api_key = Some(api_key.to_string());
-        if store.config.default_text_model.is_none() {
-            store.config.default_text_model = Some(
-                store
-                    .config
-                    .providers
-                    .deepseek
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
-            );
-        }
+    store.config.provider = ProviderKind::Deepseek;
+    store.config.providers.deepseek.api_key = Some(api_key.to_string());
+    store.config.api_key = Some(api_key.to_string());
+    if store.config.default_text_model.is_none() {
+        store.config.default_text_model = Some(
+            store
+                .config
+                .providers
+                .deepseek
+                .model
+                .clone()
+                .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
+        );
     }
 }
 
-fn clear_provider_api_key_from_config(store: &mut ConfigStore, provider: ProviderKind) {
-    store.config.providers.for_provider_mut(provider).api_key = None;
-    if provider == ProviderKind::Deepseek {
-        store.config.api_key = None;
-    }
+fn clear_deepseek_api_key_from_config(store: &mut ConfigStore) {
+    store.config.providers.deepseek.api_key = None;
+    store.config.api_key = None;
 }
 
-fn provider_env_set(provider: ProviderKind) -> bool {
-    provider_env_value(provider).is_some()
-}
-
-fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
-    provider.provider().env_vars()
-}
-
-fn provider_env_value(provider: ProviderKind) -> Option<(&'static str, String)> {
-    provider_env_vars(provider).iter().find_map(|var| {
-        std::env::var(var)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| (*var, value))
-    })
-}
-
-fn openai_codex_auth_file_path() -> PathBuf {
-    if let Ok(path) = std::env::var("OPENAI_CODEX_AUTH_FILE") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return path;
-        }
-    }
-
-    let codex_home = std::env::var("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".codex")
-        });
-    codex_home.join("auth.json")
-}
-
-fn provider_oauth_file_path(provider: ProviderKind) -> Option<PathBuf> {
-    (provider == ProviderKind::OpenaiCodex).then(openai_codex_auth_file_path)
-}
-
-fn provider_config_api_key(store: &ConfigStore, provider: ProviderKind) -> Option<&str> {
-    let slot = store
+fn deepseek_config_api_key(store: &ConfigStore) -> Option<&str> {
+    store
         .config
         .providers
-        .for_provider(provider)
+        .deepseek
         .api_key
-        .as_deref();
-    let root = (provider == ProviderKind::Deepseek)
-        .then_some(store.config.api_key.as_deref())
-        .flatten();
-    slot.or(root).filter(|v| !v.trim().is_empty())
+        .as_deref()
+        .or(store.config.api_key.as_deref())
+        .filter(|value| !value.trim().is_empty())
 }
 
-fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
-    provider_config_api_key(store, provider).is_some()
-}
-
-fn provider_keyring_api_key(secrets: &Secrets, provider: ProviderKind) -> Option<String> {
+fn deepseek_keyring_api_key(secrets: &Secrets) -> Option<String> {
     secrets
-        .get(provider_slot(provider))
+        .get("deepseek")
         .ok()
         .flatten()
-        .filter(|v| !v.trim().is_empty())
+        .filter(|value| !value.trim().is_empty())
 }
 
-fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
-    provider_keyring_api_key(secrets, provider).is_some()
+fn deepseek_env_api_key() -> Option<String> {
+    std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
-fn write_provider_api_key_to_keyring(
-    secrets: &Secrets,
-    provider: ProviderKind,
-    api_key: &str,
-) -> bool {
-    secrets.set(provider_slot(provider), api_key).is_ok()
-}
-
-fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind) {
-    let _ = secrets.delete(provider_slot(provider));
-}
-
-fn auth_status_all_providers(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
-    let active_provider = store.config.provider;
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "active provider: {} (set via config or CODEWHALE_PROVIDER)",
-        active_provider.as_str()
-    ));
-    lines.push(String::new());
-    lines.push(format!(
-        "{:<14} {:<8} {:<10} {:<8} {}",
-        "provider", "config", "keyring", "env", "status"
-    ));
-    lines.push("-".repeat(70));
-
-    for provider in ProviderKind::ALL {
-        let config_key = provider_config_api_key(store, provider);
-        let keyring_key = provider_keyring_api_key(secrets, provider);
-        let env_key = provider_env_value(provider);
-        let oauth_file_present = provider_oauth_file_path(provider).is_some_and(|p| p.exists());
-
-        let config_status = config_key.map(|_| "set").unwrap_or("-");
-        let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
-        let env_status = env_key.as_ref().map(|_| "set").unwrap_or("-");
-
-        let source = if provider == ProviderKind::OpenaiCodex {
-            // Keep the summary consistent with `auth status`: Codex auth is
-            // OAuth-file (or env token) based — config/keyring keys are not
-            // consulted for it.
-            if env_key.is_some() {
-                "env"
-            } else if oauth_file_present {
-                "oauth file"
-            } else {
-                "unset"
-            }
-        } else if config_key.is_some() {
-            "config"
-        } else if keyring_key.is_some() {
-            "keyring"
-        } else if env_key.is_some() {
-            "env"
-        } else if oauth_file_present {
-            "oauth file"
-        } else {
-            "unset"
-        };
-
-        let active_marker = if provider == active_provider {
-            " *"
-        } else {
-            ""
-        };
-
-        lines.push(format!(
-            "{:<14} {:<8} {:<10} {:<8} {}{}",
-            provider.as_str(),
-            config_status,
-            keyring_status,
-            env_status,
-            source,
-            active_marker
-        ));
-    }
-
-    lines.push(String::new());
-    lines.push("* = active provider (from config or CODEWHALE_PROVIDER)".to_string());
-    lines.push("Run `codewhale auth status --provider <id>` for detailed info.".to_string());
-    lines
-}
-
-fn auth_list_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.push("provider     config store env  active".to_string());
-    for provider in ProviderKind::ALL {
-        let slot = provider_slot(provider);
-        let file = provider_config_set(store, provider);
-        let keyring = (!file).then(|| provider_keyring_set(secrets, provider));
-        let env = provider_env_set(provider);
-        let oauth_file = provider_oauth_file_path(provider).is_some_and(|p| p.exists());
-        let active = if provider == ProviderKind::OpenaiCodex {
-            if env {
-                "env"
-            } else if oauth_file {
-                "oauth"
-            } else {
-                "missing"
-            }
-        } else if file {
-            "config"
-        } else if keyring == Some(true) {
-            "store"
-        } else if env {
-            "env"
-        } else {
-            "missing"
-        };
-        lines.push(format!(
-            "{slot:<12}  {}     {}      {}   {active}",
-            yes_no(file),
-            keyring_status_short(keyring),
-            yes_no(env)
-        ));
-    }
-    lines
-}
-
-fn auth_status_lines_for_provider(
-    store: &ConfigStore,
-    secrets: &Secrets,
-    provider: ProviderKind,
-) -> Vec<String> {
-    let config_key = provider_config_api_key(store, provider);
-    let keyring_key = provider_keyring_api_key(secrets, provider);
-    let env_key = provider_env_value(provider);
-    let oauth_file = provider_oauth_file_path(provider);
-    let oauth_file_present = oauth_file.as_ref().is_some_and(|path| path.exists());
-
-    let active_source = if provider == ProviderKind::OpenaiCodex {
-        if env_key.is_some() {
-            "env"
-        } else if oauth_file_present {
-            "Codex OAuth file"
-        } else {
-            "missing"
-        }
-    } else if config_key.is_some() {
-        "config"
-    } else if keyring_key.is_some() {
-        "secret store"
-    } else if env_key.is_some() {
-        "env"
+fn deepseek_active_source(store: &ConfigStore, secrets: &Secrets) -> &'static str {
+    if deepseek_config_api_key(store).is_some() {
+        "配置文件"
+    } else if deepseek_keyring_api_key(secrets).is_some() {
+        "系统凭据存储"
+    } else if deepseek_env_api_key().is_some() {
+        "环境变量 DEEPSEEK_API_KEY"
     } else {
-        "missing"
-    };
-    let active_last4 = if provider == ProviderKind::OpenaiCodex {
-        env_key.as_ref().map(|(_, value)| last4_label(value))
-    } else {
-        config_key
-            .map(last4_label)
-            .or_else(|| keyring_key.as_deref().map(last4_label))
-            .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)))
-    };
-    let active_label = active_last4
-        .map(|last4| format!("{active_source} (last4: {last4})"))
-        .unwrap_or_else(|| active_source.to_string());
-
-    let env_var_label = env_key
-        .as_ref()
-        .map(|(name, _)| (*name).to_string())
-        .unwrap_or_else(|| provider_env_vars(provider).join("/"));
-    let env_status = env_key
-        .as_ref()
-        .map(|(_, value)| format!("set, last4: {}", last4_label(value)))
-        .unwrap_or_else(|| "unset".to_string());
-
-    let is_active = provider == store.config.provider;
-    let active_marker = if is_active { " (active provider)" } else { "" };
-
-    let provider_cfg = store.config.providers.for_provider(provider);
-    let base_url = provider_cfg.base_url.as_deref().unwrap_or("(default)");
-    let model = provider_cfg.model.as_deref().unwrap_or("(default)");
-
-    let lookup_order = if provider == ProviderKind::OpenaiCodex {
-        "lookup order: env -> Codex OAuth file".to_string()
-    } else {
-        "lookup order: config -> secret store -> env".to_string()
-    };
-    let auth_mode = if provider == ProviderKind::OpenaiCodex {
-        "codex_oauth"
-    } else {
-        store.config.auth_mode.as_deref().unwrap_or("api_key")
-    };
-
-    let mut lines = vec![
-        format!("provider: {}{}", provider.as_str(), active_marker),
-        format!("route: {}", base_url),
-        format!("model: {}", model),
-        format!("auth mode: {auth_mode}"),
-        format!("active source: {active_label}"),
-        lookup_order,
-        format!(
-            "config file: {} ({})",
-            store.path().display(),
-            source_status(config_key, "missing")
-        ),
-        format!(
-            "secret store: {} ({})",
-            secrets.backend_name(),
-            source_status(keyring_key.as_deref(), "missing")
-        ),
-        format!("env var: {env_var_label} ({env_status})"),
-    ];
-    if let Some(path) = oauth_file {
-        let status = if path.exists() { "present" } else { "missing" };
-        lines.push(format!("Codex OAuth file: {} ({status})", path.display()));
+        "未配置"
     }
-    lines
-}
-
-fn source_status(value: Option<&str>, missing_label: &str) -> String {
-    value
-        .map(|v| format!("set, last4: {}", last4_label(v)))
-        .unwrap_or_else(|| missing_label.to_string())
-}
-
-fn last4_label(value: &str) -> String {
-    let trimmed = value.trim();
-    let chars: Vec<char> = trimmed.chars().collect();
-    if chars.len() <= 4 {
-        return "<redacted>".to_string();
-    }
-    let last4: String = chars[chars.len() - 4..].iter().collect();
-    format!("...{last4}")
 }
 
 fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
@@ -1589,120 +1159,62 @@ fn run_auth_command_with_secrets(
     secrets: &Secrets,
 ) -> Result<()> {
     match command {
-        AuthCommand::XaiDevice => {
-            bail!("xAI device authentication must be delegated to codewhale-tui")
-        }
-        AuthCommand::Status { provider } => {
-            match provider {
-                Some(p) => {
-                    let provider: ProviderKind = p.into();
-                    for line in auth_status_lines_for_provider(store, secrets, provider) {
-                        println!("{line}");
-                    }
-                }
-                None => {
-                    for line in auth_status_all_providers(store, secrets) {
-                        println!("{line}");
-                    }
-                }
-            }
+        AuthCommand::Status => {
+            println!("Provider：deepseek");
+            println!("凭据来源：{}", deepseek_active_source(store, secrets));
+            println!("配置文件：{}", store.path().display());
+            println!("查找顺序：命令行 -> 配置文件 -> 系统凭据存储 -> DEEPSEEK_API_KEY");
             Ok(())
         }
         AuthCommand::Set {
-            provider,
             api_key,
             api_key_stdin,
         } => {
-            let provider: ProviderKind = provider.into();
-            let slot = provider_slot(provider);
-            if provider == ProviderKind::Ollama && api_key.is_none() && !api_key_stdin {
-                let provider_cfg = store.config.providers.for_provider_mut(provider);
-                if provider_cfg.base_url.is_none() {
-                    provider_cfg.base_url = Some("http://localhost:11434/v1".to_string());
-                }
-                store.save()?;
-                println!(
-                    "configured {slot} provider in {} (API key optional)",
-                    store.path().display()
-                );
-                return Ok(());
-            }
             let api_key = match (api_key, api_key_stdin) {
                 (Some(v), _) => v,
                 (None, true) => read_api_key_from_stdin()?,
-                (None, false) => prompt_api_key(slot)?,
+                (None, false) => prompt_api_key()?,
             };
-            write_provider_api_key_to_config(store, provider, &api_key);
-            let keyring_saved = write_provider_api_key_to_keyring(secrets, provider, &api_key);
+            write_deepseek_api_key_to_config(store, &api_key);
+            let keyring_saved = secrets.set("deepseek", &api_key).is_ok();
             store.save()?;
-            // Don't print the key. Don't echo length.
             if keyring_saved {
                 println!(
-                    "saved API key for {slot} to {} and {}",
+                    "已将 DeepSeek API Key 保存到 {} 和 {}",
                     store.path().display(),
                     secrets.backend_name()
                 );
             } else {
-                println!("saved API key for {slot} to {}", store.path().display());
+                println!("已将 DeepSeek API Key 保存到 {}", store.path().display());
             }
             Ok(())
         }
-        AuthCommand::Get { provider } => {
-            let provider: ProviderKind = provider.into();
-            let slot = provider_slot(provider);
-            let in_file = provider_config_set(store, provider);
-            let in_keyring = !in_file && provider_keyring_set(secrets, provider);
-            let in_env = provider_env_set(provider);
-            // Report the highest-priority source that has it.
-            let source = if in_file {
-                Some("config-file")
-            } else if in_keyring {
-                Some("secret-store")
-            } else if in_env {
-                Some("env")
-            } else {
-                None
-            };
-            match source {
-                Some(source) => println!("{slot}: set (source: {source})"),
-                None => println!("{slot}: not set"),
-            }
+        AuthCommand::Get => {
+            println!(
+                "deepseek：{}（来源：{}）",
+                if deepseek_active_source(store, secrets) == "未配置" {
+                    "未配置"
+                } else {
+                    "已配置"
+                },
+                deepseek_active_source(store, secrets)
+            );
             Ok(())
         }
-        AuthCommand::Clear { provider } => {
-            let provider: ProviderKind = provider.into();
-            let slot = provider_slot(provider);
-            clear_provider_api_key_from_config(store, provider);
-            clear_provider_api_key_from_keyring(secrets, provider);
+        AuthCommand::Clear => {
+            clear_deepseek_api_key_from_config(store);
+            let _ = secrets.delete("deepseek");
             store.save()?;
-            println!("cleared API key for {slot} from config and secret store");
-            Ok(())
-        }
-        AuthCommand::List => {
-            for line in auth_list_lines(store, secrets) {
-                println!("{line}");
-            }
+            println!("已从配置文件和系统凭据存储中删除 DeepSeek API Key");
             Ok(())
         }
         AuthCommand::Migrate { dry_run } => run_auth_migrate(store, secrets, dry_run),
     }
 }
 
-fn yes_no(b: bool) -> &'static str {
-    if b { "yes" } else { "no " }
-}
-
-fn keyring_status_short(state: Option<bool>) -> &'static str {
-    match state {
-        Some(true) => "yes",
-        Some(false) => "no ",
-        None => "n/a",
-    }
-}
-
-fn prompt_api_key(slot: &str) -> Result<String> {
+fn prompt_api_key() -> Result<String> {
     use std::io::{IsTerminal, Write};
-    eprint!("Enter API key for {slot}: ");
+    eprint!("请输入 DeepSeek API Key：");
     io::stderr().flush().ok();
     if !io::stdin().is_terminal() {
         // Non-interactive: read directly without prompting twice.
@@ -1714,83 +1226,27 @@ fn prompt_api_key(slot: &str) -> Result<String> {
         .context("failed to read API key from stdin")?;
     let key = buf.trim().to_string();
     if key.is_empty() {
-        bail!("empty API key provided");
+        bail!("DeepSeek API Key 不能为空");
     }
     Ok(key)
 }
 
-/// Move plaintext keys from config.toml into the configured secret store.
-/// Hidden in v0.8.8 because the normal setup path is config/env only.
 fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
-    let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    for provider in ProviderKind::ALL {
-        let slot = provider_slot(provider);
-        let from_provider_block = store
-            .config
-            .providers
-            .for_provider(provider)
-            .api_key
-            .clone()
-            .filter(|v| !v.trim().is_empty());
-        let from_root = (provider == ProviderKind::Deepseek)
-            .then(|| store.config.api_key.clone())
-            .flatten()
-            .filter(|v| !v.trim().is_empty());
-        let value = from_provider_block.or(from_root);
-        let Some(value) = value else { continue };
-
-        if let Ok(Some(existing)) = secrets.get(slot)
-            && existing == value
-        {
-            // Already migrated; safe to strip the file slot.
-        } else if dry_run {
-            migrated.push((provider, slot));
-            continue;
-        } else if let Err(err) = secrets.set(slot, &value) {
-            warnings.push(format!(
-                "skipped {slot}: failed to write to secret store: {err}"
-            ));
-            continue;
-        }
-        if !dry_run {
-            store.config.providers.for_provider_mut(provider).api_key = None;
-            if provider == ProviderKind::Deepseek {
-                store.config.api_key = None;
-            }
-        }
-        migrated.push((provider, slot));
+    let Some(value) = deepseek_config_api_key(store).map(str::to_owned) else {
+        println!("配置文件中没有可迁移的 DeepSeek API Key");
+        return Ok(());
+    };
+    println!("系统凭据存储：{}", secrets.backend_name());
+    if dry_run {
+        println!("将迁移 DeepSeek API Key，并从配置文件中删除明文");
+        return Ok(());
     }
-
-    if !dry_run && !migrated.is_empty() {
-        store
-            .save()
-            .context("failed to write updated config.toml")?;
-    }
-
-    println!("secret store backend: {}", secrets.backend_name());
-    if migrated.is_empty() {
-        println!("nothing to migrate (config.toml has no plaintext api_key entries)");
-    } else {
-        println!(
-            "{} {} provider key(s):",
-            if dry_run { "would migrate" } else { "migrated" },
-            migrated.len()
-        );
-        for (_, slot) in &migrated {
-            println!("  - {slot}");
-        }
-        if !dry_run {
-            println!(
-                "config.toml at {} no longer contains api_key entries for migrated providers.",
-                store.path().display()
-            );
-        }
-    }
-    for w in warnings {
-        eprintln!("warning: {w}");
-    }
+    secrets
+        .set("deepseek", &value)
+        .context("无法写入系统凭据存储；配置文件未修改")?;
+    clear_deepseek_api_key_from_config(store);
+    store.save().context("无法更新配置文件")?;
+    println!("已迁移 DeepSeek API Key，并从配置文件中删除明文");
     Ok(())
 }
 
@@ -1828,54 +1284,41 @@ fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result
     }
 }
 
-fn model_command_provider_hint(
-    command_provider: Option<ProviderArg>,
-    top_level_provider: Option<ProviderKind>,
-) -> Option<ProviderKind> {
-    command_provider
-        .map(ProviderKind::from)
-        .or(top_level_provider)
+fn canonical_deepseek_model(model: &str) -> Result<&str> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        bail!("DeepSeek 模型名不能为空");
+    }
+    Ok(match trimmed.to_ascii_lowercase().as_str() {
+        "pro" | "deepseek-v4pro" => "deepseek-v4-pro",
+        "flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner" => "deepseek-v4-flash",
+        _ => trimmed,
+    })
 }
 
-fn run_model_command(
-    store: &mut ConfigStore,
-    command: ModelCommand,
-    top_level_provider: Option<ProviderKind>,
-) -> Result<()> {
-    let registry = ModelRegistry::default();
+fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<()> {
     match command {
-        ModelCommand::List { provider } => {
-            let filter = model_command_provider_hint(provider, top_level_provider);
-            for model in registry.list().into_iter().filter(|m| match filter {
-                Some(p) => m.provider == p,
-                None => true,
-            }) {
-                println!("{} ({})", model.id, model.provider.as_str());
-            }
+        ModelCommand::List => {
+            println!("deepseek-v4-pro");
+            println!("deepseek-v4-flash");
             Ok(())
         }
-        ModelCommand::Resolve { model, provider } => {
-            let provider = model_command_provider_hint(provider, top_level_provider);
-            let resolved = registry.resolve(model.as_deref(), provider);
-            println!("requested: {}", resolved.requested.unwrap_or_default());
-            println!("resolved: {}", resolved.resolved.id);
-            println!("provider: {}", resolved.resolved.provider.as_str());
-            println!("used_fallback: {}", resolved.used_fallback);
+        ModelCommand::Resolve { model } => {
+            let requested = model
+                .as_deref()
+                .or(store.config.default_text_model.as_deref())
+                .unwrap_or("deepseek-v4-pro");
+            let resolved = canonical_deepseek_model(requested)?;
+            println!("请求模型：{requested}");
+            println!("实际模型：{resolved}");
+            println!("Provider：deepseek");
             Ok(())
         }
         ModelCommand::Set { model } => {
-            let trimmed = model.trim();
-            if trimmed.is_empty() {
-                bail!("Model name cannot be empty");
-            }
-            let canonical = match trimmed.to_ascii_lowercase().as_str() {
-                "pro" | "deepseek-v4pro" => "deepseek-v4-pro",
-                "flash" | "deepseek-v4flash" => "deepseek-v4-flash",
-                _ => trimmed,
-            };
+            let canonical = canonical_deepseek_model(&model)?;
             store.config.default_text_model = Some(canonical.to_string());
             store.save()?;
-            println!("Default model set to '{canonical}'");
+            println!("已将默认 DeepSeek 模型设为 `{canonical}`");
             Ok(())
         }
     }
@@ -2273,27 +1716,15 @@ fn build_tui_command_with_paths(
     }
     cmd.args(passthrough);
 
-    let keyring_bridge_provider = resolved_runtime.provider;
     let keyring_bridge_api_key = resolved_runtime.api_key.as_ref();
     let keyring_bridge_source = resolved_runtime.api_key_source;
 
-    if let Some(provider) = cli.provider.map(ProviderKind::from) {
-        cmd.env("DEEPSEEK_PROVIDER", provider.as_str());
-    }
-    if !(cli.profile.is_some()
-        && matches!(resolved_runtime.provider_source, ProviderSource::Config))
-        && matches!(keyring_bridge_source, Some(RuntimeApiKeySource::Keyring))
+    if matches!(keyring_bridge_source, Some(RuntimeApiKeySource::Keyring))
         && let Some(api_key) = keyring_bridge_api_key
     {
-        // TUI reloads auth_mode from config/profile, but it does not re-query the
-        // platform keyring on normal startup. Bridge only the recovered secret;
-        // replaying auth_mode here would turn it back into a profile override.
+        // TUI routine startup stays prompt-free and does not query the platform
+        // keyring. Bridge only the recovered DeepSeek secret.
         cmd.env("DEEPSEEK_API_KEY", api_key);
-        for var in provider_env_vars(keyring_bridge_provider) {
-            if *var != "DEEPSEEK_API_KEY" {
-                cmd.env(var, api_key);
-            }
-        }
         cmd.env(
             "DEEPSEEK_API_KEY_SOURCE",
             RuntimeApiKeySource::Keyring.as_env_value(),
@@ -2326,21 +1757,10 @@ fn build_tui_command_with_paths(
         cmd.env("DEEPSEEK_YOLO", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
-        // `--profile` is resolved by the TUI after this facade starts it, so
-        // the base ConfigStore provider may not be the effective provider.
-        // Carry the explicit secret through a provider-neutral, source-marked
-        // slot; the TUI applies it after profile/OAuth resolution and before
-        // saved API-key slots. Preserve legacy provider envs only when their
-        // identity is already unambiguous here.
+        // Carry the explicit DeepSeek secret through the source-marked slot so
+        // the TUI applies the same precedence without persisting it.
         cmd.env("CODEWHALE_CLI_API_KEY", api_key);
-        if cli.profile.is_none() || cli.provider.is_some() {
-            cmd.env("DEEPSEEK_API_KEY", api_key);
-            for var in provider_env_vars(resolved_runtime.provider) {
-                if *var != "DEEPSEEK_API_KEY" {
-                    cmd.env(var, api_key);
-                }
-            }
-        }
+        cmd.env("DEEPSEEK_API_KEY", api_key);
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
     if let Some(base_url) = cli.base_url.as_ref() {
@@ -2497,2443 +1917,237 @@ fn read_api_key_from_stdin() -> Result<String> {
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
-    use codewhale_config::ProviderSource;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::sync::{Mutex, OnceLock};
 
     fn parse_ok(argv: &[&str]) -> Cli {
-        Cli::try_parse_from(argv).unwrap_or_else(|err| panic!("parse failed for {argv:?}: {err}"))
+        Cli::try_parse_from(argv).unwrap_or_else(|err| panic!("解析失败 {argv:?}: {err}"))
     }
 
     fn help_for(argv: &[&str]) -> String {
-        let err = Cli::try_parse_from(argv).expect_err("expected --help to short-circuit parsing");
+        let err = Cli::try_parse_from(argv).expect_err("--help 应终止解析");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         err.to_string()
     }
 
-    fn command_env(cmd: &Command, name: &str) -> Option<String> {
-        let name = std::ffi::OsStr::new(name);
-        cmd.get_envs().find_map(|(key, value)| {
-            if key == name {
-                value.map(|v| v.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-    }
-
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
-    struct ScopedEnvVar {
-        name: &'static str,
+    struct ScopedEnv {
+        key: &'static str,
         previous: Option<OsString>,
     }
 
-    impl ScopedEnvVar {
-        fn set(name: &'static str, value: &str) -> Self {
-            let previous = std::env::var_os(name);
-            // Safety: tests using this helper serialize with env_lock() and
-            // restore the original value in Drop.
-            unsafe { std::env::set_var(name, value) };
-            Self { name, previous }
+    impl ScopedEnv {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: every test in this module that mutates process environment
+            // holds env_lock for the guard lifetime.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
         }
     }
 
-    impl Drop for ScopedEnvVar {
+    impl Drop for ScopedEnv {
         fn drop(&mut self) {
-            // Safety: tests using this helper serialize with env_lock().
+            // SAFETY: caller still holds env_lock while guards are dropped.
             unsafe {
-                if let Some(previous) = self.previous.take() {
-                    std::env::set_var(self.name, previous);
-                } else {
-                    std::env::remove_var(self.name);
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
                 }
             }
         }
     }
 
-    fn install_fake_tui_binary() -> (tempfile::TempDir, ScopedEnvVar) {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-        (dir, bin)
+    fn command_env(cmd: &Command, name: &str) -> Option<String> {
+        let name = OsStr::new(name);
+        cmd.get_envs().find_map(|(key, value)| {
+            (key == name)
+                .then(|| value.map(|value| value.to_string_lossy().into_owned()))
+                .flatten()
+        })
     }
 
-    fn resolved_runtime_for_test(
-        provider: ProviderKind,
-        provider_source: ProviderSource,
-    ) -> ResolvedRuntimeOptions {
-        ResolvedRuntimeOptions {
-            provider,
-            provider_source,
-            model: "test-model".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "http://localhost:8000/v1".to_string(),
-            auth_mode: None,
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
+    #[test]
+    fn m8a_cli_help_is_deepseek_only() {
+        let help = help_for(&["codewhale", "--help"]);
+        for retained in ["doctor", "exec", "app-server", "login", "auth", "model"] {
+            assert!(help.contains(retained), "{retained}");
         }
+        assert!(!help.contains("--provider"));
+        assert!(!help.contains("List live provider API models"));
+        assert!(!help.contains("xai-device"));
+
+        let auth = help_for(&["codewhale", "auth", "--help"]);
+        assert!(auth.contains("status"));
+        assert!(auth.contains("set"));
+        assert!(auth.contains("get"));
+        assert!(auth.contains("clear"));
+        assert!(!auth.contains("--provider"));
+        assert!(!auth.contains("list"));
+    }
+
+    #[test]
+    fn m8a_foreign_provider_flag_fails_during_parsing() {
+        let error = Cli::try_parse_from(["codewhale", "--provider", "openai", "exec", "hi"])
+            .expect_err("generic provider flag must be absent");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn m8a_auth_and_model_commands_have_no_provider_selector() {
+        assert!(matches!(
+            parse_ok(&["codewhale", "auth", "status"]).command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Status
+            }))
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "codewhale",
+                "auth",
+                "set",
+                "--provider",
+                "openai",
+                "--api-key",
+                "secret"
+            ])
+            .is_err()
+        );
+        assert!(matches!(
+            parse_ok(&["codewhale", "model", "resolve", "flash"]).command,
+            Some(Commands::Model(ModelArgs {
+                command: ModelCommand::Resolve { model: Some(_) }
+            }))
+        ));
+    }
+
+    #[test]
+    fn m8a_login_writes_only_deepseek_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut store = ConfigStore::load(Some(path.clone())).unwrap();
+        run_login_command_with_secrets(
+            &mut store,
+            LoginArgs {
+                api_key: Some("test-deepseek-secret".to_string()),
+            },
+            &no_keyring_secrets(),
+        )
+        .unwrap();
+
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.contains("test-deepseek-secret"));
+        assert!(saved.contains("[providers.deepseek]"));
+        assert!(!saved.contains("openai"));
+        assert_eq!(store.config.provider, ProviderKind::Deepseek);
+    }
+
+    #[test]
+    fn m8a_foreign_config_fails_before_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "provider = \"openai\"\n").unwrap();
+        let mut store = ConfigStore::load(Some(path)).unwrap();
+        let error = resolve_runtime_for_dispatch_with_secrets(
+            &mut store,
+            &CliRuntimeOverrides::default(),
+            &no_keyring_secrets(),
+        )
+        .expect_err("foreign provider must fail before child spawn");
+        assert!(error.to_string().contains("仅支持官方 DeepSeek"));
+    }
+
+    #[test]
+    fn m8a_model_resolution_is_deepseek_only() {
+        assert_eq!(canonical_deepseek_model("pro").unwrap(), "deepseek-v4-pro");
+        assert_eq!(
+            canonical_deepseek_model("deepseek-chat").unwrap(),
+            "deepseek-v4-flash"
+        );
+        assert_eq!(
+            canonical_deepseek_model("deepseek-future").unwrap(),
+            "deepseek-future"
+        );
+        assert!(canonical_deepseek_model("  ").is_err());
+    }
+
+    #[test]
+    fn m8a_tui_child_receives_only_deepseek_runtime_identity() {
+        let _lock = env_lock();
+        let directory = tempfile::tempdir().unwrap();
+        let tui = directory
+            .path()
+            .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&tui, b"").unwrap();
+        let _binary = ScopedEnv::set("DEEPSEEK_TUI_BIN", &tui);
+
+        let cli = parse_ok(&[
+            "codewhale",
+            "--api-key",
+            "explicit-secret",
+            "--model",
+            "deepseek-v4-pro",
+            "doctor",
+        ]);
+        let mut store = ConfigStore::load(Some(directory.path().join("config.toml"))).unwrap();
+        let overrides = CliRuntimeOverrides {
+            api_key: cli.api_key.clone(),
+            model: cli.model.clone(),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = resolve_runtime_for_dispatch_with_secrets(
+            &mut store,
+            &overrides,
+            &no_keyring_secrets(),
+        )
+        .unwrap();
+        let command =
+            build_tui_command_with_paths(&cli, &resolved, vec!["doctor".into()], None, None)
+                .unwrap();
+
+        assert_eq!(
+            command_env(&command, "DEEPSEEK_API_KEY").as_deref(),
+            Some("explicit-secret")
+        );
+        assert_eq!(
+            command_env(&command, "DEEPSEEK_MODEL").as_deref(),
+            Some("deepseek-v4-pro")
+        );
+        assert!(command_env(&command, "DEEPSEEK_PROVIDER").is_none());
+        assert!(command_env(&command, "OPENAI_API_KEY").is_none());
+        assert!(command_env(&command, "XAI_API_KEY").is_none());
+    }
+
+    #[test]
+    fn m8a_app_server_accepts_only_official_deepseek_route() {
+        let mut resolved = ConfigStore::load(None)
+            .unwrap()
+            .config
+            .resolve_runtime_options(&CliRuntimeOverrides::default());
+        resolved.base_url = "https://example.com/v1".to_string();
+        let error = match production_application_config(&resolved, None) {
+            Ok(_) => panic!("foreign endpoint must fail before app construction"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("official DeepSeek endpoint"));
+    }
+
+    #[test]
+    fn canonical_run_limit_remains_stable() {
+        assert_eq!(parse_run_list_limit("1").unwrap(), 1);
+        assert_eq!(
+            parse_run_list_limit(&MAX_RUN_LIST_LIMIT.to_string()).unwrap(),
+            MAX_RUN_LIST_LIMIT
+        );
+        assert!(parse_run_list_limit("0").is_err());
     }
 
     #[test]
     fn clap_command_definition_is_consistent() {
         Cli::command().debug_assert();
-    }
-
-    // Regression for #767: `run_cli` prints the full anyhow chain so users
-    // see the underlying TOML parser error (line/column, expected token)
-    // instead of just the top-level "failed to parse config at <path>"
-    // wrapper. anyhow's bare `Display` impl drops the chain — pin both
-    // pieces here so a future refactor of the printing path doesn't
-    // silently regress.
-    #[test]
-    fn anyhow_chain_surfaces_toml_parse_cause() {
-        use anyhow::Context;
-        let inner = anyhow::anyhow!("TOML parse error at line 1, column 20");
-        let err = Err::<(), _>(inner)
-            .context("failed to parse config at C:\\Users\\test\\.deepseek\\config.toml")
-            .unwrap_err();
-
-        // What `eprintln!("error: {err}")` prints (top context only).
-        assert_eq!(
-            err.to_string(),
-            "failed to parse config at C:\\Users\\test\\.deepseek\\config.toml",
-        );
-
-        // What the `for cause in err.chain().skip(1)` loop iterates over.
-        let causes: Vec<String> = err.chain().skip(1).map(ToString::to_string).collect();
-        assert_eq!(causes, vec!["TOML parse error at line 1, column 20"]);
-    }
-
-    #[test]
-    fn parses_config_command_matrix() {
-        let cli = parse_ok(&["deepseek", "config", "get", "provider"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Config(ConfigArgs {
-                command: ConfigCommand::Get { ref key }
-            })) if key == "provider"
-        ));
-
-        let cli = parse_ok(&["deepseek", "config", "set", "model", "deepseek-v4-flash"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Config(ConfigArgs {
-                command: ConfigCommand::Set { ref key, ref value }
-            })) if key == "model" && value == "deepseek-v4-flash"
-        ));
-
-        let cli = parse_ok(&["deepseek", "config", "unset", "model"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Config(ConfigArgs {
-                command: ConfigCommand::Unset { ref key }
-            })) if key == "model"
-        ));
-
-        assert!(matches!(
-            parse_ok(&["deepseek", "config", "list"]).command,
-            Some(Commands::Config(ConfigArgs {
-                command: ConfigCommand::List
-            }))
-        ));
-        assert!(matches!(
-            parse_ok(&["deepseek", "config", "path"]).command,
-            Some(Commands::Config(ConfigArgs {
-                command: ConfigCommand::Path
-            }))
-        ));
-    }
-
-    #[test]
-    fn parses_model_command_matrix() {
-        let cli = parse_ok(&["deepseek", "model", "list"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::List { provider: None }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "model", "list", "--provider", "openai"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::List {
-                    provider: Some(ProviderArg::Openai)
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "model", "resolve", "deepseek-v4-flash"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::Resolve {
-                    model: Some(ref model),
-                    provider: None
-                }
-            })) if model == "deepseek-v4-flash"
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "model",
-            "resolve",
-            "--provider",
-            "deepseek",
-            "deepseek-v4-pro",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::Resolve {
-                    model: Some(ref model),
-                    provider: Some(ProviderArg::Deepseek)
-                }
-            })) if model == "deepseek-v4-pro"
-        ));
-
-        let cli = parse_ok(&["deepseek", "model", "set", "pro"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::Set { ref model }
-            })) if model == "pro"
-        ));
-    }
-
-    #[test]
-    fn model_command_provider_hint_uses_subcommand_then_top_level_provider() {
-        assert_eq!(
-            model_command_provider_hint(None, Some(ProviderKind::Zai)),
-            Some(ProviderKind::Zai)
-        );
-        assert_eq!(
-            model_command_provider_hint(Some(ProviderArg::Minimax), Some(ProviderKind::Zai)),
-            Some(ProviderKind::Minimax)
-        );
-        assert_eq!(model_command_provider_hint(None, None), None);
-
-        let cli = parse_ok(&["codewhale", "--provider", "zai", "model", "list"]);
-        assert_eq!(cli.provider, Some(ProviderArg::Zai));
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Model(ModelArgs {
-                command: ModelCommand::List { provider: None }
-            }))
-        ));
-    }
-
-    #[test]
-    fn parses_thread_command_matrix() {
-        let cli = parse_ok(&["deepseek", "thread", "list", "--all", "--limit", "50"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::List {
-                    all: true,
-                    limit: Some(50)
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "read", "thread-1"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::Read { ref thread_id }
-            })) if thread_id == "thread-1"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "resume", "thread-2"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::Resume { ref thread_id }
-            })) if thread_id == "thread-2"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "fork", "thread-3"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::Fork { ref thread_id }
-            })) if thread_id == "thread-3"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "archive", "thread-4"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::Archive { ref thread_id }
-            })) if thread_id == "thread-4"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "unarchive", "thread-5"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::Unarchive { ref thread_id }
-            })) if thread_id == "thread-5"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "set-name", "thread-6", "My Thread"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::SetName {
-                    ref thread_id,
-                    ref name
-                }
-            })) if thread_id == "thread-6" && name == "My Thread"
-        ));
-
-        let cli = parse_ok(&["deepseek", "thread", "clear-name", "thread-7"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Thread(ThreadArgs {
-                command: ThreadCommand::ClearName { ref thread_id }
-            })) if thread_id == "thread-7"
-        ));
-    }
-
-    #[test]
-    fn parses_sandbox_app_server_and_completion_matrix() {
-        let cli = parse_ok(&[
-            "deepseek",
-            "sandbox",
-            "check",
-            "echo hello",
-            "--ask",
-            "on-failure",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Sandbox(SandboxArgs {
-                command: SandboxCommand::Check {
-                    ref command,
-                    ask: ApprovalModeArg::OnFailure
-                }
-            })) if command == "echo hello"
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "app-server",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "9999",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::AppServer(AppServerArgs {
-                host: Some(IpAddr::V4(host)),
-                port: Some(9999),
-                stdio: false,
-                ..
-            })) if host == Ipv4Addr::UNSPECIFIED
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "app-server",
-            "--stdio",
-            "--transport-max-retries",
-            "1",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::AppServer(AppServerArgs {
-                stdio: true,
-                transport_max_retries: Some(1),
-                ..
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "completion", "bash"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Completion { shell: Shell::Bash })
-        ));
-    }
-
-    #[test]
-    fn parses_canonical_runs_and_enforces_run_api_limit() {
-        let cli = parse_ok(&["codewhale", "runs", "--limit", "200", "--json"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Runs(RunsArgs {
-                limit: MAX_RUN_LIST_LIMIT,
-                json: true
-            }))
-        ));
-
-        for limit in ["0", "201"] {
-            let error = Cli::try_parse_from(["codewhale", "runs", "--limit", limit])
-                .expect_err("out-of-range Run API limit must fail");
-            assert_eq!(error.kind(), ErrorKind::ValueValidation);
-        }
-    }
-
-    #[test]
-    fn app_server_stdio_conflicts_with_http_options() {
-        for argv in [
-            ["deepseek", "app-server", "--stdio", "--port", "9000"].as_slice(),
-            ["deepseek", "app-server", "--stdio", "--auth-token", "token"].as_slice(),
-            ["deepseek", "app-server", "--stdio", "--insecure-no-auth"].as_slice(),
-            [
-                "deepseek",
-                "app-server",
-                "--stdio",
-                "--cors-origin",
-                "http://localhost",
-            ]
-            .as_slice(),
-        ] {
-            let error = Cli::try_parse_from(argv).expect_err("stdio and HTTP flags must conflict");
-            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "argv={argv:?}");
-        }
-    }
-
-    #[test]
-    fn obsolete_app_server_flags_fail_closed() {
-        for argv in [
-            ["deepseek", "app-server", "--http"].as_slice(),
-            ["deepseek", "app-server", "--mobile"].as_slice(),
-            ["deepseek", "app-server", "--qr"].as_slice(),
-            ["deepseek", "app-server", "--workers", "2"].as_slice(),
-            ["deepseek", "app-server", "--config", "old.toml"].as_slice(),
-        ] {
-            let error = Cli::try_parse_from(argv).expect_err("obsolete flag must fail closed");
-            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "argv={argv:?}");
-        }
-        // The root CLI accepts free-form prompts, so an unknown first token is
-        // data, not a subcommand. It must not resurrect the retired generator.
-        let parsed = parse_ok(&["deepseek", "remote-setup"]);
-        assert!(parsed.command.is_none());
-        assert_eq!(parsed.prompt, ["remote-setup"]);
-    }
-
-    #[test]
-    fn removed_acp_command_is_not_dispatchable_but_explicit_prompt_remains_legal() {
-        let error = Cli::try_parse_from(["codewhale", "serve", "--acp"])
-            .expect_err("removed ACP command must fail during argument parsing");
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-
-        let explicit_prompt = parse_ok(&["codewhale", "--prompt", "serve --acp"]);
-        assert!(explicit_prompt.command.is_none());
-        assert_eq!(explicit_prompt.prompt_flag.as_deref(), Some("serve --acp"));
-        assert!(explicit_prompt.prompt.is_empty());
-        assert_eq!(
-            root_tui_passthrough(&explicit_prompt).expect("explicit ACP-shaped prompt"),
-            vec!["--prompt", "serve --acp"]
-        );
-    }
-
-    #[test]
-    fn parses_direct_tui_command_aliases() {
-        let cli = parse_ok(&["deepseek", "doctor"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Doctor(TuiPassthroughArgs { ref args })) if args.is_empty()
-        ));
-
-        let cli = parse_ok(&["deepseek", "models", "--json"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Models(TuiPassthroughArgs { ref args })) if args == &["--json"]
-        ));
-
-        let cli = parse_ok(&["deepseek", "resume", "abc123"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["abc123"]
-        ));
-
-        let cli = parse_ok(&["deepseek", "resume", "--last"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["--last"]
-        ));
-
-        let cli = parse_ok(&["deepseek", "setup", "--skills", "--local"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Setup(TuiPassthroughArgs { ref args }))
-                if args == &["--skills", "--local"]
-        ));
-
-        let cli = parse_ok(&["codewhale", "fleet", "init"]);
-        assert!(cli.prompt.is_empty());
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Fleet(TuiPassthroughArgs { ref args })) if args == &["init"]
-        ));
-
-        let cli = parse_ok(&[
-            "codewhale",
-            "fleet",
-            "run",
-            "tasks.json",
-            "--max-workers",
-            "2",
-        ]);
-        assert!(cli.prompt.is_empty());
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Fleet(TuiPassthroughArgs { ref args }))
-                if args == &["run", "tasks.json", "--max-workers", "2"]
-        ));
-    }
-
-    #[test]
-    fn hidden_lane_log_proxy_parses_child_argv_and_preserves_other_commands() {
-        let cli = parse_ok(&[
-            "codewhale",
-            "lane-log-proxy",
-            "--log-path",
-            "/tmp/lane.ndjson",
-            "--receipt-path",
-            "/tmp/lane.exit.json",
-            "--receipt-tmp-path",
-            "/tmp/lane.exit.json.tmp",
-            "--environment-path",
-            "/tmp/lane.env.json",
-            "--lane-id",
-            "lane-proof",
-            "--",
-            "/bin/echo",
-            "--child-flag",
-            "hello",
-        ]);
-        let (proxy, command) = split_lane_log_proxy_command(cli.command);
-        assert!(command.is_none());
-        let proxy = proxy.expect("proxy args");
-        assert_eq!(proxy.lane_id, "lane-proof");
-        assert_eq!(
-            proxy.command,
-            ["/bin/echo", "--child-flag", "hello"].map(str::to_string)
-        );
-
-        let cli = parse_ok(&["codewhale", "lane", "list", "--json"]);
-        let (proxy, command) = split_lane_log_proxy_command(cli.command);
-        assert!(proxy.is_none());
-        assert!(matches!(
-            command,
-            Some(Commands::Lane(LaneArgs {
-                command: LaneCommand::List { json: true }
-            }))
-        ));
-    }
-
-    #[test]
-    fn lane_start_keeps_plain_runtime_path_and_has_no_worktree_flags() {
-        let cli = parse_ok(&[
-            "codewhale",
-            "lane",
-            "start",
-            "--workflow",
-            "demo",
-            "--runtime",
-            "inline",
-            "--",
-            "/bin/true",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Lane(LaneArgs {
-                command: LaneCommand::Start {
-                    workflow: Some(ref workflow),
-                    ref runtime,
-                    ref command,
-                    ..
-                }
-            })) if workflow == "demo" && runtime == "inline" && command == &["/bin/true"]
-        ));
-
-        let help = Cli::try_parse_from(["codewhale", "lane", "start", "--help"])
-            .expect_err("help should short-circuit parsing")
-            .to_string();
-        assert!(!help.contains("--worktree"));
-        assert!(!help.contains("--branch"));
-    }
-
-    #[test]
-    fn exec_keeps_global_looking_flags_as_passthrough_args() {
-        let cli = parse_ok(&[
-            "codewhale",
-            "exec",
-            "--provider",
-            "definitely-not-a-provider",
-            "Reply OK",
-        ]);
-
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(
-            args.args,
-            vec![
-                "--provider".to_string(),
-                "definitely-not-a-provider".to_string(),
-                "Reply OK".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn exec_rejects_provider_after_subcommand() {
-        let args = vec![
-            "--provider".to_string(),
-            "definitely-not-a-provider".to_string(),
-            "Reply OK".to_string(),
-        ];
-
-        let err = reject_exec_global_flags(&args).expect_err("provider after exec should fail");
-
-        assert!(
-            err.to_string()
-                .contains("--provider must be placed before `exec`")
-        );
-    }
-
-    #[test]
-    fn exec_rejects_equals_form_provider_after_subcommand() {
-        let args = vec!["--provider=openmodel".to_string(), "Reply OK".to_string()];
-
-        let err = reject_exec_global_flags(&args).expect_err("provider after exec should fail");
-
-        assert!(
-            err.to_string()
-                .contains("--provider must be placed before `exec`")
-        );
-    }
-
-    #[test]
-    fn exec_allows_documented_forwarded_flags() {
-        let args = vec![
-            "--auto".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "fix tests".to_string(),
-        ];
-
-        reject_exec_global_flags(&args).expect("documented exec flags should pass");
-    }
-
-    #[test]
-    fn exec_allows_literal_prompt_flags_after_separator() {
-        let args = vec![
-            "--".to_string(),
-            "--provider".to_string(),
-            "is literal prompt text".to_string(),
-        ];
-
-        reject_exec_global_flags(&args).expect("separator should stop global flag validation");
-    }
-
-    #[test]
-    fn deepseek_login_writes_shared_config_and_preserves_tui_defaults() {
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-login-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let secrets = no_keyring_secrets();
-
-        run_login_command_with_secrets(
-            &mut store,
-            LoginArgs {
-                provider: Some(ProviderArg::Deepseek),
-                api_key: Some("sk-test".to_string()),
-            },
-            &secrets,
-        )
-        .expect("login should write config");
-
-        assert_eq!(store.config.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(
-            store.config.providers.deepseek.api_key.as_deref(),
-            Some("sk-test")
-        );
-        assert_eq!(
-            store.config.default_text_model.as_deref(),
-            Some("deepseek-v4-pro")
-        );
-        let saved = std::fs::read_to_string(&path).expect("config should be written");
-        assert!(saved.contains("api_key = \"sk-test\""));
-        assert!(saved.contains("default_text_model = \"deepseek-v4-pro\""));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn parses_auth_subcommand_matrix() {
-        let cli = parse_ok(&["deepseek", "auth", "xai-device"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::XaiDevice
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "deepseek"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Deepseek,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "auth",
-            "set",
-            "--provider",
-            "openrouter",
-            "--api-key-stdin",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Openrouter,
-                    api_key: None,
-                    api_key_stdin: true,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "novita"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Novita
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "clear", "--provider", "nvidia-nim"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Clear {
-                    provider: ProviderArg::NvidiaNim
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "fireworks"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Fireworks,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "siliconflow"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Siliconflow,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "arcee"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Arcee,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "moonshot"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Moonshot,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "wanjie-ark"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::WanjieArk,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "sglang"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Sglang
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "vllm"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Vllm
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "ollama"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Ollama,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "status", "--provider", "openai-codex"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Status {
-                    provider: Some(ProviderArg::OpenaiCodex)
-                }
-            }))
-        ));
-
-        for (provider, expected) in [
-            ("anthropic", ProviderArg::Anthropic),
-            ("openmodel", ProviderArg::Openmodel),
-            ("open-model", ProviderArg::Openmodel),
-            ("zai", ProviderArg::Zai),
-            ("stepfun", ProviderArg::Stepfun),
-            ("minimax", ProviderArg::Minimax),
-            ("minimax-anthropic", ProviderArg::MinimaxAnthropic),
-            ("minimax_anthropic", ProviderArg::MinimaxAnthropic),
-            ("deepinfra", ProviderArg::Deepinfra),
-            ("deep-infra", ProviderArg::Deepinfra),
-            ("siliconflow-cn", ProviderArg::SiliconflowCn),
-            ("siliconflow-CN", ProviderArg::SiliconflowCn),
-            ("siliconflow_china", ProviderArg::SiliconflowCn),
-        ] {
-            let cli = parse_ok(&[
-                "deepseek",
-                "auth",
-                "set",
-                "--provider",
-                provider,
-                "--api-key-stdin",
-            ]);
-            assert!(matches!(
-                cli.command,
-                Some(Commands::Auth(AuthArgs {
-                    command: AuthCommand::Set {
-                        provider,
-                        api_key: None,
-                        api_key_stdin: true,
-                    }
-                })) if provider == expected
-            ));
-        }
-
-        let cli = parse_ok(&["deepseek", "auth", "list"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::List
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "migrate"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Migrate { dry_run: false }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "migrate", "--dry-run"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Migrate { dry_run: true }
-            }))
-        ));
-    }
-
-    #[test]
-    fn auth_set_writes_to_shared_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-set-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Set {
-                provider: ProviderArg::Deepseek,
-                api_key: Some("sk-keyring".to_string()),
-                api_key_stdin: false,
-            },
-            &secrets,
-        )
-        .expect("set should succeed");
-
-        assert_eq!(store.config.api_key.as_deref(), Some("sk-keyring"));
-        assert_eq!(
-            store.config.providers.deepseek.api_key.as_deref(),
-            Some("sk-keyring")
-        );
-        let saved = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(saved.contains("api_key = \"sk-keyring\""));
-        assert_eq!(
-            inner.get("deepseek").unwrap().as_deref(),
-            Some("sk-keyring")
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_set_provider_key_does_not_switch_active_provider() {
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-set-preserve-provider-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        let secrets = no_keyring_secrets();
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Set {
-                provider: ProviderArg::Arcee,
-                api_key: Some("arcee-key".to_string()),
-                api_key_stdin: false,
-            },
-            &secrets,
-        )
-        .expect("set should succeed");
-
-        assert_eq!(store.config.provider, ProviderKind::Deepseek);
-        assert_eq!(
-            store.config.providers.arcee.api_key.as_deref(),
-            Some("arcee-key")
-        );
-
-        let reloaded = ConfigStore::load(Some(path.clone())).expect("store should reload");
-        assert_eq!(reloaded.config.provider, ProviderKind::Deepseek);
-        assert_eq!(
-            reloaded.config.providers.arcee.api_key.as_deref(),
-            Some("arcee-key")
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_set_ollama_accepts_empty_key_and_records_base_url() {
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-ollama-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        let secrets = no_keyring_secrets();
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Set {
-                provider: ProviderArg::Ollama,
-                api_key: None,
-                api_key_stdin: false,
-            },
-            &secrets,
-        )
-        .expect("ollama auth set should not require a key");
-
-        assert_eq!(store.config.provider, ProviderKind::Deepseek);
-        assert_eq!(
-            store.config.providers.ollama.base_url.as_deref(),
-            Some("http://localhost:11434/v1")
-        );
-        assert_eq!(store.config.providers.ollama.api_key, None);
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_clear_removes_from_config() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-clear-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.api_key = Some("sk-stale".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
-        store.save().unwrap();
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "sk-stale").unwrap();
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Clear {
-                provider: ProviderArg::Deepseek,
-            },
-            &secrets,
-        )
-        .expect("clear should succeed");
-
-        assert!(store.config.api_key.is_none());
-        assert!(store.config.providers.deepseek.api_key.is_none());
-        assert_eq!(inner.get("deepseek").unwrap(), None);
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_status_scoped_probe_and_list_all_provider_keyrings() {
-        use codewhale_secrets::{KeyringStore, SecretsError};
-        use std::sync::{Arc, Mutex};
-
-        #[derive(Default)]
-        struct RecordingStore {
-            gets: Mutex<Vec<String>>,
-        }
-
-        impl KeyringStore for RecordingStore {
-            fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
-                self.gets.lock().unwrap().push(key.to_string());
-                Ok(None)
-            }
-
-            fn set(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
-                Ok(())
-            }
-
-            fn delete(&self, _key: &str) -> Result<(), SecretsError> {
-                Ok(())
-            }
-
-            fn backend_name(&self) -> &'static str {
-                "recording"
-            }
-        }
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-active-keyring-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        let inner = Arc::new(RecordingStore::default());
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Status {
-                provider: Some(ProviderArg::Deepseek),
-            },
-            &secrets,
-        )
-        .expect("status should succeed");
-        run_auth_command_with_secrets(&mut store, AuthCommand::List, &secrets)
-            .expect("list should succeed");
-
-        let probed = inner.gets.lock().unwrap();
-        // Scoped status probes only the requested provider.
-        assert_eq!(probed[0], "deepseek");
-        // List now probes all providers (not just active) to fix the
-        // stale keyring-only-for-active-provider bug.
-        assert!(probed.len() > 1, "list should probe all providers");
-        assert!(
-            ProviderKind::ALL
-                .iter()
-                .all(|p| probed.contains(&provider_slot(*p).to_string())),
-            "every known provider should be probed by auth list: {:?}",
-            *probed
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_status_reports_all_active_provider_sources_with_last4() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _env = ScopedEnvVar::set("DEEPSEEK_API_KEY", "sk-env-1111");
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-status-table-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        store.config.api_key = Some("sk-config-3333".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-config-3333".to_string());
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "sk-keyring-2222").unwrap();
-        let secrets = Secrets::new(inner);
-
-        let output =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Deepseek).join("\n");
-
-        assert!(output.contains("provider: deepseek"));
-        assert!(output.contains("active source: config (last4: ...3333)"));
-        assert!(output.contains("lookup order: config -> secret store -> env"));
-        assert!(output.contains("config file: "));
-        assert!(output.contains("set, last4: ...3333"));
-        assert!(output.contains("secret store: in-memory (test) (set, last4: ...2222)"));
-        assert!(output.contains("env var: DEEPSEEK_API_KEY (set, last4: ...1111)"));
-        assert!(!output.contains("sk-config-3333"));
-        assert!(!output.contains("sk-keyring-2222"));
-        assert!(!output.contains("sk-env-1111"));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_status_all_providers_lists_every_known_provider() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-all-status-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        store.config.providers.arcee.api_key = Some("sk-arcee-test1234".to_string());
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("openrouter", "sk-or-test5678").unwrap();
-        let secrets = Secrets::new(inner);
-
-        let output = auth_status_all_providers(&store, &secrets).join("\n");
-
-        // Should list all known providers
-        assert!(output.contains("deepseek"));
-        assert!(output.contains("arcee"));
-        assert!(output.contains("openrouter"));
-        assert!(output.contains("huggingface"));
-        assert!(output.contains("ollama"));
-
-        // Active provider should be marked
-        assert!(output.contains("deepseek") && output.contains("*"));
-
-        // Arcee should show config source
-        assert!(output.contains("config"));
-
-        // Should NOT leak raw keys
-        assert!(!output.contains("sk-arcee-test1234"));
-        assert!(!output.contains("sk-or-test5678"));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_status_openai_codex_reports_codex_oauth_file() {
-        use codewhale_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _access_token = ScopedEnvVar::set("OPENAI_CODEX_ACCESS_TOKEN", "");
-        let _codex_token = ScopedEnvVar::set("CODEX_ACCESS_TOKEN", "");
-
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        let auth_path = dir.path().join("auth.json");
-        std::fs::write(&auth_path, r#"{"tokens":{"access_token":"secret-token"}}"#)
-            .expect("write auth file");
-        let auth_path_str = auth_path.to_string_lossy().into_owned();
-        let _auth_file = ScopedEnvVar::set("OPENAI_CODEX_AUTH_FILE", &auth_path_str);
-
-        let mut store = ConfigStore::load(Some(config_path)).expect("store should load");
-        store.config.provider = ProviderKind::OpenaiCodex;
-        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
-
-        let output =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::OpenaiCodex).join("\n");
-
-        assert!(output.contains("provider: openai-codex"));
-        assert!(output.contains("auth mode: codex_oauth"));
-        assert!(output.contains("active source: Codex OAuth file"));
-        assert!(output.contains("lookup order: env -> Codex OAuth file"));
-        assert!(output.contains(&format!(
-            "Codex OAuth file: {} (present)",
-            auth_path.display()
-        )));
-        assert!(!output.contains("secret-token"));
-    }
-
-    #[test]
-    fn auth_list_treats_openai_codex_oauth_file_as_active() {
-        use codewhale_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _access_token = ScopedEnvVar::set("OPENAI_CODEX_ACCESS_TOKEN", "");
-        let _codex_token = ScopedEnvVar::set("CODEX_ACCESS_TOKEN", "");
-
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        let auth_path = dir.path().join("auth.json");
-        std::fs::write(&auth_path, r#"{"tokens":{"access_token":"secret-token"}}"#)
-            .expect("write auth file");
-        let auth_path_str = auth_path.to_string_lossy().into_owned();
-        let _auth_file = ScopedEnvVar::set("OPENAI_CODEX_AUTH_FILE", &auth_path_str);
-
-        let mut store = ConfigStore::load(Some(config_path)).expect("store should load");
-        store.config.provider = ProviderKind::OpenaiCodex;
-        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
-
-        let output = auth_list_lines(&store, &secrets).join("\n");
-        let row = output
-            .lines()
-            .find(|line| line.starts_with("openai-codex"))
-            .unwrap_or_else(|| panic!("missing openai-codex row:\n{output}"));
-        assert!(row.ends_with("oauth"), "{row}");
-        assert!(!output.contains("secret-token"));
-    }
-
-    #[test]
-    fn auth_status_scoped_provider_shows_detailed_info() {
-        use codewhale_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-scoped-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        store.config.providers.arcee.api_key = Some("sk-arcee-9999".to_string());
-
-        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
-
-        let output =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Arcee).join("\n");
-
-        assert!(output.contains("provider: arcee"));
-        assert!(output.contains("active source: config (last4: ...9999)"));
-        assert!(output.contains("route:"));
-        assert!(output.contains("model:"));
-        assert!(!output.contains("sk-arcee-9999"));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn dispatch_keyring_recovery_self_heals_into_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-dispatch-keyring-heal-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "ring-key").unwrap();
-        let secrets = Secrets::new(inner);
-
-        let resolved = resolve_runtime_for_dispatch_with_secrets(
-            &mut store,
-            &CliRuntimeOverrides::default(),
-            &secrets,
-        );
-
-        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            resolved.api_key_source,
-            Some(RuntimeApiKeySource::ConfigFile)
-        );
-        assert_eq!(store.config.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            store.config.providers.deepseek.api_key.as_deref(),
-            Some("ring-key")
-        );
-
-        let saved = std::fs::read_to_string(&path).expect("config should be written");
-        assert!(saved.contains("api_key = \"ring-key\""));
-
-        let resolved_again = resolve_runtime_for_dispatch_with_secrets(
-            &mut store,
-            &CliRuntimeOverrides::default(),
-            &no_keyring_secrets(),
-        );
-        assert_eq!(resolved_again.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            resolved_again.api_key_source,
-            Some(RuntimeApiKeySource::ConfigFile)
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn logout_removes_plaintext_provider_keys() {
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-logout-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.api_key = Some("sk-stale".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
-        store.config.providers.fireworks.api_key = Some("fw-stale".to_string());
-        store.save().unwrap();
-
-        let secrets = no_keyring_secrets();
-
-        run_logout_command_with_secrets(&mut store, &secrets).expect("logout should succeed");
-
-        assert!(store.config.api_key.is_none());
-        assert!(store.config.providers.deepseek.api_key.is_none());
-        assert!(store.config.providers.fireworks.api_key.is_none());
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_migrate_moves_plaintext_keys_into_keyring_and_strips_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-migrate-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.api_key = Some("sk-deep".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-deep".to_string());
-        store.config.providers.openrouter.api_key = Some("or-key".to_string());
-        store.config.providers.novita.api_key = Some("nv-key".to_string());
-        store.save().unwrap();
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Migrate { dry_run: false },
-            &secrets,
-        )
-        .expect("migrate should succeed");
-
-        assert_eq!(inner.get("deepseek").unwrap(), Some("sk-deep".to_string()));
-        assert_eq!(inner.get("openrouter").unwrap(), Some("or-key".to_string()));
-        assert_eq!(inner.get("novita").unwrap(), Some("nv-key".to_string()));
-
-        // Config file must no longer contain the api keys.
-        assert!(store.config.api_key.is_none());
-        assert!(store.config.providers.deepseek.api_key.is_none());
-        assert!(store.config.providers.openrouter.api_key.is_none());
-        assert!(store.config.providers.novita.api_key.is_none());
-
-        let saved = std::fs::read_to_string(&path).expect("config exists post-migrate");
-        assert!(!saved.contains("sk-deep"), "plaintext leaked: {saved}");
-        assert!(!saved.contains("or-key"), "plaintext leaked: {saved}");
-        assert!(!saved.contains("nv-key"), "plaintext leaked: {saved}");
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_migrate_dry_run_does_not_modify_anything() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-migrate-dry-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.providers.openrouter.api_key = Some("or-stay".to_string());
-        store.save().unwrap();
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(&mut store, AuthCommand::Migrate { dry_run: true }, &secrets)
-            .expect("dry-run should succeed");
-
-        assert_eq!(inner.get("openrouter").unwrap(), None);
-        assert_eq!(
-            store.config.providers.openrouter.api_key.as_deref(),
-            Some("or-stay")
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn parses_global_override_flags() {
-        let cli = parse_ok(&[
-            "deepseek",
-            "--provider",
-            "openai",
-            "--config",
-            "/tmp/deepseek.toml",
-            "--profile",
-            "work",
-            "--model",
-            "deepseek-v4-pro",
-            "--output-mode",
-            "json",
-            "--verbosity",
-            "concise",
-            "--log-level",
-            "debug",
-            "--telemetry",
-            "true",
-            "--approval-policy",
-            "on-request",
-            "--sandbox-mode",
-            "workspace-write",
-            "--base-url",
-            "https://openai-compatible.example/v1",
-            "--api-key",
-            "sk-test",
-            "--workspace",
-            "/tmp/workspace",
-            "--no-alt-screen",
-            "--no-mouse-capture",
-            "--skip-onboarding",
-            "model",
-            "resolve",
-            "deepseek-v4-pro",
-        ]);
-
-        assert!(matches!(cli.provider, Some(ProviderArg::Openai)));
-        assert_eq!(cli.config, Some(PathBuf::from("/tmp/deepseek.toml")));
-        assert_eq!(cli.profile.as_deref(), Some("work"));
-        assert_eq!(cli.model.as_deref(), Some("deepseek-v4-pro"));
-        assert_eq!(cli.output_mode.as_deref(), Some("json"));
-        assert_eq!(cli.verbosity.as_deref(), Some("concise"));
-        assert_eq!(cli.log_level.as_deref(), Some("debug"));
-        assert_eq!(cli.telemetry, Some(true));
-        assert_eq!(cli.approval_policy.as_deref(), Some("on-request"));
-        assert_eq!(cli.sandbox_mode.as_deref(), Some("workspace-write"));
-        assert_eq!(
-            cli.base_url.as_deref(),
-            Some("https://openai-compatible.example/v1")
-        );
-        assert_eq!(cli.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(cli.workspace, Some(PathBuf::from("/tmp/workspace")));
-        assert!(cli.no_alt_screen);
-        assert!(cli.no_mouse_capture);
-        assert!(!cli.mouse_capture);
-        assert!(cli.skip_onboarding);
-    }
-
-    #[test]
-    fn cli_provider_helpers_follow_config_metadata() {
-        let registry_kinds: Vec<ProviderKind> = codewhale_config::provider::all_providers()
-            .iter()
-            .map(|provider| provider.kind())
-            .collect();
-        assert_eq!(registry_kinds, ProviderKind::ALL);
-
-        for provider in ProviderKind::ALL {
-            assert_eq!(provider_env_vars(provider), provider.provider().env_vars());
-            if provider == ProviderKind::SiliconflowCN {
-                assert_eq!(
-                    provider_slot(provider),
-                    provider_slot(ProviderKind::Siliconflow)
-                );
-            } else {
-                assert_eq!(provider_slot(provider), provider.provider().id());
-            }
-        }
-    }
-
-    #[test]
-    fn build_tui_command_allows_openai_and_forwards_provider_key() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "--provider",
-            "openai",
-            "--workspace",
-            "/tmp/codewhale-workspace",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Openai,
-            provider_source: ProviderSource::Cli,
-            model: "glm-5".to_string(),
-            api_key: Some("resolved-openai-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Keyring),
-            base_url: "https://openai-compatible.example/v4".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("openai")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
-            Some("resolved-openai-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "OPENAI_API_KEY").as_deref(),
-            Some("resolved-openai-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
-            Some("keyring")
-        );
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--workspace", "/tmp/codewhale-workspace"]),
-            "expected workspace forwarding in args: {args:?}"
-        );
-    }
-
-    #[test]
-    fn build_tui_command_allows_openai_codex_from_resolved_runtime() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&["codewhale", "doctor"]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::OpenaiCodex,
-            provider_source: ProviderSource::Config,
-            model: "gpt-5.5".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "https://chatgpt.com/backend-api".to_string(),
-            auth_mode: Some("oauth".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, vec!["doctor".to_string()])
-            .expect("openai-codex should be accepted by the facade");
-        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args, vec!["doctor"]);
-    }
-
-    #[test]
-    fn build_tui_command_forwards_explicit_openai_codex_provider() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&["codewhale", "--provider", "openai-codex", "doctor"]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::OpenaiCodex,
-            provider_source: ProviderSource::Cli,
-            model: "gpt-5.5".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "https://chatgpt.com/backend-api".to_string(),
-            auth_mode: Some("oauth".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, vec!["doctor".to_string()])
-            .expect("openai-codex should be accepted by the facade");
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("openai-codex")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_allows_anthropic_cli_provider() {
-        let _lock = env_lock();
-        let (_dir, _bin) = install_fake_tui_binary();
-
-        let cli = parse_ok(&["codewhale", "--provider", "anthropic", "doctor"]);
-        let resolved = resolved_runtime_for_test(ProviderKind::Anthropic, ProviderSource::Cli);
-
-        let cmd = build_tui_command(&cli, &resolved, vec!["doctor".to_string()])
-            .expect("anthropic should be accepted by the facade");
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("anthropic")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_allows_anthropic_env_provider() {
-        let _lock = env_lock();
-        let (_dir, _bin) = install_fake_tui_binary();
-
-        let cli = parse_ok(&["codewhale", "doctor"]);
-        let resolved = resolved_runtime_for_test(
-            ProviderKind::Anthropic,
-            ProviderSource::Env("DEEPSEEK_PROVIDER"),
-        );
-
-        build_tui_command(&cli, &resolved, vec!["doctor".to_string()])
-            .expect("anthropic from provider env should be accepted by the facade");
-    }
-
-    #[test]
-    fn build_tui_command_bridges_anthropic_keyring_secret() {
-        let _lock = env_lock();
-        let (_dir, _bin) = install_fake_tui_binary();
-
-        let cli = parse_ok(&["codewhale", "doctor"]);
-        let mut resolved =
-            resolved_runtime_for_test(ProviderKind::Anthropic, ProviderSource::Config);
-        resolved.api_key = Some("anthropic-keyring-secret".to_string());
-        resolved.api_key_source = Some(RuntimeApiKeySource::Keyring);
-
-        let cmd = build_tui_command(&cli, &resolved, vec!["doctor".to_string()])
-            .expect("config-sourced anthropic provider should be accepted");
-
-        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
-            Some("anthropic-keyring-secret")
-        );
-        assert_eq!(
-            command_env(&cmd, "ANTHROPIC_API_KEY").as_deref(),
-            Some("anthropic-keyring-secret")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
-            Some("keyring")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_does_not_export_default_runtime_overrides_for_profiles() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&["deepseek", "--profile", "google"]);
-        let mut resolved_headers = std::collections::BTreeMap::new();
-        resolved_headers.insert("X-From-Base".to_string(), "base".to_string());
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Deepseek,
-            provider_source: ProviderSource::Config,
-            model: "deepseek-v4-pro".to_string(),
-            api_key: Some("config-file-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::ConfigFile),
-            base_url: "https://api.deepseek.com".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: Some("normal".to_string()),
-            http_headers: resolved_headers,
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-
-        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_MODEL"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_BASE_URL"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_HTTP_HEADERS"), None);
-        assert_eq!(command_env(&cmd, "CODEWHALE_VERBOSITY"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_VERBOSITY"), None);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            args.windows(2).any(|pair| pair == ["--profile", "google"]),
-            "expected profile forwarding in args: {args:?}"
-        );
-    }
-
-    #[test]
-    fn build_tui_command_defaults_noninteractive_to_concise_verbosity() {
-        let _lock = env_lock();
-        let (_dir, _bin) = install_fake_tui_binary();
-
-        let cli = parse_ok(&["codewhale"]);
-        let resolved = resolved_runtime_for_test(ProviderKind::Deepseek, ProviderSource::Config);
-
-        let cmd = build_tui_command(
-            &cli,
-            &resolved,
-            vec!["exec".to_string(), "summarize".to_string()],
-        )
-        .expect("command");
-
-        assert_eq!(
-            command_env(&cmd, "CODEWHALE_VERBOSITY").as_deref(),
-            Some("concise")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_VERBOSITY").as_deref(),
-            Some("concise")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_respects_resolved_verbosity_override() {
-        let _lock = env_lock();
-        let (_dir, _bin) = install_fake_tui_binary();
-
-        let cli = parse_ok(&["codewhale"]);
-        let mut resolved =
-            resolved_runtime_for_test(ProviderKind::Deepseek, ProviderSource::Config);
-        resolved.verbosity = Some("normal".to_string());
-
-        let cmd = build_tui_command(&cli, &resolved, vec!["exec".to_string()]).expect("command");
-
-        assert_eq!(
-            command_env(&cmd, "CODEWHALE_VERBOSITY").as_deref(),
-            Some("normal")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_VERBOSITY").as_deref(),
-            Some("normal")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_allows_moonshot_and_forwards_kimi_key() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codewhale",
-            "--provider",
-            "moonshot",
-            "--model",
-            "kimi-k2.7-code",
-            "--workspace",
-            "/tmp/codewhale-workspace",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Moonshot,
-            provider_source: ProviderSource::Cli,
-            model: "kimi-k2.7-code".to_string(),
-            api_key: Some("resolved-kimi-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Keyring),
-            base_url: "https://api.moonshot.ai/v1".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("moonshot")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
-            Some("kimi-k2.7-code")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "MOONSHOT_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "KIMI_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
-            Some("keyring")
-        );
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
-    }
-
-    #[test]
-    fn build_tui_command_allows_volcengine_and_forwards_ark_keys() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codewhale",
-            "--provider",
-            "volcengine",
-            "--model",
-            "DeepSeek-V4-Pro",
-            "--workspace",
-            "/tmp/codewhale-workspace",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Volcengine,
-            provider_source: ProviderSource::Cli,
-            model: "DeepSeek-V4-Pro".to_string(),
-            api_key: Some("resolved-ark-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Keyring),
-            base_url: "https://ark.cn-beijing.volces.com/api/coding/v3".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("volcengine")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
-            Some("DeepSeek-V4-Pro")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
-            Some("resolved-ark-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "VOLCENGINE_API_KEY").as_deref(),
-            Some("resolved-ark-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "VOLCENGINE_ARK_API_KEY").as_deref(),
-            Some("resolved-ark-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "ARK_API_KEY").as_deref(),
-            Some("resolved-ark-key")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_exports_explicit_provider_model_and_base_url() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "--profile",
-            "google",
-            "--provider",
-            "openai",
-            "--model",
-            "glm-5",
-            "--base-url",
-            "https://openai-compatible.example/v4",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Openai,
-            provider_source: ProviderSource::Cli,
-            model: "glm-5".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "https://openai-compatible.example/v4".to_string(),
-            auth_mode: None,
-            insecure_skip_tls_verify: false,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            verbosity: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
-            Some("openai")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
-            Some("glm-5")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
-            Some("https://openai-compatible.example/v4")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_forwards_provider_keyring_env_vars_for_all_providers() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        for provider in ProviderKind::ALL {
-            let cli = parse_ok(&["codewhale", "--workspace", "/tmp/codewhale-workspace"]);
-            let resolved = ResolvedRuntimeOptions {
-                provider,
-                provider_source: ProviderSource::Config,
-                model: "test-model".to_string(),
-                api_key: Some("test-key".to_string()),
-                api_key_source: Some(RuntimeApiKeySource::Keyring),
-                base_url: "http://localhost:8000/v1".to_string(),
-                auth_mode: Some("api_key".to_string()),
-                insecure_skip_tls_verify: false,
-                output_mode: None,
-                log_level: None,
-                telemetry: false,
-                approval_policy: None,
-                sandbox_mode: None,
-                yolo: None,
-                verbosity: None,
-                http_headers: std::collections::BTreeMap::new(),
-            };
-
-            let cmd = build_tui_command(&cli, &resolved, Vec::new())
-                .unwrap_or_else(|e| panic!("{}: {e}", provider.as_str()));
-
-            assert_eq!(
-                command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
-                Some("test-key"),
-                "{}: DEEPSEEK_API_KEY not forwarded",
-                provider.as_str()
-            );
-            for var in provider_env_vars(provider)
-                .iter()
-                .filter(|var| **var != "DEEPSEEK_API_KEY")
-            {
-                assert_eq!(
-                    command_env(&cmd, var).as_deref(),
-                    Some("test-key"),
-                    "{}: {var} not forwarded",
-                    provider.as_str()
-                );
-            }
-            assert_eq!(
-                command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
-                Some("keyring"),
-                "{}: expected keyring source bridge",
-                provider.as_str()
-            );
-            assert_eq!(
-                command_env(&cmd, "DEEPSEEK_AUTH_MODE"),
-                None,
-                "{}: auth mode should come from config/profile, not env handoff",
-                provider.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
-        let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
-
-        assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
-        assert!(cli.prompt.is_empty());
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
-        );
-    }
-
-    #[test]
-    fn parses_top_level_continue_for_interactive_resume() {
-        let cli = parse_ok(&["codewhale", "--continue"]);
-
-        assert!(cli.continue_session);
-        assert!(cli.prompt_flag.is_none());
-        assert!(cli.prompt.is_empty());
-        assert_eq!(root_tui_passthrough(&cli).unwrap(), vec!["--continue"]);
-    }
-
-    #[test]
-    fn top_level_continue_rejects_startup_prompt() {
-        let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
-
-        let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
-        assert!(
-            err.to_string()
-                .contains("codewhale exec --continue <PROMPT>")
-        );
-    }
-
-    #[test]
-    fn parses_split_top_level_prompt_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["deepseek", "hello", "world"]);
-
-        assert_eq!(cli.prompt, vec!["hello", "world"]);
-        assert!(cli.command.is_none());
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "hello world".to_string()]
-        );
-    }
-
-    #[test]
-    fn prompt_flag_keeps_split_tail_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["deepseek", "-p", "hello", "world"]);
-
-        assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
-        assert_eq!(cli.prompt, vec!["world"]);
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "hello world".to_string()]
-        );
-    }
-
-    #[test]
-    fn known_subcommands_still_parse_before_prompt_tail() {
-        let cli = parse_ok(&["deepseek", "doctor"]);
-
-        assert!(cli.prompt.is_empty());
-        assert!(matches!(cli.command, Some(Commands::Doctor(_))));
-    }
-
-    #[test]
-    fn root_help_surface_contains_expected_subcommands_and_globals() {
-        let rendered = help_for(&["deepseek", "--help"]);
-
-        for token in [
-            "doctor",
-            "models",
-            "runs",
-            "resume",
-            "setup",
-            "login",
-            "logout",
-            "auth",
-            "config",
-            "model",
-            "thread",
-            "sandbox",
-            "app-server",
-            "completion",
-            "metrics",
-            "--provider",
-            "--model",
-            "--config",
-            "--profile",
-            "--output-mode",
-            "--log-level",
-            "--telemetry",
-            "--base-url",
-            "--api-key",
-            "--approval-policy",
-            "--sandbox-mode",
-            "--mouse-capture",
-            "--no-mouse-capture",
-            "--skip-onboarding",
-            "--continue",
-            "--prompt",
-        ] {
-            assert!(
-                rendered.contains(token),
-                "expected help to contain token: {token}"
-            );
-        }
-        for retired in [
-            "sessions",
-            "fork",
-            "run",
-            "mcp-server",
-            "update",
-            "workflow",
-            "workflow-tool",
-            "review",
-            "speech",
-            "tts",
-        ] {
-            assert!(
-                !rendered.lines().any(|line| {
-                    line.strip_prefix("  ")
-                        .and_then(|line| line.split_whitespace().next())
-                        == Some(retired)
-                }),
-                "retired top-level command remained in help: {retired}"
-            );
-            let parsed = parse_ok(&["codewhale", retired]);
-            assert!(
-                parsed.command.is_none() && parsed.prompt == [retired],
-                "retired top-level command must not remain as a dispatcher alias: {retired}"
-            );
-            let error = reject_retired_command(&parsed)
-                .expect_err("retired command spelling must fail closed");
-            assert!(error.to_string().contains("命令 `codewhale"));
-        }
-
-        let explicit_prompt = parse_ok(&["codewhale", "--prompt", "sessions"]);
-        reject_retired_command(&explicit_prompt)
-            .expect("an explicit prompt must not be mistaken for a retired command");
-
-        let explicit_mcp_prompt = parse_ok(&["codewhale", "--prompt", "mcp-server"]);
-        reject_retired_command(&explicit_mcp_prompt)
-            .expect("an explicit prompt must not be mistaken for a retired MCP command");
-
-        let explicit_run_prompt = parse_ok(&["codewhale", "--prompt", "run this task"]);
-        reject_retired_command(&explicit_run_prompt)
-            .expect("an explicit prompt must not be mistaken for the retired run command");
-        assert_eq!(
-            root_tui_passthrough(&explicit_run_prompt).expect("explicit run prompt"),
-            vec!["--prompt", "run this task"]
-        );
-
-        let explicit_update_prompt =
-            parse_ok(&["codewhale", "--prompt", "update", "the", "dependencies"]);
-        reject_retired_command(&explicit_update_prompt)
-            .expect("an explicit prompt must not be mistaken for the retired update command");
-        assert_eq!(
-            root_tui_passthrough(&explicit_update_prompt).expect("explicit update prompt"),
-            vec!["--prompt", "update the dependencies"]
-        );
-
-        let explicit_workflow_prompt =
-            parse_ok(&["codewhale", "--prompt", "workflow", "run", "an", "audit"]);
-        reject_retired_command(&explicit_workflow_prompt)
-            .expect("an explicit workflow prompt must remain legal");
-        assert_eq!(
-            root_tui_passthrough(&explicit_workflow_prompt).expect("explicit workflow prompt"),
-            vec!["--prompt", "workflow run an audit"]
-        );
-
-        let explicit_review_prompt = parse_ok(&["codewhale", "--prompt", "审查当前 git diff"]);
-        reject_retired_command(&explicit_review_prompt)
-            .expect("an explicit review prompt must remain legal");
-        assert_eq!(
-            root_tui_passthrough(&explicit_review_prompt).expect("explicit review prompt"),
-            vec!["--prompt", "审查当前 git diff"]
-        );
-
-        let explicit_speech_prompt = parse_ok(&["codewhale", "--prompt", "生成语音"]);
-        reject_retired_command(&explicit_speech_prompt)
-            .expect("an explicit speech-shaped prompt must remain legal");
-        assert_eq!(
-            root_tui_passthrough(&explicit_speech_prompt).expect("explicit speech prompt"),
-            vec!["--prompt", "生成语音"]
-        );
-
-        let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);
-        let error = reject_retired_command(&add_self).expect_err("mcp add-self must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("命令 `codewhale mcp add-self` 已删除")
-        );
-    }
-
-    #[test]
-    fn subcommand_help_surfaces_are_stable() {
-        let cases = [
-            ("config", vec!["get", "set", "unset", "list", "path"]),
-            ("model", vec!["list", "resolve"]),
-            (
-                "thread",
-                vec![
-                    "list",
-                    "read",
-                    "resume",
-                    "fork",
-                    "archive",
-                    "unarchive",
-                    "set-name",
-                    "clear-name",
-                ],
-            ),
-            ("sandbox", vec!["check"]),
-            (
-                "exec",
-                vec![
-                    "--auto",
-                    "--json",
-                    "--resume",
-                    "--continue",
-                    "--output-format",
-                    "stream-json",
-                ],
-            ),
-            ("runs", vec!["--limit", "--json"]),
-            (
-                "app-server",
-                vec![
-                    "--host",
-                    "--port",
-                    "--stdio",
-                    "--auth-token",
-                    "--insecure-no-auth",
-                    "--cors-origin",
-                    "--max-body-bytes",
-                ],
-            ),
-            (
-                "completion",
-                vec![
-                    "<SHELL>",
-                    "bash",
-                    "source <(codewhale completion bash)",
-                    "~/.local/share/bash-completion/completions/codewhale",
-                    "fpath=(~/.zfunc $fpath)",
-                    "codewhale completion fish > ~/.config/fish/completions/codewhale.fish",
-                    "codewhale completion powershell | Out-String | Invoke-Expression",
-                ],
-            ),
-            ("metrics", vec!["--json", "--since"]),
-        ];
-
-        for (subcommand, expected_tokens) in cases {
-            let argv = ["deepseek", subcommand, "--help"];
-            let rendered = help_for(&argv);
-            for token in expected_tokens {
-                assert!(
-                    rendered.contains(token),
-                    "expected help for `{subcommand}` to include `{token}`"
-                );
-            }
-        }
-    }
-
-    /// Regression for issue #247: on Windows the dispatcher must find the
-    /// sibling `codewhale-tui.exe`, not bail out looking for an
-    /// extension-less `codewhale-tui`. The candidate resolver also accepts
-    /// the suffix-less name on Windows so users who manually renamed the
-    /// file as a workaround keep working after the upgrade.
-    #[test]
-    fn sibling_tui_candidate_picks_platform_correct_name() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir
-            .path()
-            .join("codewhale")
-            .with_extension(std::env::consts::EXE_EXTENSION);
-        // Touch the dispatcher so its parent dir is the lookup root.
-        std::fs::write(&dispatcher, b"").unwrap();
-
-        // No sibling yet — resolver returns None.
-        assert!(sibling_tui_candidate(&dispatcher).is_none());
-
-        let target =
-            dispatcher.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&target, b"").unwrap();
-
-        let found = sibling_tui_candidate(&dispatcher).expect("must locate sibling");
-        assert_eq!(found, target, "primary platform-correct name wins");
-    }
-
-    #[test]
-    fn dispatcher_spawn_error_names_path_and_recovery_checks() {
-        let err = io::Error::new(io::ErrorKind::PermissionDenied, "access is denied");
-        let message = tui_spawn_error(Path::new("C:/tools/codewhale-tui.exe"), &err);
-
-        assert!(message.contains("C:/tools/codewhale-tui.exe"));
-        assert!(message.contains("access is denied"));
-        assert!(message.contains("where codewhale"));
-        assert!(message.contains("DEEPSEEK_TUI_BIN"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn tui_child_exit_code_maps_unix_signal_to_shell_status() {
-        use std::os::unix::process::ExitStatusExt;
-
-        let status = std::process::ExitStatus::from_raw(libc::SIGPIPE);
-
-        assert_eq!(tui_child_exit_code(status), Some(141));
-    }
-
-    /// Windows-only fallback: the user from #247 manually renamed the
-    /// file to drop `.exe`. After the fix lands, that workaround must
-    /// still resolve via the suffix-less fallback so they don't have to
-    /// rename it back.
-    #[cfg(windows)]
-    #[test]
-    fn sibling_tui_candidate_windows_falls_back_to_suffixless() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir.path().join("codewhale.exe");
-        std::fs::write(&dispatcher, b"").unwrap();
-
-        // Only the suffixless name exists — emulates the manual rename.
-        let suffixless = dispatcher.with_file_name("codewhale-tui");
-        std::fs::write(&suffixless, b"").unwrap();
-
-        let found = sibling_tui_candidate(&dispatcher)
-            .expect("Windows fallback must locate suffixless codewhale-tui");
-        assert_eq!(found, suffixless);
-    }
-
-    /// `DEEPSEEK_TUI_BIN` overrides the discovery path. Useful for
-    /// custom Windows install layouts and CI test rigs.
-    #[test]
-    fn locate_sibling_tui_binary_honours_env_override() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let resolved = locate_sibling_tui_binary().expect("override must resolve");
-        assert_eq!(resolved, custom);
     }
 }
