@@ -1027,6 +1027,47 @@ position 1 开始；先通过 observer fault injection，证明任意派生判�
 billing truth。否则不读 Key，explicit read-only child 保持现状。完整结果见
 [M7-G canonical read-only fan-out 审计结论](../../eval/summaries/m7-g-readonly-fanout-2026-07-23.md)。
 
+### 9.14 M7-G2 observer durability 与 successor 身份（2026-07-23）
+
+M7-G2 先审计 evaluator 而不是重跑 API。旧 Harness 在 terminal 后继续完成 identity、
+surface、accounting、verifier 和产品指标派生，最后才由外层写 arm；异常展开会先删除临时
+SQLite。post-decision `8763722c` 只把 accounting 附到一种 identity failure，未闭合其它
+observer 和 raw/process crash window。
+
+新的离线 contract 固定：
+
+```text
+exact terminal snapshot
+  -> no-credential SQLite reopen snapshot
+  -> verifier snapshot
+  -> derived arm result or abort
+```
+
+journal 是 `0600`、`O_EXCL|O_APPEND|O_NOFOLLOW`、逐记录 sequence/previous-record hash、
+file `fsync` 与首次 directory `fsync`；现有 output 不得重开。11 个独立子进程 fault 覆盖
+identity/verifier/surface/accounting exception、terminal 写前/半写/写后未 fsync、三个
+checkpoint 后与 result 前 SIGKILL，全部证明 fault 不会先提交 `arm_result`。半写 tail 可检测
+但不得派生或续跑。tamper 和重复 output 也 fail closed。
+
+production RunStore exactness 继续由唯一 Rust owner 证明：fan-out loopback 对 root 与两个
+child 在 `StateStore::open` 后逐字段相等；read-only child SIGKILL 不重发；typed recovery
+只接受 exact unfinished lifecycle ambiguity。M7-G2 没有新增第二 Store/accounting owner。
+
+旧 M7-G raw 仍是原 SHA-256、3 records、`completed_arms=0`、billing unknown，
+`maximum_reruns=0`；不得补写、续跑、补 mate 或拼样。新的 ignored offline raw 为 14
+records / 9,235 bytes，`key_accessed=false`、`network_accessed=false`、
+`product_metric_eligible=false`。
+
+admission 结论为
+**hold / live_successor_inadmissible_no_new_production_delta**。`062623e6` 后没有新的
+fan-out production behavior；换 suite ID、output、immutable binary 或 evaluator-only
+revision 不能单独成为新 candidate。本阶段在 credential/API 前停止。下一候选必须先有
+Agent request/Token budget 的真实 production 反例和 material delta，再用全新 clean
+revision、suite/output/binary 从 position 1 运行完整 9 对 / 18 arms。
+
+完整身份、fault matrix、raw hash、门禁和非结论见
+[M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

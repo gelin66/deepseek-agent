@@ -55,6 +55,13 @@
   `completed_arms=0`，accounting 未进入 raw，最终费用不可证明。按 `maximum_reruns=0`
   没有续跑。产品结论为 `hold / inadmissible_observer_identity_bug`，不具备指标资格；
   production 只保留 read-only child crash/reopen truth 修复，不新增或默认启用 fan-out。
+  M7-G2 随后冻结 fail-before-loss observer contract：exact terminal snapshot、无 Key SQLite
+  reopen snapshot 和 verifier observation 必须先于 identity/surface/accounting/产品指标派生
+  写入 `0600` hash-chain raw。11 个 exception/SIGKILL 窗口全部离线通过，旧 M7-G raw 仍为
+  unknown billing 且禁止续跑/拼样。由于 `062623e6` 后没有新的 fan-out production delta，
+  observer-only revision 不能成为新 candidate；paid successor 在 Key/API 前判定
+  `inadmissible_no_new_production_delta`，read-only child 继续 explicit-only。下一切片转向
+  Agent 请求与 Token 预算反例。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -168,7 +175,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-G read-only fan-out 正式矩阵因 observer identity bug/unknown billing 而 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-G2 已闭合 observer durability；fan-out 无新 production delta，paid successor 不准入） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1977,6 +1984,37 @@ admission 或默认并发。完整身份、raw hash、官方资料和非结论�
 position 1 开始；先 fault-inject 所有 post-terminal observer failure 并证明 accounting/
 费用先落盘。无法排除再次 unknown billing 时不读 Key，转向独立的 Agent 请求/Token 预算
 瓶颈。
+
+### M7-G2：observer durability 与 successor 身份门禁
+
+M7-G2 从 clean `3382bbc4` 开始，只修复离线 evaluator contract，不改变 production。
+审计确认 M7-G 的 `execute_arm()` 只有在 terminal 后完成 identity、accounting、surface、
+verifier 和产品派生才返回外层 `emit()`；任一异常会先删除 arm 临时目录中的唯一 SQLite。
+`8763722c` 只保存一种 identity abort 的部分 facts，不覆盖其它 observer 或 evaluator kill。
+
+`f89dafc5` 冻结新的 no-key/no-network gate：`terminal_snapshot ->
+sqlite_reopen_snapshot -> verifier_snapshot -> arm_result|abort`。raw 用 `0600`、
+`O_EXCL|O_APPEND|O_NOFOLLOW`、逐记录 sequence/previous-hash、file `fsync` 和首次 directory
+`fsync`；半写 tail 只能审计，不能续写或派生。同一 Harness 以独立进程覆盖 identity、
+verifier、surface、accounting exception，terminal 写前/半写/写后未 fsync，以及
+terminal/reopen/verifier fsync 后和 result 前 SIGKILL，共 11/11 通过。production owner 的
+fan-out overlap + exact SQLite reopen、read-only child SIGKILL/no-relaunch 和 typed recovery
+targeted tests 同时通过。
+
+旧 M7-G raw hash、3 records、`completed_arms=0` 和 unknown billing 保持不变，禁止补写、
+补 mate 或拼样。新的 offline raw 为 14 records、`0600`、Key/network false，决策是
+`hold_no_new_production_delta`。Git 证据证明 `062623e6` 后只有 evaluator changes，没有
+新的 Runtime/Store/DeepSeek/tools/catalog/prompt/budget/fan-out production behavior；因此
+换 suite ID、output、binary 或 evaluator-only revision 仍是旧 treatment 的伪重跑。
+M7-G2 没有读取 Key、没有调用 API、没有构建 paid release binary。
+
+产品决策为 **hold / live_successor_inadmissible_no_new_production_delta**：保留 explicit
+read-only child、既有 production recovery regression 和 fail-before-loss offline contract；
+不默认启用 fan-out，不宣布产品收益。下一切片先离线审计 canonical Agent request 与 Token
+预算，特别是 child/root terminal request、reasoning replay、handoff 后 integration 和
+hard-budget exhaustion；只有真实反例支持 material production delta 后，才能从 position 1
+建立新的 paid suite。完整身份、raw hash、官方复核和非结论见
+[M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
 
 ### 调优
 

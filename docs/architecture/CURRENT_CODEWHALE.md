@@ -33,6 +33,7 @@
 - M7-G read-only child recovery checkpoint：`13b94210`
 - M7-G formal candidate：`062623e6`
 - M7-G post-decision Harness hardening：`8763722c`
+- M7-G2 fail-before-loss observer checkpoint：`f89dafc5`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -65,6 +66,11 @@
   后因 Harness verifier-plan identity 错判停止，accounting 未写入 raw、费用不可证明；
   按 maximum_reruns=0 未续跑。结果为 `hold / inadmissible_observer_identity_bug`，不具备
   产品指标资格，explicit read-only child 行为与默认 admission 均不变。
+  M7-G2 已把未来 evaluator 顺序冻结为 terminal snapshot、无 Key SQLite reopen snapshot、
+  verifier snapshot、最后才派生 arm result；11 个 observer exception/raw/SIGKILL window
+  全部离线通过。旧 raw 保持 immutable unknown billing。由于 M7-G candidate 后没有新的
+  fan-out production delta，本阶段未读取 Key、未调用 API，paid successor 判定
+  `inadmissible_no_new_production_delta`；下一切片转向 Agent request/Token budget。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1160,6 +1166,22 @@ resolver 的 canonical env/timeout 错误比较，以 `run_identity_invalid` 停
 production 或重跑 formal。完整事实见
 [M7-G canonical read-only fan-out 审计结论](../../eval/summaries/m7-g-readonly-fanout-2026-07-23.md)。
 
+M7-G2 仍没有新增 production owner。离线 journal 现在冻结
+`terminal_snapshot -> sqlite_reopen_snapshot -> verifier_snapshot -> arm_result|abort`
+顺序；每条记录是 `0600`、`O_EXCL|O_APPEND|O_NOFOLLOW`、sequence/previous-hash chain、
+逐记录 file `fsync`，首次 reservation 另做 directory `fsync`。11 个独立子进程覆盖
+identity/verifier/surface/accounting exception、terminal 写前/半写/写后未 fsync，以及
+三个 snapshot checkpoint 后和 result 前 SIGKILL；所有 fault 都未先提交 derived result。
+半写 tail 只能审计，既有 output 不能重开续写。
+
+production exactness 继续由现有 Rust owner 验证：fan-out loopback 在 SQLite reopen 后逐字段
+匹配 root/child replay、usage、request、cost 和 terminal；read-only child SIGKILL 不重发，
+typed recovery 只接受 exact unfinished lifecycle ambiguity。旧 M7-G raw 仍是 unknown
+billing 且不可续跑。`062623e6` 后没有新的 fan-out production delta，因此 M7-G2 没有
+credential read、API request 或 paid binary，决策为
+`live_successor_inadmissible_no_new_production_delta`。完整事实见
+[M7-G2 observer durability 与 successor 准入结论](../../eval/summaries/m7-g2-observer-durability-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1192,6 +1214,8 @@ production 或重跑 formal。完整事实见
   M7-E raw 的 71.08% aggregate hit ratio 没有逐请求 break 或同 binary treatment 身份；
 - M7-G 已证明两个 read-only child 比 single root 更快、更便宜或更可靠；正式矩阵没有
   产生可用 arm，首个联网 arm 的 billing 也未落盘；
+- M7-G2 observer durability 已产生新的 fan-out product candidate 或允许补算/重跑 M7-G；
+  它只证明未来 evaluator 必须先保存 Store truth，paid successor 仍不准入；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
