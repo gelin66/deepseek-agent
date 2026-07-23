@@ -262,7 +262,7 @@ package_command() {
   local source_tree=""
   local target=""
   local repo_root stage_root package_root package_name archive archive_tmp
-  local cargo_lock_sha rustc_line source_mode
+  local cargo_lock_sha rustc_line rustc_verbose source_mode
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -330,7 +330,15 @@ package_command() {
     version="${version:-$(workspace_version)}"
     revision="${revision:-$(git rev-parse HEAD)}"
     source_tree="${source_tree:-$(git rev-parse HEAD^{tree})}"
-    target="${target:-$(rustc -vV | awk '/^host: / { print $2; exit }')}"
+    rustc_verbose="$(rustc -vV)"
+    target="$(
+      if [ -n "$target" ]; then
+        printf '%s\n' "$target"
+      else
+        printf '%s\n' "$rustc_verbose" |
+          awk '$1 == "host:" && !found { found = $2 } END { print found }'
+      fi
+    )"
     [ "$target" = "$(host_target)" ] ||
       die "cross-target packaging is not supported by the local delivery owner"
     source_mode="locked-offline-source"
