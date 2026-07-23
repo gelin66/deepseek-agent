@@ -15,7 +15,8 @@
     "starting_revision": "491c069c77c1e688e09969000b484539515a8c39",
     "starting_tree": "3a1ea1270c7653bdeee65a4a167265fabfcf6cc7",
     "starting_tree_clean": true,
-    "candidate_binary_revision": null,
+    "candidate_binary_revision": "77f5244a48c1936c39876b27cf06e7290e40b3ca",
+    "candidate_source_tree": "fc55455531888f49639c8d9a983a6643f43d93da",
     "harness_revision": null,
     "run_api": 10,
     "runtime_event": 16,
@@ -23,6 +24,28 @@
     "exec_stream": 2,
     "cargo_lock_sha256": "sha256:be75e11ee7b1a879908cd5a4ae8a615a45d965d63822115c8de2db7e1294eeac",
     "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "binary_identity": {
+    "delivery_schema": "codewhale.delivery.v1",
+    "product": "CodeWhale",
+    "version": "0.8.68",
+    "target": "aarch64-apple-darwin",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "source_mode": "locked-offline-source",
+    "archive_name": "codewhale-0.8.68-aarch64-apple-darwin-77f5244a48c1.tar.gz",
+    "archive_sha256": "sha256:e2dfa80a818446639bd31bfad0bb864d36c7a5ec5bd89cf36b9fa73044f88ceb",
+    "archive_size_bytes": 17733506,
+    "codewhale": {
+      "version": "codewhale 0.8.68 (77f5244a48c1)",
+      "sha256": "sha256:9faa9f200f1afb63b669eacc5d8e67b8bb1e56cb6d557a385f00ddbb5f5efdbe",
+      "size_bytes": 15827216
+    },
+    "codewhale_tui": {
+      "version": "codewhale-tui 0.8.68 (77f5244a48c1)",
+      "sha256": "sha256:b528fe0352e99551cae09fc597035e23b16a02f33e1e82b23a91b85bc31f2471",
+      "size_bytes": 22588464
+    },
+    "pair_sha256": "sha256:2dd65c47d41b9b25b575667661132fd3d5ad67602e66bf2a52c733735eb396cc"
   },
   "prompt_treatment": {
     "kind": "same_binary_constitution_override",

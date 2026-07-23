@@ -1351,8 +1351,10 @@ def preflight_identity(
     )
     require(M7E.git_output("status", "--short") == "", "worktree_not_clean")
     require(
-        M7E.git_output("rev-parse", "HEAD") == source.get("harness_revision"),
-        "harness_revision_mismatch",
+        isinstance(source.get("harness_revision"), str)
+        and len(source["harness_revision"]) == 40
+        and M7E.git_output("cat-file", "-t", source["harness_revision"]) == "commit",
+        "harness_revision_missing",
     )
     require(
         M7E.git_output("cat-file", "-t", revision) == "commit",
@@ -1368,6 +1370,22 @@ def preflight_identity(
         == manifest["prompt_treatment"]["candidate"]["sha256"],
         "candidate_not_bound_to_binary_revision",
     )
+    for path in (
+        Path(__file__).resolve(),
+        TEST_PATH,
+        M7E_PATH,
+    ):
+        relative = path.relative_to(ROOT).as_posix()
+        frozen_file = M7E.run_command(
+            ["git", "show", f"{source['harness_revision']}:{relative}"],
+            cwd=ROOT,
+        )
+        require(
+            frozen_file.returncode == 0
+            and sha256_bytes(frozen_file.stdout) == file_hash(path),
+            "harness_revision_file_mismatch",
+            {"path": relative},
+        )
     main_identity = probe_binary(codewhale, revision)
     tui_identity = probe_binary(tui, revision)
     pair = {
@@ -1375,9 +1393,21 @@ def preflight_identity(
         "codewhale_tui": tui_identity,
     }
     pair["pair_sha256"] = canonical_hash(pair)
+    frozen_binary = manifest["binary_identity"]
+    require(
+        main_identity == frozen_binary["codewhale"]
+        and tui_identity == frozen_binary["codewhale_tui"]
+        and pair["pair_sha256"] == frozen_binary["pair_sha256"],
+        "binary_pair_identity_mismatch",
+    )
+    source_tree = M7E.git_output("rev-parse", f"{revision}^{{tree}}")
+    require(
+        source_tree == source.get("candidate_source_tree"),
+        "candidate_source_tree_mismatch",
+    )
     return {
         "revision": revision,
-        "source_tree": M7E.git_output("rev-parse", f"{revision}^{{tree}}"),
+        "source_tree": source_tree,
         "harness_revision": source["harness_revision"],
         "binary_pair": pair,
         "manifest_sha256": file_hash(MANIFEST_PATH),
