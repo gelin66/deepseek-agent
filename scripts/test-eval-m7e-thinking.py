@@ -206,6 +206,7 @@ class M7EThinkingHarnessTests(unittest.TestCase):
         self.assertIsNone(HARNESS.accounting_abort_code(self.manifest, arm))
         arm["tool"]["outcomes"][0].update(
             {
+                "name": "run_verifiers",
                 "operation": "failed",
                 "side_effect": "indeterminate",
                 "retry": "unsafe",
@@ -218,9 +219,42 @@ class M7EThinkingHarnessTests(unittest.TestCase):
         )
         arm.update(
             {
-                "task_id": "t3",
+                "verified_success": True,
+                "behavioral_verified": True,
+                "scope_valid": True,
+                "tool_authority_valid": True,
                 "verification": {"valid": True, "temporal_valid": False},
+                "external_verifier": {
+                    "passed": True,
+                    "workspace_unchanged": True,
+                },
             }
+        )
+        self.assertEqual(
+            HARNESS.accounting_abort_code(self.manifest, arm),
+            "aborted_side_effect_ambiguous",
+        )
+        arm["tool"]["outcomes"].extend(
+            [
+                {
+                    "name": "edit_file",
+                    "invocation": "accepted",
+                    "transport": "succeeded",
+                    "operation": "succeeded",
+                    "side_effect": "applied",
+                    "retry": "not_needed",
+                    "failure_code": None,
+                },
+                {
+                    "name": "run_verifiers",
+                    "invocation": "accepted",
+                    "transport": "succeeded",
+                    "operation": "succeeded",
+                    "side_effect": "indeterminate",
+                    "retry": "not_needed",
+                    "failure_code": None,
+                },
+            ]
         )
         self.assertEqual(
             HARNESS.accounting_abort_code(self.manifest, arm),
@@ -239,6 +273,43 @@ class M7EThinkingHarnessTests(unittest.TestCase):
             HARNESS.accounting_abort_code(self.manifest, arm),
             "aborted_side_effect_ambiguous",
         )
+
+    def test_pair_identity_normalizes_only_host_owned_task_generation(self) -> None:
+        prefix = "当前 Host 事实：\n- task_generation: `"
+        suffix = "`\n- acceptance_ids: `acceptance`"
+        high_messages = [{"role": "user", "content": prefix + "run-high" + suffix}]
+        off_messages = [{"role": "user", "content": prefix + "run-off" + suffix}]
+        high_hash, high_count = HARNESS.normalized_request_messages_hash(high_messages)
+        off_hash, off_count = HARNESS.normalized_request_messages_hash(off_messages)
+        self.assertNotEqual(
+            HARNESS.canonical_hash(high_messages),
+            HARNESS.canonical_hash(off_messages),
+        )
+        self.assertEqual((high_hash, high_count), (off_hash, off_count))
+        base = {
+            "actor": {"kind": "root", "depth": 0},
+            "system_prompt_sha256": "sha256:system",
+            "tools_sha256": "sha256:tools",
+            "max_output_tokens": 8192,
+            "streaming": True,
+            "task_generation_count": 1,
+        }
+        high = {
+            **base,
+            "messages_sha256": HARNESS.canonical_hash(high_messages),
+            "semantic_messages_sha256": high_hash,
+        }
+        off = {
+            **base,
+            "messages_sha256": HARNESS.canonical_hash(off_messages),
+            "semantic_messages_sha256": off_hash,
+        }
+        self.assertEqual(
+            HARNESS.paired_request_fingerprint(high),
+            HARNESS.paired_request_fingerprint(off),
+        )
+        off["task_generation_count"] = 0
+        self.assertIsNone(HARNESS.paired_request_fingerprint(off))
 
     def test_surface_totals_and_off_reasoning_are_fail_closed(self) -> None:
         wrong_surface = run_view(effort="off")

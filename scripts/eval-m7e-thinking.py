@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import shutil
 import signal
@@ -30,11 +31,11 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v3.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v4.json"
 TASK_SOURCE_PATH = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 TEST_PATH = ROOT / "scripts/test-eval-m7e-thinking.py"
-SCHEMA = "codewhale.eval.m7-e-thinking-admission.v3"
-RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v3"
+SCHEMA = "codewhale.eval.m7-e-thinking-admission.v4"
+RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v4"
 RUN_API = 10
 EVENT_API = 16
 STATE_SCHEMA = 21
@@ -60,6 +61,7 @@ SAFE_ENV_NAMES = (
     "all_proxy",
     "no_proxy",
 )
+TASK_GENERATION_LINE = re.compile(r"(?m)^- task_generation: `[^`\r\n]+`$")
 
 
 class EvaluationError(RuntimeError):
@@ -746,19 +748,24 @@ def request_projection(
         requests.extend(event_values(events, "model_request_prepared"))
     efforts = [event.get("request", {}).get("reasoning_effort") for event in requests]
     models = [event.get("request", {}).get("model") for event in requests]
-    fingerprints = [
-        {
-            "actor": event.get("request", {}).get("actor"),
-            "system_prompt_sha256": canonical_hash(
-                event.get("request", {}).get("system_prompt")
-            ),
-            "messages_sha256": canonical_hash(event.get("request", {}).get("messages")),
-            "tools_sha256": canonical_hash(event.get("request", {}).get("tools")),
-            "max_output_tokens": event.get("request", {}).get("max_output_tokens"),
-            "streaming": event.get("request", {}).get("streaming"),
-        }
-        for event in requests
-    ]
+    fingerprints = []
+    for event in requests:
+        request = event.get("request", {})
+        semantic_messages_sha256, task_generation_count = (
+            normalized_request_messages_hash(request.get("messages"))
+        )
+        fingerprints.append(
+            {
+                "actor": request.get("actor"),
+                "system_prompt_sha256": canonical_hash(request.get("system_prompt")),
+                "messages_sha256": canonical_hash(request.get("messages")),
+                "semantic_messages_sha256": semantic_messages_sha256,
+                "task_generation_count": task_generation_count,
+                "tools_sha256": canonical_hash(request.get("tools")),
+                "max_output_tokens": request.get("max_output_tokens"),
+                "streaming": request.get("streaming"),
+            }
+        )
     return {
         "count": len(requests),
         "efforts": efforts,
@@ -768,6 +775,25 @@ def request_projection(
         and set(models) == {"deepseek-v4-flash"},
         "fingerprints": fingerprints,
     }
+
+
+def normalized_request_messages_hash(messages: Any) -> tuple[str, int]:
+    require(isinstance(messages, list), "request_messages_invalid")
+    normalized: list[Any] = []
+    task_generation_count = 0
+    for message in messages:
+        require(isinstance(message, dict), "request_message_invalid")
+        value = dict(message)
+        content = value.get("content")
+        if isinstance(content, str):
+            content, replacements = TASK_GENERATION_LINE.subn(
+                "- task_generation: `<host-owned>`",
+                content,
+            )
+            value["content"] = content
+            task_generation_count += replacements
+        normalized.append(value)
+    return canonical_hash(normalized), task_generation_count
 
 
 def tool_projection(events_by_run: list[list[dict[str, Any]]]) -> dict[str, Any]:
@@ -1315,26 +1341,13 @@ def accounting_abort_code(
         > resources["max_physical_api_attempts_per_arm"]
     ):
         return "aborted_physical_request_limit"
-    for outcome in arm.get("tool", {}).get("outcomes", []):
-        succeeded = (
-            outcome.get("invocation") == "accepted"
-            and outcome.get("transport") == "succeeded"
-            and outcome.get("operation") == "succeeded"
-            and outcome.get("retry") == "not_needed"
-            and outcome.get("failure_code") is None
+    outcomes = arm.get("tool", {}).get("outcomes", [])
+    for index, outcome in enumerate(outcomes):
+        succeeded = exact_tool_success(outcome)
+        recovered_verifier = exact_verifier_failure(outcome) and (
+            verifier_failure_recovered(arm, outcomes, index)
         )
-        expected_t3_verifier_failure = (
-            arm.get("task_id") == "t3"
-            and arm.get("verification", {}).get("valid") is True
-            and arm.get("verification", {}).get("temporal_valid") is True
-            and outcome.get("invocation") == "accepted"
-            and outcome.get("transport") == "succeeded"
-            and outcome.get("operation") == "failed"
-            and outcome.get("side_effect") == "indeterminate"
-            and outcome.get("retry") == "unsafe"
-            and outcome.get("failure_code") == "verifier_failed"
-        )
-        if not succeeded and not expected_t3_verifier_failure and (
+        if not succeeded and not recovered_verifier and (
             outcome.get("transport") == "indeterminate"
             or outcome.get("operation") == "indeterminate"
             or outcome.get("side_effect") == "indeterminate"
@@ -1342,6 +1355,75 @@ def accounting_abort_code(
         ):
             return "aborted_side_effect_ambiguous"
     return None
+
+
+def exact_tool_success(outcome: dict[str, Any]) -> bool:
+    return bool(
+        outcome.get("invocation") == "accepted"
+        and outcome.get("transport") == "succeeded"
+        and outcome.get("operation") == "succeeded"
+        and outcome.get("retry") == "not_needed"
+        and outcome.get("failure_code") is None
+    )
+
+
+def exact_verifier_failure(outcome: dict[str, Any]) -> bool:
+    return bool(
+        outcome.get("name") == "run_verifiers"
+        and outcome.get("invocation") == "accepted"
+        and outcome.get("transport") == "succeeded"
+        and outcome.get("operation") == "failed"
+        and outcome.get("side_effect") == "indeterminate"
+        and outcome.get("retry") == "unsafe"
+        and outcome.get("failure_code") == "verifier_failed"
+    )
+
+
+def verifier_failure_recovered(
+    arm: dict[str, Any],
+    outcomes: list[dict[str, Any]],
+    failure_index: int,
+) -> bool:
+    if not (
+        arm.get("verified_success") is True
+        and arm.get("behavioral_verified") is True
+        and arm.get("measurement_valid") is True
+        and arm.get("scope_valid") is True
+        and arm.get("tool_authority_valid") is True
+        and arm.get("verification", {}).get("valid") is True
+        and arm.get("verification", {}).get("temporal_valid") is True
+        and arm.get("external_verifier", {}).get("passed") is True
+        and arm.get("external_verifier", {}).get("workspace_unchanged") is True
+    ):
+        return False
+    applied_write = False
+    for outcome in outcomes[failure_index + 1 :]:
+        if (
+            outcome.get("name") in {"apply_patch", "edit_file"}
+            and exact_tool_success(outcome)
+            and outcome.get("side_effect") == "applied"
+        ):
+            applied_write = True
+        if (
+            applied_write
+            and outcome.get("name") == "run_verifiers"
+            and exact_tool_success(outcome)
+        ):
+            return True
+    return False
+
+
+def paired_request_fingerprint(fingerprint: dict[str, Any]) -> dict[str, Any] | None:
+    if fingerprint.get("task_generation_count") != 1:
+        return None
+    return {
+        "actor": fingerprint.get("actor"),
+        "system_prompt_sha256": fingerprint.get("system_prompt_sha256"),
+        "semantic_messages_sha256": fingerprint.get("semantic_messages_sha256"),
+        "tools_sha256": fingerprint.get("tools_sha256"),
+        "max_output_tokens": fingerprint.get("max_output_tokens"),
+        "streaming": fingerprint.get("streaming"),
+    }
 
 
 def median_fraction(values: list[Fraction]) -> Fraction | None:
@@ -1433,12 +1515,18 @@ def decide(manifest: dict[str, Any], arms: list[dict[str, Any]]) -> dict[str, An
             return {"decision": "hold", "reason": "paired_identity_incomplete"}
         high = pair["reasoning_high"]
         off = pair["reasoning_off"]
+        high_fingerprint = paired_request_fingerprint(
+            high["request_identity"]["fingerprints"][0]
+        )
+        off_fingerprint = paired_request_fingerprint(
+            off["request_identity"]["fingerprints"][0]
+        )
         if (
             high["revision"] != off["revision"]
             or high["binary_sha256"] != off["binary_sha256"]
             or high["fixture_tree_sha256"] != off["fixture_tree_sha256"]
-            or high["request_identity"]["fingerprints"][0]
-            != off["request_identity"]["fingerprints"][0]
+            or high_fingerprint is None
+            or high_fingerprint != off_fingerprint
         ):
             return {"decision": "reject", "reason": "paired_treatment_identity_mismatch"}
     task_ids = manifest["task_source"]["task_ids"]
