@@ -1142,7 +1142,28 @@ fn parse_tui_cli() -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
 
-fn main() -> Result<()> {
+fn render_main_error(error: &anyhow::Error) -> String {
+    let mut lines = vec![tr(MessageId::CliErrorPrefix).replace("{error}", &error.to_string())];
+    lines.extend(error.chain().skip(1).map(|cause| {
+        format!(
+            "  {}",
+            tr(MessageId::CliCausedByPrefix).replace("{error}", &cause.to_string())
+        )
+    }));
+    lines.join("\n")
+}
+
+fn main() -> std::process::ExitCode {
+    match run_main() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{}", render_main_error(&error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_main() -> Result<()> {
     // Match the dispatcher entrypoint: Unix shells and supervisors may inherit
     // SIGPIPE ignored, which turns short pipelines such as `codewhale doctor |
     // head` into BrokenPipe panics once this delegated TUI binary prints.
@@ -2420,14 +2441,19 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  · {}", tr(MessageId::DoctorConnectivityScope));
     let tls_status = doctor_tls_status(config);
     if !tls_status.certificate_verification {
-        println!("  ! {}", tls_status.message);
-        println!("    Prefer SSL_CERT_FILE with a trusted custom CA bundle when possible.");
+        println!(
+            "  ! {}",
+            tr(MessageId::DoctorTlsVerificationEnforced).replace("{provider}", tls_status.provider)
+        );
     }
     let capability = crate::config::deepseek_capability(&api_target.model);
     if let Some(alias) = capability.alias_deprecation.as_ref() {
         println!(
-            "  ! model alias {} retires {}; switch to {}",
-            alias.alias, alias.retirement_date, alias.replacement
+            "  ! {}",
+            tr(MessageId::DoctorModelAliasRetirement)
+                .replace("{alias}", &alias.alias)
+                .replace("{date}", &alias.retirement_date)
+                .replace("{replacement}", &alias.replacement)
         );
     }
     if has_api_key {
@@ -2496,9 +2522,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let project_mcp_config_path = crate::mcp::workspace_mcp_config_path(workspace);
     if mcp_config_path.exists() {
         println!(
-            "  {} MCP config found at {}",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&mcp_config_path)
+            tr(MessageId::DoctorMcpConfigFound)
+                .replace("{path}", &crate::utils::display_path(&mcp_config_path))
         );
     } else {
         println!(
@@ -2510,9 +2537,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     }
     if project_mcp_config_path.exists() {
         println!(
-            "  {} Project MCP config found at {}",
+            "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&project_mcp_config_path)
+            tr(MessageId::DoctorProjectMcpConfigFound).replace(
+                "{path}",
+                &crate::utils::display_path(&project_mcp_config_path)
+            )
         );
     } else {
         println!(
@@ -2570,15 +2600,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 };
                 println!("{icon}");
                 if !server.enabled {
-                    println!("      (disabled)");
+                    println!("      （{}）", tr(MessageId::DoctorMcpServerDisabled));
                 }
             }
         }
         Err(err) => {
             println!(
-                "  {} MCP config parse error: {}",
+                "  {} {}",
                 "✗".truecolor(red_r, red_g, red_b),
-                err
+                tr(MessageId::DoctorMcpConfigParseError).replace("{error}", &err.to_string())
             );
         }
     }
@@ -2621,7 +2651,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             tr(MessageId::DoctorDirectoryFound)
-                .replace("{label}", "workspace Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillWorkspaceLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&local_skills_dir))
                 .replace("{count}", &describe_dir(&local_skills_dir).to_string())
         );
@@ -2630,7 +2660,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "·".dimmed(),
             tr(MessageId::DoctorDirectoryMissing)
-                .replace("{label}", "workspace Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillWorkspaceLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&local_skills_dir))
         );
     }
@@ -2640,7 +2670,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             tr(MessageId::DoctorDirectoryFound)
-                .replace("{label}", ".agents Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillAgentsLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&agents_skills_dir))
                 .replace("{count}", &describe_dir(&agents_skills_dir).to_string())
         );
@@ -2649,7 +2679,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "·".dimmed(),
             tr(MessageId::DoctorDirectoryMissing)
-                .replace("{label}", ".agents Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillAgentsLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&agents_skills_dir))
         );
     }
@@ -2660,7 +2690,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "  {} {}",
                 "✓".truecolor(aqua_r, aqua_g, aqua_b),
                 tr(MessageId::DoctorDirectoryFound)
-                    .replace("{label}", "global .agents Skills")
+                    .replace(
+                        "{label}",
+                        tr(MessageId::DoctorSkillGlobalAgentsLabel).as_ref(),
+                    )
                     .replace(
                         "{path}",
                         &crate::utils::display_path(agents_global_skills_dir)
@@ -2675,7 +2708,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "  {} {}",
                 "·".dimmed(),
                 tr(MessageId::DoctorDirectoryMissing)
-                    .replace("{label}", "global .agents Skills")
+                    .replace(
+                        "{label}",
+                        tr(MessageId::DoctorSkillGlobalAgentsLabel).as_ref(),
+                    )
                     .replace(
                         "{path}",
                         &crate::utils::display_path(agents_global_skills_dir)
@@ -2689,7 +2725,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             tr(MessageId::DoctorDirectoryFound)
-                .replace("{label}", "global Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillGlobalLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&global_skills_dir))
                 .replace("{count}", &describe_dir(&global_skills_dir).to_string())
         );
@@ -2698,7 +2734,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "·".dimmed(),
             tr(MessageId::DoctorDirectoryMissing)
-                .replace("{label}", "global Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillGlobalLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&global_skills_dir))
         );
     }
@@ -2711,7 +2747,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             tr(MessageId::DoctorDirectoryFound)
-                .replace("{label}", ".opencode Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillOpencodeLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&opencode_skills_dir))
                 .replace("{count}", &describe_dir(&opencode_skills_dir).to_string())
         );
@@ -2721,7 +2757,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             tr(MessageId::DoctorDirectoryFound)
-                .replace("{label}", ".claude Skills")
+                .replace("{label}", tr(MessageId::DoctorSkillClaudeLabel).as_ref(),)
                 .replace("{path}", &crate::utils::display_path(&claude_skills_dir))
                 .replace("{count}", &describe_dir(&claude_skills_dir).to_string())
         );
@@ -2797,16 +2833,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 tr(MessageId::DoctorInstallDependencyHint).replace("{dependency}", "Python 3")
             );
             match std::env::consts::OS {
-                "macos" => {
-                    println!("      brew install python@3.12   (or download from python.org)")
-                }
-                "linux" => println!(
-                    "      sudo apt install python3    (Debian/Ubuntu) — or your distro's equivalent"
+                "macos" => println!("      {}", tr(MessageId::DoctorPythonMacInstall)),
+                "linux" => println!("      {}", tr(MessageId::DoctorPythonLinuxInstall)),
+                "windows" => println!("      {}", tr(MessageId::DoctorPythonWindowsInstall)),
+                other => println!(
+                    "      {}",
+                    tr(MessageId::DoctorPythonOtherInstall).replace("{os}", other)
                 ),
-                "windows" => {
-                    println!("      winget install Python.Python.3   (or download from python.org)")
-                }
-                other => println!("      install Python 3 for {other} from python.org"),
             }
         }
     }
@@ -2825,13 +2858,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             );
             match std::env::consts::OS {
                 "macos" => println!("      brew install pandoc"),
-                "linux" => println!(
-                    "      sudo apt install pandoc    (Debian/Ubuntu) — or your distro's equivalent"
+                "linux" => println!("      {}", tr(MessageId::DoctorPandocLinuxInstall)),
+                "windows" => println!("      winget install JohnMacFarlane.Pandoc"),
+                other => println!(
+                    "      {}",
+                    tr(MessageId::DoctorPandocOtherInstall).replace("{os}", other)
                 ),
-                "windows" => {
-                    println!("      winget install JohnMacFarlane.Pandoc")
-                }
-                other => println!("      install pandoc for {other} from pandoc.org"),
             }
         }
     }
@@ -2855,26 +2887,28 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         None => {
             if cfg!(target_os = "macos") {
                 println!(
-                    "  {} OCR: macOS Vision available → image_ocr/read_file screenshot OCR enabled",
+                    "  {} {}",
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorOcrVisionFallback)
                 );
-                println!(
-                    "    tesseract not found (optional; install only for alternate OCR packs)."
-                );
+                println!("    {}", tr(MessageId::DoctorTesseractOptionalMissing));
             } else {
-                println!("  {} tesseract: not found (optional)", "·".dimmed(),);
                 println!(
-                    "    image_ocr tool is NOT advertised to the model. Install tesseract to enable:"
+                    "  {} {}",
+                    "·".dimmed(),
+                    tr(MessageId::DoctorTesseractOptionalMissing)
                 );
+                println!("    {}", tr(MessageId::DoctorOcrNotAdvertised));
                 match std::env::consts::OS {
                     "macos" => println!("      brew install tesseract"),
-                    "linux" => println!(
-                        "      sudo apt install tesseract-ocr    (Debian/Ubuntu) — or your distro's equivalent"
-                    ),
-                    "windows" => println!("      winget install UB-Mannheim.TesseractOCR"),
-                    other => {
-                        println!("      install tesseract for {other} from tesseract-ocr.github.io")
+                    "linux" => {
+                        println!("      {}", tr(MessageId::DoctorTesseractLinuxInstall))
                     }
+                    "windows" => println!("      winget install UB-Mannheim.TesseractOCR"),
+                    other => println!(
+                        "      {}",
+                        tr(MessageId::DoctorTesseractOtherInstall).replace("{os}", other)
+                    ),
                 }
             }
         }
@@ -2893,8 +2927,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         Some(_) => {
             if prefer_external {
                 println!(
-                    "  {} pdftotext: available → read_file routes PDFs through Poppler (prefer_external_pdftotext = true)",
+                    "  {} {}",
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                    tr(MessageId::DoctorPdfExternalActive)
                 );
             } else {
                 println!(
@@ -2902,28 +2937,23 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✓".truecolor(aqua_r, aqua_g, aqua_b),
                     tr(MessageId::DoctorPdftotextAvailable)
                 );
-                println!(
-                    "    Set `prefer_external_pdftotext = true` in settings.toml for column-heavy PDFs."
-                );
+                println!("    {}", tr(MessageId::DoctorPdfExternalHint));
             }
         }
         None => {
             if prefer_external {
                 println!(
-                    "  {} pdftotext: not found, but `prefer_external_pdftotext = true` is set → PDF reads will return `binary_unavailable`",
+                    "  {} {}",
                     "✗".truecolor(red_r, red_g, red_b),
+                    tr(MessageId::DoctorPdfExternalMissing)
                 );
-                println!(
-                    "    Either install Poppler or unset `prefer_external_pdftotext` to fall back to the bundled pure-Rust extractor."
-                );
+                println!("    {}", tr(MessageId::DoctorPdfExternalFallback));
                 match std::env::consts::OS {
-                    "macos" => println!("    Install via: brew install poppler"),
-                    "linux" => println!(
-                        "    Install via: sudo apt install poppler-utils   (Debian/Ubuntu)"
-                    ),
-                    "windows" => println!(
-                        "    Install Poppler for Windows from https://blog.alivate.com.au/poppler-windows/"
-                    ),
+                    "macos" => println!("    {}", tr(MessageId::DoctorPopplerMacInstall)),
+                    "linux" => println!("    {}", tr(MessageId::DoctorPopplerLinuxInstall)),
+                    "windows" => {
+                        println!("    {}", tr(MessageId::DoctorPopplerWindowsInstall))
+                    }
                     _ => {}
                 }
             } else {
@@ -2947,9 +2977,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let mut any_quirk = false;
     if matches!(term_program.as_str(), "vscode" | "ghostty") {
         println!(
-            "  {} TERM_PROGRAM={} → low_motion + fancy_animations=false (auto)",
+            "  {} {}",
             "•".truecolor(sky_r, sky_g, sky_b),
-            term_program
+            tr(MessageId::DoctorTerminalLowMotion).replace("{term_program}", &term_program)
         );
         any_quirk = true;
     }
@@ -2958,8 +2988,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty())
     {
         println!(
-            "  {} SSH/Termius session → low_motion + fancy_animations=false (auto, #1433)",
-            "•".truecolor(sky_r, sky_g, sky_b)
+            "  {} {}",
+            "•".truecolor(sky_r, sky_g, sky_b),
+            tr(MessageId::DoctorTerminalSshLowMotion)
         );
         any_quirk = true;
     }
@@ -2967,15 +2998,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         || std::env::var_os("PTYXIS_VERSION").is_some_and(|v| !v.is_empty())
     {
         println!(
-            "  {} Ptyxis detected → synchronized_output=off (auto, v0.8.31)",
-            "•".truecolor(sky_r, sky_g, sky_b)
+            "  {} {}",
+            "•".truecolor(sky_r, sky_g, sky_b),
+            tr(MessageId::DoctorTerminalPtyxis)
         );
         any_quirk = true;
     }
     if crate::settings::detected_legacy_windows_console_host() {
         println!(
-            "  {} legacy Windows console host → low_motion + fancy_animations=false + bracketed_paste=false + synchronized_output=off (auto)",
-            "•".truecolor(sky_r, sky_g, sky_b)
+            "  {} {}",
+            "•".truecolor(sky_r, sky_g, sky_b),
+            tr(MessageId::DoctorTerminalLegacyWindows)
         );
         any_quirk = true;
     }
@@ -3155,9 +3188,14 @@ fn print_doctor_setup_report(
             })
             .unwrap_or_default();
         println!(
-            "  {} consistency: half-applied setup detected ({issues}) — {}",
+            "  {} {}",
             "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2),
-            consistency["repair"].as_str().unwrap_or("/setup"),
+            tr(MessageId::DoctorSetupInconsistent)
+                .replace("{issues}", &issues)
+                .replace(
+                    "{repair}",
+                    consistency["repair"].as_str().unwrap_or("/setup")
+                ),
         );
     }
     println!("  · {}", tr(MessageId::DoctorNextActions));
@@ -4597,18 +4635,18 @@ fn is_relative_stdio_path_arg(value: &str) -> bool {
 fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     // No command or URL — incomplete entry.
     if server.command.is_none() && server.url.is_none() {
-        return McpServerDoctorStatus::Error("no command or url configured".to_string());
+        return McpServerDoctorStatus::Error(tr(MessageId::DoctorMcpNoCommand).into_owned());
     }
 
     // URL-based server — just report the URL.
     if let Some(ref url) = server.url {
-        return McpServerDoctorStatus::Ok(format!("HTTP/SSE server at {url}"));
+        return McpServerDoctorStatus::Ok(tr(MessageId::DoctorMcpHttpServer).replace("{url}", url));
     }
 
     // Command-based: validate command path exists.
     let cmd = server.command.as_deref().unwrap_or("");
     if cmd.is_empty() {
-        return McpServerDoctorStatus::Error("empty command".to_string());
+        return McpServerDoctorStatus::Error(tr(MessageId::DoctorMcpEmptyCommand).into_owned());
     }
 
     let cmd_path = Path::new(cmd);
@@ -4617,35 +4655,35 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     let is_absolute = cmd_path.is_absolute() || cmd.starts_with('/');
 
     if is_absolute && !cmd_path.exists() {
-        return McpServerDoctorStatus::Error(format!("command not found: {cmd}"));
+        return McpServerDoctorStatus::Error(
+            tr(MessageId::DoctorMcpCommandNotFound).replace("{command}", cmd),
+        );
     }
 
     if server.cwd.is_none() {
         if is_relative_stdio_path_arg(cmd) {
-            return McpServerDoctorStatus::Warning(format!(
-                "stdio server uses relative command \"{cmd}\" without cwd; set cwd so headless exec and UI status checks resolve the same path"
-            ));
+            return McpServerDoctorStatus::Warning(
+                tr(MessageId::DoctorMcpRelativeCommand).replace("{command}", cmd),
+            );
         }
         if let Some(arg) = server
             .args
             .iter()
             .find(|arg| is_relative_stdio_path_arg(arg))
         {
-            return McpServerDoctorStatus::Warning(format!(
-                "stdio server uses relative path argument \"{arg}\" without cwd; set cwd so headless exec and UI status checks resolve the same path"
-            ));
+            return McpServerDoctorStatus::Warning(
+                tr(MessageId::DoctorMcpRelativeArg).replace("{arg}", arg),
+            );
         }
     }
 
     let args_str = server.args.join(" ");
-    McpServerDoctorStatus::Ok(format!(
-        "stdio server ({cmd}{})",
-        if args_str.is_empty() {
-            String::new()
-        } else {
-            format!(" {args_str}")
-        }
-    ))
+    let command = if args_str.is_empty() {
+        cmd.to_string()
+    } else {
+        format!("{cmd} {args_str}")
+    };
+    McpServerDoctorStatus::Ok(tr(MessageId::DoctorMcpStdioServer).replace("{command}", &command))
 }
 
 fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
@@ -5536,6 +5574,53 @@ mod m8c_fixed_zh_hans_help_tests {
         ] {
             assert!(!exec.contains(leak), "English exec help leaked: {leak}");
         }
+    }
+
+    #[test]
+    fn direct_tui_failure_localizes_framework_and_preserves_raw_detail() {
+        let error = anyhow::anyhow!("raw-provider-sentinel").context("Headless 启动失败");
+        let rendered = render_main_error(&error);
+
+        assert!(rendered.starts_with("错误：Headless 启动失败"));
+        assert!(rendered.contains("原因：raw-provider-sentinel"));
+        assert!(!rendered.starts_with("Error:"));
+    }
+
+    #[test]
+    fn doctor_mcp_status_localizes_host_chrome_and_preserves_raw_values() {
+        let missing: McpServerConfig =
+            serde_json::from_value(serde_json::json!({"command": null, "url": null}))
+                .expect("minimal missing MCP config");
+        let url: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": null,
+            "url": "https://fixture.invalid/raw-path"
+        }))
+        .expect("minimal URL MCP config");
+        let relative: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": "./raw-server",
+            "url": null
+        }))
+        .expect("minimal relative MCP config");
+
+        let McpServerDoctorStatus::Error(missing_detail) = doctor_check_mcp_server(&missing) else {
+            panic!("missing MCP route must be an error");
+        };
+        assert_eq!(missing_detail, "尚未配置 command 或 url");
+
+        let McpServerDoctorStatus::Ok(url_detail) = doctor_check_mcp_server(&url) else {
+            panic!("URL MCP route must be accepted");
+        };
+        assert_eq!(
+            url_detail,
+            "HTTP/SSE 服务器：https://fixture.invalid/raw-path"
+        );
+
+        let McpServerDoctorStatus::Warning(relative_detail) = doctor_check_mcp_server(&relative)
+        else {
+            panic!("relative MCP route without cwd must warn");
+        };
+        assert!(relative_detail.contains("相对 command“./raw-server”"));
+        assert!(relative_detail.contains("cwd"));
     }
 
     #[test]
