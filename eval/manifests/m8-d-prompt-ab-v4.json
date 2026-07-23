@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v4",
-  "status": "draft_offline",
+  "status": "frozen_live_admitted",
   "date": "2026-07-24",
   "base_manifest": {
     "path": "eval/manifests/m8-d-prompt-ab-v3.json",
@@ -66,9 +66,9 @@
     "maximum_reruns": 0
   },
   "admission": {
-    "live_api_admitted": false,
-    "admitted_on": null,
-    "admission_evidence": "pending",
+    "live_api_admitted": true,
+    "admitted_on": "2026-07-24",
+    "admission_evidence": "同一 immutable 8371b6dd binary pair 的 v2 全量产品门禁保持有效；v4 的 15 项 Harness tests、五个 task fixture 的 frozen Git identity、共享 error typed abort contract、frozen Harness/content/schedule identity、network-blocked 真实 app-server prompt-only activation 和当前 deepseek-v4-flash endpoint/model fixture 全部通过。",
     "credential_read_for_v4": false,
     "official_api_requests_for_v4": 0
   },
@@ -89,6 +89,6 @@
     "harness_sha256": "sha256:b76223544fa93a6467656160e7acd7193a604f44a12447f5e81130d8836382b2",
     "harness_test_sha256": "sha256:f2e2e7b4868349aaec670f83644dd855052c118d428b8d7cb718f19f2b2d751c",
     "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:695560654976c6549d789efcbd472b832ed9dfa30c2a05fa04a30b05df67f44c"
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:22aec5f28f58a519c0e22f56b4fc956319fb882f65ebac80243ed4558429003e"
   }
 }
