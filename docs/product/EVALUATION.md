@@ -987,6 +987,46 @@ supersession、compaction、child fork 与 crash/reopen 合同完成前，不满
 完整结果见
 [M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
 
+### 9.13 M7-G canonical read-only fan-out 准入（2026-07-23）
+
+M7-G 没有预设多 Agent 更快。production trace 证明同一 assistant response 中多个
+read-only `agent` calls 已由唯一 `AgentRuntime` 先全部启动、再统一 join；因此 treatment
+只在同一 binary/prompt/model/总预算下比较“不 advertised agent”的 single root 与“显式
+恰好两个 read-only child”的现有 canonical surface，不增加 scheduler 或提示词模式。
+
+冻结 suite 使用三项可分解的真实临时 Git 仓库任务，每项三次，合计 9 对 / 18 arms，
+`maximum_reruns=0`。Key 读取前已通过 deterministic verifier、真实 transport overlap、
+typed handoff/accounting、SQLite reopen、root/read-only/Writer conformance、同批 partial
+failure/cancel、进程级 SIGKILL、focused、fmt、workspace clippy/test、Harness self-test、
+同 revision release identity 和 no-key/no-network dry-run。
+
+离线 SIGKILL 反例发现并修复了 RunStore 的 child recovery terminal 验证缺陷：只有指向
+确切 in-flight `agent` operation 或 unfinished child ID 的 `RecoveryRequired` ambiguity
+可以结束未闭合 lifecycle；普通 failure 仍拒绝。该 correctness 修复不构成 fan-out
+效率证据。
+
+正式 candidate `062623e6` 的 release SHA-256 为
+`432a6d6a18906826f16b9949ee7223bb1d365a2319cb0d5884b0a7280c76e911`。
+正式 run 在首个 control arm 后以 `run_identity_invalid` 停止：
+
+- `key_accessed=true`、`network_accessed=true`；
+- `completed_arms=0`；
+- Harness 错误比较 caller-authored verifier plan 与 `crates/tools` Host resolver 注入
+  env/timeout 后的 canonical `RunCreated` plan；
+- accounting 已读取但旧 abort record 没有保存，最终 usage/request/cost 不可证明；
+- 按 `maximum_reruns=0` 没有续跑、补 mate、换 output 或拼接。
+
+因此结果为 **hold / inadmissible_observer_identity_bug**，
+`product_metric_eligible=false`。不能报告 verified success、false success、wall time、
+Token、cache、请求数或费用的 control/treatment delta。ignored `0600` raw 保持原样；
+post-decision Harness 只离线修正 canonical verifier identity，并保证未来
+post-terminal identity failure 先保存 terminal/accounting/State，不重跑本 formal。
+
+任何 successor 必须换新的 suite ID、clean revision、output 和 immutable binary，从
+position 1 开始；先通过 observer fault injection，证明任意派生判定失败都不会再次丢失
+billing truth。否则不读 Key，explicit read-only child 保持现状。完整结果见
+[M7-G canonical read-only fan-out 审计结论](../../eval/summaries/m7-g-readonly-fanout-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

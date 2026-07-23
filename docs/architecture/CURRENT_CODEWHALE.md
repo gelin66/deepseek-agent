@@ -30,6 +30,9 @@
 - M7-E last live evaluator checkpoint：`ee73e761`
 - M7-E fail-closed hold / final Harness checkpoint：`458c3d7d`
 - M7-F context-cache wire baseline checkpoint：`a1d68b05`
+- M7-G read-only child recovery checkpoint：`13b94210`
+- M7-G formal candidate：`062623e6`
+- M7-G post-decision Harness hardening：`8763722c`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -56,6 +59,12 @@
   request/output boundary 不能逐轮严格延伸；fresh revision/evidence、wire plan 与 SQLite
   reopen 均保持正确。没有候选能在不增加 stale-fact 语义的前提下形成安全 wire delta，
   因而 production 不变、Key 未读取、官方请求 0，决策为 `hold`。
+  M7-G 证明同一 response 中的多个 read-only child 已由 canonical Runtime 真正重叠执行，
+  不需要第二 scheduler；同时修复 durable `ChildStarted` 后 recovery terminal 被 Store
+  拒绝的 crash/reopen correctness 缺陷。正式 9 对 / 18 arms A/B 在首个联网 control arm
+  后因 Harness verifier-plan identity 错判停止，accounting 未写入 raw、费用不可证明；
+  按 maximum_reruns=0 未续跑。结果为 `hold / inadmissible_observer_identity_bug`，不具备
+  产品指标资格，explicit read-only child 行为与默认 admission 均不变。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1129,6 +1138,28 @@ crash/reopen 合同。本阶段没有该状态，也没有多 system message、f
 tool duplication 路径。完整事实见
 [M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
 
+M7-G 同样没有新增 production owner。`AgentRuntime` 对同一 response 的多个 `agent` calls
+先逐一持久化 prepared/started 并启动 child，再统一 `join_children`；production
+loopback 已在第一个 child 保持未响应时观察到第二个 child 到达 DeepSeek transport。child
+仍由 `ProductionAgentOrchestrator` 构造同一 Runtime，handoff、usage、cost 和 terminal
+仍进入同一 RunStore。
+
+`crates/runtime::store` 现在允许两类精确的 `RecoveryRequired` terminal 关闭 unfinished
+read-only child lifecycle：指向 durable `ChildStarted` 对应 in-flight `agent` operation 的
+ToolExecution ambiguity，或指向 exact unfinished child ID 的 ChildRun ambiguity。普通
+failure 仍拒绝。进程级 SIGKILL 证明 SQLite reopen 后 typed ambiguity 逐字段保留且不重发
+模型请求、不重启 child；同批 partial failure/cancel 也会 settle 每个 child 并保留已完成
+handoff。
+
+正式 fan-out Harness 只通过 Run API v10/app-server stdio 投影 production facts，不实现
+工具或 Agent loop。candidate `062623e6` 的 frozen binary/fixture/schedule/dry-run 通过后
+才读取 Key；首个 control arm 联网后，旧 Harness 把 caller-authored verifier plan 与 Host
+resolver 的 canonical env/timeout 错误比较，以 `run_identity_invalid` 停止。旧 abort 没有
+保存已读取 accounting，最终 billing 未知；`completed_arms=0`、`maximum_reruns=0`，没有
+产品指标和续跑。post-decision `8763722c` 只修正离线 observer 与 failure evidence，不改变
+production 或重跑 formal。完整事实见
+[M7-G canonical read-only fan-out 审计结论](../../eval/summaries/m7-g-readonly-fanout-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1159,6 +1190,8 @@ tool duplication 路径。完整事实见
   产品指标，v4 active arm 的最终 billing 也未知；
 - M7-F 已证明重放旧 Host facts 能提高 cache hit、降低费用或保持 verified success；
   M7-E raw 的 71.08% aggregate hit ratio 没有逐请求 break 或同 binary treatment 身份；
+- M7-G 已证明两个 read-only child 比 single root 更快、更便宜或更可靠；正式矩阵没有
+  产生可用 arm，首个联网 arm 的 billing 也未落盘；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B

@@ -48,6 +48,13 @@
   写回会让过期 revision/receipt 重新进入模型输入并需要新的 typed supersession/reducer
   状态；其它拆 system、前移/删除 facts、重排工具候选均无安全可归因收益。M7-F 因而
   `hold`，production 不变，Key 未读取、官方请求 0。
+  M7-G 随后确认 canonical Runtime 已在同一 assistant response 中先启动同批全部 read-only
+  child、再统一 join，production 不缺第二 scheduler。冻结的 9 对 / 18 arms 同 binary
+  fan-out A/B 在首个 control arm 后因 Harness 把 caller-authored verifier plan 与
+  Host-resolved canonical plan 做错误全等比较而停止；Key 已读取并发生网络请求，但
+  `completed_arms=0`，accounting 未进入 raw，最终费用不可证明。按 `maximum_reruns=0`
+  没有续跑。产品结论为 `hold / inadmissible_observer_identity_bug`，不具备指标资格；
+  production 只保留 read-only child crash/reopen truth 修复，不新增或默认启用 fan-out。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -161,7 +168,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-F cache-prefix 因无安全、语义不变的 wire treatment 而 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-G read-only fan-out 正式矩阵因 observer identity bug/unknown billing 而 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1928,12 +1935,55 @@ reducer 与 crash/reopen 合同。本切片不为缓存弱化 truth，不读 Key
 身份、候选取舍与非结论见
 [M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
 
+### M7-G：canonical read-only fan-out 准入
+
+M7-G 从 M7-F 结论 `ccb83e0b` 开始。只读调用图证明现有 `AgentRuntime` 已经把同一模型
+response 中的多个 `agent` calls 全部 prepared/started 并启动后才进入 `join_children`；
+`Orchestrator` 继续只构造同一个 Runtime，RunStore 继续保存唯一 child lifecycle、
+handoff 和 accounting。没有第二 scheduler、模型循环、工具目录、RunStore、通用 DAG 或
+Writer 并发可删除或接管。
+
+三类临时 Git 仓库任务分别冻结多规格 capability intersection、transitive dependency
+impact 和分层 policy resolution。每项都有 deterministic verifier、唯一允许修改文件和
+两个相互独立的只读分区。manifest 固定同 revision/binary、逐字相同 prompt、
+`deepseek-v4-flash`、`reasoning_effort=high`、相同 request/output/turn/tool/wall budgets、
+每 cell 三次、9 对 / 18 arms 与 `maximum_reruns=0`。control 不 advertised `agent`；
+treatment 只通过现有 canonical `agent` 目录显式要求同回合两个 read-only Explorer。
+
+离线 production loopback 已证明两个 child 的 transport 真实重叠、typed handoff/accounting
+闭合且 SQLite reopen 精确。进程级 SIGKILL 同时暴露一个独立 correctness bug：durable
+`ChildStarted` 后 Runtime 选择的 typed `RecoveryRequired` terminal 会被 RunStore 当作未
+settled lifecycle 拒绝。`13b94210` 只允许指向确切 in-flight agent/unfinished child 的
+recovery ambiguity 落盘，普通 failure 仍 fail closed；重开不重发模型请求、不重启 child。
+同批 partial failure 保留 sibling handoff，cancel settle 全部 pending child。
+
+正式候选 `062623e6` 与 release SHA-256
+`432a6d6a18906826f16b9949ee7223bb1d365a2319cb0d5884b0a7280c76e911`
+通过 focused、fmt、workspace clippy/test、production loopback、process crash/reopen、
+Harness self-test 和 no-key/no-network dry-run 后才读取 Key。首个 control arm 已发生网络
+请求，但旧 Harness 用提交前 verifier plan（空 env、120000ms）比较 `RunCreated` 中由
+`crates/tools` resolver 冻结的 plan（`PYTHONDONTWRITEBYTECODE=1`、600000ms），以
+`run_identity_invalid` 停止。raw 记录 `completed_arms=0`、`key_accessed=true`、
+`network_accessed=true`，但没有保存已读取的 accounting；最终 usage/cost 不可证明。
+
+按预注册规则立即停止且不重跑。`8763722c` 只离线修复 canonical plan 预期，并让未来任何
+post-terminal identity abort 先保存 terminal/accounting/State；它不换号续跑本 formal。
+产品决策为 **hold / inadmissible_observer_identity_bug**：保留 explicit child 机制、
+overlap/reopen regression 与 store correctness 修复；不宣布 fan-out 收益，不新增自动
+admission 或默认并发。完整身份、raw hash、官方资料和非结论见
+[M7-G canonical read-only fan-out 审计结论](../../eval/summaries/m7-g-readonly-fanout-2026-07-23.md)。
+
+任何 successor 必须使用新的 suite ID、clean revision、output 和 immutable binary，从
+position 1 开始；先 fault-inject 所有 post-terminal observer failure 并证明 accounting/
+费用先落盘。无法排除再次 unknown billing 时不读 Key，转向独立的 Agent 请求/Token 预算
+瓶颈。
+
 ### 调优
 
 - `apply_patch/search-replace/FIM` A/B；
 - thinking、上下文预算和压缩策略；
 - stable prefix/cache；
-- 并行只读工具；
+- 并行只读工具（M7-G product metric 不准入，explicit-only）；
 - Agent 数量和预算；
 - 开发中文原生 Agent 提示词组合，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
   以当前生产提示和归档基线做同任务 A/B，候选按版本评测并可回滚；
