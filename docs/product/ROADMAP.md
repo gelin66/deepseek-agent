@@ -26,6 +26,12 @@
   结论继续 `hold`。M7-B 已完成 canonical Strict 目录判定与 typed 工具失败恢复；六个默认
   可执行 actor 在 Strict 候选下仍全部原子回退 Standard，因此 live A/B 判定
   `inadmissible_no_surface_delta`，未读取 Key、未调用官方 API，用户 Strict 开关已删除。
+  M7-C 已冻结 12 项 canonical 编辑任务并定位 Host correctness 瓶颈：起始 tools contract
+  3/12，通过 `crates/tools` 单 owner 修复 stale/ambiguous/no-op/重复目标/rollback/mode 后
+  12/12；真实 production loopback、Writer、SIGKILL/reopen 与全 workspace 门禁通过。
+  当前没有 canonical FIM caller 或同 binary treatment surface，因此 FIM live A/B 同样在
+  credential/API 前判定 `inadmissible_no_surface_delta`；Key 未读取，FIM production 接入
+  继续 `hold`。CLI direct apply 与 TUI-local eval/edit 绕行已物理删除。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -1763,9 +1769,37 @@ decision 布尔值和零调用 wrapper，并增加 SQLite reopen 重建证明，
 candidate、manifest、raw 或 wire 行为。完整身份和非结论见
 [M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
 
-下一独立产品切片进入 `apply_patch/edit_file/FIM` 编辑能力审计与准入。它必须先测量真实
-编辑失败，再决定是否建立最小 canonical FIM 调用方；不得恢复已经删除的 `FimEditTool`，
-也不得把 FIM 混入 Strict、Provider 清理、多 Writer或产品化。
+### M7-C：canonical 编辑基线与 FIM 准入
+
+M7-C 从 `afb9b0ab` 开始，以 `c4972130` 冻结 12 项任务、完整失败矩阵与
+`maximum_reruns=0` Harness。只读调用图和历史样本把优先问题定位为 Host correctness，而
+不是已经可归因的模型 patch 生成瓶颈：原 `edit_file` 的 len+mtime freshness 可漏掉
+same-length/same-mtime 改写与重叠搜索；`apply_patch` 会接受 duplicate target、rename、
+hunk count mismatch、no-op，并在重复块上取第一个 fuzzy 候选；原子替换还会丢 mode，
+multi-file 普通失败会吞 rollback error。
+
+`7613073c` 在 `crates/tools` 唯一 owner 内完成 exact-byte digest、publish CAS、重叠唯一性、
+permissions 保留、全量 preflight、ambiguous fuzzy fail-closed 与可观察 rollback；root、
+read-only child、Writer 继续使用同一个 Runtime/Store/ToolOutcome。起始 12 项 tools contract
+为 3/12，候选为 12/12；这是确定性 correctness 证据，不冒充模型成功率 A/B。clean
+`9cba8b53` 的 Harness 8/8 gates、production loopback、Writer integrate/cleanup、三段工具
+crash window、app-server SIGKILL/replay、focused、fmt、workspace clippy/test 全部通过。
+
+cutover 已物理删除 CLI `codewhale apply` 的直接 `git apply`、TUI-local `codewhale eval`
+简化编辑器及剩余 acceptance/说明。固定 11 个 production 工具不增加同义入口；当前 actor
+catalog hash 随收紧后的 schema 重冻，历史 M7-B manifest 不改写。
+
+FIM 复核确认它是独立 Beta `/completions` surface；当前仓库只有 request planner/accounting
+基础，没有 production transport/parser、revision-bound Host apply lifecycle 或 canonical
+caller，因此不存在同 binary treatment delta。正式 live A/B 在 Key/API 前判定
+`inadmissible_no_surface_delta`：0 arms、0 requests、credential read false。产品决策是
+**keep canonical tool fixes，hold FIM**；不为制造实验恢复 `FimEditTool` 或增加第二模型循环。
+完整证据见
+[M7-C canonical 编辑能力基线与 FIM 准入结论](../../eval/summaries/m7-c-edit-baseline-2026-07-23.md)。
+
+下一编辑切片先收集新的 production failure 样本。只有 patch 生成/恢复确为主要损失且能
+冻结完整 Host-owned treatment 时，才建立 FIM parser/accounting/apply/replay 垂直路径；
+若剩余瓶颈是多文件 crash 歧义，则优先补 operation-specific durable transaction facts。
 
 ### 调优
 

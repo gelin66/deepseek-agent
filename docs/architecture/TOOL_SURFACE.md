@@ -19,8 +19,8 @@
 
 | 工具 | 当前职责 |
 |---|---|
-| `apply_patch` | 用 unified diff 或完整文件内容原子修改一个或多个工作区文件。 |
-| `edit_file` | 对已读取的单个文件执行一次精确搜索替换。 |
+| `apply_patch` | 全量预检 unified diff 或完整内容后修改工作区文件；单文件原子发布，多文件普通失败回滚。 |
+| `edit_file` | 对已读取且 byte-digest 仍 fresh 的单个文件执行一次唯一搜索替换。 |
 | `exec_shell` | 在工作区同步执行一条有界命令，返回退出状态和输出。 |
 | `file_search` | 按文件名或路径片段模糊查找工作区文件。 |
 | `git_diff` | 读取未提交或已暂存的 Git 差异。 |
@@ -65,7 +65,9 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
   production Strict treatment surface，也没有用户 Strict 开关。
 - fallback 必须保留工具数量、名称、顺序和完整 schema；不得通过删除 required/oneOf、
   nullable/sentinel 转换、第二份 wire catalog 或工具裁剪进入 Beta。
-- Beta FIM 是独立的 Completions surface，不是工具目录成员。
+- Beta FIM 是独立的 Completions surface，不是工具目录成员。当前只有 DeepSeek request
+  planner/accounting 基础，没有 production response parser、Host apply lifecycle 或
+  canonical caller，因此没有 FIM 编辑工具或产品模式。
 - 工具目录和稳定提示词前缀会影响 DeepSeek context cache，因此不增加无收益别名或
   每轮漂移的描述。
 
@@ -84,6 +86,12 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 - 失败反馈由 canonical outcome 确定性生成：中文摘要说明失败与恢复动作，英文 code/字段
   保持稳定；成功结果不改写。Runtime 不自动重复可能有副作用的调用，恢复也不重复已经
   执行的工具或已提交的 outcome。
+- `edit_file` 的 prior read 绑定 exact-byte SHA-256，并在原子 publish 前以原字节再次 CAS；
+  overlapping search、stale、not found 与 no-op 均 fail closed，成功替换保留 permissions。
+- `apply_patch` 在写盘前拒绝 duplicate/resolved duplicate target、rename、hunk count
+  mismatch、no-op 和 ambiguous fuzzy placement。multi-file 普通失败按已应用记录恢复原字节，
+  rollback 不完整显式失败；它不声称提供跨文件 crash-atomic transaction。
+- 顶层 direct `git apply` 和 TUI-local eval/edit loop 已删除，不能绕过 production executor。
 - `run_verifiers` 是当前确定性验证入口。模型自评不是确定性证据，也不能单独令 Host
   接受完成。
 
@@ -100,6 +108,7 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 
 ```bash
 cargo test -p codewhale-tools --locked catalog_is_exact_chinese_and_description_free
+cargo test -p codewhale-tools --locked m7c_
 cargo test -p codewhale-deepseek --locked strict_catalog_falls_back_atomically_without_losing_tools
 cargo test -p codewhale-state --test run_store --locked sqlite_replay_matches_memory_and_survives_reopen
 ```

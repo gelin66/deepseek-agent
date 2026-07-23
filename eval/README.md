@@ -145,9 +145,16 @@ reasoning-only、工具业务失败恢复、child 失败 handoff、失败测试�
 离线用例只证明确定性协议和运行时行为，不证明真实 DeepSeek 的编码智能；模型自评也不能
 作为任务完成证据。
 
-现有 `codewhale eval` / `crates/tui/src/eval.rs` 会直接调用一套重复实现的简化文件与
-Shell 函数，绕过生产 Agent loop 和生产工具注册表，因此它只算 smoke，不纳入 M1
-生产能力结论。
+旧 `codewhale eval` / `crates/tui/src/eval.rs` 因直接调用重复的简化文件与 Shell 函数、
+绕过 production Agent loop 和工具目录，已在 M7-C 物理删除；其剩余 Cucumber acceptance
+与说明也已删除，不保留 smoke 兼容入口。
+
+M7-C 的冻结入口是 [`eval-m7c-edit.py`](../scripts/eval-m7c-edit.py)，manifest 为
+[`m7-c-edit-baseline-v1.json`](manifests/m7-c-edit-baseline-v1.json)。Harness 只运行真实
+`crates/tools`、`AgentApplication` loopback、Runtime/Writer conformance 与进程级
+crash/reopen gates，不复制编辑器或失败分类。完整结果与 FIM
+`inadmissible_no_surface_delta / hold` 决策见
+[M7-C canonical 编辑能力基线与 FIM 准入结论](summaries/m7-c-edit-baseline-2026-07-23.md)。
 
 ## 运行
 

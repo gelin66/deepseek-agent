@@ -834,6 +834,42 @@ typed 失败恢复、exact replay 与 actor/crash conformance；不准入项是�
 证明；它不修改 frozen candidate、manifest、raw 或 wire 行为。完整冻结身份、哈希与非结论见
 [M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
 
+### 9.9 M7-C canonical 编辑基线与 FIM 准入结论（2026-07-23）
+
+M7-C 先冻结 `eval/manifests/m7-c-edit-baseline-v1.json`，没有预设 FIM 优于 patch/edit。
+manifest 包含 12 个任务目标、完整编辑失败矩阵、真实临时 Git workspace、deterministic
+verifier、root/read-only child/explicit Writer lanes、`maximum_reruns=0` 与 credential
+准入条件。Harness 只执行 canonical Rust gates 并投影 process verdict，不复制 patch parser、
+编辑器或失败分类。
+
+起始 `afb9b0ab` 的 12 项 tools contract assertion 为 3/12。9 个确定性失败分别是：
+same-length/same-mtime stale 未检出、重叠 search 误判唯一、原子替换丢 mode、duplicate
+target、未实现 rename、hunk count mismatch、no-op、ambiguous fuzzy first-match 和
+multi-file 失败未完整回滚。`7613073c` 在 `crates/tools` 单 owner 内修复后为 12/12；没有
+新增模型可见工具、Runtime、Store、Provider 或用户模式。
+
+clean `9cba8b53` Harness 以 manifest SHA-256
+`4d5457db2e7fc075fbecf925f89d45ea412a9aace515da1b4cfb0b3a03755c55` 运行 8/8 gates，
+覆盖 production AgentApplication loopback、latest-revision verifier recovery、SQLite reopen、
+read-only child、isolated Writer integrate/cleanup、ToolPrepared/Started/Outcome 三侧 SIGKILL
+与 app-server process replay。source before/after revision 与 tree 完全相同，dirty false，
+official API requests 0，credential read false。focused、fmt、workspace clippy/test 与 Harness
+self-test 也全部通过。
+
+历史 30 个 JSONL 文件中的 157 个 run manifest、158 次 patch call、1 次记录的 patch
+failure、138 次 verified success 和 4 次 false success 跨 revision/schema，只作方向性证据。
+因此 3/12 -> 12/12 只支持 Host correctness keep，不支持真实模型 verified success、Token、
+时间或费用收益 claim。
+
+FIM 是独立 Beta Completions surface。当前 `crates/deepseek` 只有 FIM request planner 和
+accounting 基础，production 没有完整 response parser、revision-bound Host edit lifecycle
+或 canonical caller；同一 immutable binary 没有 control/treatment surface delta。因此
+live A/B 在读取 Key 或请求 API 前给出 `inadmissible_no_surface_delta`：0 arms、maximum
+reruns 0、product metric ineligible。决策为：保留 canonical editor correctness；FIM
+production 接入 `hold`；删除 direct `git apply` CLI、TUI-local eval/edit loop 与剩余旧
+acceptance；不创建半条 FIM 分支或第二编辑工具。完整证据与官方资料复核见
+[M7-C canonical 编辑能力基线与 FIM 准入结论](../../eval/summaries/m7-c-edit-baseline-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

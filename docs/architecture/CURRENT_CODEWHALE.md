@@ -22,6 +22,8 @@
 - M7-B final production candidate：`e6b4b64d`
 - M7-B final admission Harness checkpoint：`7e7eaadf`
 - M7-B post-decision shrink / SQLite reopen proof：`4e3536f1`
+- M7-C canonical tools correctness checkpoint：`7613073c`
+- M7-C non-canonical edit cutover / final Harness checkpoint：`9cba8b53`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -34,7 +36,10 @@
   accounting 与 replay-safe retry；完整离线门禁通过，但旧 control/treatment 无法建立保持
   原 production delta 的公平 shared fix，因此没有读取 Key 或执行 live 复评，M7-A 继续
   `hold`。M7-B 已完成 Strict 整目录判定和 typed 工具失败恢复；六个默认可执行 actor 均无
-  Strict treatment surface，正式 live A/B 在 credential/API 前判定不准入
+  Strict treatment surface，正式 live A/B 在 credential/API 前判定不准入。M7-C 已完成
+  canonical 编辑基线和 Host correctness 修复；tools contract 从 3/12 到 12/12，CLI direct
+  apply 与 TUI-local eval/edit 绕行已删除。production 没有 canonical FIM caller，FIM live
+  A/B 同样在 credential/API 前判定无 surface delta，Key 未读取
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -305,9 +310,11 @@ EvidenceReceipt 可以满足 root TaskContract。
 Beta Strict Chat。M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍原子回退
 Standard Chat；当前生产没有真实 Strict surface，也没有用户 Strict 开关。fallback 保留
 完整工具数量、名称、顺序与 schema，不通过第二份 wire schema 或语义弱化进入 Beta。
-FIM 仍是独立 Beta Completions request-planning surface；当前没有
-canonical production FIM 编辑调用方或完整 response parser，因此不能宣称事务性 FIM
-编辑已经可用。Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache API。
+FIM 仍是独立 Beta Completions request-planning surface；M7-C 复核后当前仍没有
+canonical production FIM 编辑调用方、完整 response parser 或 revision-bound Host apply
+lifecycle，因此不能宣称事务性 FIM 编辑已经可用。现有 Chat transport/parser 也不能把
+`choices[].message` 当作 Completions 的 `choices[].text`。Context cache 由官方 Chat 的
+稳定前缀自动触发，不存在手工 cache API。
 
 ### Tools
 
@@ -331,7 +338,14 @@ retry、side effect、evidence、artifact 和 workspace revision。失败 outcom
 `failure_code`；模型看到唯一中文摘要和恢复建议，英文 code/字段保持稳定，成功结果不改写。
 Runtime 只按当次实际 advertised catalog 接受工具调用，crash/reopen 不重放已执行工具或
 已提交 outcome。root、read-only child 和 isolated Writer 使用同一失败恢复 conformance。
-旧 TUI child `ToolRegistry` 已
+M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并在原子 publish 前
+再次 CAS；重叠 search 不再被误判唯一，替换保留文件 permissions。`apply_patch` 在任何
+写入前拒绝 duplicate/resolved duplicate target、rename、hunk count mismatch、no-op 与
+ambiguous fuzzy placement。multi-file 普通失败会按记录回滚原字节并显式报告 rollback
+不完整；它不声称提供跨文件 crash-atomic transaction。
+
+顶层 CLI 的 direct `git apply` 与 TUI-local `codewhale eval` 简化编辑器已经物理删除；
+入口只能通过 production composition 调用上述固定目录。旧 TUI child `ToolRegistry` 已
 删除。TUI 下仍编译的其他宽工具实现不代表 canonical production catalog 会自动扩大，
 其余无消费者模块按独立调用方切片继续清理。
 
@@ -1017,6 +1031,24 @@ Strict decision 布尔值与一个零调用包装函数，并补充 SQLite reope
 冻结 candidate、manifest 和 raw 未改。完整证据见
 [M7-B Strict 工具调用准入与失败恢复](../../eval/summaries/m7-b-strict-tool-admission-2026-07-22.md)。
 
+M7-C 在不改变 Run API v10、RuntimeEvent v16、State v21 或 exec-stream v2 的前提下，
+冻结并关闭了 canonical 编辑 Host 反例。`crates/tools` 仍是唯一 schema/handler owner；
+`edit_file` 使用 read-time byte digest 与 publish CAS，`apply_patch` 先完成全量 target/hunk/
+result preflight 再写入，单文件 publish 使用原子 replace 并保留 permissions，multi-file
+普通错误按精确记录回滚。所有拒绝仍进入唯一 typed `ToolOutcome`，而不是新的编辑状态机。
+
+冻结 tools contract 在起始 production 上 3/12、候选 12/12。clean `9cba8b53` 的 8 项
+Harness gates 覆盖 production loopback、latest revision verifier recovery、SQLite reopen、
+read-only child、isolated Writer 和三段工具/app-server SIGKILL；official API requests 0，
+credential read false。focused、fmt、workspace clippy/test 全部通过。
+
+FIM 调用图仍止于 `crates/deepseek` 的 request planner/accounting；没有 production
+Completions transport/parser、Host-owned edit apply 或 RunStore lifecycle，因而没有同
+binary treatment surface。M7-C 判定 `inadmissible_no_surface_delta / hold`，未读取 Key、
+未执行 live A/B。CLI direct apply、TUI-local eval/edit 与其旧 acceptance 已在 cutover
+物理删除。完整事实与官方协议复核见
+[M7-C canonical 编辑能力基线与 FIM 准入结论](../../eval/summaries/m7-c-edit-baseline-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1040,6 +1072,8 @@ Strict decision 布尔值与一个零调用包装函数，并补充 SQLite reope
   incomplete response 只执行 7/40 arms，T4 mate、T5 和 read-only child 均无本次 live 证据；
 - M7-B 已证明 Strict 提高或降低 verified success、参数正确率、Token、时间或费用；当前
   production actor 没有真实 Strict treatment surface，因此本阶段没有执行产品 A/B；
+- M7-C 已证明真实 DeepSeek 的编辑成功率、恢复率、Token、时间或费用改善，或 FIM 相对
+  patch/edit 更好或更差；3/12 -> 12/12 只覆盖冻结的 deterministic Host 反例；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
