@@ -2386,6 +2386,102 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn production_catalog_is_not_used_to_compact_a_terminal_no_tools_request() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let workspace = temp.path().canonicalize().expect("canonical workspace");
+        let tool_config = tool_config_for_run(
+            &ProductionToolConfig::new(&workspace).with_shell_policy(ShellPolicy::Full),
+            &workspace,
+            &RunProductControls::default(),
+        )
+        .expect("production tool config");
+        let store = Arc::new(InMemoryRunStore::default());
+        let runtime = Arc::new(AgentRuntime::new(
+            Arc::new(OneShotModel),
+            Arc::new(ProductionToolExecutor::new(tool_config)),
+            Arc::new(NullEventSink),
+            store.clone(),
+        ));
+        let run_id = RunId::from("m7h-production-terminal-catalog");
+        let mut request = test_run_request(
+            run_id.clone(),
+            "终局请求只应按实际广告目录决定 hard-limit compaction",
+            "production catalog boundary",
+        );
+        request.environment.workspace = stable_path(&workspace);
+        request.limits.max_turns = 1;
+        request.limits.max_model_requests = 1;
+        request.limits.max_depth = 4;
+
+        let catalog = runtime.tool_definitions(
+            &request.tool_policy,
+            request
+                .task_contract
+                .as_ref()
+                .map(|contract| &contract.definition),
+            ModelToolAuthority::RootWrite,
+            0,
+            request.limits.max_depth,
+            false,
+        );
+        let probe = InMemoryRunStore::default()
+            .create(request.clone())
+            .await
+            .expect("create context probe");
+        let context = |tools: &[ToolDefinition]| {
+            let snapshot = &probe.replay.snapshot;
+            effective_context(ContextInput {
+                transcript: &snapshot.transcript,
+                projection: snapshot.context_projection.as_ref(),
+                task_contract: snapshot.request.task_contract.as_ref(),
+                workspace_state: &snapshot.workspace_state,
+                evidence_receipts: &snapshot.evidence_receipts,
+                last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+                last_verifier_failure: snapshot
+                    .last_host_verification_failure
+                    .as_ref()
+                    .map(|failure| &failure.outcome),
+                last_verifier_failure_workspace: snapshot
+                    .last_host_verification_failure
+                    .as_ref()
+                    .map(|failure| &failure.workspace_state),
+                tools,
+            })
+            .expect("deterministic context")
+            .estimated_tokens
+        };
+        let without_tools = context(&[]);
+        let with_tools = context(&catalog);
+        assert!(
+            with_tools > without_tools.saturating_add(512),
+            "the actual production catalog must create a measurable boundary"
+        );
+        request.context_policy = ContextPolicy {
+            hard_input_tokens: u32::try_from(without_tools + (with_tools - without_tools) / 2)
+                .expect("test context bound fits u32"),
+        };
+
+        let outcome = runtime.start(request).wait().await.expect("runtime joins");
+
+        assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+        assert_eq!(outcome.runtime_model_requests, 1);
+        let replay = store
+            .load(&run_id)
+            .await
+            .expect("load run")
+            .expect("run exists");
+        assert!(!replay.events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::ContextCompactionCommitted { .. }
+        )));
+        let prepared = prepared_request(&replay);
+        assert!(
+            prepared.tools.is_empty(),
+            "the only admitted request is the reserved terminal turn"
+        );
+    }
+
     #[test]
     fn actual_actor_catalogs_freeze_strict_fallback_without_touching_historical_manifests() {
         let temp = tempfile::tempdir().expect("temp workspace");
