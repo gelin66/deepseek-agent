@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v3",
-  "status": "frozen_offline_pending",
+  "status": "frozen_live_admitted",
   "date": "2026-07-24",
   "base_manifest": {
     "path": "eval/manifests/m8-d-prompt-ab-v2.json",
@@ -47,9 +47,9 @@
     "maximum_reruns": 0
   },
   "admission": {
-    "live_api_admitted": false,
-    "admitted_on": null,
-    "admission_evidence": "v2 product gates 与 immutable binary 保持有效；v3 Harness projection tests、frozen identity 和 process preflight 尚待完成。",
+    "live_api_admitted": true,
+    "admitted_on": "2026-07-24",
+    "admission_evidence": "v2 在同一 immutable 8371b6dd binary pair 上的完整 product gates 保持有效；v3 nested AgentTask/aggregate ModelAccounting 回归、frozen Harness identity、13 项 Harness tests、network-blocked process prompt-only preflight 和 diff gate 全部通过。",
     "credential_read_for_v3": false,
     "official_api_requests_for_v3": 0
   },
@@ -70,6 +70,6 @@
     "harness_sha256": "sha256:1a3ab6d71d13ed547b84eab2bbf4997af4ee617fe7c910ea32e258c7d71a54e9",
     "harness_test_sha256": "sha256:30e6d06593613cec0bd7d7f9c18e5a08fba54f9cb35b9f6614db47ef5e5bb2af",
     "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:00d23f92defcb73d930182e47e62f3b80871c4ae4522147883361bc4b7c75734"
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:a9882ac0aa2353685bba1737dcc088830c3b6bb394258a04a98ce3b16261075b"
   }
 }
