@@ -516,15 +516,10 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
             return None;
         }
     };
-    let primary = workspace.join(".codewhale").join(CONFIG_FILE_NAME);
-    let legacy = workspace.join(".deepseek").join(CONFIG_FILE_NAME);
-    let path = if primary.exists() {
-        primary
-    } else if legacy.exists() {
-        legacy
-    } else {
+    let path = workspace.join(".codewhale").join(CONFIG_FILE_NAME);
+    if !path.exists() {
         return None;
-    };
+    }
     let raw = match read_checked_config_file(&path) {
         Ok(raw) => raw,
         Err(error) => {
@@ -961,13 +956,13 @@ impl EnvRuntimeOverrides {
         Ok(Self {
             model,
             base_url,
-            output_mode: first_env(&["DEEPSEEK_OUTPUT_MODE"]),
-            log_level: first_env(&["DEEPSEEK_LOG_LEVEL"]),
-            telemetry: parse_optional_bool_env("DEEPSEEK_TELEMETRY")?,
-            approval_policy: first_env(&["DEEPSEEK_APPROVAL_POLICY"]),
-            sandbox_mode: first_env(&["DEEPSEEK_SANDBOX_MODE"]),
-            yolo: parse_optional_bool_env("DEEPSEEK_YOLO")?,
-            verbosity: first_env(&["CODEWHALE_VERBOSITY", "DEEPSEEK_VERBOSITY"]),
+            output_mode: first_env(&["CODEWHALE_OUTPUT_MODE"]),
+            log_level: first_env(&["CODEWHALE_LOG_LEVEL"]),
+            telemetry: parse_optional_bool_env("CODEWHALE_TELEMETRY")?,
+            approval_policy: first_env(&["CODEWHALE_APPROVAL_POLICY"]),
+            sandbox_mode: first_env(&["CODEWHALE_SANDBOX_MODE"]),
+            yolo: parse_optional_bool_env("CODEWHALE_YOLO")?,
+            verbosity: first_env(&["CODEWHALE_VERBOSITY"]),
         })
     }
 }

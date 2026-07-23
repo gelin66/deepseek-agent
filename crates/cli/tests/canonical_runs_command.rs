@@ -287,6 +287,7 @@ fn dispatcher_help_exposes_runs_and_removes_retired_top_level_commands() {
     assert!(!help_has_command(&help, "sessions"));
     assert!(!help_has_command(&help, "fork"));
     assert!(!help_has_command(&help, "update"));
+    assert!(!help_has_command(&help, "metrics"));
     assert!(!help.contains("Session id/prefix"));
     assert!(!help.contains("Windows note"));
 }
@@ -399,6 +400,8 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         vec!["update"],
         vec!["update", "--check"],
         vec!["update", "--proxy", "socks5://127.0.0.1:1080"],
+        vec!["metrics"],
+        vec!["metrics", "--json"],
         vec!["workflow"],
         vec!["workflow", "run", "stopship", "--fleet", "v0868-stopship"],
         vec!["workflow-tool"],

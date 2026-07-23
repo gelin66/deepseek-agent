@@ -567,7 +567,7 @@ impl Config {
 
     #[must_use]
     pub fn search_provider_resolution(&self) -> SearchProviderResolution {
-        if let Ok(raw) = std::env::var("DEEPSEEK_SEARCH_PROVIDER")
+        if let Ok(raw) = std::env::var("CODEWHALE_SEARCH_PROVIDER")
             && let Some(provider) = SearchProvider::parse(&raw)
         {
             return SearchProviderResolution {
@@ -711,74 +711,80 @@ fn merge_features(
 }
 
 fn apply_env_overrides(config: &mut Config) {
-    if let Some(base_url) = env_override("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
+    if let Some(base_url) = deepseek_env_override("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
         config.base_url = Some(base_url);
     }
-    if let Some(model) = env_override("CODEWHALE_MODEL", "DEEPSEEK_MODEL").or_else(|| {
+    if let Some(model) = deepseek_env_override("CODEWHALE_MODEL", "DEEPSEEK_MODEL").or_else(|| {
         std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
             .ok()
             .filter(|value| !value.trim().is_empty())
     }) {
         config.default_text_model = Some(model);
     }
-    if let Some(value) = env_override("CODEWHALE_SKILLS_DIR", "DEEPSEEK_SKILLS_DIR") {
+    if let Some(value) = codewhale_env("CODEWHALE_SKILLS_DIR") {
         config.skills_dir = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG") {
+    if let Some(value) = codewhale_env("CODEWHALE_MCP_CONFIG") {
         config.mcp_config_path = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_ALLOW_SHELL", "DEEPSEEK_ALLOW_SHELL") {
+    if let Some(value) = codewhale_env("CODEWHALE_ALLOW_SHELL") {
         config.allow_shell = Some(env_truthy(&value));
     }
-    if let Some(value) = env_override("CODEWHALE_APPROVAL_POLICY", "DEEPSEEK_APPROVAL_POLICY") {
+    if let Some(value) = codewhale_env("CODEWHALE_APPROVAL_POLICY") {
         config.approval_policy = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SANDBOX_MODE", "DEEPSEEK_SANDBOX_MODE") {
+    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_MODE") {
         config.sandbox_mode = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_YOLO", "DEEPSEEK_YOLO") {
+    if let Some(value) = codewhale_env("CODEWHALE_YOLO") {
         config.yolo = Some(env_truthy(&value));
     }
-    if let Some(value) = env_override("CODEWHALE_VERBOSITY", "DEEPSEEK_VERBOSITY") {
+    if let Some(value) = codewhale_env("CODEWHALE_VERBOSITY") {
         config.verbosity = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SANDBOX_BACKEND", "DEEPSEEK_SANDBOX_BACKEND") {
+    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_BACKEND") {
         config.sandbox_backend = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SANDBOX_URL", "DEEPSEEK_SANDBOX_URL") {
+    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_URL") {
         config.sandbox_url = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SANDBOX_API_KEY", "DEEPSEEK_SANDBOX_API_KEY") {
+    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SEARCH_API_KEY", "DEEPSEEK_SEARCH_API_KEY") {
+    if let Some(value) = codewhale_env("CODEWHALE_SEARCH_API_KEY") {
         config
             .search
             .get_or_insert_with(SearchConfig::default)
             .api_key = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_SEARCH_BASE_URL", "DEEPSEEK_SEARCH_BASE_URL") {
+    if let Some(value) = codewhale_env("CODEWHALE_SEARCH_BASE_URL") {
         config
             .search
             .get_or_insert_with(SearchConfig::default)
             .base_url = Some(value);
     }
-    if let Some(value) = env_override("CODEWHALE_MAX_SUBAGENTS", "DEEPSEEK_MAX_SUBAGENTS")
+    if let Some(value) = codewhale_env("CODEWHALE_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
     {
         config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
     }
 }
 
-fn env_override(codewhale_name: &str, legacy_name: &str) -> Option<String> {
+fn deepseek_env_override(codewhale_name: &str, deepseek_name: &str) -> Option<String> {
     std::env::var(codewhale_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            std::env::var(legacy_name)
+            std::env::var(deepseek_name)
                 .ok()
                 .filter(|value| !value.trim().is_empty())
         })
+}
+
+fn codewhale_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn env_truthy(value: &str) -> bool {
@@ -815,10 +821,7 @@ pub(crate) fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
         return vec![home.join("config.toml")];
     }
     effective_home_dir().map_or_else(Vec::new, |home| {
-        vec![
-            home.join(".codewhale").join("config.toml"),
-            home.join(".deepseek").join("config.toml"),
-        ]
+        vec![home.join(".codewhale").join("config.toml")]
     })
 }
 

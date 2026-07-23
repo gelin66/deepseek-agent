@@ -19,15 +19,12 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Default OS keychain service name. Kept as `deepseek` for compatibility
-/// with credentials saved before the CodeWhale rename. macOS users can verify
-/// entries with `security find-generic-password -s deepseek -a <provider>`.
-pub const DEFAULT_SERVICE: &str = "deepseek";
+/// Default OS keychain service name. macOS users can verify entries with
+/// `security find-generic-password -s codewhale -a deepseek`.
+pub const DEFAULT_SERVICE: &str = "codewhale";
 /// Select the secret storage backend. Supported values are `file` (default)
 /// and `system`/`keyring` for the OS credential store.
 pub const SECRET_BACKEND_ENV: &str = "CODEWHALE_SECRET_BACKEND";
-/// Legacy alias for [`SECRET_BACKEND_ENV`].
-pub const LEGACY_SECRET_BACKEND_ENV: &str = "DEEPSEEK_SECRET_BACKEND";
 const FILE_BACKEND_LABEL: &str = "file-based (~/.codewhale/secrets/)";
 
 /// Errors that may arise from a [`KeyringStore`] backend.
@@ -373,48 +370,9 @@ impl FileKeyringStore {
 
     /// Default path: `<home>/.codewhale/secrets/secrets.json`. Honours
     /// `CODEWHALE_HOME`, then `HOME`, `USERPROFILE`, and finally the platform
-    /// home directory from the `dirs` crate. On first use, non-conflicting
-    /// entries from the legacy `<home>/.deepseek/secrets/secrets.json` file are
-    /// copied into the CodeWhale store.
+    /// home directory from the `dirs` crate.
     pub fn default_path() -> Result<PathBuf, SecretsError> {
-        let primary = default_codewhale_secrets_path()?;
-        let legacy = legacy_deepseek_secrets_path()?;
-        if let Err(err) = Self::migrate_legacy_file_if_needed(&primary, &legacy) {
-            tracing::warn!(
-                "could not migrate legacy secret store from {} to {}: {err}",
-                legacy.display(),
-                primary.display()
-            );
-        }
-        Ok(primary)
-    }
-
-    fn migrate_legacy_file_if_needed(primary: &Path, legacy: &Path) -> Result<(), SecretsError> {
-        if !legacy.exists() {
-            return Ok(());
-        }
-
-        let legacy_store = Self::new(legacy.to_path_buf());
-        let legacy_blob = legacy_store.load_unlocked()?;
-        if legacy_blob.entries.is_empty() {
-            return Ok(());
-        }
-
-        let primary_store = Self::new(primary.to_path_buf());
-        let mut primary_blob = primary_store.load_unlocked()?;
-        let mut changed = false;
-        for (key, value) in legacy_blob.entries {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                primary_blob.entries.entry(key)
-            {
-                entry.insert(value);
-                changed = true;
-            }
-        }
-        if changed {
-            primary_store.store_unlocked(&primary_blob)?;
-        }
-        Ok(())
+        default_codewhale_secrets_path()
     }
 
     fn home_dir() -> Result<PathBuf, SecretsError> {
@@ -572,13 +530,6 @@ fn default_codewhale_secrets_path() -> Result<PathBuf, SecretsError> {
         .join("secrets.json"))
 }
 
-fn legacy_deepseek_secrets_path() -> Result<PathBuf, SecretsError> {
-    Ok(FileKeyringStore::home_dir()?
-        .join(".deepseek")
-        .join("secrets")
-        .join("secrets.json"))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SecretBackendSelection {
     File,
@@ -601,7 +552,6 @@ fn configured_secret_backend() -> Option<String> {
     std::env::var(SECRET_BACKEND_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var(LEGACY_SECRET_BACKEND_ENV).ok())
 }
 
 /// High-level facade combining a [`KeyringStore`] with environment variable fallbacks.
@@ -679,7 +629,7 @@ impl Secrets {
             SecretBackendSelection::File => Self::file_backed_default(),
             SecretBackendSelection::Unknown => {
                 tracing::warn!(
-                    "{SECRET_BACKEND_ENV}/{LEGACY_SECRET_BACKEND_ENV} has an unsupported value; using file-backed secret store"
+                    "{SECRET_BACKEND_ENV} has an unsupported value; using file-backed secret store"
                 );
                 Self::file_backed_default()
             }
@@ -940,7 +890,7 @@ mod tests {
             "MODEL_API_KEY",
             "XAI_API_KEY",
             SECRET_BACKEND_ENV,
-            LEGACY_SECRET_BACKEND_ENV,
+            "DEEPSEEK_SECRET_BACKEND",
         ] {
             // Safety: tests serialise on env_lock(); the broader
             // workspace has the same pattern in `crates/config`.
@@ -1030,13 +980,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_honors_legacy_backend_env_alias() {
+    fn auto_detect_ignores_retired_backend_env_alias() {
         let _lock = env_lock();
         clear_known_envs();
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
-        unsafe { std::env::set_var(LEGACY_SECRET_BACKEND_ENV, "local") };
+        unsafe { std::env::set_var("DEEPSEEK_SECRET_BACKEND", "system") };
 
         let secrets = Secrets::auto_detect();
 
@@ -1079,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn file_default_path_migrates_legacy_entries_to_codewhale() {
+    fn file_default_path_ignores_legacy_entries_without_mutation() {
         let _lock = env_lock();
         clear_known_envs();
         let tmp = tempfile::tempdir().unwrap();
@@ -1091,7 +1041,7 @@ mod tests {
             .join("secrets")
             .join("secrets.json");
         FileKeyringStore::new(legacy.clone())
-            .set("xiaomi-mimo", "legacy-mimo")
+            .set("deepseek", "legacy-secret")
             .unwrap();
 
         let primary = FileKeyringStore::default_path().unwrap();
@@ -1105,46 +1055,17 @@ mod tests {
                 .join("secrets.json")
         );
         assert_eq!(
-            primary_store.get("xiaomi-mimo").unwrap().as_deref(),
-            Some("legacy-mimo")
+            primary_store.get("deepseek").unwrap(),
+            None,
+            "V1 must not import secrets from the retired product root"
         );
-        assert!(
-            legacy.exists(),
-            "migration copies; it does not delete legacy data"
-        );
-    }
-
-    #[test]
-    fn file_default_path_migration_preserves_primary_values() {
-        let _lock = env_lock();
-        clear_known_envs();
-        let tmp = tempfile::tempdir().unwrap();
-        let _home = EnvVarGuard::set("HOME", tmp.path());
-        let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
-        let legacy = tmp
-            .path()
-            .join(".deepseek")
-            .join("secrets")
-            .join("secrets.json");
-        let primary = tmp
-            .path()
-            .join(".codewhale")
-            .join("secrets")
-            .join("secrets.json");
-        FileKeyringStore::new(legacy)
-            .set("openrouter", "legacy-openrouter")
-            .unwrap();
-        let primary_store = FileKeyringStore::new(primary.clone());
-        primary_store
-            .set("openrouter", "primary-openrouter")
-            .unwrap();
-
-        let resolved = FileKeyringStore::default_path().unwrap();
-
-        assert_eq!(resolved, primary);
         assert_eq!(
-            primary_store.get("openrouter").unwrap().as_deref(),
-            Some("primary-openrouter")
+            FileKeyringStore::new(&legacy)
+                .get("deepseek")
+                .unwrap()
+                .as_deref(),
+            Some("legacy-secret"),
+            "retired state remains untouched"
         );
     }
 

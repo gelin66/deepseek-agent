@@ -1,7 +1,5 @@
 #![allow(clippy::uninlined_format_args)]
 
-mod metrics;
-
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -197,18 +195,6 @@ The command prints the completion script to stdout; redirect it to a path your s
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Print a usage rollup from the audit log and session store.
-    Metrics(MetricsArgs),
-}
-
-#[derive(Debug, Args)]
-struct MetricsArgs {
-    /// Emit machine-readable JSON.
-    #[arg(long)]
-    json: bool,
-    /// Restrict to events newer than this duration (e.g. 7d, 24h, 30m, now-2h).
-    #[arg(long, value_name = "DURATION")]
-    since: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -809,6 +795,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("update") => bail!(
                 "命令 `codewhale update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
             ),
+            Some("metrics") => bail!(
+                "命令 `codewhale metrics` 已删除；旧日志/会话扫描不是 canonical RunStore 指标来源"
+            ),
             Some("workflow") => bail!(
                 "命令 `codewhale workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 由唯一 Orchestrator 管理"
             ),
@@ -929,7 +918,6 @@ fn run() -> Result<()> {
         Some(Commands::Completion { .. }) => {
             unreachable!("completion command dispatched before ConfigStore")
         }
-        Some(Commands::Metrics(args)) => run_metrics_command(args),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             let forwarded = root_tui_passthrough(&cli)?;
@@ -1682,26 +1670,26 @@ fn build_tui_command_with_paths(
         cmd.env("DEEPSEEK_MODEL", model);
     }
     if let Some(output_mode) = cli.output_mode.as_ref() {
-        cmd.env("DEEPSEEK_OUTPUT_MODE", output_mode);
+        cmd.env("CODEWHALE_OUTPUT_MODE", output_mode);
     }
     if let Some(v) = verbosity.as_ref() {
         cmd.env("CODEWHALE_VERBOSITY", v);
-        cmd.env("DEEPSEEK_VERBOSITY", v);
+        cmd.env("CODEWHALE_VERBOSITY", v);
     }
     if let Some(log_level) = cli.log_level.as_ref() {
-        cmd.env("DEEPSEEK_LOG_LEVEL", log_level);
+        cmd.env("CODEWHALE_LOG_LEVEL", log_level);
     }
     if let Some(telemetry) = cli.telemetry {
-        cmd.env("DEEPSEEK_TELEMETRY", telemetry.to_string());
+        cmd.env("CODEWHALE_TELEMETRY", telemetry.to_string());
     }
     if let Some(policy) = cli.approval_policy.as_ref() {
-        cmd.env("DEEPSEEK_APPROVAL_POLICY", policy);
+        cmd.env("CODEWHALE_APPROVAL_POLICY", policy);
     }
     if let Some(mode) = cli.sandbox_mode.as_ref() {
-        cmd.env("DEEPSEEK_SANDBOX_MODE", mode);
+        cmd.env("CODEWHALE_SANDBOX_MODE", mode);
     }
     if cli.yolo {
-        cmd.env("DEEPSEEK_YOLO", "true");
+        cmd.env("CODEWHALE_YOLO", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
         // Carry the explicit DeepSeek secret through the source-marked slot so
@@ -1825,19 +1813,6 @@ fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn run_metrics_command(args: MetricsArgs) -> Result<()> {
-    let since = match args.since.as_deref() {
-        Some(s) => {
-            Some(metrics::parse_since(s).with_context(|| format!("invalid --since value: {s:?}"))?)
-        }
-        None => None,
-    };
-    metrics::run(metrics::MetricsArgs {
-        json: args.json,
-        since,
-    })
 }
 
 fn read_api_key_from_stdin() -> Result<String> {

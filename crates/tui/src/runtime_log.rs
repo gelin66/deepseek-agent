@@ -47,7 +47,7 @@ use anyhow::{Context, Result};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const DEFAULT_LOG_RETENTION_DAYS: u64 = 7;
-const LOG_RETENTION_ENV: &str = "DEEPSEEK_LOG_RETENTION_DAYS";
+const LOG_RETENTION_ENV: &str = "CODEWHALE_LOG_RETENTION_DAYS";
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Owns the active tracing subscriber and (on Unix/Windows) a saved copy of
@@ -193,27 +193,11 @@ pub fn init() -> Result<TuiLogGuard> {
 }
 
 pub(crate) fn log_directory() -> Option<PathBuf> {
-    // $CODEWHALE_HOME is a hard override of the base data directory
-    // (docs/reference/CONFIGURATION.md): when SET, logs live under it and we do NOT fall
-    // back to the legacy ~/.deepseek path — silent fallback would defeat the
-    // isolation the override promises (CI, containers, test harnesses). We
-    // check the env var directly rather than codewhale_home()'s Ok/Err because
-    // that helper succeeds (returns $HOME/.codewhale) even when the override is
-    // unset, which would short-circuit the legacy fallback below.
+    // $CODEWHALE_HOME is a hard override of the base data directory.
     if let Some(home) = std::env::var_os("CODEWHALE_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(home).join("logs"));
     }
-    let resolve = |base: PathBuf| -> Option<PathBuf> {
-        let primary = base.join(".codewhale").join("logs");
-        if primary.exists() {
-            return Some(primary);
-        }
-        let legacy = base.join(".deepseek").join("logs");
-        if legacy.exists() {
-            return Some(legacy);
-        }
-        Some(primary)
-    };
+    let resolve = |base: PathBuf| Some(base.join(".codewhale").join("logs"));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && !home.as_os_str().is_empty()
     {
@@ -389,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn log_directory_uses_existing_legacy_deepseek_logs() {
+    fn log_directory_ignores_existing_legacy_logs() {
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let legacy = tmp.path().join(".deepseek").join("logs");
@@ -403,7 +387,8 @@ mod tests {
         }
 
         let resolved = log_directory().expect("log_directory should resolve");
-        assert_eq!(resolved, legacy);
+        assert_eq!(resolved, tmp.path().join(".codewhale").join("logs"));
+        assert!(legacy.exists(), "retired log directory remains untouched");
 
         // SAFETY: cleanup under the same lock.
         unsafe {
@@ -488,8 +473,7 @@ mod tests {
         unsafe {
             std::env::set_var("CODEWHALE_HOME", tmp.path());
         }
-        // $CODEWHALE_HOME IS the home dir (no ".codewhale" appended), and the
-        // legacy ~/.deepseek fallback is bypassed entirely.
+        // $CODEWHALE_HOME IS the home dir (no ".codewhale" appended).
         let resolved = log_directory().expect("log_directory should resolve");
         assert_eq!(resolved, tmp.path().join("logs"));
         // SAFETY: cleanup under the same lock.

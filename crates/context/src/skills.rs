@@ -585,7 +585,6 @@ fn normalize_skill_name_for_lookup(name: &str) -> String {
 /// 7. [`agents_global_skills_dir`] — agentskills.io global.
 /// 8. `~/.claude/skills` — Claude-ecosystem global (#902).
 /// 9. `~/.codewhale/skills` — CodeWhale global, primary install target.
-/// 10. `~/.deepseek/skills` — legacy DeepSeek global fallback.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -620,7 +619,6 @@ fn skills_directories_with_home_and_mode(
                 candidates.push(home.join(".agents").join("skills"));
                 candidates.push(home.join(".claude").join("skills"));
                 candidates.push(home.join(".codewhale").join("skills"));
-                candidates.push(home.join(".deepseek").join("skills"));
             }
             SkillDiscoveryMode::CodeWhaleOnly => {
                 candidates.push(home.join(".codewhale").join("skills"));

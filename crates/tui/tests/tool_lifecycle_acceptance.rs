@@ -433,10 +433,6 @@ fn run_codewhale_exec(
             "CODEWHALE_CONFIG_PATH",
             home.join(".codewhale").join("config.toml"),
         )
-        .env(
-            "DEEPSEEK_CONFIG_PATH",
-            home.join(".deepseek").join("config.toml"),
-        )
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
         .env("DEEPSEEK_BASE_URL", server.uri())
         .env("CODEWHALE_BASE_URL", server.uri())
@@ -447,8 +443,6 @@ fn run_codewhale_exec(
         .stderr(Stdio::piped());
 
     std::fs::create_dir_all(home.join(".codewhale")).expect("create codewhale home config dir");
-    std::fs::create_dir_all(home.join(".deepseek")).expect("create deepseek home config dir");
-
     run_with_timeout(command, Duration::from_secs(45))
 }
 

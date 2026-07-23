@@ -821,7 +821,6 @@ dependencies = [
  "codewhale-runtime",
  "codewhale-secrets",
  "codewhale-state",
- "dirs",
  "libc",
  "mimalloc",
  "rustls",

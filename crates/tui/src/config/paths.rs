@@ -60,17 +60,7 @@ pub(crate) fn home_config_path() -> Option<PathBuf> {
         return Some(home.join("config.toml"));
     }
 
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("config.toml");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("config.toml");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codewhale").join("config.toml"))
 }
 
 pub(crate) fn workspace_config_key(workspace: &Path) -> String {
@@ -85,12 +75,6 @@ pub(crate) fn canonicalize_or_keep(path: &Path) -> PathBuf {
 
 pub(crate) fn env_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("CODEWHALE_CONFIG_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(expand_path(trimmed));
-        }
-    }
-    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Some(expand_path(trimmed));
@@ -127,15 +111,5 @@ pub(crate) fn default_skills_dir() -> Option<PathBuf> {
 }
 
 pub(crate) fn default_mcp_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("mcp.json");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("mcp.json");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codewhale").join("mcp.json"))
 }

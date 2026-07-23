@@ -71,7 +71,7 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
         .clear_env()
         .seal_home(isolated.home())
         .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
-        .env("DEEPSEEK_CONFIG_PATH", config_path.to_string_lossy())
+        .env("CODEWHALE_CONFIG_PATH", config_path.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "must-not-be-used")
         .env("DEEPSEEK_BASE_URL", fixture.base_url())
         .env("NO_ANIMATIONS", "1")

@@ -59,7 +59,7 @@ fn app_new_uses_only_the_explicit_cost_currency_setting() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
     let settings_path = tmp.path().join("settings.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
 
     std::fs::write(&settings_path, "cost_currency = \"usd\"\n").expect("usd settings");
     let usd = App::new(test_options(false), &Config::default());
@@ -444,7 +444,7 @@ fn app_new_detects_missing_api_key_with_default_config() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
     let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
     let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
     let _api_key_envs: Vec<_> = [
@@ -484,7 +484,7 @@ fn app_new_with_explicit_api_key_does_not_trigger_onboarding() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
     let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
     let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
 
@@ -946,7 +946,7 @@ fn obsolete_default_mode_yolo_cannot_grant_authority() {
         "default_mode = \"yolo\"\n",
     )
     .expect("obsolete settings fixture");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+    let _config_env = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
     let mut options = test_options(false);
     options.config_path = Some(config_path);
 

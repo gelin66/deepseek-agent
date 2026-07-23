@@ -1028,7 +1028,7 @@ fn main() -> Result<()> {
     codewhale_tools::sandbox::process_hardening::apply_process_hardening();
 
     // Set up process panic hook before anything else — writes crash dumps
-    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
+    // to the canonical CodeWhale crash directory before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
     // shell stuck in alt-screen mode.
     let orig_hook = std::panic::take_hook();
@@ -1053,8 +1053,8 @@ fn main() -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
         // Write crash dump best-effort
-        if let Some(home) = dirs::home_dir() {
-            let crash_dir = home.join(".deepseek").join("crashes");
+        if let Ok(home) = codewhale_config::codewhale_home() {
+            let crash_dir = home.join("crashes");
             let _ = std::fs::create_dir_all(&crash_dir);
             use chrono::Utc;
             let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
@@ -1184,8 +1184,8 @@ async fn run_async_main() -> Result<()> {
                 let model = resolve_exec_model(&config, args.model.as_deref());
                 let prompt = join_prompt_parts(&args.prompt);
                 let run_launch = resolve_exec_run_launch(&args)?;
-                // The `deepseek` launcher forwards `--yolo` to this binary via
-                // the DEEPSEEK_YOLO env var (which the config loader folds into
+                // The CodeWhale dispatcher forwards `--yolo` to this binary via
+                // the CODEWHALE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let env_tool_surface = exec_tool_surface_from_env();
@@ -2186,37 +2186,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  workspace: {}", crate::utils::display_path(workspace));
     println!("  {}", doctor_search_provider_line(config));
 
-    // State root (v0.8.44)
+    // Canonical product state root
     println!();
     println!("{}", "State Root:".bold());
-    let (code_home, legacy_home) = doctor_state_roots();
-    let active_root = if code_home.exists() {
-        &code_home
-    } else if legacy_home.exists() {
-        &legacy_home
-    } else {
-        &code_home
-    };
-    println!("  active: {}", crate::utils::display_path(active_root));
-    if active_root != &code_home {
-        println!(
-            "  note: legacy {} found; start CodeWhale once to trigger safe migration where available.",
-            crate::utils::display_path(&legacy_home)
-        );
-    }
-    if legacy_home.exists() && code_home.exists() {
-        println!(
-            "  dual roots: {} (primary) + {} (legacy)",
-            crate::utils::display_path(&code_home),
-            crate::utils::display_path(&legacy_home)
-        );
-    }
-    let legacy_state_report = doctor_legacy_state_report(&code_home, &legacy_home);
-    print_doctor_legacy_state_report(
-        &legacy_state_report,
-        (aqua_r, aqua_g, aqua_b),
-        (sky_r, sky_g, sky_b),
-    );
+    let code_home =
+        codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    println!("  active: {}", crate::utils::display_path(&code_home));
 
     let (setup_state, setup_source) = doctor_setup_state(config, workspace);
     print_doctor_setup_report(
@@ -2827,189 +2802,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             .truecolor(aqua_r, aqua_g, aqua_b)
             .bold()
     );
-}
-
-const DOCTOR_LEGACY_STATE_ITEMS: &[&str] = &[
-    "sessions",
-    "tasks",
-    "skills",
-    "trophies",
-    "catalog",
-    "config.toml",
-    "settings.toml",
-    "mcp.json",
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DoctorLegacyStateStatus {
-    PrimaryOnly,
-    LegacyOnly,
-    Both,
-    Absent,
-}
-
-impl DoctorLegacyStateStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::PrimaryOnly => "primary_only",
-            Self::LegacyOnly => "legacy_only",
-            Self::Both => "both",
-            Self::Absent => "absent",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct DoctorLegacyStateEntry {
-    name: &'static str,
-    primary_path: PathBuf,
-    legacy_path: PathBuf,
-    primary_present: bool,
-    legacy_present: bool,
-    status: DoctorLegacyStateStatus,
-}
-
-fn doctor_legacy_state_status(
-    primary_present: bool,
-    legacy_present: bool,
-) -> DoctorLegacyStateStatus {
-    match (primary_present, legacy_present) {
-        (true, false) => DoctorLegacyStateStatus::PrimaryOnly,
-        (false, true) => DoctorLegacyStateStatus::LegacyOnly,
-        (true, true) => DoctorLegacyStateStatus::Both,
-        (false, false) => DoctorLegacyStateStatus::Absent,
-    }
-}
-
-fn doctor_state_roots() -> (PathBuf, PathBuf) {
-    let code_home =
-        codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
-    let legacy_home = if codewhale_config::codewhale_home_is_explicit() {
-        code_home.join(codewhale_config::LEGACY_APP_DIR)
-    } else {
-        codewhale_config::legacy_deepseek_home().unwrap_or_else(|_| PathBuf::from("~/.deepseek"))
-    };
-    (code_home, legacy_home)
-}
-
-fn doctor_legacy_state_report(
-    primary_root: &Path,
-    legacy_root: &Path,
-) -> Vec<DoctorLegacyStateEntry> {
-    DOCTOR_LEGACY_STATE_ITEMS
-        .iter()
-        .copied()
-        .map(|name| {
-            let primary_path = primary_root.join(name);
-            let legacy_path = legacy_root.join(name);
-            let primary_present = primary_path.exists();
-            let legacy_present = legacy_path.exists();
-            let status = doctor_legacy_state_status(primary_present, legacy_present);
-            DoctorLegacyStateEntry {
-                name,
-                primary_path,
-                legacy_path,
-                primary_present,
-                legacy_present,
-                status,
-            }
-        })
-        .collect()
-}
-
-fn legacy_state_needs_attention(entry: &DoctorLegacyStateEntry) -> bool {
-    matches!(
-        entry.status,
-        DoctorLegacyStateStatus::LegacyOnly | DoctorLegacyStateStatus::Both
-    )
-}
-
-fn print_doctor_legacy_state_report(
-    report: &[DoctorLegacyStateEntry],
-    ok_rgb: (u8, u8, u8),
-    warn_rgb: (u8, u8, u8),
-) {
-    use colored::Colorize;
-
-    let attention: Vec<_> = report
-        .iter()
-        .filter(|entry| legacy_state_needs_attention(entry))
-        .collect();
-    if attention.is_empty() {
-        println!(
-            "  {} legacy state: no known .deepseek entries need migration",
-            "✓".truecolor(ok_rgb.0, ok_rgb.1, ok_rgb.2)
-        );
-        return;
-    }
-
-    println!(
-        "  {} legacy state needs review:",
-        "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2)
-    );
-    for entry in attention {
-        match entry.status {
-            DoctorLegacyStateStatus::LegacyOnly => {
-                println!(
-                    "    {} {} exists but {} is missing",
-                    "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2),
-                    crate::utils::display_path(&entry.legacy_path),
-                    crate::utils::display_path(&entry.primary_path),
-                );
-            }
-            DoctorLegacyStateStatus::Both => {
-                println!(
-                    "    {} {} exists alongside primary {}; legacy data may still need review",
-                    "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2),
-                    crate::utils::display_path(&entry.legacy_path),
-                    crate::utils::display_path(&entry.primary_path),
-                );
-            }
-            DoctorLegacyStateStatus::PrimaryOnly | DoctorLegacyStateStatus::Absent => {}
-        }
-    }
-    println!(
-        "    Start CodeWhale once to trigger safe migration where available, then rerun `codewhale doctor`."
-    );
-}
-
-fn doctor_legacy_state_json(
-    primary_root: &Path,
-    legacy_root: &Path,
-    report: &[DoctorLegacyStateEntry],
-) -> serde_json::Value {
-    use serde_json::json;
-
-    let legacy_only = report
-        .iter()
-        .filter(|entry| entry.status == DoctorLegacyStateStatus::LegacyOnly)
-        .count();
-    let both = report
-        .iter()
-        .filter(|entry| entry.status == DoctorLegacyStateStatus::Both)
-        .count();
-    let entries: Vec<_> = report
-        .iter()
-        .map(|entry| {
-            json!({
-                "name": entry.name,
-                "primary_path": entry.primary_path.display().to_string(),
-                "legacy_path": entry.legacy_path.display().to_string(),
-                "primary_present": entry.primary_present,
-                "legacy_present": entry.legacy_present,
-                "status": entry.status.as_str(),
-            })
-        })
-        .collect();
-
-    json!({
-        "primary_root": primary_root.display().to_string(),
-        "legacy_root": legacy_root.display().to_string(),
-        "needs_attention": legacy_only > 0 || both > 0,
-        "legacy_only_count": legacy_only,
-        "dual_present_count": both,
-        "entries": entries,
-    })
 }
 
 // Historical sidecar version still interpreted by Doctor and the prompt
@@ -3625,15 +3417,15 @@ fn run_doctor_json(
 
     let api_target = doctor_api_target(config);
     let tls_status = doctor_tls_status(config);
-    let (code_home, legacy_home) = doctor_state_roots();
-    let legacy_state_report = doctor_legacy_state_report(&code_home, &legacy_home);
+    let code_home =
+        codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
         "config_path": config_path.display().to_string(),
         "config_present": config_path.exists(),
         "workspace": workspace.display().to_string(),
-        "legacy_state": doctor_legacy_state_json(&code_home, &legacy_home, &legacy_state_report),
+        "state_root": code_home.display().to_string(),
         "setup": doctor_setup_report_json(config, workspace),
         "api_key": {
             "source": api_key_state,
@@ -4016,7 +3808,7 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     let profile = cli
         .profile
         .clone()
-        .or_else(|| std::env::var("DEEPSEEK_PROFILE").ok());
+        .or_else(|| std::env::var("CODEWHALE_PROFILE").ok());
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     cli.feature_toggles.apply(&mut config)?;
     Ok(config)
@@ -4822,28 +4614,12 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
         return;
     }
 
-    // v0.8.44: prefer .codewhale/config.toml, fall back to .deepseek/
     let path = workspace
         .join(codewhale_config::CODEWHALE_APP_DIR)
         .join("config.toml");
     let raw = match read_project_config_file(&path) {
         Ok(Some(r)) => r,
-        Ok(None) => {
-            let legacy = workspace
-                .join(codewhale_config::LEGACY_APP_DIR)
-                .join("config.toml");
-            match read_project_config_file(&legacy) {
-                Ok(Some(r)) => r,
-                Ok(None) => return,
-                Err(err) => {
-                    eprintln!(
-                        "warning: failed to read project-scope config {}: {err}",
-                        legacy.display()
-                    );
-                    return;
-                }
-            }
-        }
+        Ok(None) => return,
         Err(err) => {
             eprintln!(
                 "warning: failed to read project-scope config {}: {err}",
@@ -4862,7 +4638,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
     };
 
     // #417: dangerous keys are denied at project scope. A malicious
-    // `<workspace>/.deepseek/config.toml` could otherwise:
+    // `<workspace>/.codewhale/config.toml` could otherwise:
     // * `api_key` / `base_url` / `provider` — exfiltrate prompts to a
     //   look-alike endpoint by swapping the user's credentials and
     //   target host with project-controlled values.
@@ -5006,7 +4782,7 @@ fn merge_user_workspace_config(
     workspace: &Path,
 ) {
     let allow_shell_before = config.allow_shell;
-    let allow_shell_from_env = std::env::var_os("DEEPSEEK_ALLOW_SHELL").is_some();
+    let allow_shell_from_env = std::env::var_os("CODEWHALE_ALLOW_SHELL").is_some();
     let Some(path) = crate::config::resolve_load_config_path(config_path) else {
         return;
     };
@@ -5092,9 +4868,8 @@ async fn run_interactive(
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    // Merge project-level config from $WORKSPACE/.codewhale/config.toml
-    // or legacy $WORKSPACE/.deepseek/config.toml
-    // unless --no-project-config was passed (#485).
+    // Merge project-level config from $WORKSPACE/.codewhale/config.toml unless
+    // --no-project-config was passed (#485).
     let mut merged_config = config.clone();
     merge_user_workspace_config(&mut merged_config, cli.config.clone(), &workspace);
     if !cli.no_project_config {
@@ -5111,16 +4886,6 @@ async fn run_interactive(
             Ok(None) => {}
             Err(err) => logging::warn(format!("Failed to create first-run config file: {err}")),
         }
-    }
-
-    // v0.8.44: migrate config from ~/.deepseek/ to ~/.codewhale/ on first
-    // launch. Non-fatal — existing installs keep working either way.
-    match codewhale_config::migrate_config_if_needed() {
-        Ok(Some(migration)) => {
-            eprintln!("{}", migration.user_notice());
-        }
-        Ok(None) => {}
-        Err(err) => logging::warn(format!("Config migration skipped: {err}")),
     }
 
     let model = resolve_interactive_deepseek_model(config)?;
@@ -5144,7 +4909,7 @@ async fn run_interactive(
     startup_trace::mark("interactive_config");
 
     // The `deepseek` launcher forwards `--yolo` to this binary via the
-    // DEEPSEEK_YOLO env var (config.yolo), not as a CLI flag. Honour either.
+    // CODEWHALE_YOLO env var (config.yolo), not as a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
     tui::run_tui(

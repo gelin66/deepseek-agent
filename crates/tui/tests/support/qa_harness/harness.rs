@@ -275,6 +275,6 @@ impl SealedWorkspace {
         &self.home
     }
     pub fn user_skills_dir(&self) -> PathBuf {
-        self.home.join(".deepseek").join("skills")
+        self.home.join(".codewhale").join("skills")
     }
 }

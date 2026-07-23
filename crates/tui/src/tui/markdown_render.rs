@@ -1800,7 +1800,7 @@ mod tests {
     fn table_cell_wider_than_column_wraps_instead_of_truncating() {
         let src = "| Feature | How to verify |\n\
                    |---|---|\n\
-                   | Workspace-local commands | Drop a .deepseek/commands/foo.md in any project, run deepseek from there, type /foo — should dispatch |\n";
+                   | Workspace-local skills | Drop an .agents/skills/foo/SKILL.md in any project, run codewhale from there, then invoke the skill — it should dispatch |\n";
         let lines = render_markdown(src, 80, Style::default());
         let combined: String = lines
             .iter()
@@ -1812,11 +1812,11 @@ mod tests {
             "table cell was truncated with `…` instead of wrapping; got: {combined:?}"
         );
         assert!(
-            combined.contains("type /foo"),
+            combined.contains("should dispatch"),
             "tail of long cell was lost; got: {combined:?}"
         );
         assert!(
-            combined.contains("Workspace-local commands"),
+            combined.contains("Workspace-local skills"),
             "short cell content lost; got: {combined:?}"
         );
     }

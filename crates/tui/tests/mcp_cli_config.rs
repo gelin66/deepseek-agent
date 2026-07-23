@@ -20,7 +20,7 @@ fn run_cli(home: &Path, workspace: &Path, mcp_config: &Path, args: &[&str]) -> O
         .env("USERPROFILE", home)
         .env("CODEWHALE_HOME", &codewhale_home)
         .env("CODEWHALE_CONFIG_PATH", codewhale_home.join("config.toml"))
-        .env("DEEPSEEK_MCP_CONFIG", mcp_config)
+        .env("CODEWHALE_MCP_CONFIG", mcp_config)
         .env("RUST_LOG", "error")
         .arg("--workspace")
         .arg(workspace)

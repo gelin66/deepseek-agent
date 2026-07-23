@@ -1320,8 +1320,7 @@ mod tests {
         ));
         let _g = CodeWhaleHomeGuard::set(dir.to_str().unwrap());
         // Hard override: the DB is <CODEWHALE_HOME>/state.db, NOT
-        // <CODEWHALE_HOME>/.codewhale/state.db, and the legacy ~/.deepseek
-        // fallback is bypassed entirely.
+        // <CODEWHALE_HOME>/.codewhale/state.db.
         assert_eq!(default_state_db_path(), dir.join("state.db"));
     }
 

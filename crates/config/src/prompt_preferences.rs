@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::{codewhale_home, codewhale_home_is_explicit, legacy_deepseek_home};
+use crate::codewhale_home;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
@@ -92,65 +92,38 @@ struct PromptPreferencesWire {
 
 #[derive(Debug, Clone)]
 struct SettingsPathInputs {
-    deepseek_config_path: Option<PathBuf>,
+    codewhale_config_path: Option<PathBuf>,
     codewhale_home: Option<PathBuf>,
-    codewhale_home_is_explicit: bool,
-    legacy_deepseek_home: Option<PathBuf>,
-    platform_config_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 struct SettingsPathCandidates {
     primary: Option<PathBuf>,
-    legacy_home: Option<PathBuf>,
-    legacy_config_dir: Option<PathBuf>,
 }
 
 fn settings_path_candidates_from(inputs: SettingsPathInputs) -> SettingsPathCandidates {
-    if let Some(config_path) = inputs.deepseek_config_path
+    if let Some(config_path) = inputs.codewhale_config_path
         && let Some(parent) = config_path.parent()
     {
         return SettingsPathCandidates {
             primary: Some(parent.join(SETTINGS_FILE_NAME)),
-            legacy_home: None,
-            legacy_config_dir: None,
-        };
-    }
-
-    let primary = inputs
-        .codewhale_home
-        .map(|home| home.join(SETTINGS_FILE_NAME));
-    if inputs.codewhale_home_is_explicit {
-        return SettingsPathCandidates {
-            primary,
-            legacy_home: None,
-            legacy_config_dir: None,
         };
     }
 
     SettingsPathCandidates {
-        primary,
-        legacy_home: inputs
-            .legacy_deepseek_home
+        primary: inputs
+            .codewhale_home
             .map(|home| home.join(SETTINGS_FILE_NAME)),
-        legacy_config_dir: inputs
-            .platform_config_dir
-            .map(|dir| dir.join("deepseek").join(SETTINGS_FILE_NAME)),
     }
 }
 
 fn load_settings_source_from_candidates(
     candidates: SettingsPathCandidates,
 ) -> Result<SettingsSource> {
-    let write_path = candidates
-        .primary
-        .as_ref()
-        .cloned()
-        .or_else(|| candidates.legacy_config_dir.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
-        })?;
-    let read_path = resolve_read_path(&candidates).unwrap_or_else(|| write_path.clone());
+    let write_path = candidates.primary.as_ref().cloned().ok_or_else(|| {
+        anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
+    })?;
+    let read_path = write_path.clone();
     let content = if read_path.exists() {
         Some(
             std::fs::read_to_string(&read_path)
@@ -160,7 +133,6 @@ fn load_settings_source_from_candidates(
         None
     };
 
-    migrate_settings_file_to_primary_if_needed(&write_path, &read_path);
     Ok(SettingsSource {
         write_path,
         read_path,
@@ -168,39 +140,16 @@ fn load_settings_source_from_candidates(
     })
 }
 
-fn resolve_read_path(candidates: &SettingsPathCandidates) -> Option<PathBuf> {
-    candidates
-        .primary
-        .as_ref()
-        .filter(|path| path.exists())
-        .cloned()
-        .or_else(|| {
-            candidates
-                .legacy_home
-                .as_ref()
-                .filter(|path| path.exists())
-                .cloned()
-        })
-        .or_else(|| {
-            candidates
-                .legacy_config_dir
-                .as_ref()
-                .filter(|path| path.exists())
-                .cloned()
-        })
-}
-
 fn current_settings_path_candidates() -> SettingsPathCandidates {
-    let deepseek_config_path = std::env::var("DEEPSEEK_CONFIG_PATH").ok().and_then(|path| {
-        let path = path.trim();
-        (!path.is_empty()).then(|| expand_home_path(path))
-    });
+    let codewhale_config_path = std::env::var("CODEWHALE_CONFIG_PATH")
+        .ok()
+        .and_then(|path| {
+            let path = path.trim();
+            (!path.is_empty()).then(|| expand_home_path(path))
+        });
     settings_path_candidates_from(SettingsPathInputs {
-        deepseek_config_path,
+        codewhale_config_path,
         codewhale_home: codewhale_home().ok(),
-        codewhale_home_is_explicit: codewhale_home_is_explicit(),
-        legacy_deepseek_home: legacy_deepseek_home().ok(),
-        platform_config_dir: dirs::config_dir(),
     })
 }
 
@@ -221,39 +170,12 @@ fn expand_home_path(path: &str) -> PathBuf {
     home
 }
 
-fn migrate_settings_file_to_primary_if_needed(primary: &Path, active_read_path: &Path) {
-    if primary == active_read_path || primary.exists() || !active_read_path.exists() {
-        return;
-    }
-
-    let Some(parent) = primary.parent() else {
-        return;
-    };
-    if let Err(err) = std::fs::create_dir_all(parent) {
-        tracing::warn!(
-            "failed to create settings migration directory {}: {err}",
-            parent.display()
-        );
-        return;
-    }
-    if let Err(err) = std::fs::copy(active_read_path, primary) {
-        tracing::warn!(
-            "failed to migrate settings from {} to {}: {err}",
-            active_read_path.display(),
-            primary.display()
-        );
-    }
-}
-
 /// Return the canonical settings write path.
 pub fn settings_path() -> Result<PathBuf> {
     let candidates = current_settings_path_candidates();
-    candidates
-        .primary
-        .or(candidates.legacy_config_dir)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
-        })
+    candidates.primary.ok_or_else(|| {
+        anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
+    })
 }
 
 /// Resolve and read the settings source exactly once.
@@ -270,16 +192,8 @@ pub fn load_prompt_preferences() -> Result<PromptPreferences> {
 mod tests {
     use super::*;
 
-    fn candidates(
-        primary: Option<PathBuf>,
-        legacy_home: Option<PathBuf>,
-        legacy_config_dir: Option<PathBuf>,
-    ) -> SettingsPathCandidates {
-        SettingsPathCandidates {
-            primary,
-            legacy_home,
-            legacy_config_dir,
-        }
+    fn candidates(primary: Option<PathBuf>) -> SettingsPathCandidates {
+        SettingsPathCandidates { primary }
     }
 
     #[test]
@@ -293,13 +207,10 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_config_path_owns_the_sibling_settings_source() {
+    fn codewhale_config_path_owns_the_sibling_settings_source() {
         let inputs = SettingsPathInputs {
-            deepseek_config_path: Some(PathBuf::from("/override/config.toml")),
+            codewhale_config_path: Some(PathBuf::from("/override/config.toml")),
             codewhale_home: Some(PathBuf::from("/home/user/.codewhale")),
-            codewhale_home_is_explicit: false,
-            legacy_deepseek_home: Some(PathBuf::from("/home/user/.deepseek")),
-            platform_config_dir: Some(PathBuf::from("/platform")),
         };
 
         let resolved = settings_path_candidates_from(inputs);
@@ -308,18 +219,13 @@ mod tests {
             resolved.primary,
             Some(PathBuf::from("/override/settings.toml"))
         );
-        assert_eq!(resolved.legacy_home, None);
-        assert_eq!(resolved.legacy_config_dir, None);
     }
 
     #[test]
-    fn explicit_codewhale_home_is_an_isolation_boundary() {
+    fn codewhale_home_is_the_only_default_settings_root() {
         let inputs = SettingsPathInputs {
-            deepseek_config_path: None,
+            codewhale_config_path: None,
             codewhale_home: Some(PathBuf::from("/isolated")),
-            codewhale_home_is_explicit: true,
-            legacy_deepseek_home: Some(PathBuf::from("/ambient/.deepseek")),
-            platform_config_dir: Some(PathBuf::from("/platform")),
         };
 
         let resolved = settings_path_candidates_from(inputs);
@@ -328,79 +234,28 @@ mod tests {
             resolved.primary,
             Some(PathBuf::from("/isolated/settings.toml"))
         );
-        assert_eq!(resolved.legacy_home, None);
-        assert_eq!(resolved.legacy_config_dir, None);
     }
 
     #[test]
-    fn settings_source_prefers_primary_then_home_legacy_then_platform_legacy() {
+    fn settings_source_reads_only_the_canonical_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let primary = tmp.path().join("primary/settings.toml");
-        let legacy_home = tmp.path().join("home-legacy/settings.toml");
-        let platform = tmp.path().join("platform/deepseek/settings.toml");
-        for path in [&primary, &legacy_home, &platform] {
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-        }
-        std::fs::write(&platform, "locale = \"es-MX\"\n").expect("platform");
-        std::fs::write(&legacy_home, "locale = \"ja\"\n").expect("legacy home");
+        let legacy = tmp.path().join(".deepseek/settings.toml");
+        std::fs::create_dir_all(primary.parent().expect("primary parent"))
+            .expect("create primary parent");
+        std::fs::create_dir_all(legacy.parent().expect("legacy parent"))
+            .expect("create legacy parent");
+        std::fs::write(&legacy, "show_thinking = false\n").expect("legacy");
         std::fs::write(&primary, "locale = \"zh-TW\"\n").expect("primary");
 
-        let all = load_settings_source_from_candidates(candidates(
-            Some(primary.clone()),
-            Some(legacy_home.clone()),
-            Some(platform.clone()),
-        ))
-        .expect("all candidates");
-        assert_eq!(all.read_path(), primary);
-
-        std::fs::remove_file(&primary).expect("remove primary");
-        let without_primary = load_settings_source_from_candidates(candidates(
-            Some(primary.clone()),
-            Some(legacy_home.clone()),
-            Some(platform.clone()),
-        ))
-        .expect("legacy home candidate");
-        assert_eq!(without_primary.read_path(), legacy_home);
-
-        std::fs::remove_file(&legacy_home).expect("remove legacy home");
-        std::fs::remove_file(&primary).expect("remove migrated primary");
-        let platform_only = load_settings_source_from_candidates(candidates(
-            Some(primary),
-            Some(legacy_home),
-            Some(platform.clone()),
-        ))
-        .expect("platform candidate");
-        assert_eq!(platform_only.read_path(), platform);
-    }
-
-    #[test]
-    fn fallback_load_reuses_selected_bytes_and_migrates_them_to_primary() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let primary = tmp.path().join("primary/settings.toml");
-        let legacy = tmp.path().join("legacy/settings.toml");
-        std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
-        let body = "locale = \"ja\"\nshow_thinking = true\n";
-        std::fs::write(&legacy, body).expect("legacy settings");
-
-        let source = load_settings_source_from_candidates(candidates(
-            Some(primary.clone()),
-            Some(legacy.clone()),
-            None,
-        ))
-        .expect("legacy source");
-
-        assert_eq!(source.read_path(), legacy);
+        let source = load_settings_source_from_candidates(candidates(Some(primary.clone())))
+            .expect("canonical source");
+        assert_eq!(source.read_path(), primary);
         assert_eq!(source.write_path(), primary);
-        assert_eq!(source.content(), Some(body));
+        assert_eq!(source.content(), Some("locale = \"zh-TW\"\n"));
         assert_eq!(
-            std::fs::read_to_string(&primary).expect("migrated primary"),
-            body
-        );
-        assert_eq!(
-            source.prompt_preferences(),
-            PromptPreferences {
-                show_thinking: true,
-            }
+            std::fs::read_to_string(&legacy).expect("legacy unchanged"),
+            "show_thinking = false\n"
         );
     }
 
@@ -408,14 +263,13 @@ mod tests {
     fn missing_file_defaults_but_read_failure_is_returned() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let missing = tmp.path().join("missing/settings.toml");
-        let source =
-            load_settings_source_from_candidates(candidates(Some(missing.clone()), None, None))
-                .expect("missing settings defaults");
+        let source = load_settings_source_from_candidates(candidates(Some(missing.clone())))
+            .expect("missing settings defaults");
         assert_eq!(source.content(), None);
         assert_eq!(source.prompt_preferences(), PromptPreferences::default());
 
         std::fs::create_dir_all(&missing).expect("directory at settings path");
-        let err = load_settings_source_from_candidates(candidates(Some(missing), None, None))
+        let err = load_settings_source_from_candidates(candidates(Some(missing)))
             .expect_err("directory cannot be read as settings file");
         assert!(format!("{err:#}").contains("Failed to read settings"));
     }
@@ -426,15 +280,13 @@ mod tests {
         let path = tmp.path().join("settings.toml");
 
         std::fs::write(&path, "locale = [\n").expect("malformed settings");
-        let malformed =
-            load_settings_source_from_candidates(candidates(Some(path.clone()), None, None))
-                .expect("read malformed settings");
+        let malformed = load_settings_source_from_candidates(candidates(Some(path.clone())))
+            .expect("read malformed settings");
         assert_eq!(malformed.prompt_preferences(), PromptPreferences::default());
 
         std::fs::write(&path, "show_thinking = []\n").expect("typed-invalid preferences");
-        let typed_invalid =
-            load_settings_source_from_candidates(candidates(Some(path.clone()), None, None))
-                .expect("read typed-invalid preferences");
+        let typed_invalid = load_settings_source_from_candidates(candidates(Some(path.clone())))
+            .expect("read typed-invalid preferences");
         assert_eq!(
             typed_invalid.prompt_preferences(),
             PromptPreferences::default(),
@@ -451,7 +303,7 @@ mod tests {
             "future_setting = []\nshow_thinking = true\nsidebar_width_percent = \"wide\"\n",
         )
         .expect("unrelated typed-invalid setting");
-        let source = load_settings_source_from_candidates(candidates(Some(path), None, None))
+        let source = load_settings_source_from_candidates(candidates(Some(path)))
             .expect("read settings source");
         assert_eq!(
             source.prompt_preferences(),

@@ -23,7 +23,6 @@ codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-secrets = { path = "../secrets", version = "0.8.68" }
 codewhale-state = { path = "../state", version = "0.8.68" }
 chrono.workspace = true
-dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true

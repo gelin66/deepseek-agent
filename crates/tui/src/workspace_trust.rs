@@ -1,12 +1,11 @@
 //! Read-only per-workspace trust snapshot of external paths that production
 //! tools may access without triggering a `PathEscape` error (#29).
 //!
-//! Storage: `~/.deepseek/workspace-trust.json`. The file is a JSON object
+//! Storage: `~/.codewhale/workspace-trust.json`. The file is a JSON object
 //! mapping each workspace's canonical path to a sorted list of canonical
 //! paths the user has explicitly trusted from that workspace. Trust granted
 //! in workspace A does not apply when running from workspace B.
-//! CodeWhale no longer exposes a command that mutates this historical file;
-//! existing data is still read and is never deleted during cutover.
+//! CodeWhale no longer exposes a command that mutates this historical file.
 //!
 //! Threat model: this is a deliberate user opt-in to a path the workspace
 //! sandbox would otherwise refuse. The only access the trust list grants is
@@ -104,13 +103,13 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Set up an isolated fake `~/.deepseek/workspace-trust.json` location.
+    /// Set up an isolated fake `~/.codewhale/workspace-trust.json` location.
     /// Returns the tmpdir (kept alive for the test) plus the explicit trust
     /// file path passed to the `*_at` helpers — avoids touching `$HOME` so
     /// tests run safely in parallel.
     fn isolated_trust_path() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let trust_path = tmp.path().join(".deepseek").join("workspace-trust.json");
+        let trust_path = tmp.path().join(".codewhale").join("workspace-trust.json");
         (tmp, trust_path)
     }
 

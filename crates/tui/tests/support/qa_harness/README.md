@@ -36,7 +36,7 @@ spin up a PTY just to assert a function returns the right value.
    belongs in a unit test (or a `wiremock`-driven turn test) instead.
 
 2. Build a sealed workspace so the scenario doesn't see the developer's real
-   `~/.deepseek/` or API keys:
+   CodeWhale state or API keys:
 
    ```rust
    let ws = qa_harness::harness::make_sealed_workspace()?;
