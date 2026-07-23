@@ -85,7 +85,7 @@
     {
       "id": "t1-capability-intersection",
       "fixture": "eval/fixtures/m7-readonly-fanout/t1-capability-intersection",
-      "fixture_tree_sha256": "sha256:80b250a1c3bf0bf56e7d611889ba8b1d284909ae0cdc5737c5aa0339aa69d816",
+      "fixture_tree_sha256": "sha256:eb41477cd4c8833e08ba1cd90be0368b2e090d68b589fda764ba41127becfdb9",
       "target": "compatibility.py",
       "partitions": [
         "parser and runtime specifications",
@@ -95,7 +95,7 @@
     {
       "id": "t2-dependency-impact",
       "fixture": "eval/fixtures/m7-readonly-fanout/t2-dependency-impact",
-      "fixture_tree_sha256": "sha256:d7b23e344a2d74e5f428a46e19193404c3d9c0e70699415f100832786ae15e46",
+      "fixture_tree_sha256": "sha256:b37b94937c3f02fe361277fad46bed003e9fd02d35b5be166be9a22ce30fed09",
       "target": "impact.py",
       "partitions": [
         "protocol/runtime/state dependency half",
@@ -105,7 +105,7 @@
     {
       "id": "t3-policy-resolution",
       "fixture": "eval/fixtures/m7-readonly-fanout/t3-policy-resolution",
-      "fixture_tree_sha256": "sha256:b95b19b16a1c53ed51649c901b879a717ac8ea72c5b1805bd2e9236617a6b33a",
+      "fixture_tree_sha256": "sha256:32a50f1bca282770a23120a54878741db30eedac60403f8ef5ddbab7e16875f5",
       "target": "policy.py",
       "partitions": [
         "base and region policy semantics",
@@ -163,6 +163,12 @@
     "efficiency": "wall time must improve stably at pair and aggregate levels; added tokens, requests, and cost are explicit transfer costs and must not erase the verified-task gain",
     "complexity": "no second runtime/store/model loop/tool catalog/product mode/general DAG or Writer concurrency",
     "no_delta_or_unknown_billing": "hold_or_reject_without_further_paid_requests"
+  },
+  "frozen_hashes": {
+    "harness_sha256": "sha256:b08be16fb48ed3d5683e9c6277d13864f130280efd363ec6558836c713a8e636",
+    "schedule_sha256": "sha256:67e90598816cf5b7586e50d8cda1bdc456eb1291bd6b1c4155dfdcbf3fd10dbb",
+    "task_contracts_sha256": "sha256:3f872ceb58848d7c9c2c8b66af7e53aa0d9c5a8b33b3766ab4a02265abad2b17",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:b2ed3b83bead16a51ff6030851efbe391c089c2109a9908bea25bfd240d98494"
   },
   "resources": {
     "maximum_reruns": 0,
