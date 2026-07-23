@@ -5,6 +5,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
+use codewhale_localization::{MessageId, tr};
 use codewhale_protocol::agent_runtime::{
     UserInputAnswer, UserInputQuestion, UserInputRequest,
     UserInteractionResponse as UserInputResponse,
@@ -234,7 +235,8 @@ impl UserInputView {
         if self.is_multi_select() {
             if self.is_confirm_selected() {
                 if self.multi_pending.is_empty() {
-                    self.validation_message = Some("请至少选择一个选项后再确认".to_string());
+                    self.validation_message =
+                        Some(tr(MessageId::UserInputValidationSelect).into_owned());
                     return ViewAction::None;
                 }
                 let question = self.current_question();
@@ -268,7 +270,8 @@ impl UserInputView {
             }
             KeyCode::Enter => {
                 if self.other_input.trim().is_empty() {
-                    self.validation_message = Some("请输入内容后再确认".to_string());
+                    self.validation_message =
+                        Some(tr(MessageId::UserInputValidationResponse).into_owned());
                     return ViewAction::None;
                 }
                 let question = self.current_question();
@@ -342,7 +345,7 @@ impl ModalView for UserInputView {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            tr(MessageId::UserInputActionRequired).into_owned(),
             Style::default().fg(palette::WHALE_INFO).bold(),
         )]));
         lines.push(Line::from(vec![
@@ -351,7 +354,12 @@ impl ModalView for UserInputView {
                 Style::default().fg(palette::TEXT_PRIMARY).bold(),
             ),
             Span::styled(
-                format!("  Question {} of {}", self.question_index + 1, total),
+                format!(
+                    "  {}",
+                    tr(MessageId::UserInputQuestionProgress)
+                        .replace("{current}", &(self.question_index + 1).to_string())
+                        .replace("{total}", &total.to_string())
+                ),
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]));
@@ -383,8 +391,8 @@ impl ModalView for UserInputView {
                 &mut lines,
                 self.selected == other_index,
                 other_number,
-                "Other".to_string(),
-                "Type a custom response".to_string(),
+                tr(MessageId::UserInputOther).into_owned(),
+                tr(MessageId::UserInputOtherDescription).into_owned(),
                 false,
             );
         }
@@ -393,17 +401,15 @@ impl ModalView for UserInputView {
         // options (and after "Other" when present). Selecting and pressing
         // Enter on it flushes the pending set as the question's answers.
         if self.is_multi_select() {
-            let confirm_index = self.option_count();
+            let confirm_index = self.option_count().saturating_sub(1);
             let confirm_number = confirm_index + 1;
             push_option_lines(
                 &mut lines,
                 self.selected == confirm_index,
                 confirm_number,
-                "Confirm selection".to_string(),
-                codewhale_localization::tr(
-                    codewhale_localization::MessageId::UserInputSubmitSelected,
-                )
-                .replace("{count}", &self.multi_pending.len().to_string()),
+                tr(MessageId::UserInputConfirmSelection).into_owned(),
+                tr(MessageId::UserInputSubmitSelected)
+                    .replace("{count}", &self.multi_pending.len().to_string()),
                 false,
             );
         }
@@ -412,13 +418,13 @@ impl ModalView for UserInputView {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled(
-                    "> Custom response:",
+                    format!("> {}", tr(MessageId::UserInputCustomResponse)),
                     Style::default().fg(palette::TEXT_PRIMARY).bold(),
                 ),
                 Span::raw(" "),
                 Span::styled(
                     if self.other_input.is_empty() {
-                        "(type your response)".to_string()
+                        tr(MessageId::UserInputTypeResponse).into_owned()
                     } else {
                         self.other_input.clone()
                     },
@@ -439,17 +445,23 @@ impl ModalView for UserInputView {
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
                 Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    format!(" {}", tr(MessageId::UserInputSubmit)),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    format!(" {}", tr(MessageId::UserInputBack)),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
             ]));
         } else {
             let opt_count = self.option_count();
             let quick_pick_label = if opt_count <= 9 {
                 format!("1-{opt_count}")
             } else {
-                "digit".to_string()
+                tr(MessageId::UserInputDigit).into_owned()
             };
             if self.is_multi_select() {
                 lines.push(Line::from(vec![
@@ -457,16 +469,28 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_INFO).bold(),
                     ),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputMove)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Space", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" toggle", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputToggle)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" toggle/confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputToggleConfirm)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputCancel)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                 ]));
             } else {
                 lines.push(Line::from(vec![
@@ -474,16 +498,28 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_INFO).bold(),
                     ),
-                    Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputQuickPick)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Up/Down", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputMove)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputConfirmSelection)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!(" {}", tr(MessageId::UserInputCancel)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                 ]));
             }
         }
@@ -523,6 +559,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 mod tests {
     use super::*;
     use codewhale_protocol::agent_runtime::UserInputOption;
+    use unicode_width::UnicodeWidthStr;
 
     fn render_view(view: &UserInputView, width: u16, height: u16) -> String {
         let area = Rect::new(0, 0, width, height);
@@ -530,7 +567,18 @@ mod tests {
         view.render(area, &mut buf);
 
         (0..height)
-            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                let mut row = String::new();
+                let mut x = 0;
+                while x < width {
+                    let symbol = buf[(x, y)].symbol();
+                    row.push_str(symbol);
+                    x = x.saturating_add(
+                        u16::try_from(UnicodeWidthStr::width(symbol).max(1)).unwrap_or(u16::MAX),
+                    );
+                }
+                row
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -564,11 +612,14 @@ mod tests {
     fn user_input_modal_calls_out_required_action_and_controls() {
         let rendered = render_view(&sample_view(), 110, 36);
 
-        assert!(rendered.contains("Action required"));
-        assert!(rendered.contains("Question 1 of 1"));
-        assert!(rendered.contains("quick pick"));
-        // allow_free_text=true surfaces the Other row.
-        assert!(rendered.contains("Other"));
+        assert!(rendered.contains("需要你的操作"));
+        assert!(rendered.contains("第 1/1 个问题"));
+        assert!(rendered.contains("快速选择"));
+        assert!(rendered.contains("其他"));
+        assert!(rendered.contains("输入自定义回答"));
+        // Model-provided question and option text remains raw.
+        assert!(rendered.contains("What should happen next?"));
+        assert!(rendered.contains("Proceed with the current change set"));
     }
 
     #[test]
@@ -580,16 +631,16 @@ mod tests {
 
         let rendered = render_view(&view, 110, 36);
 
-        assert!(rendered.contains("Custom response"));
+        assert!(rendered.contains("自定义回答"));
         assert!(rendered.contains("Need one more pass"));
         assert!(rendered.contains("Enter"));
-        assert!(rendered.contains("submit"));
+        assert!(rendered.contains("提交"));
     }
 
     #[test]
     fn user_input_modal_hides_other_row_when_free_text_disabled() {
-        // Issue #3102: allow_free_text=false must NOT render the hardcoded
-        // "Other" pseudo-option. Previously "Other" was always appended.
+        // Issue #3102: allow_free_text=false must NOT render the Host-owned
+        // free-text pseudo-option.
         let mut view = sample_view();
         view.request.questions[0].allow_free_text = false;
         // Reset selection to a valid option index (no Other row to land on).
@@ -597,17 +648,16 @@ mod tests {
 
         let rendered = render_view(&view, 110, 36);
         assert!(
-            !rendered.contains("Type a custom response"),
+            !rendered.contains("输入自定义回答"),
             "Other row should be hidden when allow_free_text is false"
         );
-        assert!(!rendered.contains("\nOther\n"));
+        assert!(!rendered.contains("\n其他\n"));
     }
 
     #[test]
     fn user_input_modal_renders_multi_select_ticks_and_confirm() {
         // Issue #3102: multi_select=true renders a check-mark gutter on
-        // toggled options plus a trailing "Confirm selection" row, and the
-        // controls hint advertises Space/Enter toggle semantics.
+        // toggled options plus a trailing Host-owned confirmation row.
         let mut view = sample_view();
         view.request.questions[0].multi_select = true;
         view.request.questions[0].allow_free_text = false;
@@ -619,11 +669,33 @@ mod tests {
         let rendered = render_view(&view, 120, 40);
         assert!(rendered.contains("✔"), "toggled option shows a check mark");
         assert!(
-            rendered.contains("Confirm selection"),
+            rendered.contains("确认选择"),
             "multi-select renders a confirm row"
         );
-        assert!(rendered.contains("Submit 1 selected"));
-        assert!(rendered.contains("toggle"));
+        assert!(
+            rendered.contains("3) 确认选择"),
+            "confirm row keeps its real selectable index"
+        );
+        assert!(
+            rendered.contains("提交已选择的 1 项"),
+            "localized multi-select summary missing:\n{rendered}"
+        );
+        assert!(rendered.contains("切换选择"));
+    }
+
+    #[test]
+    fn user_input_modal_respects_80_and_120_column_frames() {
+        for width in [80, 120] {
+            let rendered = render_view(&sample_view(), width, 40);
+            assert!(
+                rendered
+                    .lines()
+                    .all(|line| UnicodeWidthStr::width(line) <= usize::from(width)),
+                "request_user_input exceeded its {width}-column frame"
+            );
+            assert!(rendered.contains("需要你的操作"));
+            assert!(rendered.contains("What should happen next?"));
+        }
     }
 
     #[test]
