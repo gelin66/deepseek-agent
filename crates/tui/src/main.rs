@@ -1035,7 +1035,8 @@ fn localize_tui_command(command: &mut clap::Command) {
         .disable_help_subcommand(true)
         .disable_help_flag(true)
         .disable_version_flag(true)
-        .long_about(None);
+        .long_about(None)
+        .after_help(None);
     localized = localized.arg(
         clap::Arg::new("help")
             .short('h')
@@ -1057,6 +1058,9 @@ fn localize_tui_command(command: &mut clap::Command) {
     } else if let Some(message) = tui_command_message(command.get_name()) {
         localized = localized.about(tr(message).into_owned());
     }
+    if command.get_name() == "exec" {
+        localized = localized.after_help(tr(MessageId::CliExecAfterHelp).into_owned());
+    }
 
     let arg_messages = [
         ("workspace", MessageId::CliArgWorkspace),
@@ -1075,6 +1079,21 @@ fn localize_tui_command(command: &mut clap::Command) {
         ("no_mouse_capture", MessageId::CliArgNoMouseCapture),
         ("skip_onboarding", MessageId::CliArgSkipOnboarding),
         ("no_project_config", MessageId::CliArgNoProjectConfig),
+        ("model", MessageId::CliArgModel),
+        ("reasoning_effort", MessageId::CliArgReasoningEffort),
+        ("auto", MessageId::CliArgAuto),
+        ("sandbox", MessageId::CliArgSandbox),
+        (
+            "allow_sandbox_elevation",
+            MessageId::CliArgAllowSandboxElevation,
+        ),
+        ("output_format", MessageId::CliArgOutputFormat),
+        ("allowed_tools", MessageId::CliArgAllowedTools),
+        ("disallowed_tools", MessageId::CliArgDisallowedTools),
+        ("max_turns", MessageId::CliArgMaxTurns),
+        ("max_api_requests", MessageId::CliArgMaxApiRequests),
+        ("max_runtime_secs", MessageId::CliArgMaxRuntimeSecs),
+        ("append_system_prompt", MessageId::CliArgAppendSystemPrompt),
     ];
     for (id, message) in arg_messages {
         if localized
@@ -5496,6 +5515,19 @@ mod m8c_fixed_zh_hans_help_tests {
         ] {
             assert!(!help.contains(leak), "English product text leaked: {leak}");
         }
+
+        let exec = help_for(&["codewhale-tui", "exec", "--help"]);
+        assert!(exec.contains("本次运行的 thinking 强度"));
+        assert!(exec.contains("Headless Agent 的最大运行秒数"));
+        assert!(exec.contains("普通 `codewhale exec` 是一次性模型响应"));
+        for leak in [
+            "Override model for this run",
+            "Enable agent-with-tools mode",
+            "Maximum number of model steps",
+            "Plain `codewhale exec` is a one-shot model response",
+        ] {
+            assert!(!exec.contains(leak), "English exec help leaked: {leak}");
+        }
     }
 
     #[test]
@@ -5503,19 +5535,23 @@ mod m8c_fixed_zh_hans_help_tests {
         use unicode_width::UnicodeWidthStr;
 
         for width in [80usize, 120] {
-            let help = localized_tui_command()
-                .term_width(width)
-                .try_get_matches_from(["codewhale-tui", "--help"])
-                .expect_err("--help must stop parsing")
-                .to_string();
-            assert!(help.contains("文件工具使用的工作区目录"));
-            assert!(!help.contains('\u{fffd}'));
-            for line in help.lines() {
-                assert!(
-                    line.width() <= width,
-                    "rendered help width {} exceeds {width}: {line:?}",
-                    line.width()
-                );
+            for args in [
+                ["codewhale-tui", "--help"].as_slice(),
+                ["codewhale-tui", "exec", "--help"].as_slice(),
+            ] {
+                let help = localized_tui_command()
+                    .term_width(width)
+                    .try_get_matches_from(args)
+                    .expect_err("--help must stop parsing")
+                    .to_string();
+                assert!(!help.contains('\u{fffd}'));
+                for line in help.lines() {
+                    assert!(
+                        line.width() <= width,
+                        "rendered help width {} exceeds {width}: {line:?}",
+                        line.width()
+                    );
+                }
             }
         }
     }

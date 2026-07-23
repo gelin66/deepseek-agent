@@ -863,7 +863,8 @@ fn localize_cli_command(command: &mut clap::Command) {
         .disable_help_subcommand(true)
         .disable_help_flag(true)
         .disable_version_flag(true)
-        .long_about(None);
+        .long_about(None)
+        .after_help(None);
     localized = localized.arg(
         clap::Arg::new("help")
             .short('h')
@@ -885,6 +886,11 @@ fn localize_cli_command(command: &mut clap::Command) {
     } else if let Some(message) = cli_command_message(command.get_name()) {
         localized = localized.about(tr(message).into_owned());
     }
+    if command.get_name() == "exec" {
+        localized = localized.after_help(tr(MessageId::CliExecAfterHelp).into_owned());
+    } else if command.get_name() == "app-server" {
+        localized = localized.after_help(tr(MessageId::CliAppServerAfterHelp).into_owned());
+    }
 
     let arg_messages = [
         ("verbosity", MessageId::CliArgVerbosity),
@@ -897,6 +903,27 @@ fn localize_cli_command(command: &mut clap::Command) {
         ("limit", MessageId::CliArgLimit),
         ("config", MessageId::CliArgConfig),
         ("profile", MessageId::CliArgProfile),
+        ("model", MessageId::CliArgModel),
+        ("output_mode", MessageId::CliArgOutputMode),
+        ("log_level", MessageId::CliArgLogLevel),
+        ("telemetry", MessageId::CliArgTelemetry),
+        ("approval_policy", MessageId::CliArgApprovalPolicy),
+        ("sandbox_mode", MessageId::CliArgSandboxMode),
+        ("base_url", MessageId::CliArgBaseUrl),
+        ("mouse_capture", MessageId::CliArgMouseCapture),
+        ("no_mouse_capture", MessageId::CliArgNoMouseCapture),
+        ("skip_onboarding", MessageId::CliArgSkipOnboarding),
+        ("stdio", MessageId::CliArgStdio),
+        ("host", MessageId::CliArgHost),
+        ("port", MessageId::CliArgPort),
+        ("auth_token", MessageId::CliArgAuthToken),
+        ("insecure_no_auth", MessageId::CliArgInsecureNoAuth),
+        ("cors_origin", MessageId::CliArgCorsOrigin),
+        ("max_body_bytes", MessageId::CliArgMaxBodyBytes),
+        (
+            "transport_max_retries",
+            MessageId::CliArgTransportMaxRetries,
+        ),
     ];
     for (id, message) in arg_messages {
         if localized
@@ -2058,6 +2085,21 @@ mod tests {
             "Controls transcript and output verbosity",
         ] {
             assert!(!help.contains(leak), "English product text leaked: {leak}");
+        }
+
+        let app_server = help_for(&["codewhale", "app-server", "--help"]);
+        assert!(app_server.contains("HTTP 监听地址"));
+        assert!(app_server.contains("通过标准输入/输出运行同一个"));
+        assert!(app_server.contains("HTTP 默认要求 --auth-token"));
+        for leak in [
+            "HTTP bind host",
+            "Run the same canonical newline",
+            "HTTP requires --auth-token",
+        ] {
+            assert!(
+                !app_server.contains(leak),
+                "English app-server help leaked: {leak}"
+            );
         }
     }
 
