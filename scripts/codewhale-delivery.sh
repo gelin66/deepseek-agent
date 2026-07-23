@@ -94,14 +94,16 @@ pinned_rust_channel() {
 }
 
 select_installed_pinned_toolchain() {
-  local expected candidate version_output actual_version
+  local expected candidate version_output actual_version installed_toolchains
   expected="$(pinned_rust_channel)"
   [ -n "$expected" ] || die "rust-toolchain.toml has no pinned channel"
   if command -v rustup >/dev/null 2>&1; then
+    installed_toolchains="$(cd "${TMPDIR:-/tmp}" && rustup toolchain list)"
     candidate="$(
-      rustup toolchain list |
+      printf '%s\n' "$installed_toolchains" |
         awk -v expected="$expected" '
-          $1 == expected || index($1, expected "-") == 1 { print $1; exit }
+          !found && ($1 == expected || index($1, expected "-") == 1) { found = $1 }
+          END { if (found) print found }
         '
     )"
     if [ -z "$candidate" ] &&

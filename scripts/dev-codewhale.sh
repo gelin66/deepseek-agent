@@ -8,8 +8,12 @@ if command -v rustup >/dev/null 2>&1; then
   pinned_channel="$(
     awk -F '"' '/^channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml
   )"
-  if ! rustup toolchain list | awk '{ print $1 }' |
-    grep -Eq "^${pinned_channel}(-|$)"; then
+  installed_toolchains="$(cd "${TMPDIR:-/tmp}" && rustup toolchain list)"
+  if ! printf '%s\n' "$installed_toolchains" |
+    awk -v expected="$pinned_channel" '
+      $1 == expected || index($1, expected "-") == 1 { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
     stable_version="$(rustup run stable rustc --version | awk '{ print $2; exit }')"
     if [[ "$stable_version" == "$pinned_channel" ]]; then
       export RUSTUP_TOOLCHAIN=stable
