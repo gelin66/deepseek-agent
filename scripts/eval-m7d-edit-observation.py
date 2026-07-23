@@ -1,48 +1,49 @@
 #!/usr/bin/env python3
-"""Current-production M7-D edit failure observation baseline.
+"""RuntimeEvent v16-native M7-D edit observation readiness gate.
 
-The runner reuses the frozen M7-A task executor and canonical Run API.  It
-adds only a projection of RuntimeEvent v16 ToolOutcome.failure_code; it does
-not implement, repair, retry, or otherwise emulate an editor.
+This evaluator only projects facts already owned by AgentRuntime and RunStore.
+It has no model transport, credential, editor, retry, or write-execution path.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 from collections import Counter, defaultdict
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "eval/manifests/m7-d-edit-observation-v1.json"
-TASK_MANIFEST_PATH = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
-EXECUTOR_PATH = ROOT / "scripts/eval-m7-agent-convergence.py"
+TEST_PATH = ROOT / "scripts/test-eval-m7d-edit-observation.py"
 EXPECTED_SCHEMA = "codewhale.eval.m7-d-edit-observation.v1"
-RESULT_SCHEMA = "codewhale.eval.m7-d-edit-observation-result.v1"
-OFFLINE_SCHEMA = "codewhale.eval.m7-d-edit-observation-offline.v1"
-TASK_IDS = ("t1", "t2", "t3", "t4", "t5")
-EDIT_TOOLS = {"apply_patch", "edit_file"}
+OFFLINE_SCHEMA = "codewhale.eval.m7-d-edit-observation-offline.v2"
 TARGET_DIR = "/private/tmp/codewhale-m7d-target"
-USAGE_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_hit_tokens",
-    "cache_miss_tokens",
-    "cache_write_tokens",
-    "reasoning_tokens",
-    "reasoning_replay_tokens",
-)
+EDIT_TOOLS = {"apply_patch", "edit_file"}
+SUCCESS_AXES = ("accepted", "succeeded", "succeeded")
+KNOWN_FAILURE_CODES = {
+    "malformed_arguments",
+    "schema_validation",
+    "invocation_rejected",
+    "unknown_tool",
+    "missing_field",
+    "invalid_field",
+    "workspace_precondition",
+    "stale_read",
+    "ambiguous_edit",
+    "patch_parse",
+    "operation_failed",
+    "transport_failed",
+    "side_effect_ambiguous",
+    "verifier_failed",
+}
 
 
 class ObservationError(RuntimeError):
@@ -52,7 +53,11 @@ class ObservationError(RuntimeError):
         self.details = details or {}
 
 
-def require(condition: bool, code: str, details: dict[str, Any] | None = None) -> None:
+def require(
+    condition: bool,
+    code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
     if not condition:
         raise ObservationError(code, details)
 
@@ -87,217 +92,459 @@ def load_json(path: Path, code: str) -> dict[str, Any]:
 def load_manifest() -> dict[str, Any]:
     value = load_json(MANIFEST_PATH, "manifest_unavailable")
     require(value.get("schema") == EXPECTED_SCHEMA, "manifest_schema_mismatch")
-    experiment = value.get("experiment", {})
+    source = value.get("source_identity", {})
     require(
-        experiment.get("runs_per_task") == 3
-        and experiment.get("formal_arms") == 15
-        and experiment.get("maximum_reruns") == 0
-        and tuple(value.get("task_source", {}).get("task_ids", [])) == TASK_IDS,
-        "manifest_schedule_invalid",
+        source.get("runtime_event") == 16
+        and source.get("run_api") == 10
+        and source.get("state_schema") == 21
+        and source.get("exec_stream") == 2,
+        "manifest_protocol_identity_invalid",
     )
-    schedule = experiment.get("round_order")
+    observation = value.get("observation_contract", {})
     require(
-        isinstance(schedule, list)
-        and len(schedule) == 3
-        and all(sorted(round_tasks) == sorted(TASK_IDS) for round_tasks in schedule),
-        "manifest_round_order_invalid",
+        observation.get("lifecycle_identity") == "operation_id"
+        and observation.get("product_metric_eligible") is False,
+        "manifest_observation_contract_invalid",
+    )
+    admission = value.get("admission", {})
+    require(
+        admission
+        == {
+            "status": "inadmissible_no_treatment_delta",
+            "reason": admission.get("reason"),
+            "credential_read": False,
+            "official_api_requests": 0,
+            "release_binary_required": False,
+        },
+        "manifest_admission_invalid",
+    )
+    output = value.get("output", {})
+    require(
+        output.get("offline_result_name")
+        == f"m7-d-edit-observation-offline-{source.get('production_revision', '')[:8]}.json"
+        and output.get("mode") == "0600"
+        and output.get("maximum_reruns") == 0
+        and output.get("replace") is False,
+        "manifest_output_contract_invalid",
     )
     resources = value.get("resources", {})
     require(
-        resources.get("cargo_target_dir") == TARGET_DIR
-        and resources.get("transport_max_retries_per_request") == 0,
+        resources.get("cargo_incremental") == "0"
+        and resources.get("cargo_target_dir") == TARGET_DIR
+        and resources.get("network") == "forbidden",
         "manifest_resources_invalid",
     )
     buckets = value.get("failure_buckets", {})
     codes = [code for values in buckets.values() for code in values]
-    require(len(codes) == len(set(codes)), "failure_bucket_overlap")
+    require(
+        set(codes) == KNOWN_FAILURE_CODES and len(codes) == len(set(codes)),
+        "failure_bucket_contract_invalid",
+    )
+    gates = value.get("offline_gates")
+    require(
+        isinstance(gates, list)
+        and len(gates) == 14
+        and len({gate.get("id") for gate in gates if isinstance(gate, dict)}) == 14
+        and all(
+            isinstance(gate, dict)
+            and isinstance(gate.get("command"), list)
+            and gate["command"]
+            and all(isinstance(part, str) and part for part in gate["command"])
+            for gate in gates
+        ),
+        "offline_gate_contract_invalid",
+    )
+    encoded = canonical_bytes(value)
+    require(
+        b"key.txt" not in encoded
+        and b"credential_admission" not in encoded
+        and b"--acknowledge-cost" not in encoded,
+        "credential_surface_must_not_exist",
+    )
     return value
 
 
 MANIFEST = load_manifest()
 
 
-def load_executor() -> Any:
-    spec = importlib.util.spec_from_file_location("codewhale_m7d_executor", EXECUTOR_PATH)
-    require(spec is not None and spec.loader is not None, "executor_unavailable")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+def event_kind(stored: dict[str, Any]) -> str | None:
+    event = stored.get("event")
+    return event.get("kind") if isinstance(event, dict) else None
 
 
-EXECUTOR = load_executor()
-ORIGINAL_EVENT_LEDGER_VALID = EXECUTOR.event_ledger_valid
-ORIGINAL_VERIFICATION_SUMMARY = EXECUTOR.verification_summary
-ORIGINAL_TOOL_SUMMARY = EXECUTOR.tool_summary
+def nonempty(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
-def v16_as_v14(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Project the unchanged v14 completion contract inside a v16 envelope."""
-    return [{**stored, "schema_version": 14} for stored in events]
-
-
-def event_ledger_valid_v16(events: list[dict[str, Any]], run: dict[str, Any]) -> bool:
-    return ORIGINAL_EVENT_LEDGER_VALID(v16_as_v14(events), run)
-
-
-def verification_summary_v16(
-    task_id: str,
-    events: list[dict[str, Any]],
-    run: dict[str, Any],
-    expected_workspace: str,
-) -> dict[str, Any]:
-    result = ORIGINAL_VERIFICATION_SUMMARY(
-        task_id,
-        v16_as_v14(events),
-        run,
-        expected_workspace,
+def _validate_envelope(events: list[dict[str, Any]]) -> None:
+    require(bool(events), "event_ledger_empty")
+    require(
+        all(isinstance(stored, dict) for stored in events),
+        "stored_event_shape_invalid",
     )
-    result["runtime_event_schema"] = 16
-    result["completion_contract_projection"] = "v14_fields_inside_v16_envelope"
-    return result
+    require(
+        all(stored.get("schema_version") == 16 for stored in events),
+        "runtime_event_schema_mismatch",
+    )
+    run_ids = {stored.get("run_id") for stored in events}
+    require(
+        len(run_ids) == 1 and nonempty(next(iter(run_ids))),
+        "event_run_identity_mismatch",
+    )
+    sequences = [stored.get("sequence") for stored in events]
+    require(
+        all(isinstance(sequence, int) and not isinstance(sequence, bool) for sequence in sequences)
+        and sequences == list(range(1, len(events) + 1)),
+        "event_sequence_invalid",
+    )
+    event_ids = [stored.get("event_id") for stored in events]
+    require(
+        all(nonempty(event_id) for event_id in event_ids)
+        and len(event_ids) == len(set(event_ids)),
+        "event_id_invalid",
+    )
+    require(
+        all(isinstance(stored.get("event"), dict) for stored in events),
+        "runtime_event_shape_invalid",
+    )
 
 
-def tool_summary_v16(events: list[dict[str, Any]]) -> dict[str, Any]:
-    result = ORIGINAL_TOOL_SUMMARY(events)
-    prepared: dict[str, dict[str, Any]] = {}
-    model_request_sequences = [
-        stored.get("sequence")
-        for stored in events
-        if EXECUTOR.event_kind(stored) == "model_request_prepared"
-        and isinstance(stored.get("sequence"), int)
-    ]
+def _outcome_success(outcome: dict[str, Any]) -> bool:
+    return (
+        outcome.get("invocation"),
+        outcome.get("transport"),
+        outcome.get("operation"),
+    ) == SUCCESS_AXES
+
+
+def _validate_outcome(outcome: Any) -> bool:
+    require(isinstance(outcome, dict), "tool_outcome_shape_invalid")
+    success = _outcome_success(outcome)
+    failure_code = outcome.get("failure_code")
+    if success:
+        require(failure_code is None, "successful_outcome_has_failure_code")
+        require(
+            outcome.get("retry") == "not_needed",
+            "successful_outcome_retry_invalid",
+        )
+    else:
+        require(
+            failure_code in KNOWN_FAILURE_CODES,
+            "unsuccessful_outcome_missing_failure_code",
+        )
+    require(
+        outcome.get("invocation") in {"accepted", "rejected"}
+        and outcome.get("transport")
+        in {"not_started", "succeeded", "failed", "indeterminate"}
+        and outcome.get("operation")
+        in {"not_started", "succeeded", "failed", "cancelled", "indeterminate"}
+        and outcome.get("side_effect")
+        in {"not_applicable", "not_applied", "applied", "indeterminate"}
+        and outcome.get("retry")
+        in {"not_needed", "after_correction", "safe", "unsafe", "not_retryable"},
+        "tool_outcome_axes_invalid",
+    )
+    return success
+
+
+def _target_identity(name: str, invocation: dict[str, Any]) -> str | None:
+    arguments = invocation.get("arguments")
+    parsed = arguments.get("parsed") if isinstance(arguments, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    paths: list[str] | None = None
+    if name == "edit_file":
+        path = parsed.get("path")
+        if nonempty(path):
+            paths = [path]
+    elif name == "apply_patch":
+        path = parsed.get("path")
+        changes = parsed.get("changes")
+        if nonempty(path):
+            paths = [path]
+        elif isinstance(changes, list) and changes:
+            candidates = [
+                change.get("path") if isinstance(change, dict) else None
+                for change in changes
+            ]
+            if all(nonempty(candidate) for candidate in candidates):
+                paths = sorted(set(candidates))
+    return digest_bytes(canonical_bytes(paths)) if paths else None
+
+
+def _workspace_revision(event: dict[str, Any]) -> dict[str, Any] | None:
+    state = event.get("workspace_state")
+    revision = state.get("revision") if isinstance(state, dict) else None
+    if not isinstance(revision, dict):
+        return None
+    status = revision.get("status")
+    if status == "known" and nonempty(revision.get("sha256")):
+        return {"status": "known", "sha256": revision["sha256"]}
+    if status == "unknown" and nonempty(revision.get("reason")):
+        return {"status": "unknown", "reason": revision["reason"]}
+    raise ObservationError("workspace_revision_shape_invalid")
+
+
+def project_edit_observation(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project edit failures without emulating Runtime or either editor."""
+
+    _validate_envelope(events)
+    prepared: dict[str, tuple[int, dict[str, Any]]] = {}
+    started: dict[str, int] = {}
+    committed: dict[str, tuple[int, dict[str, Any]]] = {}
+    model_request_sequences: list[int] = []
+
     for stored in events:
-        if EXECUTOR.event_kind(stored) != "tool_prepared":
+        sequence = stored["sequence"]
+        event = stored["event"]
+        kind = event_kind(stored)
+        if kind == "model_request_prepared":
+            model_request_sequences.append(sequence)
             continue
-        event = stored.get("event", {})
-        invocation = event.get("invocation", {})
-        call_id = invocation.get("call_id")
-        if isinstance(call_id, str):
-            prepared[call_id] = {
-                "sequence": stored.get("sequence"),
-                "name": invocation.get("name"),
-                "arguments_sha256": EXECUTOR.canonical_hash(invocation.get("arguments")),
-            }
+        if kind == "tool_prepared":
+            operation_id = event.get("operation_id")
+            require(nonempty(operation_id), "tool_operation_id_invalid")
+            require(operation_id not in prepared, "duplicate_tool_prepared")
+            invocation = event.get("invocation")
+            require(
+                isinstance(invocation, dict)
+                and invocation.get("run_id") == stored.get("run_id")
+                and nonempty(invocation.get("call_id"))
+                and nonempty(invocation.get("name")),
+                "tool_prepared_invocation_invalid",
+            )
+            prepared[operation_id] = (sequence, event)
+        elif kind == "tool_execution_started":
+            operation_id = event.get("operation_id")
+            require(
+                nonempty(operation_id) and operation_id in prepared,
+                "tool_started_without_prepared",
+            )
+            require(operation_id not in started, "duplicate_tool_started")
+            require(prepared[operation_id][0] < sequence, "tool_lifecycle_order_invalid")
+            started[operation_id] = sequence
+        elif kind == "tool_outcome_committed":
+            operation_id = event.get("operation_id")
+            require(
+                nonempty(operation_id) and operation_id in prepared,
+                "tool_outcome_without_prepared",
+            )
+            require(operation_id not in committed, "duplicate_tool_outcome")
+            prepared_sequence, prepared_event = prepared[operation_id]
+            invocation = prepared_event["invocation"]
+            require(
+                prepared_sequence < sequence
+                and event.get("call_id") == invocation.get("call_id")
+                and event.get("name") == invocation.get("name"),
+                "tool_outcome_identity_mismatch",
+            )
+            success = _validate_outcome(event.get("outcome"))
+            started_sequence = started.get(operation_id)
+            if started_sequence is None:
+                require(
+                    not success
+                    and event["outcome"].get("side_effect")
+                    in {"not_applied", "not_applicable"},
+                    "tool_outcome_missing_started",
+                )
+            else:
+                require(
+                    prepared_sequence < started_sequence < sequence,
+                    "tool_lifecycle_order_invalid",
+                )
+                require(
+                    event["outcome"].get("invocation") == "accepted"
+                    and event["outcome"].get("operation") != "not_started",
+                    "started_tool_outcome_invalid",
+                )
+            committed[operation_id] = (sequence, event)
+
     attempts: list[dict[str, Any]] = []
-    for stored in events:
-        if EXECUTOR.event_kind(stored) != "tool_outcome_committed":
-            continue
-        event = stored.get("event", {})
-        name = event.get("name")
+    for operation_id, (outcome_sequence, event) in sorted(
+        committed.items(),
+        key=lambda value: value[1][0],
+    ):
+        name = event["name"]
         if name not in EDIT_TOOLS:
             continue
-        outcome = event.get("outcome", {})
-        call_id = event.get("call_id")
-        source = prepared.get(call_id, {}) if isinstance(call_id, str) else {}
-        revision = outcome.get("workspace_revision")
-        success = bool(
-            outcome.get("invocation") == "accepted"
-            and outcome.get("transport") == "succeeded"
-            and outcome.get("operation") == "succeeded"
-            and outcome.get("failure_code") is None
-        )
-        attempts.append(
-            {
-                "prepared_sequence": source.get("sequence"),
-                "outcome_sequence": stored.get("sequence"),
-                "name": name,
-                "arguments_sha256": source.get("arguments_sha256"),
-                "success": success,
-                "failure_code": outcome.get("failure_code"),
-                "invocation": outcome.get("invocation"),
-                "transport": outcome.get("transport"),
-                "operation": outcome.get("operation"),
-                "side_effect": outcome.get("side_effect"),
-                "retry": outcome.get("retry"),
-                "workspace_revision_sha256": (
-                    digest_bytes(revision.encode("utf-8"))
-                    if isinstance(revision, str)
-                    else None
-                ),
-            }
-        )
+        prepared_sequence, prepared_event = prepared[operation_id]
+        invocation = prepared_event["invocation"]
+        outcome = event["outcome"]
+        success = _outcome_success(outcome)
+        target_identity = _target_identity(name, invocation)
+        attempt = {
+            "operation_id": operation_id,
+            "call_id": event["call_id"],
+            "name": name,
+            "prepared_sequence": prepared_sequence,
+            "started_sequence": started.get(operation_id),
+            "outcome_sequence": outcome_sequence,
+            "arguments_sha256": digest_bytes(
+                canonical_bytes(invocation.get("arguments"))
+            ),
+            "target_identity_sha256": target_identity,
+            "success": success,
+            "failure_code": outcome.get("failure_code"),
+            "invocation": outcome.get("invocation"),
+            "transport": outcome.get("transport"),
+            "operation": outcome.get("operation"),
+            "side_effect": outcome.get("side_effect"),
+            "retry": outcome.get("retry"),
+            "workspace_revision": _workspace_revision(event),
+        }
+        if not success:
+            attempt["recovered"] = None if target_identity is None else False
+            attempt["model_requests_to_recovery"] = None
+        attempts.append(attempt)
+
     for index, attempt in enumerate(attempts):
-        if attempt["success"]:
+        if attempt["success"] or attempt["target_identity_sha256"] is None:
             continue
-        later_success = next(
-            (candidate for candidate in attempts[index + 1 :] if candidate["success"]),
-            None,
-        )
-        attempt["recovered"] = later_success is not None
-        if later_success is not None:
-            lower = attempt.get("outcome_sequence")
-            upper = later_success.get("prepared_sequence")
-            attempt["model_requests_to_recovery"] = sum(
-                isinstance(lower, int)
-                and isinstance(upper, int)
-                and lower < sequence < upper
-                for sequence in model_request_sequences
+        for candidate in attempts[index + 1 :]:
+            if (
+                candidate["success"]
+                and candidate["name"] == attempt["name"]
+                and candidate["target_identity_sha256"]
+                == attempt["target_identity_sha256"]
+            ):
+                requests = [
+                    sequence
+                    for sequence in model_request_sequences
+                    if attempt["outcome_sequence"]
+                    < sequence
+                    < candidate["prepared_sequence"]
+                ]
+                if requests:
+                    attempt["recovered"] = True
+                    attempt["model_requests_to_recovery"] = len(requests)
+                    attempt["recovery_operation_id"] = candidate["operation_id"]
+                    break
+
+    incomplete: list[dict[str, Any]] = []
+    for operation_id, started_sequence in sorted(
+        started.items(), key=lambda value: value[1]
+    ):
+        if operation_id in committed:
+            continue
+        prepared_sequence, prepared_event = prepared[operation_id]
+        invocation = prepared_event["invocation"]
+        if (
+            invocation.get("name") in EDIT_TOOLS
+            and prepared_event.get("workspace_access") == "may_write"
+        ):
+            incomplete.append(
+                {
+                    "operation_id": operation_id,
+                    "name": invocation["name"],
+                    "prepared_sequence": prepared_sequence,
+                    "started_sequence": started_sequence,
+                    "target_identity_sha256": _target_identity(
+                        invocation["name"], invocation
+                    ),
+                }
             )
+
     failures = [attempt for attempt in attempts if not attempt["success"]]
-    result["edit_attempts"] = attempts
-    result["edit_observation"] = {
+    code_to_bucket = {
+        code: bucket
+        for bucket, codes in MANIFEST["failure_buckets"].items()
+        for code in codes
+    }
+    bucket_counts = Counter(
+        code_to_bucket[attempt["failure_code"]] for attempt in failures
+    )
+    committed_ambiguities = sum(
+        attempt["side_effect"] == "indeterminate" for attempt in failures
+    )
+    return {
+        "edit_attempts": attempts,
         "attempts": len(attempts),
         "successes": sum(attempt["success"] for attempt in attempts),
         "first_attempt_success": attempts[0]["success"] if attempts else None,
-        "first_success_ordinal": next(
-            (index for index, attempt in enumerate(attempts, start=1) if attempt["success"]),
-            None,
-        ),
         "failure_codes": dict(
-            sorted(Counter(attempt.get("failure_code") for attempt in failures).items())
+            sorted(Counter(attempt["failure_code"] for attempt in failures).items())
         ),
-        "recovered_failures": sum(attempt.get("recovered") is True for attempt in failures),
-        "unrecovered_failures": sum(attempt.get("recovered") is False for attempt in failures),
+        "failure_buckets": dict(sorted(bucket_counts.items())),
+        "recovered_failures": sum(
+            attempt.get("recovered") is True for attempt in failures
+        ),
+        "unrecovered_failures": sum(
+            attempt.get("recovered") is False for attempt in failures
+        ),
+        "unscorable_recovery_failures": sum(
+            attempt.get("recovered") is None for attempt in failures
+        ),
         "model_requests_to_recovery": [
             attempt["model_requests_to_recovery"]
             for attempt in failures
             if isinstance(attempt.get("model_requests_to_recovery"), int)
         ],
+        "incomplete_write_operations": len(incomplete),
+        "incomplete_write_facts": incomplete,
+        "indeterminate_committed_side_effects": committed_ambiguities,
+        "transaction_ambiguities": committed_ambiguities + len(incomplete),
+        "normal_run_crash_frequency_claim_admissible": False,
     }
-    return result
 
 
-def configure_executor() -> None:
-    task_manifest = load_json(TASK_MANIFEST_PATH, "task_manifest_unavailable")
-    require(
-        digest_file(TASK_MANIFEST_PATH) == MANIFEST["task_source"]["sha256"],
-        "task_manifest_identity_mismatch",
+def decide(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply preregistered cross-task admission rules to projected records."""
+
+    bucket_totals: Counter[str] = Counter()
+    bucket_tasks: defaultdict[str, set[str]] = defaultdict(set)
+    transaction_ambiguities = 0
+    for record in records:
+        task_id = record.get("task_id")
+        observation = record.get("observation")
+        require(
+            nonempty(task_id) and isinstance(observation, dict),
+            "observation_record_invalid",
+        )
+        for bucket, count in observation.get("failure_buckets", {}).items():
+            require(
+                bucket in MANIFEST["failure_buckets"]
+                and isinstance(count, int)
+                and count >= 0,
+                "observation_bucket_invalid",
+            )
+            bucket_totals[bucket] += count
+            if count:
+                bucket_tasks[bucket].add(task_id)
+        value = observation.get("transaction_ambiguities", 0)
+        require(
+            isinstance(value, int) and value >= 0,
+            "transaction_observation_invalid",
+        )
+        transaction_ambiguities += value
+
+    rules = MANIFEST["decision_rules"]
+    failures_needed = rules["minimum_typed_failures_for_mechanism"]
+    tasks_needed = rules["minimum_tasks_with_same_bucket"]
+    patch = (
+        bucket_totals["patch_generation"] >= failures_needed
+        and len(bucket_tasks["patch_generation"]) >= tasks_needed
     )
-    configured = copy.deepcopy(task_manifest)
-    source = MANIFEST["source_identity"]
-    resources = copy.deepcopy(MANIFEST["resources"])
-    resources["reasoning_effort"] = MANIFEST["experiment"]["reasoning_effort"]
-    identity = {
-        "revision": source["revision"],
-        "source_tree": source["source_tree"],
-        "version": source["binary_version"],
-        "size_bytes": source["binary_size_bytes"],
-        "sha256": source["binary_sha256"],
+    recovery = (
+        bucket_totals["edit_recovery"] >= failures_needed
+        and len(bucket_tasks["edit_recovery"]) >= tasks_needed
+    )
+    if transaction_ambiguities:
+        decision = "admit_transaction_investigation"
+    elif patch:
+        decision = "admit_patch_generation_treatment"
+    elif recovery:
+        decision = "admit_edit_recovery_treatment"
+    else:
+        decision = "no_edit_mechanism_admitted"
+    return {
+        "decision": decision,
+        "failure_buckets": dict(sorted(bucket_totals.items())),
+        "tasks_per_bucket": {
+            bucket: sorted(tasks) for bucket, tasks in sorted(bucket_tasks.items())
+        },
+        "transaction_ambiguities": transaction_ambiguities,
+        "product_metric_eligible": False,
     }
-    configured["binary_identities"] = {
-        "baseline": copy.deepcopy(identity),
-        "candidate": copy.deepcopy(identity),
-    }
-    configured["protocol_schemas"] = {
-        "baseline": {"run_api": 10, "runtime_event": 16, "state": 21},
-        "candidate": {"run_api": 10, "runtime_event": 16, "state": 21},
-    }
-    configured["experiment"]["model"] = MANIFEST["experiment"]["model"]
-    configured["experiment"]["round_order"] = MANIFEST["experiment"]["round_order"]
-    configured["resources"] = resources
-    EXECUTOR.MANIFEST = configured
-    EXECUTOR.RESOURCES = resources
-    EXECUTOR.MODEL = MANIFEST["experiment"]["model"]
-    EXECUTOR.RUN_API_SCHEMA = 10
-    EXECUTOR.CANARY.RUN_API = 10
-    EXECUTOR.CANARY.EVENT_API = 16
-    EXECUTOR.event_ledger_valid = event_ledger_valid_v16
-    EXECUTOR.verification_summary = verification_summary_v16
-    EXECUTOR.tool_summary = tool_summary_v16
-
-
-configure_executor()
 
 
 def git(*arguments: str) -> str:
@@ -317,34 +564,21 @@ def git(*arguments: str) -> str:
 
 def source_identity() -> dict[str, Any]:
     frozen = MANIFEST["source_identity"]
-    binary = Path(frozen["binary_path"])
-    require(binary.is_file() and os.access(binary, os.X_OK), "binary_unavailable")
-    version = subprocess.run(
-        [str(binary), "--version"],
-        cwd=ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    revision = frozen["production_revision"]
     require(
-        version.returncode == 0
-        and version.stdout.strip() == frozen["binary_version"]
-        and digest_file(binary) == frozen["binary_sha256"]
-        and binary.stat().st_size == frozen["binary_size_bytes"]
-        and git("rev-parse", f"{frozen['revision']}^{{tree}}") == frozen["source_tree"]
+        git("rev-parse", f"{revision}^{{tree}}") == frozen["production_tree"]
         and digest_file(ROOT / "Cargo.lock") == frozen["cargo_lock_sha256"]
-        and digest_file(ROOT / "rust-toolchain.toml") == frozen["rust_toolchain_sha256"],
-        "binary_identity_mismatch",
+        and digest_file(ROOT / "rust-toolchain.toml")
+        == frozen["rust_toolchain_sha256"],
+        "production_source_identity_mismatch",
     )
     return {
-        "revision": frozen["revision"],
-        "source_tree": frozen["source_tree"],
-        "binary_sha256": frozen["binary_sha256"],
-        "binary_size_bytes": frozen["binary_size_bytes"],
-        "binary_version": frozen["binary_version"],
+        "production_revision": revision,
+        "production_tree": frozen["production_tree"],
+        "run_api": frozen["run_api"],
+        "runtime_event": frozen["runtime_event"],
+        "state_schema": frozen["state_schema"],
+        "exec_stream": frozen["exec_stream"],
     }
 
 
@@ -356,92 +590,105 @@ def repository_identity() -> dict[str, Any]:
     }
 
 
-def output_path(value: str) -> Path:
+def output_path(value: str | Path, allowed_root: Path | None = None) -> Path:
+    allowed = (
+        allowed_root.resolve()
+        if allowed_root is not None
+        else (ROOT / MANIFEST["output"]["directory"]).resolve()
+    )
     path = Path(value).expanduser().resolve()
-    allowed = (ROOT / "eval/results").resolve()
-    require(path.parent == allowed and path.name.endswith(".json"), "output_path_not_allowed")
+    expected = allowed / MANIFEST["output"]["offline_result_name"]
+    require(path == expected, "output_path_not_manifest_bound")
+    require(not path.is_symlink(), "output_symlink_rejected")
     return path
 
 
-def write_private(path: Path, value: dict[str, Any], *, replace: bool) -> None:
+def write_private_once(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    require(not path.is_symlink(), "output_symlink_rejected")
-    if not replace:
-        require(not path.exists(), "output_already_exists")
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    require(not path.exists() and not path.is_symlink(), "output_already_exists")
+    descriptor: int | None = None
     try:
-        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
-            stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode())
+            descriptor = None
+            stream.write(
+                json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode(
+                    "utf-8"
+                )
+            )
             stream.write(b"\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        require(stat.S_IMODE(path.stat().st_mode) == 0o600, "output_mode_invalid")
+        require(
+            stat.S_IMODE(path.stat().st_mode) == 0o600,
+            "output_mode_invalid",
+        )
     except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
         try:
-            os.unlink(temporary)
+            path.unlink()
         except FileNotFoundError:
             pass
         raise
 
 
-def self_test() -> dict[str, Any]:
-    source_identity()
-    synthetic = [
-        {
-            "schema_version": 16,
-            "sequence": 1,
-            "event": {
-                "kind": "tool_prepared",
-                "invocation": {
-                    "call_id": "call-1",
-                    "name": "apply_patch",
-                    "arguments": {"raw": "{}", "parsed": {}},
-                },
-            },
-        },
-        {
-            "schema_version": 16,
-            "sequence": 2,
-            "event": {
-                "kind": "tool_outcome_committed",
-                "call_id": "call-1",
-                "name": "apply_patch",
-                "outcome": {
-                    "invocation": "accepted",
-                    "transport": "succeeded",
-                    "operation": "failed",
-                    "side_effect": "not_applied",
-                    "retry": "after_correction",
-                    "failure_code": "patch_parse",
-                    "evidence": {"status": "none", "references": []},
-                    "artifacts": [],
-                    "workspace_revision": None,
-                },
-            },
-        },
-    ]
-    observed = tool_summary_v16(synthetic)["edit_observation"]
-    require(
-        observed["failure_codes"] == {"patch_parse": 1}
-        and observed["unrecovered_failures"] == 1,
-        "failure_projection_self_test_failed",
+def _regression_result() -> dict[str, Any]:
+    completed = subprocess.run(
+        ["python3", str(TEST_PATH)],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=120,
+        check=False,
     )
+    require(
+        completed.returncode == 0,
+        "projector_regression_failed",
+        {
+            "stdout_sha256": digest_bytes(completed.stdout),
+            "stderr_sha256": digest_bytes(completed.stderr),
+        },
+    )
+    return {
+        "tests": 13,
+        "stdout_sha256": digest_bytes(completed.stdout),
+        "stderr_sha256": digest_bytes(completed.stderr),
+    }
+
+
+def self_test(*, run_regression: bool = True) -> dict[str, Any]:
+    identity = source_identity()
+    regression = _regression_result() if run_regression else {"tests": 13}
     return {
         "status": "pass",
         "manifest_sha256": digest_file(MANIFEST_PATH),
         "harness_sha256": digest_file(Path(__file__).resolve()),
-        "task_manifest_sha256": digest_file(TASK_MANIFEST_PATH),
-        "binary_sha256": MANIFEST["source_identity"]["binary_sha256"],
+        "test_sha256": digest_file(TEST_PATH),
+        "source_identity": identity,
+        "regression": regression,
+        "credential_read": False,
+        "official_api_requests": 0,
     }
 
 
-def run_gate(command: list[str]) -> dict[str, Any]:
+def run_gate(identifier: str, command: list[str]) -> dict[str, Any]:
     environment = os.environ.copy()
     environment["CARGO_INCREMENTAL"] = "0"
     environment["CARGO_TARGET_DIR"] = TARGET_DIR
-    started = time.monotonic()
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "CODEWHALE_DEEPSEEK_API_KEY",
+    ):
+        environment.pop(name, None)
+    started_at = time.monotonic()
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -449,302 +696,78 @@ def run_gate(command: list[str]) -> dict[str, Any]:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=3_600,
+        timeout=MANIFEST["resources"]["gate_timeout_seconds"],
         check=False,
     )
     return {
+        "id": identifier,
         "command": command,
         "exit_code": completed.returncode,
         "stdout_sha256": digest_bytes(completed.stdout),
         "stderr_sha256": digest_bytes(completed.stderr),
-        "wall_time_ms": int((time.monotonic() - started) * 1_000),
+        "wall_time_ms": int((time.monotonic() - started_at) * 1_000),
     }
 
 
 def offline(output: Path) -> dict[str, Any]:
-    require(not repository_identity()["dirty"], "repository_must_be_clean")
-    identity = repository_identity()
+    before = repository_identity()
+    require(not before["dirty"], "repository_must_be_clean")
     gates = [
-        run_gate(["cargo", "test", "-p", "codewhale-tools", "--locked", "m7c_"]),
-        run_gate(["cargo", "test", "-p", "codewhale-app", "--locked", "m7c_"]),
-        run_gate(["cargo", "test", "-p", "codewhale-state", "--locked", "tool_prepared_sigkill_executes_once_after_sqlite_reopen"]),
-        run_gate(["cargo", "test", "-p", "codewhale-state", "--locked", "tool_side_effect_crash_is_not_executed_twice_after_reopen"]),
-        run_gate(["cargo", "test", "-p", "codewhale-state", "--locked", "tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen"]),
-        run_gate(["cargo", "test", "-p", "codewhale-app-server", "--locked", "sigkill_app_server_recovers_same_run_and_terminal_replays_without_key"]),
-        run_gate(["./scripts/dev-deepseek-agent.sh", "focused"]),
-        run_gate(["cargo", "fmt", "--all", "--", "--check"]),
+        run_gate(gate["id"], gate["command"]) for gate in MANIFEST["offline_gates"]
     ]
     after = repository_identity()
     record = {
         "schema": OFFLINE_SCHEMA,
         "suite_id": MANIFEST["suite_id"],
-        **self_test(),
-        "repository_before": identity,
+        **self_test(run_regression=False),
+        "repository_before": before,
         "repository_after": after,
         "gates": gates,
-        "passed": identity == after and not identity["dirty"] and all(gate["exit_code"] == 0 for gate in gates),
+        "passed": before == after
+        and not after["dirty"]
+        and all(gate["exit_code"] == 0 for gate in gates),
+        "admission": MANIFEST["admission"],
         "credential_read": False,
-        "api_requests": 0,
+        "official_api_requests": 0,
     }
-    write_private(output, record, replace=False)
+    write_private_once(output, record)
     return record
 
 
-def verify_offline(path: Path) -> dict[str, Any]:
-    value = load_json(path, "offline_record_unavailable")
-    current = repository_identity()
-    require(
-        value.get("schema") == OFFLINE_SCHEMA
-        and value.get("suite_id") == MANIFEST["suite_id"]
-        and value.get("passed") is True
-        and value.get("manifest_sha256") == digest_file(MANIFEST_PATH)
-        and value.get("harness_sha256") == digest_file(Path(__file__).resolve())
-        and value.get("binary_sha256") == MANIFEST["source_identity"]["binary_sha256"]
-        and value.get("repository_before") == value.get("repository_after") == current
-        and not current["dirty"],
-        "offline_record_identity_mismatch",
-    )
-    return value
-
-
-def classify_arm(arm: dict[str, Any]) -> dict[str, Any]:
-    attempts = list(arm.get("tool", {}).get("edit_attempts", []))
-    for child in arm.get("child", {}).get("children", []):
-        attempts.extend(child.get("tool", {}).get("edit_attempts", []))
-    buckets: Counter[str] = Counter()
-    code_to_bucket = {
-        code: bucket
-        for bucket, codes in MANIFEST["failure_buckets"].items()
-        for code in codes
-    }
-    for attempt in attempts:
-        if attempt.get("success"):
-            continue
-        buckets[code_to_bucket.get(attempt.get("failure_code"), "unclassified")] += 1
-    failures = [attempt for attempt in attempts if not attempt.get("success")]
-    return {
-        "edit_attempts": len(attempts),
-        "edit_successes": sum(attempt.get("success") is True for attempt in attempts),
-        "first_edit_success": attempts[0].get("success") if attempts else None,
-        "failure_codes": dict(
-            sorted(Counter(attempt.get("failure_code") for attempt in failures).items())
-        ),
-        "failure_buckets": dict(sorted(buckets.items())),
-        "recovered_failures": sum(attempt.get("recovered") is True for attempt in failures),
-        "unrecovered_failures": sum(attempt.get("recovered") is False for attempt in failures),
-        "model_requests_to_recovery": [
-            attempt["model_requests_to_recovery"]
-            for attempt in failures
-            if isinstance(attempt.get("model_requests_to_recovery"), int)
-        ],
-    }
-
-
-def arm_stop_reason(arm: dict[str, Any]) -> str | None:
-    accounting = arm.get("accounting", {})
-    if accounting.get("billing_unknown") is True or accounting.get("billing_unknown_attempts", 0):
-        return "unknown_billing"
-    if not accounting.get("valid") or not arm.get("measurement_valid"):
-        return "incomplete_accounting_or_measurement"
-    if accounting.get("cost_nanousd", 0) > MANIFEST["resources"]["max_known_cost_nanousd_per_arm"]:
-        return "per_arm_cost_limit"
-    if arm.get("false_success"):
-        return "false_success"
-    if not all(
-        arm.get(field)
-        for field in (
-            "scope_valid",
-            "path_authority_valid",
-            "tool_authority_valid",
-            "child_authority_valid",
-        )
-    ):
-        return "authority_safety_failure"
-    return None
-
-
-def summarize(arms: list[dict[str, Any]], abort: dict[str, Any] | None) -> dict[str, Any]:
-    task_cells: dict[str, dict[str, Any]] = {}
-    bucket_totals: Counter[str] = Counter()
-    bucket_tasks: defaultdict[str, set[str]] = defaultdict(set)
-    failure_codes: Counter[str] = Counter()
-    total_usage = {field: 0 for field in USAGE_FIELDS}
-    for task_id in TASK_IDS:
-        selected = [arm for arm in arms if arm["task_id"] == task_id]
-        task_cells[task_id] = {
-            "arms": len(selected),
-            "verified_success": sum(arm["verified_success"] for arm in selected),
-            "false_success": sum(arm["false_success"] for arm in selected),
-            "first_edit_success": sum(arm["edit_observation"]["first_edit_success"] is True for arm in selected),
-            "edit_attempts": sum(arm["edit_observation"]["edit_attempts"] for arm in selected),
-        }
-    for arm in arms:
-        observation = arm["edit_observation"]
-        for bucket, count in observation["failure_buckets"].items():
-            bucket_totals[bucket] += count
-            if count:
-                bucket_tasks[bucket].add(arm["task_id"])
-        failure_codes.update(observation["failure_codes"])
-        for field in USAGE_FIELDS:
-            total_usage[field] += arm["accounting"]["usage"][field]
-    threshold = MANIFEST["decision_rules"]["minimum_typed_failures_for_mechanism"]
-    task_threshold = MANIFEST["decision_rules"]["minimum_tasks_with_same_bucket"]
-    patch_candidate = bucket_totals["patch_generation"] >= threshold and len(bucket_tasks["patch_generation"]) >= task_threshold
-    recovery_candidate = (
-        bucket_totals["edit_recovery"] >= threshold
-        and len(bucket_tasks["edit_recovery"]) >= task_threshold
-    ) or sum(arm["edit_observation"]["unrecovered_failures"] for arm in arms) >= threshold
-    transaction_candidate = bucket_totals["transaction_ambiguity"] >= 1
-    complete = abort is None and len(arms) == MANIFEST["experiment"]["formal_arms"]
-    if not complete:
-        decision = "hold_incomplete_observation"
-    elif transaction_candidate:
-        decision = "admit_transaction_investigation"
-    elif patch_candidate:
-        decision = "admit_patch_generation_treatment"
-    elif recovery_candidate:
-        decision = "admit_edit_recovery_treatment"
-    else:
-        decision = "no_edit_mechanism_admitted"
-    return {
-        "complete": complete,
-        "product_metric_eligible": False,
-        "decision": decision,
-        "arms": len(arms),
-        "verified_success": sum(arm["verified_success"] for arm in arms),
-        "false_success": sum(arm["false_success"] for arm in arms),
-        "first_edit_success": sum(arm["edit_observation"]["first_edit_success"] is True for arm in arms),
-        "edit_attempts": sum(arm["edit_observation"]["edit_attempts"] for arm in arms),
-        "edit_successes": sum(arm["edit_observation"]["edit_successes"] for arm in arms),
-        "recovered_failures": sum(arm["edit_observation"]["recovered_failures"] for arm in arms),
-        "unrecovered_failures": sum(arm["edit_observation"]["unrecovered_failures"] for arm in arms),
-        "failure_codes": dict(sorted(failure_codes.items())),
-        "failure_buckets": dict(sorted(bucket_totals.items())),
-        "tasks_per_bucket": {bucket: sorted(tasks) for bucket, tasks in sorted(bucket_tasks.items())},
-        "task_cells": task_cells,
-        "requests": sum(arm["accounting"]["requests"]["physical_attempts"] for arm in arms),
-        "usage": total_usage,
-        "cost_nanousd": sum(arm["accounting"]["cost_nanousd"] for arm in arms),
-        "cost_nanocny": sum(arm["accounting"]["cost_nanocny"] for arm in arms),
-        "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
-        "normal_run_crash_frequency_claim_admissible": False,
-    }
-
-
-def schedule() -> list[dict[str, Any]]:
-    return [
-        {"task_id": task_id, "run_index": run_index, "arm_position": position}
-        for run_index, tasks in enumerate(MANIFEST["experiment"]["round_order"], start=1)
-        for position, task_id in enumerate(tasks, start=1)
-    ]
-
-
-def live(output: Path, offline_record: Path, acknowledge_cost: bool) -> dict[str, Any]:
-    require(acknowledge_cost, "cost_acknowledgement_required")
-    require(not output.exists(), "output_already_exists")
-    verify_offline(offline_record)
-    binary_identity = source_identity()
-    key_path = Path(MANIFEST["credential_admission"]["key_path"])
-    key = EXECUTOR.CANARY.read_key(key_path)
-    record: dict[str, Any] = {
-        "schema": RESULT_SCHEMA,
-        "suite_id": MANIFEST["suite_id"],
-        "status": "running",
-        "manifest_sha256": digest_file(MANIFEST_PATH),
-        "harness_sha256": digest_file(Path(__file__).resolve()),
-        "task_manifest_sha256": digest_file(TASK_MANIFEST_PATH),
-        "binary_identity": binary_identity,
-        "evaluation_revision": repository_identity(),
-        "maximum_reruns": 0,
-        "credential_read": True,
-        "api_surface": MANIFEST["experiment"]["api_surface"],
-        "model": MANIFEST["experiment"]["model"],
-        "schedule": schedule(),
-        "active_arm": None,
-        "arms": [],
-        "abort": None,
-        "aggregate": None,
-    }
-    write_private(output, record, replace=False)
-    try:
-        for scheduled in record["schedule"]:
-            known_cost = sum(arm["accounting"]["cost_nanousd"] for arm in record["arms"])
-            headroom = MANIFEST["resources"]["max_known_cost_nanousd_per_arm"]
-            if known_cost + headroom > MANIFEST["resources"]["suite_known_cost_nanousd"]:
-                record["abort"] = {"code": "suite_cost_limit", "before_arm": scheduled}
-                break
-            record["active_arm"] = {**scheduled, "status": "reserved"}
-            write_private(output, record, replace=True)
-            arm = EXECUTOR.execute_arm(
-                scheduled["task_id"],
-                "candidate",
-                scheduled["run_index"],
-                Path(MANIFEST["source_identity"]["binary_path"]),
-                MANIFEST["source_identity"]["revision"],
-                key,
-            )
-            arm["variant"] = "current"
-            arm["arm_position"] = scheduled["arm_position"]
-            arm["edit_observation"] = classify_arm(arm)
-            record["arms"].append(arm)
-            record["active_arm"] = None
-            write_private(output, record, replace=True)
-            if reason := arm_stop_reason(arm):
-                record["abort"] = {
-                    "code": reason,
-                    "task_id": arm["task_id"],
-                    "run_index": arm["run_index"],
-                }
-                break
-    except (ObservationError, EXECUTOR.EvaluationError) as error:
-        record["abort"] = {
-            "code": getattr(error, "code", type(error).__name__),
-            "details": getattr(error, "details", {}),
-        }
-    finally:
-        key = ""
-    record["active_arm"] = None
-    record["status"] = "complete" if record["abort"] is None and len(record["arms"]) == 15 else "stopped"
-    record["aggregate"] = summarize(record["arms"], record["abort"])
-    write_private(output, record, replace=True)
-    return record
-
-
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("self-test")
     offline_parser = commands.add_parser("offline")
     offline_parser.add_argument("--output", required=True)
-    live_parser = commands.add_parser("live")
-    live_parser.add_argument("--output", required=True)
-    live_parser.add_argument("--offline-record", required=True)
-    live_parser.add_argument("--acknowledge-cost", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     try:
         if args.command == "self-test":
             result = self_test()
-        elif args.command == "offline":
-            result = offline(output_path(args.output))
         else:
-            result = live(
-                output_path(args.output),
-                output_path(args.offline_record),
-                args.acknowledge_cost,
+            result = offline(output_path(args.output))
+        print(
+            json.dumps(
+                {
+                    "schema": result.get("schema", EXPECTED_SCHEMA),
+                    "status": (
+                        result.get("status")
+                        or ("pass" if result.get("passed") else "failed")
+                    ),
+                    "suite_id": result.get("suite_id", MANIFEST["suite_id"]),
+                    "credential_read": False,
+                    "official_api_requests": 0,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
             )
-        print(json.dumps(result if args.command == "self-test" else {
-            "schema": result["schema"],
-            "status": result.get("status", "pass" if result.get("passed") else "failed"),
-            "arms": len(result.get("arms", [])),
-            "abort": result.get("abort"),
-            "aggregate": result.get("aggregate"),
-        }, ensure_ascii=False, sort_keys=True))
-        if args.command == "offline":
-            return 0 if result["passed"] else 1
-        if args.command == "live":
-            return 0 if result["status"] == "complete" else 1
-        return 0
-    except (ObservationError, EXECUTOR.EvaluationError, OSError, subprocess.SubprocessError) as error:
+        )
+        return 0 if result.get("passed", True) else 1
+    except (ObservationError, OSError, subprocess.SubprocessError) as error:
         print(
             json.dumps(
                 {
@@ -752,7 +775,7 @@ def main() -> int:
                     "code": getattr(error, "code", type(error).__name__),
                     "details": getattr(error, "details", {}),
                     "credential_read": False,
-                    "api_requests": 0,
+                    "official_api_requests": 0,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

@@ -1,128 +1,68 @@
 {
   "schema": "codewhale.eval.m7-d-edit-observation.v1",
-  "suite_id": "m7-d-edit-observation-v1-7a531f8f",
-  "frozen_at_utc": "2026-07-23T00:00:00Z",
+  "suite_id": "m7-d-edit-observation-v1-61597f59",
+  "frozen_at_utc": "2026-07-23T06:00:00Z",
   "slice_contract": {
-    "problem": "RuntimeEvent v16 已持久化 typed ToolOutcome.failure_code，但现有正式模型评测只聚合旧 outcome axes，无法把真实失败归因到 patch 参数生成、stale/ambiguous 恢复或 side-effect/crash 事务。",
+    "problem": "M7-D WIP 把 RuntimeEvent v16 降级成 v14 后交给历史 Harness，并按 call_id、ToolOutcome.workspace_revision 与任意后续成功猜测编辑恢复；它还提供没有 treatment delta 的单变体 live/Key 路径，因此不能形成可信 production 失败基线。",
     "acceptance": [
-      "复用 canonical app-server --stdio、AgentApplication、AgentRuntime、ProductionToolExecutor 和 SQLite RunStore，不复制编辑实现",
-      "同一 immutable production binary 在五个冻结任务各执行三次，maximum_reruns=0",
-      "每个编辑调用只从 ToolPrepared/ToolOutcomeCommitted 投影参数摘要、failure_code、outcome axes、workspace revision 和后续恢复",
-      "每个 arm 的外部 verifier、authority、terminal、usage、cache、request、retry、cost 和 state schema 必须闭合",
-      "只有跨任务重复出现的 typed 编辑损失才能准入后续 treatment；normal run 不得被解释为 crash 频率证明"
+      "只投影 canonical RuntimeEvent v16，不导入或 monkeypatch 历史 M7-A executor",
+      "ToolPrepared、ToolExecutionStarted 与 ToolOutcomeCommitted 只按 operation_id 配对，失败必须携带稳定 failure_code",
+      "workspace revision 只取 ToolOutcomeCommitted.workspace_state.revision，不把 ToolOutcome.workspace_revision 当 Runtime revision",
+      "恢复只在同一 run、同一工具、同一可解析结构化目标且至少经过一个新的 ModelRequestPrepared 后归因；未知 patch header 目标保持 unscorable",
+      "side_effect=indeterminate 与 Started 后无 Outcome 分开计数为 transaction ambiguity，不从 normal run 推断 crash 频率",
+      "Harness output 名称由 manifest 唯一绑定、0600、maximum_reruns=0 且不可覆盖",
+      "root、read-only child、explicit Writer、三段工具 crash、app-server SIGKILL、focused、fmt、workspace clippy/test 与 git diff 门禁全部离线通过",
+      "没有真实 treatment delta 时不读取 Key、不构建 release binary、不调用官方 API"
     ],
     "owner": "eval",
     "replaces": [
-      "M7-A Harness 中不含 failure_code 的 tool outcome 聚合",
-      "从模型文本或最终 terminal 猜测编辑根因"
+      "v16_as_v14 completion projection",
+      "对历史 M7-A executor 的全局 monkeypatch",
+      "按 call_id、旧 outcome revision 与任意后续成功进行恢复归因",
+      "无 treatment delta 的单变体 live/Key 执行入口"
     ],
     "evidence": [
-      "15-arm current-production observation suite",
-      "M7-C deterministic Host matrix",
-      "canonical RuntimeEvent v16 and State v21 replay facts"
+      "13 项 v16 projector regression tests",
+      "canonical Rust production loopback、actor conformance 与 process crash/reopen gates",
+      "一次性 0600 ignored offline record"
     ],
     "cutover_deletion": [
-      "M7-D-only production adapter：本切片不允许存在",
-      "若无准入信号，不创建 FIM caller 或 multi-file transaction state"
+      "历史 executor import、v16_as_v14、configure_executor、live、schedule、key read 与 cost acknowledgement",
+      "已删除 immutable binary 的 stale identity",
+      "任意 eval/results JSON 输出和 replace 写入"
     ]
   },
   "source_identity": {
     "branch": "deepseek-agent",
-    "revision": "7a531f8f0bfd7a4394899f6347af12b49c78de73",
-    "source_tree": "166669c177ab450fcc5eaa7a381a2201f2b01d3b",
-    "binary_path": "/private/tmp/codewhale-m7d-target/release/codewhale",
-    "binary_sha256": "sha256:8f34a9542839dbdd635107ad444df4cebed1e2441b179ee3203a10338fc7f87a",
-    "binary_size_bytes": 16207664,
-    "binary_version": "codewhale 0.8.68 (7a531f8f0bfd)",
+    "production_revision": "61597f59adb520e91bf5e6c32c94ffcf4e70aa91",
+    "production_tree": "1db3191d95cf652ad7aa89c928305dc7068d225b",
     "cargo_lock_sha256": "sha256:503250ce9065cfc71d4e0850d40aeb835abb35ea91d7d6f2331d426ea20cbb81",
     "rust_toolchain_sha256": "sha256:e5cc0545f232bde807bd9394c2433322d1cd2cf42b060ceab2ac7329bc9cdaa2",
-    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
-    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
-    "target": "aarch64-apple-darwin",
-    "build_command": "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/private/tmp/codewhale-m7d-target cargo build --release --locked --bin codewhale",
     "run_api": 10,
     "runtime_event": 16,
     "state_schema": 21,
     "exec_stream": 2
   },
-  "task_source": {
-    "manifest": "eval/manifests/m7-a2-agent-convergence-ab-v1.json",
-    "sha256": "sha256:ec30735bc68428c00135ecfaa44b31f6ae60a83a9aa775dfb9d635a6da253d94",
-    "task_ids": ["t1", "t2", "t3", "t4", "t5"],
-    "claim": "复用既有冻结 fixture、objective、constraint、allowed path、deterministic verifier 与 child expectation；不续跑或拼接旧 M7-A2 raw。"
-  },
-  "experiment": {
-    "kind": "single_revision_observational_baseline",
-    "model": "deepseek-v4-flash",
-    "api_surface": "standard_chat",
-    "reasoning_effort": "high",
-    "runs_per_task": 3,
-    "formal_arms": 15,
-    "maximum_reruns": 0,
-    "round_order": [
-      ["t1", "t2", "t3", "t4", "t5"],
-      ["t3", "t4", "t5", "t1", "t2"],
-      ["t5", "t1", "t2", "t3", "t4"]
+  "observation_contract": {
+    "source": "canonical StoredRuntimeEvent ledger emitted by AgentRuntime and reopened by RunStore",
+    "edit_tools": [
+      "apply_patch",
+      "edit_file"
     ],
-    "product_metric_eligible": false,
-    "reason": "单 variant 只定位瓶颈，不估计 treatment 收益。"
-  },
-  "resources": {
-    "max_physical_api_attempts_per_arm": 10,
-    "max_logical_model_requests_per_arm": 10,
-    "max_runtime_retries_per_arm": 1,
-    "transport_max_retries_per_request": 0,
-    "max_output_tokens_per_request": 8192,
-    "max_tool_calls_per_arm": 24,
-    "runtime_wall_time_seconds": 225,
-    "harness_wall_time_seconds": 240,
-    "max_known_cost_nanousd_per_arm": 30000000,
-    "suite_known_cost_nanousd": 450000000,
-    "streaming": true,
-    "auto_approve": true,
-    "trust_mode": false,
-    "allow_sandbox_elevation": false,
-    "interactive": false,
-    "sandbox": "workspace-write",
-    "cargo_incremental": "0",
-    "cargo_target_dir": "/private/tmp/codewhale-m7d-target"
-  },
-  "official_snapshot": {
-    "reviewed_at": "2026-07-23",
-    "pricing_url": "https://api-docs.deepseek.com/quick_start/pricing",
-    "chat_api_url": "https://api-docs.deepseek.com/api/create-chat-completion",
-    "thinking_url": "https://api-docs.deepseek.com/guides/thinking_mode",
-    "model": "deepseek-v4-flash",
-    "context_tokens": 1000000,
-    "maximum_output_tokens": 384000,
-    "usd_per_million_tokens": {
-      "cache_hit_input": "0.0028",
-      "cache_miss_input": "0.14",
-      "output": "0.28"
+    "lifecycle_identity": "operation_id",
+    "revision_owner": "ToolOutcomeCommitted.workspace_state.revision",
+    "target_identity": {
+      "edit_file": "parsed path",
+      "apply_patch": "parsed path or sorted changes[].path",
+      "unresolved_patch_headers": "unscorable; Harness does not copy the production patch parser"
     },
-    "cny_per_million_tokens": {
-      "cache_hit_input": "0.02",
-      "cache_miss_input": "1",
-      "output": "2"
-    },
-    "protocol": "streaming Chat usage is carried by include_usage before [DONE]; thinking tool-call history must replay reasoning_content exactly"
-  },
-  "credential_admission": {
-    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
-    "read_only_after": [
-      "manifest and harness self-test pass",
-      "immutable binary identity matches",
-      "repository worktree is clean",
-      "offline production gates pass",
-      "explicit --acknowledge-cost is present"
+    "recovery": "same run + same tool + same target identity + later successful committed outcome + one or more intervening ModelRequestPrepared",
+    "transaction_ambiguity": [
+      "committed edit outcome with side_effect=indeterminate",
+      "may_write edit ToolExecutionStarted without a committed outcome in the observed ledger"
     ],
-    "stop_on": [
-      "unknown_billing",
-      "incomplete_accounting",
-      "identity_mismatch",
-      "authority_or_false_success_safety_failure",
-      "cost_limit"
-    ]
+    "normal_run_crash_frequency_claim_admissible": false,
+    "product_metric_eligible": false
   },
   "failure_buckets": {
     "patch_generation": [
@@ -151,9 +91,176 @@
   "decision_rules": {
     "minimum_typed_failures_for_mechanism": 3,
     "minimum_tasks_with_same_bucket": 2,
-    "patch_generation_candidate": "patch_generation bucket reaches both minimums",
-    "edit_recovery_candidate": "edit_recovery bucket reaches both minimums or at least three failed edits are not followed by a successful edit in the same actor",
-    "transaction_candidate": "at least one canonical side_effect_ambiguous edit outcome; normal runs with zero such outcomes are not proof of crash frequency",
-    "no_mechanism": "no bucket reaches its preregistered threshold; preserve current production path and recommend the next non-edit bottleneck from measured terminal/verifier facts"
-  }
+    "patch_generation_candidate": "patch_generation reaches both preregistered minimums",
+    "edit_recovery_candidate": "edit_recovery reaches both preregistered minimums; unrelated unrecovered failures do not count",
+    "transaction_candidate": "at least one canonical indeterminate edit side effect or incomplete started write operation",
+    "no_mechanism": "no bucket reaches its preregistered threshold"
+  },
+  "admission": {
+    "status": "inadmissible_no_treatment_delta",
+    "reason": "该切片只修复观测可信度；production editor、request surface 与模型行为均无 control/treatment 差异。",
+    "credential_read": false,
+    "official_api_requests": 0,
+    "release_binary_required": false
+  },
+  "output": {
+    "offline_result_name": "m7-d-edit-observation-offline-61597f59.json",
+    "directory": "eval/results",
+    "mode": "0600",
+    "maximum_reruns": 0,
+    "replace": false
+  },
+  "resources": {
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7d-target",
+    "network": "forbidden",
+    "gate_timeout_seconds": 3600
+  },
+  "offline_gates": [
+    {
+      "id": "projector-regression",
+      "command": [
+        "python3",
+        "scripts/test-eval-m7d-edit-observation.py"
+      ]
+    },
+    {
+      "id": "tools-m7c-contract",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tools",
+        "--locked",
+        "m7c_"
+      ]
+    },
+    {
+      "id": "app-production-loopback",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-app",
+        "--locked",
+        "m7c_"
+      ]
+    },
+    {
+      "id": "root-read-only-conformance",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-runtime",
+        "--locked",
+        "--test",
+        "conformance",
+        "root_and_read_only_child_share_the_same_unsafe_replay_contract"
+      ]
+    },
+    {
+      "id": "explicit-writer-conformance",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-runtime",
+        "--locked",
+        "--test",
+        "writer_orchestration"
+      ]
+    },
+    {
+      "id": "prepared-crash-reopen",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-state",
+        "--locked",
+        "tool_prepared_sigkill_executes_once_after_sqlite_reopen"
+      ]
+    },
+    {
+      "id": "started-crash-reopen",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-state",
+        "--locked",
+        "tool_side_effect_crash_is_not_executed_twice_after_reopen"
+      ]
+    },
+    {
+      "id": "outcome-crash-reopen",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-state",
+        "--locked",
+        "tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen"
+      ]
+    },
+    {
+      "id": "app-server-process-reopen",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-app-server",
+        "--locked",
+        "sigkill_app_server_recovers_same_run_and_terminal_replays_without_key"
+      ]
+    },
+    {
+      "id": "focused",
+      "command": [
+        "./scripts/dev-deepseek-agent.sh",
+        "focused"
+      ]
+    },
+    {
+      "id": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    },
+    {
+      "id": "workspace-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    {
+      "id": "workspace-test",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked"
+      ]
+    },
+    {
+      "id": "diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ]
+    }
+  ]
 }
