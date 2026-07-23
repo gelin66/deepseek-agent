@@ -1,0 +1,115 @@
+{
+  "schema": "codewhale.eval.m7-c-edit-baseline.v1",
+  "suite_id": "m7-c-edit-baseline-v1-afb9b0ab",
+  "frozen_at_utc": "2026-07-23T00:00:00Z",
+  "baseline_revision": "afb9b0abcc4a",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock": "Cargo.lock",
+    "rust_toolchain": "rust-toolchain.toml"
+  },
+  "slice_contract": {
+    "problem": "canonical apply_patch/edit_file 可确定性地漏报 stale/ambiguous/no-op，并可能误解重复目标或 rename；多文件普通失败的回滚和文件 metadata 也缺少完整证据",
+    "acceptance": [
+      "冻结任务在真实临时 Git 工作区和 deterministic verifier 下可复现",
+      "failure_code、operation、side_effect、retry 和 workspace revision 只取 canonical 事实",
+      "重复目标、rename、hunk count mismatch、no-op、stale 与 ambiguous 均在写盘前 fail closed",
+      "成功编辑保留现有文件权限，普通多文件失败全量回滚",
+      "root、read-only child、显式 Writer 继续使用同一 AgentRuntime 和工具目录"
+    ],
+    "owner": "crates/tools",
+    "replaces": [
+      "len+mtime-only edit_file freshness",
+      "first-match fuzzy patch placement",
+      "sequential apply_patch validation that accepts duplicate/no-op/rename inputs"
+    ],
+    "evidence": [
+      "codewhale-tools m7c contract tests",
+      "AgentApplication production loopback and SQLite replay tests",
+      "process crash/reopen tests",
+      "focused and workspace gates"
+    ],
+    "cutover_deletion": [
+      "old len+mtime FileReadSnapshot",
+      "first-match apply_hunk search",
+      "silent duplicate-target and rename behavior",
+      "M7-C-only experimental adapters"
+    ]
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7c-target",
+    "production_composition": "AgentApplication::production -> AgentRuntime -> ProductionToolExecutor -> SQLite RunStore",
+    "loopback_endpoint": "DeepSeekEndpoint::loopback_fixture",
+    "formal_live_requires_same_revision_binary": true,
+    "formal_live_minimum_runs_per_variant_task_lane": 3
+  },
+  "credential_admission": {
+    "status": "blocked_no_fim_surface_delta",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "read_key_before_admission": false,
+    "requirements": [
+      "all offline gates pass",
+      "same immutable binary and revision exposes a Host-owned treatment selector",
+      "treatment produces canonical FIM request and bounded apply facts",
+      "usage, cache, requests, retry and price snapshot close without unknown billing"
+    ],
+    "stop_on": [
+      "unknown_billing",
+      "incomplete_accounting",
+      "identity_mismatch",
+      "side_effect_ambiguity",
+      "no_surface_delta"
+    ]
+  },
+  "tasks": [
+    {"id":"E01","lane":"root","objective":"单文件唯一替换","fixture":"unique-replace","verifier":"exact bytes and clean deterministic check","expected_changed_files":["src/value.txt"],"mechanism_test":"m7c_edit_unique_replacement_preserves_mode"},
+    {"id":"E02","lane":"root","objective":"ambiguous search 失败后缩小范围并恢复","fixture":"ambiguous-recovery","verifier":"only the selected block changes","expected_changed_files":["src/blocks.txt"],"mechanism_test":"m7c_edit_rejects_overlapping_ambiguous_search"},
+    {"id":"E03","lane":"root","objective":"stale read 后重读并修正","fixture":"stale-reread","verifier":"external mutation survives and intended edit applies","expected_changed_files":["src/stale.txt"],"mechanism_test":"m7c_edit_detects_same_length_same_mtime_stale_content"},
+    {"id":"E04","lane":"root","objective":"单次多 hunk patch","fixture":"multi-hunk","verifier":"both separated hunks apply","expected_changed_files":["src/multi.txt"],"mechanism_test":"m7c_apply_patch_multi_hunk_is_byte_exact"},
+    {"id":"E05","lane":"root","objective":"多文件写入第二项失败时全量回滚","fixture":"multi-file-rollback","verifier":"all original bytes and paths remain","expected_changed_files":[],"mechanism_test":"m7c_apply_patch_multifile_failure_rolls_back_all"},
+    {"id":"E06","lane":"root","objective":"同一 patch 新建并删除文件","fixture":"create-delete","verifier":"created bytes exist and deleted path is absent","expected_changed_files":["src/new.txt","src/old.txt"],"mechanism_test":"m7c_apply_patch_create_delete_is_exact"},
+    {"id":"E07","lane":"root","objective":"保留 CRLF 并编辑 Unicode 多字节内容","fixture":"crlf-unicode","verifier":"CRLF count and Unicode bytes are exact","expected_changed_files":["src/unicode.txt"],"mechanism_test":"m7c_apply_patch_preserves_crlf_unicode"},
+    {"id":"E08","lane":"root","objective":"patch context 漂移时拒绝歧义并重建精确 patch","fixture":"context-drift","verifier":"wrong repeated block remains unchanged","expected_changed_files":["src/drift.txt"],"mechanism_test":"m7c_apply_patch_rejects_ambiguous_fuzzy_hunk"},
+    {"id":"E09","lane":"root","objective":"首次修改导致 verifier 失败，再修正到通过","fixture":"verifier-recovery","verifier":"frozen command fails once then passes latest revision","expected_changed_files":["src/lib.rs"],"mechanism_test":"m7c_production_loopback_verifier_failure_recovers"},
+    {"id":"E10","lane":"root","objective":"目标已满足时不得产生 no-op mutation","fixture":"negative-no-change","verifier":"workspace tree and generation stay unchanged","expected_changed_files":[],"mechanism_test":"m7c_apply_patch_rejects_noop_change"},
+    {"id":"E11","lane":"read_only_child","objective":"child 只调查并 handoff，root 执行编辑","fixture":"readonly-handoff","verifier":"child advertises no write tools and root latest revision passes","expected_changed_files":["src/handoff.txt"],"mechanism_test":"m7c_production_loopback_readonly_handoff"},
+    {"id":"E12","lane":"explicit_writer","objective":"isolated Writer 编辑，Host verify/integrate/cleanup","fixture":"writer-integration","verifier":"sealed diff fast-forwards and managed worktree is removed","expected_changed_files":["src/writer.txt"],"mechanism_test":"m7c_production_loopback_writer_integrates_and_cleans"}
+  ],
+  "mechanism_matrix": [
+    "malformed_missing_extra_arguments",
+    "patch_parse_failure",
+    "hunk_context_mismatch",
+    "stale_prior_read",
+    "search_not_found",
+    "ambiguous_non_unique_search",
+    "identical_noop_replacement",
+    "path_escape_permission_scope",
+    "create_delete_rename_duplicate_target",
+    "multifile_rollback",
+    "crlf_unicode_invalid_utf8",
+    "operation_transport_side_effect_ambiguous",
+    "verifier_latest_revision_rejection",
+    "crash_before_write_during_replace_after_outcome"
+  ],
+  "historical_directional_evidence": {
+    "jsonl_files": 30,
+    "run_manifests": 157,
+    "patch_calls": 158,
+    "patch_failures": 1,
+    "verified_success": 138,
+    "false_success": 4,
+    "claim_scope": "directional only; schemas and revisions vary"
+  },
+  "tests": {
+    "tools_filter": "m7c_",
+    "app_filter": "m7c_",
+    "harness_self_test": "scripts/eval-m7c-edit.py self-test"
+  }
+}

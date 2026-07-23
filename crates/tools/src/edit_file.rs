@@ -242,6 +242,7 @@ mod tests {
     use super::*;
     use crate::execute_read_file;
     use serde_json::json;
+    use std::fs::FileTimes;
     use tempfile::tempdir;
 
     async fn read_before_edit(context: &ProductionToolContext, path: &str) {
@@ -258,6 +259,89 @@ mod tests {
         ) -> Result<ToolOutcome, ToolError> {
             execute_edit_file(input, context)
         }
+    }
+
+    #[tokio::test]
+    async fn m7c_edit_unique_replacement_preserves_mode() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("value.txt");
+        fs::write(&path, "before\n").expect("fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("fixture mode");
+        }
+        read_before_edit(&context, "value.txt").await;
+
+        let outcome = execute_edit_file(
+            json!({"path":"value.txt","search":"before","replace":"after"}),
+            &context,
+        )
+        .expect("unique edit");
+
+        assert!(outcome.is_success());
+        assert_eq!(fs::read(&path).expect("edited bytes"), b"after\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("edited metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755,
+                "editing an executable file must preserve its mode"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn m7c_edit_rejects_overlapping_ambiguous_search() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("blocks.txt");
+        fs::write(&path, "aaa\n").expect("fixture");
+        read_before_edit(&context, "blocks.txt").await;
+
+        let error = execute_edit_file(
+            json!({"path":"blocks.txt","search":"aa","replace":"X"}),
+            &context,
+        )
+        .expect_err("overlapping candidates are ambiguous");
+
+        assert!(matches!(error, ToolError::AmbiguousEdit { .. }));
+        assert_eq!(fs::read(&path).expect("unchanged bytes"), b"aaa\n");
+    }
+
+    #[tokio::test]
+    async fn m7c_edit_detects_same_length_same_mtime_stale_content() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("stale.txt");
+        fs::write(&path, "alpha\n").expect("fixture");
+        let original_modified = fs::metadata(&path)
+            .expect("fixture metadata")
+            .modified()
+            .expect("fixture modified time");
+        read_before_edit(&context, "stale.txt").await;
+        fs::write(&path, "omega\n").expect("external same-length mutation");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open mutated fixture")
+            .set_times(FileTimes::new().set_modified(original_modified))
+            .expect("restore mtime");
+
+        let error = execute_edit_file(
+            json!({"path":"stale.txt","search":"alpha","replace":"beta"}),
+            &context,
+        )
+        .expect_err("content digest must detect stale read");
+
+        assert!(matches!(error, ToolError::StaleRead { .. }));
+        assert_eq!(fs::read(&path).expect("external bytes survive"), b"omega\n");
     }
 
     #[tokio::test]

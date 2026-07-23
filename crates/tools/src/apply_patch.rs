@@ -1171,6 +1171,170 @@ mod tests {
     }
 
     #[test]
+    fn m7c_apply_patch_rejects_duplicate_changes_targets_before_write() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("same.txt");
+        fs::write(&path, "original\n").expect("fixture");
+
+        let error = execute_apply_patch(
+            json!({"changes":[
+                {"path":"same.txt","content":"first\n"},
+                {"path":"same.txt","content":"second\n"}
+            ]}),
+            &context,
+        )
+        .expect_err("duplicate targets must be rejected");
+
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
+        assert_eq!(fs::read(&path).expect("unchanged bytes"), b"original\n");
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_rename_without_writing() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        fs::write(workspace.path().join("old.txt"), "old\n").expect("fixture");
+        let patch = "--- a/old.txt\n+++ b/new.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+
+        let error = execute_apply_patch(json!({"patch":patch}), &context)
+            .expect_err("rename syntax is not a supported edit contract");
+
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
+        assert_eq!(
+            fs::read(workspace.path().join("old.txt")).expect("old bytes"),
+            b"old\n"
+        );
+        assert!(!workspace.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_hunk_count_mismatch() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("count.txt");
+        fs::write(&path, "one\ntwo\n").expect("fixture");
+        let patch = "@@ -1,2 +1,2 @@\n-one\n+ONE\n";
+
+        let error = execute_apply_patch(json!({"path":"count.txt","patch":patch}), &context)
+            .expect_err("declared hunk counts must match body counts");
+
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
+        assert_eq!(fs::read(&path).expect("unchanged bytes"), b"one\ntwo\n");
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_ambiguous_fuzzy_hunk() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("drift.txt");
+        fs::write(&path, "target\nspacer\ntarget\n").expect("fixture");
+        let patch = "@@ -2,1 +2,1 @@\n-target\n+changed\n";
+
+        let error =
+            execute_apply_patch(json!({"path":"drift.txt","patch":patch,"fuzz":1}), &context)
+                .expect_err("equally near fuzzy matches must be rejected");
+
+        assert!(matches!(error, ToolError::AmbiguousEdit { .. }));
+        assert_eq!(
+            fs::read(&path).expect("unchanged bytes"),
+            b"target\nspacer\ntarget\n"
+        );
+    }
+
+    #[test]
+    fn m7c_apply_patch_rejects_noop_change() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("stable.txt");
+        fs::write(&path, "stable\n").expect("fixture");
+
+        let error = execute_apply_patch(
+            json!({"changes":[{"path":"stable.txt","content":"stable\n"}]}),
+            &context,
+        )
+        .expect_err("no-op must not report an applied mutation");
+
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
+        assert_eq!(fs::read(&path).expect("stable bytes"), b"stable\n");
+    }
+
+    #[test]
+    fn m7c_apply_patch_multi_hunk_is_byte_exact() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("multi.txt");
+        fs::write(&path, "a\nb\nc\nd\ne\n").expect("fixture");
+        let patch = "@@ -1,2 +1,2 @@\n a\n-b\n+B\n@@ -4,2 +4,2 @@\n d\n-e\n+E\n";
+
+        let outcome = execute_apply_patch(json!({"path":"multi.txt","patch":patch}), &context)
+            .expect("multi-hunk patch");
+
+        assert!(outcome.is_success());
+        assert_eq!(fs::read(&path).expect("patched bytes"), b"a\nB\nc\nd\nE\n");
+    }
+
+    #[test]
+    fn m7c_apply_patch_multifile_failure_rolls_back_all() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let first = workspace.path().join("one.txt");
+        let second = workspace.path().join("two.txt");
+        fs::write(&first, "one-before\n").expect("first fixture");
+        fs::write(&second, "two-before\n").expect("second fixture");
+        fs::write(workspace.path().join("blocked"), "not a directory\n").expect("blocker");
+
+        execute_apply_patch(
+            json!({"changes":[
+                {"path":"one.txt","content":"one-after\n"},
+                {"path":"two.txt","content":"two-after\n"},
+                {"path":"blocked/three.txt","content":"three\n"}
+            ]}),
+            &context,
+        )
+        .expect_err("last write must fail");
+
+        assert_eq!(fs::read(&first).expect("first rollback"), b"one-before\n");
+        assert_eq!(fs::read(&second).expect("second rollback"), b"two-before\n");
+        assert!(!workspace.path().join("blocked/three.txt").exists());
+    }
+
+    #[test]
+    fn m7c_apply_patch_create_delete_is_exact() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        fs::write(workspace.path().join("old.txt"), "old\n").expect("old fixture");
+        let patch = "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,1 @@\n+new\n--- a/old.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-old\n";
+
+        let outcome =
+            execute_apply_patch(json!({"patch":patch}), &context).expect("create and delete patch");
+
+        assert!(outcome.is_success());
+        assert_eq!(
+            fs::read(workspace.path().join("new.txt")).expect("created bytes"),
+            b"new\n"
+        );
+        assert!(!workspace.path().join("old.txt").exists());
+    }
+
+    #[test]
+    fn m7c_apply_patch_preserves_crlf_unicode() {
+        let workspace = tempdir().expect("workspace");
+        let context = ProductionToolContext::new(workspace.path().to_path_buf());
+        let path = workspace.path().join("unicode.txt");
+        fs::write(&path, "标题\r\n旧值🙂\r\n结尾\r\n").expect("fixture");
+        let patch = "@@ -1,3 +1,3 @@\n 标题\n-旧值🙂\n+新值鲸鱼\n 结尾\n";
+
+        execute_apply_patch(json!({"path":"unicode.txt","patch":patch}), &context)
+            .expect("unicode patch");
+
+        assert_eq!(
+            fs::read(&path).expect("patched bytes"),
+            "标题\r\n新值鲸鱼\r\n结尾\r\n".as_bytes()
+        );
+    }
+
+    #[test]
     fn apply_patch_characterization_is_byte_exact_and_workspace_bound() {
         let expected: Value =
             serde_json::from_str(include_str!("../tests/apply_patch_characterization.json"))
