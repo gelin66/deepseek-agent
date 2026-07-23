@@ -2243,7 +2243,7 @@ mod tests {
             Ok(_) => panic!("foreign endpoint must fail before app construction"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("official DeepSeek endpoint"));
+        assert!(error.to_string().contains("官方 DeepSeek endpoint"));
     }
 
     #[test]
