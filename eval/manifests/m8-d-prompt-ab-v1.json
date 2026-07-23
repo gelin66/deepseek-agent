@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v1",
-  "status": "wip_offline_not_live_admitted",
+  "status": "frozen_offline_not_live_admitted",
   "date": "2026-07-24",
   "claim": {
     "name": "M8-D 中文原生 production prompt 收敛",
@@ -17,7 +17,7 @@
     "starting_tree_clean": true,
     "candidate_binary_revision": "77f5244a48c1936c39876b27cf06e7290e40b3ca",
     "candidate_source_tree": "fc55455531888f49639c8d9a983a6643f43d93da",
-    "harness_revision": null,
+    "harness_revision": "53a5e66983e0a5fcdcb7fe4c14aab2e70bbd2c0b",
     "run_api": 10,
     "runtime_event": 16,
     "state_schema": 21,
@@ -287,9 +287,9 @@
     "git diff --check"
   ],
   "frozen_hashes": {
-    "harness_sha256": null,
-    "harness_test_sha256": null,
-    "schedule_sha256": null,
-    "manifest_content_sha256_excluding_frozen_hashes": null
+    "harness_sha256": "sha256:decfff8b3b04d14543dd6b1db3be8a023ab9cd92b0e71a8562419a6448149968",
+    "harness_test_sha256": "sha256:ba9a9abd6c8885b817c529b6d75d679461b858cac3123748971cb2854c52f1a1",
+    "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:e3b9a92ad1c908b44488c4fcce6dd2a110aabfa25e230cc4def84c7da97f1f22"
   }
 }
