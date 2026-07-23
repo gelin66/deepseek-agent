@@ -3940,6 +3940,262 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn m7i_actor_request_plans_rebuild_from_v16_sqlite_events() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join("fixture.txt"), "near-limit fixture\n")
+            .expect("fixture file");
+        initialize_git_fixture(&workspace);
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let base_commit = ProcessCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&workspace)
+            .output()
+            .expect("read fixture commit");
+        assert!(base_commit.status.success());
+        let base_commit = String::from_utf8(base_commit.stdout)
+            .expect("commit is UTF-8")
+            .trim()
+            .to_owned();
+        let state_path = temp.path().join("state.db");
+        let store = Arc::new(StateStore::open(Some(state_path.clone())).expect("state store"));
+        let tool_config = tool_config_for_run(
+            &ProductionToolConfig::new(&workspace).with_shell_policy(ShellPolicy::Full),
+            &workspace,
+            &RunProductControls::default(),
+        )
+        .expect("production tool config");
+        let runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(tool_config)),
+            Arc::new(NullEventSink),
+            store.clone(),
+        );
+        let mut originals = Vec::new();
+
+        for lane in ["root", "read_only_child", "explicit_writer"] {
+            let run_id = RunId::from(format!("m7i-{lane}"));
+            let mut request = RunRequest::new(
+                TaskContract {
+                    generation_id: TaskGenerationId::from(run_id.0.clone()),
+                    definition: TaskDefinition::host(format!("重建 {lane} near-limit 请求")),
+                },
+                "M7-I actor request plan",
+            );
+            request.run_id = Some(run_id.clone());
+            request.model = "deepseek-v4-pro".to_owned();
+            request.reasoning_effort = ReasoningEffort::High;
+            request.streaming = false;
+            request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
+            request.environment.workspace = stable_path(&workspace);
+            request.context_policy.hard_input_tokens = 900_000;
+            request.limits.max_depth = 1;
+
+            if lane != "root" {
+                let root_run_id = RunId::from(format!("m7i-{lane}-root"));
+                let access = if lane == "read_only_child" {
+                    AgentWorkspaceAccess::ReadOnly
+                } else {
+                    AgentWorkspaceAccess::IsolatedWrite
+                };
+                let worktree = workspace.join(format!(".{lane}-worktree"));
+                let assignment = AgentWorkspaceAssignment {
+                    access,
+                    root_workspace: stable_path(&workspace),
+                    base_commit: base_commit.clone(),
+                    worktree_path: (access == AgentWorkspaceAccess::IsolatedWrite)
+                        .then(|| stable_path(&worktree)),
+                    root_branch: (access == AgentWorkspaceAccess::IsolatedWrite)
+                        .then(|| "main".to_owned()),
+                    branch: (access == AgentWorkspaceAccess::IsolatedWrite)
+                        .then(|| format!("codewhale/writer/{lane}")),
+                    allowed_paths: (access == AgentWorkspaceAccess::IsolatedWrite)
+                        .then(|| vec!["fixture.txt".to_owned()])
+                        .unwrap_or_default(),
+                    owner_token: (access == AgentWorkspaceAccess::IsolatedWrite)
+                        .then(|| format!("owner-{lane}")),
+                };
+                let mut child_policy = ToolPolicy::default();
+                child_policy.denied.push(AGENT_TOOL_NAME.to_owned());
+                let task_contract = request.task_contract.clone().expect("child task contract");
+                let task = AgentTask {
+                    task_id: AgentTaskId::from(format!("m7i-{lane}-task")),
+                    root_run_id: root_run_id.clone(),
+                    parent_run_id: root_run_id.clone(),
+                    child_run_id: run_id.clone(),
+                    call_id: format!("m7i-{lane}-call"),
+                    role: lane.to_owned(),
+                    task_contract,
+                    workspace: assignment,
+                    tool_policy: child_policy.clone(),
+                    limits: request.limits,
+                    deadline_unix_ms: None,
+                    expected_artifact: format!("{lane} request plan"),
+                };
+                request.parent_run_id = Some(root_run_id);
+                request.actor = AgentActor {
+                    kind: AgentActorKind::Child,
+                    depth: 1,
+                };
+                request.agent_task = Some(task.clone());
+                request.tool_policy = child_policy;
+                request.environment.workspace = task.workspace.execution_workspace().to_owned();
+            }
+
+            let authority = match lane {
+                "root" => ModelToolAuthority::RootWrite,
+                "read_only_child" => ModelToolAuthority::ReadOnly,
+                "explicit_writer" => ModelToolAuthority::IsolatedWriter,
+                _ => unreachable!(),
+            };
+            let tools = runtime.tool_definitions(
+                &request.tool_policy,
+                request
+                    .task_contract
+                    .as_ref()
+                    .map(|contract| &contract.definition),
+                authority,
+                request.actor.depth,
+                request.limits.max_depth,
+                request.environment.interactive,
+            );
+            request.environment.tool_catalog_sha256 = Some(canonical_tool_catalog_sha256(&tools));
+            let created = store
+                .create(request.clone())
+                .await
+                .expect("create catalog-bound actor run");
+            assert_eq!(
+                request.environment.tool_catalog_sha256.as_deref(),
+                Some(canonical_tool_catalog_sha256(&tools).as_str())
+            );
+            let context = effective_context(ContextInput {
+                transcript: &created.replay.snapshot.transcript,
+                projection: created.replay.snapshot.context_projection.as_ref(),
+                task_contract: created.replay.snapshot.request.task_contract.as_ref(),
+                workspace_state: &created.replay.snapshot.workspace_state,
+                evidence_receipts: &created.replay.snapshot.evidence_receipts,
+                last_completion_rejection: created
+                    .replay
+                    .snapshot
+                    .last_completion_rejection
+                    .as_ref(),
+                last_verifier_failure: None,
+                last_verifier_failure_workspace: None,
+                tools: &tools,
+            })
+            .expect("canonical actor context");
+            assert!(
+                context.estimated_tokens <= u64::from(request.context_policy.hard_input_tokens),
+                "{lane} request must fit its frozen hard-input boundary"
+            );
+            let prepared = ModelRequest {
+                run_id: run_id.clone(),
+                parent_run_id: request.parent_run_id.clone(),
+                actor: request.actor,
+                model: request.model.clone(),
+                system_prompt: context.system_prompt,
+                messages: context.messages,
+                tools,
+                reasoning_effort: request.reasoning_effort,
+                max_output_tokens: request.max_output_tokens,
+                streaming: request.streaming,
+                request_number: 1,
+                attempt: 0,
+            };
+            append_test_event(
+                store.as_ref(),
+                &created.lease,
+                RuntimeEventKind::ModelRequestPrepared {
+                    attempt_id: AttemptId(format!("m7i-{lane}-attempt")),
+                    request: Box::new(prepared.clone()),
+                },
+            )
+            .await;
+            store
+                .release(&created.lease)
+                .await
+                .expect("release actor run");
+            originals.push((lane, run_id, prepared, context.estimated_tokens));
+        }
+
+        drop(runtime);
+        drop(store);
+        let reopened = StateStore::open(Some(state_path)).expect("reopen state store");
+        for (lane, run_id, original, original_estimate) in originals {
+            let replay = reopened
+                .load(&run_id)
+                .await
+                .expect("load actor run")
+                .expect("actor run exists");
+            let persisted = replay
+                .events
+                .iter()
+                .find_map(|event| match &event.event {
+                    RuntimeEventKind::ModelRequestPrepared { request, .. } => {
+                        Some(request.as_ref())
+                    }
+                    _ => None,
+                })
+                .expect("prepared actor request");
+            assert_eq!(persisted, &original);
+            let effective = effective_context(ContextInput {
+                transcript: &replay.snapshot.transcript,
+                projection: replay.snapshot.context_projection.as_ref(),
+                task_contract: replay.snapshot.request.task_contract.as_ref(),
+                workspace_state: &replay.snapshot.workspace_state,
+                evidence_receipts: &replay.snapshot.evidence_receipts,
+                last_completion_rejection: replay.snapshot.last_completion_rejection.as_ref(),
+                last_verifier_failure: None,
+                last_verifier_failure_workspace: None,
+                tools: &persisted.tools,
+            })
+            .expect("reopened actor context");
+            assert_eq!(effective.estimated_tokens, original_estimate);
+            assert!(
+                effective.estimated_tokens
+                    <= u64::from(replay.snapshot.request.context_policy.hard_input_tokens)
+            );
+
+            let capability = official_model_capabilities(&persisted.model)
+                .expect("official production model capability");
+            let max_tokens = capability
+                .resolve_output_tokens(persisted.max_output_tokens)
+                .expect("production output limit");
+            let input = || RuntimeChatPlanInput {
+                root: "https://fixture.invalid",
+                strict_enabled: false,
+                wire_model: capability.model.to_owned(),
+                max_tokens,
+            };
+            let before = plan_runtime_chat(input(), &original).expect("original request plan");
+            let after = plan_runtime_chat(input(), persisted).expect("reopened request plan");
+            assert_eq!(after, before, "{lane} RequestPlan must rebuild exactly");
+
+            let names = persisted
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>();
+            match lane {
+                "root" => {
+                    assert!(names.contains(&"edit_file"));
+                    assert!(names.contains(&AGENT_TOOL_NAME));
+                }
+                "read_only_child" => {
+                    assert!(!names.contains(&"edit_file"));
+                    assert!(!names.contains(&AGENT_TOOL_NAME));
+                }
+                "explicit_writer" => {
+                    assert!(names.contains(&"edit_file"));
+                    assert!(!names.contains(&AGENT_TOOL_NAME));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn high_and_off_request_plans_rebuild_exactly_after_sqlite_reopen() {
         let temp = tempfile::tempdir().expect("temp root");
         let workspace = temp.path().join("workspace");

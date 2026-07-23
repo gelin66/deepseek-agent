@@ -1,0 +1,284 @@
+{
+  "schema": "codewhale.eval.m7-i-near-limit-context.v1",
+  "suite_id": "m7-i-near-limit-context-6e9e9b7b-v1",
+  "frozen_at_utc": "2026-07-23T00:00:00Z",
+  "production_revision": "6e9e9b7b8bbbaff678994de64acec2328b93cc39",
+  "production_tree": "d360072e4d2af26612061d6e47d620682a585853",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree_before_and_after": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock": "Cargo.lock",
+    "rust_toolchain": "rust-toolchain.toml"
+  },
+  "slice_contract": {
+    "problem": "M7-H 的历史证据缺少 current RuntimeEvent v16 的逐请求 advertised catalog 与 near-limit 样本；现有 compaction、budget、partial、cancel、child、Writer 和 SQLite reopen 证明分散，无法作为一个可复现的 current-revision 基线。",
+    "acceptance": [
+      "每个 prepared request 只从 canonical ModelRequestPrepared 与其事件前缀重建 actual catalog、context estimate 和 hard-input boundary",
+      "ContextCompactionCommitted 的 tools、source digest、before/after estimate、accounting 和后续 prepared request 在 reducer 与 SQLite reopen 后逐字段一致",
+      "ordinary 与 reserved terminal tools=[] 请求分别冻结，mandatory facts 超限在 ModelPort 前 typed fail closed",
+      "Runtime 逻辑请求预算与 DeepSeek 物理 admission budget 使用不同 failure/accounting 事实",
+      "partial output 不盲重试，cancel exactly-once，compaction commit 后 SIGKILL/reopen 不新增 request、usage 或 transcript side effect",
+      "root、read-only child、explicit Writer 的 actual catalog、estimate 与 DeepSeek RequestPlan 在 SQLite reopen 前后相同",
+      "真实临时 Git workspace 与 deterministic verifier production loopback 通过"
+    ],
+    "owner": {
+      "runtime_decision": "crates/runtime",
+      "context_estimate": "crates/context",
+      "persistent_truth": "crates/state via canonical RuntimeEvent v16 reducer",
+      "request_plan": "crates/deepseek",
+      "evaluation_only": "eval/manifests + scripts/eval-m7i-near-limit.py"
+    },
+    "replaces": [
+      "从旧 aggregate raw 推断 terminal catalog",
+      "把 historical zero compaction/hard-budget samples 当作 current boundary coverage",
+      "为 evaluator 新增 estimated-token 或 terminal-permit 持久状态"
+    ],
+    "evidence": [
+      "current production actor catalog/context/RequestPlan SQLite reopen regression",
+      "Runtime root/read-only/Writer conformance",
+      "logical/physical request-budget taxonomy",
+      "process-level SIGKILL after local compaction commit",
+      "AgentApplication loopback with temporary Git workspace and deterministic verifier",
+      "focused, fmt, workspace clippy/test and Harness self-test"
+    ],
+    "cutover_deletion": [
+      "no-delta live or credential path",
+      "any test-only duplicate estimator or RequestPlan serializer",
+      "any M7-I temporary process, target or worktree after final gates"
+    ]
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7i-target",
+    "production_composition": "AgentApplication::production -> AgentRuntime -> RunStore",
+    "loopback_endpoint": "DeepSeekEndpoint::loopback_fixture",
+    "result_path": "eval/results/m7-i-near-limit-context-6e9e9b7b-v1.json",
+    "result_mode": "0600",
+    "overwrite": false
+  },
+  "matrix": [
+    {
+      "id": "N01",
+      "lane": "root",
+      "boundary": "ordinary_request",
+      "expected": "actual ordinary catalog and canonical context fit the hard-input limit",
+      "tests": [
+        "live_projection_matches_store_replay_through_tool_steer_and_terminal",
+        "m7i_actor_request_plans_rebuild_from_v16_sqlite_events"
+      ]
+    },
+    {
+      "id": "N02",
+      "lane": "root",
+      "boundary": "reserved_terminal_request",
+      "expected": "tools=[] is selected before estimation and no false compaction is committed",
+      "tests": [
+        "terminal_no_tools_catalog_is_selected_before_hard_limit_compaction",
+        "production_catalog_is_not_used_to_compact_a_terminal_no_tools_request"
+      ]
+    },
+    {
+      "id": "N03",
+      "lane": "root",
+      "boundary": "compaction_success",
+      "expected": "one local compaction reduces exact context below hard limit and precedes its matching request",
+      "tests": [
+        "limit_compaction_is_durable_and_the_agent_consumes_only_the_projection"
+      ]
+    },
+    {
+      "id": "N04",
+      "lane": "root",
+      "boundary": "terminal_compaction_success",
+      "expected": "local compaction does not consume the only reserved terminal request",
+      "tests": [
+        "limit_compaction_cannot_consume_the_reserved_terminal_request"
+      ]
+    },
+    {
+      "id": "N05",
+      "lane": "root",
+      "boundary": "mandatory_facts_over_limit",
+      "expected": "typed ContextLimitExceeded before compaction commit, ModelRequestPrepared or physical request",
+      "tests": [
+        "mandatory_facts_over_limit_fail_before_any_model_request"
+      ]
+    },
+    {
+      "id": "N06",
+      "lane": "root",
+      "boundary": "logical_model_request_budget",
+      "expected": "runtime_model_request_budget_exhausted with exhausted_denied=0 and budget_exhausted=false",
+      "tests": [
+        "logical_model_request_gate_does_not_report_physical_api_exhaustion"
+      ]
+    },
+    {
+      "id": "N07",
+      "lane": "root",
+      "boundary": "physical_api_request_budget",
+      "expected": "api_request_budget_exceeded only when exhausted_denied>0",
+      "tests": [
+        "typed_finish_failures_and_accounting_fail_closed"
+      ]
+    },
+    {
+      "id": "N08",
+      "lane": "root",
+      "boundary": "partial_model_failure",
+      "expected": "actionable partial content or tool fragments stop without automatic replay",
+      "tests": [
+        "retryable_transport_reopens_only_without_output_and_preserves_first_failure"
+      ]
+    },
+    {
+      "id": "N09",
+      "lane": "root",
+      "boundary": "cancel",
+      "expected": "in-flight cancel commits one typed terminal and no later response terminal",
+      "tests": [
+        "in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_terminals"
+      ]
+    },
+    {
+      "id": "N10",
+      "lane": "root",
+      "boundary": "compaction_crash_reopen",
+      "expected": "SIGKILL after compaction commit reopens exact projection and adds one request only after resume",
+      "tests": [
+        "local_context_compaction_commit_survives_sigkill_without_model_or_transcript_side_effects"
+      ]
+    },
+    {
+      "id": "N11",
+      "lane": "read_only_child",
+      "boundary": "child_compaction_and_plan",
+      "expected": "child uses the same broker, read-only catalog and exact reopened DeepSeek RequestPlan",
+      "tests": [
+        "a_real_child_uses_the_same_broker_and_compacts_without_a_summary_request",
+        "m7i_actor_request_plans_rebuild_from_v16_sqlite_events"
+      ]
+    },
+    {
+      "id": "N12",
+      "lane": "explicit_writer",
+      "boundary": "writer_catalog_budget_and_plan",
+      "expected": "Writer actual catalog identity, shared terminal budget and exact reopened DeepSeek RequestPlan remain canonical",
+      "tests": [
+        "terminal_child_budget_is_absorbed_once_and_exact_limit_can_finish_recovery",
+        "existing_writer_child_resume_requires_and_accepts_its_actual_catalog_identity",
+        "m7i_actor_request_plans_rebuild_from_v16_sqlite_events"
+      ]
+    },
+    {
+      "id": "N13",
+      "lane": "root",
+      "boundary": "production_git_verifier_loopback",
+      "expected": "temporary Git workspace, canonical edits, latest-revision deterministic verifier and no-key SQLite reopen close",
+      "tests": [
+        "m7c_production_loopback_verifier_failure_recovers"
+      ]
+    }
+  ],
+  "credential_admission": {
+    "status": "blocked_no_material_production_delta",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "read_key_before_admission": false,
+    "official_api_requests_allowed": false,
+    "reason": "the frozen delta is current-revision offline coverage only; it does not change model, prompt, reasoning, catalog, budget, context policy or provider surface",
+    "stop_on": [
+      "unknown_billing",
+      "incomplete_accounting",
+      "identity_mismatch",
+      "side_effect_ambiguity",
+      "no_material_production_delta"
+    ]
+  },
+  "gates": [
+    {
+      "id": "actor_request_plans",
+      "package": "codewhale-app",
+      "filter": "m7i_actor_request_plans_rebuild_from_v16_sqlite_events"
+    },
+    {
+      "id": "production_terminal_catalog",
+      "package": "codewhale-app",
+      "filter": "production_catalog_is_not_used_to_compact_a_terminal_no_tools_request"
+    },
+    {
+      "id": "production_git_verifier",
+      "package": "codewhale-app",
+      "filter": "m7c_production_loopback_verifier_failure_recovers"
+    },
+    {
+      "id": "live_projection",
+      "package": "codewhale-runtime",
+      "filter": "live_projection_matches_store_replay_through_tool_steer_and_terminal"
+    },
+    {
+      "id": "terminal_catalog",
+      "package": "codewhale-runtime",
+      "filter": "terminal_no_tools_catalog_is_selected_before_hard_limit_compaction"
+    },
+    {
+      "id": "terminal_compaction",
+      "package": "codewhale-runtime",
+      "filter": "limit_compaction_cannot_consume_the_reserved_terminal_request"
+    },
+    {
+      "id": "ordinary_compaction",
+      "package": "codewhale-runtime",
+      "filter": "limit_compaction_is_durable_and_the_agent_consumes_only_the_projection"
+    },
+    {
+      "id": "mandatory_over_limit",
+      "package": "codewhale-runtime",
+      "filter": "mandatory_facts_over_limit_fail_before_any_model_request"
+    },
+    {
+      "id": "logical_budget",
+      "package": "codewhale-runtime",
+      "filter": "logical_model_request_gate_does_not_report_physical_api_exhaustion"
+    },
+    {
+      "id": "physical_budget",
+      "package": "codewhale-runtime",
+      "filter": "typed_finish_failures_and_accounting_fail_closed"
+    },
+    {
+      "id": "partial_failure",
+      "package": "codewhale-runtime",
+      "filter": "retryable_transport_reopens_only_without_output_and_preserves_first_failure"
+    },
+    {
+      "id": "cancel",
+      "package": "codewhale-runtime",
+      "filter": "in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_terminals"
+    },
+    {
+      "id": "read_only_child",
+      "package": "codewhale-runtime",
+      "filter": "a_real_child_uses_the_same_broker_and_compacts_without_a_summary_request"
+    },
+    {
+      "id": "writer_exact_budget",
+      "package": "codewhale-runtime",
+      "filter": "terminal_child_budget_is_absorbed_once_and_exact_limit_can_finish_recovery"
+    },
+    {
+      "id": "writer_catalog_resume",
+      "package": "codewhale-runtime",
+      "filter": "existing_writer_child_resume_requires_and_accepts_its_actual_catalog_identity"
+    },
+    {
+      "id": "compaction_sigkill",
+      "package": "codewhale-state",
+      "filter": "local_context_compaction_commit_survives_sigkill_without_model_or_transcript_side_effects"
+    }
+  ]
+}

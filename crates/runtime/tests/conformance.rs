@@ -7985,6 +7985,50 @@ async fn terminal_no_tools_catalog_is_selected_before_hard_limit_compaction() {
 }
 
 #[tokio::test]
+async fn mandatory_facts_over_limit_fail_before_any_model_request() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        observed_calls.fetch_add(1, Ordering::AcqRel);
+        panic!("mandatory facts over the hard limit must fail before ModelPort")
+    }));
+    let (runtime, _, sink, store) = fixture(model);
+    let mut run_request = request("必需事实超限必须拒绝");
+    run_request
+        .task_contract
+        .as_mut()
+        .expect("task contract")
+        .definition
+        .constraints = vec!["不可丢弃的约束".repeat(20_000)];
+    run_request.context_policy = ContextPolicy {
+        hard_input_tokens: 1_000,
+    };
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Failed {
+            failure: RuntimeFailure::ContextLimitExceeded {
+                hard_input_tokens: 1_000,
+                ..
+            }
+        }
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    assert_eq!(outcome.runtime_model_requests, 0);
+    assert_eq!(outcome.accounting.total_started(), 0);
+    assert!(!sink.events().iter().any(|event| matches!(
+        event.event,
+        RuntimeEventKind::ContextCompactionCommitted { .. }
+            | RuntimeEventKind::ModelRequestPrepared { .. }
+    )));
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
+    assert_eq!(reduce_events(&replay.events).unwrap(), replay.snapshot);
+}
+
+#[tokio::test]
 async fn limit_compaction_cannot_consume_the_reserved_terminal_request() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed_calls = calls.clone();
