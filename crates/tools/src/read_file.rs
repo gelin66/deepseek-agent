@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::{ProductionToolContext, ToolError, ToolOutcome, optional_str, required_str};
 
@@ -39,14 +40,17 @@ pub fn execute_read_file(
 
     if !explicit_range && file_bytes <= SMALL_FILE_BYTES as u64 {
         drop(file);
-        let contents = fs::read_to_string(&file_path).map_err(|error| {
+        let bytes = fs::read(&file_path).map_err(|error| {
             ToolError::execution_failed(format!(
                 "Failed to read {}: {}",
                 file_path.display(),
                 error
             ))
         })?;
-        context.note_file_read(&file_path);
+        let contents = String::from_utf8(bytes.clone()).map_err(|error| {
+            ToolError::execution_failed(format!("Failed to read {}: {error}", file_path.display()))
+        })?;
+        context.note_file_read_bytes(&file_path, &bytes);
 
         let total_lines = contents.lines().count();
         if total_lines <= SMALL_FILE_LINES {
@@ -94,15 +98,15 @@ pub fn execute_read_file(
         None => DEFAULT_READ_LINES,
     };
 
-    let (window, total_lines) =
-        read_window_streaming(file, start_line, max_lines).map_err(|error| {
+    let (window, total_lines, content_sha256) = read_window_streaming(file, start_line, max_lines)
+        .map_err(|error| {
             ToolError::execution_failed(format!(
                 "Failed to read {}: {}",
                 file_path.display(),
                 error
             ))
         })?;
-    context.note_file_read(&file_path);
+    context.note_file_read_digest(&file_path, content_sha256);
 
     if start_line > total_lines {
         let output = format!(
@@ -133,7 +137,7 @@ fn read_window_streaming(
     file: fs::File,
     start_line: usize,
     max_lines: usize,
-) -> std::io::Result<(Vec<String>, usize)> {
+) -> std::io::Result<(Vec<String>, usize, [u8; 32])> {
     use std::io::BufRead;
 
     let mut reader = std::io::BufReader::new(file);
@@ -141,6 +145,7 @@ fn read_window_streaming(
     let mut window: Vec<String> = Vec::new();
     let mut total_lines = 0usize;
     let start_idx = start_line - 1;
+    let mut content_sha256 = Sha256::new();
 
     loop {
         raw.clear();
@@ -148,6 +153,7 @@ fn read_window_streaming(
         if read == 0 {
             break;
         }
+        content_sha256.update(&raw[..read]);
         let mut end = raw.len();
         if raw[..end].ends_with(b"\n") {
             end -= 1;
@@ -167,7 +173,7 @@ fn read_window_streaming(
         total_lines += 1;
     }
 
-    Ok((window, total_lines))
+    Ok((window, total_lines, content_sha256.finalize().into()))
 }
 
 fn render_line_window(

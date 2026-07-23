@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use crate::atomic_write::{AtomicWriteError, write_atomic_if_unchanged};
 use crate::{
     ProductionToolContext, ToolError, ToolOutcome, optional_bool, optional_str, optional_u64,
     required_str,
@@ -135,6 +136,7 @@ struct PendingWrite {
     path: PathBuf,
     content: Option<String>,
     original: Option<String>,
+    original_permissions: Option<fs::Permissions>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -199,6 +201,8 @@ enum ApplyHunkError {
         adjusted_line: usize,
         offset: isize,
     },
+    #[error("Hunk matches multiple locations at fuzz {fuzz}: {positions:?}")]
+    Ambiguous { fuzz: usize, positions: Vec<usize> },
 }
 
 /// Apply an existing `apply_patch` request against the workspace.
@@ -320,6 +324,7 @@ fn preflight_apply_patch_plan(input: &Value) -> Result<ApplyPatchPreflightPlan, 
     }
 
     let mut touched_files = Vec::new();
+    let mut seen_files = HashSet::new();
     let mut creates = Vec::new();
     let mut deletes = Vec::new();
     let mut hunks_total = 0;
@@ -330,7 +335,13 @@ fn preflight_apply_patch_plan(input: &Value) -> Result<ApplyPatchPreflightPlan, 
                 file_patch.path
             )));
         }
-        push_unique(&mut touched_files, file_patch.path.clone());
+        if !seen_files.insert(file_patch.path.clone()) {
+            return Err(ToolError::invalid_input(format!(
+                "Patch contains multiple sections for the same target `{}`. Combine them into one file section.",
+                file_patch.path
+            )));
+        }
+        touched_files.push(file_patch.path.clone());
         hunks_total += file_patch.hunks.len();
         if file_patch.create_if_missing && !file_patch.delete_after {
             push_unique(&mut creates, file_patch.path.clone());
@@ -363,6 +374,7 @@ fn preflight_changes(changes_value: &Value) -> Result<ApplyPatchPreflight, ToolE
     }
 
     let mut touched_files = Vec::new();
+    let mut seen_paths = HashSet::new();
     for change in changes {
         let path = change
             .get("path")
@@ -372,7 +384,12 @@ fn preflight_changes(changes_value: &Value) -> Result<ApplyPatchPreflight, ToolE
             .get("content")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::missing_field("changes[].content"))?;
-        push_unique(&mut touched_files, path.to_string());
+        if !seen_paths.insert(path) {
+            return Err(ToolError::invalid_input(format!(
+                "`changes` contains duplicate target `{path}`"
+            )));
+        }
+        touched_files.push(path.to_string());
     }
 
     Ok(ApplyPatchPreflight {
@@ -489,6 +506,13 @@ fn resolve_diff_paths(
 ) -> Result<(String, bool, bool), ToolError> {
     let old_norm = old_path.and_then(normalize_diff_path);
     let new_norm = new_path.and_then(normalize_diff_path);
+    if let (Some(old), Some(new)) = (&old_norm, &new_norm)
+        && old != new
+    {
+        return Err(ToolError::invalid_input(format!(
+            "Patch rename `{old}` -> `{new}` is not supported by apply_patch; use an explicit create/delete operation"
+        )));
+    }
     let delete_after = new_norm.is_none();
     let create_flag = create_if_missing || old_norm.is_none();
     let path = new_norm
@@ -535,45 +559,52 @@ where
     let (old_start, old_count) = parse_range(old_range)?;
     let (new_start, new_count) = parse_range(new_range)?;
 
-    // Parse hunk lines
     let mut hunk_lines = Vec::new();
-    let expected_lines = old_count.max(new_count) + old_count.min(new_count);
+    let mut old_seen = 0usize;
+    let mut new_seen = 0usize;
 
-    for _ in 0..expected_lines * 2 {
-        // Allow for more lines than expected
+    while old_seen < old_count || new_seen < new_count {
         match lines.peek() {
-            Some(line) if line.starts_with("@@") => break,
+            Some(line) if line.starts_with("@@") || line.starts_with("diff ") => {
+                break;
+            }
             Some(line) if line.starts_with('-') => {
+                old_seen += 1;
                 hunk_lines.push(HunkLine::Remove(line[1..].to_string()));
                 lines.next();
             }
             Some(line) if line.starts_with('+') => {
+                new_seen += 1;
                 hunk_lines.push(HunkLine::Add(line[1..].to_string()));
                 lines.next();
             }
             Some(line) if line.starts_with(' ') || line.is_empty() => {
+                old_seen += 1;
+                new_seen += 1;
                 let content = if line.is_empty() { "" } else { &line[1..] };
                 hunk_lines.push(HunkLine::Context(content.to_string()));
                 lines.next();
             }
-            Some(line)
-                if line.starts_with("diff ")
-                    || line.starts_with("--- ")
-                    || line.starts_with("+++ ") =>
-            {
-                // Start of a new file patch - don't consume, let outer loop handle it
-                break;
+            Some(line) if line.starts_with('\\') => {
+                lines.next();
             }
-            Some(line) if !line.starts_with('\\') => {
-                // Treat as context line without leading space
+            Some(line) => {
+                old_seen += 1;
+                new_seen += 1;
                 hunk_lines.push(HunkLine::Context((*line).to_string()));
                 lines.next();
             }
-            Some(_) => {
-                lines.next(); // Skip "\ No newline at end of file" etc
-            }
             None => break,
         }
+        if old_seen > old_count || new_seen > new_count {
+            break;
+        }
+    }
+
+    if old_seen != old_count || new_seen != new_count {
+        return Err(ToolError::invalid_input(format!(
+            "Hunk body count mismatch for `{header}`: declared old/new {old_count}/{new_count}, observed {old_seen}/{new_seen}"
+        )));
     }
 
     Ok(Hunk {
@@ -702,7 +733,7 @@ fn diff_header_mismatch(path_override: &str, shape: &PatchShape) -> Option<Strin
         None
     } else {
         Some(format!(
-            "Note: patch headers reference `{header_path}` but `path` overrides to `{override_norm}`."
+            "注意：patch header 指向 `{header_path}`，但 `path` 覆盖为 `{override_norm}`。"
         ))
     }
 }
@@ -711,26 +742,23 @@ fn build_summary_message(stats: &PatchStatsExt) -> String {
     let mut parts = Vec::new();
     if stats.stats.hunks_total > 0 {
         parts.push(format!(
-            "Applied {}/{} hunks across {} file(s).",
-            stats.stats.hunks_applied, stats.stats.hunks_total, stats.stats.files_applied
+            "已在 {} 个文件中应用 {}/{} 个 hunk。",
+            stats.stats.files_applied, stats.stats.hunks_applied, stats.stats.hunks_total
         ));
     } else {
-        parts.push(format!(
-            "Applied {} file change(s).",
-            stats.stats.files_applied
-        ));
+        parts.push(format!("已应用 {} 个文件修改。", stats.stats.files_applied));
     }
 
     if !stats.touched_files.is_empty() {
         parts.push(format!(
-            "Files: {}.",
+            "文件：{}。",
             format_file_list(&stats.touched_files)
         ));
     }
 
     if stats.stats.fuzz_used > 0 {
         parts.push(format!(
-            "Fuzz used on {} hunk(s) (total fuzz: {}).",
+            "{} 个 hunk 使用了 fuzz（总 fuzz={}）。",
             stats.stats.hunks_with_fuzz, stats.stats.fuzz_used
         ));
     }
@@ -773,6 +801,7 @@ fn build_pending_writes_from_changes(
 
     let mut pending = Vec::new();
     let mut stats = PatchStatsExt::default();
+    let mut resolved_targets = HashSet::new();
     for change in changes {
         let path = change
             .get("path")
@@ -784,17 +813,32 @@ fn build_pending_writes_from_changes(
             .ok_or_else(|| ToolError::missing_field("changes[].content"))?;
 
         let resolved = context.resolve_write_path(path)?;
+        if !resolved_targets.insert(resolved.clone()) {
+            return Err(ToolError::invalid_input(format!(
+                "`changes` resolves more than once to `{}`",
+                resolved.display()
+            )));
+        }
         let original = if resolved.exists() {
             Some(read_file_content(&resolved)?)
         } else {
             None
         };
+        if original.as_deref() == Some(content) {
+            return Err(ToolError::invalid_input(format!(
+                "`changes` target `{path}` already has the requested content"
+            )));
+        }
         let created = original.is_none();
+        let original_permissions = fs::metadata(&resolved)
+            .ok()
+            .map(|metadata| metadata.permissions());
 
         pending.push(PendingWrite {
             path: resolved,
             content: Some(content.to_string()),
             original,
+            original_permissions,
         });
 
         stats.stats.files_total += 1;
@@ -822,6 +866,7 @@ fn build_pending_writes_from_patches(
     let mut pending = Vec::new();
     let mut stats = PatchStatsExt::default();
     stats.stats.files_total = file_patches.len();
+    let mut resolved_targets = HashSet::new();
 
     for file_patch in file_patches {
         if file_patch.hunks.is_empty() {
@@ -832,11 +877,20 @@ fn build_pending_writes_from_patches(
         }
 
         let resolved = context.resolve_write_path(&file_patch.path)?;
+        if !resolved_targets.insert(resolved.clone()) {
+            return Err(ToolError::invalid_input(format!(
+                "Patch resolves more than once to `{}`",
+                resolved.display()
+            )));
+        }
         let original = if resolved.exists() {
             Some(read_file_content(&resolved)?)
         } else {
             None
         };
+        let original_permissions = fs::metadata(&resolved)
+            .ok()
+            .map(|metadata| metadata.permissions());
 
         if original.is_none() && !file_patch.create_if_missing {
             return Err(ToolError::execution_failed(format!(
@@ -884,13 +938,21 @@ fn build_pending_writes_from_patches(
                 path: resolved,
                 content: None,
                 original,
+                original_permissions,
             });
         } else {
             let new_content = reassemble_preserving_newlines(&lines, &base_content);
+            if original.as_deref() == Some(new_content.as_str()) {
+                return Err(ToolError::invalid_input(format!(
+                    "Patch for `{}` would not change the file",
+                    file_patch.path
+                )));
+            }
             pending.push(PendingWrite {
                 path: resolved,
                 content: Some(new_content),
                 original,
+                original_permissions,
             });
         }
     }
@@ -900,44 +962,33 @@ fn build_pending_writes_from_patches(
 
 fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
     let mut applied = Vec::new();
+    let mut created_directories = Vec::new();
 
     for entry in pending {
         let result = if let Some(content) = entry.content.as_ref() {
-            let parent_result = if let Some(parent) = entry.path.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::execution_failed(format!(
-                        "Failed to create directory {}: {}",
-                        parent.display(),
-                        e
-                    ))
-                })
-            } else {
-                Ok(())
-            };
-
-            parent_result.and_then(|()| {
-                crate::write_atomic(&entry.path, content.as_bytes()).map_err(|e| {
-                    ToolError::execution_failed(format!(
-                        "Failed to write {}: {}",
-                        entry.path.display(),
-                        e
-                    ))
-                })
-            })
-        } else if entry.path.exists() {
-            fs::remove_file(&entry.path).map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to delete {}: {}",
-                    entry.path.display(),
-                    e
-                ))
-            })
+            create_missing_parent_directories(&entry.path, &mut created_directories).and_then(
+                |()| {
+                    write_atomic_if_unchanged(
+                        &entry.path,
+                        entry.original.as_deref().map(str::as_bytes),
+                        content.as_bytes(),
+                        entry.original_permissions.as_ref(),
+                    )
+                    .map_err(|error| atomic_write_error(&entry.path, error))
+                },
+            )
         } else {
-            Ok(())
+            remove_file_if_unchanged(entry)
         };
 
         if let Err(err) = result {
-            rollback_pending_writes(&applied);
+            if let Err(rollback) = rollback_pending_writes(&applied)
+                .and_then(|()| rollback_created_directories(&created_directories))
+            {
+                return Err(ToolError::execution_failed(format!(
+                    "apply_patch failed and rollback is incomplete; original error: {err}; rollback error: {rollback}"
+                )));
+            }
             return Err(err);
         }
 
@@ -947,17 +998,130 @@ fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn rollback_pending_writes(applied: &[PendingWrite]) {
+fn create_missing_parent_directories(
+    path: &PathBuf,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ToolError> {
+    let Some(parent) = path.parent() else {
+        return Err(ToolError::execution_failed(format!(
+            "Path {} has no parent directory",
+            path.display()
+        )));
+    };
+    let mut missing = Vec::new();
+    let mut cursor = parent;
+    while !cursor.exists() {
+        missing.push(cursor.to_path_buf());
+        let Some(next) = cursor.parent() else {
+            break;
+        };
+        cursor = next;
+    }
+    for directory in missing.iter().rev() {
+        fs::create_dir(directory).map_err(|error| {
+            ToolError::execution_failed(format!(
+                "Failed to create directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+        created.push(directory.clone());
+    }
+    Ok(())
+}
+
+fn remove_file_if_unchanged(entry: &PendingWrite) -> Result<(), ToolError> {
+    let expected = entry.original.as_deref().ok_or_else(|| {
+        ToolError::workspace_precondition(format!(
+            "Cannot delete {} because no original content was captured",
+            entry.path.display()
+        ))
+    })?;
+    let current = fs::read(&entry.path).map_err(|error| {
+        ToolError::stale_read(format!(
+            "apply_patch cannot delete {} because it changed or disappeared: {error}",
+            entry.path.display()
+        ))
+    })?;
+    if current != expected.as_bytes() {
+        return Err(ToolError::stale_read(format!(
+            "apply_patch cannot delete {} because it changed after validation",
+            entry.path.display()
+        )));
+    }
+    fs::remove_file(&entry.path).map_err(|error| {
+        ToolError::execution_failed(format!(
+            "Failed to delete {}: {error}",
+            entry.path.display()
+        ))
+    })
+}
+
+fn atomic_write_error(path: &PathBuf, error: AtomicWriteError) -> ToolError {
+    match error {
+        AtomicWriteError::Conflict => ToolError::stale_read(format!(
+            "apply_patch cannot publish {} because it changed after validation",
+            path.display()
+        )),
+        AtomicWriteError::Io(error) => {
+            ToolError::execution_failed(format!("Failed to write {}: {error}", path.display()))
+        }
+    }
+}
+
+fn rollback_pending_writes(applied: &[PendingWrite]) -> Result<(), ToolError> {
     for entry in applied.iter().rev() {
         match entry.original.as_ref() {
             Some(content) => {
-                let _ = crate::write_atomic(&entry.path, content.as_bytes());
+                let expected = entry.content.as_deref().map(str::as_bytes);
+                write_atomic_if_unchanged(
+                    &entry.path,
+                    expected,
+                    content.as_bytes(),
+                    entry.original_permissions.as_ref(),
+                )
+                .map_err(|error| atomic_write_error(&entry.path, error))?;
             }
             None => {
-                let _ = fs::remove_file(&entry.path);
+                let expected = entry.content.as_deref().ok_or_else(|| {
+                    ToolError::execution_failed(format!(
+                        "Rollback lacks created content for {}",
+                        entry.path.display()
+                    ))
+                })?;
+                let current = fs::read(&entry.path).map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "Rollback cannot inspect created file {}: {error}",
+                        entry.path.display()
+                    ))
+                })?;
+                if current != expected.as_bytes() {
+                    return Err(ToolError::execution_failed(format!(
+                        "Rollback refuses to remove changed file {}",
+                        entry.path.display()
+                    )));
+                }
+                fs::remove_file(&entry.path).map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "Rollback failed to remove {}: {error}",
+                        entry.path.display()
+                    ))
+                })?;
             }
         }
     }
+    Ok(())
+}
+
+fn rollback_created_directories(created: &[PathBuf]) -> Result<(), ToolError> {
+    for directory in created.iter().rev() {
+        fs::remove_dir(directory).map_err(|error| {
+            ToolError::execution_failed(format!(
+                "Rollback failed to remove directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn read_file_content(path: &PathBuf) -> Result<String, ToolError> {
@@ -1023,6 +1187,14 @@ fn format_hunk_no_match_error(
                 "在第 {expected_line} 行附近找不到匹配上下文（实际搜索第 {adjusted_line} 行附近，偏移 {offset:+}，最大 fuzz={max_fuzz}）。期望上下文：\n{expected_preview}\n当前文件片段：\n{file_preview}"
             )
         }
+        ApplyHunkError::Ambiguous { fuzz, positions } => format!(
+            "在 fuzz={fuzz} 时匹配到多个位置（行号：{}），拒绝猜测目标",
+            positions
+                .iter()
+                .map(|position| (position + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -1044,9 +1216,19 @@ fn apply_hunks_to_lines(
                     stats.hunks_with_fuzz += 1;
                 }
             }
-            Err(e) => {
+            Err(e @ ApplyHunkError::NoMatch { .. }) => {
                 let detail = format_hunk_no_match_error(lines, hunk, &e, fuzz);
                 return Err(ToolError::workspace_precondition(format!(
+                    "无法对 `{}` 应用第 {}/{} 个 hunk：{}",
+                    file_label,
+                    idx + 1,
+                    hunks.len(),
+                    detail
+                )));
+            }
+            Err(e @ ApplyHunkError::Ambiguous { .. }) => {
+                let detail = format_hunk_no_match_error(lines, hunk, &e, fuzz);
+                return Err(ToolError::ambiguous_edit(format!(
                     "无法对 `{}` 应用第 {}/{} 个 hunk：{}",
                     file_label,
                     idx + 1,
@@ -1111,18 +1293,24 @@ fn apply_hunk(
             (min..=max).collect()
         };
 
-        for pos in search_range {
-            if matches_at_position(lines, &old_lines, pos) {
-                // Apply the hunk
-                let end_pos = pos + old_lines.len();
-                lines.splice(pos..end_pos, new_lines.clone());
+        let matches = search_range
+            .into_iter()
+            .filter(|position| matches_at_position(lines, &old_lines, *position))
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(ApplyHunkError::Ambiguous {
+                fuzz,
+                positions: matches,
+            });
+        }
+        if let Some(pos) = matches.first().copied() {
+            let end_pos = pos + old_lines.len();
+            lines.splice(pos..end_pos, new_lines.clone());
 
-                // Update cumulative offset: new lines added minus old lines removed
-                let delta = new_lines.len() as isize - old_lines.len() as isize;
-                *cumulative_offset += delta;
+            let delta = new_lines.len() as isize - old_lines.len() as isize;
+            *cumulative_offset += delta;
 
-                return Ok(fuzz);
-            }
+            return Ok(fuzz);
         }
     }
 
@@ -1513,21 +1701,20 @@ diff --git a/old.rs b/old.rs
     }
 
     #[test]
-    fn test_preflight_changes_files_total_counts_entries() {
-        let preflight = preflight_apply_patch(&json!({
+    fn test_preflight_changes_rejects_duplicate_entries() {
+        let error = preflight_apply_patch(&json!({
             "changes": [
                 { "path": "same.txt", "content": "one" },
                 { "path": "same.txt", "content": "two" }
             ]
         }))
-        .expect("preflight");
+        .expect_err("duplicate changes must fail before execution");
 
-        assert_eq!(preflight.touched_files, vec!["same.txt"]);
-        assert_eq!(preflight.files_total, 2);
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
     }
 
     #[test]
-    fn test_preflight_patch_files_total_counts_sections() {
+    fn test_preflight_patch_rejects_duplicate_sections() {
         let patch = r"diff --git a/same.txt b/same.txt
 --- a/same.txt
 +++ b/same.txt
@@ -1542,11 +1729,10 @@ diff --git a/same.txt b/same.txt
 +four
 ";
 
-        let preflight = preflight_apply_patch(&json!({ "patch": patch })).expect("preflight");
+        let error = preflight_apply_patch(&json!({ "patch": patch }))
+            .expect_err("duplicate file sections must fail before execution");
 
-        assert_eq!(preflight.touched_files, vec!["same.txt"]);
-        assert_eq!(preflight.files_total, 2);
-        assert_eq!(preflight.hunks_total, 2);
+        assert!(matches!(error, ToolError::InvalidInput { .. }));
     }
 
     #[test]
@@ -1850,11 +2036,15 @@ diff --git a/same.txt b/same.txt
                 path: deleted.clone(),
                 content: None,
                 original: Some(original.to_string()),
+                original_permissions: fs::metadata(&deleted)
+                    .ok()
+                    .map(|metadata| metadata.permissions()),
             },
             PendingWrite {
                 path: blocker.join("later.txt"),
                 content: Some("new".to_string()),
                 original: None,
+                original_permissions: None,
             },
         ];
 
@@ -2008,7 +2198,7 @@ diff --git a/b.txt b/b.txt
         let patch_result = parse_patch_result(result);
         assert_eq!(patch_result.hunks_with_fuzz, 1);
         assert!(patch_result.fuzz_used > 0);
-        assert!(patch_result.message.contains("Fuzz used"));
+        assert!(patch_result.message.contains("使用了 fuzz"));
         let summary = patch_result.file_summaries.first().unwrap();
         assert_eq!(summary.hunks_with_fuzz, 1);
     }
@@ -2034,18 +2224,14 @@ diff --git a/b.txt b/b.txt
             metadata["header_path_mismatch"]
                 .as_str()
                 .unwrap()
-                .contains("headers reference `other.txt`")
+                .contains("header 指向 `other.txt`")
         );
         let patch_result = parse_patch_result(result);
+        assert!(patch_result.message.contains("header 指向 `other.txt`"));
         assert!(
             patch_result
                 .message
-                .contains("headers reference `other.txt`")
-        );
-        assert!(
-            patch_result
-                .message
-                .contains("path` overrides to `override.txt`")
+                .contains("`path` 覆盖为 `override.txt`")
         );
     }
 

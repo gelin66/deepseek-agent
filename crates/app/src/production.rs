@@ -2421,6 +2421,71 @@ mod tests {
         })
     }
 
+    fn tool_response(
+        model: &str,
+        call_id: &str,
+        name: &str,
+        arguments: Value,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
+        json!({
+            "id": format!("fixture-{call_id}"),
+            "model": model,
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "需要调用 canonical 工具。",
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": serde_json::to_string(&arguments)
+                                .expect("serialize tool arguments")
+                        }
+                    }]
+                },
+            }],
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": input_tokens,
+            },
+        })
+    }
+
+    fn thinking_response(
+        model: &str,
+        content: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
+        json!({
+            "id": format!("fixture-thinking-{input_tokens}"),
+            "model": model,
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "根据 deterministic verifier 给出完成候选。",
+                    "content": content
+                },
+            }],
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": input_tokens,
+            },
+        })
+    }
+
     async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -2437,6 +2502,164 @@ mod tests {
         })
         .await
         .expect("run reaches terminal")
+    }
+
+    fn initialize_git_fixture(workspace: &Path) {
+        std::fs::create_dir_all(workspace).expect("workspace");
+        let run = |arguments: &[&str]| {
+            let output = ProcessCommand::new("git")
+                .args(arguments)
+                .current_dir(workspace)
+                .env("GIT_AUTHOR_NAME", "CodeWhale M7-C")
+                .env("GIT_AUTHOR_EMAIL", "m7c@example.invalid")
+                .env("GIT_COMMITTER_NAME", "CodeWhale M7-C")
+                .env("GIT_COMMITTER_EMAIL", "m7c@example.invalid")
+                .env("GIT_AUTHOR_DATE", "2026-07-23T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2026-07-23T00:00:00Z")
+                .output()
+                .expect("run git fixture command");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                arguments,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "fixture"]);
+    }
+
+    #[tokio::test]
+    async fn m7c_production_loopback_verifier_failure_recovers() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "read-value",
+                "read_file",
+                json!({"path":"value.txt"}),
+                10,
+                2,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "edit-broken",
+                "edit_file",
+                json!({"path":"value.txt","search":"before","replace":"broken"}),
+                11,
+                3,
+            ),
+            thinking_response("deepseek-v4-pro", "修改完成", 12, 2),
+            tool_response(
+                "deepseek-v4-pro",
+                "edit-fixed",
+                "edit_file",
+                json!({"path":"value.txt","search":"broken","replace":"after"}),
+                13,
+                3,
+            ),
+            thinking_response("deepseek-v4-pro", "已修正并完成", 14, 3),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join("value.txt"), "before\n").expect("value fixture");
+        std::fs::write(
+            workspace.join("verify.py"),
+            "from pathlib import Path\nraise SystemExit(0 if Path('value.txt').read_text() == 'after\\n' else 1)\n",
+        )
+        .expect("verifier fixture");
+        initialize_git_fixture(&workspace);
+
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = caller_authored_verifier_task();
+        command.limits.wall_time_ms = Some(30_000);
+        let state_path = temp.path().join("state.db");
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let run = run_result(
+            app.execute(envelope(
+                "m7c-verifier-recovery",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert_eq!(
+            requests.len(),
+            5,
+            "unexpected terminal after {} requests: {:#?}",
+            requests.len(),
+            replay.snapshot.terminal
+        );
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(
+            std::fs::read(workspace.join("value.txt")).expect("final bytes"),
+            b"after\n"
+        );
+        let edit_outcomes = replay
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "edit_file" =>
+                {
+                    Some(outcome.as_ref())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(edit_outcomes.len(), 2);
+        assert!(edit_outcomes.iter().all(|outcome| outcome.is_success()));
+        let verification_outcomes = replay
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } => Some((outcome.is_success(), receipt.is_some())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(verification_outcomes, vec![(false, false), (true, true)]);
+        let receipt = replay
+            .snapshot
+            .evidence_receipts
+            .last()
+            .expect("latest receipt");
+        assert_eq!(receipt.workspace_state, replay.snapshot.workspace_state);
+
+        drop(app);
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(config(
+            &state_path,
+            connection(&quiet_root, false),
+            false,
+        ))
+        .expect("reopen production app without credential");
+        let reopened_replay = reopened
+            .store
+            .load(&run.run_id)
+            .await
+            .expect("load reopened run")
+            .expect("reopened run exists");
+        assert_eq!(reopened_replay.events, replay.events);
+        assert_eq!(reopened_replay.snapshot, replay.snapshot);
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }
 
     fn prepared_request(replay: &RunReplay) -> ModelRequest {

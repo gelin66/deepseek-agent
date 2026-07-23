@@ -2,16 +2,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::ToolError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileReadSnapshot {
-    len: u64,
-    modified: Option<SystemTime>,
+    content_sha256: [u8; 32],
 }
 
 #[derive(Debug, Default)]
@@ -164,36 +163,38 @@ impl ProductionToolContext {
         context
     }
 
-    /// Rebind this context to another workspace and discard old read evidence.
+    /// Remember the exact bytes returned by a successful whole-file read.
     ///
-    /// A child-agent worktree is a different filesystem view. Carrying the
-    /// parent's freshness snapshots into it could authorize an edit against a
-    /// file that was never read in the child workspace.
-    pub fn rebind_workspace(&mut self, workspace: impl Into<PathBuf>) {
-        self.workspace = workspace.into();
-        self.file_read_tracker = Arc::new(Mutex::new(FileReadTracker::default()));
+    /// Production callers should prefer this over reopening the path after a
+    /// read: the digest must describe the same bytes the model observed.
+    pub(crate) fn note_file_read_bytes(&self, path: &Path, bytes: &[u8]) {
+        self.note_file_read_digest(path, sha256(bytes));
     }
 
-    /// Remember the current on-disk state after a successful file read.
-    ///
-    /// Tracking is best-effort: a metadata race or poisoned tracker must not
-    /// turn an otherwise successful read into a tool failure.
-    pub fn note_file_read(&self, path: &Path) {
-        let Ok(snapshot) = file_read_snapshot(path) else {
-            return;
-        };
+    /// Remember a digest computed while streaming the exact observed bytes.
+    pub(crate) fn note_file_read_digest(&self, path: &Path, content_sha256: [u8; 32]) {
+        let snapshot = FileReadSnapshot { content_sha256 };
         let Ok(mut tracker) = self.file_read_tracker.lock() else {
             return;
         };
         tracker.reads.insert(path.to_path_buf(), snapshot);
     }
 
-    /// Require a successful and still-current read before a narrow edit.
-    pub fn require_fresh_file_read(
+    /// Test/support convenience for callers that did not retain read bytes.
+    /// Production `read_file` records the observed bytes or streaming digest.
+    pub fn note_file_read(&self, path: &Path) {
+        let Ok(bytes) = fs::read(path) else {
+            return;
+        };
+        self.note_file_read_bytes(path, &bytes);
+    }
+
+    /// Return the current bytes only when they equal the last observed read.
+    pub(crate) fn read_fresh_file_bytes(
         &self,
         path: &Path,
         requested_path: &str,
-    ) -> Result<(), ToolError> {
+    ) -> Result<Vec<u8>, ToolError> {
         let prior = {
             let tracker = self.file_read_tracker.lock().map_err(|_| {
                 ToolError::execution_failed(
@@ -210,21 +211,30 @@ impl ProductionToolContext {
             )));
         };
 
-        let current = file_read_snapshot(path).map_err(|error| {
+        let current = fs::read(path).map_err(|error| {
             ToolError::workspace_precondition(format!(
                 "edit_file 无法确认 {} 是否仍为已读取版本（path=\"{requested_path}\"）：{error}",
                 path.display()
             ))
         })?;
 
-        if current != prior {
+        if sha256(&current) != prior.content_sha256 {
             return Err(ToolError::stale_read(format!(
                 "edit_file 拒绝修改 {}：文件在最近一次 read_file 后已经变化（path=\"{requested_path}\"）",
                 path.display()
             )));
         }
 
-        Ok(())
+        Ok(current)
+    }
+
+    /// Require a successful and still-current read before a narrow edit.
+    pub fn require_fresh_file_read(
+        &self,
+        path: &Path,
+        requested_path: &str,
+    ) -> Result<(), ToolError> {
+        self.read_fresh_file_bytes(path, requested_path).map(drop)
     }
 
     /// Resolve a path relative to the workspace and reject path escapes.
@@ -405,14 +415,8 @@ fn isolated_writer_write_denied(path: &Path) -> ToolError {
     ))
 }
 
-fn file_read_snapshot(path: &Path) -> Result<FileReadSnapshot, ToolError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        ToolError::execution_failed(format!("Failed to inspect {}: {error}", path.display()))
-    })?;
-    Ok(FileReadSnapshot {
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-    })
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -617,31 +621,5 @@ mod tests {
         assert!(!invocation.cancellation_token().unwrap().is_cancelled());
         cancellation.cancel();
         assert!(invocation.cancellation_token().unwrap().is_cancelled());
-    }
-
-    #[test]
-    fn workspace_rebind_clears_read_freshness() {
-        let parent = tempdir().expect("parent workspace");
-        let child = tempdir().expect("child workspace");
-        let parent_file = parent.path().join("source.rs");
-        let child_file = child.path().join("source.rs");
-        fs::write(&parent_file, "parent").expect("parent write");
-        fs::write(&child_file, "child").expect("child write");
-
-        let context = ProductionToolContext::new(parent.path());
-        context.note_file_read(&parent_file);
-        let mut rebound = context.clone();
-        rebound.rebind_workspace(child.path());
-
-        context
-            .require_fresh_file_read(&parent_file, "source.rs")
-            .expect("parent keeps its freshness");
-        assert!(
-            rebound
-                .require_fresh_file_read(&child_file, "source.rs")
-                .expect_err("rebound context must read child file")
-                .to_string()
-                .contains("尚未读取")
-        );
     }
 }

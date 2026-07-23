@@ -1,5 +1,5 @@
 {
-  "success_content": "{\"success\":true,\"files_applied\":1,\"files_total\":1,\"hunks_applied\":1,\"hunks_total\":1,\"fuzz_used\":0,\"hunks_with_fuzz\":0,\"touched_files\":[\"sample.txt\"],\"file_summaries\":[{\"path\":\"sample.txt\",\"hunks\":1,\"hunks_applied\":1,\"fuzz_used\":0,\"hunks_with_fuzz\":0,\"created\":false,\"deleted\":false}],\"message\":\"Applied 1/1 hunks across 1 file(s). Files: sample.txt.\"}",
+  "success_content": "{\"success\":true,\"files_applied\":1,\"files_total\":1,\"hunks_applied\":1,\"hunks_total\":1,\"fuzz_used\":0,\"hunks_with_fuzz\":0,\"touched_files\":[\"sample.txt\"],\"file_summaries\":[{\"path\":\"sample.txt\",\"hunks\":1,\"hunks_applied\":1,\"fuzz_used\":0,\"hunks_with_fuzz\":0,\"created\":false,\"deleted\":false}],\"message\":\"已在 1 个文件中应用 1/1 个 hunk。 文件：sample.txt。\"}",
   "success_metadata": "{\"touched_files\":[\"sample.txt\"],\"files_total\":1,\"hunks_total\":1,\"path_override\":\"sample.txt\",\"event\":\"apply_patch.preflight\"}",
   "success_file_bytes": "alpha\nBETA\ngamma\n",
   "missing_patch_error": "工具参数无效：缺少必填字段 'patch'",

@@ -1270,10 +1270,15 @@ impl<'a> RuntimeEventProjection<'a> {
                     ))
                     .ok()
                 } else if !json_output {
+                    let display = if outcome.is_success() {
+                        outcome.content.clone()
+                    } else {
+                        outcome.model_content()
+                    };
                     Some(exec_tool_finished_line(
                         name,
                         outcome.is_success(),
-                        &super::summarize_tool_output(&outcome.content),
+                        &super::summarize_tool_output(&display),
                     ))
                 } else {
                     None

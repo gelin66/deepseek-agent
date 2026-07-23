@@ -79,8 +79,8 @@
     {"id":"E08","lane":"root","objective":"patch context 漂移时拒绝歧义并重建精确 patch","fixture":"context-drift","verifier":"wrong repeated block remains unchanged","expected_changed_files":["src/drift.txt"],"mechanism_test":"m7c_apply_patch_rejects_ambiguous_fuzzy_hunk"},
     {"id":"E09","lane":"root","objective":"首次修改导致 verifier 失败，再修正到通过","fixture":"verifier-recovery","verifier":"frozen command fails once then passes latest revision","expected_changed_files":["src/lib.rs"],"mechanism_test":"m7c_production_loopback_verifier_failure_recovers"},
     {"id":"E10","lane":"root","objective":"目标已满足时不得产生 no-op mutation","fixture":"negative-no-change","verifier":"workspace tree and generation stay unchanged","expected_changed_files":[],"mechanism_test":"m7c_apply_patch_rejects_noop_change"},
-    {"id":"E11","lane":"read_only_child","objective":"child 只调查并 handoff，root 执行编辑","fixture":"readonly-handoff","verifier":"child advertises no write tools and root latest revision passes","expected_changed_files":["src/handoff.txt"],"mechanism_test":"m7c_production_loopback_readonly_handoff"},
-    {"id":"E12","lane":"explicit_writer","objective":"isolated Writer 编辑，Host verify/integrate/cleanup","fixture":"writer-integration","verifier":"sealed diff fast-forwards and managed worktree is removed","expected_changed_files":["src/writer.txt"],"mechanism_test":"m7c_production_loopback_writer_integrates_and_cleans"}
+    {"id":"E11","lane":"read_only_child","objective":"child 只调查并 handoff，root 执行编辑","fixture":"readonly-handoff","verifier":"child advertises no write tools and root latest revision passes","expected_changed_files":["src/handoff.txt"],"mechanism_test":"role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecycle"},
+    {"id":"E12","lane":"explicit_writer","objective":"isolated Writer 编辑，Host verify/integrate/cleanup","fixture":"writer-integration","verifier":"sealed diff fast-forwards and managed worktree is removed","expected_changed_files":["src/writer.txt"],"mechanism_test":"production_writer_is_isolated_recoverable_and_integrates_once"}
   ],
   "mechanism_matrix": [
     "malformed_missing_extra_arguments",
@@ -110,6 +110,14 @@
   "tests": {
     "tools_filter": "m7c_",
     "app_filter": "m7c_",
+    "extra_gates": [
+      {"package":"codewhale-runtime","filter":"role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecycle"},
+      {"package":"codewhale-orchestrator","filter":"production_writer_is_isolated_recoverable_and_integrates_once"},
+      {"package":"codewhale-state","filter":"tool_prepared_sigkill_executes_once_after_sqlite_reopen"},
+      {"package":"codewhale-state","filter":"tool_side_effect_crash_is_not_executed_twice_after_reopen"},
+      {"package":"codewhale-state","filter":"tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen"},
+      {"package":"codewhale-app-server","filter":"sigkill_app_server_recovers_same_run_and_terminal_replays_without_key"}
+    ],
     "harness_self_test": "scripts/eval-m7c-edit.py self-test"
   }
 }

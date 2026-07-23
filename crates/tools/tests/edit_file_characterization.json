@@ -1,7 +1,7 @@
 {
-  "success_content_template": "--- a/{path}\n+++ b/{path}\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n\nReplaced 1 occurrence in {path}",
+  "success_content_template": "--- a/{path}\n+++ b/{path}\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n\n已在 {path} 替换 1 处",
   "success_file_bytes": "alpha\nBETA\ngamma\n",
-  "identical_error": "工具参数无效：search and replace are identical, no change intended",
+  "identical_error": "工具参数无效：search 与 replace 相同，不会产生修改",
   "missing_replace_error": "工具参数无效：缺少必填字段 'replace'。已提供字段：path, search, replacement",
   "unread_error_template": "工作区前置条件不满足：edit_file 拒绝修改 {path}：本次运行尚未读取该文件（path=\"unread.txt\"）",
   "stale_error_template": "工作区在读取后发生变化：edit_file 拒绝修改 {path}：文件在最近一次 read_file 后已经变化（path=\"stale.txt\"）",

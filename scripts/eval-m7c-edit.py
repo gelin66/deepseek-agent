@@ -126,6 +126,10 @@ def run(output: Path | None) -> int:
         run_gate("codewhale-tools", manifest["tests"]["tools_filter"]),
         run_gate("codewhale-app", manifest["tests"]["app_filter"]),
     ]
+    gates.extend(
+        run_gate(gate["package"], gate["filter"])
+        for gate in manifest["tests"]["extra_gates"]
+    )
     after = git_identity()
     result = {
         "schema": "codewhale.eval.m7-c-edit-baseline-result.v1",

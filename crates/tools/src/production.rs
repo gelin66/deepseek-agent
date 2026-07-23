@@ -972,11 +972,11 @@ fn validate_schema_value(value: &Value, schema: &Value, path: &str) -> Result<()
 }
 
 fn apply_patch_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"changes":{"type":"array","minItems":1,"items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}},"fuzz":{"type":"integer"},"create_if_missing":{"type":"boolean"}},"oneOf":[{"required":["patch"]},{"required":["changes"]}],"additionalProperties":false})
+    json!({"type":"object","properties":{"path":{"type":"string","minLength":1},"patch":{"type":"string","minLength":1},"changes":{"type":"array","minItems":1,"items":{"type":"object","properties":{"path":{"type":"string","minLength":1},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}},"fuzz":{"type":"integer","minimum":0,"maximum":50,"default":3},"create_if_missing":{"type":"boolean"}},"oneOf":[{"required":["patch"]},{"required":["changes"]}],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
-    json!({"type":"object","properties":{"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}},"required":["path","search","replace"],"additionalProperties":false})
+    json!({"type":"object","properties":{"path":{"type":"string","minLength":1},"search":{"type":"string","minLength":1},"replace":{"type":"string"}},"required":["path","search","replace"],"additionalProperties":false})
 }
 
 fn exec_shell_schema() -> Value {
@@ -1578,6 +1578,83 @@ mod tests {
             std::fs::read_to_string(temp.path().join("owned.txt")).unwrap(),
             "same\n"
         );
+    }
+
+    #[tokio::test]
+    async fn m7c_canonical_edit_failure_codes_are_typed_and_non_mutating() {
+        use std::fs::FileTimes;
+
+        let temp = tempfile::tempdir().unwrap();
+        let stale = temp.path().join("stale.txt");
+        let drift = temp.path().join("drift.txt");
+        let stable = temp.path().join("stable.txt");
+        std::fs::write(&stale, "alpha\n").unwrap();
+        std::fs::write(&drift, "target\nspacer\ntarget\n").unwrap();
+        std::fs::write(&stable, "stable\n").unwrap();
+        let modified = std::fs::metadata(&stale)
+            .unwrap()
+            .modified()
+            .expect("mtime");
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(temp.path()));
+        let read = executor
+            .execute(
+                invocation("read_file", json!({"path":"stale.txt"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success());
+        std::fs::write(&stale, "omega\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+
+        let cases = [
+            (
+                invocation(
+                    "edit_file",
+                    json!({"path":"stale.txt","search":"alpha","replace":"beta"}),
+                ),
+                ToolFailureCode::StaleRead,
+            ),
+            (
+                invocation(
+                    "apply_patch",
+                    json!({
+                        "path":"drift.txt",
+                        "patch":"@@ -2,1 +2,1 @@\n-target\n+changed\n",
+                        "fuzz":1
+                    }),
+                ),
+                ToolFailureCode::AmbiguousEdit,
+            ),
+            (
+                invocation(
+                    "apply_patch",
+                    json!({"changes":[{"path":"stable.txt","content":"stable\n"}]}),
+                ),
+                ToolFailureCode::InvalidField,
+            ),
+        ];
+        for (invocation, expected_code) in cases {
+            assert!(executor.preflight(&invocation).is_none());
+            let outcome = executor
+                .execute(invocation, CancellationToken::default())
+                .await
+                .unwrap();
+            assert_eq!(outcome.failure_code, Some(expected_code));
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Accepted);
+            assert_eq!(outcome.operation, ToolOperationStatus::Failed);
+            assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+            assert_eq!(outcome.retry, ToolRetryDisposition::AfterCorrection);
+            assert!(outcome.model_content().contains("恢复建议："));
+        }
+        assert_eq!(std::fs::read(&stale).unwrap(), b"omega\n");
+        assert_eq!(std::fs::read(&drift).unwrap(), b"target\nspacer\ntarget\n");
+        assert_eq!(std::fs::read(&stable).unwrap(), b"stable\n");
     }
 
     #[tokio::test]

@@ -24,9 +24,9 @@ pub mod shell_dispatcher;
 mod unified_diff;
 mod verification_artifact;
 
-pub use apply_patch::{ApplyPatchPreflight, execute_apply_patch, preflight_apply_patch};
+pub(crate) use apply_patch::{execute_apply_patch, preflight_apply_patch};
 pub use atomic_write::write_atomic;
-pub use edit_file::execute_edit_file;
+pub(crate) use edit_file::execute_edit_file;
 pub use file_search::execute_file_search;
 pub use git::{execute_git_diff, execute_git_status};
 pub use grep_files::execute_grep_files;
@@ -59,35 +59,6 @@ mod test_support {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-}
-
-/// Capabilities that a tool may have or require.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ToolCapability {
-    /// Tool only reads data, never modifies state.
-    ReadOnly,
-    /// Tool writes to the filesystem.
-    WritesFiles,
-    /// Tool executes arbitrary shell commands.
-    ExecutesCode,
-    /// Tool makes network requests.
-    Network,
-    /// Tool can be run in a sandbox.
-    Sandboxable,
-    /// Tool requires user approval before execution.
-    RequiresApproval,
-}
-
-/// Approval requirement for a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApprovalRequirement {
-    /// Never needs approval: safe read-only operations.
-    #[default]
-    Auto,
-    /// Suggest approval but allow user to skip.
-    Suggest,
-    /// Always require explicit user approval.
-    Required,
 }
 
 /// Errors that can occur during tool execution.

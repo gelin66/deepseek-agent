@@ -1,10 +1,12 @@
 //! Production `edit_file` search/replace operation.
 
+#[cfg(test)]
 use std::fs;
 
 use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
 use serde_json::Value;
 
+use crate::atomic_write::{AtomicWriteError, write_atomic_if_unchanged};
 use crate::{ProductionToolContext, ToolError, ToolOutcome, make_unified_diff, required_str};
 
 /// Execute the production search-and-replace operation.
@@ -17,19 +19,24 @@ pub fn execute_edit_file(
     let replace = required_str(&input, "replace")?;
     if search == replace {
         return Err(ToolError::invalid_input(
-            "search and replace are identical, no change intended",
+            "search 与 replace 相同，不会产生修改",
         ));
     }
 
     let file_path = context.resolve_write_path(path_str)?;
-    context.require_fresh_file_read(&file_path, path_str)?;
-
-    let contents = fs::read_to_string(&file_path).map_err(|e| {
-        ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
+    let observed_bytes = context.read_fresh_file_bytes(&file_path, path_str)?;
+    let contents = String::from_utf8(observed_bytes.clone()).map_err(|error| {
+        ToolError::execution_failed(format!(
+            "Failed to read {} as UTF-8: {error}",
+            file_path.display()
+        ))
     })?;
 
-    let count = contents.matches(search).count();
-    let (updated, count, fuzz_kind) = if count == 0 {
+    if search.is_empty() {
+        return Err(ToolError::invalid_input("search must not be empty"));
+    }
+    let exact_matches = overlapping_matches(&contents, search);
+    let (updated, count, fuzz_kind) = if exact_matches.is_empty() {
         // First fallback: tolerate indentation differences.
         let indent_matches = leading_whitespace_fuzzy_matches(&contents, search);
         match indent_matches.as_slice() {
@@ -74,36 +81,68 @@ pub fn execute_edit_file(
                 )));
             }
         }
-    } else if count > 1 {
+    } else if exact_matches.len() > 1 {
         return Err(ToolError::ambiguous_edit(format!(
-            "edit_file 的 search 在 {} 中匹配到 {count} 处（path=\"{path_str}\"）",
-            file_path.display()
+            "edit_file 的 search 在 {} 中匹配到 {} 处（path=\"{path_str}\"）",
+            file_path.display(),
+            exact_matches.len()
         )));
     } else {
-        (contents.replace(search, replace), count, None)
+        let (start, end) = exact_matches[0];
+        let mut updated = contents.clone();
+        updated.replace_range(start..end, replace);
+        (updated, 1, None)
     };
 
-    crate::write_atomic(&file_path, updated.as_bytes()).map_err(|e| {
-        ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
-    })?;
-    context.note_file_read(&file_path);
+    if updated == contents {
+        return Err(ToolError::invalid_input(
+            "replacement would not change the file",
+        ));
+    }
+
+    write_atomic_if_unchanged(&file_path, Some(&observed_bytes), updated.as_bytes(), None)
+        .map_err(|error| match error {
+            AtomicWriteError::Conflict => ToolError::stale_read(format!(
+                "edit_file 拒绝修改 {}：文件在替换发布前再次变化（path=\"{path_str}\"）",
+                file_path.display()
+            )),
+            AtomicWriteError::Io(error) => ToolError::execution_failed(format!(
+                "Failed to write {}: {error}",
+                file_path.display()
+            )),
+        })?;
+    context.note_file_read_bytes(&file_path, updated.as_bytes());
 
     let display = file_path.display().to_string();
     let diff = make_unified_diff(&display, &contents, &updated);
     let fuzz_note = match fuzz_kind {
-        Some("indentation") => " (fuzzy indentation match)",
-        Some("punctuation") => " (fuzzy punctuation match — typographic quotes/dashes normalized)",
+        Some("indentation") => "（缩进模糊匹配）",
+        Some("punctuation") => "（标点归一化匹配）",
         Some(other) => other,
         None => "",
     };
-    let summary = format!("Replaced {count} occurrence in {display}{fuzz_note}");
+    let summary = format!("已在 {display} 替换 {count} 处{fuzz_note}");
     let body = if diff.is_empty() {
-        format!("{summary}\n(no textual changes)")
+        format!("{summary}\n（文本未变化）")
     } else {
         format!("{diff}\n{summary}")
     };
 
     Ok(ToolOutcome::success(body).with_side_effect(ToolSideEffectStatus::Applied))
+}
+
+fn overlapping_matches(contents: &str, search: &str) -> Vec<(usize, usize)> {
+    if search.is_empty() {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = contents[cursor..].find(search) {
+        let start = cursor + relative;
+        matches.push((start, start + search.len()));
+        cursor = next_char_boundary(contents, start);
+    }
+    matches
 }
 
 fn strip_line_leading_whitespace_with_map(input: &str) -> (String, Vec<usize>) {
@@ -568,7 +607,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.is_success());
-        assert!(result.content.contains("Replaced 1 occurrence"));
+        assert!(result.content.contains("替换 1 处"));
         // Inline diff (#505) — the unified diff lands above the summary
         // line so the TUI's diff-aware renderer kicks in.
         assert!(result.content.contains("--- a/"), "{}", result.content);
@@ -676,7 +715,7 @@ mod tests {
                 .expect("execute");
 
             assert!(result.is_success(), "{file_name}: {}", result.content);
-            assert!(result.content.contains("Replaced 1 occurrence"));
+            assert!(result.content.contains("替换 1 处"));
             let edited = fs::read_to_string(&test_file).expect("read");
             assert_eq!(edited, "hi world");
         }
@@ -701,7 +740,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.is_success());
-        assert!(result.content.contains("Replaced 1 occurrence"));
+        assert!(result.content.contains("替换 1 处"));
         assert!(!result.content.contains("multiple matches were replaced"));
     }
 
@@ -732,7 +771,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.is_success());
-        assert!(result.content.contains("fuzzy indentation match"));
+        assert!(result.content.contains("缩进模糊匹配"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(
             edited,
@@ -763,7 +802,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.is_success(), "{}", result.content);
-        assert!(result.content.contains("fuzzy indentation match"));
+        assert!(result.content.contains("缩进模糊匹配"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "记录\n");
     }
@@ -796,7 +835,7 @@ mod tests {
 
         assert!(result.is_success(), "fuzzy punctuation edit should succeed");
         assert!(
-            result.content.contains("fuzzy punctuation match"),
+            result.content.contains("标点归一化匹配"),
             "expected punctuation-fuzz note, got: {}",
             result.content
         );
@@ -827,7 +866,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.is_success(), "{}", result.content);
-        assert!(result.content.contains("fuzzy punctuation match"));
+        assert!(result.content.contains("标点归一化匹配"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "数据 y\n");
     }
@@ -909,7 +948,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("search and replace are identical"),
+            err.contains("search 与 replace 相同"),
             "error must explain the no-op input: {err}"
         );
         let unchanged = fs::read_to_string(&test_file).expect("read");
