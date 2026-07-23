@@ -8,7 +8,6 @@ use crate::palette;
 use crate::tui::app::App;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
-    let provider = app.onboarding_provider;
     let mut lines = vec![
         Line::from(Span::styled(
             app.tr(MessageId::OnboardApiKeyTitle).to_string(),
@@ -18,25 +17,14 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!(
-                "{} ({})",
-                app.tr(MessageId::OnboardApiKeyStep1),
-                provider.display_name()
-            ),
+            app.tr(MessageId::OnboardApiKeyStep1).to_string(),
             Style::default().fg(palette::TEXT_PRIMARY),
         )),
     ];
-    if let Some(url) = provider.credential_url() {
-        lines.push(Line::from(Span::styled(
-            url.to_string(),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            app.tr(MessageId::OnboardApiKeyLocalHint).to_string(),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
+    lines.push(Line::from(Span::styled(
+        crate::config::DEEPSEEK_CREDENTIAL_URL.to_string(),
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
     let saved_hint = app
         .tr(MessageId::OnboardApiKeySavedHint)
         .replace("{path}", &effective_config_path_display(app));
@@ -144,7 +132,7 @@ fn collapse_home_prefix(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiProvider, Config};
+    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use std::path::PathBuf;
 
@@ -165,9 +153,7 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.onboarding_provider = ApiProvider::Deepseek;
-        app
+        App::new(options, &Config::default())
     }
 
     #[test]

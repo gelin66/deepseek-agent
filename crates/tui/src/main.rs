@@ -26,7 +26,6 @@ use rust_i18n::i18n;
 i18n!("locales", fallback = ["zh-Hans"]);
 
 mod audit;
-mod codex_model_cache;
 mod config;
 mod config_persistence;
 mod dependencies;
@@ -41,19 +40,12 @@ mod hashing;
 mod localization;
 mod logging;
 mod mcp;
-mod model_catalog;
-mod models;
-mod oauth;
 mod palette;
 mod plugins;
 mod pricing;
-mod provider_lake;
-mod route_billing;
 mod route_budget;
-mod route_runtime;
 mod runtime_log;
 mod sandbox_backend;
-mod scorecard;
 #[allow(dead_code)]
 mod session_diagnostics;
 #[allow(dead_code)]
@@ -68,7 +60,6 @@ mod utils;
 mod working_set;
 mod workspace_discovery;
 mod workspace_trust;
-mod xai_oauth;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
@@ -101,7 +92,7 @@ fn install_rustls_crypto_provider() {
     author,
     version = env!("DEEPSEEK_BUILD_VERSION"),
     about = "CodeWhale terminal coding agent",
-    long_about = "Terminal-native TUI and CLI for open-source and open-weight coding models.\n\nRun 'codewhale' to start.\n\nProvider routes include DeepSeek, Arcee, Hugging Face, OpenRouter, Xiaomi MiMo, local vLLM/SGLang/Ollama, and more."
+    long_about = "DeepSeek-only terminal coding agent.\n\nRun 'codewhale' to start."
 )]
 struct Cli {
     /// Subcommand to run
@@ -196,8 +187,6 @@ enum Commands {
     },
     /// Remove the saved API key
     Logout,
-    /// Manage provider authentication flows.
-    Auth(TuiAuthArgs),
     /// Run a non-interactive prompt. Use --auto for agent-with-tools mode.
     Exec(ExecArgs),
     /// Manage local Agent Fleet runs and workers
@@ -217,8 +206,6 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         checkout: bool,
     },
-    /// Score a run's token/cache/cost from recorded turns; flag regressions vs a baseline
-    Scorecard(ScorecardArgs),
     /// Manage MCP servers
     Mcp {
         #[command(subcommand)]
@@ -258,13 +245,15 @@ struct ExecArgs {
     /// Override model for this run
     #[arg(long)]
     model: Option<String>,
-    /// Override the provider for this run (e.g. `deepseek`, `openrouter`).
-    /// Non-secret identifier only — credentials still resolve from the
-    /// environment/config. Fleet uses this to launch a worker on its
-    /// profile-pinned provider even when the parent session is on another
-    /// one (#4093).
-    #[arg(long)]
-    provider: Option<String>,
+    /// Retired provider selector. Kept as a fail-closed parser guard so the
+    /// trailing prompt cannot reinterpret `--provider` as user text.
+    #[arg(
+        long = "provider",
+        hide = true,
+        value_name = "RETIRED",
+        value_parser = reject_retired_provider_argument
+    )]
+    _retired_provider: Option<String>,
     /// Override reasoning/thinking effort for this run.
     /// Accepted values: auto, off, low, medium, high, max.
     #[arg(long = "reasoning-effort", value_name = "EFFORT")]
@@ -320,6 +309,10 @@ struct ExecArgs {
     prompt: Vec<String>,
 }
 
+fn reject_retired_provider_argument(_value: &str) -> Result<String, String> {
+    Err("`--provider` 已删除；CodeWhale 仅使用官方 DeepSeek Provider".to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ExecOutputFormat {
     Text,
@@ -332,19 +325,6 @@ const MAX_EXEC_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
 const EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 const EXEC_OUTPUT_QUEUE_CAPACITY: usize = 256;
 const EXEC_OUTPUT_CLOSE_TIMEOUT_SECS: u64 = 2;
-
-#[derive(Args, Debug, Clone)]
-struct TuiAuthArgs {
-    #[command(subcommand)]
-    command: TuiAuthCommand,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-enum TuiAuthCommand {
-    /// Sign in to xAI/Grok with an SSH-friendly device code.
-    #[command(name = "xai-device")]
-    XaiDevice,
-}
 
 const CODEWHALE_TOOL_SURFACE_ENV: &str = "CODEWHALE_TOOL_SURFACE";
 const SHELL_ONLY_EXEC_TOOLS: &[&str] = &["exec_shell", "exec_shell_wait", "exec_shell_interact"];
@@ -778,14 +758,6 @@ fn resolve_exec_model(config: &Config, explicit_model: Option<&str>) -> String {
 }
 
 fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
-    let provider = config.api_provider();
-    if provider != crate::config::ApiProvider::Deepseek {
-        bail!(
-            "交互式 Agent 只支持官方 DeepSeek Provider；当前配置为 {}。请删除其他 Provider 配置后重试。",
-            provider.as_str()
-        );
-    }
-
     let Some(configured_model) = config
         .providers
         .as_ref()
@@ -799,11 +771,7 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
         return Ok("auto".to_owned());
     }
 
-    let model = crate::config::normalize_model_name_for_provider(
-        crate::config::ApiProvider::Deepseek,
-        configured_model,
-    )
-    .ok_or_else(|| {
+    let model = crate::config::normalize_model_name(configured_model).ok_or_else(|| {
         anyhow!(
             "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {configured_model}。"
         )
@@ -814,31 +782,6 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
         )
     })?;
     Ok(model)
-}
-
-fn apply_exec_provider_override(config: &mut Config, provider_arg: &str) -> Result<()> {
-    let provider_arg = provider_arg.trim();
-    if provider_arg.is_empty() {
-        return Ok(());
-    }
-    if let Some(provider) = crate::config::ApiProvider::parse(provider_arg) {
-        config.provider = Some(provider.as_str().to_string());
-        return Ok(());
-    }
-    if config
-        .providers
-        .as_ref()
-        .and_then(|providers| providers.custom_provider_config(provider_arg))
-        .is_some()
-    {
-        config.provider = Some(provider_arg.to_string());
-        return Ok(());
-    }
-    bail!(
-        "Unrecognized --provider {provider_arg:?}. Known providers: {} \
-         or a configured [providers.<name>] custom provider",
-        crate::config::ApiProvider::names_hint()
-    );
 }
 
 fn exec_model_env_override() -> Option<String> {
@@ -907,28 +850,6 @@ struct SessionDiagnosticsArgs {
     #[arg(value_name = "JSONL")]
     path: PathBuf,
     /// Emit machine-readable JSON with redacted source handles
-    #[arg(long, default_value_t = false)]
-    json: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-struct ScorecardArgs {
-    /// JSON file with the recorded turns to score: an array of
-    /// `{ "turn_id", "provider", "model", "billing_surface", "usage": {…} }`.
-    /// Canonical runtime exports may instead use `id`, `effective_provider`,
-    /// `effective_model`, and `effective_billing_surface`. Rows without usage
-    /// or with `model_backed: false` are excluded. Rows without provider remain
-    /// readable but their cost is unavailable.
-    #[arg(long, value_name = "FILE")]
-    input: PathBuf,
-    /// Optional baseline scorecard-metrics JSON to compare against. When set,
-    /// the command exits non-zero if any metric regresses past the threshold.
-    #[arg(long, value_name = "FILE")]
-    baseline: Option<PathBuf>,
-    /// Regression threshold, in percent increase over the baseline.
-    #[arg(long, default_value_t = 5.0)]
-    threshold: f64,
-    /// Emit machine-readable JSON instead of the human summary.
     #[arg(long, default_value_t = false)]
     json: bool,
 }
@@ -1161,7 +1082,7 @@ fn main() -> Result<()> {
     }));
 
     // The interactive runtime intentionally carries a large state machine:
-    // terminal rendering, modal dispatch, provider setup, and fleet/workflow
+    // terminal rendering, modal dispatch, DeepSeek authentication, and fleet/workflow
     // events all share one async owner. Debug builds retain enough stack
     // temporaries that nesting a modal event over the TUI loop can exceed the
     // platform main-thread default (8 MiB on macOS). Give that owner an
@@ -1242,9 +1163,6 @@ async fn run_async_main() -> Result<()> {
             Commands::Init => init_project(),
             Commands::Login { api_key } => run_login(api_key),
             Commands::Logout => run_logout(),
-            Commands::Auth(args) => match args.command {
-                TuiAuthCommand::XaiDevice => run_xai_device_auth(cli.config.as_deref()),
-            },
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
@@ -1269,23 +1187,6 @@ async fn run_async_main() -> Result<()> {
                         config.base_url = Some(trimmed.to_string());
                     }
                 }
-                // Honour `--provider` (#4093): a Fleet worker whose profile pins
-                // a provider launches on that provider even when the parent
-                // session is on another one. This sets ONLY the non-secret
-                // provider identity (`config.provider`); credentials/base URL
-                // still resolve from the worker's own env/config, and for a
-                // non-DeepSeek provider the legacy root `base_url` above is
-                // ignored by `deepseek_base_url()`. Must precede model
-                // resolution so an `auto`/default model resolves to the
-                // overridden provider's default.
-                if let Some(provider_arg) = args
-                    .provider
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                {
-                    apply_exec_provider_override(&mut config, provider_arg)?;
-                }
                 if let Some(reasoning_arg) = args
                     .reasoning_effort
                     .as_deref()
@@ -1302,9 +1203,8 @@ async fn run_async_main() -> Result<()> {
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let env_tool_surface = exec_tool_surface_from_env();
-                let provider = config.api_provider();
                 let max_subagents = cli.max_subagents.map_or_else(
-                    || config.max_subagents_for_provider(provider),
+                    || config.max_subagents(),
                     |value| value.clamp(1, MAX_SUBAGENTS),
                 );
                 let trust_mode = yolo;
@@ -1359,7 +1259,6 @@ async fn run_async_main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 run_pr(&cli, &config, number, repo.as_deref(), checkout).await
             }
-            Commands::Scorecard(args) => run_scorecard(args),
             Commands::Mcp { command } => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -1420,60 +1319,6 @@ fn generate_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(shell, &mut cmd, name, &mut io::stdout());
-}
-
-/// Score a run's token/cache/cost from recorded turns and (optionally) flag
-/// regressions against a committed baseline. Offline: reads recorded usage from
-/// a JSON file, reuses the pricing layer, never calls a model. Exits non-zero
-/// when a baseline is supplied and a metric regresses past the threshold, so it
-/// can be wired as a release gate (#3388).
-fn run_scorecard(args: ScorecardArgs) -> Result<()> {
-    use crate::scorecard::{RecordedTurn, Scorecard, ScorecardMetrics};
-
-    let raw = std::fs::read_to_string(&args.input)
-        .with_context(|| format!("failed to read scorecard input {}", args.input.display()))?;
-    let recorded: Vec<RecordedTurn> = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse scorecard input {}", args.input.display()))?;
-
-    let card = Scorecard::from_recorded_turns(&recorded);
-
-    let regressions = match &args.baseline {
-        Some(path) => {
-            let baseline_raw = std::fs::read_to_string(path)
-                .with_context(|| format!("failed to read baseline {}", path.display()))?;
-            let baseline: ScorecardMetrics = serde_json::from_str(&baseline_raw)
-                .with_context(|| format!("failed to parse baseline {}", path.display()))?;
-            card.metrics.regressions_against(&baseline, args.threshold)
-        }
-        None => Vec::new(),
-    };
-
-    if args.json {
-        let out = serde_json::json!({
-            "per_turn": card.per_turn,
-            "metrics": card.metrics,
-            "regressions": regressions,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-    } else {
-        print!("{}", card.to_summary());
-        for r in &regressions {
-            println!(
-                "REGRESSION {}: baseline {:.4} -> current {:.4} (+{:.1}%)",
-                r.metric, r.baseline, r.current, r.pct_increase
-            );
-        }
-    }
-
-    if regressions.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "{} metric(s) regressed past the {:.1}% threshold",
-            regressions.len(),
-            args.threshold
-        )
-    }
 }
 
 async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -> Result<()> {
@@ -2105,16 +1950,13 @@ fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
 /// Source of the resolved DeepSeek API key, used in status reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApiKeySource {
-    Command,
     Env,
     Config,
     Keyring,
-    Secret,
     Missing,
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
-    let provider = config.api_provider();
     if std::env::var("DEEPSEEK_API_KEY")
         .ok()
         .filter(|k| !k.trim().is_empty())
@@ -2128,62 +1970,27 @@ fn resolve_api_key_source(config: &Config) -> ApiKeySource {
     }
 
     let provider_config_key = config
-        .provider_config()
+        .transitional_deepseek_config()
         .and_then(|entry| entry.api_key.as_ref())
         .is_some_and(|k| !k.trim().is_empty());
-    let root_deepseek_key = matches!(
-        provider,
-        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
-    ) && config
+    let root_deepseek_key = config
         .api_key
         .as_ref()
         .is_some_and(|k| !k.trim().is_empty());
 
     if provider_config_key || root_deepseek_key {
         ApiKeySource::Config
-    } else if let Some(auth) = config
-        .provider_config()
-        .and_then(|entry| entry.auth.as_ref())
-    {
-        match auth.source {
-            codewhale_config::AuthSourceKind::Command => ApiKeySource::Command,
-            codewhale_config::AuthSourceKind::Secret => ApiKeySource::Secret,
-        }
-    } else if provider_env_key_source(provider).is_some() {
+    } else if deepseek_env_key_source().is_some() {
         ApiKeySource::Env
     } else {
         ApiKeySource::Missing
     }
 }
 
-fn provider_env_key_source(provider: crate::config::ApiProvider) -> Option<&'static str> {
-    provider
-        .env_vars()
-        .iter()
-        .copied()
-        .find(|var| std::env::var(var).is_ok_and(|value| !value.trim().is_empty()))
-}
-
-fn provider_env_vars_label(provider: crate::config::ApiProvider) -> String {
-    provider.env_vars_label()
-}
-
-fn provider_config_table_key(provider: crate::config::ApiProvider) -> &'static str {
-    provider
-        .metadata()
-        .map(|metadata| metadata.provider_config_key())
-        .unwrap_or("deepseek_cn")
-}
-
-fn provider_auth_hint(provider: crate::config::ApiProvider) -> String {
-    if provider == crate::config::ApiProvider::OpenaiCodex {
-        "see docs/reference/PROVIDERS.md for ChatGPT/Codex OAuth setup".to_string()
-    } else {
-        format!(
-            "codewhale auth set --provider {} --api-key \"...\"",
-            provider.as_str()
-        )
-    }
+fn deepseek_env_key_source() -> Option<&'static str> {
+    std::env::var(crate::config::DEEPSEEK_API_KEY_ENV)
+        .is_ok_and(|value| !value.trim().is_empty())
+        .then_some(crate::config::DEEPSEEK_API_KEY_ENV)
 }
 
 fn count_dir_entries(dir: &Path) -> usize {
@@ -2215,17 +2022,11 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     println!("workspace: {}", workspace.display());
 
     match resolve_api_key_source(config) {
-        ApiKeySource::Command => println!(
-            "  {} api_key: configured via auth command",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
-        ),
         ApiKeySource::Env => {
-            let env_vars = provider_env_key_source(config.api_provider())
-                .map(str::to_string)
-                .unwrap_or_else(|| provider_env_vars_label(config.api_provider()));
             println!(
-                "  {} api_key: set via {env_vars}",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b)
+                "  {} api_key: set via {}",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::config::DEEPSEEK_API_KEY_ENV,
             );
         }
         ApiKeySource::Keyring => println!(
@@ -2236,18 +2037,11 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
             "  {} api_key: set via config",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
-        ApiKeySource::Secret => println!(
-            "  {} api_key: configured via secret source",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
-        ),
         ApiKeySource::Missing => {
-            let provider = config.api_provider();
-            let env_var = provider_env_vars_label(provider);
-            let login_hint = provider_auth_hint(provider);
-            let table_key = provider_config_table_key(provider);
             println!(
-                "  {} api_key: missing  (set {env_var} or `[providers.{table_key}].api_key` in ~/.codewhale/config.toml; or run `{login_hint}`)",
+                "  {} api_key: missing  (set {} or `api_key` in ~/.codewhale/config.toml; or run `codewhale auth set --api-key \"...\"`)",
                 "✗".truecolor(red_r, red_g, red_b),
+                crate::config::DEEPSEEK_API_KEY_ENV,
             );
         }
     }
@@ -2496,63 +2290,34 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!();
     println!("{}", "API Keys:".bold());
 
-    // Per-provider state: env + config file only (no values printed).
+    // DeepSeek state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
     let dispatcher_api_key_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
-    for provider in crate::config::ApiProvider::all().iter().copied() {
-        let slot = provider.as_str();
-        let in_env = provider.env_vars().iter().any(|var| {
-            std::env::var(var)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .is_some()
-        });
-        let injected_runtime_key = matches!(
-            dispatcher_api_key_source.as_deref(),
-            Some("keyring" | "env" | "cli")
-        );
-        let in_config = config
-            .provider_config_for(provider)
-            .and_then(|entry| entry.api_key.as_ref())
-            .is_some_and(|v| !v.trim().is_empty())
-            || (matches!(provider, crate::config::ApiProvider::Deepseek)
-                && !injected_runtime_key
-                && config
-                    .api_key
-                    .as_ref()
-                    .is_some_and(|v| !v.trim().is_empty()));
-        let icon = if in_env || in_config {
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
-        } else {
-            "·".dimmed()
-        };
-        println!(
-            "  {} {slot}: env={}, config={}",
-            icon,
-            if in_env { "yes" } else { "no" },
-            if in_config { "yes" } else { "no" }
-        );
-    }
+    let in_env = deepseek_env_key_source().is_some();
+    let injected_runtime_key = matches!(
+        dispatcher_api_key_source.as_deref(),
+        Some("keyring" | "env" | "cli")
+    );
+    let in_config = !injected_runtime_key && crate::config::has_config_api_key(config);
+    let icon = if in_env || in_config {
+        "✓".truecolor(aqua_r, aqua_g, aqua_b)
+    } else {
+        "·".dimmed()
+    };
+    println!(
+        "  {} deepseek: env={}, config={}",
+        icon,
+        if in_env { "yes" } else { "no" },
+        if in_config { "yes" } else { "no" }
+    );
     println!("  · credential precedence: ~/.codewhale/config.toml, OS keyring, then env");
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
         let source_label = match api_key_source {
-            ApiKeySource::Command => "configured auth command",
             ApiKeySource::Config => "config.toml",
             ApiKeySource::Keyring => "OS keyring",
-            ApiKeySource::Secret => "configured secret source",
             ApiKeySource::Env => "environment",
-            ApiKeySource::Missing
-                if matches!(
-                    config.api_provider(),
-                    crate::config::ApiProvider::Sglang
-                        | crate::config::ApiProvider::Vllm
-                        | crate::config::ApiProvider::Ollama
-                ) =>
-            {
-                "optional local auth"
-            }
             ApiKeySource::Missing => "unknown source",
         };
         println!(
@@ -2565,9 +2330,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} active provider key not configured",
             "✗".truecolor(red_r, red_g, red_b)
         );
-        println!(
-            "    Run 'codewhale auth set --provider <name>' to save a key to ~/.codewhale/config.toml."
-        );
+        println!("    Run 'codewhale auth set' to save a key to ~/.codewhale/config.toml.");
         false
     };
 
@@ -2587,7 +2350,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!("  ! {}", tls_status.message);
         println!("    Prefer SSL_CERT_FILE with a trusted custom CA bundle when possible.");
     }
-    let capability = crate::config::provider_capability(config.api_provider(), &api_target.model);
+    let capability = crate::config::deepseek_capability(&api_target.model);
     if let Some(alias) = capability.alias_deprecation.as_ref() {
         println!(
             "  ! model alias {} retires {}; switch to {}",
@@ -2628,7 +2391,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                             "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
                         );
                         println!(
-                            "    Run `codewhale auth set --provider deepseek` to save a config key that overrides stale env."
+                            "    Run `codewhale auth set` to save a config key that overrides stale env."
                         );
                     }
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
@@ -3355,16 +3118,7 @@ fn doctor_inherited_setup_facts(
 }
 
 fn doctor_has_credentials_or_local_runtime(config: &Config) -> bool {
-    if resolve_api_key_source(config) != ApiKeySource::Missing {
-        return true;
-    }
-
-    matches!(
-        config.api_provider(),
-        crate::config::ApiProvider::Sglang
-            | crate::config::ApiProvider::Vllm
-            | crate::config::ApiProvider::Ollama
-    )
+    resolve_api_key_source(config) != ApiKeySource::Missing
 }
 
 fn print_doctor_setup_report(
@@ -3439,7 +3193,7 @@ fn print_doctor_setup_report(
         );
     }
     println!(
-        "  · next actions: /constitution (standing law), /setup report (readiness), /setup provider or /provider setup <name> (provider credentials), /model (route), edit ~/.codewhale/config.toml (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
+        "  · next actions: /constitution (standing law), /setup report (readiness), codewhale auth status/set (DeepSeek credentials), /model (official model), edit ~/.codewhale/config.toml (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
     );
     for step in codewhale_config::SetupStep::ALL {
         let entry = state.steps.get(&step);
@@ -3579,19 +3333,14 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
 fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_json::Value {
     use serde_json::json;
 
-    let provider = config.api_provider();
-    let has_credentials_or_local = crate::config::has_api_key_for(config, provider);
-    let subagents_enabled = config.subagents_enabled_for_provider(provider);
+    let has_credentials_or_local = crate::config::has_api_key(config);
+    let subagents_enabled = config.subagents_enabled();
     let disabled_reason = if subagents_enabled {
         None
     } else {
-        Some(
-            config
-                .subagents_disabled_reason()
-                .unwrap_or("disabled for active provider"),
-        )
+        Some(config.subagents_disabled_reason().unwrap_or("disabled"))
     };
-    let max_subagents = config.max_subagents_for_provider(provider);
+    let max_subagents = config.max_subagents();
     let roster = crate::fleet::roster::FleetRoster::load(&config.fleet_config(), workspace);
     let mut built_in_members = 0usize;
     let mut config_members = 0usize;
@@ -3611,7 +3360,7 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
     json!({
         "ready": has_credentials_or_local && runtime_ready && roster_ready,
         "provider": {
-            "id": provider.as_str(),
+            "id": crate::config::DEEPSEEK_PROVIDER_ID,
             "auth": {
                 "present_or_local": has_credentials_or_local,
                 "source": doctor_api_key_source_label(resolve_api_key_source(config)),
@@ -3643,15 +3392,13 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
 fn doctor_provider_model_report_json(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
-    let provider = config.api_provider();
     let auth_source = resolve_api_key_source(config);
-    let auth_present_or_local = crate::config::has_api_key_for(config, provider);
-    let credential_url = provider.credential_url();
+    let auth_present_or_local = crate::config::has_api_key(config);
 
     json!({
         "provider": {
-            "id": provider.as_str(),
-            "display": provider.display_name(),
+            "id": crate::config::DEEPSEEK_PROVIDER_ID,
+            "display": crate::config::DEEPSEEK_DISPLAY_NAME,
         },
         "model": {
             "resolved": config.default_model(),
@@ -3659,16 +3406,16 @@ fn doctor_provider_model_report_json(config: &Config) -> serde_json::Value {
         "auth": {
             "present_or_local": auth_present_or_local,
             "source": doctor_api_key_source_label(auth_source),
-            "env_vars": provider.env_vars(),
-            "credential_url": credential_url,
-            "oauth_only": provider == crate::config::ApiProvider::OpenaiCodex,
+            "env_vars": [crate::config::DEEPSEEK_API_KEY_ENV],
+            "credential_url": crate::config::DEEPSEEK_CREDENTIAL_URL,
+            "oauth_only": false,
         },
         "health": {
             "live_validation": false,
             "next_action": if auth_present_or_local {
                 "/model"
             } else {
-                "/setup provider or /provider setup <name>"
+                "codewhale auth set"
             },
         },
     })
@@ -3754,7 +3501,7 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "next_actions": {
             "constitution": "/constitution",
             "setup_report": "/setup report",
-            "provider_model": "/setup provider, /provider setup <name>, or /model",
+            "provider_model": "codewhale auth status/set, or /model",
             "runtime_posture": "~/.codewhale/config.toml",
             "operate_fleet": "/setup fleet (readiness), /fleet setup (explicit profile authoring)",
             "tools_mcp": "/setup tools",
@@ -3845,11 +3592,9 @@ fn run_doctor_json(
         });
 
     let api_key_state = match resolve_api_key_source(config) {
-        ApiKeySource::Command => "command",
         ApiKeySource::Env => "env",
         ApiKeySource::Config => "config",
         ApiKeySource::Keyring => "keyring",
-        ApiKeySource::Secret => "secret",
         ApiKeySource::Missing => "missing",
     };
 
@@ -4008,7 +3753,7 @@ fn run_doctor_json(
             "checked": false,
             "note": "Skipped in --json mode; run `codewhale doctor` for a live check.",
         },
-        "capability": provider_capability_report(config),
+        "capability": deepseek_capability_report(config),
     });
 
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -4017,19 +3762,18 @@ fn run_doctor_json(
 
 /// Build the `capability` section for the machine-readable doctor report.
 ///
-/// Returns a JSON value with the resolved provider, resolved model, context
+/// Returns a JSON value with the fixed DeepSeek identity, resolved model, context
 /// window, max output, thinking support, cache telemetry support, and request
 /// payload mode.
-fn provider_capability_report(config: &Config) -> serde_json::Value {
+fn deepseek_capability_report(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
-    let provider = config.api_provider();
     let model = config.default_model();
 
-    let cap = crate::config::provider_capability(provider, &model);
+    let cap = crate::config::deepseek_capability(&model);
 
     json!({
-        "resolved_provider": provider.as_str(),
+        "resolved_provider": crate::config::DEEPSEEK_PROVIDER_ID,
         "resolved_model": cap.resolved_model,
         "context_window": cap.context_window,
         "max_output": cap.max_output,
@@ -4044,18 +3788,17 @@ fn doctor_route_report(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
     let target = doctor_api_target(config);
-    let provider = config.api_provider();
     let redacted_base_url = crate::utils::redact_url_for_display(&target.base_url);
 
     json!({
         "provider": target.provider,
-        "provider_source": doctor_provider_source(config),
-        "provider_config_table": provider_config_table_key(provider),
+        "provider_source": "fixed_deepseek",
+        "provider_config_table": "root",
         "model": target.model,
-        "wire_protocol": doctor_wire_protocol(provider),
+        "wire_protocol": doctor_wire_protocol(),
         "base_url": {
             "redacted": redacted_base_url,
-            "class": doctor_base_url_class(provider, &target.base_url),
+            "class": doctor_base_url_class(&target.base_url),
             "fingerprint": crate::utils::redacted_identifier_for_log(&target.base_url),
         },
         "auth": {
@@ -4065,31 +3808,11 @@ fn doctor_route_report(config: &Config) -> serde_json::Value {
     })
 }
 
-fn doctor_provider_source(config: &Config) -> &'static str {
-    if config
-        .provider
-        .as_ref()
-        .is_some_and(|provider| !provider.trim().is_empty())
-    {
-        "config"
-    } else {
-        "default"
-    }
+fn doctor_wire_protocol() -> &'static str {
+    "chat_completions"
 }
 
-fn doctor_wire_protocol(provider: crate::config::ApiProvider) -> &'static str {
-    match provider
-        .metadata()
-        .map(|metadata| metadata.wire())
-        .unwrap_or(codewhale_config::provider::WireFormat::ChatCompletions)
-    {
-        codewhale_config::provider::WireFormat::ChatCompletions => "chat_completions",
-        codewhale_config::provider::WireFormat::Responses => "responses",
-        codewhale_config::provider::WireFormat::AnthropicMessages => "anthropic_messages",
-    }
-}
-
-fn doctor_base_url_class(provider: crate::config::ApiProvider, base_url: &str) -> &'static str {
+fn doctor_base_url_class(base_url: &str) -> &'static str {
     let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
     if normalized.starts_with("http://localhost")
         || normalized.starts_with("http://127.0.0.1")
@@ -4098,8 +3821,7 @@ fn doctor_base_url_class(provider: crate::config::ApiProvider, base_url: &str) -
         return "local";
     }
     if normalized
-        == provider
-            .default_base_url()
+        == crate::config::DEFAULT_DEEPSEEK_BASE_URL
             .trim_end_matches('/')
             .to_ascii_lowercase()
     {
@@ -4109,49 +3831,15 @@ fn doctor_base_url_class(provider: crate::config::ApiProvider, base_url: &str) -
     }
 }
 
-fn doctor_auth_scheme(config: &Config) -> &'static str {
-    let provider = config.api_provider();
-    if provider == crate::config::ApiProvider::Anthropic {
-        "x-api-key"
-    } else if provider == crate::config::ApiProvider::XiaomiMimo
-        && (doctor_xiaomi_mimo_base_url_uses_token_plan(&config.deepseek_base_url())
-            || config
-                .deepseek_api_key()
-                .ok()
-                .is_some_and(|key| key.trim_start().starts_with("tp-")))
-    {
-        "api-key"
-    } else if matches!(
-        provider,
-        crate::config::ApiProvider::Sglang
-            | crate::config::ApiProvider::Vllm
-            | crate::config::ApiProvider::Ollama
-    ) && config.deepseek_api_key().is_err()
-    {
-        "none"
-    } else {
-        "bearer"
-    }
-}
-
-fn doctor_xiaomi_mimo_base_url_uses_token_plan(base_url: &str) -> bool {
-    let normalized = base_url.trim_end_matches('/');
-    [
-        crate::config::XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL,
-        crate::config::XIAOMI_MIMO_TOKEN_PLAN_SGP_BASE_URL,
-        crate::config::XIAOMI_MIMO_TOKEN_PLAN_AMS_BASE_URL,
-    ]
-    .iter()
-    .any(|candidate| normalized.eq_ignore_ascii_case(candidate.trim_end_matches('/')))
+fn doctor_auth_scheme(_config: &Config) -> &'static str {
+    "bearer"
 }
 
 fn doctor_api_key_source_label(source: ApiKeySource) -> &'static str {
     match source {
-        ApiKeySource::Command => "command",
         ApiKeySource::Env => "env",
         ApiKeySource::Config => "config",
         ApiKeySource::Keyring => "keyring",
-        ApiKeySource::Secret => "secret",
         ApiKeySource::Missing => "missing",
     }
 }
@@ -4196,9 +3884,8 @@ struct DoctorApiTarget {
 }
 
 fn doctor_api_target(config: &Config) -> DoctorApiTarget {
-    let provider = config.api_provider();
     DoctorApiTarget {
-        provider: provider.as_str(),
+        provider: crate::config::DEEPSEEK_PROVIDER_ID,
         base_url: config.deepseek_base_url(),
         model: config.default_model(),
     }
@@ -4213,7 +3900,7 @@ struct DoctorTlsStatus {
 }
 
 fn doctor_tls_status(config: &Config) -> DoctorTlsStatus {
-    let provider = config.api_provider().as_str();
+    let provider = crate::config::DEEPSEEK_PROVIDER_ID;
     let insecure_skip_tls_verify = config.insecure_skip_tls_verify();
     DoctorTlsStatus {
         certificate_verification: true,
@@ -4236,25 +3923,16 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
         target.base_url
     )];
 
-    match config.api_provider() {
-        crate::config::ApiProvider::Deepseek if target.base_url.contains("api.deepseek.com") => {
-            lines.push(
-                "If this is a custom DeepSeek-compatible endpoint, set its HTTPS base URL in ~/.codewhale/config.toml and rerun `codewhale doctor`."
-                    .to_string(),
-            );
-        }
-        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
-            lines.push(
-                "If this is a custom DeepSeek-compatible endpoint, confirm it serves `/v1/models` and `/v1/chat/completions` over HTTPS."
-                    .to_string(),
-            );
-        }
-        _ => {
-            lines.push(
-                "Confirm the configured provider endpoint is reachable and OpenAI-compatible for `/v1/models` and `/v1/chat/completions`."
-                    .to_string(),
-            );
-        }
+    if target.base_url.contains("api.deepseek.com") {
+        lines.push(
+            "If this is a loopback fixture, set its HTTPS base URL in ~/.codewhale/config.toml and rerun `codewhale doctor`."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "Confirm the configured DeepSeek fixture endpoint serves `/v1/models` and `/v1/chat/completions`."
+                .to_string(),
+        );
     }
 
     lines.push(
@@ -4429,17 +4107,6 @@ fn run_login(api_key: Option<String>) -> Result<()> {
 fn run_logout() -> Result<()> {
     config::clear_api_key()?;
     println!("Cleared saved API key.");
-    Ok(())
-}
-
-fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {
-    let _credentials = xai_oauth::device_code_login()?;
-    let saved =
-        config::save_provider_auth_mode_for_at(config::ApiProvider::Xai, "oauth", config_path)?;
-    println!(
-        "xAI OAuth is ready; saved [providers.xai] auth_mode = \"oauth\" to {}",
-        saved.display()
-    );
     Ok(())
 }
 
@@ -5196,16 +4863,6 @@ fn default_mouse_capture_enabled(
     true
 }
 
-/// Load project-level config from `$WORKSPACE/.codewhale/config.toml`, with
-/// legacy `$WORKSPACE/.deepseek/config.toml` fallback, then apply its fields as
-/// overrides on top of the global config (#485).
-/// Only explicitly set fields in the project file are applied; everything
-/// else falls back to the global value.
-#[cfg(test)]
-fn merge_project_config(config: &mut Config, workspace: &Path) {
-    merge_project_config_with_approval_baseline(config, workspace);
-}
-
 /// Apply project config while evaluating approval tightening against the
 /// user's canonical `Config::approval_policy` baseline.
 fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &Path) {
@@ -5464,7 +5121,7 @@ fn normalize_windows_config_path_for_compare(path: &Path) -> String {
     normalize_windows_config_path_str(&path.to_string_lossy())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn normalize_windows_config_path_str(path: &str) -> String {
     let mut normalized = path.replace('/', "\\");
     if let Some(rest) = normalized.strip_prefix(r"\\?\UNC\") {
@@ -5525,9 +5182,8 @@ async fn run_interactive(
     }
 
     let model = resolve_interactive_deepseek_model(config)?;
-    let provider = crate::config::ApiProvider::Deepseek;
     let max_subagents = cli.max_subagents.map_or_else(
-        || config.max_subagents_for_provider(provider),
+        || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),
     );
     let use_alt_screen = should_use_alt_screen(cli, config);
@@ -5796,10 +5452,6 @@ enum ExecStreamEvent {
     },
 }
 
-fn exec_supports_provider(provider: crate::config::ApiProvider) -> bool {
-    matches!(provider, crate::config::ApiProvider::Deepseek)
-}
-
 fn exec_stream_line(event: &ExecStreamEvent) -> Result<Vec<u8>> {
     let mut value = serde_json::to_vec(&exec_stream_value(event)?)?;
     value.push(b'\n');
@@ -5840,2960 +5492,54 @@ fn current_binary_sha256() -> Option<String> {
 }
 
 #[cfg(test)]
-mod doctor_legacy_state_tests {
+mod m8a_deepseek_only_entry_tests {
     use super::*;
-    use std::env;
-    use std::ffi::OsString;
-    use std::fs;
-    use tempfile::TempDir;
 
-    struct EnvVarRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarRestore {
-        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let previous = env::var_os(key);
-            unsafe {
-                env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarRestore {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.previous {
-                    Some(value) => env::set_var(self.key, value),
-                    None => env::remove_var(self.key),
-                }
-            }
-        }
-    }
-
-    fn roots(tmp: &TempDir) -> (PathBuf, PathBuf) {
-        (tmp.path().join(".codewhale"), tmp.path().join(".deepseek"))
-    }
-
-    fn entry<'a>(report: &'a [DoctorLegacyStateEntry], name: &str) -> &'a DoctorLegacyStateEntry {
-        report
-            .iter()
-            .find(|entry| entry.name == name)
-            .expect("legacy state entry should exist")
+    #[test]
+    fn exec_rejects_retired_provider_flag_at_parse_boundary() {
+        let error =
+            Cli::try_parse_from(["codewhale-tui", "exec", "--provider", "openrouter", "hello"])
+                .expect_err("retired --provider must not parse");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("仅使用官方 DeepSeek"));
     }
 
     #[test]
-    fn doctor_legacy_state_report_marks_unmigrated_legacy_entries() {
-        let tmp = TempDir::new().expect("tempdir");
-        let (primary_root, legacy_root) = roots(&tmp);
-        fs::create_dir_all(legacy_root.join("sessions")).expect("legacy sessions");
-        fs::create_dir_all(legacy_root.join("tasks")).expect("legacy tasks");
-        fs::create_dir_all(&primary_root).expect("primary root");
-        fs::write(legacy_root.join("config.toml"), "api_key = 'old'").expect("legacy config");
-
-        let report = doctor_legacy_state_report(&primary_root, &legacy_root);
-
-        assert_eq!(
-            entry(&report, "sessions").status,
-            DoctorLegacyStateStatus::LegacyOnly
-        );
-        assert_eq!(
-            entry(&report, "config.toml").status,
-            DoctorLegacyStateStatus::LegacyOnly
-        );
-        assert_eq!(
-            entry(&report, "skills").status,
-            DoctorLegacyStateStatus::Absent
-        );
-
-        let json = doctor_legacy_state_json(&primary_root, &legacy_root, &report);
-        assert_eq!(json["needs_attention"], true);
-        assert_eq!(json["legacy_only_count"], 3);
-        assert_eq!(json["dual_present_count"], 0);
-    }
-
-    #[test]
-    fn doctor_legacy_state_report_marks_dual_present_entries() {
-        let tmp = TempDir::new().expect("tempdir");
-        let (primary_root, legacy_root) = roots(&tmp);
-        fs::create_dir_all(primary_root.join("sessions")).expect("primary sessions");
-        fs::create_dir_all(legacy_root.join("sessions")).expect("legacy sessions");
-        fs::write(primary_root.join("mcp.json"), "{}").expect("primary mcp");
-        fs::write(legacy_root.join("mcp.json"), "{}").expect("legacy mcp");
-
-        let report = doctor_legacy_state_report(&primary_root, &legacy_root);
-
-        assert_eq!(
-            entry(&report, "sessions").status,
-            DoctorLegacyStateStatus::Both
-        );
-        assert_eq!(
-            entry(&report, "mcp.json").status,
-            DoctorLegacyStateStatus::Both
-        );
-
-        let json = doctor_legacy_state_json(&primary_root, &legacy_root, &report);
-        assert_eq!(json["needs_attention"], true);
-        assert_eq!(json["legacy_only_count"], 0);
-        assert_eq!(json["dual_present_count"], 2);
-    }
-
-    #[test]
-    fn doctor_legacy_state_report_is_clear_when_only_primary_exists() {
-        let tmp = TempDir::new().expect("tempdir");
-        let (primary_root, legacy_root) = roots(&tmp);
-        fs::create_dir_all(primary_root.join("sessions")).expect("primary sessions");
-        fs::write(primary_root.join("settings.toml"), "calm_mode = true")
-            .expect("primary settings");
-
-        let report = doctor_legacy_state_report(&primary_root, &legacy_root);
-
-        assert_eq!(
-            entry(&report, "sessions").status,
-            DoctorLegacyStateStatus::PrimaryOnly
-        );
-        assert!(!report.iter().any(legacy_state_needs_attention));
-
-        let json = doctor_legacy_state_json(&primary_root, &legacy_root, &report);
-        assert_eq!(json["needs_attention"], false);
-        assert_eq!(json["legacy_only_count"], 0);
-        assert_eq!(json["dual_present_count"], 0);
-    }
-
-    #[test]
-    fn doctor_legacy_state_report_is_clear_when_neither_root_exists() {
-        let tmp = TempDir::new().expect("tempdir");
-        let (primary_root, legacy_root) = roots(&tmp);
-
-        let report = doctor_legacy_state_report(&primary_root, &legacy_root);
-
-        assert!(
-            report
-                .iter()
-                .all(|entry| entry.status == DoctorLegacyStateStatus::Absent)
-        );
-        assert!(!report.iter().any(legacy_state_needs_attention));
-
-        let json = doctor_legacy_state_json(&primary_root, &legacy_root, &report);
-        assert_eq!(json["needs_attention"], false);
-        assert_eq!(json["legacy_only_count"], 0);
-        assert_eq!(json["dual_present_count"], 0);
-    }
-
-    #[test]
-    fn doctor_state_roots_ignore_ambient_legacy_home_when_codewhale_home_is_explicit() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let explicit_home = tmp.path().join("isolated-codewhale");
-        let ambient_legacy = tmp.path().join(".deepseek");
-        fs::create_dir_all(&ambient_legacy).expect("ambient legacy root");
-        fs::write(
-            ambient_legacy.join("config.toml"),
-            "provider = 'deepseek'\n",
-        )
-        .expect("ambient legacy config");
-        let _home = EnvVarRestore::set("HOME", tmp.path());
-        let _codewhale_home = EnvVarRestore::set("CODEWHALE_HOME", &explicit_home);
-
-        let (primary_root, legacy_root) = doctor_state_roots();
-        let report = doctor_legacy_state_report(&primary_root, &legacy_root);
-
-        assert_eq!(primary_root, explicit_home);
-        assert_eq!(
-            legacy_root,
-            primary_root.join(codewhale_config::LEGACY_APP_DIR)
-        );
-        assert!(
-            report
-                .iter()
-                .all(|entry| entry.status == DoctorLegacyStateStatus::Absent),
-            "doctor must not report ambient legacy state when CODEWHALE_HOME is explicit"
-        );
-        assert!(!report.iter().any(legacy_state_needs_attention));
-    }
-}
-
-#[cfg(test)]
-mod doctor_setup_state_tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn prepare_env(tmp: &TempDir) -> (crate::test_support::EnvVarGuard, PathBuf) {
-        let codewhale_home = tmp.path().join(".codewhale");
-        fs::create_dir_all(&codewhale_home).expect("codewhale home");
-        (
-            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", codewhale_home.as_os_str()),
-            codewhale_home,
-        )
-    }
-
-    fn provider_step(report: &serde_json::Value) -> &serde_json::Value {
-        report["steps"]
-            .as_array()
-            .expect("steps array")
-            .iter()
-            .find(|step| step["step"] == "provider_model")
-            .expect("provider/model step")
-    }
-
-    #[test]
-    fn doctor_setup_consistency_flags_missing_user_constitution() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-
-        let state = codewhale_config::SetupState {
-            constitution_source: codewhale_config::ConstitutionSource::UserGlobal,
-            ..Default::default()
+    fn exec_accepts_only_model_and_reasoning_overrides() {
+        let cli = Cli::try_parse_from([
+            "codewhale-tui",
+            "exec",
+            "--model",
+            "deepseek-v4-flash",
+            "--reasoning-effort",
+            "high",
+            "hello",
+        ])
+        .expect("DeepSeek exec arguments");
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
         };
-        state.save().expect("persist setup state");
-
-        let report = doctor_setup_report_json(&Config::default(), &workspace);
-
-        assert_eq!(report["source"], "persisted");
-        assert_eq!(report["consistency"]["status"], "inconsistent");
-        let issues = report["consistency"]["issues"].to_string();
-        assert!(
-            issues.contains("setup_state_points_at_missing_user_constitution"),
-            "{issues}"
-        );
+        assert_eq!(args.model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(args.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
-    fn doctor_setup_consistency_flags_stale_temp_files() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, codewhale_home) = prepare_env(&tmp);
-        let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-        fs::write(codewhale_home.join(".tmpAbC123"), b"orphaned atomic write")
-            .expect("stale temp file");
-
-        let report = doctor_setup_report_json(&Config::default(), &workspace);
-
-        assert_eq!(report["consistency"]["status"], "inconsistent");
-        let issues = report["consistency"]["issues"].to_string();
-        assert!(
-            issues.contains("stale_setup_temp_files_in_codewhale_home"),
-            "{issues}"
-        );
-    }
-
-    #[test]
-    fn doctor_setup_consistency_reports_consistent_for_clean_home() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-
-        let report = doctor_setup_report_json(&Config::default(), &workspace);
-
-        assert_eq!(report["consistency"]["status"], "consistent");
-        assert_eq!(
-            report["consistency"]["issues"]
-                .as_array()
-                .map(Vec::len)
-                .unwrap_or_default(),
-            0
-        );
-    }
-
-    #[test]
-    fn doctor_setup_report_json_derives_state_without_sidecar() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-
-        let report = doctor_setup_report_json(&Config::default(), &workspace);
-
-        assert_eq!(report["source"], "derived");
-        assert_eq!(report["inherited"], true);
-        assert_eq!(report["next_actions"]["constitution"], "/constitution");
-        assert_eq!(report["next_actions"]["setup_report"], "/setup report");
-        assert_eq!(
-            report["next_actions"]["provider_model"],
-            "/setup provider, /provider setup <name>, or /model"
-        );
-        assert_eq!(
-            report["next_actions"]["runtime_posture"],
-            "~/.codewhale/config.toml"
-        );
-        assert_eq!(
-            report["next_actions"]["operate_fleet"],
-            "/setup fleet (readiness), /fleet setup (explicit profile authoring)"
-        );
-        assert_eq!(report["next_actions"]["tools_mcp"], "/setup tools");
-        assert_eq!(report["next_actions"]["persistence"], "/setup persistence");
-        assert_eq!(
-            report["checkpoint_version"],
-            LEGACY_SETUP_CHECKPOINT_VERSION
-        );
-        assert_eq!(report["update_ready"], false);
-        assert_eq!(report["operate_ready"], false);
-        assert_eq!(
-            report["operate_fleet"]["concurrency"]["plan_limit_probed"],
-            false
-        );
-        assert_eq!(
-            report["operate_fleet"]["roster"]["readiness_rule"],
-            "built-in starter roster or custom roster"
-        );
-        assert_eq!(report["provider_model"]["provider"]["id"], "deepseek");
-        assert_eq!(report["provider_model"]["provider"]["display"], "DeepSeek");
-        assert_eq!(
-            report["provider_model"]["model"]["resolved"],
-            crate::config::DEFAULT_TEXT_MODEL
-        );
-        assert_eq!(report["provider_model"]["auth"]["source"], "missing");
-        assert_eq!(
-            report["provider_model"]["auth"]["credential_url"],
-            "https://platform.deepseek.com/api_keys"
-        );
-        assert_eq!(
-            report["provider_model"]["auth"]["env_vars"][0],
-            "DEEPSEEK_API_KEY"
-        );
-        assert_eq!(report["provider_model"]["health"]["live_validation"], false);
-        assert_eq!(report["constitution"]["source"], "bundled");
-        assert_eq!(report["constitution"]["autonomy_preference"], "unspecified");
-        assert_eq!(report["runtime_posture"]["source"], "unset");
-        assert!(report["runtime_posture"].get("default_mode").is_none());
-        assert_eq!(
-            report["runtime_posture"]["approval_policy"]["value"],
-            "on-request"
-        );
-        assert_eq!(report["runtime_posture"]["allow_shell"]["value"], true);
-        assert_eq!(
-            report["runtime_posture"]["sandbox_mode"]["value"],
-            "workspace-write"
-        );
-        assert_eq!(provider_step(&report)["status"], "needs_action");
-    }
-
-    #[test]
-    fn doctor_setup_provider_model_json_covers_cn_codex_and_local_matrix() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
-        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _codex_key = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _codex_legacy_key = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-
-        let cn_config = Config {
-            provider: Some("deepseek-cn".to_string()),
-            ..Config::default()
-        };
-        let cn_report = doctor_setup_report_json(&cn_config, &workspace);
-        assert_eq!(cn_report["provider_model"]["provider"]["id"], "deepseek-cn");
-        assert_eq!(
-            cn_report["provider_model"]["provider"]["display"],
-            "DeepSeek (legacy alias)"
-        );
-        assert_eq!(
-            cn_report["provider_model"]["auth"]["env_vars"][0],
-            "DEEPSEEK_API_KEY"
-        );
-        assert_eq!(
-            cn_report["provider_model"]["auth"]["credential_url"],
-            "https://platform.deepseek.com/api_keys"
-        );
-        assert_eq!(cn_report["provider_model"]["auth"]["oauth_only"], false);
-        assert_eq!(
-            cn_report["provider_model"]["health"]["live_validation"],
-            false
-        );
-
-        let codex_config = Config {
-            provider: Some("openai-codex".to_string()),
-            ..Config::default()
-        };
-        let codex_report = doctor_setup_report_json(&codex_config, &workspace);
-        assert_eq!(
-            codex_report["provider_model"]["provider"]["id"],
-            crate::config::ApiProvider::OpenaiCodex.as_str()
-        );
-        assert!(codex_report["provider_model"]["auth"]["credential_url"].is_null());
-        assert_eq!(codex_report["provider_model"]["auth"]["oauth_only"], true);
-        assert_eq!(
-            codex_report["provider_model"]["health"]["next_action"],
-            "/setup provider or /provider setup <name>"
-        );
-
-        let local_config = Config {
-            provider: Some("ollama".to_string()),
-            ..Config::default()
-        };
-        let local_report = doctor_setup_report_json(&local_config, &workspace);
-        assert_eq!(local_report["provider_model"]["provider"]["id"], "ollama");
-        assert_eq!(
-            local_report["provider_model"]["auth"]["present_or_local"],
-            true
-        );
-        assert!(local_report["provider_model"]["auth"]["credential_url"].is_null());
-        assert_eq!(local_report["provider_model"]["auth"]["oauth_only"], false);
-        assert_eq!(
-            local_report["provider_model"]["health"]["next_action"],
-            "/model"
-        );
-    }
-
-    #[test]
-    fn doctor_setup_report_json_uses_persisted_state() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let mut state = codewhale_config::SetupState::default();
-        state.set_step(
-            codewhale_config::SetupStep::ProviderModel,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                true,
-                LEGACY_SETUP_CHECKPOINT_VERSION,
-            )
-            .with_result("deepseek/deepseek-chat"),
-        );
-        state.set_step(
-            codewhale_config::SetupStep::TrustSandbox,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                true,
-                LEGACY_SETUP_CHECKPOINT_VERSION,
-            ),
-        );
-        state
-            .complete_constitution_checkpoint(
-                LEGACY_SETUP_CHECKPOINT_VERSION,
-                codewhale_config::ConstitutionChoice::Bundled,
-            )
-            .set_step(
-                codewhale_config::SetupStep::Constitution,
-                codewhale_config::StepEntry::new(
-                    codewhale_config::StepStatus::Verified,
-                    true,
-                    LEGACY_SETUP_CHECKPOINT_VERSION,
-                ),
-            );
-        state.runtime_posture_source = codewhale_config::RuntimePostureSource::Confirmed;
-        state.save().expect("persist setup state");
-        codewhale_config::UserConstitution {
-            autonomy_preference: codewhale_config::AutonomyPreference::Balanced,
-            ..Default::default()
-        }
-        .save()
-        .expect("persist user constitution");
+    fn interactive_model_rejects_foreign_model() {
         let config = Config {
-            approval_policy: Some("auto".to_string()),
-            allow_shell: Some(false),
-            sandbox_mode: Some("read-only".to_string()),
-            ..Config::default()
-        };
-
-        let report = doctor_setup_report_json(&config, &workspace);
-
-        assert_eq!(report["source"], "persisted");
-        assert_eq!(report["first_run_ready"], true);
-        assert_eq!(report["update_ready"], true);
-        assert_eq!(report["operate_ready"], false);
-        assert_eq!(report["constitution"]["choice"], "bundled");
-        assert_eq!(
-            report["constitution"]["checkpoint_completed_for"],
-            LEGACY_SETUP_CHECKPOINT_VERSION
-        );
-        assert_eq!(report["constitution"]["autonomy_preference"], "balanced");
-        assert_eq!(report["runtime_posture_source"], "confirmed");
-        assert_eq!(report["runtime_posture"]["source"], "confirmed");
-        assert_eq!(
-            report["runtime_posture"]["approval_policy"]["value"],
-            "auto"
-        );
-        assert_eq!(
-            report["runtime_posture"]["approval_policy"]["source"],
-            "config"
-        );
-        assert_eq!(report["runtime_posture"]["allow_shell"]["value"], false);
-        assert_eq!(report["runtime_posture"]["allow_shell"]["source"], "config");
-        assert_eq!(
-            report["runtime_posture"]["sandbox_mode"]["value"],
-            "read-only"
-        );
-        assert_eq!(
-            report["runtime_posture"]["sandbox_mode"]["source"],
-            "config"
-        );
-        assert_eq!(provider_step(&report)["result"], "deepseek/deepseek-chat");
-    }
-
-    #[test]
-    fn doctor_setup_report_json_fails_closed_without_operate_receipts() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _codewhale_home) = prepare_env(&tmp);
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let mut state = codewhale_config::SetupState::default();
-        state.set_step(
-            codewhale_config::SetupStep::ProviderModel,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                true,
-                LEGACY_SETUP_CHECKPOINT_VERSION,
-            ),
-        );
-        state.runtime_posture_source = codewhale_config::RuntimePostureSource::Confirmed;
-        state.complete_constitution_checkpoint(
-            LEGACY_SETUP_CHECKPOINT_VERSION,
-            codewhale_config::ConstitutionChoice::Bundled,
-        );
-        state.set_step(
-            codewhale_config::SetupStep::OperateFleet,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                false,
-                LEGACY_SETUP_CHECKPOINT_VERSION,
-            )
-            .with_result(
-                "provider=ready, runtime=ready, roster=ready, concurrency=plan limit not probed",
-            ),
-        );
-        state.save().expect("persist setup state");
-
-        let report = doctor_setup_report_json(&Config::default(), &workspace);
-
-        assert_eq!(report["first_run_ready"], true);
-        assert_eq!(report["operate_ready"], false);
-        assert_eq!(
-            report["operate_fleet"]["concurrency"]["plan_limit_probed"],
-            false
-        );
-        assert!(
-            report["operate_fleet"]["roster"]["built_in"]
-                .as_u64()
-                .is_some_and(|count| count > 0)
-        );
-        let operate_step = report["steps"]
-            .as_array()
-            .expect("steps array")
-            .iter()
-            .find(|step| step["step"] == "operate_fleet")
-            .expect("operate/fleet step");
-        assert_eq!(operate_step["status"], "verified");
-        assert!(
-            operate_step["result"]
-                .as_str()
-                .is_some_and(|result| result.contains("plan limit not probed"))
-        );
-    }
-}
-
-#[cfg(test)]
-mod doctor_endpoint_tests {
-    use super::*;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[tokio::test]
-    async fn doctor_connectivity_uses_canonical_deepseek_transport() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "doctor-probe",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "deepseek-v4-pro",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "ok"},
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                    "prompt_cache_hit_tokens": 0,
-                    "prompt_cache_miss_tokens": 1
-                }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let config = Config {
-            api_key: Some("fixture-key".to_owned()),
-            base_url: Some(server.uri()),
-            ..Default::default()
-        };
-
-        test_api_connectivity(&config)
-            .await
-            .expect("canonical DeepSeek Doctor probe");
-
-        let requests = server
-            .received_requests()
-            .await
-            .expect("Doctor request journal");
-        assert_eq!(requests.len(), 1);
-        let body = requests[0]
-            .body_json::<serde_json::Value>()
-            .expect("Doctor request JSON");
-        assert_eq!(body["model"], "deepseek-v4-pro");
-        assert_eq!(body["max_tokens"], 1);
-        assert_eq!(body["stream"], false);
-        assert_eq!(body["messages"][0]["content"], "hi");
-        assert!(body.get("tools").is_none());
-    }
-
-    #[test]
-    fn doctor_api_target_reports_default_endpoint() {
-        let config = Config::default();
-
-        let target = doctor_api_target(&config);
-
-        assert_eq!(target.provider, "deepseek");
-        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
-        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
-    }
-
-    #[test]
-    fn doctor_api_target_routes_deepseek_cn_alias_to_official_root() {
-        let config = Config {
-            provider: Some("deepseek-cn".to_string()),
-            ..Default::default()
-        };
-
-        let target = doctor_api_target(&config);
-
-        assert_eq!(target.provider, "deepseek-cn");
-        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
-        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
-        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
-    }
-
-    #[test]
-    fn doctor_xiaomi_base_url_is_ascii_case_insensitive() {
-        assert!(doctor_xiaomi_mimo_base_url_uses_token_plan(
-            "HTTPS://TOKEN-PLAN-CN.XIAOMIMIMO.COM/V1/"
-        ));
-    }
-
-    #[test]
-    fn doctor_tls_status_reports_verification_enabled_by_default() {
-        let status = doctor_tls_status(&Config::default());
-
-        assert!(status.certificate_verification);
-        assert!(!status.insecure_skip_tls_verify);
-        assert_eq!(status.provider, "deepseek");
-        assert!(status.message.contains("enabled"));
-    }
-
-    #[test]
-    fn doctor_tls_status_warns_when_active_provider_skips_verification() {
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.openai.insecure_skip_tls_verify = Some(true);
-        let config = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Default::default()
-        };
-
-        let status = doctor_tls_status(&config);
-
-        assert!(status.certificate_verification);
-        assert!(status.insecure_skip_tls_verify);
-        assert_eq!(status.provider, "openai");
-        assert!(status.message.contains("cannot be disabled"));
-        assert!(status.message.contains("SSL_CERT_FILE"));
-    }
-
-    #[test]
-    fn provider_capability_report_exposes_alias_deprecation_for_deepseek_chat() {
-        let config = Config {
-            default_text_model: Some("deepseek-chat".to_string()),
-            ..Default::default()
-        };
-
-        let report = provider_capability_report(&config);
-
-        assert_eq!(report["resolved_model"], "deepseek-chat");
-        assert_eq!(report["context_window"], 1_000_000);
-        assert_eq!(report["thinking_supported"], true);
-        assert_eq!(
-            report["alias_deprecation"]["replacement"],
-            "deepseek-v4-flash"
-        );
-        assert_eq!(
-            report["alias_deprecation"]["retirement_utc"],
-            "2026-07-24T15:59:00Z"
-        );
-    }
-
-    #[test]
-    fn provider_capability_report_leaves_canonical_flash_alias_metadata_null() {
-        let config = Config {
-            default_text_model: Some("deepseek-v4-flash".to_string()),
-            ..Default::default()
-        };
-
-        let report = provider_capability_report(&config);
-
-        assert_eq!(report["resolved_model"], "deepseek-v4-flash");
-        assert!(report["alias_deprecation"].is_null());
-    }
-
-    #[test]
-    fn doctor_route_report_exposes_tokenhub_openai_compatible_route_without_secret() {
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.openai.api_key = Some("tokenhub-secret-value".to_string());
-        providers.openai.base_url = Some("https://tokenhub.tencentmaas.com/v1".to_string());
-        providers.openai.model = Some("deepseek-ai/DeepSeek-V4-Pro".to_string());
-        let config = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Default::default()
-        };
-
-        let report = doctor_route_report(&config);
-        let serialized = report.to_string();
-
-        assert_eq!(report["provider"], "openai");
-        assert_eq!(report["provider_source"], "config");
-        assert_eq!(report["provider_config_table"], "openai");
-        assert_eq!(report["model"], "deepseek-ai/DeepSeek-V4-Pro");
-        assert_eq!(report["wire_protocol"], "chat_completions");
-        assert_eq!(
-            report["base_url"]["redacted"],
-            "https://tokenhub.tencentmaas.com/v1"
-        );
-        assert_eq!(report["base_url"]["class"], "custom");
-        assert_eq!(report["auth"]["scheme"], "bearer");
-        assert_eq!(report["auth"]["source"], "config");
-        assert!(
-            report["base_url"]["fingerprint"]
-                .as_str()
-                .is_some_and(|value| value.starts_with("<redacted:"))
-        );
-        assert!(!serialized.contains("tokenhub-secret-value"));
-    }
-
-    #[test]
-    fn doctor_route_report_exposes_siliconflow_cn_provider_route() {
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.siliconflow_cn.api_key = Some("sf-cn-secret-value".to_string());
-        providers.siliconflow_cn.base_url =
-            Some(crate::config::DEFAULT_SILICONFLOW_CN_BASE_URL.to_string());
-        providers.siliconflow_cn.model = Some(crate::config::DEFAULT_SILICONFLOW_MODEL.to_string());
-        let config = Config {
-            provider: Some("siliconflow-CN".to_string()),
-            providers: Some(providers),
-            ..Default::default()
-        };
-
-        let report = doctor_route_report(&config);
-        let serialized = report.to_string();
-
-        assert_eq!(report["provider"], "siliconflow-CN");
-        assert_eq!(report["provider_config_table"], "siliconflow_cn");
-        assert_eq!(report["model"], crate::config::DEFAULT_SILICONFLOW_MODEL);
-        assert_eq!(
-            report["base_url"]["redacted"],
-            crate::config::DEFAULT_SILICONFLOW_CN_BASE_URL
-        );
-        assert_eq!(report["base_url"]["class"], "default");
-        assert_eq!(report["auth"]["scheme"], "bearer");
-        assert_eq!(report["auth"]["source"], "config");
-        assert!(!serialized.contains("sf-cn-secret-value"));
-    }
-
-    #[test]
-    fn doctor_search_provider_line_includes_duckduckgo_default_source_and_switch_hint() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
-
-        let line = doctor_search_provider_line(&Config::default());
-
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
-        }
-        assert!(line.contains("search_provider: duckduckgo"));
-        assert!(line.contains("source: default"));
-        assert!(line.contains("[search] provider"));
-        assert!(line.contains("provider = \"bing\""));
-    }
-
-    #[test]
-    fn doctor_search_provider_json_reports_config_source() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
-        let config = Config {
-            search: Some(crate::config::SearchConfig {
-                provider: Some(crate::config::SearchProvider::DuckDuckGo),
-                base_url: None,
-                api_key: None,
-            }),
-            ..Default::default()
-        };
-
-        let report = doctor_search_provider_json(&config);
-
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
-        }
-        assert_eq!(report["provider"], "duckduckgo");
-        assert_eq!(report["source"], "config");
-    }
-
-    #[test]
-    fn doctor_search_provider_json_reports_env_override_source() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", "tavily") };
-
-        let report = doctor_search_provider_json(&Config::default());
-
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
-        }
-        assert_eq!(report["provider"], "tavily");
-        assert_eq!(report["source"], "env override");
-    }
-
-    #[test]
-    fn doctor_search_provider_line_omits_switch_hint_when_bing_is_configured() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
-        let config = Config {
-            search: Some(crate::config::SearchConfig {
-                provider: Some(crate::config::SearchProvider::Bing),
-                base_url: None,
-                api_key: None,
-            }),
-            ..Default::default()
-        };
-
-        let line = doctor_search_provider_line(&config);
-
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
-        }
-        assert!(line.contains("search_provider: bing"));
-        assert!(line.contains("source: config"));
-        assert!(!line.contains("[search] provider"));
-    }
-
-    #[test]
-    fn timeout_recovery_keeps_default_deepseek_users_on_default_endpoint() {
-        let config = Config::default();
-
-        let text = doctor_timeout_recovery_lines(&config).join("\n");
-
-        assert!(text.contains("api.deepseek.com"));
-        assert!(text.contains("custom DeepSeek-compatible endpoint"));
-        assert!(!text.contains("provider = \"deepseek-cn\""));
-        assert!(text.contains("codewhale doctor --json"));
-    }
-
-    #[test]
-    fn timeout_recovery_for_custom_provider_checks_openai_compatibility() {
-        let config = Config {
-            provider: Some("vllm".to_string()),
-            ..Default::default()
-        };
-
-        let text = doctor_timeout_recovery_lines(&config).join("\n");
-
-        assert!(text.contains("/v1/models"));
-        assert!(text.contains("/v1/chat/completions"));
-        assert!(!text.contains("api.deepseeki.com"));
-    }
-}
-
-#[cfg(test)]
-mod terminal_mode_tests {
-    use super::*;
-    use clap::Parser;
-
-    fn parse_cli(args: &[&str]) -> Cli {
-        Cli::try_parse_from(args).expect("CLI args should parse")
-    }
-
-    #[test]
-    fn prompt_flag_accepts_split_prompt_words_for_windows_cmd_shims() {
-        let cli = parse_cli(&["codewhale", "-p", "hello", "world"]);
-
-        assert_eq!(cli.prompt, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn prompt_flag_starts_interactive_submit_input() {
-        let cli = parse_cli(&["codewhale", "-p", "read", "the", "project"]);
-
-        assert_eq!(
-            top_level_prompt_initial_input(&cli.prompt),
-            Some(tui::InitialInput::Submit("read the project".to_string()))
-        );
-    }
-
-    #[test]
-    fn companion_binary_reports_its_own_name() {
-        assert_eq!(Cli::command().get_name(), "codewhale-tui");
-    }
-
-    #[test]
-    fn xai_device_auth_subcommand_parses() {
-        let cli = parse_cli(&["codewhale-tui", "auth", "xai-device"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(TuiAuthArgs {
-                command: TuiAuthCommand::XaiDevice
-            }))
-        ));
-    }
-
-    #[test]
-    fn removed_product_and_server_commands_fail_during_argument_parsing() {
-        for args in [
-            ["codewhale-tui", "review"].as_slice(),
-            ["codewhale-tui", "review", "--staged"].as_slice(),
-            ["codewhale-tui", "speech"].as_slice(),
-            ["codewhale-tui", "speech", "paid input", "--model", "tts"].as_slice(),
-            ["codewhale-tui", "tts"].as_slice(),
-            ["codewhale-tui", "models"].as_slice(),
-            ["codewhale-tui", "models", "--json"].as_slice(),
-            ["codewhale-tui", "serve", "--acp"].as_slice(),
-            ["codewhale-tui", "serve", "--mcp"].as_slice(),
-            ["codewhale-tui", "mcp", "add-self"].as_slice(),
-            ["codewhale-tui", "setup", "--tools"].as_slice(),
-            ["codewhale-tui", "setup", "--clean"].as_slice(),
-        ] {
-            let error = Cli::try_parse_from(args).expect_err("removed command must fail closed");
-            assert!(
-                matches!(
-                    error.kind(),
-                    clap::error::ErrorKind::UnknownArgument
-                        | clap::error::ErrorKind::InvalidSubcommand
-                ),
-                "unexpected parser outcome for {args:?}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn setup_force_remains_available_for_scaffolding() {
-        let cli = parse_cli(&["codewhale-tui", "setup", "--skills", "--force"]);
-        let Some(Commands::Setup(args)) = cli.command else {
-            panic!("expected setup command");
-        };
-
-        assert!(args.skills);
-        assert!(args.force);
-        assert!(!args.status);
-    }
-
-    #[test]
-    fn explicit_review_prompt_remains_legal() {
-        let cli = parse_cli(&["codewhale-tui", "--prompt", "审查当前 git diff"]);
-
-        assert!(cli.command.is_none());
-        assert_eq!(cli.prompt, ["审查当前 git diff"]);
-    }
-
-    #[test]
-    fn explicit_speech_prompt_remains_legal() {
-        let cli = parse_cli(&["codewhale-tui", "--prompt", "生成语音"]);
-
-        assert!(cli.command.is_none());
-        assert_eq!(cli.prompt, ["生成语音"]);
-    }
-
-    #[test]
-    fn exec_model_resolution_uses_provider_scoped_default() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
-        let _deepseek_model = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MODEL");
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openrouter: crate::config::ProviderConfig {
-                    model: Some("arcee-ai/trinity-large-thinking".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            resolve_exec_model(&config, None),
-            "arcee-ai/trinity-large-thinking"
-        );
-        assert_eq!(
-            resolve_exec_model(&config, Some("arcee-ai/trinity-large-thinking")),
-            "arcee-ai/trinity-large-thinking"
-        );
-    }
-
-    #[test]
-    fn interactive_model_resolution_accepts_only_official_deepseek_entry_truth() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _default_model =
-            crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
-
-        for (configured, expected) in [
-            ("auto", "auto"),
-            ("deepseek-v4-pro", "deepseek-v4-pro"),
-            ("deepseek-v4-flash", "deepseek-v4-flash"),
-            ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-v4-pro"),
-        ] {
-            let config = Config {
-                provider: Some("deepseek".to_owned()),
-                default_text_model: Some(configured.to_owned()),
-                ..Config::default()
-            };
-            assert_eq!(
-                resolve_interactive_deepseek_model(&config).expect("supported entry"),
-                expected
-            );
-        }
-
-        let config = Config {
-            provider: Some("deepseek".to_owned()),
-            ..Config::default()
-        };
-        assert_eq!(
-            resolve_interactive_deepseek_model(&config).expect("default official model"),
-            crate::config::DEFAULT_TEXT_MODEL
-        );
-
-        for provider in ["openrouter", "zai", "openai"] {
-            let config = Config {
-                provider: Some(provider.to_owned()),
-                ..Config::default()
-            };
-            let error = resolve_interactive_deepseek_model(&config)
-                .expect_err("foreign provider must fail closed");
-            assert!(error.to_string().contains("只支持官方 DeepSeek Provider"));
-        }
-
-        for model in ["deepseek-chat", "deepseek-reasoner", "gpt-5.5-codex"] {
-            let config = Config {
-                provider: Some("deepseek".to_owned()),
-                default_text_model: Some(model.to_owned()),
-                ..Config::default()
-            };
-            let error = resolve_interactive_deepseek_model(&config)
-                .expect_err("unsupported model must fail closed");
-            assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
-            assert!(error.to_string().contains(model));
-        }
-
-        let config = Config {
-            provider: Some("deepseek".to_owned()),
-            default_text_model: Some("deepseek-v4-pro".to_owned()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek: crate::config::ProviderConfig {
-                    model: Some("gpt-5.5-codex".to_owned()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
+            default_text_model: Some("gpt-5".to_string()),
             ..Config::default()
         };
         let error = resolve_interactive_deepseek_model(&config)
-            .expect_err("provider-scoped foreign model must fail closed");
-        assert!(error.to_string().contains("gpt-5.5-codex"));
+            .expect_err("foreign model must fail before runtime launch");
+        assert!(error.to_string().contains("只支持"));
     }
 
     #[test]
-    fn exec_model_resolution_prefers_codewhale_model_env_override() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _codewhale_model = crate::test_support::EnvVarGuard::set("CODEWHALE_MODEL", " auto ");
-        let _deepseek_model =
-            crate::test_support::EnvVarGuard::set("DEEPSEEK_MODEL", "stale-deepseek-model");
-        let config = Config {
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(resolve_exec_model(&config, None), "auto");
-    }
-
-    #[test]
-    fn exec_model_resolution_uses_legacy_deepseek_model_env_override() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
-        let _deepseek_model = crate::test_support::EnvVarGuard::set("DEEPSEEK_MODEL", " auto ");
-        let config = Config {
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(resolve_exec_model(&config, None), "auto");
-    }
-
-    #[test]
-    fn exec_model_resolution_uses_provider_safe_default_for_zai() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
-        let _deepseek_model = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MODEL");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            resolve_exec_model(&config, None),
-            crate::config::DEFAULT_ZAI_MODEL
-        );
-    }
-
-    #[test]
-    fn exec_accepts_split_prompt_words_for_windows_cmd_shims() {
-        let cli = parse_cli(&["codewhale", "exec", "hello", "world"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.prompt, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn exec_keeps_model_flag_before_split_prompt_words() {
-        let cli = parse_cli(&["codewhale", "exec", "--model", "auto", "hello", "world"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.model.as_deref(), Some("auto"));
-        assert_eq!(args.prompt, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn exec_keeps_flags_before_split_prompt_words() {
-        let cli = parse_cli(&["codewhale", "exec", "--json", "hello", "world"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert!(args.json);
-        assert_eq!(args.prompt, vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn exec_parses_provider_flag_alongside_model() {
-        // #4093: Fleet threads `--provider <id>` so a worker launches on its
-        // profile-pinned provider even when the parent session is elsewhere.
-        let cli = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--provider",
-            "openrouter",
-            "--model",
-            "glm-5.2",
-            "audit",
-        ]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.provider.as_deref(), Some("openrouter"));
-        assert_eq!(args.model.as_deref(), Some("glm-5.2"));
-        assert_eq!(args.prompt, vec!["audit"]);
-        // The threaded id round-trips through the provider vocabulary the exec
-        // handler validates against — never a model-id sniff (EPIC #2608).
-        assert_eq!(
-            crate::config::ApiProvider::parse(args.provider.as_deref().unwrap()),
-            Some(crate::config::ApiProvider::Openrouter)
-        );
-    }
-
-    #[test]
-    fn exec_provider_override_accepts_configured_custom_provider() {
-        let mut custom = std::collections::HashMap::new();
-        custom.insert(
-            "lm-studio".to_string(),
-            crate::config::ProviderConfig {
-                kind: Some("openai-compatible".to_string()),
-                base_url: Some("http://127.0.0.1:1234/v1".to_string()),
-                model: Some("qwen-2.5-7b".to_string()),
-                api_key: Some("lm-studio".to_string()),
-                ..Default::default()
-            },
-        );
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                custom,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        apply_exec_provider_override(&mut config, "lm-studio")
-            .expect("configured custom provider should be accepted");
-
-        assert_eq!(config.provider.as_deref(), Some("lm-studio"));
-        assert_eq!(config.api_provider(), crate::config::ApiProvider::Custom);
-    }
-
-    #[test]
-    fn exec_provider_override_rejects_unknown_provider() {
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            ..Default::default()
-        };
-
-        let err = apply_exec_provider_override(&mut config, "lm-studio")
-            .expect_err("unconfigured custom provider should fail closed");
-        let message = err.to_string();
-
-        assert!(message.contains("Unrecognized --provider"));
-        assert!(message.contains("[providers.<name>] custom provider"));
-        assert_eq!(config.provider.as_deref(), Some("deepseek"));
-    }
-
-    #[test]
-    fn exec_parses_reasoning_effort_flag_alongside_provider() {
-        let cli = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--provider",
-            "openrouter",
-            "--model",
-            "glm-5.2",
-            "--reasoning-effort",
-            "max",
-            "audit",
-        ]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.provider.as_deref(), Some("openrouter"));
-        assert_eq!(args.model.as_deref(), Some("glm-5.2"));
-        assert_eq!(args.reasoning_effort.as_deref(), Some("max"));
-        assert_eq!(args.prompt, vec!["audit"]);
-    }
-
-    #[test]
-    fn cli_reasoning_effort_normalizes_aliases_and_rejects_typos() {
-        assert_eq!(
-            normalize_cli_reasoning_effort("xhigh").unwrap().as_deref(),
-            Some("max")
-        );
-        assert_eq!(normalize_cli_reasoning_effort("default").unwrap(), None);
-        assert!(normalize_cli_reasoning_effort("expensive").is_err());
-    }
-
-    #[test]
-    fn exec_accepts_resume_without_a_replacement_prompt() {
-        let cli = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--resume",
-            "abc123",
-            "--output-format",
-            "stream-json",
-        ]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.resume.as_deref(), Some("abc123"));
-        assert_eq!(args.output_format, ExecOutputFormat::StreamJson);
-        assert!(args.prompt.is_empty());
-    }
-
-    #[test]
-    fn exec_parses_tool_gate_and_hardening_flags() {
-        let cli = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--allowed-tools",
-            "read_file,grep_files",
-            "--disallowed-tools",
-            "exec_shell",
-            "--max-turns",
-            "7",
-            "--max-api-requests",
-            "11",
-            "--max-runtime-secs",
-            "90",
-            "--append-system-prompt",
-            "extra rules",
-            "do the thing",
-        ]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(
-            args.allowed_tools.as_deref(),
-            Some(&["read_file".to_string(), "grep_files".to_string()][..])
-        );
-        assert_eq!(
-            args.disallowed_tools.as_deref(),
-            Some(&["exec_shell".to_string()][..])
-        );
-        assert_eq!(args.max_turns, Some(7));
-        assert_eq!(args.max_api_requests.map(NonZeroU32::get), Some(11));
-        assert_eq!(args.max_runtime_secs.map(NonZeroU64::get), Some(90));
-        assert_eq!(args.append_system_prompt.as_deref(), Some("extra rules"));
-        assert_eq!(args.prompt, vec!["do the thing"]);
-    }
-
-    #[test]
-    fn exec_auto_does_not_authorize_sandbox_elevation() {
-        let cli = parse_cli(&["codewhale", "exec", "--auto", "run it"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert!(!args.allow_sandbox_elevation);
-        assert!(args.sandbox.is_none());
-    }
-
-    #[test]
-    fn exec_approval_policy_auto_never_grants_a_tool_surface() {
-        let automatic = Config {
-            approval_policy: Some("auto".to_string()),
-            ..Config::default()
-        };
-        assert_eq!(
-            resolve_exec_approval_controls(&automatic, false, false, false),
-            ExecApprovalControls {
-                auto_approve: true,
-                tool_mode: false,
-            }
-        );
-        assert_eq!(
-            resolve_exec_approval_controls(&automatic, false, false, true),
-            ExecApprovalControls {
-                auto_approve: true,
-                tool_mode: true,
-            }
-        );
-
-        let ask = Config::default();
-        assert_eq!(
-            resolve_exec_approval_controls(&ask, false, false, true),
-            ExecApprovalControls {
-                auto_approve: false,
-                tool_mode: true,
-            }
-        );
-        assert_eq!(
-            resolve_exec_approval_controls(&ask, true, false, false),
-            ExecApprovalControls {
-                auto_approve: true,
-                tool_mode: true,
-            }
-        );
-    }
-
-    #[test]
-    fn exec_explicit_sandbox_elevation_opt_ins_authorize_retry() {
-        let danger = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--auto",
-            "--sandbox",
-            "danger-full-access",
-            "run it",
-        ]);
-        let Some(Commands::Exec(args)) = danger.command else {
-            panic!("expected exec command");
-        };
-        assert!(!args.allow_sandbox_elevation);
-        assert_eq!(args.sandbox.as_deref(), Some("danger-full-access"));
-
-        let flag = parse_cli(&[
-            "codewhale",
-            "exec",
-            "--auto",
-            "--allow-sandbox-elevation",
-            "run it",
-        ]);
-        let Some(Commands::Exec(args)) = flag.command else {
-            panic!("expected exec command");
-        };
-        assert!(args.allow_sandbox_elevation);
-    }
-
-    #[test]
-    fn exec_help_separates_agent_mode_from_elevated_authority() {
-        let mut cli = Cli::command();
-        let help = cli
-            .find_subcommand_mut("exec")
-            .expect("exec command")
-            .render_help()
-            .to_string();
-        assert!(help.contains("--auto"));
-        assert!(help.contains("--sandbox"));
-        assert!(help.contains("--allow-sandbox-elevation"));
-        assert!(help.contains("does not change the"));
-        assert!(help.contains("grant access outside the workspace"));
-        assert!(help.contains("authorize sandbox elevation"));
-    }
-
-    #[test]
-    fn exec_shell_only_tool_surface_env_sets_shell_allowlist() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _surface =
-            crate::test_support::EnvVarGuard::set(CODEWHALE_TOOL_SURFACE_ENV, " shell-only ");
-
-        let allowed_tools = resolve_exec_allowed_tools(None, exec_tool_surface_from_env())
-            .expect("shell-only surface should set an allowlist");
-
-        assert_eq!(
-            allowed_tools,
-            vec![
-                "exec_shell".to_string(),
-                "exec_shell_wait".to_string(),
-                "exec_shell_interact".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn exec_explicit_allowed_tools_override_shell_only_env() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _surface =
-            crate::test_support::EnvVarGuard::set(CODEWHALE_TOOL_SURFACE_ENV, "shell-only");
-        let explicit = vec![" Read_File ".to_string(), "GREP_FILES".to_string()];
-
-        let allowed_tools =
-            resolve_exec_allowed_tools(Some(&explicit), exec_tool_surface_from_env())
-                .expect("explicit allowlist should be preserved");
-
-        assert_eq!(
-            allowed_tools,
-            vec!["read_file".to_string(), "grep_files".to_string()]
-        );
-    }
-
-    #[test]
-    fn exec_full_tool_surface_env_leaves_allowlist_unset() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _surface = crate::test_support::EnvVarGuard::set(CODEWHALE_TOOL_SURFACE_ENV, "full");
-
-        assert_eq!(
-            resolve_exec_allowed_tools(None, exec_tool_surface_from_env()),
-            None
-        );
-    }
-
-    #[test]
-    fn exec_unknown_tool_surface_env_warns_without_allowlist() {
-        assert!(should_warn_unknown_exec_tool_surface("shell_onyl"));
-        assert!(!should_warn_unknown_exec_tool_surface("shell-only"));
-        assert!(!should_warn_unknown_exec_tool_surface("native-tools"));
-        assert!(!should_warn_unknown_exec_tool_surface("full"));
-        assert!(!should_warn_unknown_exec_tool_surface(" "));
-        assert_eq!(parse_exec_tool_surface("shell_onyl"), None);
-    }
-
-    #[test]
-    fn exec_rejects_zero_max_turns() {
-        let err = Cli::try_parse_from(["codewhale", "exec", "--max-turns", "0", "hello"])
-            .expect_err("max-turns must be >= 1");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn exec_rejects_zero_max_api_requests() {
-        let err = Cli::try_parse_from(["codewhale", "exec", "--max-api-requests", "0", "hello"])
-            .expect_err("max-api-requests must be >= 1");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn exec_rejects_zero_max_runtime_secs() {
-        let err = Cli::try_parse_from(["codewhale", "exec", "--max-runtime-secs", "0", "hello"])
-            .expect_err("max-runtime-secs must be >= 1");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn exec_accepts_continue_for_latest_workspace_session() {
-        let cli = parse_cli(&["codewhale", "exec", "--continue", "follow up"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert!(args.continue_session);
-    }
-
-    #[test]
-    fn resume_subcommand_accepts_an_exact_run_id() {
-        let cli = parse_cli(&["codewhale", "resume", "abc123"]);
-        let Some(Commands::Resume { session_id, last }) = cli.command else {
-            panic!("expected resume command");
-        };
-
-        assert_eq!(session_id.as_deref(), Some("abc123"));
-        assert!(!last);
-    }
-
-    #[test]
-    fn exec_json_conflicts_with_stream_json_output() {
-        let err = Cli::try_parse_from([
-            "codewhale",
-            "exec",
-            "--json",
-            "--output-format",
-            "stream-json",
-            "hello",
-        ])
-        .expect_err("json summary and stream-json must not mix");
-
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn exec_stream_events_are_json_lines() {
-        let event = ExecStreamEvent::ToolResult {
-            id: "call_1".to_string(),
-            name: "read_file".to_string(),
-            output: "读取依据已失效".to_string(),
-            status: "error".to_string(),
-            started_at: "2026-07-13T00:00:00Z".to_string(),
-            completed_at: "2026-07-13T00:00:01Z".to_string(),
-            duration_ms: 1000,
-            invocation_status: "accepted".to_string(),
-            transport_status: "succeeded".to_string(),
-            operation_status: "failed".to_string(),
-            side_effect_status: "not_applied".to_string(),
-            retry_disposition: "after_correction".to_string(),
-            failure_code: Some("stale_read".to_string()),
-            truncated: Some(false),
-            artifact: None,
-            result_metadata: None,
-        };
-
-        let value = exec_stream_value(&event).expect("serializes");
-        let json = serde_json::to_string(&value).expect("serializes");
-        assert!(!json.contains('\n'));
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-        assert_eq!(parsed["type"], "tool_result");
-        assert_eq!(parsed["schema"], "codewhale.exec-stream");
-        assert_eq!(parsed["schema_version"], 2);
-        assert_eq!(parsed["duration_ms"], 1000);
-        assert_eq!(parsed["side_effect_status"], "not_applied");
-        assert_eq!(parsed["failure_code"], "stale_read");
-    }
-
-    #[test]
-    fn successful_exec_tool_result_omits_failure_code() {
-        let event = ExecStreamEvent::ToolResult {
-            id: "call_1".to_string(),
-            name: "read_file".to_string(),
-            output: "line 1\nline 2".to_string(),
-            status: "success".to_string(),
-            started_at: "2026-07-13T00:00:00Z".to_string(),
-            completed_at: "2026-07-13T00:00:01Z".to_string(),
-            duration_ms: 1000,
-            invocation_status: "accepted".to_string(),
-            transport_status: "succeeded".to_string(),
-            operation_status: "succeeded".to_string(),
-            side_effect_status: "not_applicable".to_string(),
-            retry_disposition: "not_needed".to_string(),
-            failure_code: None,
-            truncated: Some(false),
-            artifact: None,
-            result_metadata: None,
-        };
-
-        let value = exec_stream_value(&event).expect("serializes");
-
-        assert_eq!(value["type"], "tool_result");
-        assert!(value.get("failure_code").is_none());
-    }
-
-    #[test]
-    fn exec_agent_lifecycle_preserves_the_exact_canonical_event() {
-        use codewhale_protocol::agent_runtime::{
-            AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentTaskId, RunId, RuntimeEventId,
-            RuntimeEventKind, StoredRuntimeEvent, WriterCleanupMetadataState, WriterCleanupResult,
-            WriterResourceState,
-        };
-
-        let stored = StoredRuntimeEvent {
-            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
-            run_id: RunId::from("root-run"),
-            parent_run_id: None,
-            event_id: RuntimeEventId("event-cleanup-committed".to_owned()),
-            sequence: 17,
-            occurred_at_unix_ms: 1_789_000_000_123,
-            event: RuntimeEventKind::AgentCleanupCommitted {
-                task_id: AgentTaskId::from("writer-task"),
-                result: WriterCleanupResult::Retained {
-                    worktree: WriterResourceState::Retained,
-                    branch: WriterResourceState::Retained,
-                    metadata: WriterCleanupMetadataState::Clear,
-                    uncertainty_code: "writer_cleanup_conflict".to_owned(),
-                },
-            },
-        };
-        let line =
-            crate::exec_lifecycle_stream::agent_lifecycle_stream_line(&stored).expect("serializes");
-        let value: serde_json::Value =
-            serde_json::from_slice(&line).expect("lifecycle line is JSON");
-
-        assert_eq!(value["type"], "agent_lifecycle");
-        assert_eq!(value["schema"], "codewhale.exec-stream");
-        assert_eq!(value["schema_version"], 2);
-        assert_eq!(
-            value["runtime_event"],
-            serde_json::to_value(stored).expect("canonical event serializes")
-        );
-    }
-
-    #[test]
-    fn headless_accepts_only_deepseek_provider_identities() {
-        assert!(exec_supports_provider(crate::config::ApiProvider::Deepseek));
-        assert!(!exec_supports_provider(
-            crate::config::ApiProvider::DeepseekCN
-        ));
-        assert!(!exec_supports_provider(crate::config::ApiProvider::Openai));
-        assert!(!exec_supports_provider(
-            crate::config::ApiProvider::Openrouter
-        ));
-    }
-
-    #[test]
-    fn alternate_screen_defaults_on_in_auto_mode() {
-        let cli = parse_cli(&["codewhale"]);
+    fn doctor_route_is_official_deepseek_shape() {
         let config = Config::default();
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    fn no_alt_screen_flag_is_accepted_but_keeps_alternate_screen() {
-        let cli = parse_cli(&["codewhale", "--no-alt-screen"]);
-        let config = Config::default();
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    fn config_never_is_accepted_but_keeps_alternate_screen() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: Some("never".to_string()),
-                mouse_capture: None,
-                terminal_probe_timeout_ms: None,
-                stream_chunk_timeout_secs: None,
-                osc8_links: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn mouse_capture_defaults_on_when_alternate_screen_is_active() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_off_on_legacy_windows_console() {
-        // Legacy conhost (no `WT_SESSION` and no `ConEmuPID`) keeps the
-        // v0.8.x default-off behavior: mouse-mode reporting on legacy console
-        // can leak SGR escapes into the composer.
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    // #1169: Windows Terminal sets `WT_SESSION` and handles mouse-mode
-    // reporting cleanly, so default-on there gives users in-app text
-    // selection (and the side-effect of clamping selection to the
-    // transcript region instead of the terminal painting across the
-    // sidebar via native selection).
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_on_in_windows_terminal() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            None,
-            Some("{a3a3b3a8-aa00-0000-0000-000000000000}"),
-            None,
-        ));
-    }
-
-    // ConEmu/Cmder sets `ConEmuPID` and handles VT mouse-mode reporting
-    // cleanly; default mouse capture on there so users get in-app scrolling.
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_on_in_conemu() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            None,
-            None,
-            Some("12345"),
-        ));
-    }
-
-    #[test]
-    fn no_mouse_capture_flag_disables_mouse_capture() {
-        let cli = parse_cli(&["codewhale", "--no-mouse-capture"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn config_can_disable_default_mouse_capture() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(false),
-                terminal_probe_timeout_ms: None,
-                stream_chunk_timeout_secs: None,
-                osc8_links: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_flag_enables_mouse_capture() {
-        let cli = parse_cli(&["codewhale", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn config_can_enable_mouse_capture() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(true),
-                terminal_probe_timeout_ms: None,
-                stream_chunk_timeout_secs: None,
-                osc8_links: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_is_off_without_alternate_screen() {
-        let cli = parse_cli(&["codewhale", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, false, None, None, None
-        ));
-    }
-
-    // Issue #878 / #898: JetBrains JediTerm advertises mouse support but
-    // forwards SGR mouse-event escapes as raw input characters, producing
-    // the "input box auto-fills with garbled characters when I move the
-    // mouse" failure mode in PyCharm/IDEA terminals. Default the capture
-    // off when we see TERMINAL_EMULATOR=JetBrains-JediTerm; explicit
-    // config / --mouse-capture still wins.
-
-    #[test]
-    fn mouse_capture_defaults_off_in_jetbrains_jediterm() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn jetbrains_default_off_is_case_insensitive() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config::default();
-
-        // JetBrains has occasionally varied the casing across releases;
-        // a case-insensitive match keeps the protection in place.
-        assert!(!should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("jetbrains-jediterm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_flag_overrides_jetbrains_default() {
-        let cli = parse_cli(&["codewhale", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn config_mouse_capture_true_overrides_jetbrains_default() {
-        let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(true),
-                terminal_probe_timeout_ms: None,
-                stream_chunk_timeout_secs: None,
-                osc8_links: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
-}
-
-#[cfg(test)]
-mod interactive_startup_tests {
-    use super::*;
-
-    #[test]
-    fn interactive_tui_defaults_agent_shell_to_approval_gated_on() {
-        let default_config = Config::default();
-        assert!(
-            interactive_tui_allow_shell(false, &default_config),
-            "interactive Agent mode should expose shell tools by default so approvals can gate commands"
-        );
-
-        let disabled = Config {
-            allow_shell: Some(false),
-            ..Config::default()
-        };
-        assert!(
-            !interactive_tui_allow_shell(false, &disabled),
-            "explicit allow_shell=false still hides shell tools"
-        );
-
-        assert!(
-            interactive_tui_allow_shell(true, &disabled),
-            "YOLO forces shell access for its no-guardrails contract"
-        );
-    }
-}
-
-#[cfg(test)]
-mod project_config_tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    /// Write a `<workspace>/.deepseek/config.toml` and return the workspace
-    /// root so the merge function can find it.
-    fn workspace_with_project_config(body: &str) -> tempfile::TempDir {
-        let tmp = tempdir().expect("tempdir");
-        let project_dir = tmp.path().join(".deepseek");
-        fs::create_dir_all(&project_dir).expect("mkdir .deepseek");
-        fs::write(project_dir.join("config.toml"), body).expect("write project config");
-        tmp
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn project_overlay_rejects_symlinked_primary_config() {
-        let workspace = tempdir().expect("workspace tempdir");
-        let outside = tempdir().expect("outside tempdir");
-        let primary_dir = workspace.path().join(codewhale_config::CODEWHALE_APP_DIR);
-        let legacy_dir = workspace.path().join(codewhale_config::LEGACY_APP_DIR);
-        fs::create_dir_all(&primary_dir).expect("mkdir primary");
-        fs::create_dir_all(&legacy_dir).expect("mkdir legacy");
-        let outside_config = outside.path().join("config.toml");
-        fs::write(&outside_config, "model = \"outside-model\"\n").expect("write outside config");
-        fs::write(legacy_dir.join("config.toml"), "model = \"legacy-model\"\n")
-            .expect("write legacy config");
-        std::os::unix::fs::symlink(&outside_config, primary_dir.join("config.toml"))
-            .expect("symlink project config");
-        let mut config = Config {
-            default_text_model: Some("base-model".to_string()),
-            ..Config::default()
-        };
-
-        merge_project_config(&mut config, workspace.path());
-
-        assert_eq!(
-            config.default_text_model.as_deref(),
-            Some("base-model"),
-            "symlinked primary project config should stop the project overlay"
-        );
-    }
-
-    fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
-        let prev_home = std::env::var_os("HOME");
-        let prev_userprofile = std::env::var_os("USERPROFILE");
-        unsafe {
-            std::env::set_var("HOME", home);
-            std::env::set_var("USERPROFILE", home);
-        }
-        let result = f();
-        unsafe {
-            match prev_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
-        result
-    }
-
-    #[test]
-    fn project_overlay_skips_when_workspace_is_home_directory() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = tempdir().expect("tempdir");
-        let project_dir = tmp.path().join(codewhale_config::CODEWHALE_APP_DIR);
-        fs::create_dir_all(&project_dir).expect("mkdir .codewhale");
-        fs::write(
-            project_dir.join("config.toml"),
-            r#"model = "project-override-model""#,
-        )
-        .expect("write project config");
-
-        with_home_dir(tmp.path(), || {
-            let mut config = Config {
-                default_text_model: Some("deepseek-v4-flash".to_string()),
-                ..Config::default()
-            };
-
-            merge_project_config(&mut config, tmp.path());
-
-            assert_eq!(
-                config.default_text_model.as_deref(),
-                Some("deepseek-v4-flash")
-            );
-        });
-    }
-
-    #[test]
-    fn project_overlay_overrides_model_but_denies_provider() {
-        // #417: `provider` is on the deny-list; only the `model`
-        // override applies. The denied key emits a stderr warning
-        // (verified by integration runs; here we assert the post-
-        // merge state).
-        let tmp = workspace_with_project_config(
-            r#"
-provider = "nvidia-nim"
-model = "deepseek-ai/deepseek-v4-pro"
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.provider, None,
-            "#417: project-scope `provider` must be denied"
-        );
-        assert_eq!(
-            config.default_text_model.as_deref(),
-            Some("deepseek-ai/deepseek-v4-pro"),
-            "model is allowed at project scope"
-        );
-    }
-
-    #[test]
-    fn project_overlay_cannot_admit_an_unsupported_interactive_model() {
-        let _guard = crate::test_support::lock_test_env();
-        let _default_model =
-            crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
-        for model in ["deepseek-chat", "gpt-5.5-codex"] {
-            let tmp = workspace_with_project_config(&format!("model = {model:?}\n"));
-            let mut config = Config {
-                provider: Some("deepseek".to_owned()),
-                default_text_model: Some("deepseek-v4-pro".to_owned()),
-                ..Config::default()
-            };
-
-            merge_project_config(&mut config, tmp.path());
-
-            assert_eq!(config.default_text_model.as_deref(), Some(model));
-            let error = resolve_interactive_deepseek_model(&config)
-                .expect_err("merged unsupported model must fail before TUI startup");
-            assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
-            assert!(error.to_string().contains(model));
-        }
-    }
-
-    #[test]
-    fn project_overlay_denies_dangerous_credentials_and_redirects() {
-        // #417: `api_key` / `base_url` / `provider` / `mcp_config_path`
-        // and MCP OAuth callback settings are all on the deny-list. A
-        // malicious project must not be able to redirect prompts, hijack MCP
-        // servers, or influence OAuth callback behavior via these.
-        let tmp = workspace_with_project_config(
-            r#"
-api_key = "ATTACKER_KEY"
-base_url = "https://evil.example.com"
-provider = "nvidia-nim"
-mcp_config_path = "/tmp/attacker-mcp.json"
-mcp_oauth_callback_port = 9999
-mcp_oauth_callback_url = "http://evil.example.com/callback"
-"#,
-        );
-        let mut config = Config {
-            api_key: Some("USER_KEY".to_string()),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            mcp_oauth_callback_port: Some(1455),
-            mcp_oauth_callback_url: Some("http://127.0.0.1:1455/callback".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.api_key.as_deref(),
-            Some("USER_KEY"),
-            "user api_key must survive project-config attack"
-        );
-        assert_eq!(
-            config.base_url.as_deref(),
-            Some("https://api.deepseek.com"),
-            "user base_url must survive project-config attack"
-        );
-        assert_eq!(
-            config.provider, None,
-            "project-scope provider must be denied"
-        );
-        assert_eq!(
-            config.mcp_config_path, None,
-            "project-scope mcp_config_path must be denied"
-        );
-        assert_eq!(
-            config.mcp_oauth_callback_port,
-            Some(1455),
-            "project-scope mcp_oauth_callback_port must be denied"
-        );
-        assert_eq!(
-            config.mcp_oauth_callback_url.as_deref(),
-            Some("http://127.0.0.1:1455/callback"),
-            "project-scope mcp_oauth_callback_url must be denied"
-        );
-    }
-
-    #[test]
-    fn project_overlay_overrides_approval_and_sandbox() {
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "on-request"
-sandbox_mode = "read-only"
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
-        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
-    }
-
-    #[test]
-    fn project_overlay_denies_approval_auto_and_sandbox_danger_values() {
-        // #417 value-deny: the loosest values (`approval_policy = "auto"`,
-        // `sandbox_mode = "danger-full-access"`) are pure escalation.
-        // Even when the user hasn't set these fields, the project
-        // can't push the session to the loosest posture.
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "auto"
-sandbox_mode = "danger-full-access"
-model = "deepseek-v4-pro"
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.approval_policy, None,
-            "project-scope `approval_policy = \"auto\"` must be denied"
-        );
-        assert_eq!(
-            config.sandbox_mode, None,
-            "project-scope `sandbox_mode = \"danger-full-access\"` must be denied"
-        );
-        // Non-escalation overrides on the same merge succeed —
-        // the deny is per-key, not per-file.
-        assert_eq!(
-            config.default_text_model.as_deref(),
-            Some("deepseek-v4-pro"),
-            "non-escalation overrides should still apply"
-        );
-    }
-
-    #[test]
-    fn project_overlay_preserves_on_request_when_project_tries_to_loosen() {
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "auto"
-"#,
-        );
-        let mut config = Config {
-            approval_policy: Some("on-request".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.approval_policy.as_deref(),
-            Some("on-request"),
-            "user's strict approval_policy must survive a project escalation attempt"
-        );
-    }
-
-    #[test]
-    fn project_overlay_can_tighten_auto_to_on_request() {
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "on-request"
-sandbox_mode = "read-only"
-"#,
-        );
-        let mut config = Config {
-            approval_policy: Some("auto".to_string()),
-            sandbox_mode: Some("workspace-write".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
-        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
-    }
-
-    #[test]
-    fn project_overlay_overrides_max_subagents_and_can_disable_shell() {
-        let tmp = workspace_with_project_config(
-            r#"
-max_subagents = 4
-allow_shell = false
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.max_subagents, Some(4));
-        assert_eq!(config.allow_shell, Some(false));
-    }
-
-    #[test]
-    fn project_overlay_cannot_enable_shell() {
-        let tmp = workspace_with_project_config(
-            r#"
-allow_shell = true
-"#,
-        );
-        let mut config = Config {
-            allow_shell: Some(false),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.allow_shell,
-            Some(false),
-            "project overlay must not loosen shell access"
-        );
-    }
-
-    #[test]
-    fn user_workspace_overlay_can_enable_shell_for_matching_workspace() {
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("project");
-        fs::create_dir_all(&workspace).expect("mkdir workspace");
-        let raw = format!(
-            "[workspace.'{}']\nallow_shell = true\n",
-            workspace.display()
-        );
-        let doc: toml::Value = toml::from_str(&raw).expect("parse config");
-
-        let mut config = Config::default();
-        merge_user_workspace_config_from_doc(&mut config, &doc, &workspace);
-
-        assert_eq!(config.allow_shell, Some(true));
-    }
-
-    #[test]
-    fn user_workspace_overlay_accepts_legacy_projects_table() {
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("project");
-        fs::create_dir_all(&workspace).expect("mkdir workspace");
-        let raw = format!("[projects.'{}']\nallow_shell = true\n", workspace.display());
-        let doc: toml::Value = toml::from_str(&raw).expect("parse config");
-
-        let mut config = Config::default();
-        merge_user_workspace_config_from_doc(&mut config, &doc, &workspace);
-
-        assert_eq!(config.allow_shell, Some(true));
-    }
-
-    #[test]
-    fn user_workspace_overlay_ignores_non_matching_workspace() {
-        let tmp = tempdir().expect("tempdir");
-        let configured_workspace = tmp.path().join("configured");
-        let active_workspace = tmp.path().join("active");
-        fs::create_dir_all(&configured_workspace).expect("mkdir configured workspace");
-        fs::create_dir_all(&active_workspace).expect("mkdir active workspace");
-        let raw = format!(
-            "[workspace.'{}']\nallow_shell = true\n",
-            configured_workspace.display()
-        );
-        let doc: toml::Value = toml::from_str(&raw).expect("parse config");
-
-        let mut config = Config::default();
-        merge_user_workspace_config_from_doc(&mut config, &doc, &active_workspace);
-
-        assert_eq!(config.allow_shell, None);
-    }
-
-    #[test]
-    fn user_workspace_overlay_preserves_allow_shell_env_override() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("project");
-        fs::create_dir_all(&workspace).expect("mkdir workspace");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            format!(
-                "[workspace.'{}']\nallow_shell = true\n",
-                workspace.display()
-            ),
-        )
-        .expect("write config");
-
-        unsafe {
-            std::env::set_var("DEEPSEEK_ALLOW_SHELL", "false");
-        }
-        let mut config = Config {
-            allow_shell: Some(false),
-            ..Config::default()
-        };
-        merge_user_workspace_config(&mut config, Some(config_path), &workspace);
-        unsafe {
-            std::env::remove_var("DEEPSEEK_ALLOW_SHELL");
-        }
-
-        assert_eq!(config.allow_shell, Some(false));
-    }
-
-    #[test]
-    fn windows_config_path_compare_normalizes_mixed_separators() {
-        assert_eq!(
-            normalize_windows_config_path_str(r"C:\Users\me\repo"),
-            normalize_windows_config_path_str(r"C:/Users/me/repo/")
-        );
-    }
-
-    #[test]
-    fn windows_config_path_compare_normalizes_verbatim_and_unc_prefixes() {
-        assert_eq!(
-            normalize_windows_config_path_str(r"\\?\C:\Users\me\repo"),
-            normalize_windows_config_path_str(r"C:/Users/me/repo")
-        );
-        assert_eq!(
-            normalize_windows_config_path_str(r"\\?\UNC\server\share\repo"),
-            normalize_windows_config_path_str(r"\\server/share/repo/")
-        );
-    }
-
-    #[test]
-    fn project_overlay_clamps_max_subagents_to_safe_range() {
-        let tmp = workspace_with_project_config(
-            r#"
-max_subagents = 500
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.max_subagents,
-            Some(crate::config::MAX_SUBAGENTS),
-            "should clamp to MAX_SUBAGENTS"
-        );
-    }
-
-    #[test]
-    fn project_overlay_ignores_negative_max_subagents() {
-        let tmp = workspace_with_project_config(
-            r#"
-max_subagents = -3
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.max_subagents, None, "negative should be ignored");
-    }
-
-    #[test]
-    fn project_overlay_skips_missing_config_file() {
-        let tmp = tempdir().expect("tempdir");
-        let mut config = Config {
-            provider: Some("codewhale".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        // Untouched.
-        assert_eq!(config.provider.as_deref(), Some("codewhale"));
-    }
-
-    #[test]
-    fn project_overlay_skips_malformed_toml() {
-        let tmp = workspace_with_project_config("this is not valid TOML !!");
-        let mut config = Config {
-            provider: Some("codewhale".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        // Untouched on parse error — better to fall back to global than crash.
-        assert_eq!(config.provider.as_deref(), Some("codewhale"));
-    }
-
-    #[test]
-    fn project_overlay_ignores_empty_string_values() {
-        let tmp = workspace_with_project_config(
-            r#"
-provider = ""
-model = ""
-"#,
-        );
-        let mut config = Config {
-            provider: Some("codewhale".to_string()),
-            default_text_model: Some("deepseek-v4-pro".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        // Empty strings are ignored — they're rarely a deliberate override.
-        assert_eq!(config.provider.as_deref(), Some("codewhale"));
-        assert_eq!(
-            config.default_text_model.as_deref(),
-            Some("deepseek-v4-pro")
-        );
-    }
-
-    #[test]
-    fn project_overlay_ignores_project_instructions_array() {
-        let tmp = workspace_with_project_config(
-            r#"
-instructions = ["./AGENTS.md", "./extra.md"]
-"#,
-        );
-        let user = vec!["~/global.md".to_string()];
-        let mut config = Config {
-            instructions: Some(user.clone()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.instructions.as_deref(),
-            Some(user.as_slice()),
-            "project overlay must not replace user-owned instructions"
-        );
-    }
-
-    #[test]
-    fn project_overlay_empty_instructions_array_preserves_user_list() {
-        let tmp = workspace_with_project_config(
-            r#"
-instructions = []
-"#,
-        );
-        let user = vec!["~/global.md".to_string(), "~/team-prefs.md".to_string()];
-        let mut config = Config {
-            instructions: Some(user.clone()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.instructions.as_deref(),
-            Some(user.as_slice()),
-            "project overlay must not clear user-owned instructions"
-        );
-    }
-
-    #[test]
-    fn project_overlay_preserves_user_instructions_when_field_absent() {
-        let tmp = workspace_with_project_config(
-            r#"
-provider = "deepseek"
-"#,
-        );
-        let user = vec!["~/global.md".to_string()];
-        let mut config = Config {
-            instructions: Some(user.clone()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        // No `instructions` key in the project file → user list intact.
-        assert_eq!(
-            config.instructions.as_deref(),
-            Some(user.as_slice()),
-            "absent project field must not clobber the user list"
-        );
-    }
-
-    #[test]
-    fn project_overlay_ignores_new_instructions_when_user_has_none() {
-        let tmp = workspace_with_project_config(
-            r#"
-instructions = ["./AGENTS.md", "", "  ", "./extra.md"]
-"#,
-        );
-        let mut config = Config::default();
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(
-            config.instructions.as_deref(),
-            None,
-            "project overlay must not introduce instruction paths"
-        );
-    }
-}
-
-#[cfg(test)]
-mod doctor_mcp_tests {
-    use super::*;
-
-    fn make_server(command: Option<&str>, args: &[&str], url: Option<&str>) -> McpServerConfig {
-        McpServerConfig {
-            command: command.map(String::from),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            env: std::collections::HashMap::new(),
-            cwd: None,
-            url: url.map(String::from),
-            transport: None,
-            connect_timeout: None,
-            execute_timeout: None,
-            read_timeout: None,
-            disabled: false,
-            enabled: true,
-            required: false,
-            enabled_tools: Vec::new(),
-            disabled_tools: Vec::new(),
-            headers: std::collections::HashMap::new(),
-            env_headers: std::collections::HashMap::new(),
-            bearer_token_env_var: None,
-            scopes: Vec::new(),
-            oauth: None,
-            oauth_resource: None,
-        }
-    }
-
-    #[test]
-    fn test_no_command_or_url_is_error() {
-        let server = make_server(None, &[], None);
-        assert!(matches!(
-            doctor_check_mcp_server(&server),
-            McpServerDoctorStatus::Error(_)
-        ));
-    }
-
-    #[test]
-    fn test_url_server_is_ok() {
-        let server = make_server(None, &[], Some("http://localhost:3000/mcp"));
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Ok(detail) => assert!(detail.contains("HTTP/SSE")),
-            other => panic!("Expected Ok, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_command_server_is_ok() {
-        let server = make_server(Some("node"), &["server.js"], None);
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Ok(detail) => assert!(detail.contains("stdio")),
-            other => panic!("Expected Ok, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_relative_stdio_path_arg_without_cwd_warns() {
-        let server = make_server(Some("python"), &["server/mcp_server.py"], None);
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Warning(detail) => {
-                assert!(detail.contains("relative path argument"));
-                assert!(detail.contains("cwd"));
-            }
-            other => panic!("Expected Warning for relative path argument, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_relative_stdio_path_arg_with_cwd_is_ok() {
-        let mut server = make_server(Some("python"), &["server/mcp_server.py"], None);
-        server.cwd = Some(PathBuf::from("/tmp/codewhale-project"));
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Ok(detail) => assert!(detail.contains("stdio")),
-            other => panic!("Expected Ok when cwd anchors relative path, got {other:?}"),
-        }
-    }
-
-    #[cfg(test)]
-    mod mcp_auth_guidance_tests {
-        #[test]
-        fn mcp_auth_hint_is_actionable_for_connect_failures() {
-            let hint = crate::mcp::oauth::auth_required_login_hint("nordic-mcp");
-            assert_eq!(
-                hint,
-                "MCP server 'nordic-mcp' requires OAuth authentication. Run `codewhale mcp login nordic-mcp` to authenticate."
-            );
-        }
-    }
-
-    #[test]
-    fn test_empty_command_is_error() {
-        let server = make_server(Some(""), &[], None);
-        assert!(matches!(
-            doctor_check_mcp_server(&server),
-            McpServerDoctorStatus::Error(_)
-        ));
-    }
-}
-
-#[cfg(test)]
-mod setup_helper_tests {
-    use super::*;
-    use std::collections::BTreeSet;
-    use tempfile::TempDir;
-
-    #[test]
-    fn init_plugins_dir_creates_readme_and_example_layout() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("plugins");
-        let (readme_path, example_path, readme_status, example_status) =
-            init_plugins_dir(&dir, false).unwrap();
-
-        assert_eq!(readme_path, dir.join("README.md"));
-        assert_eq!(example_path, dir.join("example").join("PLUGIN.md"));
-        assert!(matches!(readme_status, WriteStatus::Created));
-        assert!(matches!(example_status, WriteStatus::Created));
-        assert!(readme_path.exists());
-        assert!(example_path.exists());
-
-        let plugin_md = std::fs::read_to_string(&example_path).unwrap();
-        assert!(plugin_md.contains("---"));
-        assert!(plugin_md.contains("name: example"));
-    }
-
-    #[test]
-    fn dotenv_status_points_to_example_when_present() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(".env.example"), "DEEPSEEK_API_KEY=\n").unwrap();
-
-        assert_eq!(
-            dotenv_status_line(tmp.path()),
-            ".env not present in workspace (run `cp .env.example .env` and edit)"
-        );
-
-        std::fs::write(tmp.path().join(".env"), "DEEPSEEK_API_KEY=test\n").unwrap();
-        assert!(dotenv_status_line(tmp.path()).contains(".env present at"));
-    }
-
-    #[test]
-    fn env_example_is_trackable_and_every_key_is_wired() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let env_example = std::fs::read_to_string(root.join(".env.example")).unwrap();
-        let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
-
-        assert!(gitignore.contains("!.env.example"));
-
-        let keys = documented_env_keys(&env_example);
-        for required in [
-            "DEEPSEEK_API_KEY",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_MODEL",
-            "NVIDIA_API_KEY",
-            "NIM_BASE_URL",
-            "RUST_LOG",
-            "DEEPSEEK_APPROVAL_POLICY",
-            "DEEPSEEK_SANDBOX_MODE",
-            "DEEPSEEK_YOLO",
-        ] {
-            assert!(
-                keys.contains(required),
-                ".env.example is missing {required}"
-            );
-        }
-
-        let sources = [
-            include_str!("config.rs"),
-            include_str!("logging.rs"),
-            include_str!("../../config/src/lib.rs"),
-            include_str!("../../config/src/provider.rs"),
-            include_str!("../../cli/src/main.rs"),
-        ]
-        .join("\n");
-
-        for key in keys {
-            assert!(
-                sources.contains(&key),
-                ".env.example documents {key}, but no source file references it"
-            );
-        }
-    }
-
-    fn documented_env_keys(content: &str) -> BTreeSet<String> {
-        content
-            .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                let uncommented = trimmed
-                    .strip_prefix('#')
-                    .map(str::trim_start)
-                    .unwrap_or(trimmed);
-                let (key, _) = uncommented.split_once('=')?;
-                let key = key.trim();
-                let is_env_key = key
-                    .chars()
-                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
-                    && key.chars().any(|ch| ch == '_');
-                is_env_key.then(|| key.to_string())
-            })
-            .collect()
-    }
-
-    #[test]
-    fn resolve_api_key_source_reports_env_when_set() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
-        unsafe {
-            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
-            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
-        }
-        let cfg = Config::default();
-        let source = resolve_api_key_source(&cfg);
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
-        }
-        match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
-        }
-        assert_eq!(source, ApiKeySource::Env);
-    }
-
-    #[test]
-    fn resolve_api_key_source_reports_dispatcher_keyring() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
-        unsafe {
-            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
-            std::env::set_var("DEEPSEEK_API_KEY_SOURCE", "keyring");
-        }
-        let cfg = Config::default();
-        let source = resolve_api_key_source(&cfg);
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
-        }
-        match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
-        }
-        assert_eq!(source, ApiKeySource::Keyring);
-    }
-
-    #[test]
-    fn resolve_api_key_source_prefers_config_over_env() {
-        let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
-        unsafe {
-            std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
-            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
-        }
-        let cfg = Config {
-            api_key: Some("fresh-config-key".to_string()),
-            ..Config::default()
-        };
-        let source = resolve_api_key_source(&cfg);
-        match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
-        }
-        match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
-        }
-        assert_eq!(source, ApiKeySource::Config);
-    }
-
-    #[test]
-    fn resolve_api_key_source_reports_active_provider_env_from_metadata() {
-        let _guard = crate::test_support::lock_test_env();
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _anthropic_key =
-            crate::test_support::EnvVarGuard::set("ANTHROPIC_API_KEY", "test-anthropic-key");
-        let cfg = Config {
-            provider: Some("anthropic".to_string()),
-            ..Config::default()
-        };
-
-        let source = resolve_api_key_source(&cfg);
-
-        assert_eq!(source, ApiKeySource::Env);
-    }
-
-    #[test]
-    fn resolve_api_key_source_reports_provider_command_auth_class() {
-        let _guard = crate::test_support::lock_test_env();
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _openai_key = crate::test_support::EnvVarGuard::remove("OPENAI_API_KEY");
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.openai.auth = Some(codewhale_config::ProviderAuthSourceToml {
-            source: codewhale_config::AuthSourceKind::Command,
-            command: vec!["secret-tool".to_string(), "lookup".to_string()],
-            timeout_ms: Some(2000),
-            secret_id: None,
-        });
-        let cfg = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Config::default()
-        };
-
-        let source = resolve_api_key_source(&cfg);
-
-        assert_eq!(source, ApiKeySource::Command);
-    }
-
-    #[test]
-    fn resolve_api_key_source_reports_provider_secret_auth_class() {
-        let _guard = crate::test_support::lock_test_env();
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _openai_key = crate::test_support::EnvVarGuard::remove("OPENAI_API_KEY");
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.openai.auth = Some(codewhale_config::ProviderAuthSourceToml {
-            source: codewhale_config::AuthSourceKind::Secret,
-            command: Vec::new(),
-            timeout_ms: None,
-            secret_id: Some("codewhale/openai".to_string()),
-        });
-        let cfg = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Config::default()
-        };
-
-        let source = resolve_api_key_source(&cfg);
-
-        assert_eq!(source, ApiKeySource::Secret);
-    }
-
-    #[test]
-    fn resolve_api_key_source_ignores_root_deepseek_key_for_other_provider() {
-        let _guard = crate::test_support::lock_test_env();
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _openrouter_key = crate::test_support::EnvVarGuard::remove("OPENROUTER_API_KEY");
-        let cfg = Config {
-            provider: Some("openrouter".to_string()),
-            api_key: Some("legacy-deepseek-root-key".to_string()),
-            ..Config::default()
-        };
-
-        let source = resolve_api_key_source(&cfg);
-
-        assert_eq!(source, ApiKeySource::Missing);
-    }
-
-    #[test]
-    fn provider_status_helpers_use_provider_metadata() {
-        assert_eq!(
-            provider_env_vars_label(crate::config::ApiProvider::NvidiaNim),
-            "NVIDIA_API_KEY / NVIDIA_NIM_API_KEY / DEEPSEEK_API_KEY"
-        );
-        assert_eq!(
-            provider_config_table_key(crate::config::ApiProvider::Anthropic),
-            "anthropic"
-        );
-        assert_eq!(
-            provider_config_table_key(crate::config::ApiProvider::SiliconflowCn),
-            "siliconflow_cn"
-        );
-        assert!(
-            provider_auth_hint(crate::config::ApiProvider::OpenaiCodex).contains("PROVIDERS.md")
-        );
-    }
-
-    #[test]
-    fn skills_count_for_returns_zero_for_missing_dir() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("nope");
-        assert_eq!(skills_count_for(&dir), 0);
-    }
-
-    #[test]
-    fn skills_count_for_counts_valid_skill_dirs() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("skills");
-        let skill_dir = dir.join("getting-started");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: getting-started\ndescription: hi\n---\nbody",
-        )
-        .unwrap();
-        assert_eq!(skills_count_for(&dir), 1);
-    }
-}
-
-#[cfg(test)]
-mod pr_prompt_tests {
-    use super::*;
-
-    fn sample_pr() -> GhPullRequest {
-        GhPullRequest {
-            title: "Add cool feature".to_string(),
-            body: "Closes #99.\n\nAlso:\n- bullet a\n- bullet b".to_string(),
-            base: "main".to_string(),
-            head: "feat/cool".to_string(),
-            url: "https://github.com/example/repo/pull/123".to_string(),
-        }
-    }
-
-    #[test]
-    fn format_pr_prompt_includes_title_url_branches_body_and_diff() {
-        let prompt = format_pr_prompt(123, &sample_pr(), "diff --git a/x b/x\n+y");
-        assert!(prompt.contains("Review PR #123 — Add cool feature"));
-        assert!(prompt.contains("URL: https://github.com/example/repo/pull/123"));
-        assert!(prompt.contains("Branches: main ← feat/cool"));
-        assert!(prompt.contains("Closes #99."));
-        assert!(prompt.contains("- bullet a"));
-        assert!(prompt.contains("```diff"));
-        assert!(prompt.contains("diff --git a/x b/x"));
-    }
-
-    #[test]
-    fn format_pr_prompt_handles_empty_body_and_unknown_branches() {
-        let pr = GhPullRequest {
-            title: String::new(),
-            body: "   ".to_string(),
-            base: String::new(),
-            head: String::new(),
-            url: String::new(),
-        };
-        let prompt = format_pr_prompt(7, &pr, "(diff body)");
-        // Empty title falls back to a placeholder.
-        assert!(prompt.contains("(PR #7)"));
-        // Empty body renders the explicit placeholder.
-        assert!(prompt.contains("(no description)"));
-        assert!(prompt.contains("Branches: (unknown)"));
-        assert!(prompt.contains("URL: (unavailable)"));
-    }
-
-    #[test]
-    fn format_pr_prompt_truncates_oversize_diff_at_a_codepoint_boundary() {
-        // 300 KiB of `X` bytes with a multibyte char near the cap.
-        let mut diff = "X".repeat(190 * 1024);
-        diff.push_str(&"🚀".repeat(5_000));
-        let prompt = format_pr_prompt(1, &sample_pr(), &diff);
-        assert!(prompt.contains("[…diff truncated"));
-        assert!(prompt.contains("at 200 KiB"));
-        // Ensure we didn't slice mid-codepoint — the result still
-        // round-trips as valid UTF-8 (it's a String, so this is by
-        // construction; the test pins behaviour against silent panics
-        // if the cut logic regresses).
-        assert!(prompt.is_ascii() || prompt.contains('🚀'));
-    }
-
-    #[test]
-    fn is_command_available_detects_present_and_absent_binaries() {
-        // `sh` is part of the POSIX baseline on every Unix runner and
-        // ships with `git-bash` on Windows CI. It should be present.
-        // (Skip on Windows CI without git-bash because the runner
-        // could legitimately lack `sh.exe`.)
-        #[cfg(unix)]
-        assert!(is_command_available("sh"), "POSIX `sh` should be on PATH");
-
-        // A deliberately-implausible name to confirm the negative
-        // branch — `--version` on this would exec(3) → ENOENT.
-        assert!(
-            !is_command_available("this-command-cannot-exist-codewhale-tui-test-ENOENT-marker"),
-            "missing command should return false, not panic"
-        );
+        let route = doctor_route_report(&config);
+        assert_eq!(route["provider"], "deepseek");
+        assert_eq!(route["wire_protocol"], "chat_completions");
+        assert_eq!(route["auth"]["scheme"], "bearer");
     }
 }

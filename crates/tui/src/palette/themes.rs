@@ -527,7 +527,7 @@ pub const CLAUDE_UI_THEME: UiTheme = UiTheme {
     text_body: Color::Rgb(0xfa, 0xf9, 0xf5),  // on-dark (cream white)
     text_soft: Color::Rgb(0xd0, 0xcd, 0xc5),
     border: Color::Rgb(0x30, 0x2d, 0x28),
-    // Coral primary (signature Anthropic accent), teal secondary
+    // Coral primary, teal secondary
     accent_primary: Color::Rgb(0xcc, 0x78, 0x5c), // coral
     accent_secondary: Color::Rgb(0x5d, 0xb8, 0xa6), // accent-teal
     accent_action: Color::Rgb(0xe8, 0xa5, 0x5a),  // amber

@@ -199,7 +199,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 
     let route_label = format!(
         "{} · {}",
-        app.api_provider.display_name(),
+        crate::config::DEEPSEEK_DISPLAY_NAME,
         app.model_display_label()
     );
     let mut left = vec![

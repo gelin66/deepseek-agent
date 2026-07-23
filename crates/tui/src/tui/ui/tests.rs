@@ -22,7 +22,6 @@ fn create_test_app() -> App {
         initial_input: None,
     };
     let mut app = App::new(options, &Config::default());
-    app.api_provider = ApiProvider::Deepseek;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
     app.active_route_limits = None;

@@ -227,10 +227,8 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
 
     let config = std::fs::read_to_string(&config_path)?;
     let config: toml::Value = toml::from_str(&config)?;
-    assert_eq!(
-        config.get("provider").and_then(toml::Value::as_str),
-        Some("deepseek")
-    );
+    assert!(config.get("provider").is_none());
+    assert!(config.get("providers").is_none());
     assert_eq!(
         config.get("api_key").and_then(toml::Value::as_str),
         Some(ONBOARDING_KEY)

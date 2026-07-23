@@ -365,7 +365,7 @@ mod tests {
         write_workspace_profile(
             tmp.path(),
             "reviewer.toml",
-            "id = \"reviewer\"\nrole_hint = \"reviewer\"\nmodel = \"glm-5.2\"\n",
+            "id = \"reviewer\"\nrole_hint = \"reviewer\"\nmodel = \"deepseek-v4-flash\"\n",
         );
         let config = config_with_profiles(BTreeMap::from([(
             "reviewer".to_string(),
@@ -376,7 +376,7 @@ mod tests {
 
         let reviewer = member(&roster, "reviewer");
         assert_eq!(reviewer.origin, ProfileOrigin::Workspace);
-        assert_eq!(reviewer.profile.model.as_deref(), Some("glm-5.2"));
+        assert_eq!(reviewer.profile.model.as_deref(), Some("deepseek-v4-flash"));
         // Precedence must not duplicate the member.
         assert_eq!(
             roster

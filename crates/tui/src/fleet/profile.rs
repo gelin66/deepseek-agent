@@ -59,12 +59,8 @@ struct AgentProfileToml {
     loadout: Option<String>,
     #[serde(default, alias = "model_hint", alias = "model_id")]
     model: Option<String>,
-    /// Explicit provider id for `model` (#4093), e.g. `"deepseek"` or
-    /// `"openrouter"`. Validated against the known `ApiProvider` vocabulary at
-    /// load time — never inferred by sniffing `model` for a provider-shaped
-    /// substring (EPIC #2608). `deny_unknown_fields` no longer needs to guard
-    /// this name: it is now a first-class, validated field instead of a
-    /// smuggled one.
+    /// Optional explicit provider assertion. Only `"deepseek"` is accepted;
+    /// stale foreign pins fail before worker launch.
     #[serde(default)]
     provider: Option<String>,
     /// Optional saved thinking tier for this profile (#4137). TOML may use
@@ -333,30 +329,21 @@ fn validate_agent_profile_model_hint(path: &Path, value: Option<&str>) -> Result
     let Some(value) = value else {
         return Ok(());
     };
-    if !is_model_hint(value) {
+    if crate::config::normalize_model_name(value).is_none() {
         bail!(
-            "agent profile {} model must be a visible model id without whitespace or secrets",
+            "agent profile {} model must be auto, deepseek-v4-pro, or deepseek-v4-flash",
             path.display()
         );
     }
     Ok(())
 }
 
-/// Validate an explicit `provider` field as a safe provider id (#4093).
-///
-/// Built-in providers are accepted by the runtime vocabulary, and user-named
-/// OpenAI-compatible custom providers are accepted as simple tokens so the
-/// launch path can resolve `[providers.<id>]` from the session config (#3965).
-/// This field remains the ONLY place a profile's provider is established:
-/// callers never infer it from `model` (EPIC #2608).
+/// Reject stale provider pins before a Fleet worker can be launched.
 fn validate_agent_profile_provider(path: &Path, value: &str) -> Result<()> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        bail!("agent profile {} provider cannot be empty", path.display());
-    }
-    if trimmed != value || !trimmed.chars().all(is_agent_profile_token_char) {
+    if !trimmed.eq_ignore_ascii_case("deepseek") {
         bail!(
-            "agent profile {} provider must be a simple provider id",
+            "agent profile {} provider must be deepseek; other providers are retired",
             path.display()
         );
     }
@@ -388,15 +375,6 @@ fn normalize_agent_profile_reasoning_effort(
 
 fn is_agent_profile_token_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
-}
-
-fn is_model_hint(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty()
-        && trimmed == value
-        && trimmed
-            .chars()
-            .all(|ch| ch.is_ascii_graphic() && !matches!(ch, '=' | '\'' | '"'))
 }
 
 fn first_present<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<&'a str> {
@@ -746,10 +724,7 @@ role_hint = "reviewer"
     }
 
     #[test]
-    fn agent_profile_loader_accepts_and_round_trips_explicit_provider_field() {
-        // #4093: `provider` is now a first-class, validated field — a Fleet
-        // profile can name its own route explicitly, independent of whatever
-        // provider is active when the profile is later loaded/launched.
+    fn agent_profile_loader_rejects_retired_provider_field() {
         let tmp = TempDir::new().unwrap();
         let path = write_profile(
             tmp.path(),
@@ -757,23 +732,16 @@ role_hint = "reviewer"
             r#"
 name = "reviewer"
 provider = "openrouter"
-model = "deepseek/deepseek-v4-pro"
+model = "deepseek-v4-flash"
 "#,
         );
 
-        let profile = load_agent_profile_file(&path).expect("profile loads");
-        assert_eq!(profile.profile.provider.as_deref(), Some("openrouter"));
-        assert_eq!(
-            profile.profile.model.as_deref(),
-            Some("deepseek/deepseek-v4-pro")
-        );
+        let error = load_agent_profile_file(&path).expect_err("provider must fail");
+        assert!(error.to_string().contains("provider must be deepseek"));
     }
 
     #[test]
-    fn agent_profile_loader_accepts_custom_provider_name() {
-        // #3965: LM Studio and other user-named OpenAI-compatible providers
-        // are resolved from `[providers.<id>]` at launch time, so the profile
-        // loader must preserve the safe id instead of requiring a built-in.
+    fn agent_profile_loader_rejects_custom_provider_name() {
         let tmp = TempDir::new().unwrap();
         let path = write_profile(
             tmp.path(),
@@ -781,14 +749,12 @@ model = "deepseek/deepseek-v4-pro"
             r#"
 name = "reviewer"
 provider = "lm-studio"
-model = "qwen-2.5-7b"
+model = "deepseek-v4-flash"
 "#,
         );
 
-        let profile = load_agent_profile_file(&path).expect("profile loads");
-
-        assert_eq!(profile.profile.provider.as_deref(), Some("lm-studio"));
-        assert_eq!(profile.profile.model.as_deref(), Some("qwen-2.5-7b"));
+        let error = load_agent_profile_file(&path).expect_err("provider must fail");
+        assert!(error.to_string().contains("provider must be deepseek"));
     }
 
     #[test]
@@ -800,14 +766,14 @@ model = "qwen-2.5-7b"
             r#"
 name = "reviewer"
 provider = "lm studio"
-model = "some-model"
+model = "deepseek-v4-flash"
 "#,
         );
 
         let err = load_agent_profile_file(&path).unwrap_err().to_string();
 
         assert!(
-            err.contains("provider must be a simple provider id"),
+            err.contains("provider must be deepseek"),
             "unexpected error: {err}"
         );
     }
@@ -849,7 +815,7 @@ model = "deepseek-v4-pro api_key=secret"
         let err = load_agent_profile_file(&path).unwrap_err().to_string();
 
         assert!(
-            err.contains("model must be a visible model id"),
+            err.contains("model must be auto"),
             "unexpected error: {err}"
         );
     }

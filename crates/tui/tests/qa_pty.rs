@@ -218,16 +218,12 @@ fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Re
         ws.home().join(".codewhale").join("config.toml"),
         r#"
 provider = "deepseek"
-fallbackProviders = []
 apiKey = "deepseek-test-key"
 defaultTextModel = "deepseek-v4-pro"
 authMode = "api_key"
 
 [providers.deepseek]
 apiKey = "deepseek-test-key"
-authMode = "api_key"
-
-[providers.deepseek.httpHeaders]
 
 [features.enabled]
 subagents = true

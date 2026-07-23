@@ -134,9 +134,8 @@ mod tests {
 
     #[test]
     fn invalid_input_catches_context_overflow_phrasings() {
-        // Provider phrasing varies: DeepSeek/OpenAI/Anthropic/etc each
-        // surface context-overflow as a slightly different string.
-        // The classifier needs all of them on the same branch.
+        // DeepSeek may surface context-overflow through HTTP, SSE, or a
+        // compatibility-shaped error string. Keep them on one branch.
         for msg in [
             "This model's maximum context length is 1000000 tokens",
             "Error: context_length_exceeded",
@@ -367,9 +366,8 @@ mod tests {
 
     #[test]
     fn classifier_handles_unicode_safely() {
-        // Unicode shouldn't trip the lowercase step or the keyword
-        // scan — Chinese/Japanese error messages from
-        // OpenAI-compatible providers go through the same path.
+        // Unicode shouldn't trip the lowercase step or the keyword scan;
+        // localized DeepSeek/transport details go through the same path.
         assert_eq!(
             classify("\u{8d85}\u{51fa}\u{6700}\u{5927}\u{4e0a}\u{4e0b}\u{6587} context length"),
             ErrorCategory::InvalidInput,

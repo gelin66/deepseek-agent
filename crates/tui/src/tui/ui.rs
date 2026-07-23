@@ -43,7 +43,7 @@ use tracing;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
-use crate::config::{ApiProvider, Config};
+use crate::config::Config;
 use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::prompts;
@@ -241,6 +241,7 @@ fn prompt_override_warning(notice: &str) -> String {
 /// # }
 /// ```
 fn validate_interactive_tui_entry(config: &Config, options: &TuiOptions) -> Result<()> {
+    config.validate()?;
     let configured_model = crate::resolve_interactive_deepseek_model(config)?;
     if options.model != configured_model {
         bail!(
@@ -641,16 +642,9 @@ async fn run_deepseek_onboarding_loop(
                                     let config_path = app.config_path.as_deref();
                                     crate::config_persistence::persist_root_string_key(
                                         config_path,
-                                        "provider",
-                                        ApiProvider::Deepseek.as_str(),
-                                    )?;
-                                    crate::config_persistence::persist_root_string_key(
-                                        config_path,
                                         "api_key",
                                         &key,
                                     )?;
-                                    config.provider =
-                                        Some(ApiProvider::Deepseek.as_str().to_owned());
                                     config.api_key = Some(key);
                                     app.api_key_input.clear();
                                     app.api_key_cursor = 0;
@@ -717,8 +711,7 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         ReasoningEffort::Max => RuntimeReasoningEffort::Max,
     };
     let mut limits = RunLimits::default();
-    let subagents =
-        crate::exec_runtime::runtime_subagent_limits(config, app.api_provider, app.max_subagents);
+    let subagents = crate::exec_runtime::runtime_subagent_limits(config, app.max_subagents);
     limits.max_depth = subagents.max_depth;
     limits.max_concurrent_children = subagents.max_concurrent_children;
     StartRunCommand {
@@ -1731,7 +1724,6 @@ pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
         app.effective_model_for_budget(),
         app.active_route_limits,
     );

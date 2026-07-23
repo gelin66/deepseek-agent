@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 
 use codewhale_config::route::RouteLimits;
 
-use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL, has_api_key};
+use crate::config::{Config, DEFAULT_TEXT_MODEL, has_api_key};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::CostCurrency;
@@ -99,12 +99,10 @@ fn onboarding_is_workspace_trust_gate(
     !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
 }
 
-/// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
+/// Reasoning-effort tier projected into the canonical DeepSeek request plan.
 ///
-/// The config file accepts all five string values for forward-compat with
-/// providers that expose the full spectrum; DeepSeek currently collapses
-/// `Low`/`Medium` → `high`. OpenAI Codex normalizes inherited DeepSeek-only
-/// `Off` to `Low` and displays `Max` as `xhigh` at the provider boundary.
+/// The retained UI labels collapse onto the supported DeepSeek planning
+/// choices before the request reaches the backend.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningEffort {
     Off,
@@ -129,23 +127,6 @@ impl ReasoningEffort {
             "auto" | "automatic" => Self::Auto,
             "max" | "maximum" | "xhigh" | "ultracode" => Self::Max,
             _ => Self::default(),
-        }
-    }
-
-    #[must_use]
-    pub fn from_setting_for_provider(value: &str, provider: ApiProvider) -> Self {
-        Self::from_setting(value).normalize_for_provider(provider)
-    }
-
-    #[must_use]
-    pub fn normalize_for_provider(self, provider: ApiProvider) -> Self {
-        if provider != ApiProvider::OpenaiCodex {
-            return self;
-        }
-        match self {
-            Self::Off => Self::Low,
-            Self::Auto => Self::Medium,
-            other => other,
         }
     }
 }
@@ -830,10 +811,6 @@ pub struct App {
     /// When true, the model is auto-selected based on request complexity
     /// rather than using a fixed model. The `/model auto` command sets this.
     pub auto_model: bool,
-    /// Current API provider (mirrors `Config::api_provider`).
-    /// Updated by `/provider` switches so the UI/commands can read the
-    /// active backend without re-deriving it from the live config.
-    pub api_provider: ApiProvider,
     /// Resolved provider/model route limits for the active runtime route.
     pub active_route_limits: Option<RouteLimits>,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
@@ -878,9 +855,6 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub cost_currency: CostCurrency,
-    /// Route payment truth. Model pricing alone cannot distinguish metered
-    /// API calls from OAuth or token-plan quota.
-    pub billing_presentation: crate::route_billing::BillingPresentation,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -901,7 +875,6 @@ pub struct App {
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
-    pub onboarding_provider: ApiProvider,
     pub onboarding_workspace_trust_gate: bool,
     pub api_key_env_only: bool,
     pub api_key_input: String,
@@ -1007,14 +980,10 @@ impl App {
                 None
             }
         });
-        let provider = config.api_provider();
-        let mut effective_auth_config = config.clone();
-        effective_auth_config.provider = Some(provider.as_str().to_string());
         // Authentication follows the already validated entry configuration.
         // Saved UI preferences cannot change the production model backend.
-        let needs_api_key = !has_api_key(&effective_auth_config);
-        let api_key_env_only =
-            crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
+        let needs_api_key = !has_api_key(config);
+        let api_key_env_only = crate::config::uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
@@ -1045,26 +1014,11 @@ impl App {
             ui_theme = ui_theme.with_background_color(background);
         }
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
-        let active_context_window_override = config.context_window_for_provider_config(provider);
-        let active_route_limits = if auto_model {
-            active_context_window_override.map(|window| RouteLimits {
-                context_tokens: Some(u64::from(window)),
-                ..RouteLimits::default()
-            })
-        } else {
-            let saved_provider_model = config
-                .provider_config_for(provider)
-                .and_then(|provider| provider.model.as_deref());
-            crate::route_runtime::resolve_route_candidate(
-                provider,
-                Some(&model),
-                saved_provider_model,
-                Some(effective_auth_config.deepseek_base_url()),
-                active_context_window_override,
-            )
-            .ok()
-            .and_then(|candidate| crate::route_budget::known_route_limits(candidate.limits))
-        };
+        let active_context_window_override = config.context_window_override();
+        let active_route_limits = active_context_window_override.map(|window| RouteLimits {
+            context_tokens: Some(u64::from(window)),
+            ..RouteLimits::default()
+        });
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1072,9 +1026,8 @@ impl App {
         let reasoning_effort = if auto_model {
             ReasoningEffort::Auto
         } else {
-            configured_reasoning_effort.map_or_else(ReasoningEffort::default, |s| {
-                ReasoningEffort::from_setting_for_provider(s, provider)
-            })
+            configured_reasoning_effort
+                .map_or_else(ReasoningEffort::default, ReasoningEffort::from_setting)
         };
 
         let needs_workspace_trust =
@@ -1157,7 +1110,6 @@ impl App {
             last_status_message_seen: None,
             model,
             auto_model,
-            api_provider: provider,
             active_route_limits,
             reasoning_effort,
             workspace,
@@ -1173,7 +1125,6 @@ impl App {
             show_thinking,
             show_tool_details,
             cost_currency,
-            billing_presentation: crate::route_billing::for_route(config, provider),
             composer_density,
             composer_border,
             transcript_spacing,
@@ -1186,7 +1137,6 @@ impl App {
             theme_id,
             onboarding,
             onboarding_needs_api_key: needs_api_key,
-            onboarding_provider: provider,
             onboarding_workspace_trust_gate,
             api_key_env_only,
             api_key_input: String::new(),

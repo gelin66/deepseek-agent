@@ -116,6 +116,7 @@ pub struct SearchProviderResolution {
 }
 
 /// Web search provider configuration (`[search]` table in config.toml).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SearchConfig {
     /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `searxng` | `baidu` | `volcengine`. Default: `duckduckgo`.

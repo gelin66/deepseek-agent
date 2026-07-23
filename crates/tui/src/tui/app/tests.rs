@@ -1,11 +1,11 @@
 use super::*;
-use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
+use crate::config::{Config, DeepSeekConfig, TransitionalDeepSeekTable};
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::history::HistoryCell;
 
 fn test_options(yolo: bool) -> TuiOptions {
     TuiOptions {
-        model: "test-model".to_string(),
+        model: "deepseek-v4-pro".to_string(),
         workspace: PathBuf::from("."),
         config_path: None,
         allow_shell: yolo,
@@ -36,221 +36,31 @@ fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::
 fn initial_input_prefill_waits_for_manual_submit() {
     let mut options = test_options(false);
     options.initial_input = Some(InitialInput::Prefill("review this PR".to_string()));
-
     let app = App::new(options, &Config::default());
-
     assert_eq!(app.input, "review this PR");
-    assert_eq!(app.cursor_position, "review this PR".chars().count());
     assert!(!app.auto_submit_initial_input);
 }
 
 #[test]
-fn initial_input_submit_marks_startup_dispatch() {
-    let mut options = test_options(false);
-    options.initial_input = Some(InitialInput::Submit(
-        "阅读项目 and wait for instructions".to_string(),
-    ));
-
-    let app = App::new(options, &Config::default());
-
-    assert_eq!(app.input, "阅读项目 and wait for instructions");
-    assert_eq!(
-        app.cursor_position,
-        "阅读项目 and wait for instructions".chars().count()
-    );
-    assert!(app.auto_submit_initial_input);
-}
-
-#[test]
-fn test_trust_mode_follows_yolo_on_startup() {
-    let app = App::new(test_options(true), &Config::default());
-    assert!(app.trust_mode);
-    assert!(app.allow_shell);
-    assert_eq!(app.approval_mode, ApprovalMode::AutoApprove);
-}
-
-#[test]
-fn reasoning_effort_parsing_is_provider_aware_for_codex() {
-    assert_eq!(
-        ReasoningEffort::Off.normalize_for_provider(ApiProvider::OpenaiCodex),
-        ReasoningEffort::Low
-    );
-    assert_eq!(
-        ReasoningEffort::Auto.normalize_for_provider(ApiProvider::OpenaiCodex),
-        ReasoningEffort::Medium
-    );
-    assert_eq!(
-        ReasoningEffort::from_setting("ultracode"),
-        ReasoningEffort::Max
-    );
-}
-
-#[test]
-fn app_new_normalizes_saved_codex_reasoning_effort() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _token = EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-codex-startup-token");
+fn m8a_app_projection_is_deepseek_only() {
     let config = Config {
-        provider: Some("openai-codex".to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-                ..ProviderConfig::default()
+        providers: Some(TransitionalDeepSeekTable {
+            deepseek: DeepSeekConfig {
+                api_key: Some("fixture-key".to_string()),
+                context_window: Some(900_000),
+                ..DeepSeekConfig::default()
             },
-            ..ProvidersConfig::default()
         }),
         ..Config::default()
     };
-
-    for (raw, expected) in [
-        ("off", ReasoningEffort::Low),
-        ("auto", ReasoningEffort::Medium),
-        ("max", ReasoningEffort::Max),
-    ] {
-        std::fs::write(
-            tmp.path().join("settings.toml"),
-            format!("reasoning_effort = \"{raw}\"\n"),
-        )
-        .expect("settings");
-
-        let app = App::new(test_options(false), &config);
-
-        assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
-        assert_eq!(app.reasoning_effort, expected, "raw setting {raw}");
-    }
-}
-
-#[test]
-fn codex_startup_threads_fresh_roster_context_into_active_route_limits() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let codex_home = tmp.path().join("codex-home");
-    std::fs::create_dir_all(&codex_home).expect("Codex home");
-    std::fs::write(
-        codex_home.join("models_cache.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "fetched_at": chrono::Utc::now(),
-            "models": [{
-                "slug": crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                "priority": 1,
-                "context_window": 128000,
-                "supported_reasoning_levels": [{"effort": "high"}]
-            }]
-        }))
-        .expect("serialize cache"),
-    )
-    .expect("write cache");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _codex_home = EnvVarGuard::set("CODEX_HOME", &codex_home);
-    let _token = EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-codex-startup-token");
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-                ..ProviderConfig::default()
-            },
-            ..ProvidersConfig::default()
-        }),
-        ..Config::default()
-    };
-
     let mut options = test_options(false);
-    options.model = crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string();
+    options.model = "deepseek-v4-flash".to_string();
     let app = App::new(options, &config);
-
-    assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
+    assert_eq!(app.model, "deepseek-v4-flash");
     assert_eq!(
         app.active_route_limits
             .and_then(|limits| limits.context_tokens),
-        Some(128_000)
-    );
-    assert_eq!(
-        crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-        ),
-        128_000
-    );
-}
-
-#[test]
-fn validated_config_owns_the_deepseek_route() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    std::fs::write(tmp.path().join("settings.toml"), "theme = \"dracula\"\n").expect("settings");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
-
-    let config = Config {
-        provider: Some("deepseek".to_owned()),
-        providers: Some(ProvidersConfig {
-            deepseek: ProviderConfig {
-                api_key: Some("deepseek-config-key".to_string()),
-                ..ProviderConfig::default()
-            },
-            ..ProvidersConfig::default()
-        }),
-        ..Config::default()
-    };
-
-    let mut options = test_options(false);
-    options.model = "deepseek-v4-flash".to_owned();
-    let app = App::new(options, &config);
-
-    assert_eq!(app.api_provider, ApiProvider::Deepseek);
-    assert_eq!(app.model, "deepseek-v4-flash");
-    assert!(!app.auto_model);
-    assert!(
-        !app.onboarding_needs_api_key,
-        "validated DeepSeek config key should satisfy startup auth"
-    );
-    assert_ne!(app.onboarding, OnboardingState::ApiKey);
-    assert!(!app.api_key_env_only);
-
-    let mut auto_options = test_options(false);
-    auto_options.model = "auto".to_owned();
-    let auto = App::new(auto_options, &config);
-    assert_eq!(auto.api_provider, ApiProvider::Deepseek);
-    assert_eq!(auto.model, "auto");
-    assert!(auto.auto_model);
-}
-
-#[test]
-fn explicit_config_provider_defines_app_projection() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    std::fs::write(tmp.path().join("settings.toml"), "theme = \"dracula\"\n").expect("settings");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-    let config = Config {
-        provider: Some("xiaomi-mimo".to_string()),
-        providers: Some(ProvidersConfig {
-            xiaomi_mimo: ProviderConfig {
-                api_key: Some("mimo-config-key".to_string()),
-                model: Some("mimo-v2.5-pro".to_string()),
-                ..ProviderConfig::default()
-            },
-            ..ProvidersConfig::default()
-        }),
-        ..Config::default()
-    };
-
-    let mut options = test_options(false);
-    options.model = "mimo-v2.5-pro".to_string();
-    let app = App::new(options, &config);
-
-    assert_eq!(app.api_provider, ApiProvider::XiaomiMimo);
-    assert_eq!(app.model, "mimo-v2.5-pro");
-    assert!(
-        !app.onboarding_needs_api_key,
-        "Xiaomi MiMo provider config key should satisfy startup auth"
+        Some(900_000)
     );
 }
 

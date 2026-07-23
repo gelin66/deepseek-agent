@@ -154,23 +154,13 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
     }
 
     let cost = app.total_cost_for_currency(app.cost_currency);
-    let chip = crate::route_billing::usage_chip(
-        app.billing_presentation,
-        app.api_provider,
-        &app.model,
-        cost,
-        app.cost_currency,
-        None,
-    );
-    if let crate::route_billing::UsageChip::Money(amount) = chip
-        && tier != ShellTier::Compact
-    {
+    if cost.is_finite() && cost > 0.0 && tier != ShellTier::Compact {
         left.push(Span::styled(
             " · ",
             Style::default().fg(app.ui_theme.text_dim),
         ));
         left.push(Span::styled(
-            amount,
+            crate::pricing::format_cost_amount(cost, app.cost_currency),
             Style::default().fg(app.ui_theme.text_muted),
         ));
     }

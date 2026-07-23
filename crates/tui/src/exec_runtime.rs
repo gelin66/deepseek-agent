@@ -40,8 +40,8 @@ use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
     ExecAccountingReceipt, ExecOutputFormat, ExecOutputWait, ExecStreamEvent,
     ExecStreamInputAnalysis, ExecStreamMeta, ExecSurfaceModelUsageBucket,
-    commit_exec_terminal_signal, current_binary_sha256, exec_stream_line, exec_supports_provider,
-    recv_exec_signal, stop_exec_signal_controller, wait_exec_output_until, wait_terminal_output,
+    commit_exec_terminal_signal, current_binary_sha256, exec_stream_line, recv_exec_signal,
+    stop_exec_signal_controller, wait_exec_output_until, wait_terminal_output,
     write_exec_stream_terminal,
 };
 
@@ -63,7 +63,6 @@ fn protocol_label(value: &impl Serialize) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecStartupFailure {
     InvalidArguments,
-    ProviderUnsupported,
     RunStore,
     ResumeNotFound,
     ResumeWorkspaceMismatch,
@@ -81,7 +80,6 @@ impl ExecStartupFailure {
     fn code(self) -> &'static str {
         match self {
             Self::InvalidArguments => "exec_invalid_arguments",
-            Self::ProviderUnsupported => "exec_provider_unsupported",
             Self::RunStore => "exec_run_store_failed",
             Self::ResumeNotFound => "exec_run_not_found",
             Self::ResumeWorkspaceMismatch => "exec_resume_workspace_mismatch",
@@ -102,7 +100,6 @@ impl ExecStartupFailure {
             Self::Route => "route",
             Self::Client | Self::ToolContext => "internal",
             Self::InvalidArguments
-            | Self::ProviderUnsupported
             | Self::RunStore
             | Self::ResumeNotFound
             | Self::ResumeWorkspaceMismatch
@@ -117,7 +114,6 @@ impl ExecStartupFailure {
         match self {
             Self::RouteTimeout => RunTerminationReason::Timeout,
             Self::InvalidArguments
-            | Self::ProviderUnsupported
             | Self::RunStore
             | Self::ResumeNotFound
             | Self::ResumeWorkspaceMismatch
@@ -178,14 +174,6 @@ pub(crate) async fn run_exec_runtime(
                 super::MAX_EXEC_MAX_RUNTIME_SECS
             );
         }
-        startup_failure = ExecStartupFailure::ProviderUnsupported;
-        if !exec_supports_provider(config.api_provider()) {
-            bail!(
-                "codewhale exec 是 DeepSeek 专用入口；当前 provider={}，请切换为 deepseek",
-                config.api_provider().as_str()
-            );
-        }
-
         let deadline = deadline_origin + Duration::from_secs(max_runtime_secs.max(1));
         let (mut signal_rx, signal_task, signal_phase) = super::spawn_exec_signal_controller();
         let mut signal_task = Some(signal_task);
@@ -317,7 +305,6 @@ pub(crate) async fn run_exec_runtime(
                 tool_policy: runtime_tool_policy(tool_mode, allowed_tools, disallowed_tools),
                 limits: runtime_limits(
                     config,
-                    config.api_provider(),
                     max_subagents,
                     max_turns,
                     max_api_requests,
@@ -773,7 +760,7 @@ async fn emit_exec_stream_failure(
     let terminal = ExecTerminalReceipt::from_reason(failure.termination_reason());
     let meta = ExecStreamMeta {
         receipt_kind,
-        provider: config.api_provider().as_str().to_owned(),
+        provider: crate::config::DEEPSEEK_PROVIDER_ID.to_owned(),
         model: model.to_owned(),
         route_source: route_source.to_owned(),
         accounting: ExecAccountingReceipt::default(),
@@ -974,13 +961,6 @@ pub(crate) fn production_application_config(
 }
 
 pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConnectionConfig> {
-    let provider = config.api_provider();
-    let path_suffix = config
-        .provider_config_for(provider)
-        .and_then(|provider| provider.path_suffix.as_deref());
-    if path_suffix.is_some() {
-        bail!("DeepSeek production AgentApplication 不支持 path_suffix 路由改写");
-    }
     let base_url = config.deepseek_base_url();
     let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
         DeepSeekEndpoint::Official
@@ -1037,10 +1017,9 @@ pub(crate) struct RuntimeSubagentLimits {
 /// sub-agents, recursion depth, and concurrency cannot drift by surface.
 pub(crate) fn runtime_subagent_limits(
     config: &Config,
-    provider: crate::config::ApiProvider,
     requested_subagents: usize,
 ) -> RuntimeSubagentLimits {
-    if !config.subagents_enabled_for_provider(provider) {
+    if !config.subagents_enabled() {
         return RuntimeSubagentLimits {
             max_depth: 0,
             max_concurrent_children: 0,
@@ -1048,24 +1027,22 @@ pub(crate) fn runtime_subagent_limits(
     }
 
     let max_subagents = requested_subagents
-        .min(config.max_subagents_for_provider(provider))
+        .min(config.max_subagents())
         .clamp(1, MAX_SUBAGENTS);
     RuntimeSubagentLimits {
-        max_depth: u8::try_from(config.subagent_max_spawn_depth_for_provider(provider))
-            .unwrap_or(u8::MAX),
+        max_depth: u8::try_from(config.subagent_max_spawn_depth()).unwrap_or(u8::MAX),
         max_concurrent_children: u32::try_from(max_subagents).unwrap_or(u32::MAX),
     }
 }
 
 fn runtime_limits(
     config: &Config,
-    provider: crate::config::ApiProvider,
     requested_subagents: usize,
     max_turns: u32,
     hard_requests: Option<NonZeroU32>,
     remaining_runtime_ms: u64,
 ) -> RunLimits {
-    let subagents = runtime_subagent_limits(config, provider, requested_subagents);
+    let subagents = runtime_subagent_limits(config, requested_subagents);
     let tree_width = subagents.max_concurrent_children.saturating_add(1);
     RunLimits {
         max_turns,
@@ -2291,7 +2268,7 @@ mod tests {
         };
 
         assert_eq!(
-            runtime_subagent_limits(&config, crate::config::ApiProvider::Deepseek, 12),
+            runtime_subagent_limits(&config, 12),
             RuntimeSubagentLimits {
                 max_depth: 0,
                 max_concurrent_children: 0,
@@ -2311,7 +2288,7 @@ mod tests {
         };
 
         assert_eq!(
-            runtime_subagent_limits(&config, crate::config::ApiProvider::Deepseek, 9),
+            runtime_subagent_limits(&config, 9),
             RuntimeSubagentLimits {
                 max_depth: 2,
                 max_concurrent_children: 3,

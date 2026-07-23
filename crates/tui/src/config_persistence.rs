@@ -93,8 +93,8 @@ pub(crate) fn write_config_toml_atomic(path: &Path, body: &str) -> anyhow::Resul
 /// missing intermediate tables. Replacing an existing value keeps its decor,
 /// so comments above the key and trailing same-line comments survive.
 ///
-/// Segments are separate strings rather than one dotted key, so table names
-/// that need quoting (`[providers."my.provider"]`) resolve correctly.
+/// Segments are separate strings rather than one dotted key, so workspace
+/// paths that need quoting (`[projects."/path.with.dot"]`) resolve correctly.
 pub(crate) fn set_document_value(
     doc: &mut toml_edit::DocumentMut,
     segments: &[&str],
@@ -119,20 +119,19 @@ pub(crate) fn set_document_value(
     Ok(())
 }
 
-/// Remove every entry named `key` from `table` and, recursively, from nested
-/// tables, inline tables, and arrays of tables. Used by `/logout` to strip
-/// `api_key` everywhere without disturbing keys like `api_key_env`.
-pub(crate) fn remove_document_key_recursive(table: &mut dyn toml_edit::TableLike, key: &str) {
+/// Remove one exact value without touching sibling tables or similarly named
+/// keys. DeepSeek-only credential cleanup uses this instead of the retired
+/// cross-provider recursive sweep.
+pub(crate) fn remove_document_key(
+    doc: &mut toml_edit::DocumentMut,
+    segments: &[&str],
+) -> anyhow::Result<()> {
+    let (key, parents) = segments
+        .split_last()
+        .context("config value path must not be empty")?;
+    let table = table_like_at_path_mut(doc.as_table_mut(), parents)?;
     remove_key_preserving_leading_decor(table, key);
-    for (_, item) in table.iter_mut() {
-        if let toml_edit::Item::ArrayOfTables(tables) = item {
-            for nested in tables.iter_mut() {
-                remove_document_key_recursive(nested, key);
-            }
-        } else if let Some(nested) = item.as_table_like_mut() {
-            remove_document_key_recursive(nested, key);
-        }
-    }
+    Ok(())
 }
 
 fn remove_key_preserving_leading_decor(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
@@ -195,8 +194,8 @@ fn table_like_at_path_mut<'a>(
     let mut current: &mut dyn toml_edit::TableLike = root;
     for segment in segments {
         if current.get(segment).is_none() {
-            // Implicit, so creating `providers.foo.base_url` does not emit an
-            // empty `[providers]` header.
+            // Implicit, so creating `projects.<workspace>.trust_level` does
+            // not emit an empty `[projects]` header.
             let mut table = toml_edit::Table::new();
             table.set_implicit(true);
             current.insert(segment, toml_edit::Item::Table(table));
@@ -439,23 +438,20 @@ mod tests {
     // ------------------------------------------------------------------
     // Golden-file coverage for the shared toml_edit mutation path
     // (findings #18/#19/#20): unrelated comments, ordering, and quoted
-    // provider tables must survive every supported mutation.
+    // workspace tables must survive every supported mutation.
     // ------------------------------------------------------------------
 
     const GOLDEN_CONFIG: &str = r#"# CodeWhale golden config fixture, top note.
 # api_key = "sk-placeholder" (uncomment to set the key by hand)
-provider = "openrouter" # pinned for release QA
+default_text_model = "deepseek-v4-pro" # pinned for release QA
 
 # workspace trust note
 [projects."/Users/example/work"]
 trust_level = "trusted" # granted manually
 
-# providers note
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1" # keep in sync with docs
-
-[providers."quoted.provider"]
-base_url = "https://quoted.example/v1"
+# second workspace note
+[projects."/Users/example/quoted.project"]
+trust_level = "untrusted" # keep in sync with docs
 "#;
 
     fn write_golden_config(path: &Path) {
@@ -471,15 +467,15 @@ base_url = "https://quoted.example/v1"
         let path = temp_root.join(".deepseek").join("config.toml");
         write_golden_config(&path);
 
-        persist_root_string_key(Some(&path), "provider", "deepseek")
+        persist_root_string_key(Some(&path), "default_text_model", "deepseek-v4-flash")
             .expect("persist should succeed");
 
         let body = fs::read_to_string(&path).unwrap();
         let expected = GOLDEN_CONFIG.replace(
-            "provider = \"openrouter\" # pinned for release QA",
-            "provider = \"deepseek\" # pinned for release QA",
+            "default_text_model = \"deepseek-v4-pro\" # pinned for release QA",
+            "default_text_model = \"deepseek-v4-flash\" # pinned for release QA",
         );
-        assert_eq!(body, expected, "only the provider value may change");
+        assert_eq!(body, expected, "only the model value may change");
     }
 
     #[test]
@@ -506,7 +502,7 @@ base_url = "https://quoted.example/v1"
             "# pinned for release QA",
             "# workspace trust note",
             "# granted manually",
-            "# providers note",
+            "# second workspace note",
             "# keep in sync with docs",
         ] {
             assert!(body.contains(comment), "comment lost: {comment}\n{body}");
@@ -517,16 +513,15 @@ base_url = "https://quoted.example/v1"
             body.contains("trust_level = \"trusted\" # granted manually"),
             "{body}"
         );
-        assert!(body.contains("[providers.\"quoted.provider\"]"), "{body}");
-
-        // Original section order is intact.
-        let root_provider_at = body.find("provider = ").unwrap();
-        let projects_at = body.find("[projects.").unwrap();
-        let providers_at = body.find("[providers.openrouter]").unwrap();
         assert!(
-            root_provider_at < projects_at && projects_at < providers_at,
+            body.contains("[projects.\"/Users/example/quoted.project\"]"),
             "{body}"
         );
+
+        // Original section order is intact.
+        let root_model_at = body.find("default_text_model = ").unwrap();
+        let projects_at = body.find("[projects.").unwrap();
+        assert!(root_model_at < projects_at, "{body}");
 
         let parsed: toml::Value = toml::from_str(&body).unwrap();
         assert_eq!(
@@ -582,35 +577,6 @@ base_url = "https://quoted.example/v1"
         assert!(err.to_string().contains("must be a table"), "{err}");
     }
 
-    #[test]
-    fn remove_document_key_recursive_strips_nested_and_quoted_tables() {
-        let mut doc = r#"# root note
-api_key = "root"
-api_key_env = "KEEP_ENV"
-
-[providers.openrouter]
-api_key = "or"
-base_url = "https://openrouter.ai/api/v1"
-
-[providers."quoted.provider"]
-api_key = "quoted"
-
-[[unrelated]]
-name = "keep"
-"#
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-
-        remove_document_key_recursive(doc.as_table_mut(), "api_key");
-
-        let body = doc.to_string();
-        assert!(!body.contains("api_key = "), "{body}");
-        assert!(body.contains("# root note"), "{body}");
-        assert!(body.contains("api_key_env = \"KEEP_ENV\""), "{body}");
-        assert!(body.contains("base_url"), "{body}");
-        assert!(body.contains("[[unrelated]]"), "{body}");
-    }
-
     #[cfg(unix)]
     #[test]
     fn config_writes_land_with_owner_only_permissions() {
@@ -623,7 +589,7 @@ name = "keep"
         write_golden_config(&path);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
-        persist_root_string_key(Some(&path), "provider", "deepseek")
+        persist_root_string_key(Some(&path), "api_key", "test-only-key")
             .expect("persist should succeed");
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;

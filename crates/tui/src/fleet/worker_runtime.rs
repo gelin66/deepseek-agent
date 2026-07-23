@@ -9,8 +9,7 @@ use anyhow::{Result, bail};
 use codewhale_protocol::fleet::{FleetResolvedRoute, FleetTaskSpec, FleetTaskWorkerProfile};
 
 use super::profile::AgentProfile;
-use crate::config::ApiProvider;
-use crate::route_runtime::resolve_route_candidate;
+use crate::config::{DEFAULT_TEXT_MODEL, normalize_model_name};
 
 /// Validate that every task referencing a workspace agent profile can resolve it.
 ///
@@ -21,7 +20,23 @@ pub fn validate_task_agent_profiles(
     agent_profiles: &[AgentProfile],
 ) -> Result<()> {
     for task in tasks {
-        resolve_task_agent_profile(task, agent_profiles)?;
+        let profile = resolve_task_agent_profile(task, agent_profiles)?;
+        if let Some(provider) = explicit_fleet_provider_id(profile)
+            && !provider.eq_ignore_ascii_case("deepseek")
+        {
+            bail!(
+                "fleet task {} references retired provider {provider:?}; CodeWhale only supports deepseek",
+                task.id
+            );
+        }
+        if let Some(model) = profile.and_then(|profile| profile.profile.model.as_deref())
+            && crate::config::normalize_model_name(model).is_none()
+        {
+            bail!(
+                "fleet task {} references unsupported DeepSeek model {model:?}",
+                task.id
+            );
+        }
     }
     Ok(())
 }
@@ -70,27 +85,24 @@ pub(crate) fn resolve_fleet_route(
         fleet_route_model_selector_with_source(worker_profile, agent_profile, session_model);
     let model_selector = model_selector.as_deref();
 
-    // Resolve within the profile's own explicit provider scope when it has
-    // one (#4093); otherwise fall back to the existing default scope (mirrors
-    // `ProviderKind::default()`). The resolver is fully offline/hermetic and
-    // never reads secrets, env, or config. User-named custom providers need the
-    // session Config to resolve their table, so this receipt path omits the
-    // route instead of fabricating DeepSeek details for them (#3965).
-    let provider = match explicit_fleet_provider_id(agent_profile).as_deref() {
-        Some(provider_id) => ApiProvider::parse(provider_id)?,
-        None => ApiProvider::Deepseek,
-    };
-    let candidate = resolve_route_candidate(provider, model_selector, None, None, None).ok()?;
+    // A stale foreign provider pin makes this receipt inadmissible. The
+    // canonical route is otherwise always official DeepSeek.
+    if explicit_fleet_provider_id(agent_profile)
+        .is_some_and(|provider| !provider.eq_ignore_ascii_case("deepseek"))
+    {
+        return None;
+    }
+    let wire_model = model_selector
+        .filter(|model| !model.eq_ignore_ascii_case("auto"))
+        .and_then(normalize_model_name)
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
 
     Some(FleetResolvedRoute {
-        provider_id: candidate.provider_id.as_str().to_string(),
-        provider_kind: candidate.provider_kind.as_str().to_string(),
-        canonical_model: candidate
-            .canonical_model
-            .as_ref()
-            .map(|model| model.as_str().to_string()),
-        wire_model_id: candidate.wire_model_id.as_str().to_string(),
-        protocol: route_protocol_label(candidate.protocol).to_string(),
+        provider_id: "deepseek".to_string(),
+        provider_kind: "deepseek".to_string(),
+        canonical_model: Some(wire_model.clone()),
+        wire_model_id: wire_model,
+        protocol: "chat_completions".to_string(),
         role,
         loadout: loadout_intent_label(&loadout),
         model_class,
@@ -104,16 +116,6 @@ pub(crate) fn resolve_fleet_route(
         model_source: Some(model_source.to_string()),
         source: "resolver".to_string(),
     })
-}
-
-/// Plain-string label for a resolved wire protocol (no config type leaks).
-fn route_protocol_label(protocol: codewhale_config::route::RequestProtocol) -> &'static str {
-    use codewhale_config::route::RequestProtocol;
-    match protocol {
-        RequestProtocol::ChatCompletions => "chat_completions",
-        RequestProtocol::Responses => "responses",
-        RequestProtocol::AnthropicMessages => "anthropic_messages",
-    }
 }
 
 /// Collapse an `inherit` (no-op) loadout to `None` for the receipt.
@@ -327,17 +329,7 @@ fn effective_fleet_model_with_source(
     (run_model.to_string(), "run.model")
 }
 
-/// The provider id a resolved agent profile EXPLICITLY pins, if any (#4093).
-///
-/// This preserves user-named OpenAI-compatible custom providers such as
-/// `lm-studio` instead of collapsing them through [`ApiProvider`]. Runtime
-/// launch paths can set `Config.provider` to this exact id so the normal config
-/// resolver finds `[providers.<id>]` (#3965).
-///
-/// Returns `None` when no profile names a provider — never invents a DeepSeek
-/// default — so launch paths can omit `--provider` and leave profile-less
-/// workers on their own session default. EPIC #2608: never inferred from
-/// `model`.
+/// Return an explicit profile provider for fail-closed validation only.
 pub(crate) fn explicit_fleet_provider_id(agent_profile: Option<&AgentProfile>) -> Option<String> {
     agent_profile
         .and_then(|profile| profile.profile.provider.as_deref())
@@ -371,24 +363,7 @@ pub(crate) fn fleet_worker_launch_reasoning_effort(
     effective_fleet_reasoning_effort(agent_profile)
 }
 
-/// The route (model selector + optional explicit provider id) that a fleet
-/// worker's actual `codewhale exec` subprocess should launch on (#4093 AC #4).
-///
-/// This is the launch-side twin of [`resolve_fleet_route`] (the receipt): both
-/// read the worker's model from the same task/profile/run precedence
-/// ([`effective_fleet_model`]) and the provider from the same explicit-only
-/// source ([`explicit_fleet_provider_id`]), so a worker whose profile is pinned
-/// to provider B launches on provider B even when the parent session is on
-/// provider A.
-///
-/// - `model`: never empty in practice — falls back to `run_model` when neither
-///   the task nor the profile pins a model, matching pre-#4093 dispatch.
-/// - `provider`: `Some(provider_id)` ONLY when the resolved agent profile
-///   explicitly pins a provider. `None` means "no provider authority" — the
-///   caller omits `--provider` and the worker keeps its own session default,
-///   preserving today's behavior for profile-less workers. Built-ins use their
-///   canonical ids; user-named custom providers preserve the profile's id so
-///   `codewhale exec --provider <id>` can resolve `[providers.<id>]`.
+/// Resolve the official DeepSeek model used by the worker launch.
 pub(crate) fn fleet_worker_launch_route(
     task_spec: &FleetTaskSpec,
     agent_profiles: &[AgentProfile],
@@ -398,8 +373,14 @@ pub(crate) fn fleet_worker_launch_route(
         .ok()
         .flatten();
     let worker_profile = task_spec.worker.as_ref();
-    let model = effective_fleet_model(run_model, worker_profile, agent_profile);
-    let provider = explicit_fleet_provider_id(agent_profile);
+    let model = crate::config::normalize_model_name(&effective_fleet_model(
+        run_model,
+        worker_profile,
+        agent_profile,
+    ))
+    .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+    let provider = explicit_fleet_provider_id(agent_profile)
+        .filter(|provider| provider.eq_ignore_ascii_case("deepseek"));
     (model, provider)
 }
 
@@ -603,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_profile_route_and_reasoning_reach_launch() {
+    fn retired_profile_provider_is_rejected_before_launch() {
         let mut profile = agent_profile(
             "scout",
             "scout",
@@ -619,18 +600,10 @@ mod tests {
         );
         let profiles = vec![profile];
 
-        let (model, provider) = fleet_worker_launch_route(&task, &profiles, "deepseek-v4-pro");
-
-        assert_eq!(model, "glm-5.2");
-        assert_eq!(provider.as_deref(), Some("openrouter"));
-        assert_eq!(
-            fleet_worker_launch_reasoning_effort(&task, &profiles).as_deref(),
-            Some("high")
-        );
-        let route = resolve_fleet_route(&task, &profiles, Some("deepseek-v4-pro"))
-            .expect("explicit provider route resolves");
-        assert_eq!(route.provider_id, "openrouter");
-        assert_eq!(route.reasoning_effort.as_deref(), Some("high"));
+        let error = validate_task_agent_profiles(std::slice::from_ref(&task), &profiles)
+            .expect_err("retired provider must fail");
+        assert!(error.to_string().contains("retired provider"));
+        assert!(resolve_fleet_route(&task, &profiles, Some("deepseek-v4-pro")).is_none());
     }
 
     #[test]

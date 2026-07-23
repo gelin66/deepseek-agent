@@ -1157,7 +1157,7 @@ async fn disabled_subagents_remove_agent_from_the_exec_runtime() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn non_deepseek_startup_failure_emits_one_machine_terminal_tail() {
+async fn non_deepseek_startup_fails_before_runtime_and_network() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     let (command, _workspace, _home) = prepare_exec_with_options(
@@ -1173,10 +1173,12 @@ async fn non_deepseek_startup_failure_emits_one_machine_terminal_tail() {
     let output = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(!output.status.success(), "unsupported provider must fail");
 
-    let events = parse_strict_ndjson(&output.stdout);
-    let metadata = assert_startup_tail(&events, "exec_provider_unsupported");
-    assert_eq!(metadata["status"], "failed");
-    assert_eq!(metadata["termination_reason"], "infrastructure_error");
+    assert!(output.stdout.trim().is_empty(), "runtime must not start");
+    assert!(
+        output.stderr.contains("仅使用官方 DeepSeek"),
+        "unexpected stderr: {}",
+        output.stderr
+    );
     assert_eq!(chat_request_count(&server).await, 0);
 }
 
@@ -2494,20 +2496,6 @@ fn assert_terminal_tail<'a>(events: &'a [Value], error_code: Option<&str>) -> &'
     }
 
     &metadata[0].1["meta"]
-}
-
-fn assert_startup_tail<'a>(events: &'a [Value], error_code: &str) -> &'a Value {
-    assert_eq!(
-        events.len(),
-        3,
-        "startup tail must contain exactly 3 events"
-    );
-    assert_eq!(events[0]["type"], "metadata");
-    assert_eq!(events[0]["meta"]["receipt_kind"], "startup_failure");
-    assert_eq!(events[1]["type"], "error");
-    assert_eq!(events[1]["code"], error_code);
-    assert_eq!(events[2]["type"], "done");
-    &events[0]["meta"]
 }
 
 fn assert_exact_success_accounting(

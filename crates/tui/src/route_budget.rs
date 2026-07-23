@@ -1,12 +1,6 @@
 use codewhale_config::route::RouteLimits;
 
-use crate::config::{ApiProvider, provider_capability};
-
-/// Preserve only route limits that came from a concrete offering.
-#[must_use]
-pub(crate) fn known_route_limits(limits: RouteLimits) -> Option<RouteLimits> {
-    limits.has_known_limit().then_some(limits)
-}
+use crate::config::deepseek_capability;
 
 /// Context window for a resolved runtime route.
 ///
@@ -14,16 +8,12 @@ pub(crate) fn known_route_limits(limits: RouteLimits) -> Option<RouteLimits> {
 /// existing provider+model capability matrix so startup and custom/local
 /// routes keep their previous conservative behavior.
 #[must_use]
-pub(crate) fn route_context_window_tokens(
-    provider: ApiProvider,
-    model: &str,
-    route_limits: Option<RouteLimits>,
-) -> u32 {
+pub(crate) fn route_context_window_tokens(model: &str, route_limits: Option<RouteLimits>) -> u32 {
     route_limits
         .and_then(|limits| limits.context_tokens)
         .and_then(|tokens| u32::try_from(tokens).ok())
         .filter(|tokens| *tokens > 0)
-        .unwrap_or_else(|| provider_capability(provider, model).context_window)
+        .unwrap_or_else(|| deepseek_capability(model).context_window)
 }
 
 #[cfg(test)]
@@ -31,10 +21,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_missing_route_metadata_uses_provider_context_floor() {
+    fn missing_override_uses_official_deepseek_context() {
         assert_eq!(
-            route_context_window_tokens(ApiProvider::OpenaiCodex, "gpt-5.5", None),
-            128_000
+            route_context_window_tokens("deepseek-v4-pro", None),
+            1_000_000
         );
     }
 }
