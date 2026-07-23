@@ -29,15 +29,14 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v3.json"
-BASE_MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v2.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v4.json"
 TEST_PATH = ROOT / "scripts/test-eval-m8d-prompt.py"
 M7E_PATH = ROOT / "scripts/eval-m7e-thinking.py"
 CANDIDATE_PROMPT_PATH = ROOT / "eval/fixtures/m8-d-prompt/v1/constitution.md"
 SINGLE_TASK_SOURCE = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 WRITER_TASK_SOURCE = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-SCHEMA = "codewhale.eval.m8-d-prompt-ab.v3"
-RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v3"
+SCHEMA = "codewhale.eval.m8-d-prompt-ab.v4"
+RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v4"
 VARIANTS = ("baseline", "candidate")
 RUN_API = 10
 EVENT_API = 16
@@ -85,6 +84,7 @@ def load_module(path: Path, name: str) -> Any:
 
 
 M7E = load_module(M7E_PATH, "codewhale_m8d_m7e_projection")
+EVALUATION_ERRORS = (EvaluationError, M7E.EvaluationError)
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -124,31 +124,51 @@ def manifest_content_hash(manifest: dict[str, Any]) -> str:
     return canonical_hash(value)
 
 
-def resolved_manifest() -> dict[str, Any]:
-    overlay = load_json(MANIFEST_PATH, "manifest_unavailable")
-    require(overlay.get("schema") == SCHEMA, "manifest_schema_mismatch")
-    base_ref = overlay.get("base_manifest", {})
+def resolve_manifest_file(path: Path, seen: set[Path] | None = None) -> dict[str, Any]:
+    resolved_path = path.resolve()
+    manifest_root = (ROOT / "eval/manifests").resolve()
     require(
-        base_ref.get("path") == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
-        and base_ref.get("sha256") == file_hash(BASE_MANIFEST_PATH),
+        resolved_path.parent == manifest_root and resolved_path.suffix == ".json",
+        "manifest_path_invalid",
+    )
+    visited = set() if seen is None else set(seen)
+    require(resolved_path not in visited, "manifest_cycle")
+    visited.add(resolved_path)
+    overlay = load_json(resolved_path, "manifest_unavailable")
+    base_ref = overlay.get("base_manifest")
+    if base_ref is None:
+        return overlay
+    require(isinstance(base_ref, dict), "base_manifest_identity_mismatch")
+    relative = base_ref.get("path")
+    require(isinstance(relative, str), "base_manifest_identity_mismatch")
+    base_path = (ROOT / relative).resolve()
+    require(
+        base_path.parent == manifest_root
+        and base_ref.get("sha256") == file_hash(base_path),
         "base_manifest_identity_mismatch",
     )
-    manifest = deepcopy(load_json(BASE_MANIFEST_PATH, "base_manifest_unavailable"))
-    require(
-        manifest.get("schema") == "codewhale.eval.m8-d-prompt-ab.v2",
-        "base_manifest_schema_mismatch",
-    )
+    manifest = deepcopy(resolve_manifest_file(base_path, visited))
     manifest["schema"] = overlay["schema"]
     manifest["status"] = overlay["status"]
     manifest["date"] = overlay["date"]
     manifest["claim"].update(overlay["claim"])
     manifest.pop("prior_attempt", None)
-    manifest["suite_lineage"] = overlay["suite_lineage"]
-    manifest["prior_attempts"] = overlay["prior_attempts"]
+    if "suite_lineage" in overlay:
+        manifest["suite_lineage"] = overlay["suite_lineage"]
+    if "prior_attempts" in overlay:
+        manifest["prior_attempts"] = overlay["prior_attempts"]
     for section in ("source_identity", "experiment", "admission", "output"):
-        manifest[section].update(overlay[section])
-    manifest["offline_gates"] = overlay["offline_gates"]
+        if section in overlay:
+            manifest[section].update(overlay[section])
+    if "offline_gates" in overlay:
+        manifest["offline_gates"] = overlay["offline_gates"]
     manifest["frozen_hashes"] = overlay["frozen_hashes"]
+    return manifest
+
+
+def resolved_manifest() -> dict[str, Any]:
+    manifest = resolve_manifest_file(MANIFEST_PATH)
+    require(manifest.get("schema") == SCHEMA, "manifest_schema_mismatch")
     return manifest
 
 
@@ -200,6 +220,84 @@ def assemble_tasks(
         "tasks": tasks,
         "tool_policy": manifest["tool_policy"],
     }
+
+
+def materialize_fixture(
+    tasks: dict[str, Any],
+    task_id: str,
+    destination: Path,
+) -> str:
+    frozen = tasks["tasks"][task_id]
+    require(
+        M7E.fixture_hash(tasks, task_id) == frozen["fixture_tree_sha256"],
+        "fixture_hash_mismatch",
+    )
+    shutil.copytree(M7E.fixture_path(tasks, task_id), destination)
+    writer = frozen["lane"] == "explicit_writer"
+    timestamp = "2026-07-21T00:00:00Z" if writer else "2026-07-22T00:00:00Z"
+    message = (
+        f"M6-B1 frozen fixture {frozen['source_task_id']}"
+        if writer
+        else f"M7-A frozen fixture {M7E.fixture_path(tasks, task_id).name}"
+    )
+    environment = {
+        **M7E.safe_env(),
+        "GIT_AUTHOR_DATE": timestamp,
+        "GIT_COMMITTER_DATE": timestamp,
+    }
+    commands = (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "add", "--", "."],
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=CodeWhale Eval",
+            "-c",
+            "user.email=eval.invalid",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    )
+    for command in commands:
+        result = M7E.run_command(
+            command,
+            cwd=destination,
+            environment=environment,
+        )
+        require(result.returncode == 0, "fixture_git_init_failed")
+    base = M7E.git_output("rev-parse", "HEAD", cwd=destination)
+    require(
+        base == frozen["fixture_base_commit"]
+        and M7E.git_output(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            cwd=destination,
+        )
+        == ""
+        and M7E.git_output("symbolic-ref", "-q", "HEAD", cwd=destination)
+        == "refs/heads/main",
+        "fixture_git_identity_mismatch",
+    )
+    return base
+
+
+def probe_fixture_identities(tasks: dict[str, Any]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="codewhale-m8d-fixtures-") as raw:
+        root = Path(raw)
+        return {
+            task_id: {
+                "base_commit": materialize_fixture(
+                    tasks, task_id, root / task_id
+                ),
+                "tree_sha256": M7E.fixture_hash(tasks, task_id),
+            }
+            for task_id in tasks["tasks"]
+        }
 
 
 def load_manifest(*, frozen: bool) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -885,7 +983,7 @@ def execute_arm(
         prefix=f"codewhale-m8d-{task_id}-{variant}-"
     ) as raw:
         root = Path(raw)
-        base = M7E.materialize_fixture(tasks, task_id, workspace)
+        base = materialize_fixture(tasks, task_id, workspace)
         state_root = root / "state"
         home = state_root / "home"
         codewhale_home = state_root / "codewhale"
@@ -1451,7 +1549,7 @@ def probe_process_prompt_activation(
     with tempfile.TemporaryDirectory(prefix="codewhale-m8d-activation-") as raw:
         root = Path(raw)
         workspace = root / "workspace"
-        M7E.materialize_fixture(tasks, "t1", workspace)
+        materialize_fixture(tasks, "t1", workspace)
         variants: dict[str, dict[str, Any]] = {}
         for variant in VARIANTS:
             state_root = root / variant
@@ -1648,6 +1746,7 @@ def preflight_identity(
         "candidate_source_tree_mismatch",
     )
     activation = probe_process_prompt_activation(codewhale, manifest, tasks)
+    fixture_identities = probe_fixture_identities(tasks)
     return {
         "revision": revision,
         "source_tree": source_tree,
@@ -1666,6 +1765,7 @@ def preflight_identity(
             for task_id in tasks["tasks"]
         },
         "process_prompt_activation": activation,
+        "fixture_identities": fixture_identities,
     }
 
 
@@ -1801,7 +1901,7 @@ def run_formal(args: argparse.Namespace) -> int:
                 M7E.write_private_json(output, reservation, replace=True)
                 if abort_code is not None:
                     raise EvaluationError(abort_code)
-    except EvaluationError as error:
+    except EVALUATION_ERRORS as error:
         reservation["status"] = "aborted"
         reservation["abort"] = {
             "code": error.code,

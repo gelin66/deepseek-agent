@@ -76,18 +76,26 @@ class PromptHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest, self.tasks = M8D.load_manifest(frozen=False)
 
-    def test_v3_never_reuses_the_aborted_v1_or_v2_suite_identity(self) -> None:
-        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v3")
-        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v3")
+    def test_v4_never_reuses_prior_suite_identity(self) -> None:
+        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v4")
+        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v4")
         self.assertEqual(
             [attempt["suite"] for attempt in self.manifest["prior_attempts"]],
-            ["m8-d-prompt-ab-v1", "m8-d-prompt-ab-v2"],
+            [
+                "m8-d-prompt-ab-v1",
+                "m8-d-prompt-ab-v2",
+                "m8-d-prompt-ab-v3",
+            ],
         )
         self.assertTrue(
             all(
                 attempt["status"] == "aborted_measurement_invalid"
-                for attempt in self.manifest["prior_attempts"]
+                for attempt in self.manifest["prior_attempts"][:2]
             )
+        )
+        self.assertEqual(
+            self.manifest["prior_attempts"][2]["status"],
+            "running_process_exited",
         )
         self.assertEqual(self.manifest["experiment"]["maximum_reruns"], 0)
 
@@ -139,6 +147,39 @@ class PromptHarnessTests(unittest.TestCase):
                 M8D.M7E.fixture_hash(self.tasks, task_id),
                 task["fixture_tree_sha256"],
             )
+
+    def test_every_fixture_materializes_to_its_frozen_git_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for task_id, task in self.tasks["tasks"].items():
+                base = M8D.materialize_fixture(
+                    self.tasks,
+                    task_id,
+                    root / task_id,
+                )
+                self.assertEqual(base, task["fixture_base_commit"])
+                self.assertEqual(
+                    M8D.M7E.git_output(
+                        "symbolic-ref",
+                        "-q",
+                        "HEAD",
+                        cwd=root / task_id,
+                    ),
+                    "refs/heads/main",
+                )
+                self.assertEqual(
+                    M8D.M7E.git_output(
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                        cwd=root / task_id,
+                    ),
+                    "",
+                )
+
+    def test_shared_projection_errors_are_formal_suite_errors(self) -> None:
+        self.assertIn(M8D.EvaluationError, M8D.EVALUATION_ERRORS)
+        self.assertIn(M8D.M7E.EvaluationError, M8D.EVALUATION_ERRORS)
 
     def test_writer_command_changes_authority_not_prompt_variant(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -1,0 +1,94 @@
+{
+  "schema": "codewhale.eval.m8-d-prompt-ab.v4",
+  "status": "draft_offline",
+  "date": "2026-07-24",
+  "base_manifest": {
+    "path": "eval/manifests/m8-d-prompt-ab-v3.json",
+    "sha256": "sha256:fb790580340ac1dbb663c46a84a5b7844fa318fd144d794315d46780bd8f817e"
+  },
+  "claim": {
+    "name": "M8-D 中文原生 production prompt 收敛 v4",
+    "primary_problem": "v3 已在 single 与 read-only multi 的 6 个已完成 arms 上证明真实 prompt treatment、Host verifier 和聚合计费有效，但进入首个 explicit Writer arm 前，Harness 用 M7-A 的 Git 提交身份物化 M6-B Writer fixture，并让共享 projection error 逃出 formal reservation，留下 status=running 的不可覆盖 raw。v4 只按 frozen lane/source 恢复正确 fixture Git 身份，并把本地与共享 evaluator error 统一提交为 typed abort；不改变 binary、任务、prompt、模型、当前 endpoint、预算、计费或产品行为。",
+    "acceptance": "复用 8371b6dd immutable codewhale/codewhale-tui、candidate、30-arm schedule 和全部产品门禁；离线物化并核对 t1/t3/t5/w1/w3 的 frozen base commit、clean main branch 与 fixture tree；证明共享 projection error 会关闭 raw；process prompt-only preflight 保持唯一 constitution delta。"
+  },
+  "suite_lineage": {
+    "base_contract": "v3 manifest 按 SHA-256 固定，v4 overlay 只替换 suite identity、Harness identity、prior attempts、admission、output 和离线门禁；resolved manifest 参与 content hash。",
+    "not_a_rerun": "v1/v2/v3 raw 均保持 0600 且不可覆盖；v4 是修正 Writer fixture/recovery measurement contract 后的全新 schema、Harness revision、output 和 30 个全新 arm，maximum_reruns 仍为 0。"
+  },
+  "prior_attempts": [
+    {
+      "suite": "m8-d-prompt-ab-v1",
+      "status": "aborted_measurement_invalid",
+      "raw_path": "eval/raw/m8-d-prompt-formal-77f5244a-v1.json",
+      "raw_sha256": "sha256:9963d32427448060a362ee0e26dd96906b0c13992534979ddfbf5fc35f6a2f27",
+      "raw_size_bytes": 31506,
+      "raw_mode": "0600",
+      "completed_arms": 2,
+      "known_cost_nanousd": 4789003,
+      "finding": "真实 app-server 未加载 candidate override；无 treatment surface。"
+    },
+    {
+      "suite": "m8-d-prompt-ab-v2",
+      "status": "aborted_measurement_invalid",
+      "raw_path": "eval/raw/m8-d-prompt-formal-8371b6dd-v2.json",
+      "raw_sha256": "sha256:67ec341066cbab8deef6bdc9e2755569c63c62b0fa4bb61f946c7434bfa5cc84",
+      "raw_size_bytes": 70547,
+      "raw_mode": "0600",
+      "completed_arms": 5,
+      "known_cost_nanousd": 11115720,
+      "finding": "前 4 arms 均 valid；t5 baseline 的真实 Host/verifier/accounting complete，但旧 Harness 读取错误的 child 字段与 root-only usage，按 measurement invalid 中止。"
+    },
+    {
+      "suite": "m8-d-prompt-ab-v3",
+      "status": "running_process_exited",
+      "raw_status": "running",
+      "raw_path": "eval/raw/m8-d-prompt-formal-8371b6dd-v3.json",
+      "raw_sha256": "sha256:6823fcecbd73976b87a5f2e9f3d5e37058291af9727bdd694cdb5a6ec5d1392c",
+      "raw_size_bytes": 85183,
+      "raw_mode": "0600",
+      "process_exit_code": 2,
+      "completed_arms": 6,
+      "known_cost_nanousd": 13158683,
+      "active_arm": {
+        "task_id": "w1",
+        "variant": "candidate",
+        "run_index": 1,
+        "schedule_position": 7
+      },
+      "finding": "t1/t3/t5 的 6 arms 全部 measurement valid、verified success、无 false success、计费完整；首个 w1 arm 在 API 前因 M6-B fixture 被错误地用 M7-A Git identity 物化而失败，共享 EvaluationError 未被 formal handler 捕获，因此不可覆盖 raw 保持 running。"
+    }
+  ],
+  "source_identity": {
+    "harness_revision": "pending"
+  },
+  "experiment": {
+    "kind": "same_revision_same_binary_prompt_treatment_ab_v4",
+    "maximum_reruns": 0
+  },
+  "admission": {
+    "live_api_admitted": false,
+    "admitted_on": null,
+    "admission_evidence": "pending",
+    "credential_read_for_v4": false,
+    "official_api_requests_for_v4": 0
+  },
+  "output": {
+    "name_template": "m8-d-prompt-formal-<binary-revision8>-v4.json",
+    "mode": "0600",
+    "replace": false,
+    "reservation_before_key": true
+  },
+  "offline_gates": [
+    "python3 scripts/test-eval-m8d-prompt.py",
+    "python3 scripts/eval-m8d-prompt.py freeze-report",
+    "python3 scripts/eval-m8d-prompt.py preflight --binary <immutable-codewhale> --tui-binary <immutable-codewhale-tui> --revision 8371b6dd9ac5d18570ff81a28bd94cc93372c372",
+    "v2 full fmt/focused/workspace clippy/workspace test/loopback/SIGKILL/TUI gates on the exact same immutable binary pair",
+    "git diff --check"
+  ],
+  "frozen_hashes": {
+    "harness_sha256": "pending",
+    "harness_test_sha256": "pending",
+    "schedule_sha256": "pending",
+    "manifest_content_sha256_excluding_frozen_hashes": "pending"
+  }
+}
