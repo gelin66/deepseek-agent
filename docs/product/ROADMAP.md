@@ -35,6 +35,12 @@
   替换了单变体观测 WIP：v16->v14 降级、历史 executor monkeypatch、错位 recovery/revision、
   无 delta live/Key 路径已删除；`cf9b3fd6` 的 v16-native Harness 14/14 clean gates 通过。
   没有新的 production 模型失败样本或 treatment delta，编辑/FIM treatment 继续 `hold`。
+  M7-E 随后把已有 reasoning/replay 成本定位为首要非编辑候选，并以同一 Standard Chat
+  production binary 冻结 `high`/`off` paired A/B。v1-v3 因 evaluator 错判真实 verifier
+  recovery 失效；v4 又证明随机 absolute workspace 会改变 canonical workspace revision
+  和实际首请求，且外部停止时存在无法重建最终计费的 active arm。四次尝试全部排除出产品
+  指标；final `458c3d7d` v5 固定 `live_api_admitted=false`，production 默认不变，决策为
+  `hold`。任何复评都必须使用新的 successor manifest 从 position 1 重新准入。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -148,7 +154,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-A3 correctness 已完成；旧 A/B 因 shared-fix 不可交换继续 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-E thinking admission 因 fairness 与 unknown billing 继续 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1849,6 +1855,45 @@ editor/FIM treatments**。本切片关闭的是 evaluation truth 损失，produc
 control/treatment delta；否则关闭编辑路线，转向证据更强的非编辑损失。完整身份、首个失败
 记录和非结论见
 [M7-D RuntimeEvent v16 编辑失败观测闭环](../../eval/summaries/m7-d-edit-observation-2026-07-23.md)。
+
+### M7-E：默认 Thinking 准入
+
+M7-E 从 M7-D 结论 `7b8b4851` 开始，只读比较 canonical RunStore 与既有正式结果。M7-A2
+成功候选的 17 个请求包含 3,042 reasoning tokens 与 7,263 replay tokens；较早完整
+eager-join suite 的 154 个请求包含 21,349 reasoning tokens 与 27,629 replay tokens。
+`high`/`off` 又是当前 `crates/deepseek` 已拥有的 Standard Chat production 字段，因此它是
+唯一能在不增加工具、Runtime、Store、模型循环或产品模式的情况下形成同 binary 非编辑
+treatment 的候选。candidate `b9b83cdf` 只补 protocol/production contract 与冻结 Harness，
+没有改变默认 `Auto` 行为。
+
+正式目标为 5 tasks × 2 variants × 3 runs，15 pair / 30 arms，
+`maximum_reruns=0`。v1 把成功 verifier 的保守 side-effect 投影误判为歧义；v2/v3 又把任务
+明确要求且已经“failed verifier → effective edit → passed verifier”闭环的恢复错判为
+unresolved failure。v4 修正这些 evaluator 缺陷后，在两个完整 pair 上发现实际首请求身份
+仍不同。只读调用图定位到 canonical workspace revision 会绑定 workspace/repository absolute
+path，而 v4 每个 arm 使用不同随机 workspace，故这不是可归一化噪音，而是真实 prompt
+差异。
+
+v4 在第二个同类 mismatch 后由外部 SIGINT 精确停止；已完成 5 arms、27 requests、5/5
+verified、0 false success、已知费用 6,346,379 nanousd，但 active
+`t3/reasoning_off/run_1` 可能已有 in-flight request，临时 State/RunStore 已清理，最终 billing
+无法重建。v1-v4 合计 18 个已完成 arms、94 requests、已知费用 24,736,160 nanousd，都因
+evaluator/fairness 失效而排除出产品指标，费用只是下界。
+
+final `458c3d7d` v5 让同一 pair 复用 suite-owned fixed workspace slot、每臂从同一 fixture
+重建且保持 State/RunStore/run ID 隔离；只允许归一化恰好一条 Host-owned
+`task_generation`，并在 pair 闭合时立即比较真实 messages、actor、tools、surface、预算、
+revision、binary 与 fixture。exact high/off RequestPlan 的 SQLite reopen、root/read-only/
+Writer conformance、focused、fmt、workspace clippy/test、production loopback 与 process
+crash/reopen 均通过。
+
+由于 v4 留下 active-arm unknown billing，v5 在 preflight、output reservation、Key read 和
+API 前固定 fail closed；没有 v5 raw 或官方请求。产品决策为 **hold**：保留官方 high/off
+协议与公平 Harness，不改变 production 默认，不把 v1-v4 partial 结果拼成收益结论。未来
+只有新 successor manifest 能显式重新准入，必须从 position 1 执行全新 30 arms。下一切片
+先离线审计 exact ModelRequest 的 stable-prefix/cache break position，不立即重做付费
+thinking A/B。完整身份、费用边界和非结论见
+[M7-E 默认 Thinking 准入结论](../../eval/summaries/m7-e-thinking-admission-2026-07-23.md)。
 
 ### 调优
 

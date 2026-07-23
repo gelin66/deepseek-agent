@@ -913,6 +913,48 @@ official API requests 0。
 准入 FIM、transaction state 或另一编辑策略。完整身份与首个失败记录见
 [M7-D RuntimeEvent v16 编辑失败观测闭环](../../eval/summaries/m7-d-edit-observation-2026-07-23.md)。
 
+### 9.11 M7-E 默认 Thinking 准入结论（2026-07-23）
+
+M7-E 从 canonical RunStore 和既有正式结果定位非编辑损失，没有预设关闭 thinking 会提高
+能力。M7-A2 成功候选的 17 个请求包含 3,042 reasoning tokens 和 7,263 reasoning replay
+tokens；较早完整 eager-join suite 的 154 个请求包含 21,349 reasoning tokens 和 27,629
+replay tokens。当前 production 又已经通过 `StartRunCommand.reasoning_effort` 在同一
+Standard Chat binary 上表达 `high`/`off`，因此该候选有真实 surface delta，而不需要新增
+Runtime、Store、工具、模型循环或产品模式。
+
+冻结实验要求 5 tasks × 2 variants × 3 runs、15 pair / 30 arms、
+`maximum_reruns=0`，并把 verified success、false success、first edit、verifier recovery、
+root/read-only child、latest revision、external verifier、input/output/cache/reasoning/replay
+tokens、requests、wall time、费用和 accounting 完整性同时作为门禁。只有每任务 success
+不下降、false success 为零、至少 12 个 dual-success pairs 且至少一个核心效率 paired
+median 改善不低于 15%（其余核心效率回退不超过 10%）才允许替代当前默认。
+
+v1-v3 分别因成功 verifier side-effect 投影和真实 verifier-failure recovery 的 evaluator
+误判而失效。v4 修正后，在 T1、T2 两个完整 pair 上发现：只归一化唯一 Host-owned
+`task_generation` 后，实际首请求 semantic identity 仍不同。production workspace revision
+会绑定 canonical workspace/repository absolute path，而 v4 给每个 arm 分配不同随机 path；
+因此两臂 prompt 不同，不能用 hash normalization 掩盖。外部 SIGINT 在第二个同类 mismatch
+后停止 suite，active `t3/reasoning_off/run_1` 可能已有 in-flight request，最终 billing
+无法从已删除的临时 State/RunStore 重建。
+
+v1-v4 合计 18 个已完成 arms、94 个已完成-arm requests、18/18 verified、0 false success，
+已知费用 24,736,160 nanousd（USD 0.024736160）只是下界。全部结果因 evaluator/fairness
+失效排除出产品指标；任何局部 paired delta 都不可采纳。四份 raw 保持 Git ignored、
+`0600`、不可覆盖；v4 保持真实 `status=running`，不得事后补写终态。
+
+final `458c3d7d` v5 使用 suite-owned fixed pair workspace、从同一 fixture 逐臂重建，隔离
+State/RunStore/run ID，并在 pair 完成时立即比较真实 semantic messages、actor、tools、
+surface、预算、revision、binary、fixture 和 schedule。SQLite reopen exact RequestPlan、
+root/read-only/Writer、production loopback、process crash/reopen、focused、fmt、workspace
+clippy/test 与 15 项 Harness regression 均通过。
+
+由于 v4 active arm 留下 unknown billing，v5 冻结 `live_api_admitted=false`，在 preflight、
+output reservation、Key read 和 API 前返回 `live_api_not_admitted`；没有 v5 raw、Key read
+或官方请求。产品结论为 **hold**：保留 high/off protocol contract、exact replay 与公平
+Harness；不改变 production 默认；不拼接 v1-v4。任何复评必须以新 clean revision、
+successor manifest/suite/output 从 position 1 重新准入。完整身份、官方资料复核和非结论见
+[M7-E 默认 Thinking 准入结论](../../eval/summaries/m7-e-thinking-admission-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

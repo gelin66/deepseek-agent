@@ -26,6 +26,9 @@
 - M7-C non-canonical edit cutover / final Harness checkpoint：`9cba8b53`
 - M7-D v16-native observation projector checkpoint：`7ddf3bba`
 - M7-D failure-truth / final Harness checkpoint：`cf9b3fd6`
+- M7-E thinking admission production candidate：`b9b83cdf`
+- M7-E last live evaluator checkpoint：`ee73e761`
+- M7-E fail-closed hold / final Harness checkpoint：`458c3d7d`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -44,7 +47,10 @@
   A/B 同样在 credential/API 前判定无 surface delta，Key 未读取。M7-D 已把单变体
   observation WIP 收敛为 v16-native offline projector，删除 v14 adapter、历史 executor
   monkeypatch 和无 delta live/Key 路径；final Harness 14/14 clean gates 通过，但没有新的
-  production 模型样本或 editor treatment admission
+  production 模型样本或 editor treatment admission。M7-E 已在同一 Standard Chat production
+  binary 上冻结 `reasoning_effort=high/off`，但四次 live 尝试分别暴露 evaluator recovery
+  错判与 paired workspace identity 缺陷；v4 外部停止还留下 active-arm unknown billing。
+  final v5 固定在 Key/API 前 fail closed，默认 thinking 行为不变，产品结论为 `hold`
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1079,6 +1085,26 @@ release binary 或 result replace 路径。首个 clean suite 的 workspace-test
 通过。当前事实只支持 keep offline observer、删除 no-delta live Harness 和 hold editor/FIM
 treatment；不支持任何模型能力或效率收益。
 
+M7-E 没有增加 production owner 或默认分支。`crates/deepseek` 继续唯一拥有 Standard Chat
+的 reasoning planner、wire parser 和 usage/accounting；`AgentRuntime` 与 `RunStore` 继续
+拥有 `StartRunCommand.reasoning_effort`、exact `ModelRequest`、`RequestPlan`、
+RuntimeEvent、receipt 和 terminal。`high` 与 `off` 使用同一模型、工具目录、预算、streaming、
+completion/verifier 与 binary；区别只来自现有 reasoning treatment 及其合法诱发的
+`reasoning_content` replay。
+
+production composition test 已证明 high/off 的 exact RequestPlan 可在 SQLite reopen 后
+重建，并证明同一 stable workspace 中首请求只需归一化唯一 Host-owned
+`task_generation` 行即可匹配。评测同时确认 workspace revision 会绑定 canonical
+workspace/repository absolute path；不同随机 workspace 是实际 prompt 差异，不是可以从
+wire identity 中删除的噪音。
+
+final v5 Harness 让每个 pair 复用 suite-owned fixed workspace slot，同时隔离 State、
+RunStore、run ID 与 binary copy，并在 pair 闭合时立即核对 messages、actor、tools、surface、
+预算、revision、binary、fixture 和 schedule。它不拥有第二套 planner、Runtime、Store 或
+accounting。由于 v4 被外部停止时 active arm 可能已有无法重建最终 billing 的 in-flight
+request，v5 的 `live_api_admitted=false` 在 preflight、output reservation、Key read 和 API
+之前 fail closed。当前默认 `Auto` / thinking-enabled 没有改变。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1104,6 +1130,9 @@ treatment；不支持任何模型能力或效率收益。
   production actor 没有真实 Strict treatment surface，因此本阶段没有执行产品 A/B；
 - M7-C 已证明真实 DeepSeek 的编辑成功率、恢复率、Token、时间或费用改善，或 FIM 相对
   patch/edit 更好或更差；3/12 -> 12/12 只覆盖冻结的 deterministic Host 反例；
+- M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
+  请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
+  产品指标，v4 active arm 的最终 billing 也未知；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
