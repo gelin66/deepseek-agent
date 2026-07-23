@@ -2641,6 +2641,11 @@ impl Drop for LoopbackSseServer {
 }
 
 fn wait_for_loopback_sse_server(address: std::net::SocketAddr) {
+    // Exercise the same complete request-body receive path as Chat
+    // Completions before the child starts. A header-only GET can pass while
+    // the raw fixture is still unable to accept the first POST under a full
+    // workspace test load, replacing the intended first stall with a
+    // connection error.
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .expect("connect stalled SSE readiness probe");
     stream
@@ -2648,10 +2653,13 @@ fn wait_for_loopback_sse_server(address: std::net::SocketAddr) {
         .expect("set stalled SSE readiness timeout");
     stream
         .write_all(
-            b"GET /v1/models HTTP/1.1\r\n\
+            b"POST /__codewhale/ready HTTP/1.1\r\n\
 Host: localhost\r\n\
+Content-Type: application/json\r\n\
+Content-Length: 2\r\n\
 Connection: close\r\n\
-\r\n",
+\r\n\
+{}",
         )
         .and_then(|()| stream.flush())
         .expect("write stalled SSE readiness probe");
@@ -2719,12 +2727,11 @@ fn serve_loopback_sse_connection(
     let mut parts = request_line.split_ascii_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
-    if method == "GET" && path == "/v1/models" {
+    if method == "POST" && path == "/__codewhale/ready" {
         let body = serde_json::to_vec(&json!({
-            "object": "list",
-            "data": [{ "id": TEST_MODEL, "object": "model" }]
+            "ready": true
         }))
-        .expect("serialize models response");
+        .expect("serialize readiness response");
         write_http_response(&mut stream, "application/json", &body);
         return;
     }
