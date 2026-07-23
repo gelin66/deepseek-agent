@@ -109,6 +109,16 @@ Changing one of these constraints requires evidence and a new ADR.
   checkpoint `4e3536f1` removes redundant derived decision state and proves
   exact RequestPlan reconstruction after SQLite reopen without changing the
   frozen candidate, manifest, raw, or wire behavior.
+- M8-B established the single CodeWhale product and local delivery identity at
+  candidate `307f6c09`: the shipped binary set is exactly `codewhale` plus
+  `codewhale-tui`, Rust is pinned to 1.97.0, and one locked/offline delivery
+  owner binds full source/Cargo.lock/toolchain identity and inner/outer
+  checksums before immutable install, atomic upgrade/rollback, or
+  data-preserving uninstall. The real macOS release lifecycle and the same
+  Linux fixture lifecycle pass with network denied. `crates/release`, imported
+  updater/CNB discovery, `codew`, legacy product env/path readers, duplicate
+  metrics state, and unconnected deployment assets are deleted. No model,
+  Runtime, Store, or protocol surface changed; no Key or DeepSeek API was used.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

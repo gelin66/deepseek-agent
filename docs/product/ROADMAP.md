@@ -80,6 +80,17 @@
   PTY 与 exec/HTTP/stdio parity 矩阵全部离线通过；没有 material model treatment，
   因此 Key 未读取、官方 API 请求与外部网络访问为 0（仅使用本机 loopback）。M8-A 决策是
   `keep_deepseek_only_cutover / delete_generic_provider_paths`。
+  M8-B 又从 clean `2ed3efe3` 建立唯一 CodeWhale 产品/交付 owner：正式 binary set 固定为
+  `codewhale` 与 `codewhale-tui`，Rust 固定为 1.97.0，source package 绑定完整 revision、
+  tree、Cargo.lock、target、inner/outer SHA-256，并以 immutable release + atomic symlink
+  完成本地安装、升级、回滚和保留用户数据的卸载。真实 macOS release artifact 在禁网
+  sandbox 通过，Linux 同一 lifecycle 在缓存容器 `--network none` 通过；`crates/release`、
+  imported updater/CNB discovery、`codew`、旧产品 env/path reader、第二 metrics truth 和
+  未接线部署资产已删除。代码候选 `307f6c09` 相对 baseline 净删除 1,702 行，决策为
+  `keep_single_codewhale_identity_and_delivery_owner / shrink_imported_delivery_paths`。
+  本切片没有模型 treatment，Key 未读取、官方 API 请求 0；一次候选后只读 metadata
+  断言因漏设 toolchain override 触发 rustup 更新探测并立即中断，不能把整个 Agent session
+  表述为从未尝试外网，但冻结的交付路径仍由 OS 网络隔离证明。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -194,7 +205,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only 配置/入口与 generic Provider 删除已完成） | 自己的品牌、配置、CI、打包和开发流程完整 |
+| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only 配置/入口与 M8-B 产品身份/本地交付已完成） | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2133,9 +2144,42 @@ resume/reopen、root/read-only/Writer、真实 PTY 与 exec/HTTP/stdio parity �
 **保留 DeepSeek-only 切换，删除 generic Provider 路径**。完整矩阵、门禁和非结论见
 [M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
 
-下一切片只审计 M8 剩余的产品身份、安装/卸载、release crate、版本检查、打包、CI 与远程
-策略；先冻结本地开发和安装生命周期，再决定最小 cutover，不把全面汉化、提示词 A/B、
-MCP、RepoGraph 或多 Writer 混入同一切片。
+### M8-B：CodeWhale 产品身份与可复现本地交付
+
+M8-B 从 clean `2ed3efe3` 冻结 D01-D12，并按真实 caller 完成四个 cutover：
+
+1. `eddfd4bc`：workspace metadata、embedded build identity、User-Agent 与 binary discovery
+   只使用 CodeWhale；正式 binary set 固定为 `codewhale`、`codewhale-tui`，删除 `codew`
+   与 DeepSeek-branded 产品 override。
+2. `ccc98245`：把仍被使用的 TLS helper 收回 TUI owner，Doctor 不再请求 imported release
+   metadata，物理删除 `crates/release`、CNB/GitHub updater discovery 和专用依赖。
+3. `d792113e`：config/state/settings/secrets 只读写 `CODEWHALE_HOME`、
+   `CODEWHALE_CONFIG_PATH` 与 `.codewhale`；删除 `.deepseek` migration/fallback、第二
+   metrics state truth 和产品 env compatibility reader。
+4. `4aff11f6`：`scripts/codewhale-delivery.sh` 成为唯一 package/install/verify/rollback/
+   uninstall owner；CI 的 macOS/Linux matrix 运行同一 lifecycle。`28f8a34c`、
+   `e4232142`、`307f6c09` 随后让离线 source build 只复用已安装且版本精确匹配的 Rust
+   1.97.0，不自动联网安装。
+
+candidate `307f6c09` 的 macOS source artifact 为 17,660,358 bytes，manifest 绑定完整
+revision/tree、Cargo.lock SHA、target、Rust 和准确两项 binary set；相同输入的 fixture
+archive SHA 可复现，archive/binary tamper、wrong target 均在 activation 前拒绝。真实
+macOS package/install/verify/Doctor/uninstall 在 `sandbox-exec` 禁网下通过；Linux 同一
+lifecycle 在缓存 `golang:1.26-bookworm`、`--network none` 下通过。uninstall 只删除程序与
+delivery metadata，用户 sentinel 保持 byte-identical。
+
+Run API v10、RuntimeEvent v16、State v21、exec-stream v2 和
+`AgentApplication -> AgentRuntime -> RunStore` 均未改变。相对 baseline 共 59 files、
+`+1,574/-3,276`，净删除 1,702 行；Key 未读取、官方 API 请求 0。最终只读 source gate
+有一次漏设 `RUSTUP_TOOLCHAIN=stable`，rustup 更新探测被立即中断；它不属于 delivery
+owner，结果记录明确披露，不能扩张为整个 session 的 no-network 结论。产品决策为
+**保留唯一 CodeWhale 身份与交付 owner，收缩/删除 imported delivery 路径**。完整结果见
+[M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
+
+下一切片单独建立 fixed `zh-Hans` 产品界面：先冻结 CLI/TUI/Headless/Doctor/错误恢复/
+多 Agent 状态的真实 user-facing caller、英文泄漏、CJK 宽度和 machine-protocol 稳定矩阵；
+只翻译 Host 生成且保留的文本，不改变 raw provider/tool output，也不混入中文 Agent prompt
+A/B、MCP、RepoGraph、多 Writer 或模型选择。
 
 ### 调优
 
@@ -2153,16 +2197,16 @@ MCP、RepoGraph 或多 Writer 混入同一切片。
 
 ### 剩余清理
 
-- release 和品牌耦合；
-- 其余腾讯云/CNB 等未接线云部署资产；
-- 遗留 evidence 和最终不再需要的导入资产；
-- 无接线 stub、兼容别名、旧语义适配层和新旧双路径。
+- 遗留 historical evidence 和最终不再需要的导入资料；
+- 无接线 stub、旧语义适配层和新旧双路径；
+- fixed `zh-Hans` 完成后只保留仍有真实 caller 的文案 owner。
 
 Telegram、Feishu、bridge-core、remote-setup 调用面和 Tencent Lighthouse 部署链已在 M4-B
 因 app-server 旧控制面删除而同步物理删除，不再列为 M7 待办。
 
-顶层 `codewhale update`、CLI 自更新实现及其专用直接依赖已删除；TUI 启动时版本检查和
-仍有真实消费者的 `release` crate 保留，后续只能按各自消费者单独处置。
+顶层 `codewhale update`、CLI/TUI 自更新和版本检查、`crates/release`、CNB/imported
+GitHub release discovery 及其专用依赖已删除；本地升级和回滚只由
+`scripts/codewhale-delivery.sh` 消费显式 artifact，不访问 release metadata。
 
 清理必须先通过依赖盘点；Cargo 核心能力不得因外围删除而退化。Provider 专用的人类界面
 随对应旧路径一起删除，不投入翻译；每个切片只汉化已经确认保留的 DeepSeek 配置、Agent

@@ -1194,6 +1194,73 @@ manifest、ignored `0600` result 与完整结论：
 - `eval/results/m8-a-deepseek-only-entry-8b650356-v1.json`；
 - [M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
 
+### 9.18 M8-B CodeWhale 产品身份与本地交付（2026-07-23）
+
+M8-B manifest 固定 clean production baseline `2ed3efe3`、Run API v10、RuntimeEvent v16、
+State v21、exec-stream v2、外部 target `/private/tmp/codewhale-m8b-target`、
+`CARGO_NET_OFFLINE=true` 和 `maximum_reruns=0`。D01-D12 覆盖：
+
+1. pinned Rust 1.97.0 + Cargo.lock 的 clean locked/offline source build；
+2. product/version/target/full revision/tree/Cargo.lock/toolchain 与准确 binary set；
+3. outer archive、inner binary tamper、wrong target 和路径/symlink 拒绝；
+4. fresh install、首次 `--version`、upgrade、rollback、verify、uninstall 与数据保留；
+5. macOS/Linux、offline/no-network、旧 binary/env/config/state/release alias 拒绝；
+6. canonical Runtime/Store/protocol parity 与旧 delivery owner 物理删除。
+
+四个 production cutover 为 `eddfd4bc`、`ccc98245`、`d792113e`、`4aff11f6`；三个离线
+toolchain 闭合提交为 `28f8a34c`、`e4232142`、`307f6c09`。代码 candidate 相对
+`2ed3efe3` 共 59 files、1,574 insertions、3,276 deletions，净删除 1,702 行。
+
+真实 macOS source artifact：
+
+- file：`codewhale-0.8.68-aarch64-apple-darwin-307f6c09d082.tar.gz`；
+- size：17,660,358 bytes；
+- SHA-256：`af3cae6ae254f0331162aa475ab2201b659dc9ef68264822ea5321d3c6c48115`；
+- manifest identity：candidate `307f6c09d082d80c85daa43a5958b9e795c33d10`、tree
+  `247fc8c3499dfc1de5345c0c20e7a68443343d61`、Cargo.lock
+  `0699519a54e34db65457a56c143be8bfd89fdb96bdae7dde01a7a2540788f4ba`；
+- binaries：`codewhale` 15,695,008 bytes、`codewhale-tui` 22,522,400 bytes。
+
+同 identity + binaries 的 fixture package SHA 可复现。真实 artifact 的 install、verify、
+Doctor 和 uninstall 在 macOS `sandbox-exec` 禁网下通过；同一 lifecycle self-test 在缓存
+Linux container `--network none` 下通过。Linux source release build 由 CI matrix 拥有，
+没有把它伪装为本机已观察事实。uninstall 删除程序与 delivery metadata，保留的
+`CODEWHALE_HOME` sentinel byte-identical。
+
+ignored result：
+
+- path：`eval/results/m8-b-product-delivery-2ed3efe3-v1.json`；
+- mode/size：`0600` / 8,474 bytes；
+- SHA-256：`8c9f818674e1d739a707f538510e7db8c6c99e69c3de13a78fa75a2fecb065a4`；
+- manifest SHA-256：`b960d2ba7620c560b82bda729385993e6a44b2554cc855990820a9d76e034239`；
+- 12/12 matrix cases passed；
+- `credential_read=false`、`official_api_requests=0`；
+- `material_model_treatment=false`、`product_metric_eligible=false`。
+
+最终门禁包含 delivery macOS/Linux self-test、真实 source release lifecycle、focused、
+fmt、workspace strict Clippy/test、hermetic TUI 两次、canonical/QA/release PTY、
+exec/HTTP/stdio parity、root/read-only/Writer 和 process SIGKILL/reopen；全部通过。
+
+一次 candidate 后的只读 binary-list gate 因命令漏设 `RUSTUP_TOOLCHAIN=stable` 触发
+rustup 1.97.0 channel 更新/下载探测，并被立即中断。该命令没有读取 Key、调用 DeepSeek、
+写入 package/install/state/result 或修改仓库；但结果必须披露它，不能把“交付命令在
+OS 禁网下通过”扩张为“整个 Agent session 从未尝试外网”。随后同一断言在 stable/offline/
+network-denied sandbox 中通过。
+
+结论为
+**keep_single_codewhale_identity_and_delivery_owner / shrink_imported_delivery_paths**：
+保留唯一 CodeWhale identity、`.codewhale` state/config、准确两项 binary delivery 与
+immutable/atomic lifecycle；删除 `crates/release`、imported updater/CNB、`codew`、旧产品
+env/path compatibility、第二 metrics truth、重复配置/开发入口和未接线部署资产。不报告
+verified coding success、Token、时间或 API cost 改善，也不声称 fixed `zh-Hans` 或中文
+Agent prompt 已完成。
+
+manifest、ignored result 与完整结论：
+
+- `eval/manifests/m8-b-product-delivery-v1.json`；
+- `eval/results/m8-b-product-delivery-2ed3efe3-v1.json`；
+- [M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -41,6 +41,10 @@
 - M8-A CLI DeepSeek-only cutover：`e1a611ff`
 - M8-A TUI Provider route deletion：`63246e72`
 - M8-A config Provider model deletion：`00dcda0c`
+- M8-B product identity cutover：`eddfd4bc`
+- M8-B imported updater deletion：`ccc98245`
+- M8-B CodeWhale state-path cutover：`d792113e`
+- M8-B reproducible delivery candidate：`307f6c09`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -90,6 +94,14 @@
   credential precedence、非法 Provider/模型、Doctor/onboarding、PTY、resume/reopen 与
   exec/HTTP/stdio parity 全部离线通过。没有模型 treatment，Key 未读取、官方请求和网络
   访问为 0。
+  M8-B 随后把正式 binary set 固定为 `codewhale`、`codewhale-tui`，让 config/state/
+  settings/secrets 只使用 CodeWhale namespace，并建立唯一 locked/offline local delivery
+  owner。`crates/release`、imported updater/CNB discovery、`codew`、旧产品 env/path
+  compatibility、第二 metrics truth 和未接线部署资产已删除。candidate `307f6c09` 的真实
+  macOS artifact 在 OS 禁网下完成安装/验证/Doctor/卸载，Linux 同一 lifecycle 在缓存
+  container `--network none` 下通过；用户数据保持不变。没有模型 treatment，Key 未读取、
+  官方 API 请求 0。一次候选后 metadata 断言的 rustup 更新探测被立即中断并记录，不能把
+  delivery no-network evidence 扩张为整个 Agent session 的 no-network 结论。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1285,14 +1297,46 @@ MCP OAuth 只认证 MCP transport，不认证模型后端。
 39,023 行，Run API/RuntimeEvent/State/exec-stream 未变。完整事实见
 [M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
 
+M8-B 没有改变上述 model setup 或 canonical execution。当前 product/delivery identity 为：
+
+```text
+clean CodeWhale source + Cargo.lock + Rust 1.97.0
+  -> scripts/codewhale-delivery.sh package --locked --offline
+  -> codewhale.delivery.v1 manifest + inner/outer SHA-256
+  -> immutable prefix/lib/codewhale/releases/<identity>
+  -> atomic current/previous activation
+  -> prefix/bin/{codewhale,codewhale-tui}
+```
+
+workspace repository metadata 指向 owner origin
+`https://github.com/gelin66/deepseek-agent`；upstream 只保留 read-only source history，
+不是 package/release source。embedded build metadata 只接受 `CODEWHALE_BUILD_*`，TUI
+sibling override 只接受 `CODEWHALE_TUI_BIN`，DeepSeek transport User-Agent 为
+`CodeWhale/<version>`。真正的 provider protocol env（如 `DEEPSEEK_API_KEY`）保持不变。
+
+产品配置、状态、settings 与 secrets 只使用 `CODEWHALE_HOME`、
+`CODEWHALE_CONFIG_PATH` 和 `.codewhale`；`.deepseek` 不被读取、迁移、回写或卸载。
+OS keychain service 为 `codewhale`。CLI `metrics` 第二状态真相、旧 `codew` binary、
+重复 example、旧开发脚本、TUI updater/version check、`crates/release` 和 CNB/imported
+GitHub discovery 已物理删除。Doctor 是确定性的本地诊断，不查询 release metadata。
+
+delivery artifact 精确绑定 product/version/target/full source revision/tree、Cargo.lock
+SHA、rustc identity、source mode 和两项 binary set；archive 与内部文件都验证 SHA-256。
+install/upgrade 不覆盖 immutable release，current/previous 通过平台原子 symlink 切换；
+rollback 不重建，uninstall 只删除程序和 delivery metadata。macOS real release lifecycle
+和 Linux fixture lifecycle 都在网络被禁止时通过。代码 candidate 相对 `2ed3efe3` 净删除
+1,702 行，Run API v10、RuntimeEvent v16、State v21、exec-stream v2 未变。完整事实见
+[M8-B 产品身份与本地交付结论](../../eval/summaries/m8-b-product-delivery-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
 - hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
   可靠性保留，不支持这些效率结论；
-- 品牌改名、release/安装/打包/CI 清理或全面汉化已完成；M8-A 只完成 model Provider
-  配置与入口的 DeepSeek-only cutover；
+- fixed `zh-Hans` 全产品界面、中文帮助/错误恢复英文泄漏门禁或中文 Agent prompt A/B
+  已完成；M8-B 只完成产品 identity 与本地 delivery，Linux source release build 仍只由
+  CI matrix 拥有而非本机观察；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
