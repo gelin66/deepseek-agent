@@ -864,7 +864,14 @@ fn localize_cli_command(command: &mut clap::Command) {
         .disable_help_flag(true)
         .disable_version_flag(true)
         .long_about(None)
-        .after_help(None);
+        .after_help(None)
+        .mut_args(|argument| {
+            if argument.get_action().takes_values() {
+                argument.hide_possible_values(true)
+            } else {
+                argument
+            }
+        });
     localized = localized.arg(
         clap::Arg::new("help")
             .short('h')
@@ -2083,9 +2090,11 @@ mod tests {
             "Run a non-interactive prompt",
             "Run the canonical local Run API",
             "Controls transcript and output verbosity",
+            "possible values",
         ] {
             assert!(!help.contains(leak), "English product text leaked: {leak}");
         }
+        assert!(help.contains("是否启用本地遥测：true 或 false"));
 
         let app_server = help_for(&["codewhale", "app-server", "--help"]);
         assert!(app_server.contains("HTTP 监听地址"));

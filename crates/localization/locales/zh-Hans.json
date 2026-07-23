@@ -48,7 +48,7 @@
     "CliArgModel": "本次运行使用的官方 DeepSeek 模型 ID",
     "CliArgOutputMode": "输出模式",
     "CliArgLogLevel": "日志级别",
-    "CliArgTelemetry": "是否启用本地遥测",
+    "CliArgTelemetry": "是否启用本地遥测：true 或 false",
     "CliArgApprovalPolicy": "工具审批策略",
     "CliArgSandboxMode": "sandbox 策略",
     "CliArgBaseUrl": "官方 DeepSeek API base_url",

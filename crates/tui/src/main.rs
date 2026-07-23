@@ -1036,7 +1036,14 @@ fn localize_tui_command(command: &mut clap::Command) {
         .disable_help_flag(true)
         .disable_version_flag(true)
         .long_about(None)
-        .after_help(None);
+        .after_help(None)
+        .mut_args(|argument| {
+            if argument.get_action().takes_values() {
+                argument.hide_possible_values(true)
+            } else {
+                argument
+            }
+        });
     localized = localized.arg(
         clap::Arg::new("help")
             .short('h')
@@ -5512,6 +5519,7 @@ mod m8c_fixed_zh_hans_help_tests {
             "Run system diagnostics",
             "Run a non-interactive prompt",
             "Resume a canonical Agent run",
+            "possible values",
         ] {
             assert!(!help.contains(leak), "English product text leaked: {leak}");
         }
