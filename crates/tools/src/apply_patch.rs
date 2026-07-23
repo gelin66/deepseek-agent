@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
 use serde::{Deserialize, Serialize};
@@ -999,7 +999,7 @@ fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
 }
 
 fn create_missing_parent_directories(
-    path: &PathBuf,
+    path: &Path,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ToolError> {
     let Some(parent) = path.parent() else {
@@ -1056,7 +1056,7 @@ fn remove_file_if_unchanged(entry: &PendingWrite) -> Result<(), ToolError> {
     })
 }
 
-fn atomic_write_error(path: &PathBuf, error: AtomicWriteError) -> ToolError {
+fn atomic_write_error(path: &Path, error: AtomicWriteError) -> ToolError {
     match error {
         AtomicWriteError::Conflict => ToolError::stale_read(format!(
             "apply_patch cannot publish {} because it changed after validation",
