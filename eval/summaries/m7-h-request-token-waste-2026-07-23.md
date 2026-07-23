@@ -1,10 +1,15 @@
 # M7-H canonical request/Token 浪费矩阵与 terminal catalog 结论
 
-日期：2026-07-23  
-起始 revision：`48a0b44df2b8b0ba0f292af943a78d020484133e`  
-失败契约：`1943df4c0d9af834efe07ed13b735e344b5d7978`  
-production 修复：`eb8763a12fc3616577221a061bf5365680149b06`  
-production catalog 回归：`b1a01ce9`  
+日期：2026-07-23
+
+起始 revision：`48a0b44df2b8b0ba0f292af943a78d020484133e`
+
+失败契约：`1943df4c0d9af834efe07ed13b735e344b5d7978`
+
+production 修复：`eb8763a12fc3616577221a061bf5365680149b06`
+
+production catalog 回归：`b1a01ce9`
+
 冻结 observer：`15b5983e`，binary identity follow-up `b805a668`
 
 ## 1. 结论
