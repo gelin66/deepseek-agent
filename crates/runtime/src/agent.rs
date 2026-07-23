@@ -634,45 +634,6 @@ impl AgentRuntime {
                     failure: RuntimeFailure::Store { message },
                 };
             }
-            let context_tools = self.tool_definitions(
-                &state.snapshot.request.tool_policy,
-                state
-                    .snapshot
-                    .request
-                    .task_contract
-                    .as_ref()
-                    .map(|contract| &contract.definition),
-                ModelToolAuthority::for_request(&state.snapshot.request),
-                state.snapshot.request.actor.depth,
-                state.snapshot.request.limits.max_depth,
-                state.snapshot.request.environment.interactive,
-            );
-            if safe_fresh_boundary {
-                let estimated =
-                    match effective_context(context_input(&state.snapshot, &context_tools)) {
-                        Ok(context) => context.estimated_tokens,
-                        Err(error) => {
-                            return TerminalState::Failed {
-                                failure: RuntimeFailure::Store {
-                                    message: error.to_string(),
-                                },
-                            };
-                        }
-                    };
-                let hard_input_tokens =
-                    u64::from(state.snapshot.request.context_policy.hard_input_tokens);
-                if estimated > hard_input_tokens {
-                    match self.compact_context(state, &context_tools).await {
-                        Ok(
-                            ContextCompactionControl::Committed
-                            | ContextCompactionControl::NotNeeded,
-                        ) => {}
-                        Err(failure) => {
-                            return TerminalState::Failed { failure };
-                        }
-                    }
-                }
-            }
             let turn = if let Some(output) = state.recovery_output.take() {
                 Ok(ModelTurnControl::Output(ModelTurnOutput::new(
                     output,
@@ -850,16 +811,14 @@ impl AgentRuntime {
         &self,
         state: &mut RunState,
         tools: &[ToolDefinition],
-    ) -> Result<ContextCompactionControl, RuntimeFailure> {
+    ) -> Result<(), RuntimeFailure> {
         match prepare_compaction(
             context_input(&state.snapshot, tools),
             state.snapshot.request.context_policy,
         )
         .map_err(context_projection_failure)?
         {
-            ContextCompactionPreparation::NotNeeded { .. } => {
-                Ok(ContextCompactionControl::NotNeeded)
-            }
+            ContextCompactionPreparation::NotNeeded { .. } => Ok(()),
             ContextCompactionPreparation::LimitExceeded {
                 estimated_tokens,
                 hard_input_tokens,
@@ -883,7 +842,7 @@ impl AgentRuntime {
                     },
                 )
                 .await?;
-                Ok(ContextCompactionControl::Committed)
+                Ok(())
             }
         }
     }
@@ -942,17 +901,22 @@ impl AgentRuntime {
                         state.snapshot.request.environment.interactive,
                     )
                 };
-                let context = effective_context(context_input(&state.snapshot, &tools))
+                let mut context = effective_context(context_input(&state.snapshot, &tools))
                     .map_err(context_projection_failure)?;
                 let hard_input_tokens =
                     u64::from(state.snapshot.request.context_policy.hard_input_tokens);
                 if context.estimated_tokens > hard_input_tokens {
-                    return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
-                        failure: RuntimeFailure::ContextLimitExceeded {
-                            estimated_tokens: context.estimated_tokens,
-                            hard_input_tokens,
-                        },
-                    }));
+                    self.compact_context(state, &tools).await?;
+                    context = effective_context(context_input(&state.snapshot, &tools))
+                        .map_err(context_projection_failure)?;
+                    if context.estimated_tokens > hard_input_tokens {
+                        return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
+                            failure: RuntimeFailure::ContextLimitExceeded {
+                                estimated_tokens: context.estimated_tokens,
+                                hard_input_tokens,
+                            },
+                        }));
+                    }
                 }
                 let request = ModelRequest {
                     run_id: state.run_id().clone(),
@@ -4036,11 +4000,6 @@ enum ModelTurnControl {
 enum CompletionReviewError {
     Retry(String),
     Blocked(String),
-}
-
-enum ContextCompactionControl {
-    NotNeeded,
-    Committed,
 }
 
 enum ModelEventPoll {
