@@ -4010,9 +4010,11 @@ mod tests {
                         .then(|| "main".to_owned()),
                     branch: (access == AgentWorkspaceAccess::IsolatedWrite)
                         .then(|| format!("codewhale/writer/{lane}")),
-                    allowed_paths: (access == AgentWorkspaceAccess::IsolatedWrite)
-                        .then(|| vec!["fixture.txt".to_owned()])
-                        .unwrap_or_default(),
+                    allowed_paths: if access == AgentWorkspaceAccess::IsolatedWrite {
+                        vec!["fixture.txt".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
                     owner_token: (access == AgentWorkspaceAccess::IsolatedWrite)
                         .then(|| format!("owner-{lane}")),
                 };
