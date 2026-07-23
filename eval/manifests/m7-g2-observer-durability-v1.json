@@ -1,0 +1,138 @@
+{
+  "schema": "codewhale.eval.m7-g2-observer-durability.v1",
+  "suite_id": "m7-g2-observer-durability-3382bbc4-v1",
+  "status": "frozen_offline_live_inadmissible",
+  "date": "2026-07-23",
+  "claim": {
+    "real_problem": "M7-G returned an arm only after identity, verifier, surface, accounting, and metric derivation. Any post-terminal observer failure unwound the temporary directory and deleted the only SQLite store before the outer append-only raw writer received canonical terminal or billing facts.",
+    "acceptance": "Persist an exact canonical terminal snapshot before every derived observer, prove a no-credential SQLite reopen snapshot matches it, persist verifier observation before verified-success derivation, and fault-inject observer exceptions, partial raw writes, and SIGKILL windows without ever committing a derived arm result first.",
+    "single_owner": "The offline evaluation journal owns persistence order. AgentApplication, AgentRuntime, RunStore, Orchestrator, and the explicit read-only child surface are unchanged.",
+    "replacement": "A future successor evaluator must replace the M7-G execute-entire-arm-then-emit ordering with terminal_snapshot -> sqlite_reopen_snapshot -> verifier_snapshot -> arm_result.",
+    "cutover_deletion": "No paid successor runner or experiment-only production branch is retained in M7-G2. A future materially different production candidate may consume this journal contract; M7-G v1 raw remains immutable historical evidence."
+  },
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "3382bbc4887984b31f39e31134c02fdd06615754",
+    "starting_tree_clean": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "production_delta_after_m7_g_candidate": false,
+    "production_candidate": "062623e62328b1b01face1b64f73a48081eefa48",
+    "post_decision_observer_only_revision": "8763722c37fecefadbbf8b28671808b67ecad810"
+  },
+  "observer_contract": {
+    "record_order": [
+      "plan",
+      "terminal_snapshot",
+      "sqlite_reopen_snapshot",
+      "verifier_snapshot",
+      "arm_result or abort"
+    ],
+    "terminal_snapshot_exact_fields": [
+      "full RunView",
+      "full RuntimeEvent list",
+      "full ModelRequestPrepared request values",
+      "usage",
+      "accounting",
+      "cost",
+      "terminal",
+      "State schema and integrity projection"
+    ],
+    "journal": {
+      "mode": "0600",
+      "creation": "O_EXCL|O_APPEND|O_NOFOLLOW",
+      "record_integrity": "monotonic sequence plus previous-record SHA-256 chain",
+      "durability": "file fsync after every complete record and directory fsync after reservation",
+      "partial_tail": "detect and exclude; never derive, resume, or append the same suite",
+      "existing_output": "never reopened for append"
+    },
+    "reopen": "The production RunStore gate reopens the same SQLite state without a credential; the evaluator journal preserves both exact projections and their equality hashes before product metrics.",
+    "maximum_reruns": 0
+  },
+  "fault_injection": {
+    "faults": [
+      "identity_exception",
+      "verifier_exception",
+      "surface_exception",
+      "accounting_exception",
+      "terminal_before_write_kill",
+      "terminal_mid_write_kill",
+      "terminal_after_write_before_fsync_kill",
+      "after_terminal_fsync_kill",
+      "after_reopen_fsync_kill",
+      "after_verifier_fsync_kill",
+      "before_result_kill"
+    ],
+    "invariants": [
+      "no fault may commit arm_result",
+      "identity, verifier, surface, and accounting exceptions retain terminal and reopen facts before abort",
+      "a mid-record kill leaves a detectable partial tail and no derivation",
+      "every complete record is 0600, hash chained, and fsynced",
+      "fault children have no credential or network input"
+    ]
+  },
+  "legacy_suite": {
+    "suite": "m7-g-readonly-fanout-v1",
+    "candidate": "062623e62328b1b01face1b64f73a48081eefa48",
+    "raw": "eval/results/m7-g-readonly-fanout-062623e6.jsonl",
+    "raw_sha256": "sha256:177bb20aa9b1d5d91b75a60ce3fde7c783c0e927567f9c2c79e2ad971fa546eb",
+    "raw_mode": "0600",
+    "completed_arms": 0,
+    "billing": "unknown",
+    "maximum_reruns": 0,
+    "continuation_forbidden": true,
+    "mate_completion_forbidden": true,
+    "sample_splicing_forbidden": true
+  },
+  "admission": {
+    "live_api_admitted": false,
+    "reason": "The only new behavior is an offline observer durability contract. It does not change the production fan-out treatment, so a new suite ID, output, release binary, or evaluator-only revision would still be a disguised rerun of M7-G.",
+    "credential_rule": "Do not read /Users/gelin/Desktop/codewhale/key.txt and do not call the official API.",
+    "future_requirements": [
+      "a material production delta supported by a concrete request or token-budget counterexample",
+      "a clean candidate revision distinct from the consumed M7-G production treatment",
+      "new suite ID, output path, and immutable binary",
+      "same task, prompt, model, total budgets, and maximum_reruns=0",
+      "9 pairs / 18 arms from schedule position 1",
+      "all offline identity, billing, recovery, journal, and process-kill gates",
+      "no continuation, mate completion, or sample splicing from M7-G"
+    ]
+  },
+  "decision": {
+    "keep": [
+      "explicit-only canonical read-only child",
+      "M7-G production overlap and RunStore recovery regressions",
+      "offline fail-before-loss observer journal contract"
+    ],
+    "shrink": [
+      "no paid successor runner in this slice",
+      "no second accounting or RunStore owner"
+    ],
+    "hold": [
+      "fan-out product benefit",
+      "automatic fan-out admission",
+      "default child concurrency"
+    ],
+    "reject": [
+      "renumbering an observer-only revision as a new production candidate",
+      "continuing or splicing the M7-G formal raw",
+      "second Runtime, Store, model loop, tool catalog, Writer concurrency, general DAG, or prompt wrapper"
+    ],
+    "next_slice": "Audit canonical Agent request and token-budget consumption using existing RunStore events, beginning with unnecessary child/root terminal requests and reasoning replay. Require a concrete offline counterexample before any production change or paid A/B."
+  },
+  "resources": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m7g2-target",
+    "offline_output": "eval/results/m7-g2-observer-durability-3382bbc4-v1.jsonl",
+    "raw_mode": "ignored_0600"
+  },
+  "frozen_hashes": {
+    "harness_sha256": "sha256:e0df9086636b1c811dac5c9f1973135f9ff1cc2391dfc079e6ee59ad93922ab0",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:ebe3f204b8e5e7fb0928228e38af446f29e8bf724ad342fb80dd655c13323c9a",
+    "sample_store_facts_sha256": "sha256:0279798e999315cac6466b143fac1ce0f0218b8c6513b9066b1987951e4d9a91",
+    "fault_matrix_sha256": "sha256:42245c0b3fe4e3d8f86a05d8ddab90e44403eceede8e9bea0e712f1eb1f402b5"
+  }
+}
