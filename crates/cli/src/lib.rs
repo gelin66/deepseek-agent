@@ -246,10 +246,6 @@ Lane records persist under $CODEWHALE_HOME/lanes/. tmux durability belongs to
 Runtime, not Fleet.
 ")]
     Lane(LaneArgs),
-    /// Apply a patch file or stdin to the working tree.
-    Apply(TuiPassthroughArgs),
-    /// Run the offline TUI evaluation harness.
-    Eval(TuiPassthroughArgs),
     /// Manage TUI MCP servers.
     Mcp(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
@@ -1046,14 +1042,6 @@ fn run() -> Result<()> {
         }
         Some(Commands::LaneLogProxy(_)) => unreachable!("lane log proxy dispatched above"),
         Some(Commands::Lane(args)) => run_lane_command(args),
-        Some(Commands::Apply(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("apply", args))
-        }
-        Some(Commands::Eval(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("eval", args))
-        }
         Some(Commands::Mcp(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
@@ -2257,11 +2245,7 @@ fn build_tui_command_with_paths(
     } else {
         resolved_runtime.verbosity.clone()
     };
-    if verbosity.is_none()
-        && passthrough
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "exec" | "eval"))
-    {
+    if verbosity.is_none() && passthrough.iter().any(|arg| arg == "exec") {
         verbosity = Some("concise".to_string());
     }
 

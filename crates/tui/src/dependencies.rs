@@ -15,7 +15,7 @@
 //! - Doctor command (`run_doctor` in `main.rs`): for surfacing the
 //!   resolved state to the user so missing dependencies aren't an
 //!   invisible failure.
-//! - Retained TUI tools that invoke Git, Pandoc, PDF extraction, or other
+//! - Retained TUI tools that invoke the GitHub CLI, Pandoc, PDF extraction, or other
 //!   local executables.
 //!
 //! Results are cached for the process lifetime via [`std::sync::OnceLock`]
@@ -304,7 +304,7 @@ pub fn resolve_pandoc() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// A tool that DeepSeek-TUI shells out to. Instead of scattering
-/// `Command::new("git")` / `Command::new("gh")` across the codebase,
+/// `Command::new("gh")` and similar calls across the codebase,
 /// each external dependency implements this trait once in this module.
 /// Callers ask the tool for a pre-populated [`Command`] and chain their
 /// own args, working directory, and spawn method.
@@ -312,15 +312,14 @@ pub fn resolve_pandoc() -> Option<String> {
 /// # Example
 ///
 /// ```ignore
-/// let output = Git::command()
-///     .expect("git not found")
-///     .args(["diff", "--stat"])
-///     .current_dir(&workspace)
+/// let output = Gh::command()
+///     .expect("gh not found")
+///     .arg("--version")
 ///     .output()?;
 /// ```
 pub trait ExternalTool {
     /// Candidate binary names, tried in order until one responds to
-    /// `--version`.  For single-binary tools (git, gh, node) this is a
+    /// `--version`.  For single-binary tools (gh, node) this is a
     /// one-element slice.
     fn candidates() -> &'static [&'static str];
 
@@ -349,30 +348,6 @@ pub trait ExternalTool {
 // ---------------------------------------------------------------------------
 // Concrete tool implementations
 // ---------------------------------------------------------------------------
-
-/// Git version control.
-pub struct Git;
-
-impl ExternalTool for Git {
-    fn candidates() -> &'static [&'static str] {
-        &["git"]
-    }
-
-    fn resolve() -> Option<String> {
-        static CACHE: OnceLock<Option<String>> = OnceLock::new();
-        CACHE
-            .get_or_init(|| {
-                for candidate in Self::candidates() {
-                    if probe_executable(candidate) {
-                        tracing::info!(target: "tool_dependencies", "Resolved git binary");
-                        return Some((*candidate).to_string());
-                    }
-                }
-                None
-            })
-            .clone()
-    }
-}
 
 /// GitHub CLI.
 pub struct Gh;
@@ -610,11 +585,6 @@ mod tests {
     // ===================================================================
 
     #[test]
-    fn git_candidates_is_git_only() {
-        assert_eq!(Git::candidates(), &["git"]);
-    }
-
-    #[test]
     fn gh_candidates_is_gh_only() {
         assert_eq!(Gh::candidates(), &["gh"]);
     }
@@ -622,13 +592,6 @@ mod tests {
     #[test]
     fn rustc_candidates_is_rustc_only() {
         assert_eq!(RustC::candidates(), &["rustc"]);
-    }
-
-    #[test]
-    fn git_resolve_is_cached() {
-        let first = Git::resolve();
-        let second = Git::resolve();
-        assert_eq!(first, second);
     }
 
     #[test]

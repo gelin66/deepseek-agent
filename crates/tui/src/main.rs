@@ -5,7 +5,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,7 +17,6 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use codewhale_deepseek::official_model_capabilities;
 use dotenvy::dotenv;
-use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
@@ -32,7 +31,6 @@ mod config;
 mod config_persistence;
 mod dependencies;
 mod error_taxonomy;
-mod eval;
 mod exec_lifecycle_stream;
 mod exec_output;
 mod exec_runtime;
@@ -73,7 +71,6 @@ mod workspace_trust;
 mod xai_oauth;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
-use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
 use crate::features::{Feature, render_feature_table};
 use crate::mcp::{McpPool, McpServerConfig, McpServerOAuthConfig, McpWriteStatus};
@@ -220,10 +217,6 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         checkout: bool,
     },
-    /// Apply a patch file (or stdin) to the working tree
-    Apply(ApplyArgs),
-    /// Run the offline evaluation harness (no network/LLM calls)
-    Eval(EvalArgs),
     /// Score a run's token/cache/cost from recorded turns; flag regressions vs a baseline
     Scorecard(ScorecardArgs),
     /// Manage MCP servers
@@ -940,28 +933,6 @@ struct ScorecardArgs {
     json: bool,
 }
 
-#[derive(Args, Debug, Clone)]
-struct EvalArgs {
-    /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
-    #[arg(long, value_name = "STEP")]
-    fail_step: Option<String>,
-    /// Shell command to run during the exec step
-    #[arg(long, default_value = "printf eval-harness")]
-    shell_command: String,
-    /// Token that must appear in shell output for validation
-    #[arg(long, default_value = "eval-harness")]
-    shell_expect_token: String,
-    /// Maximum characters stored per step output summary
-    #[arg(long, default_value_t = 240)]
-    max_output_chars: usize,
-    /// Emit machine-readable JSON output
-    #[arg(long, default_value_t = false)]
-    json: bool,
-    /// Append one JSONL evidence record per step to `<DIR>/<scenario>.jsonl`.
-    #[arg(long, value_name = "DIR")]
-    record: Option<PathBuf>,
-}
-
 #[derive(Args, Debug, Default, Clone)]
 struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `features.<name>=true`.
@@ -983,13 +954,6 @@ impl FeatureToggles {
         }
         Ok(())
     }
-}
-
-#[derive(Args, Debug, Clone)]
-struct ApplyArgs {
-    /// Patch file to apply (defaults to stdin)
-    #[arg(value_name = "PATCH_FILE")]
-    patch_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -1395,8 +1359,6 @@ async fn run_async_main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 run_pr(&cli, &config, number, repo.as_deref(), checkout).await
             }
-            Commands::Apply(args) => run_apply(args),
-            Commands::Eval(args) => run_eval(args),
             Commands::Scorecard(args) => run_scorecard(args),
             Commands::Mcp { command } => {
                 let config = load_config_from_cli(&cli)?;
@@ -1458,75 +1420,6 @@ fn generate_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(shell, &mut cmd, name, &mut io::stdout());
-}
-
-/// Run the offline evaluation harness (no network/LLM calls).
-fn run_eval(args: EvalArgs) -> Result<()> {
-    let fail_step = match args.fail_step.as_deref() {
-        Some(value) => ScenarioStepKind::parse(value)
-            .map(Some)
-            .ok_or_else(|| anyhow!("invalid --fail-step '{value}'"))?,
-        None => None,
-    };
-
-    let config = EvalHarnessConfig {
-        fail_step,
-        shell_command: args.shell_command,
-        shell_expect_token: args.shell_expect_token,
-        max_output_chars: args.max_output_chars,
-        record_dir: args.record.clone(),
-        ..EvalHarnessConfig::default()
-    };
-
-    let harness = EvalHarness::new(config);
-    let run = harness.run().context("evaluation harness failed")?;
-    let report = run.to_report();
-
-    if args.json {
-        let json = serde_json::to_string_pretty(&report)?;
-        println!("{json}");
-    } else {
-        println!("Offline Eval Harness");
-        println!("scenario: {}", report.scenario_name);
-        println!("workspace: {}", report.workspace_root.display());
-        println!("success: {}", report.metrics.success);
-        println!("steps: {}", report.metrics.steps);
-        println!("tool_errors: {}", report.metrics.tool_errors);
-        println!("duration_ms: {}", report.metrics.duration.as_millis());
-
-        if !report.metrics.per_tool.is_empty() {
-            println!("per_tool:");
-            for (kind, stats) in &report.metrics.per_tool {
-                println!(
-                    "  {} invocations={} errors={} duration_ms={}",
-                    kind.tool_name(),
-                    stats.invocations,
-                    stats.errors,
-                    stats.total_duration.as_millis()
-                );
-            }
-        }
-
-        let failed_steps: Vec<_> = report.steps.iter().filter(|s| !s.success).collect();
-        if !failed_steps.is_empty() {
-            println!("failed_steps:");
-            for step in failed_steps {
-                let error = step.error.as_deref().unwrap_or("unknown error");
-                println!(
-                    "  {} tool={} error={}",
-                    step.kind.tool_name(),
-                    step.tool_name,
-                    error
-                );
-            }
-        }
-    }
-
-    if report.metrics.success {
-        Ok(())
-    } else {
-        bail!("offline evaluation harness reported failure")
-    }
 }
 
 /// Score a run's token/cache/cost from recorded turns and (optionally) flag
@@ -4764,47 +4657,6 @@ fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
             view.url.as_str()
         },
     )
-}
-
-fn run_apply(args: ApplyArgs) -> Result<()> {
-    let patch = if let Some(path) = args.patch_file {
-        std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read patch {}: {}", path.display(), e))?
-    } else {
-        read_patch_from_stdin()?
-    };
-    if patch.trim().is_empty() {
-        bail!("Patch is empty.");
-    }
-
-    let mut tmp = NamedTempFile::new()?;
-    tmp.write_all(patch.as_bytes())?;
-    let tmp_path = tmp.path().to_path_buf();
-
-    let output = crate::dependencies::Git::command()
-        .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?
-        .arg("apply")
-        .arg("--whitespace=nowarn")
-        .arg(&tmp_path)
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run git apply: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git apply failed: {}", stderr.trim());
-    }
-    println!("Applied patch successfully.");
-    Ok(())
-}
-
-fn read_patch_from_stdin() -> Result<String> {
-    let mut stdin = io::stdin();
-    if stdin.is_terminal() {
-        bail!("No patch file provided and stdin is empty.");
-    }
-    let mut buffer = String::new();
-    stdin.read_to_string(&mut buffer)?;
-    Ok(buffer)
 }
 
 async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand) -> Result<()> {
