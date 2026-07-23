@@ -338,10 +338,10 @@ retry、side effect、evidence、artifact 和 workspace revision。失败 outcom
 `failure_code`；模型看到唯一中文摘要和恢复建议，英文 code/字段保持稳定，成功结果不改写。
 Runtime 只按当次实际 advertised catalog 接受工具调用，crash/reopen 不重放已执行工具或
 已提交 outcome。root、read-only child 和 isolated Writer 使用同一失败恢复 conformance。
-M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并在原子 publish 前
-再次 CAS；重叠 search 不再被误判唯一，替换保留文件 permissions。`apply_patch` 在任何
-写入前拒绝 duplicate/resolved duplicate target、rename、hunk count mismatch、no-op 与
-ambiguous fuzzy placement。multi-file 普通失败会按记录回滚原字节并显式报告 rollback
+M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并在原子 replacement
+前再次校验原字节；重叠 search 不再被误判唯一，替换保留文件 permissions。`apply_patch`
+在任何写入前拒绝 duplicate/resolved duplicate target、rename、hunk count mismatch、no-op
+与 ambiguous fuzzy placement。multi-file 普通失败会按记录回滚原字节并显式报告 rollback
 不完整；它不声称提供跨文件 crash-atomic transaction。
 
 顶层 CLI 的 direct `git apply` 与 TUI-local `codewhale eval` 简化编辑器已经物理删除；
@@ -1033,7 +1033,8 @@ Strict decision 布尔值与一个零调用包装函数，并补充 SQLite reope
 
 M7-C 在不改变 Run API v10、RuntimeEvent v16、State v21 或 exec-stream v2 的前提下，
 冻结并关闭了 canonical 编辑 Host 反例。`crates/tools` 仍是唯一 schema/handler owner；
-`edit_file` 使用 read-time byte digest 与 publish CAS，`apply_patch` 先完成全量 target/hunk/
+`edit_file` 使用 read-time byte digest，并在原子 replacement 前再次校验原字节；这不是把
+content predicate 与 rename 合并的线性化 CAS。`apply_patch` 先完成全量 target/hunk/
 result preflight 再写入，单文件 publish 使用原子 replace 并保留 permissions，multi-file
 普通错误按精确记录回滚。所有拒绝仍进入唯一 typed `ToolOutcome`，而不是新的编辑状态机。
 
@@ -1048,6 +1049,17 @@ binary treatment surface。M7-C 判定 `inadmissible_no_surface_delta / hold`，
 未执行 live A/B。CLI direct apply、TUI-local eval/edit 与其旧 acceptance 已在 cutover
 物理删除。完整事实与官方协议复核见
 [M7-C canonical 编辑能力基线与 FIM 准入结论](../../eval/summaries/m7-c-edit-baseline-2026-07-23.md)。
+
+结论后复核 checkpoint `1cb65b82` 继续收紧同一 owner：`changes` 不得携带 patch-only
+`path/fuzz/create_if_missing`，`path` 不得覆盖 `/dev/null` create/delete header，delete-to-null
+必须移除完整内容，create-from-null 不得覆盖已有文件，checked create 用 no-clobber publish。
+当前模型可见描述明确逐文件原子发布与跨文件 crash 非事务；root headless、root interactive
+和 isolated Writer 的当前 catalog hash 已随描述重冻，历史 manifest 不重写。
+
+freshness 的当前边界是 exact-byte check 后 atomic rename；外部不守约 writer 仍可能竞争
+check/rename，删除同理存在 check/remove 窗口。Started 的 `MayWrite` 即使 outcome 未应用、
+revision 未变，也会推进 workspace generation；这与 direct-tools no-op fixture 不推进任何
+Runtime generation 的历史测试边界不同。
 
 ## 7. 明确非结论
 

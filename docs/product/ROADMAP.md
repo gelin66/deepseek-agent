@@ -1778,7 +1778,8 @@ same-length/same-mtime 改写与重叠搜索；`apply_patch` 会接受 duplicate
 hunk count mismatch、no-op，并在重复块上取第一个 fuzzy 候选；原子替换还会丢 mode，
 multi-file 普通失败会吞 rollback error。
 
-`7613073c` 在 `crates/tools` 唯一 owner 内完成 exact-byte digest、publish CAS、重叠唯一性、
+`7613073c` 在 `crates/tools` 唯一 owner 内完成 exact-byte digest、publish 前原字节校验与原子
+replacement、重叠唯一性、
 permissions 保留、全量 preflight、ambiguous fuzzy fail-closed 与可观察 rollback；root、
 read-only child、Writer 继续使用同一个 Runtime/Store/ToolOutcome。起始 12 项 tools contract
 为 3/12，候选为 12/12；这是确定性 correctness 证据，不冒充模型成功率 A/B。clean
@@ -1800,6 +1801,20 @@ caller，因此不存在同 binary treatment delta。正式 live A/B 在 Key/API
 下一编辑切片先收集新的 production failure 样本。只有 patch 生成/恢复确为主要损失且能
 冻结完整 Host-owned treatment 时，才建立 FIM parser/accounting/apply/replay 垂直路径；
 若剩余瓶颈是多文件 crash 歧义，则优先补 operation-specific durable transaction facts。
+
+2026-07-23 的结论后只读复核发现四个未进入原 12 项 manifest 的确定性 Host 反例。
+`1cb65b82` 在同一 `crates/tools` owner 内拒绝 `changes` 与 patch-only controls 混用、禁止
+`path` 覆盖 `/dev/null` create/delete 语义、要求 delete-to-null 真正清空目标，并禁止
+create-from-null 覆盖已有文件；checked create 改为 no-clobber publish。模型可见描述同步
+明确“逐文件原子 publish、跨文件 crash 非事务”，当前 writable actor catalog identity
+重冻而历史 M7-B/M7-C manifest 不改写。
+
+复核同时把旧文档中的“publish CAS”收窄为准确事实：已有文件只在原子 replacement 前做
+exact-byte precondition，外部不守约 writer 仍可竞争 check/rename；delete 也存在 check/remove
+窗口。canonical Runtime 中 Started 的 `MayWrite` 即使拒绝且 revision 不变也会推进 generation，
+所以 frozen E10 的 generation 文案只描述 direct-tools fixture，不是 production Runtime 合同。
+这些勘误不产生 FIM treatment；Key 仍未读取，live 仍为
+`inadmissible_no_surface_delta`。
 
 ### 调优
 

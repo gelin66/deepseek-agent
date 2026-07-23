@@ -19,7 +19,7 @@
 
 | 工具 | 当前职责 |
 |---|---|
-| `apply_patch` | 全量预检 unified diff 或完整内容后修改工作区文件；单文件原子发布，多文件普通失败回滚。 |
+| `apply_patch` | 全量预检 unified diff 或 `changes` 完整内容后修改工作区文件；逐文件原子发布，多文件普通失败回滚但跨文件 crash 非事务。 |
 | `edit_file` | 对已读取且 byte-digest 仍 fresh 的单个文件执行一次唯一搜索替换。 |
 | `exec_shell` | 在工作区同步执行一条有界命令，返回退出状态和输出。 |
 | `file_search` | 按文件名或路径片段模糊查找工作区文件。 |
@@ -86,11 +86,17 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 - 失败反馈由 canonical outcome 确定性生成：中文摘要说明失败与恢复动作，英文 code/字段
   保持稳定；成功结果不改写。Runtime 不自动重复可能有副作用的调用，恢复也不重复已经
   执行的工具或已提交的 outcome。
-- `edit_file` 的 prior read 绑定 exact-byte SHA-256，并在原子 publish 前以原字节再次 CAS；
+- `edit_file` 的 prior read 绑定 exact-byte SHA-256，并在原子 replacement 前再次校验原字节；
+  check 与 rename 不是一个线性化 CAS，外部不守约 writer 仍可竞争该窗口；
   overlapping search、stale、not found 与 no-op 均 fail closed，成功替换保留 permissions。
 - `apply_patch` 在写盘前拒绝 duplicate/resolved duplicate target、rename、hunk count
-  mismatch、no-op 和 ambiguous fuzzy placement。multi-file 普通失败按已应用记录恢复原字节，
+  mismatch、no-op、ambiguous fuzzy placement、`changes` 与 patch-only controls 混用，以及
+  `path` 覆盖 `/dev/null` create/delete。delete-to-null 必须清空内容；create-from-null 与
+  checked create 都不覆盖已有目标。multi-file 普通失败按已应用记录恢复原字节，
   rollback 不完整显式失败；它不声称提供跨文件 crash-atomic transaction。
+- canonical Runtime 中已经 Started 的 `MayWrite` 即使最终 `NotApplied`、revision 未变，也会
+  推进 workspace generation；direct tools fixture 没有 Runtime generation，不能据此恢复旧
+  verifier evidence。
 - 顶层 direct `git apply` 和 TUI-local eval/edit loop 已删除，不能绕过 production executor。
 - `run_verifiers` 是当前确定性验证入口。模型自评不是确定性证据，也不能单独令 Host
   接受完成。

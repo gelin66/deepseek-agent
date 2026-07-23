@@ -155,6 +155,9 @@ M7-C 的冻结入口是 [`eval-m7c-edit.py`](../scripts/eval-m7c-edit.py)，mani
 crash/reopen gates，不复制编辑器或失败分类。完整结果与 FIM
 `inadmissible_no_surface_delta / hold` 决策见
 [M7-C canonical 编辑能力基线与 FIM 准入结论](summaries/m7-c-edit-baseline-2026-07-23.md)。
+结论后复核没有改写 frozen manifest：新增 residual preflight/create/delete/no-clobber 反例
+由同一 tools owner 关闭；summary 同时记录 existing-file publish 非线性化 CAS，以及 Runtime
+Started `MayWrite` 的 generation 勘误。没有新增 FIM surface，Key/API 准入不变。
 
 ## 运行
 

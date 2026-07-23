@@ -848,7 +848,7 @@ target、未实现 rename、hunk count mismatch、no-op、ambiguous fuzzy first-
 multi-file 失败未完整回滚。`7613073c` 在 `crates/tools` 单 owner 内修复后为 12/12；没有
 新增模型可见工具、Runtime、Store、Provider 或用户模式。
 
-clean `9cba8b53` Harness 以 manifest SHA-256
+clean `9cba8b53` Harness 以 manifest canonical-content SHA-256
 `4d5457db2e7fc075fbecf925f89d45ea412a9aace515da1b4cfb0b3a03755c55` 运行 8/8 gates，
 覆盖 production AgentApplication loopback、latest-revision verifier recovery、SQLite reopen、
 read-only child、isolated Writer integrate/cleanup、ToolPrepared/Started/Outcome 三侧 SIGKILL
@@ -869,6 +869,19 @@ reruns 0、product metric ineligible。决策为：保留 canonical editor corre
 production 接入 `hold`；删除 direct `git apply` CLI、TUI-local eval/edit loop 与剩余旧
 acceptance；不创建半条 FIM 分支或第二编辑工具。完整证据与官方资料复核见
 [M7-C canonical 编辑能力基线与 FIM 准入结论](../../eval/summaries/m7-c-edit-baseline-2026-07-23.md)。
+
+结论后的只读复核没有改写 frozen manifest 或历史 result。`1cb65b82` 新增确定性反例并关闭：
+`changes` 与 patch-only controls 混用、`path` 覆盖 `/dev/null` create/delete、未完整删除却删除
+整文件、create-from-null 覆盖已有目标，以及 checked-create 竞态覆盖。13 个 M7-C patch
+用例、2 个 checked-publish 用例、canonical preflight、当前 actor catalog identity 与完整
+tools crate 均通过。
+
+证据口径同步收窄：existing-file publish 是 exact-byte precondition 后的原子 replacement，
+不是线性化 content CAS；跨文件 publish 不是 crash-atomic transaction。frozen E10 的
+“generation unchanged”只由 direct tools fixture 覆盖；production Runtime 中 Started 的
+`MayWrite` 会推进 generation，即使 revision 不变且 side effect 最终 `NotApplied`。历史
+manifest 保持不可变并在 summary 中记录勘误。该修复仍没有 FIM treatment surface，因此
+不授权 credential/API 或 live A/B。
 
 ## 10. 结果与决策记录
 

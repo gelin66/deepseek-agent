@@ -7,8 +7,10 @@
 - 非 canonical CLI/TUI 路径删除：`639f1e8b`、`9cba8b53`
 - 当前 production actor catalog 冻结：`6a27fb85`
 - 最终离线 Harness revision：`9cba8b53f02d9d457575711ecfe6a08342334d83`
+- 结论后只读复核与残余 correctness 修复：`1cb65b82`
 - manifest：`eval/manifests/m7-c-edit-baseline-v1.json`
-- manifest SHA-256：`4d5457db2e7fc075fbecf925f89d45ea412a9aace515da1b4cfb0b3a03755c55`
+- manifest canonical-content SHA-256：`4d5457db2e7fc075fbecf925f89d45ea412a9aace515da1b4cfb0b3a03755c55`
+- manifest raw-file SHA-256：`24ecf8252c192136edfd122919a0a5aab5a0c42ae9a9799f808febc26e825277`
 - 结论：**keep canonical tool correctness；hold FIM；live A/B 为
   `inadmissible_no_surface_delta`**
 
@@ -64,7 +66,7 @@ fixture；本切片没有用该不一致强行构造 treatment。
 | malformed/missing/extra arguments | Runtime 已有 typed invocation rejection | 保持唯一 `ToolOutcome`，补 production 回归 |
 | patch parse / hunk count | parser 会接受声明行数与正文不一致 | 写前拒绝 |
 | context mismatch / drift | fuzzy 搜索取第一个候选，重复块可错位 | 多候选时 `ambiguous_edit`，不写盘 |
-| stale prior read | `edit_file` 只比较长度与 mtime | 绑定读取字节 SHA-256，并在 publish 前 CAS |
+| stale prior read | `edit_file` 只比较长度与 mtime | 绑定读取字节 SHA-256，publish 前再次校验原字节，再原子替换；不宣称线性化 CAS |
 | search not found | 已 fail closed | 保持 |
 | ambiguous/non-unique search | 重叠匹配会被误判唯一 | 重叠感知计数并拒绝 |
 | identical/no-op | `apply_patch` 可接受无变化结果 | 写前拒绝 |
@@ -122,7 +124,7 @@ tests 和 `git diff --check`。
 
 唯一 owning module 是 `crates/tools`：
 
-- `edit_file` 的 read freshness 改为 exact-byte digest，发布前再次 CAS；
+- `edit_file` 的 read freshness 改为 exact-byte digest，发布前再次校验原字节，再原子替换；
 - 精确搜索使用重叠感知唯一性，原子替换保留 permissions；
 - `apply_patch` 在任何写入前拒绝 duplicate target、rename、hunk count mismatch、no-op 和
   ambiguous fuzzy placement；
@@ -136,6 +138,37 @@ cutover 物理删除了：len+mtime freshness、first-match fuzzy placement、�
 
 从 `afb9b0ab` 到代码 checkpoint `9cba8b53` 为 25 files、`+1,424/-2,048`；没有新增 Cargo
 依赖、模型可见工具、Runtime、Store、Provider、用户模式或 compatibility reader。
+
+### 5.1 结论后复核与勘误
+
+在不改写上述 frozen manifest、历史 Harness result 或 3/12 -> 12/12 结论的前提下，六个
+只读审计再次检查了 tools、DeepSeek、Runtime/State、真实 caller、Harness 与复杂度。
+`1cb65b82` 关闭了四个残余的写前 correctness 反例：
+
+- `changes` 不再静默忽略仅属于 patch 的 `path`、`fuzz` 或 `create_if_missing`；
+- `path` 不得覆盖 `/dev/null` create/delete header，避免把创建/删除语义降成普通替换；
+- delete-to-null 必须实际移除完整内容，create-from-null 遇到已有目标必须拒绝；
+- checked create 使用 no-clobber publish，竞态中的外部创建不会被覆盖；canonical preflight
+  保留 `changes` 语义错误的 `invalid_field`，而不是误报 `patch_parse`。
+
+模型可见 `apply_patch` 描述现在明确：单文件逐个原子 publish，多文件普通失败回滚，但跨
+文件 crash window 不是事务；`path/fuzz/create_if_missing` 只属于 `patch`。当前 root
+headless、root interactive 与 isolated Writer 目录 hash 随这一真实 wire identity 更新，历史
+M7-B manifest 仍保持不可变。定向门禁为 13 个 M7-C apply-patch 用例、2 个 checked-publish
+用例、canonical preflight 与 actor catalog identity 全部通过；完整 tools crate 为 347 passed、
+1 ignored external helper，集成测试另 1 passed。
+
+这里同时纠正两处证据口径：
+
+- 对已有文件，当前跨平台原语是“读取 expected bytes -> 原子 rename replacement”，不是把
+  内容 predicate 与 rename 合并为同一线性化 compare-and-swap。未遵守 CodeWhale 单 Writer
+  契约的外部进程仍可能在两步之间竞争；Runtime 在 Started 后继续 fail closed，不盲重放。
+  删除同样是 byte precondition 后 remove。真正消除该窗口需要新的 durable operation 设计，
+  不能靠改名为 CAS 或 advisory lock 声称完成。
+- frozen manifest 的 E10 把 no-op 的 verifier 写成 tree 和 generation 均不变；该断言只由
+  direct tools mechanism 覆盖。canonical Runtime 中任何已经 Started 的 `MayWrite` 都会令
+  workspace generation 前进，即使 outcome 是 `NotApplied` 且 revision 未变。历史 manifest
+  为保持可复核身份不重写；后续 Runtime 级任务必须按“revision 不变、generation 前进”判定。
 
 ## 6. FIM 与 live A/B 决策
 
@@ -168,7 +201,8 @@ ineligible。`key.txt` 未读取，也没有价格或成功率 claim。
 
 已知边界：
 
-- 单文件 rename-based publish 是原子的，但多文件 publish 不是跨文件 crash-atomic；普通错误
+- 单文件 rename-based replacement 是原子的，但 expected-byte check 与 rename 不是一个
+  线性化 CAS；多文件 publish 也不是跨文件 crash-atomic。普通错误
   会回滚，Started/Outcome crash 窗口由 Runtime fail closed 为 recovery required 而不重放；
 - 只保留 permissions/mode，不声称保留 ownership、xattr 或 ACL；
 - freshness digest 是单次 Runtime context 内的 read fact；Prepared 前后进程丢失 read cache
