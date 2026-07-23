@@ -47,6 +47,8 @@ MODEL_IDLE_MS = 120_000
 HARNESS_GRACE_SECONDS = 30
 PER_ARM_COST_CEILING_USD = 0.02
 MAX_FRAME = 16 * 1024 * 1024
+HOST_VERIFIER_TIMEOUT_MS = 600_000
+HOST_VERIFIER_ENV = {"PYTHONDONTWRITEBYTECODE": "1"}
 ROOT_TOOLS = [
     "apply_patch",
     "edit_file",
@@ -347,8 +349,8 @@ def verifier_spec(task_id: str) -> dict[str, Any]:
                     "program": program,
                     "args": command["args"],
                     "cwd": "",
-                    "env": {},
-                    "timeout_ms": 120_000,
+                    "env": HOST_VERIFIER_ENV,
+                    "timeout_ms": HOST_VERIFIER_TIMEOUT_MS,
                 }
             ]
         },
@@ -833,13 +835,24 @@ def run_identity(root_events: list[dict[str, Any]], task_id: str) -> dict[str, A
     ]
     require(len(created) == 1, "run_created_invalid")
     request = created[0]
+    expected_definition = task_definition(task_id)
+    identity_checks = {
+        "model": request.get("model") == MODEL,
+        "reasoning_effort": request.get("reasoning_effort") == "high",
+        "max_output_tokens": request.get("max_output_tokens") == MAX_OUTPUT_TOKENS,
+        "task_definition": request.get("task_contract", {}).get("definition")
+        == expected_definition,
+    }
     require(
-        request.get("model") == MODEL
-        and request.get("reasoning_effort") == "high"
-        and request.get("max_output_tokens") == MAX_OUTPUT_TOKENS
-        and request.get("task_contract", {}).get("definition")
-        == task_definition(task_id),
+        all(identity_checks.values()),
         "run_identity_invalid",
+        {
+            "checks": identity_checks,
+            "expected_task_definition_sha256": canonical_hash(expected_definition),
+            "actual_task_definition_sha256": canonical_hash(
+                request.get("task_contract", {}).get("definition")
+            ),
+        },
     )
     prepared = [
         stored["event"]["request"]
@@ -976,7 +989,18 @@ def execute_arm(
         terminal = run.get("terminal", {})
         state_identity = state_schema(codewhale_home)
         accounting = accounting_projection(run)
-        identity = run_identity(root_events, task_id)
+        try:
+            identity = run_identity(root_events, task_id)
+        except EvaluationError as error:
+            raise EvaluationError(
+                error.code,
+                {
+                    **error.details,
+                    "terminal_state": terminal.get("state"),
+                    "accounting": accounting,
+                    "state_schema": state_identity,
+                },
+            ) from error
         lifecycle = audit_lifecycle(variant, root_events, child_runs)
         verifier = external_verifier(workspace)
         changed = changed_files(workspace)
@@ -1304,6 +1328,13 @@ def run_self_test() -> int:
     require(
         manifest["resources"]["maximum_reruns"] == 0,
         "self_test_rerun_contract",
+    )
+    verifier = verifier_spec("t1-capability-intersection")
+    verifier_step = verifier["plan"]["steps"][0]
+    require(
+        verifier_step["env"] == HOST_VERIFIER_ENV
+        and verifier_step["timeout_ms"] == HOST_VERIFIER_TIMEOUT_MS,
+        "self_test_host_verifier_identity",
     )
     print(
         json.dumps(

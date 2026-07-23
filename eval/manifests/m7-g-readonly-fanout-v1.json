@@ -165,9 +165,9 @@
     "no_delta_or_unknown_billing": "hold_or_reject_without_further_paid_requests"
   },
   "frozen_hashes": {
-    "harness_sha256": "sha256:b08be16fb48ed3d5683e9c6277d13864f130280efd363ec6558836c713a8e636",
+    "harness_sha256": "sha256:9591bcb0f70178572845fc60461a30bc6b2f18265db94f3fd70bab3da334790e",
     "schedule_sha256": "sha256:67e90598816cf5b7586e50d8cda1bdc456eb1291bd6b1c4155dfdcbf3fd10dbb",
-    "task_contracts_sha256": "sha256:3f872ceb58848d7c9c2c8b66af7e53aa0d9c5a8b33b3766ab4a02265abad2b17",
+    "task_contracts_sha256": "sha256:f333a0cf4427efed3b6f97bc15c183e7e1f45cbf3af4a59ca831eb1677d2f1f2",
     "manifest_content_sha256_excluding_frozen_hashes": "sha256:b2ed3b83bead16a51ff6030851efbe391c089c2109a9908bea25bfd240d98494"
   },
   "resources": {
