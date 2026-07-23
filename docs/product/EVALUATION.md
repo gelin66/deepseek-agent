@@ -1326,6 +1326,59 @@ manifest、ignored result 与完整结论：
 - `eval/results/m8-c-fixed-zh-hans-interface-e99bf6c7-v1.json`；
 - [M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
 
+### 9.20 M8-D 中文原生 Agent prompt A/B（2026-07-24）
+
+M8-D 冻结一个且仅一个模型 treatment：把 current production constitution 的固定五步
+checklist 替换为两句事实缺口循环。Host UI、tool schema、Runtime/RunStore、协议、权限、
+任务、预算、retry、pricing 和 accounting 均不变。所有正式 suite 绑定：
+
+- source/binary revision `8371b6dd9ac5d18570ff81a28bd94cc93372c372`；
+- source tree `9fc34ee9dcd1837d361a37bbef174799c9241624`；
+- binary pair SHA `30288ee19b48d2941cb0cbcfeedb2d9fef8eadcbfa5a9c78352347411f87939c`；
+- candidate prompt SHA `2c3b8018a11c49ca1e0ae9b331ef12621aec77a3d56c631c01e535a74ec50ebf`；
+- `deepseek-v4-flash`、`reasoning_effort=high`、当前官方
+  `https://api.deepseek.com/chat/completions`；
+- 5 tasks × 2 variants × 3 runs、30 arms、`maximum_reruns=0`。
+
+2026-07-24 复核官方 Create Chat Completion、Models & Pricing、Thinking、Tool Calls、
+Change Log 和 FIM 文档。当前 OpenAI-compatible base URL 与 `/chat/completions` 路径保持；
+退役的是 `deepseek-chat`/`deepseek-reasoner` 旧模型别名。M8-D 未使用两个旧 alias，也未
+调用独立 Beta FIM surface。
+
+真实 caller 审计发现 app-server 没有加载已有 context-owned prompt override；`8371b6dd`
+让 app-server 与 exec/TUI 共用同一 loader，并用外部 stdio 进程、loopback 禁网、SIGKILL
+和 State reopen 证明 durable `RunCreated` prompt。该修复独立于 candidate 收益，保留。
+
+五个 successor suite 均使用全新 schema、Harness revision 和不可覆盖 0600 output：
+
+1. v1 完成 2 arms 后发现两臂真实 prompt 相同，按 measurement invalid 停止；
+2. v2 完成 5 arms，t5 的 Host/verifier/accounting 实际成功，但旧 child/task/usage
+   projection 错判；
+3. v3 完成 6 arms，全部 valid/verified；首个 Writer 在 API 前因错误 fixture Git identity
+   失败，shared error 逃出旧 handler，raw 保持 `running`；
+4. v4 完成 7 arms；single/read-only 6/6 valid/verified，首个 Writer canonical
+   integration/verifier/cleanup/reopen 成功，但旧扁平 AgentTask 与 `git status` scope
+   产生测量层 false success；
+5. v5 已离线修正 nested AgentTask 与 clean integrated `base..HEAD` scope，但首个 baseline
+   arm 后 accounting 为 `billing_unknown=true`、`complete=false`、`surface_usage=[]`，
+   立即 `aborted_unknown_billing`，没有启动第二 arm。
+
+v1-v4 可证明费用下界为 `$0.052454002`；v5 费用未知，不能补算或宣称总费用。旧 suite
+不得补 mate、续跑或拼样。v3/v4 的三个完整 diagnostic pairs 对 Token 的 paired median
+方向分别为改善 23.50% 和退化 12.33%，进一步说明不完整小样本不能支撑产品结论。
+
+最终决策是
+`hold_prompt_candidate / keep_app_server_override_consistency`：production bundled prompt
+保持不变，没有 candidate production branch 进入默认路径；保留 fixture、Harness、
+manifests 与 raw 作为可复核证据。M8-D 不证明 verified success、false success、工具恢复、
+Token、cache、wall time 或费用有净变化。
+
+manifest/raw/summary：
+
+- `eval/manifests/m8-d-prompt-ab-v1.json` 至 `m8-d-prompt-ab-v5.json`；
+- ignored `eval/raw/m8-d-prompt-formal-*.json`（全部 0600）；
+- [M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

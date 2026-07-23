@@ -100,6 +100,18 @@
   安装包回归全部通过。决策为
   `keep_single_fixed_zh_hans_owner / shrink_duplicate_product_text_paths`；没有模型
   treatment，Key 未读取、官方 API 请求 0。
+  M8-D 随后冻结同一 immutable `8371b6dd` binary pair、`deepseek-v4-flash`、
+  current `https://api.deepseek.com/chat/completions`、五个 single/read-only/explicit
+  Writer 任务和唯一 constitution prompt treatment。真实 caller 审计发现 app-server
+  没有加载既有 context-owned override；`8371b6dd` 已让 TUI/exec/app-server 收敛并以
+  外部进程 + State reopen 证明。v1-v4 分别暴露无 surface、multi accounting/task、
+  Writer fixture 和 Writer scope 的 evaluator 旧投影，raw 均不可覆盖、不拼样。final v5
+  已离线修正 current nested AgentTask 与 integrated `base..HEAD` scope，但首个 live arm
+  的 usage/billing 不可证明，按预注册门禁立即 `aborted_unknown_billing`。正式 30 arms
+  未完成，production bundled prompt 未切换，结论为
+  `hold_prompt_candidate / keep_app_server_override_consistency`。旧
+  `deepseek-chat`/`deepseek-reasoner` model alias 未使用；官方当前 ChatCompletions API
+  路径没有被旧 alias 退役替代。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -107,7 +119,7 @@
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-23
+- 上次更新：2026-07-24
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -214,7 +226,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only、M8-B 身份/交付、M8-C fixed zh-Hans 已完成；M8-D prompt A/B 待执行） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-A～M8-C 已完成；M8-D prompt candidate 因 final unknown billing 判定 hold；M8-E 退出审计待执行） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2216,10 +2228,39 @@ candidate `44b17940`、tree `f4444098`，两项 installed binary 的 version 身
 时间或费用改善。完整结果见
 [M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
 
-下一切片为 M8-D：重新审计 current production prompt 与历史被拒绝候选，先冻结版本、
-immutable binary、任务/角色/预算/计费和 verifier 身份，只对 DeepSeek 可见 system prompt
-形成单一可归因 treatment；不能把 Host UI 翻译、Runtime/Store、工具 schema、权限或预算
-变化混入 A/B。只有无 unknown billing 且存在真实 prompt surface delta 时才读取 Key。
+### M8-D：中文原生 Agent prompt 同任务 A/B
+
+M8-D 以 M8-C 后的 `491c069c` 为基线，只把 constitution 的固定五步 checklist 替换为
+两句事实缺口循环。candidate 从未替换 bundled prompt；真实 treatment 通过既有
+config-home override 注入。审计发现 `codewhale app-server` 没有像 exec/TUI 一样加载
+该 context-owned override，`8371b6dd` 完成唯一 caller 修复并冻结两项 release binary：
+`codewhale` SHA `d7d6afbe…98f823b`、`codewhale-tui` SHA
+`f0239151…5661c4f`。
+
+正式 contract 固定 `deepseek-v4-flash`、当前官方
+`https://api.deepseek.com/chat/completions`、相同 tool/permission/budget/cache suffix、
+五个任务、3 runs/cell、30 arms 和 `maximum_reruns=0`。`deepseek-chat` 与
+`deepseek-reasoner` 旧模型别名没有进入请求；2026-07-24 退役的是旧 alias，不是
+`/chat/completions` surface。FIM 独立 Beta surface 未调用。
+
+v1-v4 的 2/5/6/7 completed arms 依次暴露 app-server 无 delta、旧 multi projection、
+错误 Writer fixture Git identity 和错误 Writer lifecycle/scope projection；每个 successor
+都使用新 schema/Harness/output，从 position 1 开始，旧 raw 保持 0600 且不续跑、不拼样。
+v5 已离线证明 current nested AgentTask、aggregate accounting、五个 fixture identity 与
+clean integrated Writer `base..HEAD` scope，但第一个 baseline arm 后
+`billing_unknown=true`、`complete=false`、`surface_usage=[]`。Harness 立即停止，
+没有第 2 个 arm。
+
+因此没有完整、计费可证明的正式矩阵。production bundled prompt 不接管，产品决策为
+**hold prompt candidate / keep app-server override consistency**。不存在候选 production
+prompt branch 可删除；保留 ignored fixture/Harness/manifests/raw 作为身份与停止证据。
+v1-v4 可证明费用下界合计 `$0.052454002`，v5 费用未知，不能补算总费用。完整事实见
+[M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
+
+下一切片为 M8-E：不继续堆 prompt 版本，先逐项审计 PRODUCT_PLAN V1 完成定义与
+M1/M2/M5-C/M6/M8 证据债务，冻结唯一 release gap matrix。只有 current production
+反例才准入实现；M8-D v5 不得续跑，未来 Key/API 必须同时具备新 production delta、
+全新 successor manifest 和可证明 billing。
 
 ### 调优
 

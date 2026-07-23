@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-23
+- 快照日期：2026-07-24
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -47,6 +47,9 @@
 - M8-B reproducible delivery candidate：`307f6c09`
 - M8-C shared fixed zh-Hans owner：`062a747d`
 - M8-C fixed zh-Hans production candidate：`44b17940`
+- M8-D app-server prompt caller / immutable binary checkpoint：`8371b6dd`
+- M8-D final evaluator checkpoint：`a51e145f`
+- M8-D final live admission checkpoint：`26841208`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -111,6 +114,16 @@
   保持原样。L01-L14、foreign locale、80/120 列 CJK、两次 TUI、crash/reopen 与真实
   `44b17940` 安装包回归通过；protocol/runtime/state/app-server 相对 baseline 零差异。
   没有模型 treatment，Key 未读取、官方 API 请求 0。
+  M8-D 随后只评测一个 constitution prompt treatment。真实 process audit 发现 app-server
+  未加载已有 context-owned override；`8371b6dd` 已让 TUI/exec/app-server caller 收敛，
+  没有新增 prompt owner、模式或 Runtime。所有 successor 绑定同一
+  `deepseek-v4-flash` immutable binary pair 和当前官方
+  `https://api.deepseek.com/chat/completions`；旧 `deepseek-chat`/
+  `deepseek-reasoner` model alias 没有使用。v1-v4 的 evaluator identity/projection 缺陷
+  分别被新 schema 修正且旧 0600 raw 不覆盖；final v5 已离线覆盖 nested AgentTask、
+  aggregate accounting、五个 fixture 与 integrated Writer `base..HEAD` scope，但首个
+  live arm 的 billing unknown，按门禁立即停止。production bundled prompt 未改变，结论为
+  `hold_prompt_candidate / keep_app_server_override_consistency`。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1368,6 +1381,33 @@ M8-C 相对 `e99bf6c7` 为 31 files、`+2,741/-963`，净增加 1,778 行；正�
 零差异，Run API v10、RuntimeEvent v16、State v21、exec-stream v2 未变。完整事实见
 [M8-C 固定 zh-Hans 产品界面结论](../../eval/summaries/m8-c-fixed-zh-hans-interface-2026-07-23.md)。
 
+M8-D 没有改变 bundled prompt、model routing、Runtime、RunStore、tool catalog、权限、
+请求预算或协议。保留的 production 行为变化只有：
+
+```text
+TUI / exec / app-server
+  -> codewhale_context::prompts::load_prompt_overrides_from_config_home
+  -> ProductionComposition
+  -> AgentApplication -> AgentRuntime -> RunStore
+```
+
+候选 constitution 只存在于 `eval/fixtures/m8-d-prompt/v1`，通过既有 override surface 注入
+immutable binary；它不是默认配置、用户模式或第二 prompt truth。外部 app-server
+process test 在禁网下提交 Start，随后从 State reopen 的 `RunCreated` request 验证 prompt。
+两臂其余 system blocks、cache controls、model、tool/permission/budget/accounting identity
+保持相同。
+
+官方 2026-07-24 文档仍定义 base URL `https://api.deepseek.com` 和 Standard Chat
+`POST /chat/completions`，当前模型为 `deepseek-v4-flash`/`deepseek-v4-pro`。当天退役的是
+`deepseek-chat` 与 `deepseek-reasoner` 旧模型别名，不是 ChatCompletions interface。
+FIM 仍是独立 Beta `/beta/completions`，M8-D 没有 FIM caller 或请求。
+
+final v5 首 arm 在一个无 usage 的失败 attempt 后由 canonical accounting 记录
+`billing_unknown=true`、`complete=false`、`surface_usage=[]`，Harness 立即停止。
+因此 current architecture 只包含 caller consistency fix，不包含新的默认 prompt 能力。
+完整身份、raw 和非结论见
+[M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1377,6 +1417,8 @@ M8-C 相对 `e99bf6c7` 为 31 files、`+2,741/-963`，净增加 1,778 行；正�
 - 中文 Agent prompt A/B 已获得收益；M8-C 只完成 fixed `zh-Hans` Host 产品界面和
   machine/raw 非翻译边界，不改变模型可见 system prompt；Linux source release build
   仍只由 CI matrix 拥有而非本机观察；
+- M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
+  停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
