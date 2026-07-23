@@ -89,7 +89,7 @@ fn install_rustls_crypto_provider() {
     name = "codewhale-tui",
     bin_name = "codewhale-tui",
     author,
-    version = env!("DEEPSEEK_BUILD_VERSION"),
+    version = env!("CODEWHALE_BUILD_VERSION"),
     about = "CodeWhale terminal coding agent",
     long_about = "DeepSeek-only terminal coding agent.\n\nRun 'codewhale' to start."
 )]
@@ -2150,7 +2150,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Version info
     println!("{}", "Version Information:".bold());
-    println!("  codewhale-tui: {}", env!("DEEPSEEK_BUILD_VERSION"));
+    println!("  codewhale-tui: {}", env!("CODEWHALE_BUILD_VERSION"));
     println!("  rust: {}", rustc_version());
     println!();
 

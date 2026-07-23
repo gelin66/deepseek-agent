@@ -436,7 +436,7 @@ fn is_codewhale_readonly_invocation(tokens: &[&str]) -> bool {
     let Some((command, args)) = tokens.split_first() else {
         return false;
     };
-    if !matches!(*command, "codewhale" | "codew") {
+    if *command != "codewhale" {
         return false;
     }
     matches!(args, ["--version"] | ["-V"] | ["-v"] | ["--help"] | ["-h"])

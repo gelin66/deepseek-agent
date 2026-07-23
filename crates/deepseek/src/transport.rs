@@ -16,6 +16,8 @@ use crate::{
     ResponseMode, SharedApiRequestBudget,
 };
 
+const CODEWHALE_USER_AGENT: &str = concat!("CodeWhale/", env!("CARGO_PKG_VERSION"));
+
 const OFFICIAL_ROOT: &str = "https://api.deepseek.com";
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_SSE_BUFFER_BYTES: usize = 10 * 1024 * 1024;
@@ -500,6 +502,7 @@ impl DeepSeekTransport {
             let request = self
                 .client
                 .post(&plan.url)
+                .header(reqwest::header::USER_AGENT, CODEWHALE_USER_AGENT)
                 .bearer_auth(self.config.credential.expose())
                 .json(&plan.body);
             let response =
@@ -1650,6 +1653,13 @@ mod tests {
                     break;
                 }
             }
+            let request_headers = String::from_utf8_lossy(&request);
+            assert!(
+                request_headers.to_ascii_lowercase().contains(
+                    &format!("user-agent: {}", CODEWHALE_USER_AGENT).to_ascii_lowercase()
+                ),
+                "canonical CodeWhale User-Agent missing from request:\n{request_headers}"
+            );
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"

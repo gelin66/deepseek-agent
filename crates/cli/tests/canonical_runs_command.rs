@@ -146,7 +146,7 @@ fn run_dispatcher_with_tui_probe(
     Command::new(codewhale_binary())
         .current_dir(workspace)
         .env("CODEWHALE_HOME", home)
-        .env("DEEPSEEK_TUI_BIN", fake_tui)
+        .env("CODEWHALE_TUI_BIN", fake_tui)
         .env("CODEWHALE_TUI_MARKER", marker)
         .env_remove("DEEPSEEK_API_KEY")
         .env_remove("CODEWHALE_CLI_API_KEY")

@@ -99,7 +99,7 @@ impl ProductionApplicationConfig {
             http_client: None,
             tools,
             prompt: ProductionPromptConfig::default(),
-            composition_build_revision: env!("DEEPSEEK_BUILD_VERSION").to_owned(),
+            composition_build_revision: env!("CODEWHALE_BUILD_VERSION").to_owned(),
             default_max_api_requests: NonZeroU32::new(DEFAULT_MAX_API_REQUESTS)
                 .expect("production request budget default is non-zero"),
         }

@@ -31,7 +31,7 @@ use codewhale_state::{StateStore, ThreadListFilters};
 #[derive(Debug, Parser)]
 #[command(
     name = "codewhale",
-    version = env!("DEEPSEEK_BUILD_VERSION"),
+    version = env!("CODEWHALE_BUILD_VERSION"),
     bin_name = "codewhale",
     override_usage = "codewhale [OPTIONS] [PROMPT]\n       codewhale [OPTIONS] <COMMAND> [ARGS]"
 )]
@@ -1762,29 +1762,25 @@ to execute it. Common fixes:\n\
 come from the same install directory.\n\
   - If you downloaded release assets manually, keep both `codewhale` and \
 `codewhale-tui` binaries together and make sure the TUI binary is executable.\n\
-  - Set DEEPSEEK_TUI_BIN to the absolute path of a working `codewhale-tui` \
+  - Set CODEWHALE_TUI_BIN to the absolute path of a working `codewhale-tui` \
 binary.",
         tui.display()
     )
 }
 
 /// Resolve the sibling `codewhale-tui` executable next to the running
-/// dispatcher. Honours platform executable suffix (`.exe` on Windows) so
-/// the npm-distributed Windows package — which ships
-/// `bin/downloads/codewhale-tui.exe` — is found by `Path::exists` (#247).
+/// dispatcher. Honours the platform executable suffix (`.exe` on Windows).
 ///
-/// `DEEPSEEK_TUI_BIN` is consulted first as an explicit override for
-/// custom installs and CI test layouts. On Windows we additionally try
-/// the suffix-less name as a fallback for users who already manually
-/// renamed the file before this fix landed.
+/// `CODEWHALE_TUI_BIN` is consulted first as an explicit override for custom
+/// installs and CI test layouts.
 fn locate_sibling_tui_binary() -> Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("DEEPSEEK_TUI_BIN") {
+    if let Ok(override_path) = std::env::var("CODEWHALE_TUI_BIN") {
         let candidate = PathBuf::from(override_path);
         if candidate.is_file() {
             return Ok(candidate);
         }
         bail!(
-            "DEEPSEEK_TUI_BIN points at {}, which is not a regular file.",
+            "CODEWHALE_TUI_BIN points at {}, which is not a regular file.",
             candidate.display()
         );
     }
@@ -1801,14 +1797,10 @@ fn locate_sibling_tui_binary() -> Result<PathBuf> {
         "Companion `codewhale-tui` binary not found at {}.\n\
 \n\
 The `codewhale` dispatcher delegates interactive sessions to a sibling \
-`codewhale-tui` binary. To fix this, install one of:\n\
-  • npm:    npm install -g codewhale                (downloads both binaries)\n\
-  • cargo:  cargo install codewhale-cli codewhale-tui --locked\n\
-  • GitHub Releases: download BOTH `codewhale-<platform>` AND \
-`codewhale-tui-<platform>` from https://github.com/Hmbown/CodeWhale/releases/latest \
-and place them in the same directory.\n\
+`codewhale-tui` binary. Reinstall the checksum-verified CodeWhale package so \
+both binaries are activated from the same release directory.\n\
 \n\
-Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `codewhale-tui` binary.",
+Or set CODEWHALE_TUI_BIN to the absolute path of an existing `codewhale-tui` binary.",
         expected.display()
     );
 }
@@ -2025,7 +2017,7 @@ mod tests {
             .path()
             .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&tui, b"").unwrap();
-        let _binary = ScopedEnv::set("DEEPSEEK_TUI_BIN", &tui);
+        let _binary = ScopedEnv::set("CODEWHALE_TUI_BIN", &tui);
 
         let cli = parse_ok(&[
             "codewhale",

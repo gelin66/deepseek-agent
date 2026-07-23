@@ -264,7 +264,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             right.push(Span::raw("  "));
         }
         right.push(Span::styled(
-            format!("v{}", env!("DEEPSEEK_BUILD_VERSION")),
+            format!("v{}", env!("CODEWHALE_BUILD_VERSION")),
             Style::default().fg(app.ui_theme.text_hint),
         ));
     }
