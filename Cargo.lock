@@ -932,19 +932,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-release"
-version = "0.8.68"
-dependencies = [
- "anyhow",
- "reqwest 0.13.4",
- "rustls",
- "semver",
- "serde",
- "serde_json",
- "webpki-roots",
-]
-
-[[package]]
 name = "codewhale-runtime"
 version = "0.8.68"
 dependencies = [
@@ -1041,7 +1028,6 @@ dependencies = [
  "codewhale-context",
  "codewhale-deepseek",
  "codewhale-protocol",
- "codewhale-release",
  "codewhale-runtime",
  "codewhale-secrets",
  "codewhale-state",

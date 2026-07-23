@@ -4,10 +4,10 @@ pub(crate) fn ensure_rustls_crypto_provider() {
 
 pub(crate) fn reqwest_client_builder() -> reqwest::ClientBuilder {
     ensure_rustls_crypto_provider();
-    codewhale_release::platform_http_client_builder()
+    reqwest::Client::builder()
 }
 
 pub(crate) fn reqwest_blocking_client_builder() -> reqwest::blocking::ClientBuilder {
     ensure_rustls_crypto_provider();
-    codewhale_release::platform_blocking_http_client_builder()
+    reqwest::blocking::Client::builder()
 }
