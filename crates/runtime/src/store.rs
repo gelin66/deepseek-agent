@@ -2127,11 +2127,39 @@ pub fn apply_event(
                     "terminal outcome parent does not match the run",
                 ));
             }
-            if snapshot
+            let unsettled = snapshot
                 .agent_tasks
                 .iter()
-                .any(|lifecycle| lifecycle.finished.is_none())
-            {
+                .filter(|lifecycle| lifecycle.finished.is_none())
+                .collect::<Vec<_>>();
+            let all_unsettled_are_read_only = !unsettled.is_empty()
+                && unsettled.iter().all(|lifecycle| {
+                    lifecycle.task.workspace.access == AgentWorkspaceAccess::ReadOnly
+                });
+            let exact_read_only_recovery = match &outcome.terminal {
+                TerminalState::RecoveryRequired { ambiguity } if all_unsettled_are_read_only => {
+                    match ambiguity.phase {
+                        RecoveryAmbiguityPhase::ChildRun => unsettled
+                            .iter()
+                            .any(|lifecycle| lifecycle.task.child_run_id.0 == ambiguity.action_id),
+                        RecoveryAmbiguityPhase::ToolExecution => {
+                            snapshot.pending_tool.as_ref().is_some_and(|pending| {
+                                pending.state == DurableActionState::InFlight
+                                    && pending.invocation.name == AGENT_TOOL_NAME
+                                    && pending.operation_id.0 == ambiguity.action_id
+                                    && unsettled.iter().any(|lifecycle| {
+                                        lifecycle.task.call_id == pending.invocation.call_id
+                                            && lifecycle.child_started.is_some()
+                                    })
+                            })
+                        }
+                        RecoveryAmbiguityPhase::ModelRequest
+                        | RecoveryAmbiguityPhase::HostVerification => false,
+                    }
+                }
+                _ => false,
+            };
+            if !unsettled.is_empty() && !exact_read_only_recovery {
                 return Err(corrupt(
                     &run_id,
                     "run reached terminal with an unsettled AgentTask lifecycle",
@@ -4917,6 +4945,96 @@ mod tests {
         assert!(lifecycle.integration.is_none());
         assert!(lifecycle.cleanup.is_none());
         assert!(lifecycle.finished.is_some());
+    }
+
+    fn unfinished_read_only_child_kinds(launch_outcome_committed: bool) -> Vec<RuntimeEventKind> {
+        let task = read_only_task();
+        let mut kinds = vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: task.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+            RuntimeEventKind::ChildStarted {
+                task_id: task.task_id.clone(),
+                call_id: task.call_id.clone(),
+                child_run_id: task.child_run_id,
+                depth: 1,
+            },
+        ];
+        if launch_outcome_committed {
+            kinds.push(RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("agent-operation".to_owned()),
+                call_id: task.call_id,
+                name: AGENT_TOOL_NAME.to_owned(),
+                outcome: Box::new(
+                    ToolOutcome::success("read-only child launched")
+                        .with_side_effect(ToolSideEffectStatus::Applied),
+                ),
+                workspace_state: None,
+            });
+        }
+        kinds
+    }
+
+    #[test]
+    fn exact_recovery_terminal_may_preserve_unsettled_read_only_child_truth() {
+        let cases = [
+            (
+                false,
+                RecoveryAmbiguityPhase::ToolExecution,
+                "agent-operation",
+            ),
+            (true, RecoveryAmbiguityPhase::ChildRun, "child"),
+        ];
+        for (launch_outcome_committed, phase, action_id) in cases {
+            let mut kinds = unfinished_read_only_child_kinds(launch_outcome_committed);
+            kinds.push(root_terminal(TerminalState::RecoveryRequired {
+                ambiguity: RecoveryAmbiguity {
+                    phase,
+                    action_id: action_id.to_owned(),
+                    message: "do not relaunch an ambiguous read-only child".to_owned(),
+                },
+            }));
+            let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+            assert!(matches!(
+                snapshot.terminal.as_ref().map(|outcome| &outcome.terminal),
+                Some(TerminalState::RecoveryRequired { ambiguity })
+                    if ambiguity.action_id == action_id
+            ));
+            assert_eq!(snapshot.agent_tasks.len(), 1);
+            assert!(snapshot.agent_tasks[0].finished.is_none());
+        }
+    }
+
+    #[test]
+    fn non_matching_terminal_cannot_hide_an_unsettled_read_only_child() {
+        let mut kinds = unfinished_read_only_child_kinds(true);
+        kinds.push(root_terminal(TerminalState::Failed {
+            failure: RuntimeFailure::Join {
+                message: "generic failure".to_owned(),
+            },
+        }));
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("unsettled AgentTask")
+        ));
     }
 
     #[test]

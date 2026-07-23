@@ -1232,6 +1232,155 @@ mod tests {
         }
     }
 
+    struct FanoutDeepSeekServer {
+        root: String,
+        task: JoinHandle<Vec<CapturedRequest>>,
+    }
+
+    impl FanoutDeepSeekServer {
+        async fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind fan-out fixture");
+            let address = listener.local_addr().expect("fan-out fixture address");
+            let task = tokio::spawn(async move {
+                let mut captured = Vec::new();
+
+                let (mut root_first, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .expect("first root request timeout")
+                        .expect("accept first root request");
+                captured.push(read_request(&mut root_first).await);
+                write_fixture_response(
+                    &mut root_first,
+                    json!({
+                        "id": "fixture-fanout-root",
+                        "model": "deepseek-v4-pro",
+                        "choices": [{
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "role": "assistant",
+                                "content": null,
+                                "reasoning_content": "将两个独立调查同时交给只读子 Agent。",
+                                "tool_calls": [
+                                    {
+                                        "id": "fanout-child-one",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "agent",
+                                            "arguments": serde_json::to_string(&json!({
+                                                "prompt": "独立调查第一部分并返回一个事实",
+                                                "type": "explore",
+                                                "fork_context": false,
+                                                "expected_artifact": "第一部分事实",
+                                                "allowed_tools": [],
+                                                "max_steps": 1,
+                                                "wall_time_secs": 10
+                                            })).expect("serialize first child")
+                                        }
+                                    },
+                                    {
+                                        "id": "fanout-child-two",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "agent",
+                                            "arguments": serde_json::to_string(&json!({
+                                                "prompt": "独立调查第二部分并返回一个事实",
+                                                "type": "explore",
+                                                "fork_context": false,
+                                                "expected_artifact": "第二部分事实",
+                                                "allowed_tools": [],
+                                                "max_steps": 1,
+                                                "wall_time_secs": 10
+                                            })).expect("serialize second child")
+                                        }
+                                    }
+                                ]
+                            }
+                        }],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 3,
+                            "total_tokens": 13,
+                            "prompt_cache_hit_tokens": 0,
+                            "prompt_cache_miss_tokens": 10
+                        }
+                    }),
+                )
+                .await;
+
+                let (mut child_one, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .expect("first child request timeout")
+                        .expect("accept first child request");
+                captured.push(read_request(&mut child_one).await);
+
+                // Keep the first child request unanswered. Accepting the second
+                // request in this window proves transport-level overlap rather
+                // than merely durable ChildStarted event ordering.
+                let (mut child_two, _) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                        .await
+                        .expect("second child must overlap the unanswered first child")
+                        .expect("accept second child request");
+                captured.push(read_request(&mut child_two).await);
+
+                write_fixture_response(
+                    &mut child_one,
+                    thinking_response("deepseek-v4-pro", "第一部分事实", 11, 2),
+                )
+                .await;
+                write_fixture_response(
+                    &mut child_two,
+                    thinking_response("deepseek-v4-pro", "第二部分事实", 12, 2),
+                )
+                .await;
+
+                let (mut root_integrate, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .expect("root integration request timeout")
+                        .expect("accept root integration request");
+                captured.push(read_request(&mut root_integrate).await);
+                write_fixture_response(
+                    &mut root_integrate,
+                    thinking_response("deepseek-v4-pro", "两个调查均已汇聚", 13, 2),
+                )
+                .await;
+                captured
+            });
+            Self {
+                root: format!("http://{address}/v1"),
+                task,
+            }
+        }
+
+        async fn finish(self) -> Vec<CapturedRequest> {
+            tokio::time::timeout(Duration::from_secs(5), self.task)
+                .await
+                .expect("fan-out fixture server completes")
+                .expect("fan-out fixture server task")
+        }
+    }
+
+    async fn write_fixture_response(socket: &mut tokio::net::TcpStream, response: Value) {
+        let body = serde_json::to_vec(&response).expect("serialize fixture response");
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        socket
+            .write_all(header.as_bytes())
+            .await
+            .expect("write fixture response header");
+        socket
+            .write_all(&body)
+            .await
+            .expect("write fixture response body");
+    }
+
     async fn read_request(socket: &mut tokio::net::TcpStream) -> CapturedRequest {
         let mut bytes = Vec::new();
         let header_end = loop {
@@ -2536,6 +2685,174 @@ mod tests {
         run(&["init", "-q", "-b", "main"]);
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "fixture"]);
+    }
+
+    #[tokio::test]
+    async fn m7g_production_loopback_read_only_children_overlap_and_reopen_exactly() {
+        let server = FanoutDeepSeekServer::start().await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host("并行调查两个相互独立的只读事实后汇总");
+        command.reasoning_effort = ReasoningEffort::High;
+        command.tool_policy.allowed = Some(vec![AGENT_TOOL_NAME.to_owned()]);
+        command.limits = RunLimits {
+            max_turns: 2,
+            max_model_requests: 4,
+            max_model_retries: 0,
+            max_tool_calls: 2,
+            max_depth: 1,
+            max_concurrent_children: 2,
+            model_event_idle_ms: Some(5_000),
+            wall_time_ms: Some(20_000),
+        };
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let run = run_result(
+            app.execute(envelope("m7g-fanout", RunCommand::Start(command)))
+                .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let captured = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(captured.len(), 4);
+        assert!(
+            captured
+                .iter()
+                .all(|request| request.path == "/v1/chat/completions")
+        );
+        assert_eq!(
+            captured[0].body["tools"]
+                .as_array()
+                .expect("root agent catalog")
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+                .collect::<Vec<_>>(),
+            vec![AGENT_TOOL_NAME]
+        );
+        assert!(captured[1].body.get("tools").is_none());
+        assert!(captured[2].body.get("tools").is_none());
+
+        let positions = |predicate: fn(&RuntimeEventKind) -> bool| {
+            replay
+                .events
+                .iter()
+                .enumerate()
+                .filter_map(|(index, stored)| predicate(&stored.event).then_some(index))
+                .collect::<Vec<_>>()
+        };
+        let task_prepared =
+            positions(|event| matches!(event, RuntimeEventKind::AgentTaskPrepared { .. }));
+        let child_started =
+            positions(|event| matches!(event, RuntimeEventKind::ChildStarted { .. }));
+        let child_finished =
+            positions(|event| matches!(event, RuntimeEventKind::ChildFinished { .. }));
+        let result_collected =
+            positions(|event| matches!(event, RuntimeEventKind::AgentResultCollected { .. }));
+        assert_eq!(task_prepared.len(), 2);
+        assert_eq!(child_started.len(), 2);
+        assert_eq!(child_finished.len(), 2);
+        assert_eq!(result_collected.len(), 2);
+        assert!(
+            child_started[1] < child_finished[0],
+            "both read-only children must start before either one is joined"
+        );
+
+        let root_requests = replay
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stored)| match &stored.event {
+                RuntimeEventKind::ModelRequestPrepared { request, .. }
+                    if request.actor.kind == AgentActorKind::Root =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(root_requests.len(), 2);
+        assert!(
+            child_finished[1] < root_requests[1],
+            "both typed handoffs must commit before the single root integration request"
+        );
+
+        let child_ids = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::AgentTaskPrepared { task } => {
+                    assert_eq!(task.workspace.access, AgentWorkspaceAccess::ReadOnly);
+                    Some(task.child_run_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids.len(), 2);
+        let mut child_replays = Vec::new();
+        for child_id in &child_ids {
+            let child = app
+                .store
+                .load(child_id)
+                .await
+                .expect("load child")
+                .expect("child run exists");
+            assert!(matches!(
+                child
+                    .snapshot
+                    .terminal
+                    .as_ref()
+                    .map(|outcome| &outcome.terminal),
+                Some(TerminalState::Completed { .. })
+            ));
+            assert_eq!(child.snapshot.request.actor.kind, AgentActorKind::Child);
+            assert_eq!(child.snapshot.request.actor.depth, 1);
+            child_replays.push(child);
+        }
+
+        assert_eq!(replay.snapshot.runtime_model_requests, 4);
+        assert_eq!(replay.snapshot.accounting.root.started, 2);
+        assert_eq!(replay.snapshot.accounting.root.completed, 2);
+        assert_eq!(replay.snapshot.accounting.child.started, 2);
+        assert_eq!(replay.snapshot.accounting.child.completed, 2);
+        assert_eq!(replay.snapshot.accounting.transport_retries, 0);
+        assert_eq!(replay.snapshot.accounting.usage_responses, 4);
+        assert_eq!(replay.snapshot.accounting.usage.input_tokens, 46);
+        assert_eq!(replay.snapshot.accounting.usage.output_tokens, 9);
+        assert!(replay.snapshot.accounting.complete);
+        assert!(replay.snapshot.accounting.usage_complete);
+        assert!(!replay.snapshot.accounting.billing_unknown);
+
+        drop(app);
+        let reopened = StateStore::open(Some(state_path)).expect("reopen StateStore");
+        let reopened_root = reopened
+            .load(&run.run_id)
+            .await
+            .expect("load reopened root")
+            .expect("reopened root exists");
+        assert_eq!(reopened_root, replay);
+        for (child_id, before) in child_ids.iter().zip(&child_replays) {
+            let after = reopened
+                .load(child_id)
+                .await
+                .expect("load reopened child")
+                .expect("reopened child exists");
+            assert_eq!(&after, before);
+        }
     }
 
     #[tokio::test]

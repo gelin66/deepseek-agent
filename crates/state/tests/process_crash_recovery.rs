@@ -209,6 +209,7 @@ enum CrashScenario {
     TemporalMutationCommitted,
     TemporalHostVerificationCommitted,
     HostSpecMismatchRejectionCommitted,
+    ReadOnlyChildStarted,
     WriterTaskPrepared,
     WriterCreateSideEffect,
     WriterRunning,
@@ -252,6 +253,7 @@ impl CrashScenario {
             Self::TemporalMutationCommitted => "temporal_mutation_committed",
             Self::TemporalHostVerificationCommitted => "temporal_host_verification_committed",
             Self::HostSpecMismatchRejectionCommitted => "host_spec_mismatch_rejection_committed",
+            Self::ReadOnlyChildStarted => "read_only_child_started",
             Self::WriterTaskPrepared => "writer_task_prepared",
             Self::WriterCreateSideEffect => "writer_create_side_effect",
             Self::WriterRunning => "writer_running",
@@ -295,6 +297,7 @@ impl CrashScenario {
             "temporal_mutation_committed" => Self::TemporalMutationCommitted,
             "temporal_host_verification_committed" => Self::TemporalHostVerificationCommitted,
             "host_spec_mismatch_rejection_committed" => Self::HostSpecMismatchRejectionCommitted,
+            "read_only_child_started" => Self::ReadOnlyChildStarted,
             "writer_task_prepared" => Self::WriterTaskPrepared,
             "writer_create_side_effect" => Self::WriterCreateSideEffect,
             "writer_running" => Self::WriterRunning,
@@ -572,7 +575,29 @@ impl ModelPort for MarkerModel {
         if self.scenario == CrashScenario::SteerQueued {
             return Ok(Box::new(PendingStream));
         }
-        let output = if is_temporal_verification_scenario(self.scenario) && request_number == 1 {
+        let output = if self.scenario == CrashScenario::ReadOnlyChildStarted
+            && request.actor.kind == AgentActorKind::Root
+            && request_number == 0
+        {
+            ModelOutput {
+                content: String::new(),
+                reasoning_content: Some("启动唯一只读子 Agent".to_owned()),
+                tool_calls: vec![ModelToolCall {
+                    id: "read-only-agent-call".to_owned(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({
+                        "prompt": "只读调查后返回事实",
+                        "type": "explore",
+                        "fork_context": false,
+                        "expected_artifact": "一个只读事实",
+                        "allowed_tools": [],
+                        "max_steps": 1
+                    })),
+                }],
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: one_usage(),
+            }
+        } else if is_temporal_verification_scenario(self.scenario) && request_number == 1 {
             ModelOutput {
                 content: String::new(),
                 reasoning_content: Some("根据已持久化的失败事实修复工作区".to_owned()),
@@ -1543,6 +1568,9 @@ impl RuntimeEventSink for CrashSink {
                 RuntimeEventKind::CompletionRejected { ref rejection }
                     if rejection.cause == EvidenceSealRejection::VerifierSpecMismatch
             ),
+            CrashScenario::ReadOnlyChildStarted => {
+                matches!(event.event, RuntimeEventKind::ChildStarted { .. })
+            }
             CrashScenario::WriterTaskPrepared => {
                 matches!(event.event, RuntimeEventKind::AgentTaskPrepared { .. })
             }
@@ -1665,6 +1693,11 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
     ) {
         request.limits.max_turns = 1;
         request.limits.max_model_requests = 1;
+    }
+    if scenario == CrashScenario::ReadOnlyChildStarted {
+        request.limits.max_depth = 1;
+        request.limits.max_concurrent_children = 1;
+        request.limits.max_model_requests = 3;
     }
     request.environment.interactive = matches!(
         scenario,
@@ -2146,6 +2179,116 @@ async fn model_request_in_flight_crash_is_not_reissued_after_reopen() {
             RuntimeEventKind::ModelRequestInFlight { .. }
         )),
         1
+    );
+}
+
+#[tokio::test]
+async fn read_only_child_started_sigkill_fails_closed_without_relaunch() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::ReadOnlyChildStarted);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+    assert_eq!(marker_count(&fixture.tool_marker), 0);
+
+    let prefix_store = StateStore::open(Some(fixture.db.clone())).expect("open child prefix");
+    let prefix = prefix_store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load child prefix")
+        .expect("child prefix exists");
+    let lifecycle = prefix
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("durable read-only child lifecycle");
+    let child_run_id = lifecycle.task.child_run_id.clone();
+    let operation_id = prefix
+        .snapshot
+        .pending_tool
+        .as_ref()
+        .expect("agent operation remains in flight")
+        .operation_id
+        .clone();
+    assert_eq!(
+        lifecycle.task.workspace.access,
+        AgentWorkspaceAccess::ReadOnly
+    );
+    assert!(lifecycle.finished.is_none());
+    assert_eq!(
+        event_count(&prefix, |event| matches!(
+            event,
+            RuntimeEventKind::ChildStarted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&prefix, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        0
+    );
+    assert!(
+        prefix_store
+            .load(&child_run_id)
+            .await
+            .expect("load absent child")
+            .is_none(),
+        "SIGKILL occurs after durable ChildStarted but before child RunCreated"
+    );
+    drop(prefix_store);
+
+    let (runtime, store, model) = fixture.reopen_with_model(CrashScenario::ReadOnlyChildStarted);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume read-only child prefix");
+    assert!(
+        matches!(
+        &outcome.terminal,
+        TerminalState::RecoveryRequired {
+            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ToolExecution,
+                action_id,
+                ..
+            }
+        } if action_id == &operation_id.0
+        ),
+        "unexpected read-only child recovery outcome: {outcome:?}"
+    );
+    assert!(
+        model.observed_requests().is_empty(),
+        "an uncollected read-only child must never be relaunched or followed by a root request"
+    );
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+    assert_eq!(marker_count(&fixture.tool_marker), 0);
+
+    let repeated = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("repeat recovery-required resume");
+    assert_eq!(repeated, outcome);
+    assert!(model.observed_requests().is_empty());
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered root")
+        .expect("recovered root exists");
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ChildStarted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        0
     );
 }
 
