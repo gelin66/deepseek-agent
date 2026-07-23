@@ -76,12 +76,18 @@ class PromptHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest, self.tasks = M8D.load_manifest(frozen=False)
 
-    def test_v2_never_reuses_the_aborted_v1_suite_identity(self) -> None:
-        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v2")
-        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v2")
+    def test_v3_never_reuses_the_aborted_v1_or_v2_suite_identity(self) -> None:
+        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v3")
+        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v3")
         self.assertEqual(
-            self.manifest["prior_attempt"]["status"],
-            "aborted_measurement_invalid",
+            [attempt["suite"] for attempt in self.manifest["prior_attempts"]],
+            ["m8-d-prompt-ab-v1", "m8-d-prompt-ab-v2"],
+        )
+        self.assertTrue(
+            all(
+                attempt["status"] == "aborted_measurement_invalid"
+                for attempt in self.manifest["prior_attempts"]
+            )
         )
         self.assertEqual(self.manifest["experiment"]["maximum_reruns"], 0)
 
@@ -189,6 +195,100 @@ class PromptHarnessTests(unittest.TestCase):
         changed = deepcopy(candidate)
         changed["prompt"]["stable_suffix_sha256"] = "changed"
         self.assertFalse(M8D.activation_identity_matches(baseline, changed))
+
+    def test_multi_agent_accounting_uses_the_canonical_aggregate(self) -> None:
+        root_usage = {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_hit_tokens": 80,
+            "cache_miss_tokens": 20,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 5,
+            "reasoning_replay_tokens": 3,
+        }
+        aggregate_usage = {
+            "input_tokens": 130,
+            "output_tokens": 27,
+            "cache_hit_tokens": 100,
+            "cache_miss_tokens": 30,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 7,
+            "reasoning_replay_tokens": 4,
+        }
+        accounting = {
+            "hard_request_limit": 10,
+            "root": {"started": 2, "completed": 2, "in_flight": 0},
+            "child": {"started": 1, "completed": 1, "in_flight": 0},
+            "transport_retries": 0,
+            "runtime_retries": 0,
+            "sealed": True,
+            "complete": True,
+            "usage_complete": True,
+            "usage_missing": False,
+            "usage_incomplete": False,
+            "billing_unknown": False,
+            "unpriced": False,
+            "usage_missing_responses": 0,
+            "incomplete_responses": 0,
+            "billing_unknown_attempts": 0,
+            "unpriced_usage_responses": 0,
+            "records_after_seal": 0,
+            "usage": aggregate_usage,
+            "surface_usage": [
+                {
+                    "surface": "standard_chat",
+                    "model": "deepseek-v4-flash",
+                    "usage": aggregate_usage,
+                    "cost_nanousd": 123,
+                }
+            ],
+            "cost_nanousd": 123,
+        }
+        projection = M8D.accounting_projection(
+            {"usage": root_usage, "accounting": accounting}
+        )
+        self.assertTrue(projection["valid"])
+        self.assertEqual(projection["usage"], aggregate_usage)
+        self.assertEqual(projection["root_usage"], root_usage)
+        self.assertEqual(projection["usage_source"], "accounting.aggregate")
+
+    def test_child_contract_uses_current_nested_agent_task_fields(self) -> None:
+        root_events = [
+            {
+                "event": {
+                    "kind": "agent_task_prepared",
+                    "task": {
+                        "task_id": "reader-1",
+                        "workspace": {"access": "read_only"},
+                        "tool_policy": {
+                            "allowed": ["git_diff", "read_file"],
+                            "denied": [],
+                        },
+                    },
+                }
+            },
+            {
+                "event": {
+                    "kind": "child_started",
+                    "task_id": "reader-1",
+                    "child_run_id": "child-1",
+                }
+            },
+        ]
+        projected = M8D.bind_current_child_contract(
+            root_events,
+            [
+                {
+                    "workspace_access": None,
+                    "allowed_tools": None,
+                    "tool_names": ["read_file"],
+                }
+            ],
+        )
+        self.assertEqual(projected[0]["workspace_access"], "read_only")
+        self.assertEqual(
+            projected[0]["allowed_tools"], ["git_diff", "read_file"]
+        )
 
     def test_prompt_signature_binds_prefix_and_preserves_suffix(self) -> None:
         baseline = "BASE"

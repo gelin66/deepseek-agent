@@ -1,0 +1,75 @@
+{
+  "schema": "codewhale.eval.m8-d-prompt-ab.v3",
+  "status": "draft_measurement_correction",
+  "date": "2026-07-24",
+  "base_manifest": {
+    "path": "eval/manifests/m8-d-prompt-ab-v2.json",
+    "sha256": "sha256:2e514b96f7074036eaeab280773ead25d2978cd8cfa6db7561831b662052a9c6"
+  },
+  "claim": {
+    "name": "M8-D 中文原生 production prompt 收敛 v3",
+    "primary_problem": "v2 已证明真实 prompt treatment 生效，但 t5 首 arm 暴露 Harness 仍按旧扁平 AgentTask 字段读取 read-only child，并把 root-only RunView.usage 与 root+child ModelAccounting.surface_usage 比较。v3 只修正这两个 canonical projection，不改变 binary、任务、prompt、模型、预算、计费或产品行为。",
+    "acceptance": "复用 v2 immutable codewhale/codewhale-tui、candidate、30-arm schedule 和所有产品门禁；以 AgentTask.workspace.access、AgentTask.tool_policy.allowed 和 ModelAccounting.usage 读取当前 RuntimeEvent v16 / Run API v10 的 child authority 与聚合计费。"
+  },
+  "suite_lineage": {
+    "base_contract": "v2 manifest 按 SHA-256 固定，v3 overlay 只替换 suite identity、Harness identity、prior attempts、admission、output 和离线门禁；resolved manifest 参与 content hash。",
+    "not_a_rerun": "v1/v2 raw 均保持 0600 且不可覆盖；v3 是修正 measurement contract 后的全新 schema、Harness revision、output 和 30 个全新 arm，maximum_reruns 仍为 0。"
+  },
+  "prior_attempts": [
+    {
+      "suite": "m8-d-prompt-ab-v1",
+      "status": "aborted_measurement_invalid",
+      "raw_path": "eval/raw/m8-d-prompt-formal-77f5244a-v1.json",
+      "raw_sha256": "sha256:9963d32427448060a362ee0e26dd96906b0c13992534979ddfbf5fc35f6a2f27",
+      "raw_size_bytes": 31506,
+      "raw_mode": "0600",
+      "completed_arms": 2,
+      "known_cost_nanousd": 4789003,
+      "finding": "真实 app-server 未加载 candidate override；无 treatment surface。"
+    },
+    {
+      "suite": "m8-d-prompt-ab-v2",
+      "status": "aborted_measurement_invalid",
+      "raw_path": "eval/raw/m8-d-prompt-formal-8371b6dd-v2.json",
+      "raw_sha256": "sha256:67ec341066cbab8deef6bdc9e2755569c63c62b0fa4bb61f946c7434bfa5cc84",
+      "raw_size_bytes": 70547,
+      "raw_mode": "0600",
+      "completed_arms": 5,
+      "known_cost_nanousd": 11115720,
+      "finding": "前 4 arms 均 valid；t5 baseline 的真实 Host/verifier/accounting complete，但旧 Harness 读取错误的 child 字段与 root-only usage，按 measurement invalid 中止。"
+    }
+  ],
+  "source_identity": {
+    "harness_revision": "pending"
+  },
+  "experiment": {
+    "kind": "same_revision_same_binary_prompt_treatment_ab_v3",
+    "maximum_reruns": 0
+  },
+  "admission": {
+    "live_api_admitted": false,
+    "admitted_on": null,
+    "admission_evidence": "v2 product gates 与 immutable binary 保持有效；v3 Harness projection tests、frozen identity 和 process preflight 尚待完成。",
+    "credential_read_for_v3": false,
+    "official_api_requests_for_v3": 0
+  },
+  "output": {
+    "name_template": "m8-d-prompt-formal-<binary-revision8>-v3.json",
+    "mode": "0600",
+    "replace": false,
+    "reservation_before_key": true
+  },
+  "offline_gates": [
+    "python3 scripts/test-eval-m8d-prompt.py",
+    "python3 scripts/eval-m8d-prompt.py freeze-report",
+    "python3 scripts/eval-m8d-prompt.py preflight --binary <immutable-codewhale> --tui-binary <immutable-codewhale-tui> --revision 8371b6dd9ac5d18570ff81a28bd94cc93372c372",
+    "v2 full fmt/focused/workspace clippy/workspace test/loopback/SIGKILL/TUI gates on the exact same immutable binary pair",
+    "git diff --check"
+  ],
+  "frozen_hashes": {
+    "harness_sha256": "pending",
+    "harness_test_sha256": "pending",
+    "schedule_sha256": "pending",
+    "manifest_content_sha256_excluding_frozen_hashes": "pending"
+  }
+}

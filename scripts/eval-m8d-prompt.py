@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from copy import deepcopy
 from fractions import Fraction
 import hashlib
 import importlib.util
@@ -28,14 +29,15 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v2.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v3.json"
+BASE_MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v2.json"
 TEST_PATH = ROOT / "scripts/test-eval-m8d-prompt.py"
 M7E_PATH = ROOT / "scripts/eval-m7e-thinking.py"
 CANDIDATE_PROMPT_PATH = ROOT / "eval/fixtures/m8-d-prompt/v1/constitution.md"
 SINGLE_TASK_SOURCE = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 WRITER_TASK_SOURCE = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-SCHEMA = "codewhale.eval.m8-d-prompt-ab.v2"
-RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v2"
+SCHEMA = "codewhale.eval.m8-d-prompt-ab.v3"
+RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v3"
 VARIANTS = ("baseline", "candidate")
 RUN_API = 10
 EVENT_API = 16
@@ -122,6 +124,34 @@ def manifest_content_hash(manifest: dict[str, Any]) -> str:
     return canonical_hash(value)
 
 
+def resolved_manifest() -> dict[str, Any]:
+    overlay = load_json(MANIFEST_PATH, "manifest_unavailable")
+    require(overlay.get("schema") == SCHEMA, "manifest_schema_mismatch")
+    base_ref = overlay.get("base_manifest", {})
+    require(
+        base_ref.get("path") == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
+        and base_ref.get("sha256") == file_hash(BASE_MANIFEST_PATH),
+        "base_manifest_identity_mismatch",
+    )
+    manifest = deepcopy(load_json(BASE_MANIFEST_PATH, "base_manifest_unavailable"))
+    require(
+        manifest.get("schema") == "codewhale.eval.m8-d-prompt-ab.v2",
+        "base_manifest_schema_mismatch",
+    )
+    manifest["schema"] = overlay["schema"]
+    manifest["status"] = overlay["status"]
+    manifest["date"] = overlay["date"]
+    manifest["claim"].update(overlay["claim"])
+    manifest.pop("prior_attempt", None)
+    manifest["suite_lineage"] = overlay["suite_lineage"]
+    manifest["prior_attempts"] = overlay["prior_attempts"]
+    for section in ("source_identity", "experiment", "admission", "output"):
+        manifest[section].update(overlay[section])
+    manifest["offline_gates"] = overlay["offline_gates"]
+    manifest["frozen_hashes"] = overlay["frozen_hashes"]
+    return manifest
+
+
 def assemble_tasks(
     manifest: dict[str, Any],
 ) -> dict[str, Any]:
@@ -173,8 +203,7 @@ def assemble_tasks(
 
 
 def load_manifest(*, frozen: bool) -> tuple[dict[str, Any], dict[str, Any]]:
-    manifest = load_json(MANIFEST_PATH, "manifest_unavailable")
-    require(manifest.get("schema") == SCHEMA, "manifest_schema_mismatch")
+    manifest = resolved_manifest()
     source = manifest.get("source_identity", {})
     require(
         source.get("run_api") == RUN_API
@@ -577,6 +606,58 @@ def request_projection(
     }
 
 
+def accounting_projection(run: dict[str, Any]) -> dict[str, Any]:
+    accounting = run.get("accounting")
+    require(isinstance(accounting, dict), "accounting_missing")
+    aggregate_usage = accounting.get("usage")
+    require(isinstance(aggregate_usage, dict), "aggregate_usage_missing")
+    normalized = dict(run)
+    normalized["usage"] = aggregate_usage
+    projection = M7E.accounting_projection(normalized, REASONING_EFFORT)
+    projection["root_usage"] = run.get("usage")
+    projection["usage_source"] = "accounting.aggregate"
+    return projection
+
+
+def bind_current_child_contract(
+    root_events: list[dict[str, Any]],
+    children: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    starts = M7E.event_values(root_events, "child_started")
+    tasks = {
+        event.get("task", {}).get("task_id"): event.get("task", {})
+        for event in M7E.event_values(root_events, "agent_task_prepared")
+    }
+    require(len(starts) == len(children), "child_projection_count_mismatch")
+    projected: list[dict[str, Any]] = []
+    for start, child in zip(starts, children, strict=True):
+        task = tasks.get(start.get("task_id"))
+        require(isinstance(task, dict), "child_task_contract_missing")
+        workspace = task.get("workspace")
+        tool_policy = task.get("tool_policy")
+        require(
+            isinstance(workspace, dict) and isinstance(tool_policy, dict),
+            "child_task_contract_invalid",
+        )
+        value = dict(child)
+        value["workspace_access"] = workspace.get("access")
+        value["allowed_tools"] = tool_policy.get("allowed")
+        projected.append(value)
+    return projected
+
+
+def current_child_projection(
+    client: Any,
+    root_events: list[dict[str, Any]],
+    deadline: float,
+    suffix: str,
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    children, ledgers = M7E.child_projection(
+        client, root_events, deadline, suffix
+    )
+    return bind_current_child_contract(root_events, children), ledgers
+
+
 def child_valid(
     manifest: dict[str, Any],
     task: dict[str, Any],
@@ -878,7 +959,7 @@ def execute_arm(
             require(isinstance(root_id, str) and root_id, "root_id_missing")
             run = M7E.wait_terminal(client, process, root_id, deadline, suffix)
             root_events = M7E.fetch_events(client, root_id, deadline, suffix)
-            children, child_ledgers = M7E.child_projection(
+            children, child_ledgers = current_child_projection(
                 client, root_events, deadline, suffix
             )
         finally:
@@ -903,7 +984,7 @@ def execute_arm(
             baseline_text,
             candidate_text,
         )
-        accounting = M7E.accounting_projection(run, REASONING_EFFORT)
+        accounting = accounting_projection(run)
         root_tool_names = [
             event.get("invocation", {}).get("name")
             for event in M7E.event_values(root_events, "tool_prepared")
