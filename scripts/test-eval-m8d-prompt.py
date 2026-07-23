@@ -76,15 +76,16 @@ class PromptHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest, self.tasks = M8D.load_manifest(frozen=False)
 
-    def test_v4_never_reuses_prior_suite_identity(self) -> None:
-        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v4")
-        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v4")
+    def test_v5_never_reuses_prior_suite_identity(self) -> None:
+        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v5")
+        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v5")
         self.assertEqual(
             [attempt["suite"] for attempt in self.manifest["prior_attempts"]],
             [
                 "m8-d-prompt-ab-v1",
                 "m8-d-prompt-ab-v2",
                 "m8-d-prompt-ab-v3",
+                "m8-d-prompt-ab-v4",
             ],
         )
         self.assertTrue(
@@ -96,6 +97,10 @@ class PromptHarnessTests(unittest.TestCase):
         self.assertEqual(
             self.manifest["prior_attempts"][2]["status"],
             "running_process_exited",
+        )
+        self.assertEqual(
+            self.manifest["prior_attempts"][3]["status"],
+            "aborted_writer_lifecycle_invalid",
         )
         self.assertEqual(self.manifest["experiment"]["maximum_reruns"], 0)
 
@@ -360,8 +365,13 @@ class PromptHarnessTests(unittest.TestCase):
             event = {"kind": kind}
             if kind == "agent_task_prepared":
                 event["task"] = {
-                    "workspace_access": "isolated_write",
-                    "allowed_paths": ["format_bytes.py"],
+                    "workspace": {
+                        "access": "isolated_write",
+                        "base_commit": self.tasks["tasks"]["w1"][
+                            "fixture_base_commit"
+                        ],
+                        "allowed_paths": ["format_bytes.py"],
+                    },
                 }
             if kind == "agent_cleanup_committed":
                 event["result"] = {"status": "removed"}
@@ -427,6 +437,59 @@ class PromptHarnessTests(unittest.TestCase):
                 Path(raw),
             )
         self.assertFalse(result["valid"])
+
+    def test_writer_scope_uses_integrated_base_to_head_diff(self) -> None:
+        task = self.tasks["tasks"]["w1"]
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            base = M8D.materialize_fixture(self.tasks, "w1", workspace)
+            target = workspace / "format_bytes.py"
+            target.write_text(
+                target.read_text(encoding="utf-8").replace(
+                    "value /= 1000",
+                    "value /= 1024",
+                ),
+                encoding="utf-8",
+            )
+            for command in (
+                ["git", "add", "--", "format_bytes.py"],
+                [
+                    "git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "user.name=CodeWhale Eval",
+                    "-c",
+                    "user.email=eval.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "integrated writer result",
+                ],
+            ):
+                result = M8D.M7E.run_command(
+                    command,
+                    cwd=workspace,
+                    environment=M8D.M7E.safe_env(),
+                )
+                self.assertEqual(result.returncode, 0)
+            self.assertEqual(
+                M8D.M7E.git_output(
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                    cwd=workspace,
+                ),
+                "",
+            )
+            self.assertEqual(
+                M8D.observed_changed_files(
+                    workspace,
+                    base,
+                    task["lane"],
+                ),
+                task["expected_changed_files"],
+            )
 
     def test_unknown_billing_stops_before_next_arm(self) -> None:
         arm = {

@@ -29,14 +29,14 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v4.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v5.json"
 TEST_PATH = ROOT / "scripts/test-eval-m8d-prompt.py"
 M7E_PATH = ROOT / "scripts/eval-m7e-thinking.py"
 CANDIDATE_PROMPT_PATH = ROOT / "eval/fixtures/m8-d-prompt/v1/constitution.md"
 SINGLE_TASK_SOURCE = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 WRITER_TASK_SOURCE = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-SCHEMA = "codewhale.eval.m8-d-prompt-ab.v4"
-RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v4"
+SCHEMA = "codewhale.eval.m8-d-prompt-ab.v5"
+RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v5"
 VARIANTS = ("baseline", "candidate")
 RUN_API = 10
 EVENT_API = 16
@@ -816,6 +816,11 @@ def writer_lifecycle(
     )
     tasks = M7E.event_values(root_events, "agent_task_prepared")
     prepared_task = tasks[0].get("task", {}) if len(tasks) == 1 else {}
+    workspace_assignment = (
+        prepared_task.get("workspace", {})
+        if isinstance(prepared_task, dict)
+        else {}
+    )
     root_tools = [
         event.get("invocation", {}).get("name")
         for event in M7E.event_values(root_events, "tool_prepared")
@@ -831,7 +836,20 @@ def writer_lifecycle(
         "refs/heads/codewhale/writer/",
         cwd=workspace,
     )
-    leak_free = worktrees.count("worktree ") == 1 and writer_refs == ""
+    root_status_clean = (
+        M7E.git_output(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            cwd=workspace,
+        )
+        == ""
+    )
+    leak_free = (
+        worktrees.count("worktree ") == 1
+        and writer_refs == ""
+        and root_status_clean
+    )
     valid = bool(
         len(children) == 1
         and children[0]["terminal"]["state"] == "completed"
@@ -839,8 +857,10 @@ def writer_lifecycle(
         and ordered
         and counts["agent_integration_failed"] == 0
         and cleanup_status in {"removed", "already_absent"}
-        and prepared_task.get("workspace_access") == "isolated_write"
-        and prepared_task.get("allowed_paths") == task["allowed_paths"]
+        and workspace_assignment.get("access") == "isolated_write"
+        and workspace_assignment.get("base_commit")
+        == task["fixture_base_commit"]
+        and workspace_assignment.get("allowed_paths") == task["allowed_paths"]
         and root_authority
         and leak_free
     )
@@ -852,8 +872,35 @@ def writer_lifecycle(
         "ordered": ordered,
         "cleanup_status": cleanup_status,
         "root_authority": root_authority,
+        "root_status_clean": root_status_clean,
         "leak_free": leak_free,
     }
+
+
+def observed_changed_files(
+    workspace: Path,
+    base_commit: str,
+    lane: str,
+) -> list[str]:
+    if lane != "explicit_writer":
+        return M7E.changed_files(workspace)
+    head = M7E.git_output("rev-parse", "HEAD", cwd=workspace)
+    require(head != base_commit, "writer_head_not_advanced")
+    committed = M7E.git_output(
+        "diff",
+        "--name-only",
+        "--no-renames",
+        base_commit,
+        head,
+        cwd=workspace,
+    ).splitlines()
+    untracked = M7E.git_output(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        cwd=workspace,
+    ).splitlines()
+    return sorted(set(committed + untracked))
 
 
 def start_process(
@@ -1065,7 +1112,11 @@ def execute_arm(
                 client.close()
             M7E.stop_process(process)
         external = M7E.external_verifier(workspace, deadline)
-        changed = M7E.changed_files(workspace)
+        changed = observed_changed_files(
+            workspace,
+            base,
+            task["lane"],
+        )
         expected_changed = sorted(task["expected_changed_files"])
         child_is_valid = child_valid(manifest, task, children)
         lifecycle = writer_lifecycle(
