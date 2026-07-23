@@ -1,7 +1,7 @@
 {
   "schema": "codewhale.eval.m7-d-edit-observation.v1",
-  "suite_id": "m7-d-edit-observation-v1-61597f59",
-  "frozen_at_utc": "2026-07-23T06:00:00Z",
+  "suite_id": "m7-d-edit-observation-v1-61597f59-v2",
+  "frozen_at_utc": "2026-07-23T05:18:57Z",
   "slice_contract": {
     "problem": "M7-D WIP 把 RuntimeEvent v16 降级成 v14 后交给历史 Harness，并按 call_id、ToolOutcome.workspace_revision 与任意后续成功猜测编辑恢复；它还提供没有 treatment delta 的单变体 live/Key 路径，因此不能形成可信 production 失败基线。",
     "acceptance": [
@@ -11,6 +11,7 @@
       "恢复只在同一 run、同一工具、同一可解析结构化目标且至少经过一个新的 ModelRequestPrepared 后归因；未知 patch header 目标保持 unscorable",
       "side_effect=indeterminate 与 Started 后无 Outcome 分开计数为 transaction ambiguity，不从 normal run 推断 crash 频率",
       "Harness output 名称由 manifest 唯一绑定、0600、maximum_reruns=0 且不可覆盖",
+      "CLI status 必须由 aggregate passed 决定；失败 gate 在 0600 ignored record 中保留有界诊断 tail",
       "root、read-only child、explicit Writer、三段工具 crash、app-server SIGKILL、focused、fmt、workspace clippy/test 与 git diff 门禁全部离线通过",
       "没有真实 treatment delta 时不读取 Key、不构建 release binary、不调用官方 API"
     ],
@@ -22,9 +23,9 @@
       "无 treatment delta 的单变体 live/Key 执行入口"
     ],
     "evidence": [
-      "13 项 v16 projector regression tests",
+      "15 项 v16 projector/Harness regression tests",
       "canonical Rust production loopback、actor conformance 与 process crash/reopen gates",
-      "一次性 0600 ignored offline record"
+      "首个 suite 的不可复现 workspace-test 失败记录与新的 v2 一次性 0600 ignored offline record"
     ],
     "cutover_deletion": [
       "历史 executor import、v16_as_v14、configure_executor、live、schedule、key read 与 cost acknowledgement",
@@ -104,11 +105,12 @@
     "release_binary_required": false
   },
   "output": {
-    "offline_result_name": "m7-d-edit-observation-offline-61597f59.json",
+    "offline_result_name": "m7-d-edit-observation-offline-61597f59-v2.json",
     "directory": "eval/results",
     "mode": "0600",
     "maximum_reruns": 0,
-    "replace": false
+    "replace": false,
+    "failure_tail_bytes_per_stream": 65536
   },
   "resources": {
     "cargo_incremental": "0",

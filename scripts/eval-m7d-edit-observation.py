@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "eval/manifests/m7-d-edit-observation-v1.json"
 TEST_PATH = ROOT / "scripts/test-eval-m7d-edit-observation.py"
 EXPECTED_SCHEMA = "codewhale.eval.m7-d-edit-observation.v1"
-OFFLINE_SCHEMA = "codewhale.eval.m7-d-edit-observation-offline.v2"
+OFFLINE_SCHEMA = "codewhale.eval.m7-d-edit-observation-offline.v3"
 TARGET_DIR = "/private/tmp/codewhale-m7d-target"
 EDIT_TOOLS = {"apply_patch", "edit_file"}
 SUCCESS_AXES = ("accepted", "succeeded", "succeeded")
@@ -121,10 +121,11 @@ def load_manifest() -> dict[str, Any]:
     output = value.get("output", {})
     require(
         output.get("offline_result_name")
-        == f"m7-d-edit-observation-offline-{source.get('production_revision', '')[:8]}.json"
+        == f"m7-d-edit-observation-offline-{source.get('production_revision', '')[:8]}-v2.json"
         and output.get("mode") == "0600"
         and output.get("maximum_reruns") == 0
-        and output.get("replace") is False,
+        and output.get("replace") is False
+        and output.get("failure_tail_bytes_per_stream") == 65_536,
         "manifest_output_contract_invalid",
     )
     resources = value.get("resources", {})
@@ -656,7 +657,7 @@ def _regression_result() -> dict[str, Any]:
         },
     )
     return {
-        "tests": 13,
+        "tests": 15,
         "stdout_sha256": digest_bytes(completed.stdout),
         "stderr_sha256": digest_bytes(completed.stderr),
     }
@@ -664,7 +665,7 @@ def _regression_result() -> dict[str, Any]:
 
 def self_test(*, run_regression: bool = True) -> dict[str, Any]:
     identity = source_identity()
-    regression = _regression_result() if run_regression else {"tests": 13}
+    regression = _regression_result() if run_regression else {"tests": 15}
     return {
         "status": "pass",
         "manifest_sha256": digest_file(MANIFEST_PATH),
@@ -699,7 +700,7 @@ def run_gate(identifier: str, command: list[str]) -> dict[str, Any]:
         timeout=MANIFEST["resources"]["gate_timeout_seconds"],
         check=False,
     )
-    return {
+    record = {
         "id": identifier,
         "command": command,
         "exit_code": completed.returncode,
@@ -707,6 +708,15 @@ def run_gate(identifier: str, command: list[str]) -> dict[str, Any]:
         "stderr_sha256": digest_bytes(completed.stderr),
         "wall_time_ms": int((time.monotonic() - started_at) * 1_000),
     }
+    if completed.returncode != 0:
+        limit = MANIFEST["output"]["failure_tail_bytes_per_stream"]
+        record["stdout_tail"] = completed.stdout[-limit:].decode(
+            "utf-8", errors="replace"
+        )
+        record["stderr_tail"] = completed.stderr[-limit:].decode(
+            "utf-8", errors="replace"
+        )
+    return record
 
 
 def offline(output: Path) -> dict[str, Any]:
@@ -716,10 +726,11 @@ def offline(output: Path) -> dict[str, Any]:
         run_gate(gate["id"], gate["command"]) for gate in MANIFEST["offline_gates"]
     ]
     after = repository_identity()
+    check = self_test(run_regression=False)
     record = {
         "schema": OFFLINE_SCHEMA,
         "suite_id": MANIFEST["suite_id"],
-        **self_test(run_regression=False),
+        "self_test": check,
         "repository_before": before,
         "repository_after": after,
         "gates": gates,
@@ -732,6 +743,12 @@ def offline(output: Path) -> dict[str, Any]:
     }
     write_private_once(output, record)
     return record
+
+
+def result_status(result: dict[str, Any]) -> str:
+    if isinstance(result.get("passed"), bool):
+        return "pass" if result["passed"] else "failed"
+    return result.get("status", "pass")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -754,10 +771,7 @@ def main() -> int:
             json.dumps(
                 {
                     "schema": result.get("schema", EXPECTED_SCHEMA),
-                    "status": (
-                        result.get("status")
-                        or ("pass" if result.get("passed") else "failed")
-                    ),
+                    "status": result_status(result),
                     "suite_id": result.get("suite_id", MANIFEST["suite_id"]),
                     "credential_read": False,
                     "official_api_requests": 0,

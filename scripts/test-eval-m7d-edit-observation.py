@@ -8,6 +8,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("eval-m7d-edit-observation.py")
@@ -302,6 +303,24 @@ class ObservationProjectionTests(unittest.TestCase):
         self.assertNotIn(b"credential_admission", encoded)
         self.assertEqual(M7D.MANIFEST["admission"]["official_api_requests"], 0)
         self.assertEqual(M7D.MANIFEST["admission"]["credential_read"], False)
+
+    def test_aggregate_failure_status_cannot_be_masked_by_self_test(self) -> None:
+        result = {"status": "pass", "passed": False}
+        self.assertEqual(M7D.result_status(result), "failed")
+
+    def test_failed_gate_keeps_bounded_diagnostics(self) -> None:
+        limit = M7D.MANIFEST["output"]["failure_tail_bytes_per_stream"]
+        completed = M7D.subprocess.CompletedProcess(
+            args=["fixture"],
+            returncode=101,
+            stdout=b"x" * (limit + 7),
+            stderr=b"failure-tail",
+        )
+        with mock.patch.object(M7D.subprocess, "run", return_value=completed):
+            record = M7D.run_gate("fixture", ["fixture"])
+        self.assertEqual(len(record["stdout_tail"].encode("utf-8")), limit)
+        self.assertEqual(record["stderr_tail"], "failure-tail")
+        self.assertEqual(record["exit_code"], 101)
 
 
 if __name__ == "__main__":
