@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-d-prompt-ab.v2",
-  "status": "frozen_offline_pending",
+  "status": "frozen_live_admitted",
   "date": "2026-07-24",
   "claim": {
     "name": "M8-D 中文原生 production prompt 收敛 v2",
@@ -276,9 +276,9 @@
     "Writer worktree/seal/integrate/verify/cleanup lifecycle"
   ],
   "admission": {
-    "live_api_admitted": false,
-    "admitted_on": null,
-    "admission_evidence": "v2 immutable binary/archive 与外部进程 red/green 已建立；完整离线门禁、冻结 Harness identity 和 preflight prompt-only delta 尚待完成。",
+    "live_api_admitted": true,
+    "admitted_on": "2026-07-24",
+    "admission_evidence": "v2 immutable binary/archive、外部 app-server RunCreated prompt-only delta、frozen Harness/preflight、fmt、focused、workspace clippy/test、production exec/HTTP/stdio loopback、app-server/State SIGKILL reopen、root/read-only/Writer 与 TUI/PTY 门禁全部通过；v2 Key 尚未读取。",
     "credential_read_for_v2": false,
     "official_api_requests_for_v2": 0,
     "pre_key": [
@@ -347,6 +347,6 @@
     "harness_sha256": "sha256:01ab774268059703bce4ccc43135f12ea229c8b1bb4e39cda463f2fa5c87056d",
     "harness_test_sha256": "sha256:7ecf19ae26ddb88636cf79d61cd37257ec4e459be1759440d0fad23636998566",
     "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
-    "manifest_content_sha256_excluding_frozen_hashes": "sha256:e82f7ad84618831fbddb4f4e6f7f0b220e1fc8f5057832738dd9b31c1e1257b0"
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:b96832d7eed8389cb744de54115baf6e17e3e4c8f917f6fa20bba01812d1a601"
   }
 }
