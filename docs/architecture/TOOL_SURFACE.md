@@ -70,6 +70,9 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
   canonical caller，因此没有 FIM 编辑工具或产品模式。
 - 工具目录和稳定提示词前缀会影响 DeepSeek context cache，因此不增加无收益别名或
   每轮漂移的描述。
+- `PromptCacheControl` 是 Host 的 block provenance，不是 DeepSeek wire 字段。当前 planner
+  把 stable/volatile blocks 合成一个 system message；工具目录按固定字母顺序生成。M7-F
+  不通过重排/复制工具、拆多个 system message 或删除 workspace/evidence facts猜测缓存收益。
 
 ## 5. 执行与证据边界
 

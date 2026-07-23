@@ -1,0 +1,314 @@
+{
+  "schema": "codewhale.eval.m7-f-context-cache-prefix-result.v1",
+  "status": "complete_offline_hold_no_live_admission",
+  "date": "2026-07-23",
+  "identity": {
+    "starting_revision": "8285a883322fa9b0040fba26ef833ee9808001eb",
+    "baseline_checkpoint": "a1d68b05d1e252fe55aa4ea2f19b6dc910e74873",
+    "branch": "deepseek-agent",
+    "manifest": "eval/manifests/m7-f-context-cache-prefix-v1.json",
+    "manifest_sha256": "sha256:363dfffed3ed01f2b04ced4108ffd481edaec9dc26af64140e7e1ed4604100e9",
+    "app_production_source_sha256": "sha256:7ce3458f5d882b97de5c4fd9fbf4d94f3be5f00ab469e7c4a4b65d47cb38f96e",
+    "deepseek_planner_source_sha256": "sha256:63b49c4db6eb428a010f5e21d3ad252cdf1378929737b57f6402067fcb26dd7b",
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2
+  },
+  "official_protocol": {
+    "reviewed_on": "2026-07-23",
+    "context_caching": "https://api-docs.deepseek.com/guides/kv_cache/",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "change_log": "https://api-docs.deepseek.com/updates/",
+    "cache_contract": {
+      "automatic": true,
+      "full_persisted_unit_match_required": true,
+      "persistence_boundaries": [
+        "end_of_user_input",
+        "end_of_model_output",
+        "detected_common_prefix",
+        "fixed_token_interval"
+      ],
+      "best_effort": true,
+      "reported_fields": [
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens"
+      ]
+    },
+    "pricing_fixture_usd_per_million_tokens": {
+      "deepseek-v4-flash": {
+        "cache_hit_input": "0.0028",
+        "cache_miss_input": "0.14",
+        "output": "0.28"
+      },
+      "deepseek-v4-pro": {
+        "cache_hit_input": "0.003625",
+        "cache_miss_input": "0.435",
+        "output": "0.87"
+      }
+    },
+    "volatile_model_fact": "deepseek-chat and deepseek-reasoner aliases are documented for deprecation at 2026-07-24T15:59:00Z; no M7-F request used either alias."
+  },
+  "production_loopback": {
+    "test": "codewhale_app::production::tests::m7f_production_loopback_freezes_host_fact_suffix_cache_break",
+    "composition": "AgentApplication -> AgentRuntime -> RunStore -> DeepSeekModelPort -> loopback HTTP",
+    "model": "deepseek-v4-pro",
+    "surface": "standard_chat",
+    "requests": 3,
+    "request_numbers": [
+      1,
+      2,
+      3
+    ],
+    "message_counts": [
+      2,
+      4,
+      6
+    ],
+    "adjacent_common_message_counts": [
+      1,
+      3
+    ],
+    "adjacent_expected_without_previous_host_tail": [
+      1,
+      3
+    ],
+    "read_only_first_transition": {
+      "host_facts_changed": false,
+      "previous_host_facts_replayed": false,
+      "next_message_at_break": "assistant"
+    },
+    "edit_second_transition": {
+      "host_facts_changed": true,
+      "workspace_revision_advanced": true,
+      "previous_host_facts_replayed": false,
+      "next_message_at_break": "assistant"
+    },
+    "constant_across_turns": [
+      "system_prompt",
+      "tool_catalog",
+      "model",
+      "surface",
+      "streaming",
+      "max_output_tokens"
+    ],
+    "request_plan_equals_raw_http_body": true,
+    "sqlite_reopen_events_exact": true,
+    "sqlite_reopen_snapshot_exact": true,
+    "terminal": "completed",
+    "false_success": false,
+    "final_file_bytes": "after\\n"
+  },
+  "wire_findings": {
+    "system_blocks": {
+      "typed_boundary": "one stable block followed by ordered volatile blocks",
+      "wire_system_messages": 1,
+      "separator": "\\n\\n---\\n\\n",
+      "cache_control_provider_field_present": false,
+      "conclusion": "PromptCacheControl is Host metadata only; splitting/relabeling blocks without changing runtime_system_instructions has no wire delta."
+    },
+    "host_facts": {
+      "position": "last ModelMessage::User on every request",
+      "contains": [
+        "task_generation",
+        "acceptance_ids",
+        "workspace_generation",
+        "workspace_revision",
+        "current evidence receipt or none",
+        "unresolved completion/verifier facts when present"
+      ],
+      "canonical_transcript_index": null,
+      "next_request_history": "omitted before the committed assistant/tool output",
+      "effect": "request N+1 is not a full extension of request N input + output; repeated common-prefix persistence can recover an older prefix, so progression is generally one turn behind rather than completely disabled"
+    },
+    "tool_catalog": {
+      "order": "prefix-stable alphabetical production catalog",
+      "persisted_exactly": true,
+      "sqlite_rebuild_exact": true,
+      "official_cache_key_treatment_documented": false,
+      "conclusion": "no catalog reorder treatment exists"
+    },
+    "reasoning_and_tools": {
+      "reasoning_content_exact_replay": true,
+      "raw_tool_arguments_exact_replay": true,
+      "tool_result_adjacency_preserved": true,
+      "child_handoff_deferred_until_tool_results": true,
+      "conclusion": "these bytes are required protocol history and cannot be moved or dropped for cache gain"
+    }
+  },
+  "observational_cache_baseline": {
+    "source": "four ignored 0600 M7-E raw files; only completed arms with valid closed accounting",
+    "product_metric_admissible": false,
+    "reason": "M7-E arm pairing/evaluator defects invalidate treatment comparisons, but each selected arm's official usage identity and accounting are independently closed and useful as a non-causal production baseline.",
+    "arms": 18,
+    "requests": 94,
+    "input_tokens": 395812,
+    "cache_hit_tokens": 281344,
+    "cache_miss_tokens": 114468,
+    "aggregate_cache_hit_ratio": 0.7108020979657009,
+    "output_tokens": 28296,
+    "known_cost_nanousd": 24736160,
+    "raw_sha256": {
+      "m7-e-thinking-formal-b9b83cdf-v1.json": "sha256:fab92a1062887c1a5171f0b1776e0e221aa834fa2e858d721a8919d2ed8cdec7",
+      "m7-e-thinking-formal-30ce183f-v2.json": "sha256:c2e263f970386b8feed270a98fa9d3156ebcb3c95c92a2dfb27d18a995fb4931",
+      "m7-e-thinking-formal-53475dc4-v3.json": "sha256:f4b77dc79b40e854e4768eaff584950da0f6e7932c9998c998aabeb723b62c30",
+      "m7-e-thinking-formal-ee73e761-v4.json": "sha256:e6ae9602aff62d38f06a8d7b322f4e9115eab26f4105ec6c35f7fa8bba8ae70c"
+    },
+    "non_claims": [
+      "aggregate usage does not identify a per-request cache break",
+      "the 71.08% hit ratio is not a same-binary control/treatment result",
+      "best-effort provider persistence prevents inferring a deterministic miss from a single run",
+      "no cost saving is attributed to a candidate"
+    ]
+  },
+  "candidate_disposition": [
+    {
+      "candidate": "relabel or split stable/volatile SystemPrompt blocks without changing wire planning",
+      "wire_delta": false,
+      "decision": "reject",
+      "reason": "the planner flattens all blocks into one system message and does not send cache_control"
+    },
+    {
+      "candidate": "send stable and volatile blocks as multiple system messages",
+      "wire_delta": true,
+      "decision": "reject",
+      "reason": "official cache docs do not define multiple-system-message cache semantics; message splitting changes tokenization and potentially model semantics"
+    },
+    {
+      "candidate": "move Host facts before task/history",
+      "wire_delta": true,
+      "decision": "reject",
+      "reason": "a workspace/evidence change would break the prefix earlier and change instruction priority"
+    },
+    {
+      "candidate": "drop or coarsen task generation, workspace revision, receipt or verifier facts",
+      "wire_delta": true,
+      "decision": "reject",
+      "reason": "violates freshness, evidence and latest-revision completion truth"
+    },
+    {
+      "candidate": "persist each prior Host-facts message before its committed assistant output",
+      "wire_delta": true,
+      "decision": "hold_not_implemented",
+      "reason": "it would restore a full chronological wire history and could advance provider request/output boundary units, but it also adds superseded workspace/evidence facts to every later model input and requires new typed projection/reducer/reopen state. No proof yet shows unchanged semantics or a safe stale-fact supersession contract."
+    },
+    {
+      "candidate": "reorder or duplicate the tool catalog",
+      "wire_delta": true,
+      "decision": "reject",
+      "reason": "the catalog is already deterministic; official cache docs do not specify tool serialization as a cache key, and duplication increases tokens/complexity"
+    }
+  ],
+  "offline_gates": [
+    {
+      "gate": "cargo fmt --all -- --check",
+      "status": "passed"
+    },
+    {
+      "gate": "codewhale-deepseek canonical projection/raw reasoning test",
+      "status": "passed"
+    },
+    {
+      "gate": "codewhale-deepseek PromptCacheControl wire test",
+      "status": "passed"
+    },
+    {
+      "gate": "codewhale-deepseek child handoff/tool adjacency test",
+      "status": "passed"
+    },
+    {
+      "gate": "codewhale-context full crate tests",
+      "status": "passed",
+      "tests": 17
+    },
+    {
+      "gate": "M7-F production loopback and SQLite reopen",
+      "status": "passed"
+    },
+    {
+      "gate": "M7-E high/off exact request-plan SQLite reopen",
+      "status": "passed"
+    },
+    {
+      "gate": "M7-B request-plan rebuild and actor catalog identities",
+      "status": "passed"
+    },
+    {
+      "gate": "root/read-only child/Writer ToolOutcome conformance",
+      "status": "passed"
+    },
+    {
+      "gate": "child ContextBroker compaction conformance",
+      "status": "passed"
+    },
+    {
+      "gate": "latest workspace evidence boundary conformance",
+      "status": "passed"
+    },
+    {
+      "gate": "model in-flight, committed response and compaction SIGKILL/reopen",
+      "status": "passed"
+    },
+    {
+      "gate": "cargo check -p codewhale-deepseek --locked",
+      "status": "passed"
+    },
+    {
+      "gate": "cargo check -p codewhale-app --locked",
+      "status": "passed"
+    },
+    {
+      "gate": "./scripts/dev-deepseek-agent.sh focused",
+      "status": "passed"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "status": "passed"
+    },
+    {
+      "gate": "git diff --check",
+      "status": "passed"
+    }
+  ],
+  "live": {
+    "admitted": false,
+    "reason": "no candidate simultaneously has a real wire delta and proof of unchanged semantics/freshness/replay",
+    "key_read": false,
+    "official_api_requests": 0,
+    "billing_unknown": false,
+    "raw_created": false
+  },
+  "decision": {
+    "value": "hold",
+    "reason": "real_host_fact_suffix_break_without_safe_semantics_preserving_treatment",
+    "keep": [
+      "current single Runtime/RunStore/RequestPlan path",
+      "ordered stable/volatile Host metadata",
+      "latest Host-facts tail",
+      "deterministic tool order",
+      "exact reasoning/tool replay",
+      "new offline wire/reopen regression tests"
+    ],
+    "shrink": [
+      "do not describe PromptCacheControl as a provider cache boundary",
+      "do not treat historical aggregate cache ratios as treatment evidence"
+    ],
+    "hold": [
+      "typed chronological Host-fact replay with explicit supersession",
+      "any credentialed context-cache A/B"
+    ],
+    "reject": [
+      "fact dropping or coarsening",
+      "multiple system messages based on generic OpenAI assumptions",
+      "tool catalog reordering/duplication",
+      "a new cache mode, Runtime, Store or request truth"
+    ],
+    "production_behavior_changed": false,
+    "next_slice": "If cache work is reopened, first design a typed, derived chronological Host-fact snapshot projection that proves old facts are historical and latest facts authoritative across compaction/crash/reopen. Only then may a successor same-binary A/B compare the exact extension treatment; otherwise select a different bottleneck."
+  }
+}

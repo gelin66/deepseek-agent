@@ -41,6 +41,13 @@
   和实际首请求，且外部停止时存在无法重建最终计费的 active arm。四次尝试全部排除出产品
   指标；final `458c3d7d` v5 固定 `live_api_admitted=false`，production 默认不变，决策为
   `hold`。任何复评都必须使用新的 successor manifest 从 position 1 重新准入。
+  M7-F 随后按 DeepSeek 最新 cache-prefix unit 规则审计 exact production wire。
+  `a1d68b05` 的三轮 loopback 证明：每轮 Host facts 是 ModelRequest 最后的 ephemeral user
+  message，下一轮不会把它放回历史；即使只读后 facts 完全相同，相邻公共完整 messages 仍只
+  到上一请求的 `len - 1`，而 edit 后 revision 会正确刷新。该 break 真实，但把旧 facts
+  写回会让过期 revision/receipt 重新进入模型输入并需要新的 typed supersession/reducer
+  状态；其它拆 system、前移/删除 facts、重排工具候选均无安全可归因收益。M7-F 因而
+  `hold`，production 不变，Key 未读取、官方请求 0。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -154,7 +161,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
-| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-E thinking admission 因 fairness 与 unknown billing 继续 hold） | 其他 Provider 和重复产品外壳被删除 |
+| M7 | DeepSeek 专项调优与产品清理 | 进行中（M7-F cache-prefix 因无安全、语义不变的 wire treatment 而 hold） | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
@@ -1894,6 +1901,32 @@ API 前固定 fail closed；没有 v5 raw 或官方请求。产品决策为 **ho
 先离线审计 exact ModelRequest 的 stable-prefix/cache break position，不立即重做付费
 thinking A/B。完整身份、费用边界和非结论见
 [M7-E 默认 Thinking 准入结论](../../eval/summaries/m7-e-thinking-admission-2026-07-23.md)。
+
+### M7-F：canonical context-cache 前缀审计
+
+M7-F 从 M7-E 结论 `8285a883` 开始，先按 2026-07-23 DeepSeek 官方 Context Caching 文档
+重新冻结 cache 语义。当前 provider 只命中完整匹配的已持久化 cache-prefix unit；unit 可在
+用户输入末尾、模型输出末尾、重复公共前缀和长序列固定 token 间隔形成，且整体是
+best-effort。`PromptCacheControl` 不是官方字段。
+
+调用图证明 `crates/context` 的 stable constitution / volatile world-state blocks 在
+`crates/deepseek` 被拼成单个 system message，随后是 canonical transcript，最后追加
+task generation、workspace revision、receipt/rejection/verifier 状态。`a1d68b05` 增加
+test-only production loopback：三轮请求 messages 数为 `2/4/6`，相邻公共完整 messages 为
+`1/3`，恰好等于上一请求去掉 Host-facts tail。首轮只读后 facts 字节相同但仍被省略；第二轮
+edit 后 latest revision 正确变化。raw loopback body 等于 persisted ModelRequest 重建的
+RequestPlan，SQLite reopen 前后 event/snapshot 完全一致。
+
+四份 M7-E raw 的 18 个 closed-accounting arms 仅作非因果诊断：94 requests、395,812 input、
+281,344 cache-hit、114,468 cache-miss，aggregate hit ratio `71.0802%`。它们没有逐请求 usage
+或 M7-F candidate，且 M7-E pairing 已失效，不能成为收益指标。
+
+产品决策为 **hold**。多 system message 缺少官方语义保证；facts 前移/删除会破坏 prefix 或
+freshness/evidence；tool catalog 已稳定。唯一真实潜在 delta 是按时间顺序重放旧 Host facts，
+但这会把过期 revision/receipt 加入后续输入，并要求 typed supersession、compaction、
+reducer 与 crash/reopen 合同。本切片不为缓存弱化 truth，不读 Key、不调用官方 API。完整
+身份、候选取舍与非结论见
+[M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
 
 ### 调优
 

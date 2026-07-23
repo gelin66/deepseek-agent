@@ -955,6 +955,38 @@ Harness；不改变 production 默认；不拼接 v1-v4。任何复评必须以�
 successor manifest/suite/output 从 position 1 重新准入。完整身份、官方资料复核和非结论见
 [M7-E 默认 Thinking 准入结论](../../eval/summaries/m7-e-thinking-admission-2026-07-23.md)。
 
+### 9.12 M7-F canonical context-cache 前缀审计（2026-07-23）
+
+M7-F 按 DeepSeek 当前官方 cache-prefix unit 规则评估 production exact wire，而不是把
+Host 的 `PromptCacheControl`、UTF-8 公共字节或 prompt hash 当成 provider 命中。冻结口径
+要求：
+
+- authoritative input 是 persisted `ModelRequestPrepared` 和 deterministic
+  `crates/deepseek::RequestPlan`；raw loopback HTTP 必须逐字段相同；
+- 分别记录 system block、wire message、首个不同 role/内容、工具目录、surface/model/
+  thinking/output/streaming identity；
+- `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 是唯一 provider 结果；
+- cache 是 best-effort，单次 miss 不是确定性回归；
+- 未形成同 binary wire treatment 时不读 Key、不调用 API。
+
+`a1d68b05` 的真实三轮 production loopback 使用 read → edit → completion。请求 message
+counts 为 `2/4/6`，相邻公共完整 message counts 为 `1/3`。上一轮 Host facts 始终是唯一
+break：只读后其内容完全相同，下一请求仍不重放；edit 后 workspace revision 则正确刷新。
+system prompt、catalog、model、surface、streaming 与 output budget 不变，raw body 与 rebuilt
+plan 相同，SQLite reopen 精确。
+
+四份 M7-E raw 中 18 个 completed + closed-accounting arms 合计 94 requests、395,812 input、
+281,344 hit、114,468 miss，aggregate hit ratio `71.0802%`。该数据只证明现有 production
+确有大量自动 cache hit；它没有逐请求 break，且原 A/B fairness 失效，不能用于推断 M7-F
+收益。
+
+候选门禁拒绝 facts 删除/粗化、facts 前移、多 system message 猜测和 tool duplication。
+按时间顺序重放旧 Host facts 能形成真实 wire delta，但在旧 revision/receipt 的 typed
+supersession、compaction、child fork 与 crash/reopen 合同完成前，不满足“语义不变”。
+决策为 **hold**：保留 offline wire/reopen regression，不改变 production，不执行 live。
+完整结果见
+[M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

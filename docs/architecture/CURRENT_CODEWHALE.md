@@ -29,6 +29,7 @@
 - M7-E thinking admission production candidate：`b9b83cdf`
 - M7-E last live evaluator checkpoint：`ee73e761`
 - M7-E fail-closed hold / final Harness checkpoint：`458c3d7d`
+- M7-F context-cache wire baseline checkpoint：`a1d68b05`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -50,7 +51,11 @@
   production 模型样本或 editor treatment admission。M7-E 已在同一 Standard Chat production
   binary 上冻结 `reasoning_effort=high/off`，但四次 live 尝试分别暴露 evaluator recovery
   错判与 paired workspace identity 缺陷；v4 外部停止还留下 active-arm unknown billing。
-  final v5 固定在 Key/API 前 fail closed，默认 thinking 行为不变，产品结论为 `hold`
+  final v5 固定在 Key/API 前 fail closed，默认 thinking 行为不变，产品结论为 `hold`。
+  M7-F 又证明每轮 ephemeral Host-facts tail 不进入下一请求历史，导致 provider
+  request/output boundary 不能逐轮严格延伸；fresh revision/evidence、wire plan 与 SQLite
+  reopen 均保持正确。没有候选能在不增加 stale-fact 语义的前提下形成安全 wire delta，
+  因而 production 不变、Key 未读取、官方请求 0，决策为 `hold`。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1105,6 +1110,25 @@ accounting。由于 v4 被外部停止时 active arm 可能已有无法重建最
 request，v5 的 `live_api_admitted=false` 在 preflight、output reservation、Key read 和 API
 之前 fail closed。当前默认 `Auto` / thinking-enabled 没有改变。
 
+M7-F 没有新增 production owner。`SystemPrompt` 继续保存 stable constitution 与 ordered
+volatile world-state blocks；`runtime_system_instructions` 将它们用固定 separator 拼成一个
+DeepSeek system message，`cache_control` 不进入 wire。ContextBroker 随后投影 canonical
+transcript，并把 task generation、workspace generation/revision、receipt、completion
+rejection 与 verifier failure 作为最后一个 Host user message。该 tail 没有 transcript
+index，因此下一请求不会在 assistant/tool output 前重放它。
+
+production loopback 冻结的三轮 messages 为 `2/4/6`，相邻公共完整 messages 为 `1/3`；
+只读后 Host facts 相同也仍是 break，写入后 revision 则正确刷新。raw HTTP body 等于从
+`ModelRequestPrepared` 重建的 `RequestPlan`，SQLite reopen 后事件与 snapshot 精确。
+当前工具目录顺序已稳定；root/read-only child/Writer 的 system/catalog 差异均来自角色与
+权限。
+
+把旧 Host facts 写回下一轮可形成真实 wire delta，但会把 superseded revision/receipt
+重新加入模型输入，还需要新的 typed supersession、compaction、child fork、reducer 与
+crash/reopen 合同。本阶段没有该状态，也没有多 system message、fact deletion/reorder 或
+tool duplication 路径。完整事实见
+[M7-F canonical context-cache 前缀审计结论](../../eval/summaries/m7-f-context-cache-prefix-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1133,6 +1157,8 @@ request，v5 的 `live_api_admitted=false` 在 preflight、output reservation、
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；
+- M7-F 已证明重放旧 Host facts 能提高 cache hit、降低费用或保持 verified success；
+  M7-E raw 的 71.08% aggregate hit ratio 没有逐请求 break 或同 binary treatment 身份；
 - 单次 live canary 可以成为产品指标。
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
