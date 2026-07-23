@@ -1150,8 +1150,9 @@ mod tests {
         AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, ModelAccounting,
         ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
         ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
-        RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
-        ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
+        RunLimits, RuntimeEventKind, SystemPrompt, TerminalState, ToolArguments, ToolDefinition,
+        ToolFailureCode, ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess,
+        WriteExecutionMode,
     };
     use codewhale_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -4195,6 +4196,258 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn m8d_prompt_treatment_subprocess_probe() {
+        let Ok(output_path) = std::env::var("CODEWHALE_M8D_PROBE_OUTPUT") else {
+            return;
+        };
+        let variant = std::env::var("CODEWHALE_M8D_PROBE_VARIANT").expect("M8-D probe variant");
+        let workspace = PathBuf::from(
+            std::env::var("CODEWHALE_M8D_PROBE_WORKSPACE").expect("M8-D probe workspace"),
+        );
+        let probe_root =
+            PathBuf::from(std::env::var("CODEWHALE_M8D_PROBE_ROOT").expect("M8-D probe root"));
+        std::fs::create_dir_all(&probe_root).expect("create M8-D probe root");
+        if variant == "candidate" {
+            let candidate = include_str!("../../../eval/fixtures/m8-d-prompt/v1/constitution.md");
+            codewhale_context::prompts::set_base_prompt_override(candidate.to_owned())
+                .expect("install isolated M8-D candidate override");
+        } else {
+            assert_eq!(variant, "baseline");
+        }
+        let composition = test_production_composition(
+            &probe_root,
+            connection("http://127.0.0.1:9/v1", false),
+            false,
+        );
+        let prompt = composition.system_prompt(&workspace, "deepseek-v4-flash", true);
+        std::fs::write(
+            output_path,
+            serde_json::to_vec(&prompt).expect("serialize M8-D prompt"),
+        )
+        .expect("write M8-D prompt probe");
+    }
+
+    #[tokio::test]
+    async fn m8d_prompt_treatment_changes_only_constitution_and_reopens_exactly() {
+        let temp = tempfile::tempdir().expect("M8-D temp root");
+        let workspace = temp.path().join("workspace");
+        let home = temp.path().join("home");
+        let codewhale_home = temp.path().join("codewhale-home");
+        for directory in [&workspace, &home, &codewhale_home] {
+            std::fs::create_dir_all(directory).expect("create M8-D fixture directory");
+        }
+        std::fs::write(workspace.join("fixture.txt"), "prompt treatment fixture\n")
+            .expect("write M8-D fixture");
+        initialize_git_fixture(&workspace);
+        let workspace = workspace.canonicalize().expect("canonical M8-D workspace");
+
+        let current_test = std::env::current_exe().expect("current app test binary");
+        let mut prompts = Vec::new();
+        for variant in ["baseline", "candidate"] {
+            let output_path = temp.path().join(format!("{variant}-prompt.json"));
+            let probe_root = temp.path().join(format!("{variant}-probe"));
+            let output = ProcessCommand::new(&current_test)
+                .arg("m8d_prompt_treatment_subprocess_probe")
+                .arg("--nocapture")
+                .env("RUST_TEST_THREADS", "1")
+                .env("HOME", &home)
+                .env("CODEWHALE_HOME", &codewhale_home)
+                .env("CODEWHALE_M8D_PROBE_OUTPUT", &output_path)
+                .env("CODEWHALE_M8D_PROBE_VARIANT", variant)
+                .env("CODEWHALE_M8D_PROBE_WORKSPACE", &workspace)
+                .env("CODEWHALE_M8D_PROBE_ROOT", &probe_root)
+                .output()
+                .expect("run isolated M8-D prompt probe");
+            assert!(
+                output.status.success() && output_path.is_file(),
+                "{variant} probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            prompts.push(
+                serde_json::from_slice::<SystemPrompt>(
+                    &std::fs::read(output_path).expect("read M8-D prompt probe"),
+                )
+                .expect("decode M8-D prompt probe"),
+            );
+        }
+
+        let baseline_constitution = codewhale_context::prompts::BASE_PROMPT.trim();
+        let candidate_constitution =
+            include_str!("../../../eval/fixtures/m8-d-prompt/v1/constitution.md").trim();
+        assert_ne!(baseline_constitution, candidate_constitution);
+        assert_eq!(prompts[0].blocks.len(), prompts[1].blocks.len());
+        assert_eq!(
+            prompts[0]
+                .blocks
+                .iter()
+                .map(|block| block.cache_control)
+                .collect::<Vec<_>>(),
+            prompts[1]
+                .blocks
+                .iter()
+                .map(|block| block.cache_control)
+                .collect::<Vec<_>>()
+        );
+        let baseline_suffix = prompts[0].blocks[0]
+            .text
+            .strip_prefix(baseline_constitution)
+            .expect("baseline constitution prefix");
+        let candidate_suffix = prompts[1].blocks[0]
+            .text
+            .strip_prefix(candidate_constitution)
+            .expect("candidate constitution prefix");
+        assert_eq!(baseline_suffix, candidate_suffix);
+        assert_eq!(&prompts[0].blocks[1..], &prompts[1].blocks[1..]);
+
+        let mut plans = Vec::new();
+        for (variant, prompt) in ["baseline", "candidate"].into_iter().zip(prompts) {
+            let state_path = temp.path().join(format!("{variant}-state.db"));
+            let store =
+                Arc::new(StateStore::open(Some(state_path.clone())).expect("M8-D state store"));
+            let tool_config = tool_config_for_run(
+                &ProductionToolConfig::new(&workspace).with_shell_policy(ShellPolicy::Full),
+                &workspace,
+                &RunProductControls::default(),
+            )
+            .expect("M8-D production tools");
+            let runtime = AgentRuntime::new(
+                Arc::new(ReplayOnlyModelPort),
+                Arc::new(ProductionToolExecutor::new(tool_config)),
+                Arc::new(NullEventSink),
+                store.clone(),
+            );
+            let run_id = RunId::from("m8d-prompt-treatment");
+            let mut request = RunRequest::new(
+                TaskContract {
+                    generation_id: TaskGenerationId::from("m8d-prompt-treatment"),
+                    definition: TaskDefinition::host("验证 M8-D prompt treatment 身份"),
+                },
+                prompt,
+            );
+            request.run_id = Some(run_id.clone());
+            request.model = "deepseek-v4-flash".to_owned();
+            request.reasoning_effort = ReasoningEffort::High;
+            request.streaming = true;
+            request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
+            request.environment.workspace = stable_path(&workspace);
+            request.limits.max_depth = 1;
+            let tools = runtime.tool_definitions(
+                &request.tool_policy,
+                request
+                    .task_contract
+                    .as_ref()
+                    .map(|contract| &contract.definition),
+                ModelToolAuthority::RootWrite,
+                0,
+                request.limits.max_depth,
+                false,
+            );
+            request.environment.tool_catalog_sha256 = Some(canonical_tool_catalog_sha256(&tools));
+            let created = store
+                .create(request.clone())
+                .await
+                .expect("create M8-D run");
+            let context = effective_context(ContextInput {
+                transcript: &created.replay.snapshot.transcript,
+                projection: created.replay.snapshot.context_projection.as_ref(),
+                task_contract: created.replay.snapshot.request.task_contract.as_ref(),
+                workspace_state: &created.replay.snapshot.workspace_state,
+                evidence_receipts: &created.replay.snapshot.evidence_receipts,
+                last_completion_rejection: created
+                    .replay
+                    .snapshot
+                    .last_completion_rejection
+                    .as_ref(),
+                last_verifier_failure: None,
+                last_verifier_failure_workspace: None,
+                tools: &tools,
+            })
+            .expect("M8-D effective context");
+            let prepared = ModelRequest {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                actor: request.actor,
+                model: request.model.clone(),
+                system_prompt: context.system_prompt,
+                messages: context.messages,
+                tools,
+                reasoning_effort: request.reasoning_effort,
+                max_output_tokens: request.max_output_tokens,
+                streaming: request.streaming,
+                request_number: 1,
+                attempt: 0,
+            };
+            append_test_event(
+                store.as_ref(),
+                &created.lease,
+                RuntimeEventKind::ModelRequestPrepared {
+                    attempt_id: AttemptId(format!("m8d-{variant}-attempt")),
+                    request: Box::new(prepared.clone()),
+                },
+            )
+            .await;
+            store
+                .release(&created.lease)
+                .await
+                .expect("release M8-D run");
+            drop(runtime);
+            drop(store);
+
+            let reopened = StateStore::open(Some(state_path)).expect("reopen M8-D state");
+            let replay = reopened
+                .load(&run_id)
+                .await
+                .expect("load M8-D reopened run")
+                .expect("M8-D reopened run exists");
+            let persisted = replay
+                .events
+                .iter()
+                .find_map(|event| match &event.event {
+                    RuntimeEventKind::ModelRequestPrepared { request, .. } => {
+                        Some(request.as_ref())
+                    }
+                    _ => None,
+                })
+                .expect("M8-D prepared request");
+            assert_eq!(persisted, &prepared);
+            let capability =
+                official_model_capabilities(&persisted.model).expect("M8-D capability");
+            let max_tokens = capability
+                .resolve_output_tokens(persisted.max_output_tokens)
+                .expect("M8-D output limit");
+            let plan_input = || RuntimeChatPlanInput {
+                root: "https://fixture.invalid",
+                strict_enabled: false,
+                wire_model: capability.model.to_owned(),
+                max_tokens,
+            };
+            let before = plan_runtime_chat(plan_input(), &prepared).expect("M8-D original plan");
+            let after = plan_runtime_chat(plan_input(), persisted).expect("M8-D reopened plan");
+            assert_eq!(after, before);
+            plans.push(after);
+        }
+
+        let mut baseline_body = plans[0].body.clone();
+        let mut candidate_body = plans[1].body.clone();
+        let baseline_system = baseline_body["messages"][0]["content"]
+            .as_str()
+            .expect("baseline wire system")
+            .strip_prefix(baseline_constitution)
+            .expect("baseline wire constitution")
+            .to_owned();
+        let candidate_system = candidate_body["messages"][0]["content"]
+            .as_str()
+            .expect("candidate wire system")
+            .strip_prefix(candidate_constitution)
+            .expect("candidate wire constitution")
+            .to_owned();
+        assert_eq!(baseline_system, candidate_system);
+        baseline_body["messages"][0]["content"] = json!("<constitution-treatment>");
+        candidate_body["messages"][0]["content"] = json!("<constitution-treatment>");
+        assert_eq!(baseline_body, candidate_body);
     }
 
     #[tokio::test]
