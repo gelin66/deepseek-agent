@@ -815,6 +815,7 @@ dependencies = [
  "codewhale-app-server",
  "codewhale-build-support",
  "codewhale-config",
+ "codewhale-context",
  "codewhale-execpolicy",
  "codewhale-lane",
  "codewhale-localization",

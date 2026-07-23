@@ -1,16 +1,21 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use codewhale_protocol::agent_runtime::{
     AgentActor, AgentActorKind, AgentTask, AgentTaskId, AgentWorkspaceAccess,
-    AgentWorkspaceAssignment, RunId, RunRequest,
+    AgentWorkspaceAssignment, ReasoningEffort, RunId, RunLimits, RunRequest, ToolPolicy,
 };
-use codewhale_protocol::run_api::{RUN_API_SCHEMA_VERSION, RunCommandResponse, RunCommandResult};
+use codewhale_protocol::run_api::{
+    RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
+    RunProductControls, StartRunCommand,
+};
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     AgentOutcome, ModelAccounting, PendingRuntimeEvent, RunStore, TerminalState,
 };
 use codewhale_state::StateStore;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 fn codewhale_binary() -> PathBuf {
     option_env!("CARGO_BIN_EXE_codewhale")
@@ -171,6 +176,118 @@ fn help_has_command(help: &str, command: &str) -> bool {
             .and_then(|line| line.split_whitespace().next())
             == Some(command)
     })
+}
+
+#[tokio::test]
+async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec() {
+    const OVERRIDE_MARKER: &str = "m8d-app-server-process-override-marker";
+
+    let home = tempfile::tempdir().expect("temporary app-server CODEWHALE_HOME");
+    let workspace = tempfile::tempdir().expect("temporary app-server workspace");
+    let prompt_path = home.path().join("prompts/constitution.md");
+    std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
+        .expect("create prompt override directory");
+    std::fs::write(&prompt_path, format!("# 系统契约\n\n{OVERRIDE_MARKER}\n"))
+        .expect("write prompt override");
+
+    let mut child = tokio::process::Command::new(codewhale_binary())
+        .current_dir(workspace.path())
+        .env("CODEWHALE_HOME", home.path())
+        .env("CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE", "1")
+        .env("DEEPSEEK_API_KEY", "offline-app-server-prompt-key")
+        // Preserve the official endpoint contract while making any model
+        // attempt fail locally; RunCreated is committed before the response.
+        .env("HTTPS_PROXY", "http://127.0.0.1:1")
+        .env("https_proxy", "http://127.0.0.1:1")
+        .env("ALL_PROXY", "http://127.0.0.1:1")
+        .args(["app-server", "--stdio", "--transport-max-retries", "0"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start production app-server process");
+
+    let envelope = RunCommandEnvelope {
+        schema_version: RUN_API_SCHEMA_VERSION,
+        request_id: "m8d-app-server-prompt-probe".to_owned(),
+        command: RunCommand::Start(StartRunCommand {
+            task: TaskDefinition::host("只建立 prompt 进程级证据"),
+            workspace: workspace.path().display().to_string(),
+            model: Some("deepseek-v4-flash".to_owned()),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(128),
+            max_api_requests: std::num::NonZeroU32::new(1),
+            streaming: false,
+            tool_policy: ToolPolicy::default(),
+            limits: RunLimits {
+                max_depth: 0,
+                max_turns: 1,
+                max_model_requests: 1,
+                max_model_retries: 0,
+                max_tool_calls: 0,
+                ..RunLimits::default()
+            },
+            controls: RunProductControls {
+                auto_approve: true,
+                interactive: false,
+                sandbox: Some("workspace-write".to_owned()),
+                ..RunProductControls::default()
+            },
+        }),
+    };
+    let mut stdin = child.stdin.take().expect("app-server stdin");
+    stdin
+        .write_all(
+            format!(
+                "{}\n",
+                serde_json::to_string(&envelope).expect("encode start envelope")
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write app-server command");
+    stdin.flush().await.expect("flush app-server command");
+
+    let mut stdout = BufReader::new(child.stdout.take().expect("app-server stdout"));
+    let mut response_line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        stdout.read_line(&mut response_line),
+    )
+    .await
+    .expect("app-server response timeout")
+    .expect("read app-server response");
+    let response: RunCommandResponse =
+        serde_json::from_str(&response_line).expect("decode app-server response");
+    let RunCommandResult::Run { run } = response.result else {
+        panic!("app-server start failed: {response_line}");
+    };
+    let run_id = run.run_id.clone();
+
+    child.kill().await.expect("stop app-server process");
+    let _ = child.wait().await;
+
+    let store = StateStore::open(Some(home.path().join("state.db")))
+        .expect("open app-server canonical State DB");
+    let replay = store
+        .load(&run_id)
+        .await
+        .expect("load app-server run")
+        .expect("app-server RunCreated");
+    let prompt = replay
+        .snapshot
+        .request
+        .system_prompt
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        prompt.contains(OVERRIDE_MARKER),
+        "production app-server ignored the config-home prompt override"
+    );
 }
 
 #[tokio::test]

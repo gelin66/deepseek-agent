@@ -251,8 +251,8 @@ pub const LANGUAGE_PROMPT: &str = include_str!("prompts/language.md");
 pub const OUTPUT_PROMPT: &str = include_str!("prompts/output.md");
 
 // ── Embedder prompt overrides ──
-// Existing startup override hooks. These are audited separately because the
-// TUI and app-server currently initialize them differently.
+// Existing startup override hooks shared by the production TUI, exec, and
+// app-server entrypoints.
 static BASE_PROMPT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static STATIC_PROMPT_COMPOSER: std::sync::OnceLock<Box<StaticPromptComposer>> =
     std::sync::OnceLock::new();

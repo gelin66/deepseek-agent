@@ -1653,6 +1653,9 @@ fn run_app_server_command(
     resolved_runtime: &ResolvedRuntimeOptions,
     args: AppServerArgs,
 ) -> Result<()> {
+    // Match exec and the interactive TUI: install the single context-owned
+    // config-home override before AgentApplication composes any system prompt.
+    codewhale_context::prompts::load_prompt_overrides_from_config_home();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
