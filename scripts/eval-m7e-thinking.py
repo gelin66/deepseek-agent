@@ -31,11 +31,11 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v4.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m7-e-thinking-admission-v5.json"
 TASK_SOURCE_PATH = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 TEST_PATH = ROOT / "scripts/test-eval-m7e-thinking.py"
-SCHEMA = "codewhale.eval.m7-e-thinking-admission.v4"
-RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v4"
+SCHEMA = "codewhale.eval.m7-e-thinking-admission.v5"
+RESULT_SCHEMA = "codewhale.eval.m7-e-thinking-result.v5"
 RUN_API = 10
 EVENT_API = 16
 STATE_SCHEMA = 21
@@ -345,6 +345,36 @@ def materialize_fixture(tasks: dict[str, Any], task_id: str, destination: Path) 
         "fixture_git_identity_mismatch",
     )
     return base
+
+
+def pair_workspace_slot(
+    manifest: dict[str, Any],
+    workspace_root: Path,
+    task_id: str,
+    run_index: int,
+) -> Path:
+    task_ids = manifest["task_source"]["task_ids"]
+    require(task_id in task_ids, "paired_workspace_task_invalid")
+    require(
+        1 <= run_index <= manifest["experiment"]["runs_per_variant_task"],
+        "paired_workspace_run_index_invalid",
+    )
+    ordinal = task_ids.index(task_id) + 1
+    pair_root = workspace_root / f"pair-{ordinal}-{run_index}"
+    pair_root.mkdir(parents=True, exist_ok=True)
+    return pair_root / "workspace"
+
+
+def clear_pair_workspace(workspace: Path, workspace_root: Path) -> None:
+    require(
+        workspace.parent.parent == workspace_root,
+        "paired_workspace_cleanup_scope_invalid",
+    )
+    require(not workspace.is_symlink(), "paired_workspace_cleanup_ambiguous")
+    if workspace.exists():
+        require(workspace.is_dir(), "paired_workspace_cleanup_ambiguous")
+        shutil.rmtree(workspace)
+    require(not workspace.exists(), "paired_workspace_cleanup_failed")
 
 
 def verifier_spec(tasks: dict[str, Any], task_id: str) -> dict[str, Any]:
@@ -1071,6 +1101,7 @@ def execute_arm(
     task_id: str,
     variant: str,
     run_index: int,
+    workspace: Path,
     binary_source: Path,
     binary_identity: dict[str, Any],
     revision: str,
@@ -1084,7 +1115,6 @@ def execute_arm(
         prefix=f"codewhale-m7e-{task_id}-{variant}-"
     ) as raw:
         root = Path(raw)
-        workspace = root / "workspace"
         base = materialize_fixture(tasks, task_id, workspace)
         state_root = root / "state"
         home = state_root / "home"
@@ -1426,6 +1456,53 @@ def paired_request_fingerprint(fingerprint: dict[str, Any]) -> dict[str, Any] | 
     }
 
 
+def paired_arm_identity_matches(
+    high: dict[str, Any],
+    off: dict[str, Any],
+) -> bool:
+    high_fingerprints = high.get("request_identity", {}).get("fingerprints", [])
+    off_fingerprints = off.get("request_identity", {}).get("fingerprints", [])
+    if not high_fingerprints or not off_fingerprints:
+        return False
+    high_fingerprint = paired_request_fingerprint(high_fingerprints[0])
+    off_fingerprint = paired_request_fingerprint(off_fingerprints[0])
+    return bool(
+        high.get("revision") == off.get("revision")
+        and high.get("binary_sha256") == off.get("binary_sha256")
+        and high.get("fixture_tree_sha256") == off.get("fixture_tree_sha256")
+        and high_fingerprint is not None
+        and high_fingerprint == off_fingerprint
+    )
+
+
+def suite_abort_code(
+    manifest: dict[str, Any],
+    arms: list[dict[str, Any]],
+) -> str | None:
+    require(bool(arms), "formal_arm_missing")
+    arm_abort = accounting_abort_code(manifest, arms[-1])
+    if arm_abort is not None:
+        return arm_abort
+    latest = arms[-1]
+    pair = [
+        arm
+        for arm in arms
+        if arm.get("task_id") == latest.get("task_id")
+        and arm.get("run_index") == latest.get("run_index")
+    ]
+    if len(pair) < 2:
+        return None
+    if len(pair) != 2 or {arm.get("variant") for arm in pair} != set(VARIANTS):
+        return "aborted_paired_cell_shape_invalid"
+    by_variant = {arm["variant"]: arm for arm in pair}
+    if not paired_arm_identity_matches(
+        by_variant["reasoning_high"],
+        by_variant["reasoning_off"],
+    ):
+        return "aborted_paired_treatment_identity_mismatch"
+    return None
+
+
 def median_fraction(values: list[Fraction]) -> Fraction | None:
     if not values:
         return None
@@ -1515,19 +1592,7 @@ def decide(manifest: dict[str, Any], arms: list[dict[str, Any]]) -> dict[str, An
             return {"decision": "hold", "reason": "paired_identity_incomplete"}
         high = pair["reasoning_high"]
         off = pair["reasoning_off"]
-        high_fingerprint = paired_request_fingerprint(
-            high["request_identity"]["fingerprints"][0]
-        )
-        off_fingerprint = paired_request_fingerprint(
-            off["request_identity"]["fingerprints"][0]
-        )
-        if (
-            high["revision"] != off["revision"]
-            or high["binary_sha256"] != off["binary_sha256"]
-            or high["fixture_tree_sha256"] != off["fixture_tree_sha256"]
-            or high_fingerprint is None
-            or high_fingerprint != off_fingerprint
-        ):
+        if not paired_arm_identity_matches(high, off):
             return {"decision": "reject", "reason": "paired_treatment_identity_mismatch"}
     task_ids = manifest["task_source"]["task_ids"]
     for task_id in task_ids:
@@ -1683,6 +1748,10 @@ def read_key(path: Path) -> str:
 
 def run_formal(args: argparse.Namespace) -> int:
     manifest, tasks = load_manifest(frozen=True)
+    require(
+        manifest.get("admission", {}).get("live_api_admitted") is True,
+        "live_api_not_admitted",
+    )
     binary = Path(args.binary).resolve()
     revision = args.revision
     require(args.acknowledge_cost, "cost_not_acknowledged")
@@ -1701,7 +1770,10 @@ def run_formal(args: argparse.Namespace) -> int:
     try:
         require(secret not in canonical_bytes(reservation), "credential_in_reservation")
         with tempfile.TemporaryDirectory(prefix="codewhale-m7e-suite-binary-") as raw:
-            suite_binary = Path(raw) / "codewhale"
+            suite_root = Path(raw)
+            suite_binary = suite_root / "codewhale"
+            workspace_root = suite_root / "paired-workspaces"
+            workspace_root.mkdir()
             shutil.copy2(binary, suite_binary)
             suite_binary.chmod(0o700)
             require(
@@ -1723,21 +1795,32 @@ def run_formal(args: argparse.Namespace) -> int:
                 reservation["status"] = "running"
                 reservation["known_cost_is_lower_bound"] = True
                 write_private_json(output, reservation, replace=True)
-                arm = execute_arm(
+                workspace = pair_workspace_slot(
                     manifest,
-                    tasks,
+                    workspace_root,
                     arm_spec["task_id"],
-                    arm_spec["variant"],
                     arm_spec["run_index"],
-                    suite_binary,
-                    identity["binary"],
-                    revision,
-                    key,
                 )
+                clear_pair_workspace(workspace, workspace_root)
+                try:
+                    arm = execute_arm(
+                        manifest,
+                        tasks,
+                        arm_spec["task_id"],
+                        arm_spec["variant"],
+                        arm_spec["run_index"],
+                        workspace,
+                        suite_binary,
+                        identity["binary"],
+                        revision,
+                        key,
+                    )
+                finally:
+                    clear_pair_workspace(workspace, workspace_root)
                 require(secret not in canonical_bytes(arm), "credential_in_arm")
                 reservation["arms"].append(arm)
                 reservation["active_arm"] = None
-                abort_code = accounting_abort_code(manifest, arm)
+                abort_code = suite_abort_code(manifest, reservation["arms"])
                 reservation["known_cost_is_lower_bound"] = abort_code is not None
                 reservation["aggregate"] = aggregate(manifest, reservation["arms"])
                 if abort_code is not None:

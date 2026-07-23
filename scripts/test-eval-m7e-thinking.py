@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the current Run API v10 / RuntimeEvent v16 M7-E Harness."""
+"""Regression tests for the current Run API v10 / RuntimeEvent v16 M7-E v5 Harness."""
 
 from __future__ import annotations
 
@@ -145,6 +145,27 @@ class M7EThinkingHarnessTests(unittest.TestCase):
         encoded = HARNESS.canonical_bytes(high)
         self.assertNotIn(b"DEEPSEEK_API_KEY", encoded)
         self.assertNotIn(b"key.txt", encoded)
+
+    def test_v5_live_api_is_blocked_before_output_or_key_access(self) -> None:
+        self.assertIs(
+            self.manifest["admission"]["live_api_admitted"],
+            False,
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "binary": "/does/not/exist",
+                "revision": "0" * 40,
+                "acknowledge_cost": True,
+                "output": str(ROOT / "eval/raw/should-not-exist.json"),
+                "key_file": str(ROOT / "key.txt"),
+            },
+        )()
+        with self.assertRaises(HARNESS.EvaluationError) as context:
+            HARNESS.run_formal(args)
+        self.assertEqual(context.exception.code, "live_api_not_admitted")
+        self.assertFalse(Path(args.output).exists())
 
     def test_request_projection_requires_exact_effort_and_model(self) -> None:
         events = [
@@ -310,6 +331,91 @@ class M7EThinkingHarnessTests(unittest.TestCase):
         )
         off["task_generation_count"] = 0
         self.assertIsNone(HARNESS.paired_request_fingerprint(off))
+
+    def test_pair_identity_mismatch_aborts_as_soon_as_the_pair_closes(self) -> None:
+        common = {
+            "task_id": "t1",
+            "run_index": 1,
+            "revision": "revision",
+            "binary_sha256": "sha256:binary",
+            "fixture_tree_sha256": "sha256:fixture",
+            "measurement_valid": True,
+            "tool": {"outcomes": []},
+        }
+        fingerprint = {
+            "actor": {"kind": "root", "depth": 0},
+            "system_prompt_sha256": "sha256:system",
+            "messages_sha256": "sha256:raw",
+            "semantic_messages_sha256": "sha256:semantic-high",
+            "task_generation_count": 1,
+            "tools_sha256": "sha256:tools",
+            "max_output_tokens": 8192,
+            "streaming": True,
+        }
+        high = {
+            **common,
+            "variant": "reasoning_high",
+            "accounting": HARNESS.accounting_projection(
+                run_view(effort="high"),
+                "high",
+            ),
+            "request_identity": {"fingerprints": [fingerprint]},
+        }
+        off = {
+            **common,
+            "variant": "reasoning_off",
+            "accounting": HARNESS.accounting_projection(
+                run_view(effort="off"),
+                "off",
+            ),
+            "request_identity": {
+                "fingerprints": [
+                    {
+                        **fingerprint,
+                        "semantic_messages_sha256": "sha256:semantic-off",
+                    }
+                ]
+            },
+        }
+        self.assertIsNone(HARNESS.suite_abort_code(self.manifest, [high]))
+        self.assertEqual(
+            HARNESS.suite_abort_code(self.manifest, [high, off]),
+            "aborted_paired_treatment_identity_mismatch",
+        )
+        off["request_identity"]["fingerprints"][0][
+            "semantic_messages_sha256"
+        ] = "sha256:semantic-high"
+        self.assertIsNone(HARNESS.suite_abort_code(self.manifest, [high, off]))
+
+    def test_pair_workspace_path_is_stable_only_inside_the_same_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            workspace_root = Path(raw) / "paired-workspaces"
+            workspace_root.mkdir()
+            first = HARNESS.pair_workspace_slot(
+                self.manifest,
+                workspace_root,
+                "t1",
+                1,
+            )
+            same_pair = HARNESS.pair_workspace_slot(
+                self.manifest,
+                workspace_root,
+                "t1",
+                1,
+            )
+            other_pair = HARNESS.pair_workspace_slot(
+                self.manifest,
+                workspace_root,
+                "t1",
+                2,
+            )
+            self.assertEqual(first, same_pair)
+            self.assertNotEqual(first, other_pair)
+            first.mkdir()
+            (first / "probe").write_text("pair-owned", encoding="utf-8")
+            HARNESS.clear_pair_workspace(first, workspace_root)
+            self.assertFalse(first.exists())
+            self.assertTrue(first.parent.is_dir())
 
     def test_surface_totals_and_off_reasoning_are_fail_closed(self) -> None:
         wrong_surface = run_view(effort="off")

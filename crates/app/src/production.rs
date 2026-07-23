@@ -3407,6 +3407,27 @@ mod tests {
         assert_eq!(off_reopened_request, off_request);
         assert_eq!(high_request.reasoning_effort, ReasoningEffort::High);
         assert_eq!(off_request.reasoning_effort, ReasoningEffort::Off);
+        let normalized_messages = |request: &ModelRequest| {
+            serde_json::to_string(&request.messages)
+                .expect("serialize canonical messages")
+                .replace(&request.run_id.0, "<host-owned-task-generation>")
+        };
+        assert_eq!(
+            normalized_messages(&high_request),
+            normalized_messages(&off_request),
+            "a stable paired workspace must leave only the Host-owned task generation identity in the first request messages"
+        );
+        assert_eq!(high_request.actor, off_request.actor);
+        assert_eq!(high_request.model, off_request.model);
+        assert_eq!(high_request.system_prompt, off_request.system_prompt);
+        assert_eq!(high_request.tools, off_request.tools);
+        assert_eq!(
+            high_request.max_output_tokens,
+            off_request.max_output_tokens
+        );
+        assert_eq!(high_request.streaming, off_request.streaming);
+        assert_eq!(high_request.request_number, off_request.request_number);
+        assert_eq!(high_request.attempt, off_request.attempt);
 
         let capability = official_model_capabilities(&high_request.model)
             .expect("official production model capability");
