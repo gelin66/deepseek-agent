@@ -38,6 +38,9 @@
 - M7-H final decision checkpoint：`e46ae822`
 - M7-I current-revision baseline checkpoint：`f8d0b242`
 - M7-I test-only strict lint checkpoint：`b1894069`
+- M8-A CLI DeepSeek-only cutover：`e1a611ff`
+- M8-A TUI Provider route deletion：`63246e72`
+- M8-A config Provider model deletion：`00dcda0c`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -81,6 +84,12 @@
   catalog、context estimate 与 DeepSeek RequestPlan 均能从 SQLite reopen 精确重建，
   mandatory facts 超限在 0 次模型请求前 fail closed。没有新的 production delta，Key 未读、
   API/网络请求为 0；M7 request/Token 调优关闭，M8 DeepSeek-only 产品清理已准入。
+  M8-A 随后让 CLI、app-server 与交互 TUI 只接受同一根级 DeepSeek
+  credential/endpoint/model 配置，并删除 `crates/agent`、generic Provider 参数、Provider
+  OAuth、model catalog/pricing/alias、fallback 和 route resolver。首次启动、无 Key、
+  credential precedence、非法 Provider/模型、Doctor/onboarding、PTY、resume/reopen 与
+  exec/HTTP/stdio parity 全部离线通过。没有模型 treatment，Key 未读取、官方请求和网络
+  访问为 0。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1248,13 +1257,42 @@ SIGKILL/reopen 与 production Git/verifier loopback 由既有 canonical tests �
 `close_request_token_optimization_and_admit_m8_cleanup`。完整事实见
 [M7-I near-limit context/request budget 结论](../../eval/summaries/m7-i-near-limit-context-2026-07-23.md)。
 
+M8-A 没有改变上述 canonical execution 或 protocol owner。当前三条入口的 model setup 为：
+
+```text
+CLI / interactive TUI / app-server
+  -> crates/config root api_key + base_url + default_text_model
+  -> crates/deepseek capability / planner / transport / accounting
+  -> AgentApplication -> AgentRuntime -> RunStore
+```
+
+credential precedence 是 explicit CLI、root config、CodeWhale keyring、`DEEPSEEK_API_KEY`；
+Provider 不再是可选配置。远程 endpoint 只接受官方 DeepSeek，显式 loopback 只用于离线
+production-path fixture；app-server 始终要求官方 HTTPS。named profile、project config 和
+Fleet profile 都不能设置 Provider 或替换 credential/endpoint/model owner。
+
+CLI 的 `ProviderArg`、generic login/logout/model registry 与整个 `crates/agent` 已删除。
+TUI 的 `ApiProvider`、provider-specific OAuth、model catalog/provider lake、route runtime/
+billing/scorecard 和第二份 capability/pricing route 已删除。`crates/config` 的
+`ProviderKind`、Providers tables、catalog、pricing、models.dev、model reference、fallback
+与整棵 generic route resolver 已删除。保留的 `crates/tui::pricing` 只展示 canonical
+DeepSeek usage/cost，不选择模型或路由；`[search].provider` 只选择 retrieval adapter。
+MCP OAuth 只认证 MCP transport，不认证模型后端。
+
+旧 `provider = "deepseek"`、`[providers.deepseek]` 与 camel-case model keys 也 fail closed；
+没有兼容 reader、dual write 或 Provider 模式。当前 `config.example.toml` 同时通过
+`crates/config::ConfigToml` 和交互 TUI loader。M8-A 从 `8b650356` 到 `00dcda0c` 净删除
+39,023 行，Run API/RuntimeEvent/State/exec-stream 未变。完整事实见
+[M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
 - hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
   可靠性保留，不支持这些效率结论；
-- Provider 清理或全面汉化已完成；
+- 品牌改名、release/安装/打包/CI 清理或全面汉化已完成；M8-A 只完成 model Provider
+  配置与入口的 DeepSeek-only cutover；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和

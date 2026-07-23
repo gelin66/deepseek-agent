@@ -1161,6 +1161,39 @@ baseline；不证明一般任务的 Token、请求、wall time、费用或 verif
 完整身份、调用图、门禁和非结论见
 [M7-I near-limit context/request budget 结论](../../eval/summaries/m7-i-near-limit-context-2026-07-23.md)。
 
+### 9.17 M8-A DeepSeek-only production 配置与入口（2026-07-23）
+
+M8-A manifest 固定 clean production baseline `8b650356`、Run API v10、RuntimeEvent v16、
+State v21、exec-stream v2、外部 target `/private/tmp/codewhale-m8a-target`、
+`CARGO_NET_OFFLINE=true` 和 `maximum_reruns=0`。P01-P12 矩阵覆盖：
+
+1. 隔离 HOME 首启、无 Key、DeepSeek-only template 与中文恢复；
+2. 非 DeepSeek Provider/模型、非法 endpoint/TLS/header 在 spawn/RunStore/network 前拒绝；
+3. CLI -> config -> keyring -> env 的 credential precedence 与秘密脱敏；
+4. resume/SQLite reopen 不重复模型请求或写入；
+5. Doctor/onboarding、真实 PTY、exec/HTTP/stdio machine schema parity；
+6. root、read-only child、explicit Writer 使用同一 DeepSeek backend/Runtime/Store；
+7. generic Provider、OAuth、catalog/pricing/alias/route source 与依赖物理删除。
+
+三个 production 提交分别为 `e1a611ff`、`63246e72`、`00dcda0c`。从起始到代码 cutover
+共 71 files、3,689 insertions、42,712 deletions，净删除 39,023 行。CLI、TUI 和
+`crates/config` 已各自通过 targeted tests/check，`config.example.toml` 另由当前
+`ConfigToml` 与交互 TUI 双重解析验证；完整 focused、fmt、workspace Clippy/test、real
+PTY、surface parity 与 crash/reopen 门禁通过。
+
+该切换没有改变 DeepSeek request、response、reasoning、prompt、tool catalog、budget 或
+accounting surface，不存在可比较的 paid model treatment。冻结 credential gate 因而在
+Key path 前停止：`credential_read=false`、`official_api_requests=0`、
+`external_network_accessed=false`、`loopback_only=true`、`maximum_reruns=0`。结论为
+**keep_deepseek_only_cutover / delete_generic_provider_paths**；不报告 Token、时间、费用或
+一般编码成功率收益。
+
+manifest、ignored `0600` result 与完整结论：
+
+- `eval/manifests/m8-a-deepseek-only-entry-v1.json`；
+- `eval/results/m8-a-deepseek-only-entry-8b650356-v1.json`；
+- [M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -70,6 +70,16 @@
   `ModelRequestPrepared` 精确重建，mandatory facts 超限在 0 次模型请求前 typed fail
   closed。没有发现新的 production 反例或 material delta，因此关闭 M7 request/Token 调优，
   不读取 Key、不调用 API，准入 M8 DeepSeek-only 产品清理。
+  M8-A 已从 clean `8b650356` 完成三个垂直切片：`e1a611ff` 让 CLI/auth/model/config
+  只接受 DeepSeek，删除 `crates/agent` 与 generic Provider/OAuth/model registry；
+  `63246e72` 将交互 TUI、Doctor、onboarding 和 Fleet argv 切到同一 DeepSeek 配置，
+  删除 TUI 私有 provider catalog/route/billing/OAuth 路径；`00dcda0c` 让
+  `crates/config` 只保留根级 `api_key`、`base_url`、`default_text_model` 模型真相，
+  并物理删除 generic Provider、catalog、pricing、alias 和 route resolver。冻结的
+  P01-P12 首启、无 Key、非法 Provider/模型、credential precedence、resume/reopen、
+  PTY 与 exec/HTTP/stdio parity 矩阵全部离线通过；没有 material model treatment，
+  因此 Key 未读取、官方 API 请求与外部网络访问为 0（仅使用本机 loopback）。M8-A 决策是
+  `keep_deepseek_only_cutover / delete_generic_provider_paths`。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -184,7 +194,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 已准入（先做 DeepSeek-only 配置/Provider 遗留清理） | 自己的品牌、配置、CI、打包和开发流程完整 |
+| M8 | V1 本地产品化 | 进行中（M8-A DeepSeek-only 配置/入口与 generic Provider 删除已完成） | 自己的品牌、配置、CI、打包和开发流程完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2098,6 +2108,35 @@ surface treatment，因此 `product_metric_eligible=false`；Key 未读取，官
 production caller 与 generic Provider 遗留；每个 caller 切换到唯一 DeepSeek owner 后物理
 删除旧路径，不把品牌改名、发布或新模型选择系统混入同一切片。
 
+### M8-A：DeepSeek-only production 配置与入口切换
+
+M8-A 从 clean `8b650356` 冻结 P01-P12 离线矩阵，并按真实 caller 分三个提交完成切换：
+
+1. `e1a611ff`：CLI/auth/model/config 只解析 DeepSeek；credential precedence 固定为
+   CLI -> config -> keyring -> env；删除 `crates/agent`、generic Provider 参数、跨 Provider
+   OAuth/keyring/model registry。
+2. `63246e72`：交互 TUI、Doctor、onboarding、exec projection 与 Fleet worker argv 使用同一
+   DeepSeek 配置；删除 TUI provider catalog、provider OAuth、route/billing/scorecard 和
+   私有模型路由。
+3. `00dcda0c`：`crates/config` 成为唯一根级 credential/endpoint/model owner；project config
+   和 named profile 不得改变模型权威；删除 generic Provider、catalog、pricing、alias、
+   fallback 和 route resolver，且不保留 compatibility reader 或 dual write。
+
+模型后端和 canonical 执行链没有变化；Run API v10、RuntimeEvent v16、State v21、
+exec-stream v2 保持不变。起始到代码 cutover 共 71 files、`+3,689/-42,712`，净删除
+39,023 行。首次启动、无 Key、外来 Provider/模型、endpoint/TLS、credential precedence、
+resume/reopen、root/read-only/Writer、真实 PTY 与 exec/HTTP/stdio parity 均通过。示例配置
+由 `crates/config` 与交互 TUI 同时解析验证。
+
+本切片没有改变请求、模型、reasoning、prompt、catalog 或预算，付费请求不能增加归因力；
+按冻结 gate 未读取 Key、未调用官方 API、未访问外部网络（仅使用本机 loopback）。产品决策为
+**保留 DeepSeek-only 切换，删除 generic Provider 路径**。完整矩阵、门禁和非结论见
+[M8-A DeepSeek-only production 配置与入口结论](../../eval/summaries/m8-a-deepseek-only-entry-2026-07-23.md)。
+
+下一切片只审计 M8 剩余的产品身份、安装/卸载、release crate、版本检查、打包、CI 与远程
+策略；先冻结本地开发和安装生命周期，再决定最小 cutover，不把全面汉化、提示词 A/B、
+MCP、RepoGraph 或多 Writer 混入同一切片。
+
 ### 调优
 
 - `apply_patch/search-replace/FIM` A/B；
@@ -2114,7 +2153,6 @@ production caller 与 generic Provider 遗留；每个 caller 切换到唯一 De
 
 ### 剩余清理
 
-- 其他 Provider、模型目录、定价和别名；
 - release 和品牌耦合；
 - 其余腾讯云/CNB 等未接线云部署资产；
 - 遗留 evidence 和最终不再需要的导入资产；
