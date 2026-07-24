@@ -54,6 +54,25 @@ fn m8a_app_projection_is_deepseek_only() {
 }
 
 #[test]
+fn auto_model_preserves_explicit_reasoning_setting() {
+    let _lock = lock_test_env();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
+    let config = Config {
+        reasoning_effort: Some("off".to_owned()),
+        ..Config::default()
+    };
+    let mut options = test_options(false);
+    options.model = "auto".to_owned();
+
+    let app = App::new(options, &config);
+
+    assert!(app.auto_model);
+    assert_eq!(app.reasoning_effort, ReasoningEffort::Off);
+}
+
+#[test]
 fn app_new_uses_only_the_explicit_cost_currency_setting() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");

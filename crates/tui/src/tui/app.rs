@@ -806,8 +806,8 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
-    /// When true, the model is auto-selected based on request complexity
-    /// rather than using a fixed model. The `/model auto` command sets this.
+    /// When true, the Host selects the official model from typed run facts.
+    /// Explicit reasoning remains independent from this model selection.
     pub auto_model: bool,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Ctrl+T; initialized from config at startup.
@@ -1014,12 +1014,8 @@ impl App {
             .reasoning_effort
             .as_deref()
             .or_else(|| config.reasoning_effort());
-        let reasoning_effort = if auto_model {
-            ReasoningEffort::Auto
-        } else {
-            configured_reasoning_effort
-                .map_or_else(ReasoningEffort::default, ReasoningEffort::from_setting)
-        };
+        let reasoning_effort = configured_reasoning_effort
+            .map_or_else(ReasoningEffort::default, ReasoningEffort::from_setting);
 
         let needs_workspace_trust =
             !yolo && crate::tui::onboarding::needs_trust_at(config_path.as_deref(), &workspace);
