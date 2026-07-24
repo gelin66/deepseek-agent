@@ -168,6 +168,17 @@ Changing one of these constraints requires evidence and a new ADR.
   `reject_offline_viability_and_delete`: projection, prompt marker, config/user
   wiring, and treatment tests are physically deleted; no Key or API was used.
   Production has no acceptance-progress product branch or second plan truth.
+- M10-D found no safe independent app-level recovery-controller delta.
+  ToolOutcome feedback, tools side-effect/retry truth, Runtime verifier
+  transitions and replay-safe retry, DeepSeek accounting, Harness billing
+  stop, and fixed Pro/max recheck already have distinct canonical owners.
+  Across the current M9-C/M10-A/M10-B frozen trajectories, eight verifier
+  failures recovered through the existing path; the only other typed-failure
+  arm failed its frozen child-call contract rather than lacking a recovery
+  action. `context_missing`, `reasoning_insufficient`, and generic environment
+  failure are not stable causal facts. The decision is
+  `reject_no_safe_independent_controller_delta`: no production candidate, Key,
+  API request, classifier, automatic rollback, or second loop was created.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

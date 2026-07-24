@@ -1,0 +1,196 @@
+{
+  "schema": "codewhale.eval.m10-d-failure-directed-recovery-audit.v1",
+  "frozen_at": "2026-07-24",
+  "decision": "reject_no_safe_independent_controller_delta",
+  "product_metric_eligible": false,
+  "production_candidate_created": false,
+  "credential_read": false,
+  "official_api_requests": 0,
+  "identity": {
+    "commit": "85d6995c85f9f2034661f1aece4446f7d081162a",
+    "tree": "b37f2b274ebfa4b9b049d5b2b320363f9d42ec3c",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "source_sha256": {
+      "crates/protocol/src/agent_runtime.rs": "sha256:5fd097cf6aee5ab29834e97befa865900ed0f0fca12c60c2c27803e578381a59",
+      "crates/runtime/src/agent.rs": "sha256:18d2e96fcc73fbac79d6f2b933fe763e9f4944ac5fc94ee4f9c2474727390979",
+      "crates/runtime/src/store.rs": "sha256:06eb4e1a5f967ab2d42e0b82ebadd67c0a32b4f2965a89399f61b5281db2a157",
+      "crates/app/src/production.rs": "sha256:8af03649746a24075d61bdbd9841e1e45af910c170506235587e148102cd801a",
+      "crates/context/src/compaction.rs": "sha256:2060ac732db1f83aede907e829ff65c85038ce4e074b7d4efe5ca067498e0d17"
+    }
+  },
+  "slice_contract": {
+    "real_problem": "determine whether current canonical failure facts expose a measured recovery loss that one new crates/app Host failure-to-action controller can safely fix",
+    "acceptance": [
+      "use only stable canonical failure facts",
+      "make no additional model classification request",
+      "add no second controller loop",
+      "raise same-budget recovery success",
+      "produce zero duplicate side effects",
+      "preserve false_success=0 and exact replay",
+      "delete any generic recovery branch that the candidate replaces"
+    ],
+    "owner_if_admitted": "crates/app",
+    "existing_owners_must_remain": [
+      "crates/protocol ToolOutcome feedback contract",
+      "crates/tools failure causality and side-effect truth",
+      "crates/runtime verifier transition, retry, budget and replay policy",
+      "crates/deepseek transport/accounting evidence",
+      "eval Harness billing_unknown campaign stop"
+    ],
+    "cutover_on_no_delta": "create no production branch and retain the existing owner-specific recovery mechanisms"
+  },
+  "failure_matrix": [
+    {
+      "requested_class": "context_missing",
+      "canonical_fact": null,
+      "current_owner": "ContextBroker plus model-selected canonical search/read tools",
+      "current_behavior": "no Host classifier; the M10-B budgeted Working-Set substitute was rejected and deleted",
+      "independent_host_action": null,
+      "decision": "inadmissible_without_a_new_typed_observation",
+      "reason": "task difficulty, missing context and model search quality cannot be inferred from a stable current failure code"
+    },
+    {
+      "requested_class": "wrong_file_scope",
+      "canonical_fact": "allowed-path and workspace authority violations may surface as workspace_precondition; a semantically wrong but permitted file is detected only by TaskContract/verifier evidence",
+      "current_owner": "crates/tools path authority plus TaskContract/EvidenceReceipt completion gate",
+      "current_behavior": "reject forbidden scope before mutation; allowed but wrong changes cannot be generically rolled back without risking user work",
+      "independent_host_action": null,
+      "decision": "keep_existing_gate",
+      "reason": "workspace_precondition is broader than wrong-file selection and does not authorize a generic rollback"
+    },
+    {
+      "requested_class": "verifier_failed",
+      "canonical_fact": "ToolFailureCode::VerifierFailed and CompletionRequiredTransition::EffectiveWorkspaceMutation",
+      "current_owner": "crates/runtime",
+      "current_behavior": "project the exact failure once, require an effective revision mutation, reject repeated verification of unchanged content, then seal failure-write-pass evidence",
+      "independent_host_action": null,
+      "decision": "already_owner_complete"
+    },
+    {
+      "requested_class": "stale_or_patch_conflict",
+      "canonical_fact": "stale_read, ambiguous_edit, workspace_precondition and patch_parse with typed retry disposition",
+      "current_owner": "crates/tools plus ToolOutcome.model_content",
+      "current_behavior": "fresh read and atomicity checks prevent unsafe mutation; model receives the stable reread/correction action; unsafe side effects are never replayed",
+      "independent_host_action": null,
+      "decision": "already_owner_complete",
+      "reason": "only the model/task context can construct the corrected edit; Host can prove freshness but cannot invent replacement intent"
+    },
+    {
+      "requested_class": "tool_schema_error",
+      "canonical_fact": "malformed_arguments, schema_validation, missing_field, invalid_field and patch_parse",
+      "current_owner": "crates/runtime preflight plus ToolOutcome.model_content",
+      "current_behavior": "reject before execution, redact raw malformed bytes, request corrected arguments, bound repeated identical failure by the reserved terminal request",
+      "independent_host_action": null,
+      "decision": "already_owner_complete"
+    },
+    {
+      "requested_class": "reasoning_insufficient",
+      "canonical_fact": null,
+      "current_owner": "crates/app fixed actor route policy only when a real completion rejection or prior child failure exists",
+      "current_behavior": "root/child continuation or recheck uses Pro/max only from typed recovery facts",
+      "independent_host_action": null,
+      "decision": "reject_untyped_classifier",
+      "reason": "model self-assessment, keywords or repeated calls are not a stable causal failure fact"
+    },
+    {
+      "requested_class": "incomplete_stream",
+      "canonical_fact": "ModelAttemptFailure plus exact ModelResponseEvidence and ModelRetryDecision",
+      "current_owner": "crates/runtime and crates/deepseek",
+      "current_behavior": "retry only when there is no actionable output and replay is proven safe; commit retry atomically and resume it exactly once after crash",
+      "independent_host_action": null,
+      "decision": "already_owner_complete"
+    },
+    {
+      "requested_class": "transport_billing_unknown",
+      "canonical_fact": "ModelAccounting.billing_unknown and billing_unknown_attempts",
+      "current_owner": "crates/deepseek accounting plus corrected eval Harness",
+      "current_behavior": "seal the attempt and stop a formal campaign; do not blindly resend",
+      "independent_host_action": null,
+      "decision": "safety_terminal",
+      "reason": "M9-E proved the official contract cannot reconcile the pre-header attempt per request"
+    },
+    {
+      "requested_class": "budget_exhausted",
+      "canonical_fact": "typed RuntimeFailure budget variants and sealed request accounting",
+      "current_owner": "crates/runtime",
+      "current_behavior": "terminal incomplete/failed; never claim completion and never create capacity outside the frozen budget",
+      "independent_host_action": null,
+      "decision": "safety_terminal"
+    },
+    {
+      "requested_class": "environment_failure",
+      "canonical_fact": null,
+      "current_owner": "tool-specific OperationFailed or Runtime Model/Store failure without a general causal environment profile",
+      "current_behavior": "fail with the exact current owner; no generic product-code mutation",
+      "independent_host_action": null,
+      "decision": "defer_to_m10_e_environment_facts",
+      "reason": "a deterministic ProjectEnvironmentProfile is required before Host can distinguish missing tool, wrong command, service startup and product-code failure"
+    }
+  ],
+  "current_trajectory_evidence": {
+    "raw": [
+      {
+        "path": "eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl",
+        "sha256": "sha256:c73a01a4934b82b3f4a4042791aae89e5da56feaea1ffbea188a80d4e6e05b77",
+        "size_bytes": 11611383,
+        "typed_failure_arms": {
+          "verifier_failed": 2
+        }
+      },
+      {
+        "path": "eval/results/m10-a-scoped-context-pack-14c922de3066-v1.jsonl",
+        "sha256": "sha256:0c81935b2e6c4afb2e80c76d0a3746689e068a90c17ee16644176b8d710a0d66",
+        "size_bytes": 31169005,
+        "typed_failure_arms": {
+          "verifier_failed": 5
+        },
+        "observer_correction": "the one frozen false-success label is an evaluator false positive; canonical Host failed-write-pass receipt and external verifier passed"
+      },
+      {
+        "path": "eval/results/m10-b-working-set-d79ebf43b0d9-v1.jsonl",
+        "sha256": "sha256:69b44fa8ebcc8555fe102369bbf4fc25c66149aa713a8d4fa2157578f87da1d0",
+        "size_bytes": 7445467,
+        "typed_failure_arms": {
+          "verifier_failed": 1,
+          "workspace_precondition": 1
+        },
+        "quality_veto": "the workspace_precondition arm passed its file verifier and Host receipt but violated the frozen child-call argument contract; this is not a missing recovery action"
+      }
+    ],
+    "aggregate": {
+      "arm_results_with_typed_tool_failure": 9,
+      "verifier_failed": 8,
+      "workspace_precondition": 1,
+      "observed_missing_recovery_action_failures": 0
+    }
+  },
+  "offline_fault_injection": [
+    "model_tool_failure_feedback_is_typed_concise_and_chinese",
+    "root_readonly_child_and_writer_share_tool_failure_correction_contract",
+    "readonly_executor_transport_failure_is_typed_and_recovers_on_the_next_model_turn",
+    "verifier_failure_is_projected_once_then_a_write_allows_verified_correction",
+    "retryable_transport_reopens_only_without_output_and_preserves_first_failure",
+    "crash_after_atomic_retry_decision_resumes_the_prepared_retry_once",
+    "repeated_identical_correctable_tool_failure_is_bounded_by_terminal_request",
+    "mandatory_facts_over_limit_fail_before_any_model_request",
+    "production_failure_matrix_preserves_code_side_effect_and_retry",
+    "m7c_canonical_edit_failure_codes_are_typed_and_non_mutating",
+    "fixed_actor_policy_matrix_uses_only_typed_actor_authority_and_failure_facts"
+  ],
+  "decision_rule": {
+    "candidate_required": false,
+    "reason": "every safely actionable typed class is already handled by its canonical owner; the remaining requested classes are untyped, safety terminals or depend on M10-E environment facts",
+    "forbidden_result": "do not create a second app controller that duplicates protocol feedback, Runtime retry or completion authority",
+    "next_slice": "M10-E Reproducible Environment plus Runtime Artifact Verification"
+  },
+  "non_conclusions": [
+    "does not claim that recovery can never improve",
+    "does not claim that every model failure is correctly diagnosed",
+    "does not admit automatic rollback, a classifier request or a second controller loop",
+    "does not change fixed actor routing or the billing_unknown stop rule",
+    "does not use historical mechanism evidence as a live product comparison"
+  ]
+}

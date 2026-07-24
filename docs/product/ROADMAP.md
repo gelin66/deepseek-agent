@@ -2987,18 +2987,30 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 
 #### M10-D：Failure-Directed Recovery Controller
 
-- 真实问题：typed ToolOutcome、completion rejection、transport retry 与 verifier recovery
-  已存在，但 `crates/app` 尚无按稳定 failure facts 选择 ContextBroker/重读/环境诊断/
-  Pro-max recheck 的完整 Host 映射。
-- 验收：预注册 context_missing、wrong scope、verifier_failed、stale/conflict、
-  schema error、reasoning insufficient、incomplete stream、unknown billing、
-  budget/environment failure；相同预算恢复率上升、重复副作用为零、false success 0、
-  exact replay 一致。
-- owner：`crates/app`，复用唯一 Runtime/Store/tools。
-- 替代旧路：通用 continuation、盲重试和重复全上下文。
-- 证据：确定性故障注入后才做 fixed-Pro recovery A/B。
-- cutover：逐类接管后删除对应通用分支；失败删除策略候选，不增加分类模型请求或第二
-  controller loop。
+正式决定为 `reject_no_safe_independent_controller_delta`：
+
+- current failure graph 已按 owner 闭合：tools 产生 failure/side-effect/retry truth，
+  `ToolOutcome.model_content()` 为三个 actor 给出同一 typed 恢复反馈，Runtime 强制
+  verifier failure→有效修改→pass 并只原子重放 replay-safe no-output model failure，
+  app 只从真实 rejection/prior child failure 固定选择 Pro/max；
+- M9-C/M10-A/M10-B frozen raw 共 9 个带 typed tool failure 的 arm：8 个
+  `verifier_failed` 均由 current path 实际恢复；1 个 `workspace_precondition` arm 已通过
+  文件 verifier/Host receipt，质量否决来自冻结 child 调用参数不匹配，不是缺少恢复
+  action；
+- `context_missing`、`reasoning_insufficient` 与泛 `environment_failure` 不是 current
+  canonical causal facts；wrong-file semantic 也不能从通用 path rejection 推导。新增
+  app map 只能重复现有 owner 或用关键词/模型自评猜测，并会引入第二 controller loop/
+  自动副作用；
+- deterministic fault injection 通过 schema correction、read-only transport recovery、
+  verifier transition、safe retry、retry crash/reopen、重复失败有界、context/budget
+  fail-closed、tools failure matrix 与 fixed actor route；
+- 没有 production candidate、Key、API、raw 或 live A/B。保留现有 owner-specific
+  recovery，不新增/删除 production 路径。
+
+完整矩阵见
+[M10-D Failure-Directed Recovery](../../eval/summaries/m10-d-failure-directed-recovery-2026-07-24.md)。
+下一独立切片为 M10-E；只有 deterministic environment facts 先建立，环境失败才可能拥有
+安全的窄 Host action。
 
 #### M10-E：Reproducible Environment + Runtime Artifacts
 

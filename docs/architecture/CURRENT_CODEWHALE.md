@@ -1933,6 +1933,27 @@ M10-C 当前事实：
 完整事实见
 [M10-C Acceptance Progress](../../eval/summaries/m10-c-acceptance-progress-2026-07-24.md)。
 
+M10-D 当前事实：
+
+- production 没有独立 failure-directed app controller、第二 loop、分类请求、自动
+  rollback 或 recovery store；
+- 工具失败的唯一模型反馈是 `ToolOutcome.model_content()`；14 个 stable code 结合
+  operation/side-effect/retry 给 root/read-only/Writer 同一中文修正动作；
+- Runtime 已拥有 verifier `failure -> effective mutation -> pass`、相同 revision 拒绝
+  重验、replay-safe no-output model retry、atomic retry decision、budget terminal 和
+  crash/reopen exactly-once；
+- app 的 fixed route policy 只把真实 completion rejection/Host verifier failure/prior
+  child failure 映射为 Pro/max recheck；没有 mid-run router 或 difficulty classifier；
+- current frozen trajectories 中 8 个 verifier failure 已恢复；唯一其他
+  workspace-precondition arm 的产品失败是 child arguments contract，不是恢复缺口；
+- `context_missing`、`reasoning_insufficient`、泛 `environment_failure` 仍不是
+  canonical causal facts。M10-D 因而拒绝新增通用 controller，并把 environment
+  differentiation 留给 M10-E；
+- Key/API/raw 为 0，Run API v12、RuntimeEvent v18、State v24、exec-stream v3 未变化。
+
+完整事实见
+[M10-D Failure-Directed Recovery](../../eval/summaries/m10-d-failure-directed-recovery-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

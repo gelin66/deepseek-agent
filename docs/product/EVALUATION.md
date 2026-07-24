@@ -2195,6 +2195,30 @@ M10-C 已在 credential 边界前形成
 下一独立切片是 M10-D Failure-Directed Recovery；不得把 M10-C 的离线 token estimate
 冒充 API usage 或 live 产品比较。
 
+M10-D 已形成 `reject_no_safe_independent_controller_delta`：
+
+- current typed failure action 分属唯一 owner：ToolOutcome feedback、tools
+  side-effect/retry、Runtime verifier/replay-safe retry/budget、DeepSeek accounting、
+  Harness unknown-billing stop；app 已只从 typed rejection/prior child failure 固定
+  Pro/max recheck；
+- M9-C/M10-A/M10-B frozen raw 中有 9 个 typed-failure arm：8 个
+  `verifier_failed` 均实际恢复；1 个 `workspace_precondition` arm 通过目标文件 verifier
+  和 Host receipt，但违反 frozen child-call arguments，因此不是 missing recovery
+  action；
+- `context_missing`、`reasoning_insufficient`、泛 `environment_failure` 没有 stable
+  canonical causal fact；用关键词、自评或 generic operation failure 驱动动作会创造
+  第二猜测 controller；
+- current deterministic fault injection 覆盖 root/read-only/Writer schema correction、
+  tool transport、verifier transition、safe model retry、retry SIGKILL/reopen、重复失败
+  bounded terminal、context/budget fail closed 与 fixed actor route，全部通过；
+- 没有可替代旧路的独立 candidate，因此 production code delta=0、credential read=false、
+  official API requests=0、raw=none。
+
+完整证据见
+[M10-D Failure-Directed Recovery](../../eval/summaries/m10-d-failure-directed-recovery-2026-07-24.md)。
+下一独立切片是 M10-E Environment/Runtime Artifacts；不得把没有环境因果事实的
+`operation_failed` 自动解释成“修改产品代码”或“重试”。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
