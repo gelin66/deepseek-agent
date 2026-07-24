@@ -1,0 +1,263 @@
+{
+  "schema": "codewhale.eval.m8-n-v15-release-scope-successor.v1",
+  "suite_id": "m8-n-v15-release-scope-successor-21200ccf-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "frozen_assets": {
+    "harness_sha256": "ffe8fc9b6718806e6ad961124ba76335ea9e073522926602d51a3fd880430de8",
+    "harness_test_sha256": "bb46bc9445e880bbce1050c8cb6628f2aafd9d1d08aa89c829cad4c560a38dfb"
+  },
+  "baseline": {
+    "branch": "deepseek-agent",
+    "revision": "21200ccf0b4118793f1ad4e64acc973c25741e08",
+    "tree": "a54be1cb4bd16c0278bfb9da90d71dfb864fead5",
+    "cargo_lock_sha256": "f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "v1_matrix": "15 pass / 1 blocked",
+    "remaining_blocker": "V15 Simplified Chinese Agent prompt release evidence",
+    "worktree_clean": true
+  },
+  "slice_contract": {
+    "problem": "PRODUCT_PLAN 6.1 correctly requires every future model-visible prompt candidate to pass a current same-task A/B before cutover, but V15 was interpreted as requiring an unadopted checklist candidate to complete an indefinitely repeated third-party billing experiment before the already-shipped fixed-Chinese baseline could release. M8-D and M8-M both kept the bundled prompt unchanged and stopped fail-closed on unknown billing.",
+    "acceptance": [
+      "prove the exact bundled constitution version and its ancestry through qualified official DeepSeek, Writer and current release checkpoints",
+      "prove that M5-A 12/12 product-metric-eligible arms used byte-identical bundled constitution text and retain complete request, usage, cost and false-success evidence",
+      "prove the current full prompt baseline has exact current live diagnostic evidence plus root, read-only child, Writer, verifier, accounting and SQLite-reopen conformance",
+      "prove the bundled prompt is compile-time source identity and whole-release rollback is owned by the existing delivery path",
+      "preserve the rule that every future semantic prompt candidate must pass its own current same-revision immutable A/B before cutover",
+      "reject any new paid run because M8-N has no material model-visible treatment; credential read and official requests must remain zero",
+      "change V15 only through an accepted ADR and leave all production model, prompt, Runtime, Store, transport and tool owners unchanged"
+    ],
+    "single_owner": {
+      "product_scope": "docs/product/PRODUCT_PLAN.md + docs/decisions/0007-v1-fixed-chinese-prompt-release-evidence.md",
+      "production_prompt": "crates/context",
+      "production_execution": "crates/app::AgentApplication -> crates/runtime::AgentRuntime -> crates/state::RunStore",
+      "official_deepseek_transport_and_accounting": "crates/deepseek",
+      "release_identity_and_rollback": "scripts/codewhale-delivery.sh",
+      "offline_projection": "scripts/eval-m8n-v15-release-scope.py"
+    },
+    "replaces": [
+      "interpreting the candidate-cutover A/B rule as a requirement to invent or repeatedly rerun an unadopted prompt candidate",
+      "using M8-D or M8-M incomplete samples as a superiority, inferiority or equivalence claim",
+      "the candidate-only M8-D app test and fixture after the release-scope decision no longer has a live consumer"
+    ],
+    "cutover_deletion": [
+      "delete the M8-D candidate-only subprocess treatment test and current-tree fixture while preserving frozen Git history, manifests, summaries and 0600 raw",
+      "rename retained generic app-server override-consistency test markers so historical milestone names are not product truth",
+      "delete the one-shot M8-N evaluator/test after the result and hashes are recorded",
+      "do not add a prompt selector, mode, compatibility branch, Provider, FIM, Anthropic transport, LLM router, second Runtime or second Store"
+    ]
+  },
+  "authority_audit": {
+    "product_plan_candidate_gate": {
+      "section": "6.1 中文原生交互与 Agent 提示词",
+      "meaning": "任何改变提示语义的候选必须同任务 A/B；只有不回归且有明确净收益才可接管 production",
+      "applies_to_unadopted_m8_d_m8_m_candidate": true,
+      "requires_candidate_cutover_without_benefit": false
+    },
+    "original_v15": {
+      "section": "14. V1 完成定义",
+      "text": "中文原生 Agent 提示词通过同任务 A/B，版本可追溯、可回滚且没有能力回归",
+      "problem": "The absolute wording conflates fixed product-language baseline evidence with the separate admission rule for a future semantic treatment."
+    },
+    "adr_0004": {
+      "meaning": "fixed Simplified Chinese is an accepted product contract, not an efficiency claim; future prompt semantic changes still require A/B"
+    },
+    "successor_requirement": "The shipped fixed-Chinese prompt must have immutable version/rollback identity, qualified official DeepSeek coding and false-success evidence, and exact-current production retention. A future semantic prompt candidate remains blocked before cutover until its own complete billing-provable A/B passes."
+  },
+  "bundled_prompt_identity": {
+    "path": "crates/context/src/prompts/constitution.md",
+    "sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409",
+    "first_formal_chinese_candidate_revision": "b088fd138c6715933e74526a2c65aecd58211789",
+    "compile_time_owner": "crates/context/src/prompts.rs::BASE_PROMPT",
+    "current_default": true,
+    "semantic_candidate_active": false,
+    "user_override_boundary": "An explicit CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE opt-in may replace the user's local prompt; it is not a second shipped default.",
+    "exact_revision_chain": [
+      {
+        "revision": "503d62948c2643a4a3b6a0828e93b57d866e97c0",
+        "role": "M5-A baseline",
+        "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409"
+      },
+      {
+        "revision": "ba25f8368590818ca17198a9d59a8306ebb7a52a",
+        "role": "M5-A candidate",
+        "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409"
+      },
+      {
+        "revision": "a982a9a878587450aab57e87f4ec9df7751eb146",
+        "role": "M6-A official Writer canary",
+        "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409"
+      },
+      {
+        "revision": "d1d6ca5c8aed06ffcd4be063f14a27666c2a65b8",
+        "role": "M8-M immutable live binary",
+        "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409"
+      },
+      {
+        "revision": "21200ccf0b4118793f1ad4e64acc973c25741e08",
+        "role": "M8-N clean baseline",
+        "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409"
+      }
+    ],
+    "historical_prompt_ab": {
+      "summary_path": "eval/summaries/prompt-chinese-ab-2026-07-18.md",
+      "summary_sha256": "1f1c877f089eb0469aa7f8947f0d851fd5dd0c4b984db36bd55a8469843fe15f",
+      "decision": "reject full candidate; do not claim Chinese superiority",
+      "convergence_summary_path": "eval/summaries/prompt-convergence-canaries-2026-07-18.md",
+      "convergence_summary_sha256": "a95fcbed77d58f89a68785058b726e2a414fc1dd9c8742d4536b484d22162725",
+      "scope": "These results remain negative treatment evidence and are not rewritten as a release win."
+    }
+  },
+  "qualified_real_model_evidence": {
+    "name": "M5-A canonical completion-gate official DeepSeek A/B",
+    "summary_path": "eval/summaries/m5-completion-gate-ab-2026-07-19.md",
+    "summary_sha256": "b4149f7c05e3eb62f66e0c0ce57ecff5bfcd6b20be25fe682c4f63214e8334ab",
+    "raw_path": "eval/results/m5-completion-gate-ba25f836-vs-503d6294.json",
+    "raw_sha256": "42ac722d6f25abe6b066eee850ef5190b2e0367dfd91bed00472bad652e7b05c",
+    "raw_required_mode": "0600",
+    "evaluation_id": "2eabda53cb8943b1875a20d2cf7a70f8",
+    "model": "deepseek-v4-flash",
+    "surface": "standard_chat",
+    "schedule": "2 scenarios x 2 revisions x 3 repetitions = 12/12 arms",
+    "maximum_reruns": 0,
+    "product_metric_eligible": true,
+    "aggregate": {
+      "coding_baseline_verified": "3/3",
+      "coding_candidate_verified": "3/3",
+      "coding_candidate_false_success": 0,
+      "forced_claim_baseline_false_success": "3/3",
+      "forced_claim_candidate_correct_rejection": "3/3",
+      "forced_claim_candidate_false_success": 0,
+      "api_requests": 40,
+      "tokens": 144903,
+      "cost_usd": 0.004110153
+    },
+    "prompt_identity": "Both M5-A revisions embed the same constitution SHA-256 as current HEAD; pair-first model request identity is exact within the M5-A treatment."
+  },
+  "current_live_diagnostic": {
+    "name": "M8-M current fixed-Pro prompt successor stopped suite",
+    "summary_path": "eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md",
+    "summary_sha256": "8947283e81263b3d23d343ae6a276328f063d8eb1c47c62abfc6a8329e72a070",
+    "raw_path": "eval/raw/m8-m-prompt-successor-formal-d1d6ca5c-v1.jsonl",
+    "raw_sha256": "641d7d80129b4673bd93eb4d4a0af57f278b326357af71c04188b8eae74acec7",
+    "raw_required_mode": "0600",
+    "product_metric_eligible": false,
+    "eligible_for_candidate_benefit": false,
+    "baseline_observations": [
+      "t1 baseline measurement-valid verified success and false_success=false",
+      "t3 baseline measurement-valid verified success and false_success=false",
+      "t5 baseline read-only-child measurement-valid verified success and false_success=false"
+    ],
+    "suite_abort": "aborted_unknown_billing on t5 candidate; no resume, mate fill or sample splicing"
+  },
+  "writer_evidence": {
+    "summary_path": "eval/summaries/m6-a-isolated-writer-canary-2026-07-21.md",
+    "summary_sha256": "04734433f86f3d2c9c8d27c40004efd984e216174f75c52ccd525b576f088fa2",
+    "raw_path": "eval/results/m6-a-isolated-writer-canary-2026-07-21.json",
+    "raw_sha256": "5e7ae080c6beeffff254ab286ff65e714453ac7af9d327e9c7a472e3d0d72a52",
+    "raw_required_mode": "0600",
+    "revision": "a982a9a878587450aab57e87f4ec9df7751eb146",
+    "constitution_sha256": "39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409",
+    "surface": "standard_chat",
+    "result": "mechanism canary passed with 7/7 usage-bearing physical responses, exact Writer integration/latest-root receipt/cleanup; product_metric_eligible=false"
+  },
+  "current_release_gates": [
+    {
+      "id": "P01",
+      "package": "codewhale-context",
+      "test_target": null,
+      "filter": "production_prompt_fixture_enforces_structure_language_and_provenance",
+      "proves": "current prompt structure, fixed Chinese contract, stable/volatile cache blocks and source provenance"
+    },
+    {
+      "id": "P02",
+      "package": "codewhale-cli",
+      "test_target": "canonical_runs_command",
+      "filter": "app_server_process_loads_the_same_config_home_prompt_override_as_exec",
+      "proves": "exec and app-server use the same context-owned prompt override loader"
+    },
+    {
+      "id": "P03",
+      "package": "codewhale-app",
+      "test_target": null,
+      "filter": "m7i_actor_request_plans_rebuild_from_v16_sqlite_events",
+      "proves": "root, read-only child and explicit Writer RequestPlans/accounting rebuild exactly after SQLite reopen"
+    },
+    {
+      "id": "P04",
+      "package": "codewhale-app",
+      "test_target": null,
+      "filter": "m8i_auto_root_routes_read_only_children_to_flash_and_reopens_exactly",
+      "proves": "root/read-only-child production composition and route audit reopen exactly without a second Runtime"
+    },
+    {
+      "id": "P05",
+      "package": "codewhale-app",
+      "test_target": null,
+      "filter": "m7c_production_loopback_verifier_failure_recovers",
+      "proves": "current Git edit, verifier failure/recovery, latest receipt, physical accounting and no-request reopen"
+    },
+    {
+      "id": "P06",
+      "package": "codewhale-runtime",
+      "test_target": "conformance",
+      "filter": "model_completion_is_rejected_when_the_frozen_verifier_fails",
+      "proves": "false completion is rejected by the single Host completion owner"
+    },
+    {
+      "id": "P07",
+      "package": "codewhale-orchestrator",
+      "test_target": null,
+      "filter": "production_writer_is_isolated_recoverable_and_integrates_once",
+      "proves": "current explicit Writer worktree, integration, latest-root verify and cleanup lifecycle"
+    }
+  ],
+  "release_identity_and_rollback": {
+    "owner": "scripts/codewhale-delivery.sh",
+    "owner_sha256_at_baseline": "ed9cd0d5c6ab55897b5a6826fe2e612832f68bea2603bdb6d34ae0510ff60d08",
+    "historical_summary_path": "eval/summaries/m8-b-product-delivery-2026-07-23.md",
+    "historical_summary_sha256": "2cb973afc16aad8e3d4f1090162a849cc6cb804edb184873e2ffe97fca4e20a2",
+    "contract": [
+      "package binds full source revision/tree, Cargo.lock, toolchain, target and binary SHA-256",
+      "install verifies the immutable artifact before atomically switching current/previous",
+      "rollback atomically restores the previous immutable release without network or rebuild",
+      "prompt rollback is whole-release rollback; there is no second prompt-version store or selector"
+    ]
+  },
+  "successor_decision_contract": {
+    "M8_D_M8_M_candidate": "hold and keep unadopted; do not resume, splice or infer benefit",
+    "bundled_fixed_chinese_prompt": "keep only if all frozen real-model identities and exact-current gates pass",
+    "future_semantic_candidate": "must complete its own same-revision immutable billing-provable A/B before cutover",
+    "V15_if_adr_accepted_and_gates_pass": "pass",
+    "projected_matrix": "16 pass / 0 blocked",
+    "release_status_if_all_gates_pass": "releasable",
+    "material_model_visible_delta": false,
+    "live_api_admission": "inadmissible_no_material_treatment"
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8n-target",
+    "result_path": "eval/results/m8-n-v15-release-scope-21200ccf-v1.json",
+    "result_mode": "0600",
+    "overwrite": false,
+    "credential_read": false,
+    "official_api_requests_allowed": false,
+    "external_network_allowed": false,
+    "release_artifact_required": true,
+    "release_artifact_source_must_equal_candidate": true
+  },
+  "non_conclusions": [
+    "The rejected b088fd13 full Chinese treatment is not reclassified as a quality win.",
+    "M8-D or M8-M does not prove the fact-gap candidate better, worse or equivalent.",
+    "M5-A does not prove broad coding superiority, every repository or every current dynamic prompt block.",
+    "M6-A is mechanism evidence, not Writer benefit evidence.",
+    "Closing V15 does not make Auto the default or admit any new model-visible optimization.",
+    "No Anthropic, retired alias, FIM, LLM router, Provider, prompt mode, compatibility layer, second Runtime or second Store is introduced."
+  ]
+}
