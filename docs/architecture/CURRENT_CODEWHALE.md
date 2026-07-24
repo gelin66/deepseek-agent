@@ -127,11 +127,13 @@
   live arm 的 billing unknown，按门禁立即停止。production bundled prompt 未改变，结论为
   `hold_prompt_candidate / keep_app_server_override_consistency`。
   M8-E 随后冻结 16 项 V1 exit matrix：8 pass、8 blocked，当前发布状态为
-  `not_releasable`。用户选择官方 Anthropic Messages base URL
-  `https://api.deepseek.com/anthropic` 作为 release target；current production
-  `crates/deepseek` 仍只有 Chat sender/parser/replay/accounting，不能通过只换 URL
-  达成迁移。clean `a12bea45` 的 locked/offline artifact 只含 `codewhale` 和
-  `codewhale-tui`，全量 offline conformance 和安装验证通过；Key 未读取、官方请求 0。
+  `not_releasable`。M8-E frozen manifest/result 曾记录未经授权的 Anthropic Messages
+  release premise；用户已明确否认，PRODUCT_PLAN/ADR 也从未接受。该 frozen 字段保留作
+  历史审计，不再计入 release gap。current `crates/deepseek` Chat
+  sender/parser/replay/accounting 是正确 production 路线。clean `a12bea45` 的
+  locked/offline artifact 只含 `codewhale` 和 `codewhale-tui`，全量 offline
+  conformance 和安装验证通过；Key 未读取、官方请求 0。M8-F Messages cutover 为
+  `canceled_invalid_premise`，没有 production 代码接管。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1428,13 +1430,12 @@ AgentApplication -> AgentRuntime -> DeepSeekModelPort
   -> RunStore
 ```
 
-官方 Anthropic Messages base URL `https://api.deepseek.com/anthropic` 目前不出现在
-production planner 或 transport。当前也没有 Messages request DTO、content-block/SSE
-parser、tool/thinking exact replay 或 Messages usage/accounting owner。因此用户选择的
-release target 是一个明确缺口，不是 config 值替换；在 parity cutover 完成前，
-CodeWhale 必须保持不可发布。切换时仍只能有一个 `DeepSeekModelPort`、一个
-`AgentRuntime`、一个 `RunStore` 和一个 production sender，不能新增 Provider、模式或
-永久 dual transport。
+官方 Anthropic Messages base URL `https://api.deepseek.com/anthropic` 不出现在
+production planner 或 transport，这是有意的产品边界，不是缺口。CodeWhale 不兼容
+Claude Code/Anthropic 生态，也不需要 Messages request DTO、content-block/SSE parser
+或第二 transport。唯一 `DeepSeekModelPort` 继续使用官方 DeepSeek ChatCompletions；
+`deepseek-v4-pro`/`deepseek-v4-flash`、Standard/Strict planner、reasoning/tool replay、
+usage/retry/accounting 与 RunStore 链均保留。
 
 M8-E 的其他 architecture blockers 同样是当前事实：
 
@@ -1464,9 +1465,9 @@ root/read-only/Writer、SIGKILL/reopen 与 delivery gates 通过。这证明上�
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
 - M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；16 项完成定义中仍有
-  8 项 blocked，且用户选择的 Anthropic Messages production target 尚未实现；
-- 旧模型 alias 退役等于 ChatCompletions surface 退役，或反过来证明 current Chat sender
-  是用户接受的 release target；这两个判断都不成立；
+  8 项 blocked；
+- 旧模型 alias 退役等于 ChatCompletions surface 退役；官方文档与当前 production
+  contract 都证明这是两个不同层次；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和

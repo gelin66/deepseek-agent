@@ -5,6 +5,12 @@
 > 审计 contract / artifact revision：`a12bea45f20668e7ba58aebee4a6267ff4f70233`  
 > 结论：`not_releasable / keep_canonical_chain_and_delivery / hold_release`
 
+> 2026-07-24 纠正：frozen manifest/result 中的
+> `user_selected_release_target=https://api.deepseek.com/anthropic` 是未经授权的错误
+> 前提，用户已明确否认，PRODUCT_PLAN/ADR 也从未接受。冻结文件保持不变以保留审计
+> 历史；下文产品结论已 supersede：Anthropic 不计入 V09 或 release gap，M8-F
+> Messages cutover 为 `canceled_invalid_premise`。
+
 ## 1. 产品结论
 
 M8-E 逐项审计 `PRODUCT_PLAN.md` 的 16 项 V1 完成定义。8 项有当前源码、离线
@@ -44,16 +50,11 @@ treatment，没有读取 `key.txt`，官方 DeepSeek 请求为 0。
 - [Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api/) 同时定义官方
   Anthropic 格式 base URL `https://api.deepseek.com/anthropic` 和 Messages API。
 
-因此“旧 alias 下线”和“ChatCompletions 接口下线”不是同一事实。但是用户已明确选择
-Anthropic Messages 作为 CodeWhale 发布目标；这一产品选择高于“Chat 仍兼容”的事实。
-当前 `crates/deepseek` production sender 仍请求 `/chat/completions`，没有 Anthropic
-Messages request、SSE parser、tool/thinking replay、usage/accounting 与 crash/reopen
-parity，故发布门禁必须失败。
-
-不能只替换 base URL：那会把 Chat body 发给 Messages endpoint，并破坏 canonical replay
-和 accounting。下一切片必须在一个 production cutover 内补齐完整 parity，迁移唯一
-caller，再删除旧 Chat production sender；不得用 Provider、用户模式或双 production
-transport 维持兼容。
+因此“旧 alias 下线”和“ChatCompletions 接口下线”不是同一事实。CodeWhale 是只接
+官方 DeepSeek 的独立本地编码 Agent，不需要兼容 Claude Code/Anthropic 生态。
+PRODUCT_PLAN 固定 Standard Chat、Strict fallback 与独立 FIM；当前
+`crates/deepseek` `/chat/completions` sender/parser/replay/accounting 是应保留的
+production 路径。Anthropic 只是官方提供的另一种兼容格式，不是发布要求。
 
 ## 3. V1 gap matrix
 
@@ -67,7 +68,7 @@ transport 维持兼容。
 | V06 | 一个 TaskGraph 产品概念 | blocked | canonical Orchestrator 与用户可见 Fleet、Lane protocol/config/state 并存 |
 | V07 | CLI/TUI/API 是薄客户端 | pass | 都进入 `AgentApplication -> AgentRuntime -> RunStore` |
 | V08 | 多写 Agent 完整闭环 | blocked | 单 explicit Writer 完整；multi-Writer 经 M6-B1 后未准入 |
-| V09 | Standard/Strict/FIM 路由准确 | blocked | Standard/Strict fallback 已证；FIM 无 caller/parser/apply；Anthropic target 也缺失 |
+| V09 | Standard/Strict/FIM 路由准确 | blocked | Standard/Strict fallback 已证；FIM 无 caller/parser/apply |
 | V10 | RepoGraph 跨文件理解 | blocked | M5-C 仍未实现，也没有等价 canonical owner |
 | V11 | latest EvidenceReceipt completion | pass | M5-A owner 与 v16/v21 reopen 保留 latest-revision 绑定 |
 | V12 | 旧 Provider/updater/重复路径清除 | blocked | model/updater 已删；Fleet/Lane 与部分 generic provider vocabulary 尚存 |
@@ -151,7 +152,6 @@ codewhale-tui 0.8.68 (a12bea45f206)
 
 **Shrink/delete in successor cutovers**
 
-- Anthropic Messages parity 后删除旧 Chat production sender/config path；
 - canonical TaskGraph replacement 运行后删除 Fleet/Lane 重复产品与持久状态路径；
 - consumer 迁移后删除余下 generic provider vocabulary。
 
@@ -163,15 +163,17 @@ codewhale-tui 0.8.68 (a12bea45f206)
 **Release**
 
 - 当前结论：`not_releasable`。
-- 首个下一切片：canonical DeepSeek Anthropic Messages production cutover。
-- 后续仍需单 TaskGraph、V1 multi-Writer/RepoGraph scope 决策、imported-baseline coding 与
-  workflow-step A/B，以及 billing-provable 中文 prompt successor。
+- M8-F Anthropic Messages production cutover：`canceled_invalid_premise`；冻结 commit
+  `066e15cb` 保留历史，manifest/专属测试与未提交 WIP 已删除，Key 未读取、官方请求 0。
+- 首个下一切片：把 Orchestrator/Fleet/Lane 收敛为单一 TaskGraph 产品概念。
+- 后续仍需 FIM 产品范围/证据、V1 multi-Writer/RepoGraph scope 决策、
+  imported-baseline coding/workflow-step A/B，以及 billing-provable 中文 prompt
+  successor。
 
 ## 7. 非结论
 
 M8-E 不证明：
 
-- 当前 Chat sender 是用户选择的发布终态；
 - offline 全绿等于 V1 完成；
 - FIM、RepoGraph 或 multi-Writer 已实现；
 - CodeWhale 已优于导入基线；

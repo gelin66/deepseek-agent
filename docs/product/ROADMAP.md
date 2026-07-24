@@ -114,12 +114,17 @@
   路径没有被旧 alias 退役替代。
   M8-E 随后从 clean `433a871b` 冻结 PRODUCT_PLAN 的 16 项 V1 exit gap：
   V01/V02/V03/V04/V05/V07/V11/V14 共 8 项通过，V06/V08/V09/V10/V12/V13/V15/V16
-  共 8 项阻塞，发布结论为 `not_releasable`。用户明确选择官方 Anthropic Messages
-  base URL `https://api.deepseek.com/anthropic` 作为发布目标；当前 production 仍只有
-  Chat sender，不能把 Chat body 直接换 endpoint，因此该 canonical cutover 是首个
-  release blocker。`a12bea45` 的 locked/offline artifact 只含 `codewhale` 与
+  共 8 项阻塞，发布结论为 `not_releasable`。`a12bea45` 的 frozen manifest/result 曾把
+  “用户选择 Anthropic Messages”写成 release premise；2026-07-24 用户明确否认该选择，
+  PRODUCT_PLAN 与 ADR 也从未接受它。因此 frozen 证据保留作历史审计，但 Anthropic 不再
+  计入 V09 或 release gap。当前官方 DeepSeek ChatCompletions production sender 与
+  PRODUCT_PLAN 的 Standard/Strict 路线一致；V09 仍只因 FIM 无 canonical
+  caller/parser/apply 而 blocked。locked/offline artifact 只含 `codewhale` 与
   `codewhale-tui`，安装/验证和完整 offline conformance 通过；它证明 baseline 可复现，
-  不推翻 8 项 blocker。M8-E 没有 production model delta，Key 未读取、官方 API 请求 0。
+  不推翻这 8 项 blocker。M8-E 没有 production model delta，Key 未读取、官方 API
+  请求 0。基于错误前提冻结的 M8-F 已标记
+  `canceled_invalid_premise`，未提交 Messages production WIP 已精确删除，Key 未读取、
+  官方 API 请求 0。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -2276,15 +2281,16 @@ revision 读取权威输入，后续文档更新不能反向改变原审计。
 
 - pass：唯一 DeepSeek backend、AgentRuntime、RuntimeEvent、RunStore，root/child 同一
   conformance，CLI/TUI/API 薄客户端，latest-revision EvidenceReceipt，fixed zh-Hans；
-- blocked：单一 TaskGraph、多 Writer V1 完成面、完整 Standard/Strict/FIM 加发布目标
-  routing、RepoGraph、重复产品/状态彻底删除、imported-baseline coding A/B、中文 prompt
-  A/B、workflow-step 不增证明。
+- blocked：单一 TaskGraph、多 Writer V1 完成面、完整 Standard/Strict/FIM routing、
+  RepoGraph、重复产品/状态彻底删除、imported-baseline coding A/B、中文 prompt A/B、
+  workflow-step 不增证明。
 
 2026-07-24 官方复核确认 `deepseek-chat`/`deepseek-reasoner` 是退役的 legacy model
 alias，`deepseek-v4-pro`/`deepseek-v4-flash` 保留；官方同时支持 OpenAI 格式和 base URL
-为 `https://api.deepseek.com/anthropic` 的 Anthropic Messages。用户明确选择后者为
-CodeWhale 发布目标。current production 只有 Chat request/parser/replay/accounting，
-不能只替换 endpoint；因此 M8-E 不做半套迁移，也不把官方兼容性当成产品选择。
+为 `https://api.deepseek.com/anthropic` 的 Anthropic Messages。后者只是官方兼容接口，
+不是 CodeWhale 产品需求。PRODUCT_PLAN 固定的 production 路线仍是 DeepSeek Standard
+Chat、lossless Strict fallback 与独立 FIM；当前 Chat request/parser/replay/accounting
+应保留。
 
 clean `a12bea45` 的 locked/offline source artifact 绑定 tree `966afe2f`、Cargo.lock
 `ff53b498…f0ef2`、Rust 1.97.0，只包含 `codewhale` 和 `codewhale-tui`。归档 SHA 为
@@ -2298,12 +2304,12 @@ Writer、SIGKILL/reopen 和 delivery self-test 全部通过。这只证明当前
 request/cache 调优**。M8-D v5 不续跑，Key 未读取，官方 API 请求 0。完整结论见
 [M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
 
-下一切片为 M8-F：冻结 current Chat production control 与官方 Anthropic Messages
-treatment 的 request/response/tool/thinking/usage/retry/reopen parity，在
-`crates/deepseek` 唯一 owner 内完成 canonical cutover，迁移 `AgentApplication` 唯一
-caller 后删除旧 Chat production sender。不得新增 Provider、用户模式、第二 Backend 或
-双 production transport；只有 offline parity、全入口 conformance、clean artifact 和
-billing 可证明的新 successor manifest 全部通过后，才允许受限 official canary。
+M8-F 的 Anthropic Messages cutover 因 `invalid_premise` 取消。冻结它的
+`066e15cb` 保留在 Git 历史中，但 manifest、专属测试和全部未提交 production WIP 已由
+纠正提交删除；没有读取 Key 或调用官方 API。下一切片回到真实 V1 blocker：先把
+`ProductionAgentOrchestrator` 与 Fleet/Lane 收敛为一个 TaskGraph 产品概念，并在
+cutover 后删除重复协议、配置、状态和 UI 词汇。随后再处理 FIM 产品范围/证据、
+imported-baseline coding/workflow-step A/B 与 billing-provable 中文 prompt successor。
 
 ### 调优
 

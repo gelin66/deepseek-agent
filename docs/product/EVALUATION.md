@@ -1405,10 +1405,10 @@ RepoGraph 缺失、重复状态/词汇未完全删除、没有 imported-baseline
 [Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion) 和
 [Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api/)。
 `deepseek-chat`/`deepseek-reasoner` 是退役旧 alias，不等于 ChatCompletions surface
-退役；但用户已把 `https://api.deepseek.com/anthropic` 的 Anthropic Messages 选为
-CodeWhale release target。当前 production 没有该 request/parser/tool/thinking replay/
-usage/accounting parity，故 V09 和 release 必须 blocked。不能把现有 Chat body 只换
-base URL。
+退役。M8-E frozen manifest/result 中的 `user_selected_release_target` 前提后来被用户
+明确否认，PRODUCT_PLAN 与 ADR 也没有 Anthropic 发布决策；该字段只保留为 frozen
+历史输入，不能再驱动产品结论。CodeWhale 保留官方 DeepSeek ChatCompletions。V09 仍因
+FIM 没有 canonical caller/parser/apply 而 blocked，不因 Anthropic 兼容面 blocked。
 
 从 clean `a12bea45` 生成 locked/offline artifact：
 
@@ -1426,9 +1426,10 @@ delivery self-test 和 real package install/verify 全部通过。这些是 base
 
 最终决策为
 `not_releasable / keep_canonical_chain_and_delivery / hold_release`。M8-E 不读取 Key，
-官方请求 0，不产生 product metric。下一次 credentialed test 只允许属于新 Anthropic
-Messages production successor，且必须在全量 offline parity、immutable binary、全新
-manifest 和 billing completeness 都可证明后开始。
+官方请求 0，不产生 product metric。错误前提上的 M8-F 为
+`canceled_invalid_premise`：其 manifest/专属测试及未提交 production WIP 已删除，
+没有读取 Key 或调用官方 API。后续 credentialed test 只能属于真实产品 treatment，
+并继续要求 immutable binary、预注册 manifest 和 billing completeness。
 
 manifest/result/summary：
 
