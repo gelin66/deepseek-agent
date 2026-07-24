@@ -3,10 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M7-B Strict 目录准入与 typed 工具失败恢复已接入
-- 更新日期：2026-07-23
-- schema：`Run API`（`schema_version = 10`）、`RuntimeEvent`（writer/reader v16）、
-  `State`（schema v21）、`codewhale.exec-stream`（v2）
+- 状态：M8-I Host-owned typed Auto 路由已接入
+- 更新日期：2026-07-24
+- schema：`Run API`（`schema_version = 11`）、`RuntimeEvent`（writer/reader v17）、
+  `State`（schema v22）、`codewhale.exec-stream`（v3）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -145,7 +145,8 @@ resolve_interaction
 客户端可控制：
 
 - 结构化 `task`、`workspace`；
-- 官方模型或 auto route；
+- 官方模型或 `model=auto`；显式模型保持原值，Auto 只由
+  `AgentApplication` 根据 actor/workspace authority 和 typed recovery facts 决定；
 - reasoning、streaming、输出和请求预算；
 - `ToolPolicy`、`RunLimits`；
 - 本地 trust、approval 和 sandbox posture；
@@ -163,7 +164,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -339,7 +340,6 @@ run_store_failed
 共享 broad code 的失败还可携带稳定 `error.reason`：
 
 ```text
-deepseek_auto_route_failed
 deepseek_credential_missing
 workspace_mismatch
 provider_mismatch
@@ -348,7 +348,8 @@ execution_fingerprint_missing
 execution_fingerprint_mismatch
 ```
 
-启动、继续和恢复时的 DeepSeek credential/auto-route 失败不得只藏在人类 message 中。
+启动、继续和恢复时的 DeepSeek credential、持久路由或执行环境失败不得只藏在人类
+message 中。
 HTTP status 只是 transport 映射，程序判断必须以 `result.kind`、`error.code` 和可选
 `error.reason` 为准，不能解析中文消息前缀。
 
@@ -444,28 +445,37 @@ artifact 和 workspace revision。模型可见失败反馈只由该 outcome 确�
 原样。`ToolPrepared` 后 crash 不能重复不安全调用，`ToolOutcomeCommitted` 后恢复只回放
 已提交结果。
 
+RuntimeEvent v17 让每个 `RunRequest` 和 child `AgentTask` 强制绑定最小
+`ModelRouteAudit`：requested model mode、requested reasoning、Host policy version 和稳定
+reason code。selected model/reasoning 仍只存于既有 canonical 字段，actor/workspace
+authority 仍只存于 `RunRequest`/`AgentTask`，不建立第二份派生真相。Auto root 固定 Pro，
+普通 read-only child 可选 Flash，typed recheck 与 explicit Writer 选 Pro；一个 Run 内
+selection immutable。pre-v17 materialized run 无法从结果模型反推原始请求意图，因此
+State v22 直接退役，不提供兼容 reader。
+
 M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
 持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
 `strict_tools` policy。DeepSeek surface 与 fallback reason 不重复写入 State；SQLite 重开后
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v10 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+Run API v11 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v21 复用 canonical event/snapshot/lease，并直接退役
-全部 pre-v16 materialized run，因为历史失败无法无猜测补齐 v16 failure code；只保留可
-独立恢复的 pending Start intent。
+事件总线或兼容 alias。State schema v22 复用 canonical event/snapshot/lease；v21 已退役
+无法补齐 typed tool failure 的旧 run，v22 再退役缺少 route audit 的 materialized run。
+pending Start intent 仍保留，因为 Host Auto policy 在 `RunCreated` 前不再发出模型请求，
+可从 canonical command 精确恢复。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v21（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v22（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved
-  run ID，不能再生成第二个 run。自动路由 start 的预运行请求可能已发出时则 fail closed，
-  避免重复计费。
+  run ID，不能再生成第二个 run。Auto 路由完全由 Host typed facts 确定，创建前没有
+  classifier 网络请求或未知计费窗口，pending Start 可安全恢复 exact reserved run。
 - `start`/`resume` 只有在 canonical Store 已持久创建或取得 lease 后才确认。
 - 同进程 active run 通过一个 process-local control registry 投递 steer、interrupt、cancel 和
   interaction response；registry 不是持久事实，命令回执和结果事件才是持久事实。

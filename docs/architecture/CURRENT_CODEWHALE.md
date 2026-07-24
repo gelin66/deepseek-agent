@@ -142,7 +142,11 @@
   FIM planner/error/surface/accounting、always-zero terminal 字段和 eval-only classifier，
   并让 config 成为 V4 model id 的唯一规范化 owner；冻结历史证据不改写。没有读取 Key，
   官方请求为 0。
-- 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v3
+  M8-I 又把 `model=auto` 从额外 Flash prompt classifier 收敛为
+  `crates/app::ProductionModelRoutePolicy`；prompt/parser/heuristic、pre-RunCreated
+  unknown-billing 分支和 whole-tree route inheritance 已删除。
+- 当前协议：Run API v11、RuntimeEvent v17、State schema v22、exec-stream v3。产品默认
+  仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
 ## 1. 当前结论
 
@@ -199,8 +203,9 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。RuntimeEvent v16 与 State schema v21 继续持久化 completion rejection 的 typed
-`cause` 和 `required_transition`，恢复只能消费当前 generation 的 exact rejection 事实；
+推断已被替代。当前 RuntimeEvent v17 与 State schema v22 继续持久化 v16/v21 引入的
+completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
+的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
 
 WorkSurface 现在只投影 canonical child Agent，并保留 top/left/right 布局。旧键盘/鼠标
@@ -307,8 +312,8 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v16 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
-在进入
+当前 RuntimeEvent v17 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
 `exhausted_denied > 0` 时才持久化 `api_request_budget_exceeded`。`started == limit`
@@ -382,7 +387,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v16 / State v21 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v17 / State v22 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -405,8 +410,14 @@ EvidenceReceipt 可以满足 root TaskContract。
 - usage frame 到达即进入 accounting，异常 EOF/consumer drop 不丢失已知 usage；
 - retryable 与 replay-safe 分离，partial output/tool-call 不允许自动重放；
 - root/child physical request attribution；
-- auto-route classifier 与确定性 fallback；
 - 官方模型 capability、output limit 和 pricing fixture。
+
+产品 `model=auto` policy 不在 backend。唯一 owner 是
+`crates/app::ProductionModelRoutePolicy`：显式模型/reasoning 原样保留；Auto root 与
+explicit isolated Writer 使用 Pro，普通 read-only child 可使用 Flash，typed
+recheck/rework 使用 Pro；Auto reasoning 通常为 high，只有 typed recovery facts 才提升
+为 max，永不自行选择 off。每个 child selection 先冻结进 `AgentTask`，再由同一
+`AgentRuntime` 构造 exact `RunRequest`；不在一个 Run 内切换模型。
 
 普通工具调用不因存在工具就误走 Beta；只有整组 schema strict-compatible 时使用
 Beta Strict Chat。M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍原子回退
@@ -456,9 +467,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v21；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v22；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v16；
+- 当前 canonical RuntimeEvent writer/reader 为 v17；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -481,6 +492,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - v21 直接退役全部 pre-v16 materialized run，因为历史失败无法无猜测补齐
   `failure_code`；只保留可从 canonical command 重建的 pending Start intent，不分类历史
   错误文本，不建立兼容 reader；
+- v22 直接退役缺少 `ModelRouteAudit` 的 pre-v17 materialized run，因为 selected model
+  不能诚实反推 caller requested mode/reasoning；保留 pending Start intent，因为 Host Auto
+  policy 在 `RunCreated` 前没有网络或计费副作用；
 - no-key terminal replay。
 
 旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
@@ -508,9 +522,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v10 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v11 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v16；
+  writer/reader 为 v17；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -1524,6 +1538,38 @@ cost completeness/bucket 或 canonical root/child reopen ledger，retry count �
 因此 live coding/workflow-step A/B 为
 `inadmissible_incomplete_baseline_accounting`；旧 revision 不修改，Key 未读取。
 
+M8-I 当前 production route 为：
+
+```text
+Start/Continue typed facts
+  -> AgentApplication::ProductionModelRoutePolicy
+  -> RunRequest(model, reasoning, ModelRouteAudit)
+  -> AgentRuntime
+       -> read-only AgentTask(Flash/High)
+       -> failed read-only recheck AgentTask(Pro/Max)
+       -> explicit Writer AgentTask(Pro/High or typed rework Max)
+  -> DeepSeekModelPort -> ChatCompletions
+  -> RunStore(State v22)
+```
+
+Auto root 始终 Pro；产品没有 typed bounded-low-risk/no-tools 输入，因此当前不授予 root
+Flash。read-only child 的 Flash 结果必须返回 Pro root 汇聚，并由既有 Host evidence gate
+验收；failed handoff 只允许启动新的 Pro child 重查，不在原 Run 中偷偷切模型。显式
+`deepseek-v4-pro`、`deepseek-v4-flash` 和显式 reasoning 完全绕过 Auto policy。
+
+旧 `crates/deepseek/src/auto_route.rs`、额外 non-streaming Flash 请求、128-token
+classifier prompt/parser、provider DTO、关键词/500 字 heuristic、空 `recent_context`、
+`DeepSeekAutoRouteFailed` 和 creation unknown-billing projection 已物理删除。Auto Start
+的 `RunCreated.accounting_baseline` 现在是 0 次请求，首个且唯一物理请求属于 root。
+RuntimeEvent v17/State v22 强制 route audit 与 child binding；SQLite 重开不重新路由。
+
+formal A/B 没有准入：frozen old classifier control 在 `15fea38e`，candidate 在
+`ef65bafa`，而删除旧路径后不存在同时承载 fixed Pro/Flash、旧 classifier 与 Host policy
+的同 revision/immutable binary。为跑满矩阵恢复 production classifier toggle 会重新制造
+已删除的模式和第二 route owner。因此结果为
+`inadmissible_no_single_binary_four_variant_surface`；Key 未读取、官方请求 0。产品默认保持
+固定 Pro，显式 Auto 机制保留但默认 admission 为 hold。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1559,6 +1605,9 @@ cost completeness/bucket 或 canonical root/child reopen ledger，retry count �
   patch/edit 更好或更差；3/12 -> 12/12 只覆盖冻结的 deterministic Host 反例；
 - M8-H 已证明 FIM 质量较差或永不应实现；它只证明旧 production 半分支无 caller、sender、
   parser/apply/reopen 闭环，当前没有可归因 treatment；
+- M8-I 已证明 read-only Flash child 相对 fixed Pro 质量非劣或成本/时间稳定改善约 20%；
+  当前只有 request-count、replay 和安全边界的 mechanism evidence，没有 live product
+  metric，Auto 不是默认；
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；

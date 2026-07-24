@@ -137,7 +137,16 @@
   `keep Standard/Strict / reject unreachable FIM production half-branch / retain frozen and
   eval-only protocol evidence`；V09 仍因 PRODUCT_PLAN 的 FIM 完成定义未满足而 blocked。
   没有 treatment delta，Key 未读取，官方 API 请求 0。
-  当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v3。CLI、TUI、本地 API 与
+  M8-I 随后从 clean `15fea38e` 冻结旧 Auto classifier control，并以 code candidate
+  `ef65bafa` 把 `model=auto` 改为 `crates/app` 唯一 owner 的 Host typed 保守路由：
+  Auto root 与 explicit Writer 用 Pro，普通 read-only child 可用 Flash，typed
+  recheck/rework 用 Pro；显式 model/reasoning 不变。额外 Flash classifier 请求、
+  prompt/parser/provider DTO、关键词/500 字 heuristic、空 `recent_context` 与
+  pre-RunCreated unknown-billing 分支已物理删除。由于旧 classifier control 和 Host
+  candidate 不存在于同 revision/immutable binary，四 variant formal A/B 在 Key 前判定
+  `inadmissible_no_single_binary_four_variant_surface`；产品默认保持 fixed Pro，显式 Auto
+  机制保留但默认 admission 为 `hold`。Key 未读取、官方请求 0。
+  当前 Run API v11、RuntimeEvent v17、State schema v22、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -2393,9 +2402,56 @@ retry count 也未知。按完整 accounting 门禁，live coding/workflow-step 
 完整结论见
 [M8-H FIM 产品范围与历史债收敛](../../eval/summaries/m8-h-fim-scope-debt-2026-07-24.md)。
 
+### M8-I：Host typed 保守 Auto 路由
+
+M8-I 以 clean `15fea38e` 为 baseline，先提交
+`eval/manifests/m8-i-host-auto-route-v1.json` 冻结旧 classifier 的 request/body/timeout、
+fallback heuristic、whole-tree inheritance 和四 variant A/B 门禁。真实问题不是需要更强
+prompt classifier，而是旧路径会在 `RunCreated` 前额外发送一次
+`deepseek-v4-flash` non-streaming Chat 请求，却没有相对 fixed Pro 的 verified-success
+非劣证据。
+
+code candidate `ef65bafa` 建立唯一 `crates/app::ProductionModelRoutePolicy`：
+
+- 显式 `deepseek-v4-pro`/`deepseek-v4-flash` 与显式 reasoning 原样保留；
+- Auto root 固定 Pro；普通 reasoning 为 high，只有 typed recovery 才为 max；
+- 普通 read-only child 为 Flash/high，failed child 的新 recheck 为 Pro/max；
+- explicit isolated Writer 仍 explicit-only，Auto selection 为 Pro/high，typed rework 为
+  Pro/max；
+- 当前没有 typed bounded-low-risk/no-tools 产品事实，因此不授予 root Flash；
+- 每个 `RunRequest`/`AgentTask` selection immutable，不做 mid-run switch。
+
+RuntimeEvent v17/State v22 强制 `ModelRouteAudit`，而 selected model/reasoning、actor 和
+workspace authority 继续使用既有 canonical 字段，不增加第二份状态真相。pre-v17
+materialized run 无法诚实恢复 caller intent，直接退役；pending Start 因创建前已无模型
+副作用而保留并可 exact recovery。Run API 升到 v11，只删除失去生产者的
+`DeepSeekAutoRouteFailed` 与 creation unknown-billing projection。
+
+cutover 物理删除 530 行 `crates/deepseek/src/auto_route.rs`，以及 classifier
+prompt/parser/provider DTO、关键词/500 字 fallback、空 `recent_context`、startup route
+分类和旧 PTY guard。production loopback 证明 Auto root 的首个且唯一物理请求为 Pro，
+两个普通 read-only child 为 Flash，回到 Pro root 汇聚；SQLite 重开保持 exact route。
+focused、workspace strict Clippy/test、exec 25/25、app-server 23/23、PTY 6/6、State
+SIGKILL/reopen、M7-C/DeepSeek Harness 与 M8-E 8/8 contract 全部通过。
+
+formal A/B 未读取 Key：variant C 的 frozen old classifier 只存在于 `15fea38e`，variant D
+只存在于 `ef65bafa`；删除旧 production branch 后没有同 revision/immutable binary
+同时承载 A/B/C/D 的真实 surface。为评测重新加入 classifier toggle 会违反本切片的单
+owner/cutover 删除边界。因此准入结论为
+`inadmissible_no_single_binary_four_variant_surface`，不产生 verified success、Token、费用
+或 wall-time 产品指标。
+
+决策为 **keep explicit models and Host policy / delete prompt classifier / hold Auto
+default admission**。产品默认保持 fixed Pro；只有未来 successor 在同 immutable identity
+下证明 fixed-Pro 非劣、false success 为 0、关键 strata 无新增 Pro-only success，并在质量
+通过后稳定改善费用或时间约 20%，Auto 才能成为默认。完整结论见
+[M8-I Host typed Auto 路由](../../eval/summaries/m8-i-host-auto-route-2026-07-24.md)。
+
 ### 调优
 
 - imported `352e86a6` 与 current 的同任务 coding/workflow-step A/B；
+- Auto 只允许使用 RunStore 真实 verified outcome/cost 标签做新 successor；不恢复额外
+  LLM classifier，也不把 prompt 关键词当 authority；
 - 只有满足 M8-H re-entry gate 才重开 `apply_patch/search-replace/FIM` A/B；
 - thinking、上下文预算和压缩策略；
 - stable prefix/cache；

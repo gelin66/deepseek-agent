@@ -1521,6 +1521,58 @@ manifest/summary：
 - `eval/manifests/m8-h-fim-scope-debt-v1.json`；
 - [M8-H FIM 产品范围与历史债收敛](../../eval/summaries/m8-h-fim-scope-debt-2026-07-24.md)。
 
+### 9.24 M8-I Host typed Auto 路由（2026-07-24）
+
+M8-I manifest 在 production 变更前固定 clean `15fea38e`、tree、Cargo.lock/toolchain、
+旧 classifier 文件/composition hash、maximum_reruns=0 和四 variant 正式 A/B：
+
+| Variant | 语义 |
+|---|---|
+| A | fixed `deepseek-v4-pro` 产品基线 |
+| B | fixed `deepseek-v4-flash` 诊断 |
+| C | frozen `15fea38e` Flash prompt classifier |
+| D | Host typed 保守 policy candidate |
+
+离线 contract 不测 prompt “难度”，只测 typed product facts：
+
+- explicit model/reasoning 精确不变；
+- Auto root Pro/high，typed recovery Pro/max；
+- 普通 read-only child Flash/high，失败后的新 recheck Pro/max；
+- explicit Writer 仍 explicit-only，Auto selection Pro/high，typed rework Pro/max；
+- route audit、actor/workspace authority、child binding、request ledger 和 SQLite reopen；
+- pending Start 在 0 次 pre-runtime model request 下恢复同一 reserved Run；
+- CLI/TUI/HTTP/stdio parity 与 process SIGKILL recovery。
+
+code candidate `ef65bafa` 的离线结果：
+
+| 机制指标 | 旧 classifier | Host policy |
+|---|---:|---:|
+| first root turn 前物理请求 | 1 | 0 |
+| first root turn 模型 | classifier 决定 | Pro |
+| `RunCreated` accounting baseline requests | 1 | 0 |
+| creation 前网络/unknown-billing 窗口 | 有 | 无 |
+| child route | whole-tree inheritance | frozen per actor |
+| SQLite reopen 重新路由 | 不允许但需旧结果 | 不需要，exact audit |
+
+这些是 correctness/request-count mechanism evidence，不是质量或成本产品指标。正式 A/B
+要求 fixed Pro 非劣、false success=0、关键 strata 无新增 Pro-only success，并在质量通过
+后费用或 wall time 稳定净改善约 20%。但 C 与 D 分属不同 revision；cutover 后没有一份
+immutable binary 同时承载 A/B/C/D 的真实 production surface。恢复 classifier toggle 会
+重新引入第二 route owner/产品模式，违反预注册删除边界。因此在读取 Key 前判定
+`inadmissible_no_single_binary_four_variant_surface`，official requests=0。
+
+产品结论：
+
+- `keep_explicit_models_and_host_policy`；
+- `delete_prompt_classifier_and_unknown_billing_preroute_debt`；
+- `hold_auto_default_admission`；
+- product default 固定 `deepseek-v4-pro`，显式 Auto 不附带成功率/成本收益声明。
+
+manifest/summary：
+
+- `eval/manifests/m8-i-host-auto-route-v1.json`；
+- [M8-I Host typed Auto 路由](../../eval/summaries/m8-i-host-auto-route-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
