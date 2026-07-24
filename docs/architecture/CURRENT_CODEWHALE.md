@@ -64,6 +64,7 @@
 - M8-M prompt successor Harness：`d723d0b3`
 - M8-M fixed-Pro live admission：`d60d5e52`
 - M8-N V15 release-scope successor contract：`1a656bee`
+- M8-N accepted release candidate：`498599dd`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
