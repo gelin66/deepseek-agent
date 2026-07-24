@@ -1,0 +1,122 @@
+{
+  "schema": "codewhale.eval.m12-terminal-convergence-live-admission.v1",
+  "admitted_at_utc": "2026-07-24T23:20:04Z",
+  "contract_manifest": "eval/manifests/m12-terminal-convergence-reproduction-v1.json",
+  "contract_manifest_sha256": "sha256:51d92910c48640c2c17276904b68113ab6508a70d82856c96dd3347db238a62e",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "candidate_revision": "5716713fe6f7083d8182c44b3ebf37bc3ad455aa",
+  "candidate_tree": "a07e8ffdb79b2e46bfdcdec98de7b0f681fd4281",
+  "candidate_binary": "/private/tmp/codewhale-m12-target/release/codewhale",
+  "candidate_binary_sha256": "sha256:80a9210f6647aaba76945cb7464752dd17670329d1e3b46a5a5ef5d1db4e0f4e",
+  "candidate_binary_size_bytes": 14073952,
+  "candidate_binary_version": "codewhale 0.8.68 (5716713fe6f7)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:22a3823a59bd3176a2729c6e041f5750a09a5c7164393b32deb0f3ad769cf3cd",
+  "schedule_sha256": "sha256:6be5cb511d40477b03f0a7695e425c101ce000234f04947789c4be37b60ba7b1",
+  "task_contracts_sha256": "sha256:10643c868f4b3c4e4cb8e258bf260d14298e3b37a150df1843fcb516c8f8a205",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:b159cc18db08796477cda8714ae3dc273159d814723a92c0c92beed402898f00",
+  "freeze_report_sha256": "sha256:cf9b9e4fa84b3a8acc139574af278da9dcfd3fff675e7615db82ca0dc3e82e50",
+  "dry_run_sha256": "sha256:7e83a0164779be683c55ce4c07853dd1c2cbf513eb223e42c4e0d0e4bb5ed31e",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new position-1 two-task terminal-convergence reproduction after correcting Host/external verifier environment parity"
+  },
+  "offline_gates": [
+    {
+      "gate": "M12 fixture, schedule, task-contract, hash-chain, environment parity and SIGKILL Harness self-test",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M9-C and M11 campaign compatibility self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "historical M11 report classifies rust_cli as evaluation_environment_mismatch and is byte-identical across two runs",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "both new fixture verifiers fail before task and independently pass after the frozen requested change",
+      "result": "pass"
+    },
+    {
+      "gate": "isolated evaluator HOME resolves the frozen Rust 1.97.0 cargo/rustc toolchain and is shared by Host and external verifier",
+      "result": "pass"
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production fixed route, root/read-only/Writer, verifier recovery, RunStore exact reopen, process SIGKILL, CLI/TUI/API loopbacks",
+      "result": "pass"
+    },
+    {
+      "gate": "production release binary build and credential-free M12 Harness dry-run",
+      "result": "pass"
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "rust_endpoint": "sha256:077e1c9dcd69cc0e5473f6588f28583aabcf62a8ee4994c233edb7a98fe77af5",
+    "typescript_cache": "sha256:073892ca824d9506cdeb6431b20eb18d329870a19b0035c75488a03a00fe6d25"
+  },
+  "live_contract": {
+    "formal_tasks": 2,
+    "runs_per_task": 3,
+    "formal_arms": 6,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.12,
+    "suite_known_cost_ceiling_usd": 0.72,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "output": "eval/results/m12-terminal-convergence-5716713fe6f7-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-25",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
