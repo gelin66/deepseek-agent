@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-23
+- 上次更新：2026-07-24
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -31,8 +31,9 @@
 2. 当前稳定单 Agent Runtime。
 3. 当前候选实现。
 
-涉及多 Agent、RepoGraph、FIM、Strict 或 compaction 的改动还必须有关闭该能力的
-A/B 对照。
+候选若改变多 Agent、RepoGraph、FIM、Strict 或 compaction，还必须有关闭该能力的 A/B
+对照。没有 material treatment 时不得为满足清单读取 Key；应记录 inadmissibility 或作
+明确产品范围决策。
 
 ## 3. 任务集
 
@@ -1626,6 +1627,57 @@ manifest/summary：
 
 - `eval/manifests/m8-j-v1-successor-v12-debt-v1.json`；
 - [M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
+
+### 9.26 M8-K V08/V09/V10 产品范围 successor（2026-07-24）
+
+M8-K 不改写 M6-B1、M5-B、M7-C、M8-E、M8-H 或 M8-J 的 frozen evidence。
+manifest `m8-k-v1-scope-successor-v1.json` 绑定 clean `49a46581`、authority/source
+hash、Rust 1.97.0、current 10 pass / 6 blocked matrix，以及如下统一实施准入门槛：
+
+1. latest owning decision 之后存在 current production failure；
+2. failure 可归因于缺少候选能力，并有 canonical caller；
+3. affected task 有 deterministic verifier；
+4. control/treatment 位于同 revision immutable binary；
+5. physical request、usage、retry、wall time 与 cost accounting 闭合；
+6. 候选有唯一 owner、真实 caller 迁移和 cutover 删除。
+
+只读结果：
+
+| Item | 既有正式证据 | current 缺口 | 准入 |
+|---|---|---|---|
+| V08 | M6-B1 v2 为 `reject_and_rework`；v3 unknown billing；single Writer explicit-only | multi-Writer attributable failure=0，treatment=0 | 不实施 |
+| V09 | M7-C Host edit matrix 12/12；M8-H 删除不可达 FIM 半分支 | 新编辑生成失败=0，FIM caller/parser/apply/reopen=0 | 不实施 |
+| V10 | M5-B on/off 均 6/6 verified；失败未定位为结构检索 | RepoGraph caller=0，结构检索归因失败=0 | 不实施 |
+
+同日官方 DeepSeek 复核继续证明：
+
+- [Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion) 使用
+  `POST /chat/completions`；
+- [Tool Calls](https://api-docs.deepseek.com/guides/tool_calls) 的 Strict 是 Beta Chat，
+  且整组 function 都必须 strict-compatible；
+- [FIM Completion](https://api-docs.deepseek.com/guides/fim_completion/) 与
+  [Create FIM Completion](https://api-docs.deepseek.com/api/create-completion) 仍定义
+  独立 Beta `/completions`、`choices[].text` 和 4K output limit；
+- [V4 release](https://api-docs.deepseek.com/news/news260424/) 要求保持 official base URL
+  并改用 `deepseek-v4-pro`/`deepseek-v4-flash`；2026-07-24 下线的是旧 model aliases，
+  不是 ChatCompletions。
+
+ADR-0005 因而只调整 V1 的 capability scope，不改变固定架构或 production source：
+
+- V08 以一个 explicit isolated Writer 的完整 Host lifecycle 验收；
+- V09 以 Standard Chat 与 Strict whole-catalog admission/lossless fallback 验收；
+- V10 以 canonical search/read/diff、bounded ContextBroker 和 deterministic verifier
+  的跨文件结果验收。
+
+multi-Writer、FIM 与 RepoGraph 分别为 `reject_as_v1_literal / hold_evidence_gated_reentry`。
+V08/V09/V10 关闭后 current matrix 是 13 pass / 3 blocked；V13/V15/V16 仍 blocked。
+本切片没有 material model treatment，live A/B 为
+`inadmissible_no_material_treatment`，credential read=false，official requests=0。
+这不证明三种优化质量较差，也不产生 verified-success、Token、时间或费用收益结论。
+
+manifest：
+
+- `eval/manifests/m8-k-v1-scope-successor-v1.json`。
 
 ## 10. 结果与决策记录
 

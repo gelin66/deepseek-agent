@@ -127,8 +127,8 @@ Writing agents -> WorkspaceLane / Worktree
 |---|---|---|
 | `protocol` | 领域类型、命令、事件和结果 | UI、HTTP、SQLite、Provider |
 | `runtime` | 单 Agent 循环、transcript、tool replay、终态候选 | TUI、具体 DeepSeek HTTP、具体数据库、多 Agent 产品逻辑 |
-| `deepseek` | Standard Chat、Strict Chat、FIM、SSE、reasoning、usage | TUI、工具实现、调度器 |
-| `context` | RepoGraph、working set、request projection、compaction | UI、Provider 传输 |
+| `deepseek` | Standard/Strict Chat、SSE、reasoning、usage；证据准入后的独立 FIM 协议 | TUI、工具实现、调度器 |
+| `context` | working set、跨文件 request projection、compaction；证据准入后的 RepoGraph | UI、Provider 传输 |
 | `tools` | 工具目录、执行、编辑、进程、验证适配 | TUI、模型协议 |
 | `state` | append-only events、snapshot、replay、artifact | UI、模型调用 |
 | `orchestrator` | TaskGraph、Agent 调度、预算、mailbox、worktree | TUI、DeepSeek wire format |
@@ -162,7 +162,6 @@ request planner 直接进入现有生产 `crates/tui/src/client/`，不得先创
 enum ApiSurface {
     StandardChat,
     StrictChat,
-    Fim,
 }
 ```
 
@@ -171,27 +170,23 @@ enum ApiSurface {
 - 普通 Chat 和普通工具调用走标准 Chat API；
 - 只有整组工具都满足 strict schema 时才走 Beta Strict Chat；
 - 任一工具不兼容 strict 时整组退回普通工具调用，不得丢工具；
-- FIM 独立走 Beta Completions；
+- FIM 若由新证据重新准入，必须独立走 Beta Completions，不能复用 Chat parser；
 - Context Cache 是普通 Chat 的自动能力；
 - assistant reasoning/tool-call 历史按 DeepSeek 协议精确回放；
 - SSE、finish reason、usage、cache、retry 和 limits 由一个 Backend 统一负责。
 
 每次模型调用必须先产生一个确定性的 `RequestPlan`，一次性固定 surface、endpoint、
 wire model、streaming、reasoning replay 与工具 strict 状态；发送层不得再次猜测或改写。
-M2-A 只在现有生产 Client 内接管这段预检并复用当前 transport、retry、SSE parser 和
-Agent loop，不创建第二个 Runtime。待真实调用路径完成迁移并删除旧分支后，再决定是否
-值得抽成独立 crate。
+当前 production sender 只接受上面的 Chat surface。旧 FIM planner 因没有 sender、
+response parser、Host apply 和 reopen consumer 已删除；只有新的 current production
+编辑失败与完整垂直 treatment 同时存在时，才允许重新加入。
 
 模型名、上下文上限、价格和 Beta 状态属于可变化能力，必须从官方协议 fixture 和
 定期 canary 中验证，不能散落为永久业务假设。
 
-当前 5/5 live canary 是上述 wire 契约的外部事实基线，且记录明确标记为
-`product_metric_eligible=false`、`verified_success=null`。M2-A 切换生产请求路径后必须
-重跑它，但无论通过多少次都不能替代 M1-C 的真实编码任务验收。
-
-截至 2026-07-15，M2-A 已完成上述 `RequestPlan` 的生产 Client 代码接入和单元回归；
-production-path 的 sender/FIM 垂直测试及切换后的 live canary 仍是未完成门禁。验收前
-不得把“代码已接入”写成“Backend 已完成”或“真实链路已验证”。
+截至 2026-07-24，official DeepSeek ChatCompletions 的 planner、sender、SSE/parser、
+reasoning/tool replay、usage/retry/accounting 与 RunStore 已形成唯一 production 链。
+协议 loopback/canary 只能证明 wire correctness，不能替代真实编码任务验收。
 
 ### 6.1 中文原生交互与 Agent 提示词
 
@@ -246,21 +241,18 @@ artifacts
 工具函数返回不等于操作成功，操作成功也不等于任务已验证。`complete_task` 只提交
 完成候选；最终终态由 Runtime 根据 `TaskContract` 和最新证据判断。
 
-## 8. Context 与 RepoGraph
+## 8. Context 与证据触发 RepoGraph
 
-第一版使用确定性的代码图，不先建设向量数据库：
+V1 先使用 canonical、可验证的确定性工作集，不建设第二检索状态：
 
-- tree-sitter 符号和签名；
-- ripgrep 文本引用；
-- LSP definition/reference 补强；
-- 文件和包依赖；
-- git diff 与工作集；
-- 测试影响；
-- 任务相关性与 Token 预算排序。
+- `file_search`、`grep_files`、`list_dir` 和分段 `read_file`；
+- Git status/diff 与当前 working set；
+- 包清单、测试和编译器的确定性反馈；
+- TaskContract、最新 EvidenceReceipt 与 Token 预算排序。
 
 Context compaction 必须保留任务目标、用户最新约束、当前变更、未解决问题、最新
-证据以及 tool-call/result 原子性。只有评测证明确定性 RepoGraph 不足时，才考虑
-本地 embedding 或混合检索。
+证据以及 tool-call/result 原子性。只有真实任务把失败定位为结构检索缺失，并且同任务
+对照证明收益后，才加入 tree-sitter/LSP RepoGraph；embedding 或混合检索需要再独立证明。
 
 ## 9. 多 Agent 产品
 
@@ -269,7 +261,9 @@ Context compaction 必须保留任务目标、用户最新约束、当前变更�
 - 1 个 Integrator；
 - 按需要启动 Explorer、Implementer、Reviewer、Verifier；
 - 只读 Agent 可共享只读工作区；
-- 写 Agent 必须获得独立 worktree；
+- V1 只准入一个显式 Writer；它必须获得独立 worktree 并完成 Host
+  review/verify/integrate/cleanup；
+- 多 Writer 只在单 Writer 正式证据仍暴露可归因并发缺口后重新评测；
 - Agent 数量、预算和深度由任务与评测决定。
 
 所有角色都是同一个 Runtime 的 profile。模型侧只需要一个 `agent` 工具，通过
@@ -331,10 +325,10 @@ diff 和 UI 状态通过 reducer 生成投影。大日志和 diff 使用内容�
 可以根据开发证据调整：
 
 - crate 拆分和命名时机；
-- RepoGraph 的具体实现；
+- 是否需要 RepoGraph 及其具体实现；
 - compaction 策略；
 - 默认工具、Agent 数量和预算；
-- Strict/FIM 的任务路由；
+- Strict 的任务路由，以及 FIM 是否重新准入；
 - snapshot 间隔；
 - UI 交互和配置细节；
 - 是否加入 embedding。
@@ -368,9 +362,11 @@ V1 必须同时满足：
 - 只有一个 RunStore；
 - 只有一个 TaskGraph 产品概念；
 - CLI/TUI/API 是同一 Runtime 的薄客户端；
-- 多写 Agent 有完整 worktree/review/verify/merge/cleanup；
-- DeepSeek Standard、Strict 和 FIM 路由准确；
-- RepoGraph 能处理跨文件代码理解；
+- 一个显式 Writer 具有完整 worktree/review/verify/merge/cleanup；多 Writer 不作为
+  V1 门槛；
+- DeepSeek Standard Chat 与 Strict 整目录准入/无损回退准确；FIM 只在新证据准入后进入；
+- 跨文件任务可由 canonical 搜索/读取、ContextBroker 和 deterministic verifier 在冻结
+  预算内完成；RepoGraph 实现不作为 V1 门槛；
 - 完成状态依赖最新 EvidenceReceipt；
 - 其他 Provider、旧 updater、重复状态和重复运行路径已清除；
 - 真实评测证明产品优于导入时的 CodeWhale 基线；

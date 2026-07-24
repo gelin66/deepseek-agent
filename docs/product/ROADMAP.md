@@ -154,6 +154,14 @@
   current run replay、pending Start、route audit 与 accounting。V12 因而关闭为 pass，
   current V1 为 10 pass / 6 blocked；剩余 V08/V09/V10/V13/V15/V16。该切片没有模型
   treatment，Key 未读取、官方请求 0。
+  M8-K 从 clean `49a46581` 冻结 V08/V09/V10 successor audit。正式证据不支持继续按清单
+  实现 multi-Writer、FIM 或 RepoGraph：M6-B1 拒绝扩大 Writer 且当前显式单 Writer
+  lifecycle 完整；M8-H 已删除无 caller 的 FIM 半分支且没有新编辑生成失败；M5-C 一直因
+  没有结构检索归因样本而延后。ADR-0005 因而把 V1 定义收敛为可验证能力结果：
+  `keep explicit single Writer / keep Standard+Strict / keep bounded cross-file
+  retrieval`，三种优化实现继续 evidence-gated hold。current matrix 为 13 pass /
+  3 blocked，剩余 V13/V15/V16；没有 production 或 model treatment，Key 未读取、
+  官方请求 0。
   当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -265,10 +273,10 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
+| M5 | ContextBroker、跨文件检索和 canonical 证据链 | 已完成（M5-A 完成；M5-B shrink；RepoGraph 按 ADR-0005 转为 post-V1 证据准入） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；现有跨文件检索可验证，结构索引不按名称堆功能 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-J successor audit 为 10/16 pass；V08/V09/V10/V13/V15/V16 仍 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-K successor 为 13/16 pass；V13/V15/V16 仍 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -1624,9 +1632,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 完整身份、binary/result SHA、cell、pair、未知计费下界与归因限制见
   [M5-B ContextBroker 正式 A/B](../../eval/summaries/m5-context-broker-ab-2026-07-20.md)。
 
-### M5-C：增量 RepoGraph（证据触发，暂不开发）
+### M5-C：增量 RepoGraph（post-V1 证据触发）
 
-- M5-B 没有把失败定位为“缺少结构检索”，因此当前不开始。
+- M5-B 没有把失败定位为“缺少结构检索”，ADR-0005 因而确认 RepoGraph 不作为 V1
+  实现门槛。
 - 首个纵向切片优先复用 ripgrep、git diff 和包清单；tree-sitter/LSP/embedding 必须各自
   证明比现有 project map 提高 verified success 或减少 Token，不能一次性全部引入。
 - RepoGraph 只向同一 ContextBroker 提供候选事实，不拥有模型循环、任务状态或完成判定。
@@ -1639,7 +1648,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ### 退出门槛
 
-- RepoGraph 仍需先由真实任务定位结构检索缺口，再证明相比当前 project map 提高成功率
+- RepoGraph 重新准入仍需先由真实任务定位结构检索缺口，再证明相比 current canonical
+  search/read/context 提高成功率
   或减少 Token。
 - ContextBroker 已按 A/B 完成 shrink：保留硬限制可靠性，删除未产生净收益的主动压缩；
   不宣称 compaction 降低成本、缩短时间或提高成功率。
@@ -2494,6 +2504,40 @@ V16 imported-baseline workflow-step A/B。没有模型 treatment 或可付费产
 
 完整结论见
 [M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
+
+### M8-K：V08/V09/V10 产品范围 successor
+
+M8-K 以 clean `49a46581`、Run API v11、RuntimeEvent v17、State v23、exec-stream v3 和
+10 pass / 6 blocked 的 current matrix 开始。manifest commit `b44d7ff9` 在任何 authority
+变化前冻结 V08/V09/V10 的实现准入合同：
+
+| Item | current production | 可归因新失败 | 同 binary treatment | 决策 |
+|---|---|---:|---:|---|
+| V08 multi-Writer | 每 root 一个 explicit Writer，完整 Host lifecycle | 0 | 无 | keep single / reject V1 multi-Writer / hold re-entry |
+| V09 FIM | official Standard/Strict Chat；FIM 半分支已删除 | 0 | 无 | keep Chat / reject V1 FIM / hold re-entry |
+| V10 RepoGraph | canonical search/read/diff + ContextBroker + verifier | 0 | 无 | keep bounded cross-file outcome / reject named V1 graph / hold re-entry |
+
+三项都不满足“current typed failure、真实 caller、deterministic verifier、同 revision
+immutable treatment、完整 accounting”这组实施准入条件，因此没有选择 production
+功能切片，也没有读取 Key 或请求 API。为补清单恢复旧 FIM、增加第二 Writer scheduler，
+或创建无 caller RepoGraph 会直接违反已有正式证据。
+
+ADR-0005 记录产品范围 successor：
+
+- V08 由现有显式单 Writer 的完整 lifecycle 验收；multi-Writer 不是 V1 门槛；
+- V09 由 Standard Chat 和 Strict 整目录准入/无损回退验收；FIM 不是 V1 门槛；
+- V10 由 canonical 搜索/读取、bounded ContextBroker 和 deterministic verifier 的跨文件
+  结果验收；RepoGraph 实现名不是 V1 门槛。
+
+这不是宣布三种优化已经完成或无价值。任何一项重开都必须出现新的可归因 production
+失败，并从 frozen task position 1 建立完整垂直 treatment。按新的能力定义，V08/V09/V10
+关闭为 pass，current V1 matrix 为 13 pass / 3 blocked；剩余 V13 imported-baseline
+coding comparison、V15 billing-provable 中文 prompt comparison 和 V16
+imported-baseline workflow-step comparison，V1 仍不可发布。
+
+manifest：
+
+- `eval/manifests/m8-k-v1-scope-successor-v1.json`。
 
 ### 调优
 

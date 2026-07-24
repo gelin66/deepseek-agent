@@ -129,12 +129,12 @@ worktree、diff、verify、integrate 和 cleanup。CLI、TUI 与 app-server 均�
   `codewhale lane`；
 - setup-state 的 `OperateFleet` card、receipt flag 和 Doctor roster projection。
 
-## 未完成能力
+## Post-V1 证据准入能力
 
 以下能力不得从旧实现恢复，也没有被 M6-B1 准入：
 
 - canonical TaskGraph 上的 follow-up/wait/interrupt 等控制动作；
-- 多 Writer 有界并发与可恢复冲突收敛；
+- 多 Writer 有界并发与可恢复冲突收敛；ADR-0005 已确认它不是 V1 门槛；
 - 更广任务上的多 Agent 净收益证明。
 
 M6-A 已完成单 Writer 的 `AgentTask`、结构化 Host-observed `AgentOutcome`、worktree
@@ -142,5 +142,6 @@ create/diff/verify/integrate/root verify/cleanup 和 crash/reopen。M6-B1 的 18
 36 arms 同任务 A/B 已判定 `reject_and_rework`：Writer `4/18` verified、7
 false-success，且 Token/费用分别比 single 高 35.5% / 52.5%。后续切片已完成 verifier、
 actor capability 与 explicit-only admission 收敛；这不等于 Writer 已获得净收益，
-也不允许扩到双 Writer。重新通过正式 A/B 前，多 Writer、通用 DAG 和第二 scheduler
-均不进入开发。
+也不允许扩到双 Writer。ADR-0005 以现有 explicit single Writer lifecycle 关闭 V08；
+这不是 multi-Writer 已实现或 single Writer 已获净收益。重新出现可归因失败并通过正式
+A/B 前，多 Writer、通用 DAG 和第二 scheduler 均不进入开发。
