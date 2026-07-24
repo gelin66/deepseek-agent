@@ -1363,6 +1363,7 @@ Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn scoped_constitution_invariant_is_prompt_guidance_only() {
@@ -1379,5 +1380,36 @@ mod tests {
         assert!(rendered.contains("不得破坏运行时协议"));
         assert!(rendered.contains("相关路径：crates/protocol/**"));
         assert!(!rendered.contains("机制强制"));
+    }
+
+    #[test]
+    fn fallback_overview_and_project_pack_repeat_the_same_payload() {
+        let workspace = std::env::temp_dir().join(format!(
+            "codewhale-project-context-duplicate-fixture-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&workspace);
+        fs::create_dir_all(workspace.join("src")).expect("fixture source directory");
+        fs::write(
+            workspace.join("README.md"),
+            "# Fixture\n\nOPAQUE_SHARED_PROJECT_PAYLOAD\n",
+        )
+        .expect("fixture README");
+        fs::write(workspace.join("src/lib.rs"), "pub fn fixture() {}\n").expect("fixture source");
+
+        let expected_json = serde_json::to_string_pretty(
+            &build_project_context_pack(&workspace).expect("project context payload"),
+        )
+        .expect("serialize payload");
+        let overview =
+            generate_bounded_project_overview(&workspace).expect("bounded project overview");
+        let pack = generate_project_context_pack(&workspace).expect("project context pack");
+
+        assert!(overview.contains(&expected_json));
+        assert!(pack.contains(&expected_json));
+        assert_eq!(overview.matches("OPAQUE_SHARED_PROJECT_PAYLOAD").count(), 1);
+        assert_eq!(pack.matches("OPAQUE_SHARED_PROJECT_PAYLOAD").count(), 1);
+
+        fs::remove_dir_all(&workspace).expect("remove fixture");
     }
 }

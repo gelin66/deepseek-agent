@@ -691,7 +691,7 @@ fn estimate_context_tokens(
 
 /// Conservative tokenizer-free estimate calibrated for Chinese prose,
 /// repetitive ASCII, and high-entropy identifiers.
-fn estimate_text_tokens(value: &str) -> usize {
+pub(crate) fn estimate_text_tokens(value: &str) -> usize {
     let bytes = value.as_bytes();
     let mut tokens = 0usize;
     let mut cursor = 0usize;

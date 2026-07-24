@@ -12,4 +12,8 @@ pub mod project_context;
 pub mod prompts;
 pub mod skills;
 
-pub use prompts::{InstructionSource, ProductionPromptRequest, production_system_prompt};
+pub use prompts::{
+    InstructionSource, ProductionPromptBuild, ProductionPromptRequest, PromptContextLayer,
+    PromptContextLedger, PromptContextLedgerEntry, PromptContextScope, PromptContextStability,
+    production_system_prompt, production_system_prompt_with_ledger,
+};
