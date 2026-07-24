@@ -1,0 +1,284 @@
+{
+  "schema": "codewhale.eval.m8-l-release-benchmark-successor.v1",
+  "suite_id": "m8-l-release-benchmark-successor-4fef6a34-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "baseline": {
+    "branch": "deepseek-agent",
+    "revision": "4fef6a34e999a8d592629308cb1b5fd7017bbf18",
+    "tree": "239316f1adda010c3ab684a7782d3128ae5fcf76",
+    "cargo_lock_sha256": "f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "v1_matrix": "13 pass / 3 blocked",
+    "remaining_blockers": [
+      "V13 imported-baseline coding comparison",
+      "V15 billing-provable Simplified Chinese prompt comparison",
+      "V16 imported-baseline workflow-step comparison"
+    ],
+    "worktree_clean": true
+  },
+  "slice_contract": {
+    "problem": "The immutable imported revision can receive the same coding task on official DeepSeek ChatCompletions, but its terminal and persistence contracts cannot account for every physical request, retry, incomplete response, child request and cost. A paid cross-revision A/B would therefore turn missing legacy truth into an apparent current advantage. V1 still needs one reproducible release benchmark for real coding evidence and non-increased user workflow steps.",
+    "acceptance": [
+      "independently prove which imported/current task, verifier, request, usage, retry, cache, wall-time, cost and reopen facts are comparable",
+      "reject the paid imported/current A/B before credential access when legacy physical accounting is incomplete",
+      "preserve one qualified official DeepSeek coding result with immutable task, binary, verifier, request, usage, cost and false-success evidence",
+      "run current AgentApplication -> AgentRuntime -> RunStore coding, verifier-recovery, completion-rejection, accounting/reopen and CLI workflow gates on the exact candidate",
+      "compare the same user-visible login, interactive start, headless coding, run inspection and resume workflows as atomic user actions",
+      "change the V1 exit requirement only through an accepted ADR; retain the imported revision as an immutable black-box reference without claiming an unmeasurable cost or success delta",
+      "leave V15 blocked and make no V1 release claim"
+    ],
+    "single_owner": {
+      "benchmark_contract_and_projection": "eval/manifests + scripts/eval-m8l-release-benchmark.py",
+      "production_execution": "crates/app::AgentApplication -> crates/runtime::AgentRuntime -> crates/state::RunStore",
+      "official_deepseek_transport_and_accounting": "crates/deepseek",
+      "product_scope": "docs/decisions + docs/product/PRODUCT_PLAN.md"
+    },
+    "replaces": [
+      "the requirement to produce a paid success/cost superiority claim from a legacy arm that cannot natively close physical billing",
+      "using deleted Fleet, Lane, Thread or session compatibility paths as workflow-step evidence",
+      "treating deterministic loopback alone as real model quality evidence"
+    ],
+    "evidence": [
+      "immutable imported source and M8-H release-binary preflight",
+      "qualified M5-A official DeepSeek coding/false-success A/B",
+      "current-revision production loopback with a real temporary Git workspace and deterministic verifier",
+      "current completion-rejection and exact SQLite request-plan replay",
+      "current process-level CLI runs/resume contracts",
+      "frozen atomic user-action comparison"
+    ],
+    "cutover_deletion": [
+      "remove V13/V16 tuning entries that still prescribe the inadmissible imported paid A/B",
+      "do not add a legacy accounting adapter, external bill estimator, provider mode, compatibility reader or second benchmark executor",
+      "delete only M8-L temporary target/process state after final gates; preserve the ignored 0600 historical raw used by its recorded SHA-256"
+    ]
+  },
+  "imported_audit": {
+    "revision": "352e86a611fdf3cd8bd27c36d24d482c06a71117",
+    "tree": "dae7b0a638ec9c57c67aad401ad9a2d9adb7daf2",
+    "m8_h_release_binary": {
+      "codewhale_sha256": "23fabcc72fdf1a97cefeec4a4cd15ff589ec1e05d8c5bd4c090680ca51117708",
+      "codewhale_tui_sha256": "e2507e489bad96ffe54f56fa2378abdc466bedfda8bc328aca6cec0d31947d9f",
+      "built_locked_offline": true,
+      "same_official_surface": "https://api.deepseek.com/chat/completions",
+      "same_model": "deepseek-v4-pro"
+    },
+    "source_blobs": {
+      "tui_main": "b6b838244afc02136168936800ebc6d3fc658958",
+      "turn_loop": "1a2985cacdb28df7a79f2531f76f7b936e29b520",
+      "events": "dce82de6be85875a5e2d9678b02a68bf4d4bc7c9",
+      "session": "eec91eb4cf143fcd716518dd521698773bf85fa5",
+      "cli": "141f73cceaa77ed3ea56cd4e4d565432cd4162e8",
+      "app_server": "2a45b2651168c3c7c36120758be560a0d069337c"
+    },
+    "comparability": {
+      "official_chat_surface": true,
+      "canonical_model_id": true,
+      "external_task_fixture_identity": true,
+      "external_deterministic_verifier": true,
+      "binary_identity": true,
+      "prompt_and_tool_catalog_hash": true,
+      "terminal_token_and_cache_usage_when_observed": true,
+      "wall_time_boundary": true,
+      "physical_request_count": false,
+      "retry_count": false,
+      "failed_or_incomplete_response_usage": false,
+      "root_child_request_aggregate": false,
+      "cost_completeness_and_bucket": false,
+      "request_started_in_flight_reopen": false
+    },
+    "source_facts": [
+      "exec-stream v1 declares retry_count but every production terminal constructor sets it to None",
+      "the Engine has inner and outer transparent paths that reissue create_message_stream with the same request",
+      "TurnComplete carries aggregate Usage but no physical request ledger",
+      "session persistence accumulates completed usage only",
+      "the separate scorecard can price observed turns but cannot reconstruct unobserved physical attempts or crash windows"
+    ],
+    "paid_ab_admission": {
+      "status": "inadmissible_incomplete_baseline_accounting",
+      "credential_read": false,
+      "official_api_requests": 0,
+      "old_revision_modified": false,
+      "external_cost_estimate_allowed": false
+    }
+  },
+  "qualified_real_coding_evidence": {
+    "name": "M5-A canonical completion-gate official DeepSeek A/B",
+    "summary_path": "eval/summaries/m5-completion-gate-ab-2026-07-19.md",
+    "summary_sha256": "b4149f7c05e3eb62f66e0c0ce57ecff5bfcd6b20be25fe682c4f63214e8334ab",
+    "raw_path": "eval/results/m5-completion-gate-ba25f836-vs-503d6294.json",
+    "raw_sha256": "42ac722d6f25abe6b066eee850ef5190b2e0367dfd91bed00472bad652e7b05c",
+    "raw_required_mode": "0600",
+    "evaluation_id": "2eabda53cb8943b1875a20d2cf7a70f8",
+    "model": "deepseek-v4-flash",
+    "surface": "standard_chat",
+    "schedule": "2 scenarios x 2 revisions x 3 repetitions = 12/12 arms",
+    "maximum_reruns": 0,
+    "product_metric_eligible": true,
+    "aggregate": {
+      "coding_baseline_verified": "3/3",
+      "coding_candidate_verified": "3/3",
+      "coding_candidate_false_success": 0,
+      "forced_claim_baseline_false_success": "3/3",
+      "forced_claim_candidate_correct_rejection": "3/3",
+      "forced_claim_candidate_false_success": 0,
+      "api_requests": 40,
+      "tokens": 144903,
+      "cost_usd": 0.004110153
+    },
+    "scope_limit": "This proves one frozen coding task and one false-claim counterexample on an ancestor of the current canonical chain. It is retained as real model evidence only; current exact-source retention is established by the offline production gates below."
+  },
+  "current_release_benchmark": {
+    "source_hashes": {
+      "app_production_sha256": "bd920e0782e5b47e2153fc2b7efd8f49fe216d41171f558c1f17bfcf632d87eb",
+      "runtime_conformance_sha256": "b7123f0858f05d62691d62f6ff9e34a070fc1bf3845f0d6c79ccd078d3a29b9c",
+      "cli_runs_test_sha256": "f9bbb122487ab62459f27dd0342db130fa0365325f051ed31637c6b4ee7c33ec",
+      "exec_acceptance_sha256": "b1d70c9a92a83dd8b25636c4b3e5fa9d6c1b3189cb43614f80336462eb72aa84"
+    },
+    "cases": [
+      {
+        "id": "R01",
+        "kind": "production_coding",
+        "gate_id": "production_verifier_recovery",
+        "expected": "real temporary Git workspace changes before -> broken -> after, first Host verifier fails, second passes, latest-revision receipt completes, five physical requests are accounted and SQLite reopen emits no request"
+      },
+      {
+        "id": "R02",
+        "kind": "false_success",
+        "gate_id": "completion_rejection",
+        "expected": "a model completion proposal is rejected when the frozen verifier fails"
+      },
+      {
+        "id": "R03",
+        "kind": "request_replay",
+        "gate_id": "actor_request_plan_reopen",
+        "expected": "root, read-only child and explicit Writer RequestPlans reconstruct exactly from SQLite events with canonical accounting"
+      },
+      {
+        "id": "R04",
+        "kind": "workflow_surface",
+        "gate_id": "canonical_runs_help",
+        "expected": "current public help exposes one canonical runs path and no retired session/thread/fork/run aliases"
+      },
+      {
+        "id": "R05",
+        "kind": "workflow_recovery",
+        "gate_id": "exec_resume",
+        "expected": "one resume action replays the same terminal without another model request"
+      }
+    ],
+    "gates": [
+      {
+        "id": "production_verifier_recovery",
+        "package": "codewhale-app",
+        "test_target": null,
+        "filter": "m7c_production_loopback_verifier_failure_recovers"
+      },
+      {
+        "id": "completion_rejection",
+        "package": "codewhale-runtime",
+        "test_target": "conformance",
+        "filter": "model_completion_is_rejected_when_the_frozen_verifier_fails"
+      },
+      {
+        "id": "actor_request_plan_reopen",
+        "package": "codewhale-app",
+        "test_target": null,
+        "filter": "m7i_actor_request_plans_rebuild_from_v16_sqlite_events"
+      },
+      {
+        "id": "canonical_runs_help",
+        "package": "codewhale-cli",
+        "test_target": "canonical_runs_command",
+        "filter": "dispatcher_help_exposes_runs_and_removes_retired_top_level_commands"
+      },
+      {
+        "id": "exec_resume",
+        "package": "codewhale-tui",
+        "test_target": "exec_terminal_acceptance",
+        "filter": "completed_exec_resume_replays_the_same_terminal_without_another_model_request"
+      }
+    ]
+  },
+  "workflow_step_comparison": {
+    "unit": "one explicit user action: one command submission or one TUI start; internal Runtime events, verifier steps and model requests are not user actions",
+    "rule": "current_actions must be less than or equal to imported_actions for every common V1 workflow; removed optional legacy concepts cannot be counted as required imported steps",
+    "workflows": [
+      {
+        "id": "W01",
+        "workflow": "save official DeepSeek API credential",
+        "imported_entry": "codewhale login",
+        "imported_actions": 1,
+        "current_entry": "codewhale login",
+        "current_actions": 1
+      },
+      {
+        "id": "W02",
+        "workflow": "start interactive coding task in current workspace",
+        "imported_entry": "codewhale PROMPT",
+        "imported_actions": 1,
+        "current_entry": "codewhale PROMPT",
+        "current_actions": 1
+      },
+      {
+        "id": "W03",
+        "workflow": "run one non-interactive tool-backed coding task",
+        "imported_entry": "codewhale exec --auto PROMPT",
+        "imported_actions": 1,
+        "current_entry": "codewhale exec --auto PROMPT",
+        "current_actions": 1
+      },
+      {
+        "id": "W04",
+        "workflow": "inspect previous local agent executions",
+        "imported_entry": "codewhale sessions",
+        "imported_actions": 1,
+        "current_entry": "codewhale runs",
+        "current_actions": 1
+      },
+      {
+        "id": "W05",
+        "workflow": "resume the newest local execution",
+        "imported_entry": "codewhale resume --last",
+        "imported_actions": 1,
+        "current_entry": "codewhale resume --last",
+        "current_actions": 1
+      }
+    ],
+    "result_if_gates_pass": "5/5 non_increased; total required actions 5 -> 5; retired Fleet/Lane/Thread/session metadata are not compatibility steps"
+  },
+  "successor_decision_contract": {
+    "original_imported_paid_ab": "reject_as_inadmissible",
+    "release_benchmark": "keep",
+    "V13": "pass only after an accepted ADR replaces unmeasurable imported superiority with qualified real coding evidence plus current exact-production retention",
+    "V16": "pass only when all five frozen common workflows are non-increased and current process gates pass",
+    "V15": "remains blocked",
+    "projected_matrix": "15 pass / 1 blocked",
+    "release_status": "not_releasable"
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8l-target",
+    "result_path": "eval/results/m8-l-release-benchmark-4fef6a34-v1.json",
+    "result_mode": "0600",
+    "overwrite": false,
+    "credential_read": false,
+    "official_api_requests_allowed": false,
+    "external_network_allowed": false
+  },
+  "non_conclusions": [
+    "Current CodeWhale is not claimed to have a measurable success, token, wall-time or API-cost delta against imported 352e86a6.",
+    "The qualified M5-A task does not prove broad coding superiority or every current model behavior.",
+    "The loopback gates prove current production mechanism retention, not live DeepSeek quality.",
+    "The imported revision is not modified and its missing request or cost facts are not inferred.",
+    "V15 is not closed, Auto does not become the default, and V1 is not declared releasable.",
+    "No Anthropic, retired model alias, FIM, LLM router, Provider mode, compatibility layer, second Runtime, second Store or second benchmark executor is introduced."
+  ]
+}
