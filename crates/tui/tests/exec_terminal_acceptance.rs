@@ -2408,7 +2408,7 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                 )
             });
             assert_eq!(event["schema"], "codewhale.exec-stream");
-            assert_eq!(event["schema_version"], 2);
+            assert_eq!(event["schema_version"], 3);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",
@@ -2519,7 +2519,7 @@ fn assert_exact_success_accounting(
     assert_eq!(metadata["usage_response_count"], expected_requests);
     assert_eq!(metadata["standard_chat_response_count"], expected_requests);
     assert_eq!(metadata["strict_chat_response_count"], 0);
-    assert_eq!(metadata["fim_response_count"], 0);
+    assert!(metadata.get("fim_response_count").is_none());
     assert_eq!(metadata["usage_missing_responses"], 0);
     assert_eq!(metadata["usage_incomplete_responses"], 0);
     assert_eq!(metadata["billing_unknown_attempts"], 0);

@@ -13,17 +13,24 @@ fn m8a_default_is_official_deepseek() {
 }
 
 #[test]
-fn m8a_model_aliases_are_bounded_to_official_ids() {
+fn m8h_model_names_delegate_to_the_current_official_catalog() {
     assert_eq!(
         normalize_model_name("pro").as_deref(),
         Some("deepseek-v4-pro")
     );
     assert_eq!(
-        normalize_model_name("deepseek-chat").as_deref(),
+        normalize_model_name("flash").as_deref(),
         Some("deepseek-v4-flash")
     );
     assert_eq!(normalize_model_name("auto").as_deref(), Some("auto"));
-    assert!(normalize_model_name("gpt-5").is_none());
+    for unsupported in [
+        "deepseek-chat",
+        "deepseek-reasoner",
+        "deepseek-future",
+        "gpt-5",
+    ] {
+        assert!(normalize_model_name(unsupported).is_none());
+    }
 }
 
 #[test]

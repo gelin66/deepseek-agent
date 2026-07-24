@@ -1915,16 +1915,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             tr(MessageId::DoctorTlsVerificationEnforced).replace("{provider}", tls_status.provider)
         );
     }
-    let capability = crate::config::deepseek_capability(&api_target.model);
-    if let Some(alias) = capability.alias_deprecation.as_ref() {
-        println!(
-            "  ! {}",
-            tr(MessageId::DoctorModelAliasRetirement)
-                .replace("{alias}", &alias.alias)
-                .replace("{date}", &alias.retirement_date)
-                .replace("{replacement}", &alias.replacement)
-        );
-    }
     if has_api_key {
         print!(
             "  {} {}",
@@ -3249,7 +3239,6 @@ fn deepseek_capability_report(config: &Config) -> serde_json::Value {
         "thinking_supported": cap.thinking_supported,
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
-        "alias_deprecation": cap.alias_deprecation,
     })
 }
 
@@ -4729,8 +4718,6 @@ struct ExecAccountingReceipt {
     standard_chat_response_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     strict_chat_response_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fim_response_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     surface_model_usage_buckets: Option<Vec<ExecSurfaceModelUsageBucket>>,
     #[serde(skip_serializing_if = "Option::is_none")]

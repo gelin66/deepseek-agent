@@ -85,10 +85,6 @@ impl DeepSeekEndpoint {
                 "{}/beta/chat/completions",
                 root.strip_suffix("/v1").unwrap_or(root)
             ),
-            ApiSurface::Fim => format!(
-                "{}/beta/completions",
-                root.strip_suffix("/v1").unwrap_or(root)
-            ),
         }
     }
 }

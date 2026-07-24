@@ -102,7 +102,6 @@ pub enum WriteExecutionMode {
 pub enum ApiSurface {
     StandardChat,
     StrictChat,
-    Fim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4051,7 +4050,7 @@ mod tests {
                         run_id,
                         parent_run_id: None,
                         actor: AgentActor::default(),
-                        model: "deepseek-chat".into(),
+                        model: "deepseek-v4-pro".into(),
                         system_prompt: SystemPrompt::from_text("system"),
                         messages: Vec::new(),
                         tools: Vec::new(),

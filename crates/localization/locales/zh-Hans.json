@@ -171,7 +171,6 @@
     "DoctorTimeoutFixtureHint": "请确认配置的 DeepSeek fixture endpoint 提供 `/v1/models` 与 `/v1/chat/completions`。",
     "DoctorTimeoutReportHint": "运行 `codewhale doctor --json`；报告问题时附上 `base_url`、`default_text_model` 与 `api_connectivity`。",
     "DoctorTlsVerificationEnforced": "提供方 {provider} 不允许关闭 TLS 证书验证；如需自定义 CA，请使用 SSL_CERT_FILE 指向可信 CA bundle。",
-    "DoctorModelAliasRetirement": "模型别名 {alias} 将于 {date} 停用；请改用 {replacement}。",
     "DoctorMcpConfigFound": "已在 {path} 找到 MCP 配置",
     "DoctorProjectMcpConfigFound": "已在 {path} 找到项目 MCP 配置",
     "DoctorMcpServerDisabled": "已禁用",

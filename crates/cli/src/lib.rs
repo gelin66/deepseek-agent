@@ -1823,13 +1823,12 @@ mod tests {
     fn m8a_model_resolution_is_deepseek_only() {
         assert_eq!(canonical_deepseek_model("pro").unwrap(), "deepseek-v4-pro");
         assert_eq!(
-            canonical_deepseek_model("deepseek-chat").unwrap(),
+            canonical_deepseek_model("flash").unwrap(),
             "deepseek-v4-flash"
         );
-        assert_eq!(
-            canonical_deepseek_model("deepseek-future").unwrap(),
-            "deepseek-future"
-        );
+        assert!(canonical_deepseek_model("deepseek-chat").is_err());
+        assert!(canonical_deepseek_model("deepseek-reasoner").is_err());
+        assert!(canonical_deepseek_model("deepseek-future").is_err());
         assert!(canonical_deepseek_model("  ").is_err());
     }
 

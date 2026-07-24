@@ -4383,8 +4383,8 @@ class HarnessTests(unittest.TestCase):
                 events_value, run = synthetic_verification_chain("t1")
                 created = run_created(events_value)
                 if case == "model":
-                    created["model"] = "deepseek-reasoner"
-                    run["model"] = "deepseek-reasoner"
+                    created["model"] = "deepseek-v4-pro"
+                    run["model"] = "deepseek-v4-pro"
                 elif case == "workspace":
                     created["environment"]["workspace"] = "/tampered/workspace"
                     run["workspace"] = "/tampered/workspace"

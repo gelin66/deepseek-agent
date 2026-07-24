@@ -74,7 +74,7 @@ SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
 EXEC_STREAM_SCHEMA = "codewhale.exec-stream"
-EXEC_STREAM_SCHEMA_VERSION = 2
+EXEC_STREAM_SCHEMA_VERSION = 3
 SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10, 11, 12})
 # This evaluator intentionally reads the frozen M4 baseline and M5 candidate.
 # Product code itself keeps no old RuntimeEvent compatibility path.
@@ -105,8 +105,8 @@ ALLOWED_TOOLS = (
 # Shell is conservatively write-capable. Treat every invocation as a write
 # barrier so a root Agent cannot mutate the workspace before the Explorer
 # handoff and still pass merely because the edit was hidden inside a command.
-WRITE_TOOLS = {"apply_patch", "write_file", "edit_file", "fim_edit", "exec_shell"}
-MUTATION_TOOLS = {"apply_patch", "write_file", "edit_file", "fim_edit"}
+WRITE_TOOLS = {"apply_patch", "edit_file", "exec_shell"}
+MUTATION_TOOLS = {"apply_patch", "edit_file"}
 EXPECTED_CHANGED_FILES = ["ranges.py"]
 ENVIRONMENT_ALLOWLIST = (
     "PATH",
@@ -1065,7 +1065,6 @@ def sanitize_terminal(meta: dict[str, Any]) -> dict[str, Any]:
         "usage_response_count",
         "standard_chat_response_count",
         "strict_chat_response_count",
-        "fim_response_count",
         "usage_missing_responses",
         "usage_incomplete_responses",
         "billing_unknown_attempts",
@@ -2464,7 +2463,6 @@ def terminal_measurement_valid(
         for field in (
             "standard_chat_response_count",
             "strict_chat_response_count",
-            "fim_response_count",
         )
     ]
     buckets = terminal.get("surface_model_usage_buckets")
@@ -2482,7 +2480,7 @@ def terminal_measurement_valid(
     if any(
         not isinstance(bucket, dict)
         or bucket.get("model") != actual_model
-        or bucket.get("api_surface") not in {"standard_chat", "strict_chat", "fim"}
+        or bucket.get("api_surface") not in {"standard_chat", "strict_chat"}
         or any(optional_int(bucket.get(field)) is None for field in bucket_integer_fields)
         or any(int(bucket[field]) < 0 for field in bucket_integer_fields)
         or optional_number(bucket.get("cost_usd")) is None
@@ -2504,7 +2502,7 @@ def terminal_measurement_valid(
             for bucket in buckets
             if bucket.get("api_surface") == surface
         )
-        for surface in ("standard_chat", "strict_chat", "fim")
+        for surface in ("standard_chat", "strict_chat")
     }
     runtime_cost = optional_number(terminal.get("cost_usd"))
     runtime_cost_cny = optional_number(terminal.get("cost_cny"))
@@ -2568,7 +2566,6 @@ def terminal_measurement_valid(
         and bucket_sums["total_tokens"] == total_tokens
         and bucket_surface_responses["standard_chat"] == surface_counts[0]
         and bucket_surface_responses["strict_chat"] == surface_counts[1]
-        and bucket_surface_responses["fim"] == surface_counts[2]
         and costs_close(
             sum(float(bucket["cost_usd"]) for bucket in buckets), runtime_cost
         )
@@ -2858,7 +2855,6 @@ def run_lane(
             "surface_counts": {
                 "standard_chat": accounting.get("standard_chat_response_count"),
                 "strict_chat": accounting.get("strict_chat_response_count"),
-                "fim": accounting.get("fim_response_count"),
             },
             "surface_model_usage_buckets": accounting.get(
                 "surface_model_usage_buckets"
@@ -2879,7 +2875,6 @@ def run_lane(
                     for surface, count in (
                         ("standard_chat", accounting.get("standard_chat_response_count")),
                         ("strict_chat", accounting.get("strict_chat_response_count")),
-                        ("fim", accounting.get("fim_response_count")),
                     )
                     if isinstance(count, int) and count > 0
                 ],
@@ -5763,7 +5758,6 @@ class HarnessSelfTests(unittest.TestCase):
             "usage_response_count": 1,
             "standard_chat_response_count": 1,
             "strict_chat_response_count": 0,
-            "fim_response_count": 0,
             "input_tokens": hit + miss,
             "output_tokens": output,
             "total_tokens": hit + miss + output,

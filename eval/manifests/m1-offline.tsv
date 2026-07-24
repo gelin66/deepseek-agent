@@ -10,10 +10,9 @@ runtime-finish-fail-closed	agent-reliability	runtime-contract	candidate_only	cod
 runtime-tool-commit-replay	agent-reliability	runtime-contract	candidate_only	codewhale-runtime	test:conformance	tool_commit_atomically_replays_typed_outcome_and_transcript	ToolOutcome 与 canonical transcript 原子提交并可精确重放
 runtime-compaction-projection	agent-reliability	runtime-contract	candidate_only	codewhale-runtime	test:conformance	automatic_compaction_is_durable_and_the_agent_consumes_only_the_projection	压缩事件持久化且模型只消费 canonical projection
 runtime-reasoning-tool-replay	deepseek-protocol	runtime-contract	candidate_only	codewhale-runtime	test:conformance	tool_reasoning_and_raw_arguments_replay_exactly	Runtime 精确回放 reasoning 和工具原始参数
-deepseek-standard-beta-surfaces	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::loopback_root_keeps_standard_v1_and_beta_as_distinct_surfaces	普通 Chat、Beta Chat 与 Beta FIM 保持不同官方协议 surface
+deepseek-standard-beta-surfaces	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::loopback_root_keeps_standard_v1_and_beta_as_distinct_surfaces	普通 Chat 与 Beta Strict Chat 保持不同官方协议 surface
 deepseek-strict-route	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::official_root_routes_compatible_strict_catalog_to_beta_chat	全兼容工具目录整体进入官方 Beta Strict Chat
 deepseek-strict-atomic-fallback	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::strict_catalog_falls_back_atomically_without_losing_tools	任一工具不兼容时整个目录回退普通调用且不丢工具
-deepseek-fim-route	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::official_root_routes_fim_to_beta_completions	FIM 请求只规划到官方 Beta Completions surface
 deepseek-canonical-replay	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	tests::canonical_projection_is_stable_and_replays_raw_arguments_exactly	DeepSeek 请求投影稳定并精确回放原始工具参数
 deepseek-usage-cache	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	transport::tests::parser_preserves_reasoning_raw_arguments_usage_and_finish_reason	解析 cache hit/miss、reasoning Token、原始参数和 finish reason
 deepseek-output-limit	deepseek-protocol	protocol-unit	candidate_only	codewhale-deepseek	lib	model_port::tests::output_tokens_must_stay_inside_the_official_fixture	输出 Token 上限必须受官方能力 fixture 约束

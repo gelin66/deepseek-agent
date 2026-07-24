@@ -76,10 +76,11 @@ created.
 
 ## Models
 
-Config and CLI accept `auto`, the retained public DeepSeek ids, their bounded
-aliases (`pro`, `flash`, `deepseek-chat`, `deepseek-reasoner`), and future
-simple `deepseek-*` ids. Foreign ids and values containing whitespace, secret
-material, or delimiter injection are rejected before a model request.
+Config and CLI accept `auto`, the two retained public DeepSeek ids, and the
+bounded convenience forms `pro`, `flash`, `deepseek-v4pro`, and
+`deepseek-v4flash`. Retired aliases, speculative future ids, foreign ids, and
+values containing whitespace, secret material, or delimiter injection are
+rejected before a model request.
 
 Aliases normalize as follows:
 
@@ -87,7 +88,6 @@ Aliases normalize as follows:
 | --- | --- |
 | `pro`, `deepseek-v4pro` | `deepseek-v4-pro` |
 | `flash`, `deepseek-v4flash` | `deepseek-v4-flash` |
-| `deepseek-chat`, `deepseek-reasoner` | `deepseek-v4-flash` |
 | `auto` | Host-selected retained DeepSeek model |
 
 Transient limits and protocol behavior belong to `crates/deepseek` fixtures,

@@ -1,6 +1,6 @@
 //! DeepSeek-only configuration for the retained interactive client.
 //!
-//! Provider selection, model aliases, credentials, and endpoint resolution
+//! Provider selection, credentials, and endpoint resolution
 //! have one production meaning: the official DeepSeek backend. Non-provider
 //! settings stay here because the TUI remains a thin client of the canonical
 //! application/runtime path.
@@ -47,17 +47,6 @@ pub struct DeepSeekCapability {
     pub thinking_supported: bool,
     pub cache_telemetry_supported: bool,
     pub request_payload_mode: RequestPayloadMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alias_deprecation: Option<ModelAliasDeprecation>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelAliasDeprecation {
-    pub alias: String,
-    pub replacement: String,
-    pub retirement_date: String,
-    pub retirement_utc: String,
-    pub notice: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,40 +70,12 @@ pub fn deepseek_capability(resolved_model: &str) -> DeepSeekCapability {
         thinking_supported: capability.is_some(),
         cache_telemetry_supported: true,
         request_payload_mode: RequestPayloadMode::ChatCompletions,
-        alias_deprecation: None,
-    }
-}
-
-#[must_use]
-pub fn canonical_model_name(model: &str) -> Option<&'static str> {
-    match model.trim().to_ascii_lowercase().as_str() {
-        "deepseek-v4-pro" | "deepseek-v4pro" | "pro" => Some("deepseek-v4-pro"),
-        "deepseek-v4-flash" | "deepseek-v4flash" | "flash" | "deepseek-chat"
-        | "deepseek-reasoner" => Some("deepseek-v4-flash"),
-        _ => None,
     }
 }
 
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if !trimmed
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
-    {
-        return None;
-    }
-    if trimmed.eq_ignore_ascii_case("auto") {
-        return Some("auto".to_string());
-    }
-    canonical_model_name(trimmed)
-        .map(str::to_string)
-        .or_else(|| {
-            trimmed
-                .to_ascii_lowercase()
-                .starts_with("deepseek-")
-                .then(|| trimmed.to_string())
-        })
+    codewhale_config::canonical_deepseek_model(model).ok()
 }
 
 #[derive(Debug, Clone, Deserialize)]

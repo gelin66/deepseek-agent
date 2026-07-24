@@ -223,7 +223,7 @@ fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
     let command = StartRunCommand {
         task: TaskDefinition::host("实现功能"),
         workspace: workspace.to_owned(),
-        model: Some("deepseek-chat".to_owned()),
+        model: Some("deepseek-v4-pro".to_owned()),
         reasoning_effort: ReasoningEffort::default(),
         max_output_tokens: None,
         max_api_requests: None,

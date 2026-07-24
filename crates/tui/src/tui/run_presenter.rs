@@ -1561,7 +1561,7 @@ mod tests {
                     run_id: RunId::from("retry-run"),
                     parent_run_id: None,
                     actor: AgentActor::default(),
-                    model: "deepseek-chat".to_owned(),
+                    model: "deepseek-v4-pro".to_owned(),
                     system_prompt: SystemPrompt::from_text("系统"),
                     messages: Vec::new(),
                     tools: Vec::new(),

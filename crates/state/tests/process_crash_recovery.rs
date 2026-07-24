@@ -81,7 +81,7 @@ fn creation_intent() -> codewhale_runtime::CreationIntent {
     let command = StartRunCommand {
         task: TaskDefinition::host("执行进程恢复测试"),
         workspace: "/tmp/codewhale-process-crash-test".to_owned(),
-        model: Some("deepseek-chat".to_owned()),
+        model: Some("deepseek-v4-pro".to_owned()),
         reasoning_effort: ReasoningEffort::default(),
         max_output_tokens: None,
         max_api_requests: None,

@@ -1635,7 +1635,6 @@ fn model_error_category(category: ModelErrorCategory) -> &'static str {
 fn accounting_receipt(accounting: &ModelAccounting) -> ExecAccountingReceipt {
     let mut standard = 0_u64;
     let mut strict = 0_u64;
-    let mut fim = 0_u64;
     let buckets = accounting
         .surface_usage
         .iter()
@@ -1645,14 +1644,12 @@ fn accounting_receipt(accounting: &ModelAccounting) -> ExecAccountingReceipt {
                     standard = standard.saturating_add(bucket.response_count)
                 }
                 ApiSurface::StrictChat => strict = strict.saturating_add(bucket.response_count),
-                ApiSurface::Fim => fim = fim.saturating_add(bucket.response_count),
             }
             ExecSurfaceModelUsageBucket {
                 model: bucket.model.clone(),
                 api_surface: match bucket.surface {
                     ApiSurface::StandardChat => "standard_chat",
                     ApiSurface::StrictChat => "strict_chat",
-                    ApiSurface::Fim => "fim",
                 },
                 response_count: u32_saturating(bucket.response_count),
                 usage_response_count: u32_saturating(bucket.usage_response_count),
@@ -1683,7 +1680,6 @@ fn accounting_receipt(accounting: &ModelAccounting) -> ExecAccountingReceipt {
         usage_response_count: Some(u32_saturating(accounting.usage_responses)),
         standard_chat_response_count: Some(u32_saturating(standard)),
         strict_chat_response_count: Some(u32_saturating(strict)),
-        fim_response_count: Some(u32_saturating(fim)),
         surface_model_usage_buckets: Some(buckets),
         usage_complete: Some(accounting.usage_complete),
         cost_complete: Some(
@@ -2002,7 +1998,7 @@ mod tests {
             1_025,
         );
         let value = crate::exec_stream_value(&stream).unwrap();
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 3);
         assert_eq!(value["type"], "tool_result");
         assert_eq!(value["failure_code"], "stale_read");
         assert_eq!(value["invocation_status"], "accepted");

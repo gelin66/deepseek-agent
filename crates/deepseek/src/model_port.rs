@@ -360,7 +360,6 @@ fn runtime_accounting(
                 surface: match bucket.surface {
                     ApiSurface::StandardChat => RuntimeApiSurface::StandardChat,
                     ApiSurface::StrictChat => RuntimeApiSurface::StrictChat,
-                    ApiSurface::Fim => RuntimeApiSurface::Fim,
                 },
                 model: bucket.model,
                 response_count: u64::from(bucket.response_count),

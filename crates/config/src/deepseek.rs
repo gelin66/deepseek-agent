@@ -563,12 +563,10 @@ pub fn canonical_deepseek_model(model: &str) -> Result<String> {
     let lower = trimmed.to_ascii_lowercase();
     let canonical = match lower.as_str() {
         "pro" | "deepseek-v4pro" => "deepseek-v4-pro".to_string(),
-        "flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner" => {
-            "deepseek-v4-flash".to_string()
-        }
+        "flash" | "deepseek-v4flash" => "deepseek-v4-flash".to_string(),
+        "deepseek-v4-pro" | "deepseek-v4-flash" => lower,
         "auto" => "auto".to_string(),
-        _ if lower.starts_with("deepseek-") => trimmed.to_string(),
-        _ => bail!("不支持模型 '{trimmed}'；CodeWhale 仅接受官方 DeepSeek 模型 ID"),
+        _ => bail!("不支持模型 '{trimmed}'；仅支持 auto、deepseek-v4-pro 或 deepseek-v4-flash"),
     };
     Ok(canonical)
 }

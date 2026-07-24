@@ -132,15 +132,16 @@ Harness 自己的进程外复核仍使用独立的 30 秒上限。
 
 - `full-runtime-offline`：本地 DeepSeek mock 驱动真实
   `exec -> AgentApplication -> AgentRuntime`；
-- `protocol-unit`：验证 `crates/deepseek` 的 Standard/Beta/Strict/FIM 规划、回放、usage 和
+- `protocol-unit`：验证 `crates/deepseek` 的 Standard/Beta Strict 规划、回放、usage 和
   类型化 SSE 结果；
 - `runtime-contract`：验证 canonical Runtime、RunStore、确定性工具证据、多 Agent handoff
   与入口删除契约。
 
-当前清单不再保留旧 Engine、TUI ToolRegistry、私有 mailbox、模型 critic 或声明性
-worktree 测试。FIM 当前只登记 Beta route planner；完整 response parser、畸形 SSE、
-reasoning-only、工具业务失败恢复、child 失败 handoff、失败测试结果和 writer worktree
-仍是显式能力债，补齐 canonical owner 测试前不得放入可运行清单。
+当前清单不再保留旧 Engine、TUI ToolRegistry、私有 mailbox、模型 critic、声明性
+worktree 测试或无 caller 的 FIM route planner。FIM 只有在新的 production 失败证据满足
+M8-H re-entry gate，并且完整 parser/apply/accounting/reopen 垂直路径先成立时，才能重新
+进入可运行清单。畸形 SSE、reasoning-only、工具业务失败恢复、child 失败 handoff、失败
+测试结果和 writer worktree 仍按各自 canonical owner 补证。
 
 离线用例只证明确定性协议和运行时行为，不证明真实 DeepSeek 的编码智能；模型自评也不能
 作为任务完成证据。

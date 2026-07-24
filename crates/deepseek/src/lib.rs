@@ -45,13 +45,10 @@ pub use transport::{
     TransportRetryPolicy, parse_chat_response,
 };
 
-pub const FIM_MODEL: &str = "deepseek-v4-pro";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiSurface {
     StandardChat,
     StrictChat,
-    Fim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +60,7 @@ pub enum ResponseMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestPlan {
     pub surface: ApiSurface,
-    /// Frozen decision for Chat tool routing. FIM has no tool surface.
+    /// Frozen decision for Chat tool routing.
     pub tool_surface: Option<ToolSurfaceDecision>,
     pub url: String,
     pub model: String,
@@ -207,27 +204,6 @@ impl fmt::Display for ChatPlanError {
 }
 
 impl std::error::Error for ChatPlanError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FimPlanError {
-    InvalidMaxTokens,
-    RequiresOfficialDeepSeek,
-}
-
-impl fmt::Display for FimPlanError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidMaxTokens => {
-                formatter.write_str("DeepSeek FIM max_tokens must be between 1 and 4096")
-            }
-            Self::RequiresOfficialDeepSeek => {
-                formatter.write_str("FIM requires the official DeepSeek OpenAI-format API")
-            }
-        }
-    }
-}
-
-impl std::error::Error for FimPlanError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictSchemaIssue {
@@ -393,36 +369,6 @@ pub fn plan_runtime_chat(
             top_p: None,
         },
     )
-}
-
-pub fn plan_fim(
-    base_url: &str,
-    path_suffix: Option<&str>,
-    prompt: &str,
-    suffix: &str,
-    max_tokens: u32,
-) -> Result<RequestPlan, FimPlanError> {
-    if !(1..=4096).contains(&max_tokens) {
-        return Err(FimPlanError::InvalidMaxTokens);
-    }
-    let root = official_root(base_url).ok_or(FimPlanError::RequiresOfficialDeepSeek)?;
-    if path_suffix.is_some() {
-        return Err(FimPlanError::RequiresOfficialDeepSeek);
-    }
-    Ok(RequestPlan {
-        surface: ApiSurface::Fim,
-        tool_surface: None,
-        url: format!("{root}/beta/completions"),
-        model: FIM_MODEL.to_owned(),
-        body: json!({
-            "model": FIM_MODEL,
-            "prompt": prompt,
-            "suffix": suffix,
-            "max_tokens": max_tokens,
-        }),
-        response_mode: ResponseMode::NonStreaming,
-        reasoning_replay_tokens: None,
-    })
 }
 
 #[must_use]
@@ -674,8 +620,6 @@ fn validate_exact_reasoning_replay(
 fn requires_tool_call_reasoning_replay(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
     lower.contains("deepseek-v4")
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-reasoner")
         || lower.contains("reasoner")
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
@@ -1706,16 +1650,6 @@ mod tests {
             }
         });
         assert_eq!(strict_schema_issue(&recursive), None);
-    }
-
-    #[test]
-    fn official_root_routes_fim_to_beta_completions() {
-        let plan = plan_fim("https://api.deepseek.com", None, "fn main() {", "}", 64)
-            .expect("valid official FIM plan");
-
-        assert_eq!(plan.surface, ApiSurface::Fim);
-        assert_eq!(plan.url, "https://api.deepseek.com/beta/completions");
-        assert_eq!(plan.model, FIM_MODEL);
     }
 
     #[test]

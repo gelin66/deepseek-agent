@@ -872,7 +872,7 @@ impl CountingDeepSeekFixture {
                         &mut stream,
                         &json!({
                             "object": "list",
-                            "data": [{ "id": "deepseek-chat", "object": "model" }]
+                            "data": [{ "id": "deepseek-v4-pro", "object": "model" }]
                         }),
                     )?;
                 } else if request.starts_with("POST /v1/chat/completions ") {
@@ -947,7 +947,7 @@ fn spawn_deepseek_fixture() -> anyhow::Result<(
                     &mut stream,
                     &json!({
                         "object": "list",
-                        "data": [{ "id": "deepseek-chat", "object": "model" }]
+                        "data": [{ "id": "deepseek-v4-pro", "object": "model" }]
                     }),
                 )?;
                 continue;
@@ -1024,7 +1024,7 @@ fn write_sse_response(stream: &mut TcpStream) -> anyhow::Result<()> {
             json!({
                 "id": "chatcmpl-canonical-pty",
                 "object": "chat.completion.chunk",
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-pro",
                 "choices": [{
                     "index": 0,
                     "delta": {
@@ -1040,7 +1040,7 @@ fn write_sse_response(stream: &mut TcpStream) -> anyhow::Result<()> {
             json!({
                 "id": "chatcmpl-canonical-pty",
                 "object": "chat.completion.chunk",
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-pro",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 "usage": {
                     "prompt_tokens": 12,

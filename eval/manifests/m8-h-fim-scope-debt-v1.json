@@ -1,0 +1,110 @@
+{
+  "schema": "codewhale.eval.m8-h-fim-scope-debt.v1",
+  "suite_id": "m8-h-fim-scope-debt-dce858d0-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "baseline_revision": "dce858d0f8201e65bc01bcf79d400f20b121465d",
+  "baseline_tree": "f029dbbb7df15c9211dee357e53e2420342b5c64",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_baseline": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "1d8b3e08412b2e0a5b2d7dd4e414dd5c86ee5a573559684b755b44d411dd9d77",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0"
+  },
+  "slice_contract": {
+    "problem": "当前 FIM planner 生成 beta/completions，但唯一 sender 拒绝该 URL 且只解析 Chat response；production 无 caller、Host apply lifecycle 或新编辑失败样本。退役模型 alias 仍被配置/TUI 静默映射，exec/eval 继续投影永远为零的 FIM 字段。",
+    "acceptance": [
+      "production 只可发送官方 ChatCompletions，模型只解析为 deepseek-v4-pro、deepseek-v4-flash 或 auto route",
+      "无 plan_fim、FimPlanError、ApiSurface::Fim、fim_response_count、fim_edit 或无消费者 alias-deprecation 分支",
+      "Standard Chat 与全目录 Strict lossless fallback 的 sender/parser/accounting/reopen 不退化",
+      "M7-C 12/12 deterministic edit baseline 与 root/read-only/explicit Writer conformance 不退化",
+      "冻结历史 manifest/result/summary 保持不可变，独立协议 harness 不成为 production caller",
+      "无 credential read、官方 API 请求或无 surface delta 的产品指标"
+    ],
+    "owners": {
+      "model_catalog_and_config_normalization": "crates/config",
+      "request_planner_transport_and_accounting": "crates/deepseek",
+      "canonical_surface_accounting_contract": "crates/protocol",
+      "headless_projection": "crates/tui",
+      "evaluation_projection": "scripts/eval-deepseek-exec.py"
+    },
+    "replaces": [
+      "uncallable plan_fim beta/completions request branch",
+      "speculative FIM accounting and always-zero exec metadata",
+      "duplicate TUI model normalization",
+      "retired deepseek-chat/deepseek-reasoner compatibility mapping",
+      "future deepseek-* pass-through that fails later in the ModelPort"
+    ],
+    "evidence": [
+      "static caller and URL ownership absence matrix",
+      "M7-C frozen harness self-test and deterministic edit gates",
+      "config/deepseek/TUI focused tests",
+      "production Chat loopback and SQLite reopen",
+      "focused, fmt, workspace clippy/test, git diff --check"
+    ],
+    "cutover_deletion": [
+      "crates/deepseek plan_fim/FIM_MODEL/FimPlanError and transport/accounting arms",
+      "protocol FIM surface variant",
+      "exec/eval fim_response_count and legacy fim_edit/write_file classifier entries",
+      "TUI alias retirement DTO, dead warning/report projection, duplicate catalog switch",
+      "retired model alias mappings and unknown future-model pass-through"
+    ]
+  },
+  "frozen_facts": {
+    "m7_c_host_edit_matrix": "12/12",
+    "new_current_runtime_edit_samples": 0,
+    "production_fim_callers": 0,
+    "production_fim_response_parsers": 0,
+    "production_fim_apply_lifecycles": 0,
+    "production_fim_reopen_paths": 0,
+    "planner_url": "https://api.deepseek.com/beta/completions",
+    "sender_owns_planner_url": false,
+    "sender_response_shape": "chat choices[0].message",
+    "fim_response_shape_required": "completions choices[0].text",
+    "credential_read": false,
+    "official_api_requests": 0
+  },
+  "surface_scope": {
+    "standard_chat": "keep_production",
+    "strict_chat": "keep_planner_and_atomic_lossless_standard_fallback",
+    "fim": "reject_uncallable_production_half_branch",
+    "fim_protocol_harness": "retain_eval_only_when_independently_auditable",
+    "fim_reentry_gate": [
+      "new canonical production evidence shows patch generation or recovery is a primary loss",
+      "same immutable binary exposes a Host-owned revision-bound treatment",
+      "complete parser, boundary validation, atomic apply, typed retry, accounting and reopen exist before live A/B",
+      "billing and source identity are complete"
+    ]
+  },
+  "evaluation": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8h-target",
+    "live_ab_admission": "inadmissible_no_surface_delta",
+    "read_key": false,
+    "official_api_requests": 0,
+    "product_metric_eligible": false,
+    "next_admissible_product_test": "same-task imported-baseline coding/workflow-step A/B after offline identity audit"
+  },
+  "schema_cutover": {
+    "exec_stream": "2 -> 3 because every terminal accounting record drops the always-zero fim_response_count field; no compatibility reader",
+    "runtime_event": "remains 16 because no valid production sender could create a FIM SurfaceUsage; StandardChat and StrictChat serialized events are unchanged",
+    "state_schema": "remains 21; existing valid v16 StandardChat/StrictChat runs reopen unchanged"
+  },
+  "preserved_history": [
+    "frozen M7-C manifest/result/summary",
+    "frozen M8-E invalid-premise manifest and superseding summary",
+    "historical docs and raw evidence needed to audit prior decisions"
+  ],
+  "non_conclusions": [
+    "FIM quality is not measured and is not claimed to be better or worse than patch/edit.",
+    "Deleting an unreachable branch is complexity and truthfulness evidence, not coding-success improvement.",
+    "The imported baseline coding/workflow-step A/B has not yet run.",
+    "No token, wall-time, cache, billing, or API-cost improvement is claimed."
+  ]
+}

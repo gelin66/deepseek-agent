@@ -27,7 +27,6 @@ struct ApiRequestBudgetState {
     usage_responses: u32,
     standard_chat_responses: u32,
     strict_chat_responses: u32,
-    fim_responses: u32,
     usage_buckets: Vec<ApiUsageBucket>,
     responses_missing_usage: u32,
     incomplete_responses: u32,
@@ -96,15 +95,14 @@ pub struct ApiUsageBucket {
 }
 
 /// Immutable projection of all provider-reported usage observed through the
-/// shared request budget. Root, child, nested-child, background, and FIM
-/// clients all clone the same owner.
+/// shared request budget. Root, child, nested-child, and background clients
+/// all clone the same owner.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ApiUsageSnapshot {
     pub usage: Usage,
     pub usage_responses: u32,
     pub standard_chat_responses: u32,
     pub strict_chat_responses: u32,
-    pub fim_responses: u32,
     pub usage_buckets: Vec<ApiUsageBucket>,
     pub responses_missing_usage: u32,
     pub incomplete_responses: u32,
@@ -358,7 +356,6 @@ impl SharedApiRequestBudget {
                 usage_responses: 0,
                 standard_chat_responses: 0,
                 strict_chat_responses: 0,
-                fim_responses: 0,
                 usage_buckets: Vec::new(),
                 responses_missing_usage: 0,
                 incomplete_responses: 0,
@@ -589,9 +586,6 @@ fn record_surface_response_locked(
         ApiSurface::StrictChat => {
             state.strict_chat_responses = state.strict_chat_responses.saturating_add(1);
         }
-        ApiSurface::Fim => {
-            state.fim_responses = state.fim_responses.saturating_add(1);
-        }
     }
     let bucket = usage_bucket_mut(state, model, surface);
     bucket.response_count = bucket.response_count.saturating_add(1);
@@ -710,7 +704,6 @@ fn usage_snapshot_of(state: &ApiRequestBudgetState) -> ApiUsageSnapshot {
         usage_responses: state.usage_responses,
         standard_chat_responses: state.standard_chat_responses,
         strict_chat_responses: state.strict_chat_responses,
-        fim_responses: state.fim_responses,
         usage_buckets: state.usage_buckets.clone(),
         responses_missing_usage: state.responses_missing_usage,
         incomplete_responses: state.incomplete_responses,
@@ -964,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_usage_ledger_aggregates_chat_and_fim_with_exact_cost() {
+    fn shared_usage_ledger_aggregates_chat_models_with_exact_cost() {
         let budget = SharedApiRequestBudget::new(NonZeroU32::new(3).unwrap());
         let chat = Usage {
             input_tokens: 1_000,
@@ -974,7 +967,7 @@ mod tests {
             reasoning_tokens: 50,
             ..Usage::default()
         };
-        let fim = Usage {
+        let pro = Usage {
             input_tokens: 500,
             output_tokens: 50,
             cache_hit_tokens: 0,
@@ -989,7 +982,7 @@ mod tests {
             "prompt_cache_miss_tokens": 750,
             "completion_tokens_details": { "reasoning_tokens": 50 }
         });
-        let fim_wire = serde_json::json!({
+        let pro_wire = serde_json::json!({
             "prompt_tokens": 500,
             "completion_tokens": 50,
             "total_tokens": 550,
@@ -1004,9 +997,9 @@ mod tests {
         );
         budget.record_usage_response(
             "deepseek-v4-pro",
-            ApiSurface::Fim,
-            Some(&fim),
-            Some(&fim_wire),
+            ApiSurface::StandardChat,
+            Some(&pro),
+            Some(&pro_wire),
         );
 
         let (_, usage) = budget.seal_and_full_snapshot();
@@ -1014,18 +1007,17 @@ mod tests {
         assert_eq!(usage.usage.output_tokens, 150);
         assert_eq!(usage.usage.reasoning_tokens, 50);
         assert_eq!(usage.usage_responses, 2);
-        assert_eq!(usage.standard_chat_responses, 1);
+        assert_eq!(usage.standard_chat_responses, 2);
         assert_eq!(usage.strict_chat_responses, 0);
-        assert_eq!(usage.fim_responses, 1);
         assert_eq!(usage.usage_buckets.len(), 2);
         assert!(usage.usage_complete());
         assert!(usage.cost_complete());
         let expected =
             crate::pricing::calculate_turn_cost_estimate("deepseek-v4-flash", &chat).unwrap();
-        let expected_fim =
-            crate::pricing::calculate_turn_cost_estimate("deepseek-v4-pro", &fim).unwrap();
-        assert!((usage.cost_usd - expected.usd - expected_fim.usd).abs() < 1e-12);
-        assert!((usage.cost_cny - expected.cny - expected_fim.cny).abs() < 1e-12);
+        let expected_pro =
+            crate::pricing::calculate_turn_cost_estimate("deepseek-v4-pro", &pro).unwrap();
+        assert!((usage.cost_usd - expected.usd - expected_pro.usd).abs() < 1e-12);
+        assert!((usage.cost_cny - expected.cny - expected_pro.cny).abs() < 1e-12);
     }
 
     #[test]
@@ -1073,7 +1065,6 @@ mod tests {
         assert!(snapshot.cost_complete());
         assert_eq!(snapshot.standard_chat_responses, 1);
         assert_eq!(snapshot.strict_chat_responses, 0);
-        assert_eq!(snapshot.fim_responses, 0);
         assert_eq!(snapshot.usage_buckets.len(), 1);
         assert_eq!(snapshot.usage_buckets[0].surface, plan.surface);
         assert_eq!(snapshot.usage_buckets[0].model, plan.model);
