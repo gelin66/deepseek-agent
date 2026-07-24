@@ -3118,13 +3118,30 @@ Store、tool catalog、Provider 或模型路由器。
   deterministic fixture、单变量 treatment 和可删除旧路，才允许另立 production
   vertical slice。单个失败或工具调用计数不能授权实现。
 
-2026-07-25 已按官方一手文档复核：唯一 production sender 继续使用
-`https://api.deepseek.com/chat/completions`；`deepseek-v4-pro` 是本基线固定模型。
-2026-07-24 退役的是 legacy `deepseek-chat` / `deepseek-reasoner` alias，不是
-ChatCompletions surface。任务、fixture identity、24-arm schedule 与 crash-safe journal
-自测已冻结；credential 尚未读取，官方请求为 0。离线全门禁、candidate/admission 身份和
-正式 acquisition 尚未形成，因此当前没有 M11 产品结论，也不得把 M10-A–G treatment
-机械恢复为候选。
+正式 acquisition 已以 `stop_incomplete_accounting` 结束，trajectory 决定为
+`insufficient_repeated_current_loss`：
+
+- candidate `f256c497`、admission `ef91861c` 与 immutable release binary 冻结同一
+  24-arm contract；focused、fmt、workspace strict clippy/test、root/read-only/Writer、
+  RunStore reopen、SIGKILL 与 CLI/TUI/API gates 全部通过；
+- 前 4 arms measurement-valid：`readonly_investigation` 与 `typescript_service`
+  verified，安全反例正确拒绝，false success=0；`rust_cli` 的双文件 external verifier
+  已通过，但 10 次请求后 terminal blocked 且无 Host receipt，形成唯一
+  `verified_workspace_without_terminal_receipt` current loss；
+- 第 5 个 `root_recovery` 已落下 terminal、canonical Store、credential-free reopen 与
+  verifier snapshot，但 `usage_incomplete=true`、accounting complete=false、
+  `billing_unknown=false`。Harness 在下一 arm 前停止，没有重跑、补 mate、续跑或拼接；
+- ignored 0600 raw 有 32 个完整 hash-chained records、partial tail=0；5 个 canonical
+  trajectories / 4 个 arm results / 1 个 accounting abort 被同一 analyzer 独立复算；
+- 唯一 product loss 只属于 `rust_cli` 一个 task，未达到同一 stable loss 至少跨两个
+  independent tasks 的门槛。因此不立 production candidate，不恢复 M10-A–G treatment，
+  不新增 completion controller、prompt、tool、Runtime/Store 状态或 retry path。
+
+2026-07-25 官方复核仍确认唯一 production sender 使用
+`https://api.deepseek.com/chat/completions` 与 `deepseek-v4-pro/high`；2026-07-24
+退役的是 legacy model alias，不是 ChatCompletions surface。完整身份、描述性 prefix、
+官方来源、门禁与非结论见
+[M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
 
 ### 调优
 

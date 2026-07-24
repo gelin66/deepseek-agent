@@ -208,6 +208,17 @@ Changing one of these constraints requires evidence and a new ADR.
   reopen/crash behavior, and historical reproducibility runners; do not add an
   automatic Host fan-out policy, swarm, multi-Writer, or paid successor without
   a new current production delta.
+- M11 started one current 8-task × 3 multi-language fixed-Pro loss acquisition
+  through the same corrected Harness. Four arms were measurement-valid:
+  two verified, one correct safety rejection, one Rust workspace whose external
+  verifier passed but whose Run blocked without a Host receipt; false success
+  remained zero. The fifth arm preserved exact Store/reopen/verifier facts but
+  stopped on incomplete usage with billing known. The read-only analyzer
+  classifies the Rust case as the only current product loss and the fifth arm
+  as a measurement interruption. Because the loss appears in only one
+  independent task, the decision is
+  `insufficient_repeated_current_loss`: no production candidate, rerun, mate,
+  old-treatment restoration, or new controller is authorized.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

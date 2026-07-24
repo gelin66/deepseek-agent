@@ -2035,13 +2035,21 @@ M11 当前只增加 eval acquisition 输入，不改变 production：
   reopen 与 external verifier snapshot，并用 ignored 0600、exclusive、fsynced、
   hash-chained journal 覆盖 SIGKILL 窗口；unknown billing 或 incomplete accounting
   仍立即停止下一 arm，`maximum_reruns=0`；
-- 当前只完成 fixture/tree/base/schedule/journal 的 deterministic freeze 和 M9-C/M11
-  compatibility self-test。credential 尚未读取、official API request=0、production
-  crate/config/protocol/schema delta=0；没有 baseline 结果或新 production candidate。
+- 正式 acquisition 完成 4 个 measurement-valid arms 后，在第 5 arm 因
+  `usage_incomplete=true`、accounting complete=false、`billing_unknown=false` 停止；
+  raw 保存 5 个 terminal/Store/reopen/verifier snapshots、4 个 arm results 和一个 abort，
+  没有重跑或补样；
+- 4 个完整结果是 2 verified、1 correct safety rejection、1 non-terminal loss、
+  false success=0。唯一 loss 为 `rust_cli`：workspace external verifier 通过，但
+  terminal blocked 且无 Host receipt；
+- 同一 read-only analyzer 把 `root_recovery` 的无 arm-result snapshot 分类为
+  measurement interruption，并证明唯一 product loss 只出现在一个 independent task。
+  当前 production candidate=none。
 
-M11 的唯一准入依据是新的 canonical trajectory：24/24 完整 baseline 后，同一 stable
-current loss 还必须在至少两个独立任务重复，才可另立一个单-owner、单变量、可删除旧路的
-vertical slice。M10-A–G 的已拒绝/关闭 treatment 不能因 M11 启动而恢复。
+M11 没有改变 production crate/config/protocol/schema。后续仍要求同一 stable current
+loss 至少跨两个 independent tasks，才可另立一个单-owner、单变量、可删除旧路的 vertical
+slice。M10-A–G 的已拒绝/关闭 treatment 不能因本次单 task loss 而恢复。完整事实见
+[M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
 
 ## 7. 明确非结论
 

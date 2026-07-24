@@ -2335,13 +2335,30 @@ ambiguity 或成本 ceiling 在下一 arm 前停止；禁止 rerun、补 mate、
 verified、security cell 3/3 correct rejection、false success=0 时成立。完整 baseline
 仍只是 loss label source，不是 product A/B。
 
-后续 candidate 的最低门是同一 stable current loss 在至少两个独立任务重复，并能指定
-一个既有 owner、deterministic fixture、一个主要 treatment variable 和 cutover 要删除的
-旧路。trajectory analyzer 必须继续只从 canonical Store/raw 派生，不得以 LLM Judge、
-模型自修改或人工挑样取代。2026-07-25 的 fixture/tree/base/schedule/journal self-test 已
-通过，M9-C compatibility self-test 同时通过；credential read=false、API requests=0。
-完整 workspace gate、live admission 和正式结果仍待执行，因此当前没有 M11 baseline
-结论或 production candidate。
+正式结果为 `stop_incomplete_accounting`：
+
+- 4 个 measurement-valid arm results：2 verified success、1 correct rejection、
+  1 non-terminal product loss、false success=0；
+- 完整 prefix 共 28 physical requests、176,318 input tokens、11,900 output tokens、
+  113,536 cache-hit input、62,782 cache-miss input、known cost USD 0.040790008；
+  这些数不包含 accounting-incomplete 第 5 arm，只能描述 prefix；
+- `rust_cli` 已满足 external verifier 和 exact changed-file scope，但 terminal blocked、
+  Host receipt 缺失；稳定 loss code 为
+  `verified_workspace_without_terminal_receipt`；
+- `root_recovery` 有第 5 个 canonical Store snapshot，但因 incomplete usage 没有
+  arm result，归入 measurement interruption，不伪装成 product loss；
+- raw 为 ignored 0600、7,932,558 bytes、32 个完整 hash-chained records、
+  `partial_tail_bytes=0`。Harness 没有 rerun、mate completion、resume 或 splice。
+
+同一 corrected Harness 的 M11 trajectory mode 复算 5 trajectories / 4 labels /
+1 accounting abort，输出 byte-identical；唯一 product loss 的 independent task 集合为
+`["rust_cli"]`，没有达到至少两个 independent tasks。因此 trajectory 决定为
+`insufficient_repeated_current_loss`，production candidate=none。后续只能等待新的
+accounting-complete current evidence；不得从单 task failure、raw tool count 或
+accounting interruption 推导实现。
+
+完整证据见
+[M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
 
 ## 10. 结果与决策记录
 

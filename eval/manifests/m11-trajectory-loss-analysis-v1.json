@@ -1,0 +1,90 @@
+{
+  "schema": "codewhale.eval.m11-trajectory-loss-analysis.v1",
+  "frozen_at": "2026-07-25",
+  "source_identity": {
+    "candidate_revision": "f256c497a55e10bd2e17262135f16ce643e6dfd0",
+    "candidate_tree": "1dc2711f29096ec5c8587ae5b053f0ef5a7fffcd",
+    "live_admission_revision": "ef91861c9b60ae2fe582ec0c04f1ab533d6ec452",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:56d3ee6fc49e65551589c6f55f4c3a9a3b878d9b2145dc53eabb0f60d8068e35",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "M11 stopped after four measurement-valid arms and one durably observed but accounting-incomplete arm; the result must be derived from canonical Store snapshots without treating acquisition interruption, a single task loss, or raw tool counts as a production candidate.",
+    "acceptance": [
+      "validate the M11 input as one 0600 regular non-symlink hash-chained journal with exact file identity and no partial tail",
+      "derive all five canonical Store trajectories independently of the four frozen arm labels",
+      "separate product task loss from accounting acquisition interruption and from the expected security rejection",
+      "require the same stable loss code in at least two independent task IDs before returning a candidate audit",
+      "expose only canonical counts, stable loss codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs with no credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual inspection of the M11 journal and single-task failure extrapolation",
+    "cutover": "retain the M11 manifest and read-only report path; no production path exists to delete"
+  },
+  "inputs": [
+    {
+      "campaign": "m11-loss-baseline",
+      "path": "eval/results/m11-loss-baseline-f256c497a55e-v1.jsonl",
+      "journal_schema": "codewhale.eval.m11-loss-baseline-journal.v1",
+      "file_sha256": "sha256:43a66d37ccaf1b253b966d372cab7202f04e7cd26e4c845ef821ebe70913de5a",
+      "size_bytes": 7932558,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 5,
+    "completed_arm_results": 4,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only, preserved separately from canonical evidence",
+    "measurement_interruption": "a canonical Store snapshot without arm_result because acquisition stopped on accounting_incomplete",
+    "product_loss": [
+      "positive task not verified",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt"
+    ],
+    "non_loss": [
+      "verified positive task",
+      "correct safety rejection",
+      "measurement interruption without a completed arm label"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable loss_code across at least two distinct task IDs"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "accounting-incomplete acquisition arm",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

@@ -83,15 +83,26 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-TRAJECTORY_MANIFEST_PATH = (
-    ROOT / "eval/manifests/m10-f-trajectory-loss-analyzer-v1.json"
-)
-TRAJECTORY_MANIFEST_SCHEMA = (
-    "codewhale.eval.m10-f-trajectory-loss-analyzer.v1"
-)
-TRAJECTORY_REPORT_SCHEMA = (
-    "codewhale.eval.m10-f-trajectory-loss-report.v1"
-)
+if CAMPAIGN == "m11":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m11-trajectory-loss-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "codewhale.eval.m11-trajectory-loss-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "codewhale.eval.m11-trajectory-loss-report.v1"
+    )
+else:
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m10-f-trajectory-loss-analyzer-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "codewhale.eval.m10-f-trajectory-loss-analyzer.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "codewhale.eval.m10-f-trajectory-loss-report.v1"
+    )
 MODEL = "deepseek-v4-pro"
 REASONING = "high"
 ZERO_HASH = "sha256:" + ("0" * 64)
@@ -2135,6 +2146,58 @@ def trajectory_recovery_projection(
     return "typed_failure_not_recovered"
 
 
+def trajectory_loss_projection(
+    lane: str,
+    analysis: dict[str, Any],
+    arm_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if arm_result is None:
+        return {
+            "product_loss": False,
+            "loss_code": "measurement_incomplete",
+        }
+    if lane == "safety":
+        return {
+            "product_loss": arm_result.get("correct_rejection") is not True,
+            "loss_code": (
+                None
+                if arm_result.get("correct_rejection") is True
+                else "safety_rejection_failed"
+            ),
+        }
+    if arm_result.get("verified_success") is True:
+        return {"product_loss": False, "loss_code": None}
+    if arm_result.get("false_success") is True:
+        return {
+            "product_loss": True,
+            "loss_code": "false_success",
+        }
+    external = arm_result.get("external_verifier")
+    verifier_passed = (
+        external.get("passed")
+        if isinstance(external, dict)
+        else None
+    )
+    if (
+        verifier_passed is True
+        and analysis["terminal_state"] != "completed"
+        and not analysis["host_receipt"]
+    ):
+        return {
+            "product_loss": True,
+            "loss_code": "verified_workspace_without_terminal_receipt",
+        }
+    if verifier_passed is False:
+        return {
+            "product_loss": True,
+            "loss_code": "deterministic_verifier_failed",
+        }
+    return {
+        "product_loss": True,
+        "loss_code": "task_not_verified",
+    }
+
+
 def sum_counter_values(target: Counter, values: dict[str, Any]) -> None:
     for key, value in values.items():
         require(
@@ -2145,6 +2208,44 @@ def sum_counter_values(target: Counter, values: dict[str, Any]) -> None:
             "trajectory_counter_invalid",
         )
         target[key] += value
+
+
+def m11_loss_candidate(
+    losses: Counter, loss_tasks: dict[str, set[str]]
+) -> dict[str, Any]:
+    repeated = [
+        {
+            "loss_code": loss_code,
+            "tasks": sorted(tasks),
+            "trajectories": losses[loss_code],
+        }
+        for loss_code, tasks in sorted(loss_tasks.items())
+        if len(tasks) >= 2
+    ]
+    if repeated:
+        return {
+            "result_class": "next_candidate_audit_required",
+            "candidate_id": repeated[0]["loss_code"],
+            "repeated_losses": repeated,
+            "next_gate": (
+                "audit one existing owner, freeze one treatment variable "
+                "and its old-path deletion, then run an independent "
+                "same-task fixed-Pro vertical slice"
+            ),
+        }
+    return {
+        "result_class": "insufficient_repeated_current_loss",
+        "candidate_id": None,
+        "minimum_independent_tasks": 2,
+        "observed_losses": [
+            {
+                "loss_code": loss_code,
+                "tasks": sorted(tasks),
+                "trajectories": losses[loss_code],
+            }
+            for loss_code, tasks in sorted(loss_tasks.items())
+        ],
+    }
 
 
 def aggregate_trajectory_loss(
@@ -2173,6 +2274,9 @@ def aggregate_trajectory_loss(
     duplicate_trajectories = 0
     control_duplicate_trajectories = 0
     control_campaigns_with_visible_read_duplicates: set[str] = set()
+    current_task_losses = Counter()
+    loss_tasks: dict[str, set[str]] = {}
+    measurement_interruptions = Counter()
 
     for campaign in campaigns:
         acquisition_aborts += campaign["accounting_aborts"]
@@ -2184,6 +2288,7 @@ def aggregate_trajectory_loss(
             analysis = trajectory["analysis"]
             label = trajectory["label"]
             recovery = trajectory["recovery"]
+            loss = trajectory.get("loss")
             is_control = trajectory["is_current_control"]
             stratum = f"{lane}/{task_id}"
             strata.setdefault(stratum, Counter())
@@ -2198,6 +2303,26 @@ def aggregate_trajectory_loss(
             if label["evidence_deficit"] is not None:
                 deficits[label["evidence_deficit"]] += 1
             recoveries[recovery] += 1
+            if CAMPAIGN == "m11":
+                require(
+                    isinstance(loss, dict)
+                    and isinstance(loss.get("product_loss"), bool)
+                    and (
+                        loss.get("loss_code") is None
+                        or isinstance(loss.get("loss_code"), str)
+                    ),
+                    "trajectory_loss_projection_invalid",
+                )
+                loss_code = loss.get("loss_code")
+                if loss_code == "measurement_incomplete":
+                    measurement_interruptions[task_id] += 1
+                elif loss["product_loss"]:
+                    require(
+                        isinstance(loss_code, str),
+                        "trajectory_loss_projection_invalid",
+                    )
+                    current_task_losses[loss_code] += 1
+                    loss_tasks.setdefault(loss_code, set()).add(task_id)
             model_requests += analysis["model_requests"]
             sum_counter_values(tools, analysis["tool_prepared"])
             sum_counter_values(outcomes, analysis["tool_outcomes"])
@@ -2265,7 +2390,11 @@ def aggregate_trajectory_loss(
     control_campaign_count = len(
         control_campaigns_with_visible_read_duplicates
     )
-    if control_visible_reads >= 2 and control_campaign_count >= 2:
+    if CAMPAIGN == "m11":
+        candidate = m11_loss_candidate(
+            current_task_losses, loss_tasks
+        )
+    elif control_visible_reads >= 2 and control_campaign_count >= 2:
         candidate = {
             "result_class": "next_candidate",
             "candidate_id": "revision_bound_read_observation_quality",
@@ -2297,7 +2426,7 @@ def aggregate_trajectory_loss(
                     control_campaign_count,
             },
         }
-    return {
+    result = {
         "trajectories": trajectories,
         "completed_arm_results": completed_arm_results,
         "accounting_aborts": acquisition_aborts,
@@ -2331,6 +2460,18 @@ def aggregate_trajectory_loss(
         "recovery_outcomes": dict(sorted(recoveries.items())),
         "candidate": candidate,
     }
+    if CAMPAIGN == "m11":
+        result["current_task_losses"] = dict(
+            sorted(current_task_losses.items())
+        )
+        result["current_loss_independent_tasks"] = {
+            loss_code: sorted(tasks)
+            for loss_code, tasks in sorted(loss_tasks.items())
+        }
+        result["measurement_interruptions"] = dict(
+            sorted(measurement_interruptions.items())
+        )
+    return result
 
 
 def build_trajectory_report() -> dict[str, Any]:
@@ -2424,26 +2565,30 @@ def build_trajectory_report() -> dict[str, Any]:
                 "trajectory_stratum_invalid",
             )
             analysis = analyze_trajectory_facts(snapshot.get("facts", {}))
+            arm_result = results.get(evaluation_id)
             label = trajectory_label_projection(
-                lane, analysis, results.get(evaluation_id)
+                lane, analysis, arm_result
             )
-            trajectories.append(
-                {
-                    "lane": lane,
-                    "task_id": task_id,
-                    "variant": variant or "fixed_pro",
-                    "is_current_control": (
-                        variant == control_variant
-                        if control_variant is not None
-                        else variant is None
-                    ),
-                    "analysis": analysis,
-                    "label": label,
-                    "recovery": trajectory_recovery_projection(
-                        lane, analysis
-                    ),
-                }
-            )
+            trajectory = {
+                "lane": lane,
+                "task_id": task_id,
+                "variant": variant or "fixed_pro",
+                "is_current_control": (
+                    variant == control_variant
+                    if control_variant is not None
+                    else variant is None
+                ),
+                "analysis": analysis,
+                "label": label,
+                "recovery": trajectory_recovery_projection(
+                    lane, analysis
+                ),
+            }
+            if CAMPAIGN == "m11":
+                trajectory["loss"] = trajectory_loss_projection(
+                    lane, analysis, arm_result
+                )
+            trajectories.append(trajectory)
         campaigns.append(
             {
                 "campaign": item["campaign"],
@@ -2474,6 +2619,7 @@ def build_trajectory_report() -> dict[str, Any]:
             "credential_read": False,
             "network_accessed": False,
             "raw_prompt_output": False,
+            "raw_reasoning_output": False,
             "raw_tool_argument_output": False,
             "raw_tool_content_output": False,
             "evaluation_id_output": False,
@@ -3452,6 +3598,51 @@ def run_self_test() -> int:
         not in canonical_bytes(trajectory_projection).decode("utf-8"),
         "self_test_trajectory_secret_exposed",
     )
+    if CAMPAIGN == "m11":
+        verified_without_receipt = trajectory_loss_projection(
+            "root",
+            {
+                **trajectory_projection,
+                "terminal_state": "blocked",
+                "host_receipt": False,
+            },
+            {
+                "verified_success": False,
+                "false_success": False,
+                "external_verifier": {"passed": True},
+            },
+        )
+        interrupted = trajectory_loss_projection(
+            "root", trajectory_projection, None
+        )
+        require(
+            verified_without_receipt
+            == {
+                "product_loss": True,
+                "loss_code": (
+                    "verified_workspace_without_terminal_receipt"
+                ),
+            }
+            and interrupted
+            == {
+                "product_loss": False,
+                "loss_code": "measurement_incomplete",
+            },
+            "self_test_trajectory_loss_projection_invalid",
+        )
+        require(
+            m11_loss_candidate(
+                Counter({"same_loss": 1}),
+                {"same_loss": {"task-a"}},
+            )["result_class"]
+            == "insufficient_repeated_current_loss"
+            and m11_loss_candidate(
+                Counter({"same_loss": 2}),
+                {"same_loss": {"task-a", "task-b"}},
+            )["result_class"]
+            == "next_candidate_audit_required",
+            "self_test_trajectory_loss_threshold_invalid",
+        )
     print(
         json.dumps(
             {
