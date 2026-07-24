@@ -1379,6 +1379,63 @@ manifest/raw/summary：
 - ignored `eval/raw/m8-d-prompt-formal-*.json`（全部 0600）；
 - [M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
 
+### 9.21 M8-E V1 退出证据总审计（2026-07-24）
+
+M8-E 不是模型 A/B，而是 PRODUCT_PLAN 16 项 V1 完成定义的 release evidence audit。
+frozen production revision 为 `433a871b9e26a09009d99575594c29557ebc7484`，contract
+revision 为 `a12bea45f20668e7ba58aebee4a6267ff4f70233`。manifest 固定：
+
+- exact revision/tree、Cargo.lock、Rust 1.97.0、Run API v10、RuntimeEvent v16、
+  State v21、exec-stream v2；
+- frozen revision 上 PRODUCT_PLAN/ROADMAP/EVALUATION/CURRENT_CODEWHALE 四个 blob hash；
+- 16 项 gap matrix、8 pass / 8 blocked 和 `not_releasable`；
+- `maximum_reruns=0`、external Cargo target、offline、no Key、0 official request；
+- ignored 0600 result 的唯一输出路径。
+
+通过项是 V01/V02/V03/V04/V05/V07/V11/V14；阻塞项是
+V06/V08/V09/V10/V12/V13/V15/V16。主要 blocker 是 Fleet/Lane/Orchestrator 多个
+TaskGraph 产品概念、multi-Writer 未准入、FIM 无 canonical caller/parser/apply、
+RepoGraph 缺失、重复状态/词汇未完全删除、没有 imported-baseline coding/workflow
+证据，以及 M8-D prompt 仍为 unknown-billing hold。
+
+2026-07-24 复核官方
+[Change Log](https://api-docs.deepseek.com/updates)、
+[V4 发布说明](https://api-docs.deepseek.com/news/news260424/)、
+[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、
+[Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion) 和
+[Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api/)。
+`deepseek-chat`/`deepseek-reasoner` 是退役旧 alias，不等于 ChatCompletions surface
+退役；但用户已把 `https://api.deepseek.com/anthropic` 的 Anthropic Messages 选为
+CodeWhale release target。当前 production 没有该 request/parser/tool/thinking replay/
+usage/accounting parity，故 V09 和 release 必须 blocked。不能把现有 Chat body 只换
+base URL。
+
+从 clean `a12bea45` 生成 locked/offline artifact：
+
+- file `codewhale-0.8.68-aarch64-apple-darwin-a12bea45f206.tar.gz`；
+- tree `966afe2fde6e4af788409c992fc78e872a96acc9`；
+- artifact SHA-256 `6104e45023ff8c8594f60645da28f57c18913ec4e9249c0900569c3020a86ffc`；
+- inner binary 只有 `codewhale` 与 `codewhale-tui`，SHA 分别为
+  `bee2414a…afba9`、`f8266dd1…9262f`；
+- real install/verify 和两项 `0.8.68 (a12bea45f206)` version identity 通过。
+
+focused、fmt、workspace clippy/test、exec 25、canonical TUI PTY 7、Run 18、
+exec/HTTP/stdio parity、root/read-only/Writer、process crash/reopen、M8-E contract 8/8、
+delivery self-test 和 real package install/verify 全部通过。这些是 baseline consistency
+证据，不是缺失 V1 产品能力的替代证据。
+
+最终决策为
+`not_releasable / keep_canonical_chain_and_delivery / hold_release`。M8-E 不读取 Key，
+官方请求 0，不产生 product metric。下一次 credentialed test 只允许属于新 Anthropic
+Messages production successor，且必须在全量 offline parity、immutable binary、全新
+manifest 和 billing completeness 都可证明后开始。
+
+manifest/result/summary：
+
+- `eval/manifests/m8-e-v1-exit-audit-v1.json`；
+- ignored 0600 `eval/results/m8-e-v1-exit-audit-433a871b-v1.json`；
+- [M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

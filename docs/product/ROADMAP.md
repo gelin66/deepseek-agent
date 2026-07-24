@@ -112,6 +112,14 @@
   `hold_prompt_candidate / keep_app_server_override_consistency`。旧
   `deepseek-chat`/`deepseek-reasoner` model alias 未使用；官方当前 ChatCompletions API
   路径没有被旧 alias 退役替代。
+  M8-E 随后从 clean `433a871b` 冻结 PRODUCT_PLAN 的 16 项 V1 exit gap：
+  V01/V02/V03/V04/V05/V07/V11/V14 共 8 项通过，V06/V08/V09/V10/V12/V13/V15/V16
+  共 8 项阻塞，发布结论为 `not_releasable`。用户明确选择官方 Anthropic Messages
+  base URL `https://api.deepseek.com/anthropic` 作为发布目标；当前 production 仍只有
+  Chat sender，不能把 Chat body 直接换 endpoint，因此该 canonical cutover 是首个
+  release blocker。`a12bea45` 的 locked/offline artifact 只含 `codewhale` 与
+  `codewhale-tui`，安装/验证和完整 offline conformance 通过；它证明 baseline 可复现，
+  不推翻 8 项 blocker。M8-E 没有 production model delta，Key 未读取、官方 API 请求 0。
   当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -226,7 +234,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-A～M8-C 已完成；M8-D prompt candidate 因 final unknown billing 判定 hold；M8-E 退出审计待执行） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-A～M8-C 已完成；M8-D prompt candidate 因 final unknown billing 判定 hold；M8-E 退出审计为 8/16 pass，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2257,10 +2265,45 @@ prompt branch 可删除；保留 ignored fixture/Harness/manifests/raw 作为身
 v1-v4 可证明费用下界合计 `$0.052454002`，v5 费用未知，不能补算总费用。完整事实见
 [M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
 
-下一切片为 M8-E：不继续堆 prompt 版本，先逐项审计 PRODUCT_PLAN V1 完成定义与
-M1/M2/M5-C/M6/M8 证据债务，冻结唯一 release gap matrix。只有 current production
-反例才准入实现；M8-D v5 不得续跑，未来 Key/API 必须同时具备新 production delta、
-全新 successor manifest 和可证明 billing。
+### M8-E：V1 退出证据总审计
+
+M8-E 以 clean `433a871b` 为 frozen production input，逐项审计 PRODUCT_PLAN 的 16 项
+V1 完成定义。`eval/manifests/m8-e-v1-exit-audit-v1.json` 绑定该 revision、tree、
+Cargo.lock、toolchain 和四份权威文档 blob；`scripts/test-eval-m8e-v1-exit.py` 从 frozen
+revision 读取权威输入，后续文档更新不能反向改变原审计。
+
+结果为 8 pass / 8 blocked：
+
+- pass：唯一 DeepSeek backend、AgentRuntime、RuntimeEvent、RunStore，root/child 同一
+  conformance，CLI/TUI/API 薄客户端，latest-revision EvidenceReceipt，fixed zh-Hans；
+- blocked：单一 TaskGraph、多 Writer V1 完成面、完整 Standard/Strict/FIM 加发布目标
+  routing、RepoGraph、重复产品/状态彻底删除、imported-baseline coding A/B、中文 prompt
+  A/B、workflow-step 不增证明。
+
+2026-07-24 官方复核确认 `deepseek-chat`/`deepseek-reasoner` 是退役的 legacy model
+alias，`deepseek-v4-pro`/`deepseek-v4-flash` 保留；官方同时支持 OpenAI 格式和 base URL
+为 `https://api.deepseek.com/anthropic` 的 Anthropic Messages。用户明确选择后者为
+CodeWhale 发布目标。current production 只有 Chat request/parser/replay/accounting，
+不能只替换 endpoint；因此 M8-E 不做半套迁移，也不把官方兼容性当成产品选择。
+
+clean `a12bea45` 的 locked/offline source artifact 绑定 tree `966afe2f`、Cargo.lock
+`ff53b498…f0ef2`、Rust 1.97.0，只包含 `codewhale` 和 `codewhale-tui`。归档 SHA 为
+`6104e450…a86ffc`，真实临时 prefix install/verify 与两项 version identity 通过。
+focused、fmt、workspace clippy/test、exec/HTTP/stdio、canonical PTY、root/read-only/
+Writer、SIGKILL/reopen 和 delivery self-test 全部通过。这只证明当前 baseline 可复现且
+内部一致，不满足缺失的 8 项 V1 条件。
+
+产品决策为
+**not releasable / keep canonical chain and delivery / hold prompt、FIM、fan-out 与 broader
+request/cache 调优**。M8-D v5 不续跑，Key 未读取，官方 API 请求 0。完整结论见
+[M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
+
+下一切片为 M8-F：冻结 current Chat production control 与官方 Anthropic Messages
+treatment 的 request/response/tool/thinking/usage/retry/reopen parity，在
+`crates/deepseek` 唯一 owner 内完成 canonical cutover，迁移 `AgentApplication` 唯一
+caller 后删除旧 Chat production sender。不得新增 Provider、用户模式、第二 Backend 或
+双 production transport；只有 offline parity、全入口 conformance、clean artifact 和
+billing 可证明的新 successor manifest 全部通过后，才允许受限 official canary。
 
 ### 调优
 

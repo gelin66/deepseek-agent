@@ -50,6 +50,8 @@
 - M8-D app-server prompt caller / immutable binary checkpoint：`8371b6dd`
 - M8-D final evaluator checkpoint：`a51e145f`
 - M8-D final live admission checkpoint：`26841208`
+- M8-E frozen V1 gap contract / locked-offline artifact：`a12bea45`
+- M8-E frozen-input resolver checkpoint：`f6063a7b`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -124,6 +126,12 @@
   aggregate accounting、五个 fixture 与 integrated Writer `base..HEAD` scope，但首个
   live arm 的 billing unknown，按门禁立即停止。production bundled prompt 未改变，结论为
   `hold_prompt_candidate / keep_app_server_override_consistency`。
+  M8-E 随后冻结 16 项 V1 exit matrix：8 pass、8 blocked，当前发布状态为
+  `not_releasable`。用户选择官方 Anthropic Messages base URL
+  `https://api.deepseek.com/anthropic` 作为 release target；current production
+  `crates/deepseek` 仍只有 Chat sender/parser/replay/accounting，不能通过只换 URL
+  达成迁移。clean `a12bea45` 的 locked/offline artifact 只含 `codewhale` 和
+  `codewhale-tui`，全量 offline conformance 和安装验证通过；Key 未读取、官方请求 0。
 - 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 
 ## 1. 当前结论
@@ -1408,6 +1416,42 @@ final v5 首 arm 在一个无 usage 的失败 attempt 后由 canonical accountin
 完整身份、raw 和非结论见
 [M8-D 中文原生 Agent prompt A/B 结论](../../eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md)。
 
+M8-E 没有改变 production architecture。它只增加 frozen audit contract、offline verifier
+和结论文档。当前 DeepSeek wire 事实是：
+
+```text
+AgentApplication -> AgentRuntime -> DeepSeekModelPort
+  -> RequestPlan(Standard Chat / lossless Strict fallback)
+  -> POST /chat/completions
+  -> Chat response/SSE parser
+  -> canonical usage/retry/accounting
+  -> RunStore
+```
+
+官方 Anthropic Messages base URL `https://api.deepseek.com/anthropic` 目前不出现在
+production planner 或 transport。当前也没有 Messages request DTO、content-block/SSE
+parser、tool/thinking exact replay 或 Messages usage/accounting owner。因此用户选择的
+release target 是一个明确缺口，不是 config 值替换；在 parity cutover 完成前，
+CodeWhale 必须保持不可发布。切换时仍只能有一个 `DeepSeekModelPort`、一个
+`AgentRuntime`、一个 `RunStore` 和一个 production sender，不能新增 Provider、模式或
+永久 dual transport。
+
+M8-E 的其他 architecture blockers 同样是当前事实：
+
+- `ProductionAgentOrchestrator` 与 Fleet/Lane 的用户可见命令、协议和状态概念并存；
+- explicit single Writer 有完整 worktree/verify/integrate/cleanup，但 multi-Writer 未准入；
+- FIM 只有 `crates/deepseek` planner/accounting 基础，没有 canonical response/apply caller；
+- RepoGraph 不存在；
+- 没有相对 imported `352e86a6` 的真实 coding 与 workflow-step 完成证据；
+- M8-D bundled prompt 未切换。
+
+clean `a12bea45` artifact 绑定 tree `966afe2f`、Cargo.lock `ff53b498…f0ef2` 和
+Rust 1.97.0，只包含 `codewhale`、`codewhale-tui`；两者在真实临时 prefix 安装验证后
+报告相同 revision。focused、workspace clippy/test、CLI/TUI/API parity、
+root/read-only/Writer、SIGKILL/reopen 与 delivery gates 通过。这证明上图现有架构可复现，
+不消除上述 blocker。完整矩阵见
+[M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1419,6 +1463,10 @@ final v5 首 arm 在一个无 usage 的失败 attempt 后由 canonical accountin
   仍只由 CI matrix 拥有而非本机观察；
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
+- M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；16 项完成定义中仍有
+  8 项 blocked，且用户选择的 Anthropic Messages production target 尚未实现；
+- 旧模型 alias 退役等于 ChatCompletions surface 退役，或反过来证明 current Chat sender
+  是用户接受的 release target；这两个判断都不成立；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
