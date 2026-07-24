@@ -1,0 +1,174 @@
+{
+  "schema": "codewhale.eval.m8-i-host-auto-route.v1",
+  "suite_id": "m8-i-host-auto-route-15fea38e-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "baseline_revision": "15fea38e28aa60a9ae51e8e85b38c05ff019781a",
+  "baseline_tree": "76e83491f53cc158362db1072126e82e08584a76",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_baseline": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 3,
+    "cargo_lock_sha256": "1d8b3e08412b2e0a5b2d7dd4e414dd5c86ee5a573559684b755b44d411dd9d77",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0",
+    "old_classifier_sha256": "397803cacdd211422ffaaa7548c433a898020daf5aca39ea9e0bbf83f59bbf92",
+    "old_production_composition_sha256": "bb893263fe094087468474849e0fad8ce145c0ea013115cc81734696ead8cfd3"
+  },
+  "slice_contract": {
+    "problem": "model=auto 在 canonical Runtime 创建前额外发送一次 non-streaming deepseek-v4-flash Chat 请求，并从首条任务文本、空 recent_context、关键词和 500 字阈值同时猜 model 与 thinking。它消耗 root/children 共用物理 request ledger、增加时延和 crash-before-RunCreated 的 unknown-billing 窗口，却没有相对固定 Pro 的 verified-success 非劣证据；随后所有 child 又无条件继承 root 选择。",
+    "acceptance": [
+      "crates/app 是唯一 production Auto policy owner；crates/deepseek 只保留官方模型 capability、planner、transport/parser/accounting",
+      "显式 deepseek-v4-pro/deepseek-v4-flash 和显式 reasoning 保持原值，不经过 Auto policy",
+      "Auto root 与 explicit isolated Writer 选择 Pro；普通 Auto reasoning 选择 high，只有 typed recovery/rework evidence 允许 max",
+      "普通 Auto read-only child 选择 Flash；失败后的 typed recheck 选择 Pro；结果仍由 Pro root 汇聚和 Host evidence gate 验收",
+      "每个 RunRequest 的 model/reasoning 在 run 内 immutable；无 mid-run switch、隐式 Writer、multi-Writer、第二 Runtime/Store/backend/provider",
+      "RunStore 持久化 requested model mode、requested reasoning、policy version、selected model/reasoning、actor/workspace authority 和稳定 reason code，重开不重新路由",
+      "pending creation 在 RunCreated 前不再产生网络或计费副作用，可由 exact reserved command 安全恢复",
+      "root/read-only/Writer、CLI/TUI/API、request ledger、SIGKILL/reopen 与 terminal accounting conformance 通过"
+    ],
+    "single_owner": "crates/app::ProductionModelRoutePolicy",
+    "mechanical_consumers": [
+      "crates/runtime applies the Host-frozen child route contract",
+      "crates/protocol persists the canonical route audit and child binding",
+      "crates/state replays the exact RuntimeEvent contract",
+      "CLI/TUI/app-server remain thin Run API clients"
+    ],
+    "replaces": [
+      "crates/deepseek/src/auto_route.rs Flash classifier request",
+      "classifier system/user prompt, JSON parser and provider inventory",
+      "keyword and 500-character heuristic fallback",
+      "production recent_context=\"\" route input",
+      "pre-runtime auto-route accounting_baseline and unknown-billing creation recovery",
+      "whole-tree child inheritance that prevents actor-specific official model selection",
+      "DeepSeekAutoRouteFailed client projection and tests with no remaining producer"
+    ],
+    "evidence": [
+      "offline Host policy contract matrix for explicit/root/read-only/Writer/recovery",
+      "exact child AgentTask to RunRequest binding and model-specific prompt/capability resolution",
+      "one-request root ledger proving classifier removal",
+      "pending creation recovery without unknown billing",
+      "SQLite reopen and process SIGKILL recovery",
+      "CLI/TUI/app-server production-path parity",
+      "focused, fmt, workspace clippy/test, Harness self-test and git diff --check"
+    ],
+    "cutover_deletion": [
+      "auto_route module and public DeepSeek classifier API",
+      "Flash classifier request/prompt/parser/timeout/fallback heuristics/provider DTOs",
+      "RunApiErrorReason::DeepSeekAutoRouteFailed and TUI Route startup classification",
+      "CreationIntent model=None unknown-billing rule and its API projection/test debt",
+      "tests asserting a pre-root classifier request or shared classifier accounting"
+    ]
+  },
+  "frozen_control": {
+    "revision": "15fea38e28aa60a9ae51e8e85b38c05ff019781a",
+    "route_request": {
+      "endpoint": "/chat/completions",
+      "model": "deepseek-v4-flash",
+      "stream": false,
+      "max_tokens": 128,
+      "thinking": "off",
+      "temperature": 0.0,
+      "timeout_ms": 4000,
+      "recent_context": ""
+    },
+    "fallback": {
+      "complex_keyword_count": 40,
+      "pro_character_threshold": 500,
+      "default_model": "deepseek-v4-flash"
+    },
+    "child_route": "inherit_root_model_and_reasoning",
+    "physical_requests_before_first_root_turn": 1,
+    "unknown_billing_before_run_created": true
+  },
+  "candidate_policy": {
+    "principle": "Pro 负责，Flash 调查，Host 验证",
+    "root": {
+      "model": "deepseek-v4-pro",
+      "auto_reasoning": "high",
+      "typed_recovery_reasoning": "max"
+    },
+    "read_only_child": {
+      "ordinary_model": "deepseek-v4-flash",
+      "ordinary_reasoning": "high",
+      "typed_failed_handoff_recheck_model": "deepseek-v4-pro",
+      "typed_failed_handoff_recheck_reasoning": "max",
+      "aggregation": "Pro root"
+    },
+    "isolated_writer": {
+      "admission": "explicit_only",
+      "model": "deepseek-v4-pro",
+      "ordinary_reasoning": "high",
+      "typed_rework_reasoning": "max"
+    },
+    "root_flash": "not_admitted because current Run API has no typed bounded-low-risk product fact",
+    "thinking_off": "explicit_user_selection_only",
+    "mid_run_switch": false
+  },
+  "formal_ab": {
+    "maximum_reruns": 0,
+    "minimum_repetitions_per_cell": 3,
+    "randomization": "balanced_interleaved",
+    "immutable_identity": [
+      "source revision and tree",
+      "release binary sha256",
+      "Cargo.lock and rust toolchain",
+      "TaskContract and tool catalog",
+      "model request/output budget and verifier"
+    ],
+    "variants": {
+      "A": "fixed deepseek-v4-pro product baseline",
+      "B": "fixed deepseek-v4-flash diagnostic",
+      "C": "frozen 15fea38e Flash classifier control",
+      "D": "Host typed conservative policy candidate"
+    },
+    "strata": [
+      "no-tool bounded answer",
+      "read-only single-file investigation",
+      "read-only multi-file investigation",
+      "single-file modification",
+      "multi-file modification",
+      "debugging and verifier-failure recovery",
+      "security, release and migration",
+      "explicit isolated Writer",
+      "crash and reopen"
+    ],
+    "hard_quality_gates": [
+      "verified success is formally non-inferior to fixed Pro",
+      "false success equals zero",
+      "no new Pro-only success in security/release/recovery/Writer strata",
+      "root/read-only/Writer evidence completion, replay and billing do not regress",
+      "all classifier/retry/recheck requests, tokens, time and cost are counted"
+    ],
+    "efficiency_gate_after_quality": "total cost or wall time improves by approximately 20 percent with positive code-complexity delta",
+    "credential_gate": "Do not read key.txt or call the official API unless all four variants have a real frozen surface delta, one immutable identity and complete billing.",
+    "failure_decision": "Keep explicit models; product default remains fixed Pro; Flash remains explicit and may be used for safely aggregated read-only child investigation."
+  },
+  "official_fixtures_revalidated_utc": "2026-07-24",
+  "official_sources": [
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/"
+  ],
+  "research_sources": [
+    "https://arxiv.org/abs/2607.11399",
+    "https://arxiv.org/abs/2601.07206",
+    "https://arxiv.org/abs/2410.10347"
+  ],
+  "execution": {
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8i-target",
+    "read_key": false,
+    "official_api_requests": 0
+  },
+  "non_conclusions": [
+    "Flash read-only child quality is not assumed from model branding.",
+    "Removing one classifier request is mechanism evidence, not a verified task-success or cost claim.",
+    "No default Auto admission occurs before the formal quality and efficiency gates pass.",
+    "No local learned router, cascade or step-level model switch is part of this V1 slice."
+  ]
+}
