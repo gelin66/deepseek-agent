@@ -1,0 +1,97 @@
+{
+  "schema": "codewhale.eval.m9-a-host-auto-live-admission.v1",
+  "admitted_at_utc": "2026-07-24T00:00:00Z",
+  "contract_manifest": "eval/manifests/m9-a-host-auto-release-admission-v1.json",
+  "contract_manifest_sha256": "sha256:b080178a320178d04153ceb630ad70b43357276b03e30381aa364ff9aaf4f152",
+  "candidate_revision": "29c4980ff4f6ffa682dd294f2503ca2691490d50",
+  "candidate_tree": "0496fbbd746d2f798d2a63e40b13547e89a63145",
+  "candidate_binary": "/private/tmp/codewhale-m9a-target/release/codewhale",
+  "candidate_binary_sha256": "sha256:73834d742c291dedfe502ad9001d9c48896512deaad11ec97d7fe81411ebe2b8",
+  "candidate_binary_size_bytes": 15397024,
+  "candidate_binary_version": "codewhale 0.8.68 (29c4980ff4f6)",
+  "harness": "scripts/eval-m9a-auto-route.py",
+  "harness_sha256": "sha256:b4c02b14ba5c7dd131af51f7f6ebe875d423a56c0f619ff48c16266f457f55d7",
+  "schedule_sha256": "sha256:e8618f8bac65715b257549b3689608665b1524d6d67ea692f0dde3aabe704172",
+  "task_contracts_sha256": "sha256:b621e836395e2dd2c56cc07129515650bc5393c568f7232ea14966c99b1d995d",
+  "harness_self_test_sha256": "sha256:bfbcfb2b96cbc0a4b3c5176cb6a3c6aba00b3c417988d382117347eb91307183",
+  "dry_run_sha256": "sha256:aea297508f3a783a32d465f5f9452048d1341ae15e7de5426349e9c60bced488",
+  "surface_delta": {
+    "fixed_pro": "Pro root and Pro read-only children",
+    "fixed_flash": "Flash root and Flash read-only children; diagnostic only",
+    "host_auto": "Pro root and ordinary Flash read-only children",
+    "admissible": true,
+    "boundary": "Only tasks that create ordinary read-only children enter the paid matrix; root-only and ordinary Writer conformance remain offline because Auto has no model delta there."
+  },
+  "offline_gates": [
+    {
+      "gate": "M9-A hash-chain Harness self-test and SIGKILL fault matrix",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "TUI model=auto preserves explicit reasoning",
+      "result": "pass"
+    },
+    {
+      "gate": "Host Auto typed policy matrix and exact Pro-root/Flash-child SQLite reopen loopback",
+      "result": "pass"
+    },
+    {
+      "gate": "model-request in-flight and committed-terminal process crash/reopen",
+      "result": "pass"
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass_after_exact_transient_recheck",
+      "observation": "The first run had one timing-sensitive established-SSE stall assertion observe the retry-open generic network error. Its exact unchanged rerun passed, and the complete focused suite plus the later full workspace suite both passed without code changes."
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked --offline",
+      "result": "pass"
+    },
+    {
+      "gate": "production release binary build and credential-free Harness dry-run",
+      "result": "pass"
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "t1-capability-intersection": "80b250a1c3bf0bf56e7d611889ba8b1d284909ae0cdc5737c5aa0339aa69d816",
+    "t2-dependency-impact": "d7b23e344a2d74e5f428a46e19193404c3d9c0e70699415f100832786ae15e46",
+    "t3-policy-resolution": "b95b19b16a1c53ed51649c901b879a717ac8ea72c5b1805bd2e9236617a6b33a"
+  },
+  "live_contract": {
+    "formal_arms": 27,
+    "runs_per_variant_task": 3,
+    "maximum_reruns": 0,
+    "suite_cost_ceiling_usd": 1.08,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "output": "eval/results/m9-a-host-auto-release-admission-29c4980ff4f6-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-24",
+  "official_sources": [
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
