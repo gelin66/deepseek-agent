@@ -126,9 +126,11 @@ Changing one of these constraints requires evidence and a new ADR.
   slices and evaluated independently.
 - The orphan TUI `verify` model critic, `FimEditTool`, and the duplicate
   `RunTestsTool`/`RunVerifiersTool` wrappers have been physically deleted.
-  Deterministic evidence remains in `crates/tools`; the canonical DeepSeek FIM
-  request surface remains in `crates/deepseek`. Do not restore the deleted TUI
-  model or tool loops as compatibility paths.
+  Deterministic evidence remains in `crates/tools`. M8-H also deleted the
+  unreachable DeepSeek FIM planner/surface/accounting half-branch after proving
+  it had no canonical caller, sender ownership, response parser, Host apply, or
+  reopen lifecycle. Do not restore either path as compatibility code; FIM may
+  re-enter only as a complete evidence-backed vertical slice.
 - The TUI-local Goal/Hunt loop, private TaskContract/receipt store, Slop ledger,
   fake custom-command pause state, and their UI/config surfaces have been
   physically deleted. They had no canonical production consumer. The only

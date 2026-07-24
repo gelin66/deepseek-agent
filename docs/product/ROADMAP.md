@@ -125,7 +125,19 @@
   请求 0。基于错误前提冻结的 M8-F 已标记
   `canceled_invalid_premise`，未提交 Messages production WIP 已精确删除，Key 未读取、
   官方 API 请求 0。
-  当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。CLI、TUI、本地 API 与
+  M8-H 随后从 clean `dce858d0` 复核 M7-C 后没有发现新的 current-v16 production 编辑
+  样本：Host deterministic matrix 仍为 12/12，canonical FIM caller/parser/apply/reopen
+  全为 0。既有 `plan_fim` 生成 sender endpoint owner 明确拒绝的
+  `/beta/completions`，而唯一 response parser 只接受 Chat `choices[].message`，因此它不是
+  可归因 treatment，而是无消费者半分支。code candidate `7d9aa9a6` 物理删除 FIM
+  planner/surface/accounting、永远为 0 的 exec/eval 字段、退役模型 alias 静默映射、future
+  `deepseek-*` pass-through、TUI 重复目录 switch 与永远为 `None` 的 alias retirement
+  UI/JSON。exec-stream 因公共 terminal 字段删除升到 v3；Run API v10、RuntimeEvent v16、
+  State v21 不变，已有 Standard/Strict run 可原样重开。决策为
+  `keep Standard/Strict / reject unreachable FIM production half-branch / retain frozen and
+  eval-only protocol evidence`；V09 仍因 PRODUCT_PLAN 的 FIM 完成定义未满足而 blocked。
+  没有 treatment delta，Key 未读取，官方 API 请求 0。
+  当前 Run API v10、RuntimeEvent v16、State schema v21、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -2339,9 +2351,52 @@ imported `352e86a6` 的同任务 workflow-step A/B。下一切片冻结 Standard
 完整结论见
 [M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
 
+### M8-H：FIM 产品范围与无消费者历史债收敛
+
+M8-H 以 clean `dce858d0` 为 baseline，先冻结
+`eval/manifests/m8-h-fim-scope-debt-v1.json`。M7-C 已关闭 12/12 deterministic Host
+编辑反例；M7-D 之后没有新的 current RuntimeEvent v16 production 编辑失败样本，也没有
+同 binary FIM treatment。静态 caller graph 进一步证明：
+
+- `plan_fim` 生成 `https://api.deepseek.com/beta/completions`；
+- 唯一 `DeepSeekEndpoint::owns_url` 只允许 Standard/Beta Strict Chat URL；
+- 唯一 non-streaming parser 读取 `choices[0].message`，不是 FIM `choices[0].text`；
+- Runtime/RunStore 没有 fresh-read/revision/prefix/suffix-bound Host apply lifecycle；
+- production caller、response parser、apply 和 reopen 数量均为 0。
+
+因此 live FIM A/B 在 credential/API 前仍为
+`inadmissible_no_surface_delta`。code candidate `7d9aa9a6` 删除 `plan_fim`、
+`FimPlanError`、FIM surface/accounting、`fim_response_count`、eval-only
+`fim_edit`/`write_file` classifier 债；同时让 config 成为 V4 模型目录唯一 owner，
+`deepseek-chat`/`deepseek-reasoner` 与 speculative `deepseek-*` 不再静默改写或延迟失败。
+TUI 删除重复 model switch、永远为空的 alias retirement DTO/Doctor 分支和对应文案。
+冻结 M7-C/M8-E 历史证据以及有独立协议价值的 direct live Harness 保持不改写，不成为
+production caller。
+
+删除公共 terminal 的 always-zero FIM 字段后 exec-stream `v2 -> v3`，不保留兼容 reader。
+RuntimeEvent v16/State v21 不变，因为 production sender 从未能产生 FIM `SurfaceUsage`，
+已有 Standard/Strict serialized event 形状不变。相对 baseline 为 26 files、
+`+185/-214`，净删除 29 行（新增主要为冻结 manifest）。
+
+决策为 **keep Standard Chat and lossless Strict fallback / reject and delete unreachable
+production FIM half-branch / hold FIM re-entry**。这不证明 FIM 质量较差；只有新
+production 失败证据把 patch generation/recovery 定位为主要损失，并且完整
+Host-owned parser/apply/accounting/reopen treatment 先成立，才可重新准入。V09 仍是
+`blocked_product_scope_decision`，不能把“准确地不支持”冒充 PRODUCT_PLAN 的完成。
+fallback 随后对 exact imported `352e86a6` 构建 locked/offline immutable binary，并在
+本机回环证明它可使用相同 `/chat/completions` 与 `deepseek-v4-pro`；但旧 exec terminal
+没有 request count、cost completeness/bucket 或可重开的 root/child started ledger，
+retry count 也未知。按完整 accounting 门禁，live coding/workflow-step A/B 在 credential
+前为 `inadmissible_incomplete_baseline_accounting`；不修改旧 baseline、不读 Key、
+官方请求仍为 0。
+
+完整结论见
+[M8-H FIM 产品范围与历史债收敛](../../eval/summaries/m8-h-fim-scope-debt-2026-07-24.md)。
+
 ### 调优
 
-- `apply_patch/search-replace/FIM` A/B；
+- imported `352e86a6` 与 current 的同任务 coding/workflow-step A/B；
+- 只有满足 M8-H re-entry gate 才重开 `apply_patch/search-replace/FIM` A/B；
 - thinking、上下文预算和压缩策略；
 - stable prefix/cache；
 - 并行只读工具（M7-G product metric 不准入，explicit-only）；

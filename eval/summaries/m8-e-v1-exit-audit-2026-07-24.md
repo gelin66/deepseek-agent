@@ -179,6 +179,16 @@ Orchestrator。因此本文件冻结的 V06 `blocked` 是 M8-E 历史输入，�
 8 pass / 8 blocked frozen result、manifest 与 raw 不反向修改。successor 见
 [M8-G 单一 TaskGraph 产品概念收敛](m8-g-taskgraph-convergence-2026-07-24.md)。
 
+M8-H code candidate `7d9aa9a6` 又 supersede 本文件“保留 FIM planner/accounting
+基础”的历史快照。调用图证明旧 `plan_fim` 产生 sender endpoint owner 不接受的
+`/beta/completions` URL，完整 parser 只读取 Chat `choices[].message`，Runtime/RunStore
+也没有 revision-bound Host apply/reopen consumer；它不是可运行 treatment。当前 production
+已物理删除这条无消费者半分支及 always-zero accounting/terminal 字段，保留官方
+Standard Chat 与 lossless Beta Strict fallback。V09 的 frozen `blocked` 不反向改写；
+当前结论为 `keep Standard/Strict / reject unreachable FIM production half-branch /
+hold FIM re-entry`，详见
+[M8-H FIM 产品范围与历史债收敛](m8-h-fim-scope-debt-2026-07-24.md)。
+
 ## 7. 非结论
 
 M8-E 不证明：

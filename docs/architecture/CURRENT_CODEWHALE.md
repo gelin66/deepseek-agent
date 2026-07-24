@@ -134,7 +134,15 @@
   locked/offline artifact 只含 `codewhale` 和 `codewhale-tui`，全量 offline
   conformance 和安装验证通过；Key 未读取、官方请求 0。M8-F Messages cutover 为
   `canceled_invalid_premise`，没有 production 代码接管。
-- 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
+  M8-G 随后物理删除无 canonical caller 的 Fleet/Lane 产品、协议、状态和 process shell，
+  V06 关闭为 pass。M8-H 又复核 M7-C 以后没有新的 current-v16 production 编辑失败，
+  deterministic Host matrix 仍为 12/12；旧 FIM planner 生成 sender 不拥有的
+  `/beta/completions`，唯一完整 parser 又只读取 Chat `choices[].message`，因此它是无
+  consumer 的 production 半分支，不是可运行 treatment。candidate `7d9aa9a6` 已删除
+  FIM planner/error/surface/accounting、always-zero terminal 字段和 eval-only classifier，
+  并让 config 成为 V4 model id 的唯一规范化 owner；冻结历史证据不改写。没有读取 Key，
+  官方请求为 0。
+- 当前协议：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v3
 
 ## 1. 当前结论
 
@@ -385,9 +393,9 @@ EvidenceReceipt 可以满足 root TaskContract。
 
 ### DeepSeek backend
 
-`crates/deepseek` 是官方 DeepSeek 请求事实 owner：
+`crates/deepseek` 是官方 DeepSeek Chat 请求事实 owner：
 
-- Standard Chat、Beta Strict Chat 与 FIM surface 规划；
+- Standard Chat 与 Beta Strict Chat surface 规划；
 - 确定性 `RequestPlan`；
 - Chat ordinary/non-streaming 与 SSE transport；
 - reasoning/tool-call 历史回放；
@@ -404,11 +412,12 @@ EvidenceReceipt 可以满足 root TaskContract。
 Beta Strict Chat。M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍原子回退
 Standard Chat；当前生产没有真实 Strict surface，也没有用户 Strict 开关。fallback 保留
 完整工具数量、名称、顺序与 schema，不通过第二份 wire schema 或语义弱化进入 Beta。
-FIM 仍是独立 Beta Completions request-planning surface；M7-C 复核后当前仍没有
-canonical production FIM 编辑调用方、完整 response parser 或 revision-bound Host apply
-lifecycle，因此不能宣称事务性 FIM 编辑已经可用。现有 Chat transport/parser 也不能把
-`choices[].message` 当作 Completions 的 `choices[].text`。Context cache 由官方 Chat 的
-稳定前缀自动触发，不存在手工 cache API。
+官方 FIM 仍是独立 Beta Completions 协议，但 CodeWhale 当前不再声明 production FIM
+surface。M8-H 证明旧 planner 没有 canonical caller，sender 不拥有它产生的 endpoint，
+完整 parser 也不能读取 Completions 的 `choices[].text`；该半分支及其无消费者 accounting
+已物理删除。未来只有新的 production 编辑失败样本同时证明瓶颈属于编辑生成，并且完整
+Host-owned parser/apply/accounting/reopen 候选先成立，FIM 才能按新垂直切片重开。
+Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache API。
 
 ### Tools
 
@@ -536,9 +545,9 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 | `protocol` | canonical task、request、command、event、named verifier、显式稳定 JSON evidence、AgentTask/outcome、terminal | 后续 evidence 只按真实任务缺口扩展 |
 | `runtime` | 唯一根/只读子/Writer Agent loop、Host actor capability、显式 Writer admission、时序 completion gate 与 reducer | M7 DeepSeek 可靠性/预算调优 |
 | `orchestrator` | 单 Writer worktree、Host diff/verify/integrate、精确 cleanup/recovery | Writer 保持 explicit-only；不扩双 Writer |
-| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting、完整 stream 证据与 usage 保全 | FIM 调优 |
+| `deepseek` | 官方 DeepSeek Chat planner/transport/parser/accounting、完整 stream 证据与 usage 保全 | 只按真实协议失败扩展 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
-| `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 编辑/FIM 协议 A/B |
+| `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 只按新的 production 编辑失败补证 |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
 | `app` | 唯一 production composition、Run command、显式 Writer policy 与 Orchestrator wiring | M7 策略调优 |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
@@ -1485,6 +1494,36 @@ RepoGraph、multi-Writer、imported-baseline coding/workflow-step A/B 和 prompt
 unknown-billing successor 仍未完成。完整事实见
 [M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
 
+M8-H 已 supersede 上述 M8-E/M7-C 的“保留 FIM planner/accounting 基础”快照。当前
+production 只有官方 DeepSeek Standard Chat 与 lossless Beta Strict fallback：
+
+```text
+canonical model ids
+  -> deepseek-v4-pro | deepseek-v4-flash
+  -> DeepSeekModelPort
+  -> https://api.deepseek.com/chat/completions
+  -> Chat parser/replay/accounting
+```
+
+旧 `plan_fim` 产生的 `/beta/completions` URL 不属于 sender endpoint owner，唯一完整
+response parser 只接受 Chat `choices[].message`，且 Runtime/RunStore 没有 FIM
+revision-bound Host apply/reopen consumer。candidate `7d9aa9a6` 因而删除 FIM
+planner/error/surface/accounting、公共 terminal 的 always-zero `fim_response_count`、
+eval-only `fim_edit`/`write_file` classifier 和重复模型 alias 兼容层。exec-stream
+`v2 -> v3` 只反映公共 terminal 字段删除；RuntimeEvent v16、State v21 不变。
+
+这项收敛的结论是 **keep Standard/Strict / reject unreachable FIM production
+half-branch / hold FIM re-entry**，不是证明 FIM 质量较差。M7-C deterministic matrix
+仍为 12/12，本阶段没有新 current-v16 production 编辑失败、没有同 binary treatment，
+所以 Key 未读取、官方 API 请求 0。完整事实见
+[M8-H FIM 产品范围与历史债收敛](../../eval/summaries/m8-h-fim-scope-debt-2026-07-24.md)。
+
+M8-H 的 imported-baseline fallback 也只完成离线准入。exact `352e86a6` binary 能使用
+相同 `/chat/completions` 与 `deepseek-v4-pro`，但旧 terminal schema 没有 request count、
+cost completeness/bucket 或 canonical root/child reopen ledger，retry count 也未知。
+因此 live coding/workflow-step A/B 为
+`inadmissible_incomplete_baseline_accounting`；旧 revision 不修改，Key 未读取。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1518,6 +1557,8 @@ unknown-billing successor 仍未完成。完整事实见
   production actor 没有真实 Strict treatment surface，因此本阶段没有执行产品 A/B；
 - M7-C 已证明真实 DeepSeek 的编辑成功率、恢复率、Token、时间或费用改善，或 FIM 相对
   patch/edit 更好或更差；3/12 -> 12/12 只覆盖冻结的 deterministic Host 反例；
+- M8-H 已证明 FIM 质量较差或永不应实现；它只证明旧 production 半分支无 caller、sender、
+  parser/apply/reopen 闭环，当前没有可归因 treatment；
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；

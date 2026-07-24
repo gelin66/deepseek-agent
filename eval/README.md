@@ -160,6 +160,14 @@ crash/reopen gates，不复制编辑器或失败分类。完整结果与 FIM
 由同一 tools owner 关闭；summary 同时记录 existing-file publish 非线性化 CAS，以及 Runtime
 Started `MayWrite` 的 generation 勘误。没有新增 FIM surface，Key/API 准入不变。
 
+M8-H 从 clean `dce858d0` 复核后，M7-C deterministic Host matrix 仍为 12/12，也没有
+新的 current-v16 production 编辑失败样本。静态调用图证明旧 `plan_fim` 产生 sender
+endpoint owner 不接受的 `/beta/completions` URL，唯一完整 response parser 只读取 Chat
+`choices[].message`；因此这不是同 binary treatment，而是无消费者 production 半分支。
+candidate `7d9aa9a6` 已删除该 planner/error/surface/accounting、always-zero terminal
+字段和 eval-only classifier，同时保留冻结历史证据。结论与重新准入条件见
+[M8-H FIM 产品范围与历史债收敛](summaries/m8-h-fim-scope-debt-2026-07-24.md)。
+
 ## 运行
 
 当前提交的全部离线用例：

@@ -1473,6 +1473,54 @@ manifest/summary：
 - `eval/manifests/m8-g-taskgraph-convergence-v1.json`；
 - [M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
 
+### 9.23 M8-H FIM 产品范围与历史债收敛（2026-07-24）
+
+M8-H 的 baseline 是 clean `dce858d0`，code candidate 是 `7d9aa9a6`。预注册
+manifest 不把 FIM 优于 patch/edit 作为前提，而是要求先出现新的 current-v16
+production 编辑失败证据和同 immutable binary treatment。
+
+准入事实为：
+
+| 事实 | 数量/状态 |
+|---|---:|
+| M7-C deterministic Host edit matrix | 12/12 |
+| M7-D 后新的 current-v16 production 编辑样本 | 0 |
+| canonical FIM caller/parser/apply/reopen | 0 / 0 / 0 / 0 |
+| planner URL 被唯一 sender owner 接受 | false |
+| credential read / official API requests | false / 0 |
+
+`plan_fim` 生成 `/beta/completions`，但 sender 只拥有 Standard/Beta Strict Chat URL，
+完整 response parser 只读取 Chat `choices[0].message`。这条分支不能产生可归因
+treatment，也不能安全写盘或在 RunStore 重开。因此 live A/B 在 credential/API 前为
+`inadmissible_no_surface_delta`，不产生 success、Token、wall-time 或费用指标。
+
+candidate 物理删除：
+
+- FIM planner/error/surface/accounting 和 always-zero exec/eval 字段；
+- evaluator 中不在当前允许目录的 `fim_edit`/`write_file` classifier；
+- 退役模型 alias 的静默映射与 speculative future-model pass-through；
+- TUI 重复 model catalog switch、永远为 `None` 的 alias retirement DTO/Doctor/JSON/文案。
+
+exec-stream 因 terminal 字段收缩从 v2 升到 v3，不保留兼容 reader；RuntimeEvent v16 与
+State v21 不变，现有有效 Standard/Strict event 形状和 reopen 不变。决策为
+`keep_standard_strict / reject_unreachable_fim_production_half_branch /
+hold_fim_reentry`。V09 仍为 `blocked_product_scope_decision`：PRODUCT_PLAN 的 FIM 完成面
+未满足，不能以删除半分支伪造 pass。下一项可归因实验是 imported `352e86a6` 的同任务
+coding/workflow-step A/B。
+
+该 fallback 的离线 preflight 已继续执行：exact imported revision 能构建 immutable
+release binary，也能通过显式 path suffix 使用相同 `/chat/completions` 与
+`deepseek-v4-pro`。但其 exec terminal schema v1 没有 `api_request_count`、
+`cost_complete`、费用 bucket 或可重开的 root/child started request ledger，
+`retry_count` 也是 `null`。因此无法满足完整逐 arm accounting，live A/B 在 credential
+前判定 `inadmissible_incomplete_baseline_accounting`；不修改旧 revision，不读取 Key，
+官方 API 请求仍为 0。
+
+manifest/summary：
+
+- `eval/manifests/m8-h-fim-scope-debt-v1.json`；
+- [M8-H FIM 产品范围与历史债收敛](../../eval/summaries/m8-h-fim-scope-debt-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
