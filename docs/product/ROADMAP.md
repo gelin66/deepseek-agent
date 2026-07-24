@@ -2821,6 +2821,28 @@ M9-A，也不需要付费证明 Auto 无收益。M8-I/M9-A 的 frozen manifest/s
 完整事实见
 [M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
+### M9-E：fixed-Pro billing evidence boundary
+
+M9-E 给 P0 设定一次官方文档 + 当前 production/Harness caller graph 的有界审计；只有
+官方契约能提供 request-level identity、账单 reconciliation 与有界结算语义时，才允许
+读取隔离 Key 做最小 canary。复核确认：
+
+- successful Chat response/stream 有 completion `id` 和 usage，但 pre-header failure
+  两者都不存在；
+- `/user/balance` 是账户级聚合余额，没有 request identity、更新时限或强一致性承诺；
+- Usage export 只公开月度 CSV 和按 Key amount 分解，没有公开 request-level schema、
+  completion ID 或结算水位；
+- `user_id` 只用于内容安全、cache 与调度隔离，不是 billing identity；
+- keep-alive 与十分钟排队关闭语义不能回答客户端 pre-header failure 是否已执行/计费。
+
+因此当前官方公开契约不能把 M9-A/M9-C 的物理 attempt 精确追溯为 billed/unbilled。
+独占 Key、余额差和月度 aggregate 只能作为诊断，不能满足 formal per-attempt truth。
+M9-E 在 credential 前结束，Key 未读取、official API 请求 0，也不增加 sender/header/
+accounting/Harness 代码。现有 `billing_unknown -> stop` 保留；未来 fixed-Pro 实验只对
+physical accounting 完整的 arms 形成 Token/费用结论。任何准入规则放宽必须另立 ADR，
+不得在候选评测中临时修改。完整证据见
+[M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

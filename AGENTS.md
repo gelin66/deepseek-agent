@@ -129,6 +129,14 @@ Changing one of these constraints requires evidence and a new ADR.
   uses Pro/high, and typed recovery/recheck/rework uses Pro/max. Explicit
   Pro/Flash/reasoning remains exact and replayable. Do not restore Auto,
   classifiers, keyword routing, dynamic routers or an extra model request.
+- M9-E bounded the billing-evidence audit to official documentation plus the
+  existing corrected Harness and production accounting. Successful responses
+  expose completion id/usage, but official balance and monthly per-Key export
+  do not document request-level reconciliation, settlement bounds, or
+  pre-header failure billing. The slice therefore closed before credential
+  access as `infeasible_exact_pre-header_request_reconciliation_under_current_official_contract`.
+  Keep `billing_unknown -> formal campaign stop`; changing that admission rule
+  requires a separate ADR.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

@@ -1840,6 +1840,15 @@ read-only child 为 Flash/high，typed recovery/recheck/rework 为 Pro/max。M8-
 frozen evidence 未改写；Key 未读取，official API 请求 0。完整事实见
 [M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
+M9-E 没有 production 或 Harness 代码变更。官方 Chat completion `id`/usage 只存在于
+已经收到的 response；`/user/balance` 是账户聚合，Usage export 只公开月度按 Key amount
+分解，官方没有 request-level reconciliation、settlement bound 或 pre-header failure
+计费语义。P0 因而在 credential 前关闭为
+`infeasible_exact_pre-header_request_reconciliation_under_current_official_contract`：
+Key 未读取、official API 请求 0，现有 `billing_unknown -> formal campaign stop`
+保持。完整事实见
+[M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

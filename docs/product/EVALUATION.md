@@ -2018,6 +2018,43 @@ effect-first**。M9-A 的 `hold_auto_default_admission` 保留为发生时的历
 - [ADR-0008](../decisions/0008-fixed-deepseek-routing-and-auto-retirement.md)；
 - [M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
+### 9.34 M9-E fixed-Pro billing evidence boundary（2026-07-24）
+
+P0 不是 product treatment。它以现有 corrected Harness、canonical physical request
+ledger、RunStore 和 M9-C stopped raw 为唯一 owner，只审计官方 billing observation
+能否关闭 response-before-headers 的 unknown billing。
+
+审计 admission：
+
+1. 只做一次官方 Chat usage/price/balance/Usage export/`user_id`/keep-alive/error
+   文档复核和 current caller graph；
+2. 只有存在 documented request-level identity、reconciliation endpoint/export 与
+   settlement bound，才读取隔离 Key 做最小 canary；
+3. 否则在 credential 前结束，不复制 evaluator、不增加 polling/retry、不猜测余额差。
+
+官方契约只为收到的 successful response 提供 completion `id` 和 usage；
+`/user/balance` 是账户级聚合，FAQ 只说明月度 CSV 的 amount 按 Key 分解，`user_id`
+不用于 billing。官方没有公开 pre-header attempt 的 request-level 账单查询、余额强一致/
+刷新时限或客户端断开后的计费语义。故 isolated Key + balance delta 不能满足 exact
+per-physical-attempt truth。
+
+结论：
+
+```text
+infeasible_exact_pre-header_request_reconciliation_under_current_official_contract
+keep billing_unknown -> formal campaign stop
+credential read false
+official API requests 0
+no production or Harness code change
+```
+
+后续 fixed-Pro A–E 实验只有 accounting 完整的 arms 才有 Token/费用资格；若任何
+physical attempt unknown，campaign 继续 fail closed。放宽当前准入规则需要独立 ADR。
+
+证据：
+
+- [M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
