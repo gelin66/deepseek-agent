@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import unittest
 
 
@@ -18,8 +19,14 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def sha256(path: str) -> str:
-    return hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+def sha256_at_revision(revision: str, path: str) -> str:
+    content = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(content).hexdigest()
 
 
 class M8EV1ExitContract(unittest.TestCase):
@@ -50,17 +57,25 @@ class M8EV1ExitContract(unittest.TestCase):
 
     def test_authority_hashes_bind_the_frozen_audit_input(self) -> None:
         expected = self.manifest["authorities"]
+        revision = self.manifest["production_revision"]
         self.assertEqual(
             expected["product_plan_sha256"],
-            sha256("docs/product/PRODUCT_PLAN.md"),
+            sha256_at_revision(revision, "docs/product/PRODUCT_PLAN.md"),
         )
-        self.assertEqual(expected["roadmap_sha256"], sha256("docs/product/ROADMAP.md"))
         self.assertEqual(
-            expected["evaluation_sha256"], sha256("docs/product/EVALUATION.md")
+            expected["roadmap_sha256"],
+            sha256_at_revision(revision, "docs/product/ROADMAP.md"),
+        )
+        self.assertEqual(
+            expected["evaluation_sha256"],
+            sha256_at_revision(revision, "docs/product/EVALUATION.md"),
         )
         self.assertEqual(
             expected["current_architecture_sha256"],
-            sha256("docs/architecture/CURRENT_CODEWHALE.md"),
+            sha256_at_revision(
+                revision,
+                "docs/architecture/CURRENT_CODEWHALE.md",
+            ),
         )
 
     def test_product_plan_has_exactly_sixteen_v1_requirements(self) -> None:
