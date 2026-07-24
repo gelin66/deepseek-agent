@@ -1,0 +1,212 @@
+{
+  "schema": "codewhale.eval.m9-a-host-auto-release-admission.v1",
+  "suite_id": "m9-a-host-auto-release-admission-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "3770feba35dd8a3392f7271e6505465ab02319fb",
+    "starting_tree": "9e758dccc9bda0da6b717183be24cfe1b55f190c",
+    "required_clean_start": true,
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo_lock_sha256": "f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "audited_owner_sha256": {
+    "app_production_policy": "17fd81d5489b73786684b0aaf7866e99efce9dc355a9742c57e4264ab8f26fd1",
+    "tui_product_projection": "53d8c12ec12ea58d9e35284bdb937c6f629dbcfe3961a623d37f50d87652bade",
+    "protocol_route_contract": "c518c5e4551f43c41b02ea57e079916ef46b90981ee10f9c4b7e2daa7447be57",
+    "runtime_child_binding": "18d2e96fcc73fbac79d6f2b933fe763e9f4944ac5fc94ee4f9c2474727390979",
+    "state_owner": "cf7a168b2152f2feb420ea83b44e246dc06b3a25208665c21d5c1680894aba83",
+    "fail_before_loss_contract": "e0df9086636b1c811dac5c9f1973135f9ff1cc2391dfc079e6ee59ad93922ab0"
+  },
+  "slice_contract": {
+    "real_problem": "M8-I removed the prompt-only Flash classifier and established one Host-owned typed policy, but Auto has no formal same-revision quality or efficiency evidence against fixed Pro. The current interactive TUI also discards an explicit reasoning setting whenever model=auto, contradicting the accepted explicit-reasoning contract.",
+    "acceptance": [
+      "crates/app remains the only production Auto policy owner and crates/deepseek remains only the official model capability, Chat planner, transport, parser, retry, usage, and cost owner",
+      "explicit model and explicit reasoning selections survive CLI, TUI, HTTP, and stdio projection unchanged",
+      "Auto root is Pro; ordinary read-only child is Flash; typed read-only recheck is Pro; explicit isolated Writer is Pro; no route uses an LLM classifier, prompt keyword, character threshold, Provider, product mode, or mid-run switch",
+      "each child selection is frozen in AgentTask and exactly bound to RunRequest; ModelRouteAudit, selected model/reasoning, actor authority, request accounting, and execution fingerprint reopen without rerouting",
+      "root-only, explicit Writer, and crash/reopen paths pass conformance even where Auto and fixed Pro have no model surface delta",
+      "a formal paid comparison is admitted only after one immutable current binary exposes fixed Pro, fixed Flash, and Host Auto with the same task, tools, budgets, verifier, retry policy, and complete billing"
+    ],
+    "single_owner": "crates/app::ProductionModelRoutePolicy",
+    "deterministic_correction_owner": "crates/tui product input projection",
+    "replaces": [
+      "the TUI-only rule that silently rewrites an explicit reasoning selection to auto when model=auto"
+    ],
+    "cutover_deletion": [
+      "delete the TUI reasoning rewrite before the formal candidate is frozen",
+      "do not restore crates/deepseek/src/auto_route.rs, classifier prompt/parser, recent_context, keyword or 500-character heuristics, provider inventory, unknown-billing pre-route recovery, or a production experiment toggle",
+      "delete any M9-A-only live runner/test path after the decision if it has no independent production or regression consumer"
+    ]
+  },
+  "current_surface_audit": {
+    "fixed_pro": {
+      "requested_mode": "explicit",
+      "root_model": "deepseek-v4-pro",
+      "ordinary_read_only_child_model": "deepseek-v4-pro",
+      "writer_model": "deepseek-v4-pro"
+    },
+    "fixed_flash": {
+      "requested_mode": "explicit",
+      "root_model": "deepseek-v4-flash",
+      "ordinary_read_only_child_model": "deepseek-v4-flash",
+      "writer_model": "deepseek-v4-flash",
+      "role": "diagnostic_only"
+    },
+    "host_auto": {
+      "requested_mode": "auto",
+      "policy_version": "deepseek_host_auto_v1",
+      "root_model": "deepseek-v4-pro",
+      "ordinary_read_only_child_model": "deepseek-v4-flash",
+      "typed_read_only_recheck_model": "deepseek-v4-pro",
+      "ordinary_writer_model": "deepseek-v4-pro",
+      "typed_writer_rework_model": "deepseek-v4-pro",
+      "ordinary_reasoning": "high",
+      "typed_recovery_reasoning": "max"
+    },
+    "paid_delta_boundary": "Auto differs from fixed Pro only when a current Run creates an ordinary read-only child. Root-only and ordinary Writer runs are offline conformance strata, not paid benefit cells."
+  },
+  "offline_matrix": [
+    "TUI model=auto preserves explicit off/high/max reasoning exactly like exec and app-server",
+    "explicit Pro and Flash root/child inheritance remains exact",
+    "Auto root, ordinary read-only child, typed recheck, ordinary Writer, and typed rework resolve only from typed actor/authority/evidence facts",
+    "AgentTask and child RunRequest bind exact model, reasoning, route audit, workspace authority, limits, and tool policy",
+    "pending Start, root model in-flight, read-only child, Writer, verifier, and terminal SIGKILL/reopen do not reroute or duplicate requests",
+    "root/read-only/Writer RequestPlan and accounting rebuild exactly from SQLite",
+    "CLI/TUI/HTTP/stdio share one requested model/reasoning contract",
+    "no auto_route module, classifier prompt/parser, recent_context, prompt heuristic, Provider, second Runtime, second Store, or experiment production variant exists"
+  ],
+  "formal_experiment": {
+    "kind": "same_revision_same_immutable_binary_three_surface_comparison",
+    "maximum_reruns": 0,
+    "runs_per_variant_task": 3,
+    "formal_tasks": 3,
+    "formal_arms": 27,
+    "variants": {
+      "fixed_pro": {
+        "requested_model": "deepseek-v4-pro",
+        "requested_reasoning": "high",
+        "role": "only product quality baseline"
+      },
+      "fixed_flash": {
+        "requested_model": "deepseek-v4-flash",
+        "requested_reasoning": "high",
+        "role": "diagnostic; cannot admit Auto"
+      },
+      "host_auto": {
+        "requested_model": "auto",
+        "requested_reasoning": "high",
+        "role": "candidate"
+      }
+    },
+    "same_across_arms": [
+      "source revision, source tree, Cargo.lock, rust toolchain, release binary bytes and binary SHA-256",
+      "TaskContract, user prompt, fixture bytes, deterministic verifier, workspace slot identity and Git seed",
+      "official ChatCompletions endpoint, streaming, retry policy, tool catalog, permissions, request/output/turn/tool/wall budgets",
+      "maximum_reruns=0 and fail-before-loss journal contract"
+    ],
+    "schedule": "balanced three-variant rotation inside each task and repetition; every arm begins from the same pair-owned fixture bytes and a separate State/RunStore",
+    "tasks": [
+      {
+        "id": "t1-capability-intersection",
+        "fixture": "eval/fixtures/m7-readonly-fanout/t1-capability-intersection",
+        "fixture_tree_sha256": "80b250a1c3bf0bf56e7d611889ba8b1d284909ae0cdc5737c5aa0339aa69d816",
+        "required_read_only_children": 2,
+        "stratum": "multi-file capability intersection followed by one verified implementation"
+      },
+      {
+        "id": "t2-dependency-impact",
+        "fixture": "eval/fixtures/m7-readonly-fanout/t2-dependency-impact",
+        "fixture_tree_sha256": "d7b23e344a2d74e5f428a46e19193404c3d9c0e70699415f100832786ae15e46",
+        "required_read_only_children": 2,
+        "stratum": "cross-component dependency investigation followed by one verified implementation"
+      },
+      {
+        "id": "t3-policy-resolution",
+        "fixture": "eval/fixtures/m7-readonly-fanout/t3-policy-resolution",
+        "fixture_tree_sha256": "b95b19b16a1c53ed51649c901b879a717ac8ea72c5b1805bd2e9236617a6b33a",
+        "required_read_only_children": 2,
+        "stratum": "layered policy and locked-key counterexamples followed by one verified implementation"
+      }
+    ]
+  },
+  "hard_gates": {
+    "quality": [
+      "Host Auto verified success is not lower than fixed Pro in any task cell",
+      "Host Auto false success is zero",
+      "no pair is fixed-Pro success and Host-Auto failure",
+      "all Host Auto arms contain exactly one Pro root route, exactly two ordinary Flash read-only child routes, and a Pro root integration route",
+      "all fixed-Pro arms use Pro for root and both children; all fixed-Flash arms use Flash for root and both children",
+      "TaskContract, verifier, evidence completion, latest revision, route audit, request ledger, replay, and billing remain valid"
+    ],
+    "accounting": [
+      "every physical start has a typed response/usage disposition",
+      "billing_unknown=false, accounting complete=true, usage_complete=true, in_flight=0, and all official prices are fixture-known",
+      "any unknown billing, unsealed accounting, identity mismatch, observer failure, safety ambiguity, or incomplete cell stops the suite without retry, mate completion, resampling, or splicing"
+    ],
+    "efficiency_after_quality": [
+      "Host Auto total known cost or wall time improves by at least 20 percent versus fixed Pro",
+      "the chosen improvement direction is stable in paired task/repetition results rather than produced by one outlier",
+      "the net code-complexity delta remains positive after deleting experiment-only paths"
+    ]
+  },
+  "decision_rule": {
+    "admit_default_auto": "only if every quality/accounting gate passes and at least one efficiency gate passes",
+    "otherwise": "keep product default fixed deepseek-v4-pro; keep explicit models; keep Host Auto as hold; Flash remains explicit and a typed read-only investigation model",
+    "non_conclusions": [
+      "official model positioning does not prove CodeWhale task quality",
+      "the fixed Flash diagnostic cannot substitute for fixed Pro non-inferiority",
+      "root-only and Writer conformance cannot be counted as Auto efficiency wins because they have no model delta",
+      "no step-level cascade, learned router, root Flash, hidden recheck, or classifier restoration is admitted"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-24",
+    "v4_release": "https://api-docs.deepseek.com/news/news260424/",
+    "models_and_pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ],
+      "retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "ordinary_reasoning_effort": "high",
+      "complex_agent_reasoning_effort": "max",
+      "flash_cache_miss_input_usd_per_million": "0.14",
+      "flash_output_usd_per_million": "0.28",
+      "pro_cache_miss_input_usd_per_million": "0.435",
+      "pro_output_usd_per_million": "0.87"
+    }
+  },
+  "research_review": {
+    "reviewed_on": "2026-07-24",
+    "sources": [
+      "https://arxiv.org/abs/2607.11399",
+      "https://arxiv.org/abs/2601.07206",
+      "https://arxiv.org/abs/2410.10347"
+    ],
+    "use": "Research motivates harness-state routing, abstention, and reliable quality estimation; it does not override CodeWhale's fixed-Pro quality gate."
+  },
+  "execution": {
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m9a-target",
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_before_live_admission": false,
+    "official_api_requests_before_live_admission": 0,
+    "raw_mode": "ignored_0600_exclusive_hash_chained",
+    "live_api_admitted_at_freeze": false
+  }
+}
