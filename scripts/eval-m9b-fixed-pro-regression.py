@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""M9-B post-V1 fixed-Pro coding regression baseline.
+"""M9-C post-V1 fixed-Pro coding regression baseline successor.
 
 The evaluator exercises six frozen temporary Git repositories through the
 canonical ``codewhale app-server --stdio`` Run API. It records terminal and
 RunStore facts before credential-free reopen, deterministic verification, or
-label derivation. It is a regression label collector, not a product A/B.
+label derivation. The M9-C contract content-addresses the corrected M9-B task
+and tool inputs but always starts a new schedule and journal at position 1.
+It is a regression label collector, not a product A/B.
 """
 
 from __future__ import annotations
@@ -29,10 +31,20 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
-MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
-JOURNAL_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression-journal.v1"
-ADMISSION_SCHEMA = "codewhale.eval.m9-b-fixed-pro-live-admission.v1"
+MANIFEST_PATH = (
+    ROOT / "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
+)
+BASE_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
+)
+MANIFEST_SCHEMA = "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
+BASE_MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
+JOURNAL_SCHEMA = (
+    "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
+)
+ADMISSION_SCHEMA = (
+    "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
+)
 RUN_API = 11
 EVENT_API = 17
 STATE_SCHEMA = 23
@@ -145,19 +157,82 @@ def file_hash(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def load_manifest() -> dict[str, Any]:
+def repository_relative(path: Path, failure_code: str) -> str:
     try:
-        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        return path.relative_to(ROOT).as_posix()
+    except ValueError as error:
+        raise EvaluationError(failure_code) from error
+
+
+def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise EvaluationError("manifest_unavailable") from error
+        raise EvaluationError(failure_code) from error
+    require(isinstance(value, dict), failure_code)
+    return value
+
+
+def load_manifest() -> dict[str, Any]:
+    successor = read_json_object(MANIFEST_PATH, "manifest_unavailable")
     require(
-        isinstance(manifest, dict)
-        and manifest.get("schema") == MANIFEST_SCHEMA,
+        successor.get("schema") == MANIFEST_SCHEMA,
         "manifest_schema_invalid",
     )
+    inherited = successor.get("inherited_contract")
+    require(isinstance(inherited, dict), "inherited_contract_invalid")
+    require(
+        inherited.get("path")
+        == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
+        and inherited.get("file_sha256") == file_hash(BASE_MANIFEST_PATH),
+        "inherited_manifest_identity_invalid",
+    )
+    base = read_json_object(
+        BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
+    )
+    require(
+        base.get("schema") == BASE_MANIFEST_SCHEMA,
+        "inherited_manifest_schema_invalid",
+    )
+    inherited_sections = inherited.get("sections")
+    require(
+        isinstance(inherited_sections, dict)
+        and set(inherited_sections)
+        == {"tasks", "tool_policies", "official_review"},
+        "inherited_sections_invalid",
+    )
+    for section, expected_sha256 in inherited_sections.items():
+        require(
+            expected_sha256 == canonical_hash(base.get(section)),
+            "inherited_section_identity_invalid",
+            {"section": section},
+        )
+    require(
+        successor.get("official_review") == base.get("official_review"),
+        "official_review_identity_invalid",
+    )
+    acceptance_overrides = inherited.get("acceptance_id_overrides")
+    base_tasks = base.get("tasks")
+    require(
+        isinstance(base_tasks, dict)
+        and isinstance(acceptance_overrides, dict)
+        and set(acceptance_overrides) == set(base_tasks),
+        "acceptance_override_identity_invalid",
+    )
+    tasks = json.loads(json.dumps(base_tasks, ensure_ascii=False))
+    for task_id, acceptance_id in acceptance_overrides.items():
+        require(
+            isinstance(acceptance_id, str)
+            and acceptance_id == f"m9c-{task_id.replace('_', '-')}",
+            "acceptance_override_invalid",
+            {"task_id": task_id},
+        )
+        tasks[task_id]["acceptance_id"] = acceptance_id
+    manifest = dict(successor)
+    manifest["tasks"] = tasks
+    manifest["tool_policies"] = base["tool_policies"]
     source = manifest.get("source_identity", {})
     resources = manifest.get("resources", {})
-    tasks = manifest.get("tasks", {})
     require(
         source.get("run_api") == RUN_API
         and source.get("runtime_event") == EVENT_API
@@ -1628,7 +1703,7 @@ def execute_arm(
         }
     )
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9b-arm-"
+        prefix="codewhale-m9c-arm-"
     ) as raw_temp:
         arm_root = Path(raw_temp)
         workspace = arm_root / "workspace"
@@ -1813,7 +1888,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     )
     return {
         "record_type": "summary",
-        "record_class": "post_v1_fixed_pro_regression_baseline",
+        "record_class": MANIFEST["decision_rule"]["record_class"],
         "product_metric_eligible": False,
         "baseline_label_eligible": complete,
         "complete": complete,
@@ -1844,7 +1919,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_nanousd": total_cost,
         "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
         "decision": (
-            "keep_fixed_pro_regression_baseline"
+            "keep_fixed_pro_regression_baseline_successor"
             if complete
             else "reject_incomplete_baseline"
         ),
@@ -1877,18 +1952,31 @@ def probe_binary(binary: Path, revision: str) -> dict[str, Any]:
 
 
 def load_admission(
-    path: Path, revision: str, binary: Path
+    path: Path,
+    revision: str,
+    binary: Path,
+    binary_identity: dict[str, Any],
+    output: Path,
 ) -> dict[str, Any]:
-    try:
-        admission = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise EvaluationError("live_admission_unavailable") from error
+    admission = read_json_object(path, "live_admission_unavailable")
+    output_relative = repository_relative(output, "live_output_scope_invalid")
+    surface = admission.get("surface_identity", {})
+    live_contract = admission.get("live_contract", {})
     require(
         admission.get("schema") == ADMISSION_SCHEMA
         and admission.get("candidate_revision") == revision
+        and admission.get("candidate_tree")
+        == git_output("rev-parse", f"{revision}^{{tree}}")
+        and admission.get("candidate_binary") == binary.as_posix()
         and admission.get("candidate_binary_sha256") == file_hash(binary)
+        and admission.get("candidate_binary_size_bytes")
+        == binary.stat().st_size
+        and admission.get("candidate_binary_version")
+        == binary_identity["version"]
         and admission.get("contract_manifest_sha256")
         == file_hash(MANIFEST_PATH)
+        and admission.get("inherited_contract_manifest_sha256")
+        == file_hash(BASE_MANIFEST_PATH)
         and admission.get("harness_sha256")
         == file_hash(Path(__file__).resolve())
         and admission.get("schedule_sha256")
@@ -1900,6 +1988,36 @@ def load_admission(
                 for task_id in TASKS
             }
         )
+        and surface.get("production_sender")
+        == "official DeepSeek OpenAI-format ChatCompletions"
+        and surface.get("base_url")
+        == MANIFEST["official_review"]["frozen_facts"]["openai_base_url"]
+        and surface.get("endpoint")
+        == MANIFEST["official_review"]["frozen_facts"]["chat_endpoint"]
+        and surface.get("model") == MODEL
+        and surface.get("reasoning_effort") == REASONING
+        and surface.get("streaming") is True
+        and surface.get("fixed_across_all_arms") is True
+        and surface.get("product_treatment_delta") is False
+        and live_contract.get("output") == output_relative
+        and live_contract.get("formal_tasks") == 6
+        and live_contract.get("runs_per_task") == 3
+        and live_contract.get("formal_arms") == 18
+        and live_contract.get("schedule_start_position") == 1
+        and live_contract.get("maximum_reruns") == 0
+        and live_contract.get("m9_b_raw_is_input") is False
+        and live_contract.get("per_arm_known_cost_ceiling_usd") == 0.08
+        and live_contract.get("suite_known_cost_ceiling_usd") == 1.44
+        and live_contract.get("stop_before_next_arm_on_unknown_billing")
+        is True
+        and live_contract.get("stop_before_next_arm_on_incomplete_accounting")
+        is True
+        and live_contract.get("output_mode")
+        == "ignored_0600_exclusive_hash_chained"
+        and admission.get("official_protocol_revalidated_on")
+        == MANIFEST["official_review"]["reviewed_on"]
+        and admission.get("official_sources")
+        == MANIFEST["official_review"]["sources"]
         and admission.get("offline_gates_passed") is True
         and admission.get("live_api_admitted") is True,
         "live_admission_invalid",
@@ -1911,6 +2029,7 @@ def preflight(
     binary: Path,
     revision: str,
     admission_path: Path | None,
+    output_path: Path | None,
     *,
     formal: bool,
 ) -> dict[str, Any]:
@@ -1923,6 +2042,52 @@ def preflight(
         "rev-parse", "--verify", f"{revision}^{{commit}}"
     )
     require(resolved == revision, "revision_invalid")
+    source = MANIFEST["source_identity"]
+    starting_revision = source["starting_revision"]
+    require(
+        git_output("rev-parse", f"{starting_revision}^{{tree}}")
+        == source["starting_tree"],
+        "starting_identity_mismatch",
+    )
+    ancestry = run_command(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            starting_revision,
+            revision,
+        ],
+        cwd=ROOT,
+    )
+    require(ancestry.returncode == 0, "candidate_ancestry_invalid")
+    production_diff = git_output(
+        "diff",
+        "--name-only",
+        f"{starting_revision}..{revision}",
+        "--",
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "config.example.toml",
+    )
+    require(not production_diff, "candidate_production_delta_detected")
+    authority_paths = {
+        "product_plan": ROOT / "docs/product/PRODUCT_PLAN.md",
+        "roadmap": ROOT / "docs/product/ROADMAP.md",
+        "evaluation": ROOT / "docs/product/EVALUATION.md",
+        "current_architecture": (
+            ROOT / "docs/architecture/CURRENT_CODEWHALE.md"
+        ),
+    }
+    require(
+        all(
+            file_hash(path)
+            == MANIFEST["authority_sha256"][authority]
+            for authority, path in authority_paths.items()
+        ),
+        "authority_identity_mismatch",
+    )
     identity = probe_binary(binary, revision)
     fixture_hashes = {
         task_id: fixture_hash(task_id) for task_id in TASKS
@@ -1935,7 +2100,6 @@ def preflight(
         },
         "fixture_hash_mismatch",
     )
-    source = MANIFEST["source_identity"]
     require(
         file_hash(ROOT / "Cargo.lock") == source["cargo_lock_sha256"]
         and file_hash(ROOT / "rust-toolchain.toml")
@@ -1944,10 +2108,22 @@ def preflight(
     )
     admission = None
     if formal:
-        require(admission_path is not None, "live_admission_required")
-        admission = load_admission(admission_path, revision, binary)
+        require(
+            admission_path is not None and output_path is not None,
+            "live_admission_required",
+        )
+        admission = load_admission(
+            admission_path,
+            revision,
+            binary,
+            identity,
+            output_path,
+        )
     return {
         "manifest_sha256": file_hash(MANIFEST_PATH),
+        "inherited_contract_manifest_sha256": file_hash(
+            BASE_MANIFEST_PATH
+        ),
         "harness_sha256": file_hash(Path(__file__).resolve()),
         "schedule_sha256": canonical_hash(formal_schedule()),
         "task_contracts_sha256": canonical_hash(
@@ -1998,7 +2174,7 @@ def read_key(path: Path) -> str:
 def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
     return {
         "record_type": "plan",
-        "record_class": "post_v1_fixed_pro_regression_baseline",
+        "record_class": MANIFEST["decision_rule"]["record_class"],
         "product_metric_eligible": False,
         "source_identity": identity,
         "model": MODEL,
@@ -2076,6 +2252,16 @@ def run_self_test() -> int:
         "self_test_schedule_balance",
     )
     require(
+        file_hash(BASE_MANIFEST_PATH)
+        == MANIFEST["inherited_contract"]["file_sha256"]
+        and {
+            task_id: task["acceptance_id"]
+            for task_id, task in TASKS.items()
+        }
+        == MANIFEST["inherited_contract"]["acceptance_id_overrides"],
+        "self_test_inherited_contract",
+    )
+    require(
         "agent_result_collected" not in WRITER_ONLY_LIFECYCLE
         and set(WRITER_ONLY_LIFECYCLE).issubset(WRITER_LIFECYCLE),
         "self_test_readonly_lifecycle_boundary",
@@ -2092,7 +2278,7 @@ def run_self_test() -> int:
     )
     materialized: dict[str, str] = {}
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9b-fixture-test-"
+        prefix="codewhale-m9c-fixture-test-"
     ) as raw_temp:
         root = Path(raw_temp)
         for task_id in TASKS:
@@ -2124,7 +2310,7 @@ def run_self_test() -> int:
     )
     fault_results = []
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9b-journal-test-"
+        prefix="codewhale-m9c-journal-test-"
     ) as raw_temp:
         directory = Path(raw_temp)
         for fault in faults:
@@ -2221,6 +2407,10 @@ def run_self_test() -> int:
                 "schema": JOURNAL_SCHEMA,
                 "record_type": "self_test",
                 "passed": True,
+                "manifest_sha256": file_hash(MANIFEST_PATH),
+                "inherited_contract_manifest_sha256": file_hash(
+                    BASE_MANIFEST_PATH
+                ),
                 "schedule_sha256": canonical_hash(schedule),
                 "task_contracts_sha256": canonical_hash(
                     {
@@ -2246,6 +2436,9 @@ def run_freeze_report() -> int:
             {
                 "harness_sha256": file_hash(Path(__file__).resolve()),
                 "manifest_sha256": file_hash(MANIFEST_PATH),
+                "inherited_contract_manifest_sha256": file_hash(
+                    BASE_MANIFEST_PATH
+                ),
                 "schedule_sha256": canonical_hash(formal_schedule()),
                 "task_contracts_sha256": canonical_hash(
                     {
@@ -2271,7 +2464,11 @@ def run_freeze_report() -> int:
 def run_dry(args: argparse.Namespace) -> int:
     revision = args.revision or git_output("rev-parse", "HEAD")
     identity = preflight(
-        Path(args.binary).resolve(), revision, None, formal=False
+        Path(args.binary).resolve(),
+        revision,
+        None,
+        None,
+        formal=False,
     )
     print(
         json.dumps(
@@ -2288,13 +2485,15 @@ def run_formal(args: argparse.Namespace) -> int:
     require(args.admission, "live_admission_required")
     revision = args.revision or git_output("rev-parse", "HEAD")
     binary = Path(args.binary).resolve()
+    output = Path(args.output).resolve()
     identity = preflight(
         binary,
         revision,
         Path(args.admission).resolve(),
+        output,
         formal=True,
     )
-    with Journal.claim(Path(args.output).resolve()) as journal:
+    with Journal.claim(output) as journal:
         journal.emit(plan_record(identity))
         key = read_key(Path(args.key_file).expanduser().resolve())
         journal.emit(
@@ -2305,7 +2504,7 @@ def run_formal(args: argparse.Namespace) -> int:
             }
         )
         frozen_root = Path(
-            tempfile.mkdtemp(prefix="codewhale-m9b-binary-")
+            tempfile.mkdtemp(prefix="codewhale-m9c-binary-")
         )
         frozen_binary = frozen_root / "codewhale"
         arms: list[dict[str, Any]] = []
