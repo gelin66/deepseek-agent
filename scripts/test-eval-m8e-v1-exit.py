@@ -29,6 +29,16 @@ def sha256_at_revision(revision: str, path: str) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def read_at_revision(revision: str, path: str) -> str:
+    return subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
 class M8EV1ExitContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -131,12 +141,13 @@ class M8EV1ExitContract(unittest.TestCase):
         self.assertNotRegex(joined, r"\bRepoGraph\b")
 
     def test_duplicate_task_product_concepts_are_observable(self) -> None:
-        cli = read("crates/cli/src/lib.rs")
+        revision = self.manifest["production_revision"]
+        cli = read_at_revision(revision, "crates/cli/src/lib.rs")
         self.assertIn("Fleet(TuiPassthroughArgs)", cli)
         self.assertIn("Lane(LaneArgs)", cli)
         self.assertIn(
             "pub struct ProductionAgentOrchestrator",
-            read("crates/orchestrator/src/runtime.rs"),
+            read_at_revision(revision, "crates/orchestrator/src/runtime.rs"),
         )
 
     def test_known_release_blockers_remain_fail_closed(self) -> None:

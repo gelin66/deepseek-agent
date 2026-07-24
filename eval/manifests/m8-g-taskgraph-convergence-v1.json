@@ -1,0 +1,100 @@
+{
+  "schema": "codewhale.eval.m8-g-taskgraph-convergence.v1",
+  "suite_id": "m8-g-taskgraph-convergence-64f6bc16-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "baseline_revision": "650df581c825100c70a621da214c6c3d9ccb39d0",
+  "candidate_revision": "64f6bc1610787993fb0ad2d709aa232161c83453",
+  "candidate_tree": "9c965668460b54080921b88f37ef5610c71f0b13",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_baseline": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "setup_state_schema": 2,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "1d8b3e08412b2e0a5b2d7dd4e414dd5c86ee5a573559684b755b44d411dd9d77",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0"
+  },
+  "canonical_owners": {
+    "task_and_outcome_contract": "crates/protocol::{AgentTask, AgentOutcome}",
+    "root_and_child_execution": "crates/runtime::AgentRuntime",
+    "persistent_truth_and_reopen": "crates/state::StateStore as RunStore",
+    "explicit_writer_git_side_effects": "crates/orchestrator::ProductionAgentOrchestrator",
+    "application_entry": "crates/app::AgentApplication"
+  },
+  "cutover": {
+    "decision": "keep_canonical_taskgraph_delete_fleet_lane",
+    "removed_user_commands": [
+      "codewhale fleet",
+      "codewhale lane"
+    ],
+    "removed_paths": [
+      "crates/protocol/src/fleet.rs",
+      "crates/config/src/fleet.rs",
+      "crates/tui/src/fleet",
+      "crates/tui/assets/skills/fleet-manager",
+      "crates/lane"
+    ],
+    "removed_persistent_concepts": [
+      "Fleet ledger and leases",
+      "Lane registry and process receipts",
+      "OperateFleet setup card and receipt flag"
+    ],
+    "retained_constraints": [
+      "one DeepSeek backend",
+      "one AgentRuntime",
+      "one canonical RuntimeEvent",
+      "one RunStore",
+      "one explicit Writer at most",
+      "CLI/TUI/API thin-client parity"
+    ],
+    "explicitly_absent": [
+      "remote Fleet",
+      "generic DAG",
+      "multi-Writer",
+      "compatibility reader or dual write"
+    ]
+  },
+  "complexity": {
+    "changed_files": 48,
+    "insertions": 150,
+    "deletions": 15260,
+    "net_lines": -15110,
+    "visible_cli_commands_before": 20,
+    "visible_cli_commands_after": 18,
+    "setup_steps_before": 7,
+    "setup_steps_after": 6
+  },
+  "validation": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8g-target",
+    "cargo_net_offline": true,
+    "passed": [
+      "./scripts/dev-codewhale.sh focused",
+      "cargo fmt --all -- --check",
+      "cargo clippy --workspace --all-targets --locked --offline -- -D warnings",
+      "cargo test --workspace --locked --offline",
+      "CLI retired-command fail-closed process tests",
+      "root/read-only/explicit Writer conformance",
+      "exec/HTTP/stdio parity",
+      "RunStore reopen and process SIGKILL recovery",
+      "git diff --check"
+    ],
+    "credential_read": false,
+    "official_api_requests": 0,
+    "reason": "This is an offline architecture convergence with no model treatment or billing surface delta."
+  },
+  "v1_effect": {
+    "V06": "pass",
+    "V12": "improved_but_not_closed",
+    "V16": "local_step_count_decreased_but_imported_baseline_ab_still_required"
+  },
+  "non_conclusions": [
+    "No verified coding-success, token, wall-time, cache, or API-cost improvement is claimed.",
+    "Single explicit Writer is not admitted as a default or as evidence for multi-Writer.",
+    "FIM, RepoGraph, imported-baseline coding A/B, and the Chinese prompt successor remain separate decisions."
+  ]
+}

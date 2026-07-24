@@ -2311,6 +2311,34 @@ M8-F 的 Anthropic Messages cutover 因 `invalid_premise` 取消。冻结它的
 cutover 后删除重复协议、配置、状态和 UI 词汇。随后再处理 FIM 产品范围/证据、
 imported-baseline coding/workflow-step A/B 与 billing-provable 中文 prompt successor。
 
+### M8-G：单一 TaskGraph 产品概念收敛
+
+M8-G 以 clean `650df581` 为 baseline。只读调用图确认 canonical TaskGraph 已由
+`AgentTask` / `AgentOutcome`、`AgentRuntime` child lifecycle、`RunStore` 持久真相和
+`ProductionAgentOrchestrator` 的 explicit Writer Git side effects 共同实现；不存在
+需要新 crate、DTO、Store 或 scheduler 才能填补的执行缺口。
+
+code candidate `64f6bc16` 物理删除 Fleet protocol/config/ledger/lease/scheduler/SSH/
+alerts/worker/UI、bundled skill，以及完整 Lane registry/tmux/inline/process shell。
+`codewhale fleet`、`codewhale lane` 和 `/fleet` 不再是产品面；旧调用在配置或模型启动前
+fail closed。setup-state 从 7 步收敛为 6 步并升到 schema v2，旧 Fleet-bearing record
+不兼容读取；Doctor 只投影 canonical `task_graph` owner/actors。CLI 可见命令从 20 降到
+18。
+
+相对 baseline 为 48 files、`+150/-15,260`，净删除 15,110 行。Run API v10、
+RuntimeEvent v16、State v21、exec-stream v2 和唯一
+`AgentApplication -> AgentRuntime -> RunStore` 未改变。focused、workspace strict
+Clippy/test、root/read-only/explicit Writer、exec/HTTP/stdio parity、SQLite reopen、
+process SIGKILL recovery、fmt 与 diff gate 全部通过。Key 未读取，官方 API 请求 0。
+
+决策为 **keep canonical TaskGraph / delete Fleet and Lane / close V06**。V12 已收窄但仍
+需独立审计 generic provider vocabulary；V16 只证明本切片步骤下降，不能替代相对
+imported `352e86a6` 的同任务 workflow-step A/B。下一切片冻结 Standard/Strict/FIM 的
+真实 V1 产品范围：只有编辑基线证明主要瓶颈仍在生成且 FIM 有可归因 surface delta 时
+才建立最小 Host-owned 候选，否则保持 hold/reject 并转入 imported-baseline A/B。
+完整结论见
+[M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
+
 ### 调优
 
 - `apply_patch/search-replace/FIM` A/B；
@@ -2367,8 +2395,8 @@ M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、
 | 退役 `tui/compaction`、`seam_manager`（已删除） | `context` | canonical hard-limit 实现位于 `context + runtime` |
 | `project_context`、`working_set` 遗留半区 | `context` | 浅层 project map 和重复投影 |
 | `tui/src/tools/*` | `tools` | TUI 工具业务逻辑 |
-| legacy thread tables、Fleet ledger | `state` | 多状态真相 |
-| Fleet、Lane | `orchestrator` | 重复产品外壳；hidden Workflow 第二循环已删除 |
+| legacy thread tables、Fleet ledger（已删除） | `state` | canonical `RunStore` 是唯一持久真相 |
+| Fleet、Lane（M8-G 已删除） | `runtime + orchestrator` | 只保留 canonical child lifecycle 与 explicit Writer Git side effects |
 | 交互 foreground/child projection（M4-C C3 已迁移） | `app + runtime + tui` | 旧 Engine、runtime-thread、SessionManager、child cache 已删除 |
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |

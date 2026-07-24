@@ -1453,6 +1453,38 @@ root/read-only/Writer、SIGKILL/reopen 与 delivery gates 通过。这证明上�
 不消除上述 blocker。完整矩阵见
 [M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
 
+M8-G 已 supersede 上述 M8-E 的 Fleet/Lane 快照。当前唯一 TaskGraph 产品事实为：
+
+```text
+AgentApplication
+  -> AgentRuntime(root/read-only child/explicit Writer)
+  -> RuntimeEvent v16
+  -> RunStore(State v21)
+
+explicit Writer Git side effects only
+  -> ProductionAgentOrchestrator
+  -> worktree/diff/verify/integrate/root verify/cleanup
+```
+
+`AgentTask`、`AgentOutcome`、`parent_run_id`、shared budget 和 terminal lifecycle 是
+canonical graph facts；没有新的 TaskGraph DTO、crate、scheduler 或 Store。
+Fleet protocol/config/ledger/lease/scheduler/SSH/alerts/worker/UI、bundled skill，以及
+Lane registry/tmux/inline/process shell 均已物理删除。CLI 不再提供 `fleet`/`lane`，
+TUI 不再提供 `/fleet`；旧 spellings 在 config、TUI、Store 或 model 前 fail closed。
+
+setup-state schema 为 v2，已删除 `OperateFleet` 和 receipt flag；旧 v1 Fleet-bearing
+record 不经兼容 reader 重开。Doctor JSON 的 `task_graph` 只报告
+`AgentRuntime`、`RunStore`、`ProductionAgentOrchestrator` 与 root/read-only/explicit
+Writer actor，明确 `remote_fleet=false`、`multi_writer=false`。
+
+code candidate `64f6bc16` 相对 `650df581` 净删除 15,110 行，visible CLI command
+`20 -> 18`、setup step `7 -> 6`。Run API v10、RuntimeEvent v16、State v21 和
+exec-stream v2 未改变；focused、workspace Clippy/test、CLI/TUI/API parity、
+root/read-only/Writer、SQLite reopen 与 SIGKILL recovery 通过。V06 当前为 pass；FIM、
+RepoGraph、multi-Writer、imported-baseline coding/workflow-step A/B 和 prompt
+unknown-billing successor 仍未完成。完整事实见
+[M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

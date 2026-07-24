@@ -170,6 +170,15 @@ codewhale-tui 0.8.68 (a12bea45f206)
   imported-baseline coding/workflow-step A/B，以及 billing-provable 中文 prompt
   successor。
 
+### 2026-07-24 successor note
+
+M8-G code candidate `64f6bc16` 已物理删除 Fleet/Lane 的 protocol、config、持久状态、
+command、UI 与 process shell，保留现有 `AgentRuntime`、`RunStore` 和 explicit Writer
+Orchestrator。因此本文件冻结的 V06 `blocked` 是 M8-E 历史输入，当前 V06 已变为
+`pass`；V12 收窄但未关闭，V16 仍需 imported-baseline workflow-step A/B。M8-E 的
+8 pass / 8 blocked frozen result、manifest 与 raw 不反向修改。successor 见
+[M8-G 单一 TaskGraph 产品概念收敛](m8-g-taskgraph-convergence-2026-07-24.md)。
+
 ## 7. 非结论
 
 M8-E 不证明：

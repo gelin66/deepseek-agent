@@ -3,7 +3,7 @@
 > 文档类别：当前能力说明。产品边界以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 快照日期：2026-07-21
+- 快照日期：2026-07-24
 - 执行 owner：`crates/runtime::AgentRuntime`
 - Writer 编排 owner：`crates/orchestrator::ProductionAgentOrchestrator`
 - 持久事实 owner：canonical `RunStore`
@@ -76,29 +76,26 @@ max_concurrent = 4
 max_depth = 3
 ```
 
-它们分别控制是否暴露 `agent`、共享 child 并发上限和嵌套深度。当前 Config resolver
-仍接受部分导入期 provider/top-level fallback 字段；这些旧配置待独立删除，不构成第二
-Runtime 的保留理由。`max_concurrent` 仍允许多个只读 child；M6-A 另行把 isolated Writer
-限制为每个 root 最多一个，不能由该配置扩大为多 Writer。
+它们分别控制是否暴露 `agent`、共享 child 并发上限和嵌套深度。DeepSeek endpoint、
+model 与认证由唯一 DeepSeek config owner 解析；已经退休的 Provider、Fleet 和 Lane
+配置会 fail closed。`max_concurrent` 仍允许多个只读 child；isolated Writer 限制为每个
+root 最多一个，不能由该配置扩大为多 Writer。
 
-## Fleet 与角色 profile
+## 唯一 TaskGraph 产品概念
 
-Fleet 的真实 worker 由 `fleet::executor` 启动为：
+TaskGraph 不是新的 DTO、模式或第二 scheduler。它是现有 canonical facts 的产品名称：
 
 ```text
-FleetExecutor -> codewhale exec --output-format stream-json
+AgentTask / AgentOutcome / parent_run_id
+  -> AgentRuntime child lifecycle and shared budgets
+  -> RunStore durable truth and reopen
+  -> ProductionAgentOrchestrator only for explicit Writer Git side effects
 ```
 
-因此 Fleet worker 最终仍进入 canonical `AgentApplication -> AgentRuntime`。Fleet
-ledger 目前仍是待迁入或删除的产品债务，但不拥有 canonical Writer worktree、模型循环、
-RunStore 或 terminal。
-
-Fleet 任务/profile 中的 role、loadout 和 model intent 只参与 prompt 与 route 投影；
-解析后的 route、reasoning tier 以及全局 `FleetExecConfig` allow/deny 会进入实际 exec
-命令。task-level role/tool scope 目前没有进入 exec argv，因此 Fleet receipt 的
-`effective_permissions` 固定留空，不能把声明配置写成已执行权限。Fleet 不能借用 M6-A
-Writer 已执行的权限事实填写自己的 receipt；只有它自己的 task policy 进入 canonical
-Orchestrator 并被 Host 观测后，才能由 enforced policy owner 填写该字段。
+`crates/protocol` 只表达 canonical Agent/Run facts；`crates/runtime` 推进 root 和 child；
+`crates/state` 负责唯一持久真相；`crates/orchestrator` 只拥有 explicit Writer 的
+worktree、diff、verify、integrate 和 cleanup。CLI、TUI 与 app-server 均投影这条链，
+不存在远程 Fleet、Lane registry、第二 ledger、通用 DAG 或多 Writer 控制面。
 
 ## TUI 投影
 
@@ -126,26 +123,24 @@ Orchestrator 并被 Host 观测后，才能由 enforced policy owner 填写该�
 - 仅为虚假权限 receipt 服务的 `WorkerRole`、`WorkerRuntimeProfile` 和
   `FleetWorkerRuntimeSpec`；
 - 旧 `/subagents` modal；
-- Lane 的第二份 worktree create/remove、重复 worktree runtime/registry 字段和 CLI 参数。
+- Fleet 的协议、配置、ledger、lease/scheduler、SSH host、alerts、worker executor、
+  `/fleet`、`codewhale fleet` 和 bundled `fleet-manager` skill；
+- Lane crate、registry、tmux/inline process runtime、`lane-log-proxy` 与
+  `codewhale lane`；
+- setup-state 的 `OperateFleet` card、receipt flag 和 Doctor roster projection。
 
 ## 未完成能力
 
 以下能力不得从旧实现恢复，也没有被 M6-B1 准入：
 
-- 唯一 Orchestrator 的 task graph、mailbox 和控制动作；
+- canonical TaskGraph 上的 follow-up/wait/interrupt 等控制动作；
 - 多 Writer 有界并发与可恢复冲突收敛；
 - 更广任务上的多 Agent 净收益证明。
 
 M6-A 已完成单 Writer 的 `AgentTask`、结构化 Host-observed `AgentOutcome`、worktree
-create/diff/verify/integrate/root verify/cleanup 和 crash/reopen。它只通过一次生产机制
-canary。M6-B1 的 18 对 / 36 arms 同任务 A/B 已判定 `reject_and_rework`：Writer
-`4/18` verified、7 false-success，且 Token/费用分别比 single 高 35.5% / 52.5%。
-正式决策要求 isolated Writer 只通过显式 opt-in admission 使用，不扩到双 Writer；但
-当前默认 `RunLimits` / tool policy 仍会暴露 `agent` 路径，这个默认关闭 cutover 尚未
-实现，不能把决策要求写成已交付事实。
-
-下一步仍是同一 Runtime/Store/Orchestrator 内的 M6-B1 rework：verifier 不得污染
-workspace，Host 必须按 actor 强制 root/Writer capability，TaskContract/EvidenceReceipt
-必须表达冻结 verifier 与必要的失败后恢复时序，并完成 Writer 默认关闭、显式 opt-in
-的 admission cutover。重新通过正式 A/B 前，多 Writer、通用 DAG 和第二 scheduler
+create/diff/verify/integrate/root verify/cleanup 和 crash/reopen。M6-B1 的 18 对 /
+36 arms 同任务 A/B 已判定 `reject_and_rework`：Writer `4/18` verified、7
+false-success，且 Token/费用分别比 single 高 35.5% / 52.5%。后续切片已完成 verifier、
+actor capability 与 explicit-only admission 收敛；这不等于 Writer 已获得净收益，
+也不允许扩到双 Writer。重新通过正式 A/B 前，多 Writer、通用 DAG 和第二 scheduler
 均不进入开发。

@@ -1437,6 +1437,42 @@ manifest/result/summary：
 - ignored 0600 `eval/results/m8-e-v1-exit-audit-433a871b-v1.json`；
 - [M8-E V1 退出证据总审计](../../eval/summaries/m8-e-v1-exit-audit-2026-07-24.md)。
 
+### 9.22 M8-G 单一 TaskGraph 收敛（2026-07-24）
+
+M8-G 是 offline architecture cutover，不是模型 A/B。baseline `650df581` 与 code
+candidate `64f6bc16` 固定同一 Run API v10、RuntimeEvent v16、State v21、exec-stream
+v2、Rust 1.97.0 和唯一 DeepSeek ChatCompletions production chain。
+
+验收口径只使用 canonical facts：
+
+- root、read-only child 和 explicit Writer 继续通过同一 Runtime/Store conformance；
+- exec、HTTP/SSE、stdio 与 TUI 继续投影同一 Run；
+- RunStore reopen、process SIGKILL recovery 和 Writer integrate/cleanup 不退化；
+- Fleet/Lane protocol、config、state、command、UI 和 skill 不存在可调用 consumer；
+- setup-state 旧 schema fail closed，不增加 compatibility reader 或 dual write；
+- workflow surface 与代码复杂度必须下降。
+
+结果：
+
+| 指标 | baseline | candidate |
+|---|---:|---:|
+| visible CLI commands | 20 | 18 |
+| setup steps | 7 | 6 |
+| changed source | — | 48 files，`+150/-15,260` |
+| V06 | blocked | pass |
+| Key / official requests | 0 / 0 | 0 / 0 |
+
+focused、workspace strict Clippy/test、root/read-only/Writer、exec/HTTP/stdio parity、
+SQLite reopen、SIGKILL recovery、fmt 与 diff gate 全部通过。决策为
+`keep_canonical_taskgraph / delete_fleet_lane / close_V06`。V12 只标记为
+`improved_but_not_closed`；V16 的局部步骤下降不能冒充 imported-baseline workflow
+A/B。没有 verified coding success、Token、cache、wall time 或费用结论。
+
+manifest/summary：
+
+- `eval/manifests/m8-g-taskgraph-convergence-v1.json`；
+- [M8-G 单一 TaskGraph 产品概念收敛](../../eval/summaries/m8-g-taskgraph-convergence-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
