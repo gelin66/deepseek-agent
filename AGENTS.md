@@ -139,7 +139,8 @@ Changing one of these constraints requires evidence and a new ADR.
   post-V1 candidates, not literal V1 requirements. The current matrix is
   13 pass / 3 blocked; no production surface changed and no Key or API was
   used.
-- M8-L independently proved that imported `352e86a6` can share the official
+- M8-L accepted candidate `d27553c4` independently proved that imported
+  `352e86a6` can share the official
   ChatCompletions/model, task fixture, external verifier, and binary identity,
   but cannot natively report physical request count, retry, incomplete usage,
   root/child ledger, cost completeness, or exact reopen truth. The paid

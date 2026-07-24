@@ -2596,7 +2596,9 @@ start、headless coding、run inspection 与 resume 五个共同 workflow 在 im
 close V13 and V16**。current V1 matrix 为 15 pass / 1 blocked；V15 billing-provable
 Simplified Chinese Agent prompt comparison 仍 blocked，V1 仍不可发布。production
 model/transport/Runtime/Store/protocol/tool catalog 无变化，Key 未读取、official API
-requests 0。完整结论见
+requests 0。accepted benchmark candidate 为 `d27553c4c8145a5c0bd3bb0edcf6b6befffa394a`，
+tree `f8e7a15694b7f8a62ddd98044fc0838ad1dbeec6`；private formal result SHA-256 为
+`fdf2865659fe9bbe61ebf4951e5e0e02adb5cb718c0737ce762911047746fd86`。完整结论见
 [M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
 
 ### 调优

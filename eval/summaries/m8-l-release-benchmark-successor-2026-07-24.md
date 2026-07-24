@@ -5,6 +5,9 @@
 - clean baseline：`4fef6a34e999a8d592629308cb1b5fd7017bbf18`
 - baseline tree：`239316f1adda010c3ab684a7782d3128ae5fcf76`
 - frozen manifest/Harness commit：`14319b11`
+- accepted authority/benchmark candidate：
+  `d27553c4c8145a5c0bd3bb0edcf6b6befffa394a`
+- candidate tree：`f8e7a15694b7f8a62ddd98044fc0838ad1dbeec6`
 - protocol：Run API v11 / RuntimeEvent v17 / State v23 / exec-stream v3
 - credential read / official API requests：false / 0
 
@@ -156,9 +159,37 @@ CARGO_NET_OFFLINE=true
 CARGO_TARGET_DIR=/private/tmp/codewhale-m8l-target
 ```
 
-正式 result、candidate identity、五个 exact gate、focused、fmt、workspace Clippy/test 和
-最终 cleanup 将在 clean candidate 上执行并在本摘要的 final checkpoint 中封存；在此之前
-不读取 Key、不发 official request。
+formal Harness 在 clean candidate `d27553c4` 上从 position 1 一次完成：
+
+| Fact | Value |
+|---|---|
+| result | `eval/results/m8-l-release-benchmark-4fef6a34-v1.json` |
+| result mode / bytes | `0600` / 3,479 |
+| result SHA-256 | `fdf2865659fe9bbe61ebf4951e5e0e02adb5cb718c0737ce762911047746fd86` |
+| canonical manifest SHA-256 | `3e9bef16423d50568ed7835b044f5f312315e350bdb18d0828eaf6d97020a1fb` |
+| Harness SHA-256 | `d3acc90762fca40c44750eeaae9683585cdf22feff6a7d55652d143b81a67971` |
+| source before/after | same clean `d27553c4` / tree `f8e7a156` |
+| decision | `keep_release_benchmark_successor_close_V13_V16` |
+| workflow | 5/5 non-increased；total `5 -> 5` |
+| credential / official API / network | false / 0 / false |
+
+五个 exact gate：
+
+- production verifier recovery：pass；
+- model completion rejection：pass；
+- root/read-only/Writer RequestPlan SQLite reopen：pass；
+- canonical runs help：pass；
+- completed exec resume without another request：pass。
+
+最终还通过 M8-L contract 8/8、Harness self-test、`cargo fmt --all -- --check`、
+`./scripts/dev-codewhale.sh focused`、workspace strict Clippy/test 与
+`git diff --check`。首次 focused suite load 中，
+`established_sse_without_events_hits_typed_stream_stall` 在 retry-open 后先投影
+network error；其余 24 个 exec acceptance case 全部通过。同一 exact targeted test 随即
+1/1 通过，完整 warmed focused 再次运行后 25/25 通过。这与 M8-K 已记录的 cold-load timing
+观察相同，未稳定复现，且本切片没有 production source delta，因此不制造无证据修复。全部
+Cargo 命令使用上面的 external target/offline 环境。最终清理精确删除
+`/private/tmp/codewhale-m8l-target`；没有 M8-L worktree、进程或 binary 残留。
 
 ## 9. Keep / reject / hold
 

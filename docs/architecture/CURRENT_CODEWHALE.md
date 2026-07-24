@@ -60,6 +60,7 @@
 - M8-K frozen V1 scope successor：`b44d7ff9`
 - M8-K accepted scope candidate：`6a99cb79`
 - M8-L frozen release benchmark successor：`14319b11`
+- M8-L accepted release benchmark candidate：`d27553c4`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
