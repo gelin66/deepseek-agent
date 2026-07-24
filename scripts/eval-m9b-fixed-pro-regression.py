@@ -2,12 +2,13 @@
 """Corrected fixed-Pro coding regression and loss-acquisition Harness.
 
 The default M9-C campaign remains byte-addressed to its frozen successor
-contract. ``--campaign m11`` selects the current multi-language M11 loss
-baseline without creating a second evaluator. Both campaigns exercise
-temporary Git repositories through canonical ``codewhale app-server --stdio``
-and record terminal and RunStore facts before credential-free reopen,
-deterministic verification, or label derivation. They are regression label
-collectors, not product A/Bs.
+contract. ``--campaign m11`` selects the multi-language M11 loss baseline and
+``--campaign m12`` selects the corrected terminal-convergence reproduction
+without creating a second evaluator. All campaigns exercise temporary Git
+repositories through canonical ``codewhale app-server --stdio`` and record
+terminal and RunStore facts before credential-free reopen, deterministic
+verification, or label derivation. They are regression label collectors, not
+product A/Bs.
 """
 
 from __future__ import annotations
@@ -47,13 +48,34 @@ def selected_campaign(arguments: list[str]) -> str:
             selected.append(argument.partition("=")[2])
     if not selected:
         return "m9c"
-    if len(selected) != 1 or selected[0] not in {"m9c", "m11"}:
+    if len(selected) != 1 or selected[0] not in {"m9c", "m11", "m12"}:
         return "invalid"
     return selected[0]
 
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
-if CAMPAIGN == "m11":
+CURRENT_LOSS_CAMPAIGNS = {"m11", "m12"}
+if CAMPAIGN == "m12":
+    MANIFEST_PATH = (
+        ROOT
+        / "eval/manifests/m12-terminal-convergence-reproduction-v1.json"
+    )
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = (
+        "codewhale.eval.m12-terminal-convergence-reproduction.v1"
+    )
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = (
+        "codewhale.eval.m12-terminal-convergence-reproduction-journal.v1"
+    )
+    ADMISSION_SCHEMA = (
+        "codewhale.eval.m12-terminal-convergence-live-admission.v1"
+    )
+    RUN_API = 12
+    EVENT_API = 18
+    STATE_SCHEMA = 24
+    EXEC_STREAM = 3
+elif CAMPAIGN == "m11":
     MANIFEST_PATH = ROOT / "eval/manifests/m11-loss-baseline-v1.json"
     BASE_MANIFEST_PATH: Path | None = None
     MANIFEST_SCHEMA = "codewhale.eval.m11-loss-baseline.v1"
@@ -83,7 +105,18 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m11":
+if CAMPAIGN == "m12":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT
+        / "eval/manifests/m12-terminal-convergence-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "codewhale.eval.m12-terminal-convergence-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "codewhale.eval.m12-terminal-convergence-report.v1"
+    )
+elif CAMPAIGN == "m11":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m11-trajectory-loss-analysis-v1.json"
     )
@@ -228,8 +261,8 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 
 def load_manifest() -> dict[str, Any]:
-    require(CAMPAIGN in {"m9c", "m11"}, "campaign_invalid")
-    if CAMPAIGN == "m11":
+    require(CAMPAIGN in {"m9c", "m11", "m12"}, "campaign_invalid")
+    if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
         manifest = read_json_object(MANIFEST_PATH, "manifest_unavailable")
         require(
             manifest.get("schema") == MANIFEST_SCHEMA,
@@ -246,19 +279,13 @@ def load_manifest() -> dict[str, Any]:
             and source.get("exec_stream") == EXEC_STREAM,
             "protocol_identity_invalid",
         )
-        require(
-            resources.get("model") == MODEL
-            and resources.get("reasoning_effort") == REASONING
-            and resources.get("runs_per_task") == 3
-            and resources.get("formal_tasks") == 8
-            and resources.get("formal_arms") == 24
-            and resources.get("maximum_reruns") == 0,
-            "resource_identity_invalid",
-        )
-        require(
-            isinstance(tasks, dict)
-            and list(tasks)
-            == [
+        expected_tasks = (
+            [
+                "rust_endpoint",
+                "typescript_cache",
+            ]
+            if CAMPAIGN == "m12"
+            else [
                 "rust_cli",
                 "typescript_service",
                 "python_security",
@@ -267,7 +294,20 @@ def load_manifest() -> dict[str, Any]:
                 "readonly_investigation",
                 "writer_migration",
                 "safety_false_completion",
-            ],
+            ]
+        )
+        require(
+            resources.get("model") == MODEL
+            and resources.get("reasoning_effort") == REASONING
+            and resources.get("runs_per_task") == 3
+            and resources.get("formal_tasks") == len(expected_tasks)
+            and resources.get("formal_arms")
+            == len(expected_tasks) * resources["runs_per_task"]
+            and resources.get("maximum_reruns") == 0,
+            "resource_identity_invalid",
+        )
+        require(
+            isinstance(tasks, dict) and list(tasks) == expected_tasks,
             "task_identity_invalid",
         )
         require(
@@ -439,6 +479,46 @@ def safe_env() -> dict[str, str]:
     return environment
 
 
+def prepare_evaluation_home(home: Path) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    if CAMPAIGN != "m12":
+        return
+    rustup_source = (Path.home() / ".rustup").resolve()
+    require(
+        rustup_source.is_dir(),
+        "rustup_home_unavailable",
+    )
+    rustup_link = home / ".rustup"
+    if not rustup_link.exists() and not rustup_link.is_symlink():
+        rustup_link.symlink_to(rustup_source, target_is_directory=True)
+    require(
+        rustup_link.is_symlink()
+        and rustup_link.resolve() == rustup_source,
+        "rustup_home_identity_mismatch",
+    )
+
+
+def evaluation_environment(home: Path) -> dict[str, str]:
+    prepare_evaluation_home(home)
+    return {**safe_env(), "HOME": str(home)}
+
+
+def verifier_environment_contract() -> dict[str, Any] | None:
+    if CAMPAIGN != "m12":
+        return None
+    rustup_source = (Path.home() / ".rustup").resolve()
+    require(rustup_source.is_dir(), "rustup_home_unavailable")
+    return {
+        "strategy": "per_arm_isolated_home_with_explicit_rustup_link",
+        "host_and_external_share_home": True,
+        "rustup_home_target_sha256": sha256_bytes(
+            rustup_source.as_posix().encode("utf-8")
+        ),
+        "rustc": MANIFEST["source_identity"]["rustc"],
+        "cargo": MANIFEST["source_identity"]["cargo"],
+    }
+
+
 def run_command(
     arguments: list[str],
     *,
@@ -506,11 +586,21 @@ def verifier_command(task_id: str, workspace: Path) -> list[str]:
     return ["/usr/bin/python3", "-I", "-B", "_eval_verifier.py", "."]
 
 
-def external_verifier(task_id: str, workspace: Path) -> dict[str, Any]:
+def external_verifier(
+    task_id: str, workspace: Path, evaluation_home: Path | None = None
+) -> dict[str, Any]:
     started = time.monotonic()
+    environment = safe_env()
+    if CAMPAIGN == "m12":
+        require(
+            evaluation_home is not None,
+            "verifier_environment_missing",
+        )
+        environment = evaluation_environment(evaluation_home)
     result = run_command(
         verifier_command(task_id, workspace),
         cwd=workspace,
+        environment=environment,
         timeout=RESOURCES["external_verifier_timeout_seconds"],
     )
     return {
@@ -533,8 +623,14 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         {"task_id": task_id},
     )
     shutil.copytree(source, destination, copy_function=shutil.copy2)
+    verifier_home = destination.parent / "verifier-home"
     require(
-        external_verifier(task_id, destination)["passed"] is False,
+        external_verifier(
+            task_id,
+            destination,
+            verifier_home if CAMPAIGN == "m12" else None,
+        )["passed"]
+        is False,
         "fixture_must_fail_before_task",
         {"task_id": task_id},
     )
@@ -557,9 +653,10 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         date = "2026-07-19T00:00:00Z"
         message = "fixture"
         init = ["git", "init", "-q"]
-    elif profile == "m11-2026-07-25":
+    elif profile in {"m11-2026-07-25", "m12-2026-07-25"}:
         date = "2026-07-25T00:00:00Z"
-        message = f"M11 frozen fixture {source.name}"
+        milestone = "M12" if profile.startswith("m12") else "M11"
+        message = f"{milestone} frozen fixture {source.name}"
         init = ["git", "init", "-q", "-b", "main"]
     else:
         raise EvaluationError(
@@ -894,11 +991,10 @@ def launch_server(
     home = state_root / "home"
     codewhale_home = state_root / "codewhale"
     xdg = state_root / "xdg"
-    for directory in (state_root, home, codewhale_home, xdg):
+    for directory in (state_root, codewhale_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
     environment = {
-        **safe_env(),
-        "HOME": str(home),
+        **evaluation_environment(home),
         "CODEWHALE_HOME": str(codewhale_home),
         "XDG_CONFIG_HOME": str(xdg),
     }
@@ -1909,6 +2005,19 @@ def trajectory_tool_source(name: str) -> str:
     return "other_tool"
 
 
+def host_verifier_environment_failure(outcome: Any) -> bool:
+    if not isinstance(outcome, dict) or tool_outcome_success(outcome):
+        return False
+    encoded = canonical_bytes(outcome).lower()
+    return all(
+        marker in encoded
+        for marker in (
+            b"rustup could not choose a version of cargo to run",
+            b"no default is configured",
+        )
+    )
+
+
 def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
     tool_prepared = Counter()
     tool_outcomes = Counter()
@@ -1921,6 +2030,7 @@ def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
     visible_exact_duplicates = Counter()
     model_requests = 0
     receipt_present = False
+    host_verifier_environment_failures = 0
 
     streams = trajectory_event_streams(facts)
     for stream in streams:
@@ -2037,6 +2147,8 @@ def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
             elif kind == "host_verification_committed":
                 if isinstance(event.get("receipt"), dict):
                     receipt_present = True
+                if host_verifier_environment_failure(event.get("outcome")):
+                    host_verifier_environment_failures += 1
 
     run = facts.get("run")
     require(isinstance(run, dict), "trajectory_run_invalid")
@@ -2047,6 +2159,9 @@ def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
     return {
         "terminal_state": terminal_state,
         "host_receipt": receipt_present,
+        "host_verifier_environment_failures": (
+            host_verifier_environment_failures
+        ),
         "model_requests": model_requests,
         "tool_prepared": dict(sorted(tool_prepared.items())),
         "tool_outcomes": dict(sorted(tool_outcomes.items())),
@@ -2099,7 +2214,15 @@ def trajectory_label_projection(
     terminal_completed = analysis["terminal_state"] == "completed"
     receipt = analysis["host_receipt"]
     deficit = None
-    if lane != "safety" and terminal_completed and not receipt:
+    if (
+        lane != "safety"
+        and external_passed is True
+        and not terminal_completed
+        and not receipt
+        and analysis["host_verifier_environment_failures"] > 0
+    ):
+        deficit = "host_verifier_environment_mismatch"
+    elif lane != "safety" and terminal_completed and not receipt:
         deficit = "completed_without_host_receipt"
     elif (
         false_success
@@ -2134,6 +2257,8 @@ def trajectory_label_projection(
 def trajectory_recovery_projection(
     lane: str, analysis: dict[str, Any]
 ) -> str:
+    if analysis["host_verifier_environment_failures"] > 0:
+        return "evaluation_environment_invalid"
     if not analysis["failure_codes"]:
         return "no_typed_failure"
     if lane == "safety":
@@ -2182,6 +2307,16 @@ def trajectory_loss_projection(
         verifier_passed is True
         and analysis["terminal_state"] != "completed"
         and not analysis["host_receipt"]
+        and analysis["host_verifier_environment_failures"] > 0
+    ):
+        return {
+            "product_loss": False,
+            "loss_code": "evaluation_environment_mismatch",
+        }
+    if (
+        verifier_passed is True
+        and analysis["terminal_state"] != "completed"
+        and not analysis["host_receipt"]
     ):
         return {
             "product_loss": True,
@@ -2210,7 +2345,7 @@ def sum_counter_values(target: Counter, values: dict[str, Any]) -> None:
         target[key] += value
 
 
-def m11_loss_candidate(
+def repeated_current_loss_candidate(
     losses: Counter, loss_tasks: dict[str, set[str]]
 ) -> dict[str, Any]:
     repeated = [
@@ -2277,6 +2412,7 @@ def aggregate_trajectory_loss(
     current_task_losses = Counter()
     loss_tasks: dict[str, set[str]] = {}
     measurement_interruptions = Counter()
+    environment_mismatches = Counter()
 
     for campaign in campaigns:
         acquisition_aborts += campaign["accounting_aborts"]
@@ -2303,7 +2439,7 @@ def aggregate_trajectory_loss(
             if label["evidence_deficit"] is not None:
                 deficits[label["evidence_deficit"]] += 1
             recoveries[recovery] += 1
-            if CAMPAIGN == "m11":
+            if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
                 require(
                     isinstance(loss, dict)
                     and isinstance(loss.get("product_loss"), bool)
@@ -2316,6 +2452,12 @@ def aggregate_trajectory_loss(
                 loss_code = loss.get("loss_code")
                 if loss_code == "measurement_incomplete":
                     measurement_interruptions[task_id] += 1
+                elif loss_code == "evaluation_environment_mismatch":
+                    require(
+                        loss["product_loss"] is False,
+                        "trajectory_environment_loss_invalid",
+                    )
+                    environment_mismatches[task_id] += 1
                 elif loss["product_loss"]:
                     require(
                         isinstance(loss_code, str),
@@ -2390,8 +2532,8 @@ def aggregate_trajectory_loss(
     control_campaign_count = len(
         control_campaigns_with_visible_read_duplicates
     )
-    if CAMPAIGN == "m11":
-        candidate = m11_loss_candidate(
+    if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
+        candidate = repeated_current_loss_candidate(
             current_task_losses, loss_tasks
         )
     elif control_visible_reads >= 2 and control_campaign_count >= 2:
@@ -2460,7 +2602,7 @@ def aggregate_trajectory_loss(
         "recovery_outcomes": dict(sorted(recoveries.items())),
         "candidate": candidate,
     }
-    if CAMPAIGN == "m11":
+    if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
         result["current_task_losses"] = dict(
             sorted(current_task_losses.items())
         )
@@ -2470,6 +2612,9 @@ def aggregate_trajectory_loss(
         }
         result["measurement_interruptions"] = dict(
             sorted(measurement_interruptions.items())
+        )
+        result["evaluation_environment_mismatches"] = dict(
+            sorted(environment_mismatches.items())
         )
     return result
 
@@ -2584,7 +2729,7 @@ def build_trajectory_report() -> dict[str, Any]:
                     lane, analysis
                 ),
             }
-            if CAMPAIGN == "m11":
+            if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
                 trajectory["loss"] = trajectory_loss_projection(
                     lane, analysis, arm_result
                 )
@@ -2752,7 +2897,11 @@ def execute_arm(
             }
         )
 
-        verifier = external_verifier(task_id, workspace)
+        verifier = external_verifier(
+            task_id,
+            workspace,
+            state_root / "home" if CAMPAIGN == "m12" else None,
+        )
         changed = changed_files(task_id, workspace, base_commit)
         journal.emit(
             {
@@ -2818,20 +2967,28 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    safety = cells["safety_false_completion"]
-    complete = (
-        all(
-            cell["verified_success"] == runs_per_task
-            and cell["false_success"] == 0
+    if CAMPAIGN == "m12":
+        complete = all(
+            cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
             and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        and safety["correct_rejection"] == runs_per_task
-        and safety["false_success"] == 0
-        and safety["route_valid"] == runs_per_task
-        and safety["lane_valid"] == runs_per_task
-    )
+    else:
+        safety = cells["safety_false_completion"]
+        complete = (
+            all(
+                cell["verified_success"] == runs_per_task
+                and cell["false_success"] == 0
+                and cell["route_valid"] == runs_per_task
+                and cell["lane_valid"] == runs_per_task
+                for cell in positive
+            )
+            and safety["correct_rejection"] == runs_per_task
+            and safety["false_success"] == 0
+            and safety["route_valid"] == runs_per_task
+            and safety["lane_valid"] == runs_per_task
+        )
     total_cost = sum(
         arm["accounting"]["cost_nanousd"] for arm in arms
     )
@@ -2877,9 +3034,13 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
         "decision": (
             (
-                "keep_m11_current_loss_baseline"
-                if CAMPAIGN == "m11"
-                else "keep_fixed_pro_regression_baseline_successor"
+                "keep_m12_terminal_convergence_reproduction"
+                if CAMPAIGN == "m12"
+                else (
+                    "keep_m11_current_loss_baseline"
+                    if CAMPAIGN == "m11"
+                    else "keep_fixed_pro_regression_baseline_successor"
+                )
             )
             if complete
             else "reject_incomplete_baseline"
@@ -2925,7 +3086,7 @@ def load_admission(
     live_contract = admission.get("live_contract", {})
     historical_raw_is_input = (
         live_contract.get("historical_raw_is_input")
-        if CAMPAIGN == "m11"
+        if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS
         else live_contract.get("m9_b_raw_is_input")
     )
     require(
@@ -2953,6 +3114,11 @@ def load_admission(
                 task_id: task_definition(task_id)
                 for task_id in TASKS
             }
+        )
+        and (
+            CAMPAIGN != "m12"
+            or admission.get("verifier_environment_contract_sha256")
+            == canonical_hash(verifier_environment_contract())
         )
         and surface.get("production_sender")
         == "official DeepSeek OpenAI-format ChatCompletions"
@@ -3104,6 +3270,9 @@ def preflight(
             }
         ),
         "fixture_hashes": fixture_hashes,
+        "verifier_environment_contract": (
+            verifier_environment_contract()
+        ),
         "binary": identity,
         "admission_sha256": (
             file_hash(admission_path)
@@ -3174,6 +3343,9 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
         "key_accessed": False,
         "network_accessed": False,
         "maximum_reruns": 0,
+        "verifier_environment_contract": (
+            verifier_environment_contract()
+        ),
     }
 
 
@@ -3265,22 +3437,24 @@ def run_self_test() -> int:
             }
         },
     ]
-    temporal_lane = root_lane_audit(
-        "root_recovery",
-        {"root_events": temporal_events, "children": []},
-    )
-    require(
-        temporal_lane["valid"] and temporal_lane["recovery_order_valid"],
-        "self_test_host_owned_temporal_pass_rejected",
-    )
-    missing_host_pass = root_lane_audit(
-        "root_recovery",
-        {"root_events": temporal_events[:-1], "children": []},
-    )
-    require(
-        not missing_host_pass["valid"],
-        "self_test_missing_host_temporal_pass_accepted",
-    )
+    if "root_recovery" in TASKS:
+        temporal_lane = root_lane_audit(
+            "root_recovery",
+            {"root_events": temporal_events, "children": []},
+        )
+        require(
+            temporal_lane["valid"]
+            and temporal_lane["recovery_order_valid"],
+            "self_test_host_owned_temporal_pass_rejected",
+        )
+        missing_host_pass = root_lane_audit(
+            "root_recovery",
+            {"root_events": temporal_events[:-1], "children": []},
+        )
+        require(
+            not missing_host_pass["valid"],
+            "self_test_missing_host_temporal_pass_accepted",
+        )
     if CAMPAIGN == "m9c":
         require(
             BASE_MANIFEST_PATH is not None
@@ -3308,6 +3482,32 @@ def run_self_test() -> int:
         },
         "self_test_fixture_identity",
     )
+    if CAMPAIGN == "m12":
+        with tempfile.TemporaryDirectory(
+            prefix="codewhale-m12-toolchain-home-"
+        ) as raw_home:
+            environment = evaluation_environment(Path(raw_home))
+            cargo_probe = run_command(
+                ["cargo", "--version"],
+                cwd=ROOT,
+                environment=environment,
+                timeout=15,
+            )
+            rustc_probe = run_command(
+                ["rustc", "--version"],
+                cwd=ROOT,
+                environment=environment,
+                timeout=15,
+            )
+            require(
+                cargo_probe.returncode == 0
+                and rustc_probe.returncode == 0
+                and MANIFEST["source_identity"]["cargo"].encode("utf-8")
+                in cargo_probe.stdout
+                and MANIFEST["source_identity"]["rustc"].encode("utf-8")
+                in rustc_probe.stdout,
+                "self_test_isolated_toolchain_unavailable",
+            )
     materialized: dict[str, str] = {}
     with tempfile.TemporaryDirectory(
         prefix=f"codewhale-{CAMPAIGN}-fixture-test-"
@@ -3598,7 +3798,7 @@ def run_self_test() -> int:
         not in canonical_bytes(trajectory_projection).decode("utf-8"),
         "self_test_trajectory_secret_exposed",
     )
-    if CAMPAIGN == "m11":
+    if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
         verified_without_receipt = trajectory_loss_projection(
             "root",
             {
@@ -3614,6 +3814,20 @@ def run_self_test() -> int:
         )
         interrupted = trajectory_loss_projection(
             "root", trajectory_projection, None
+        )
+        environment_mismatch = trajectory_loss_projection(
+            "root",
+            {
+                **trajectory_projection,
+                "terminal_state": "blocked",
+                "host_receipt": False,
+                "host_verifier_environment_failures": 1,
+            },
+            {
+                "verified_success": False,
+                "false_success": False,
+                "external_verifier": {"passed": True},
+            },
         )
         require(
             verified_without_receipt
@@ -3631,12 +3845,30 @@ def run_self_test() -> int:
             "self_test_trajectory_loss_projection_invalid",
         )
         require(
-            m11_loss_candidate(
+            environment_mismatch
+            == {
+                "product_loss": False,
+                "loss_code": "evaluation_environment_mismatch",
+            }
+            and host_verifier_environment_failure(
+                {
+                    **accepted,
+                    "operation": "failed",
+                    "content": (
+                        "rustup could not choose a version of cargo to run, "
+                        "because no default is configured"
+                    ),
+                }
+            ),
+            "self_test_trajectory_loss_projection_invalid",
+        )
+        require(
+            repeated_current_loss_candidate(
                 Counter({"same_loss": 1}),
                 {"same_loss": {"task-a"}},
             )["result_class"]
             == "insufficient_repeated_current_loss"
-            and m11_loss_candidate(
+            and repeated_current_loss_candidate(
                 Counter({"same_loss": 2}),
                 {"same_loss": {"task-a", "task-b"}},
             )["result_class"]
@@ -3668,6 +3900,9 @@ def run_self_test() -> int:
                     "epoch_reset_after_applied_mutation": True,
                     "raw_arguments_exposed": False,
                 },
+                "verifier_environment_contract": (
+                    verifier_environment_contract()
+                ),
                 "key_accessed": False,
                 "network_accessed": False,
             },
@@ -3698,6 +3933,9 @@ def run_freeze_report() -> int:
                     task_id: fixture_hash(task_id)
                     for task_id in TASKS
                 },
+                "verifier_environment_contract": (
+                    verifier_environment_contract()
+                ),
                 "key_accessed": False,
                 "network_accessed": False,
             },
@@ -3803,7 +4041,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11"),
+        choices=("m9c", "m11", "m12"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()

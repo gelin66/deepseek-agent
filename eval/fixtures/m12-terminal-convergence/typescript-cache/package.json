@@ -1,0 +1,8 @@
+{
+  "name": "m12-cache-policy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/cache_policy.test.ts"
+  }
+}

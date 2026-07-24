@@ -1,0 +1,237 @@
+{
+  "schema": "codewhale.eval.m12-terminal-convergence-reproduction.v1",
+  "frozen_at": "2026-07-25",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "70d88e5fef2b8795d38185bdbf41a44da7c1763b",
+    "starting_tree": "4a4bed88085c501b031bebdf9b49944f5736a475",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.9.6",
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:b9ab949efcb10a0405393d0a16f8b6e1dbb232869085b0f988c45f5139864668",
+    "roadmap": "sha256:56e8889d571b4191b03040b8bb07909f0d0d11b7a12825e4aed27c5a17c9b5c7",
+    "evaluation": "sha256:6be59924b728de6c418346db4bfc19d5b9f6fe84994f1b4b41f9fc7b128f5cc2",
+    "current_architecture": "sha256:eedf6b489dff5b96d5e18d914abd21818aba82ff71baaf376ac1e9c496790daa"
+  },
+  "resources": {
+    "runs_per_task": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 2,
+    "formal_arms": 6,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 8192,
+    "model_event_idle_ms": 120000,
+    "runtime_wall_time_ms": 300000,
+    "harness_wall_time_ms": 330000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 120,
+    "per_arm_known_cost_ceiling_usd": "0.12",
+    "suite_known_cost_ceiling_usd": "0.72",
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m12-target"
+  },
+  "tool_policies": {
+    "root_tools": [
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "root_with_agent_tools": [
+      "agent",
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "read_only_child_tools": [
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file"
+    ],
+    "writer_child_tools": [
+      "apply_patch",
+      "edit_file",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ]
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "rust_endpoint",
+        "typescript_cache"
+      ],
+      [
+        "typescript_cache",
+        "rust_endpoint"
+      ],
+      [
+        "rust_endpoint",
+        "typescript_cache"
+      ]
+    ],
+    "schedule_semantics": "new position-1 M12 reproduction; every arm receives a fresh independent Git repository and RunStore; language order alternates; maximum_reruns=0"
+  },
+  "tasks": {
+    "rust_endpoint": {
+      "lane": "root",
+      "language": "rust",
+      "stratum": "Rust endpoint validation and multi-file regression",
+      "fixture": "eval/fixtures/m12-terminal-convergence/rust-endpoint",
+      "fixture_tree_sha256": "sha256:077e1c9dcd69cc0e5473f6588f28583aabcf62a8ee4994c233edb7a98fe77af5",
+      "fixture_base_commit": "ffd08697e418d01abfb92cdaad90e1a5757294e0",
+      "fixture_commit_profile": "m12-2026-07-25",
+      "objective": "修复 Rust normalize_endpoint：trim 输入，只接受 http:// 或 https:// origin，保留合法 host、可选 port 与 bracketed IPv6，移除末尾 slash；拒绝空 host、credentials、query、fragment、非 HTTP scheme 与非法 port。同时在 tests/endpoint_contract.rs 新增 accepts_http_and_https_with_port 与 rejects_credentials_query_fragment_and_non_http 两个真实回归测试。最终 cargo test 由冻结 verifier 验收。",
+      "constraints": [
+        "保持 normalize_endpoint(value: &str) -> Result<String, &'static str> 签名",
+        "不得新增依赖或网络步骤",
+        "只允许修改 src/lib.rs 和 tests/endpoint_contract.rs"
+      ],
+      "non_goals": [
+        "修改 Cargo.toml、Cargo.lock、_eval_verifier.py 或 Git 元数据",
+        "调用子 Agent"
+      ],
+      "acceptance_id": "m12-rust-endpoint",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "src/lib.rs",
+        "tests/endpoint_contract.rs"
+      ],
+      "expected_changed_files": [
+        "src/lib.rs",
+        "tests/endpoint_contract.rs"
+      ],
+      "max_api_requests": 10,
+      "max_tool_calls": 28,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "typescript_cache": {
+      "lane": "root",
+      "language": "typescript",
+      "stratum": "TypeScript cache policy and hidden contract regression",
+      "fixture": "eval/fixtures/m12-terminal-convergence/typescript-cache",
+      "fixture_tree_sha256": "sha256:073892ca824d9506cdeb6431b20eb18d329870a19b0035c75488a03a00fe6d25",
+      "fixture_base_commit": "dd9f2ca6a1224c5e2e6dc1ec331daba0253b29eb",
+      "fixture_commit_profile": "m12-2026-07-25",
+      "objective": "修复 TypeScript parseCacheControl：directive 名称大小写不敏感，no-store/no-cache 禁止缓存，合法非负 s-maxage 优先于 max-age，非法或负 lifetime 必须 fail closed；无 lifetime 的普通 public 响应仍可缓存且 ttlSeconds=null。同时在 test/cache_policy.test.ts 新增 prefers shared max-age and ignores case 与 rejects invalid and negative lifetimes 两个真实回归测试。最终 Node test 与隐藏矩阵由冻结 verifier 验收。",
+      "constraints": [
+        "保持 CachePolicy 与 parseCacheControl(value: string) 公共签名",
+        "不得新增依赖、构建步骤或网络步骤",
+        "只允许修改 src/cache_policy.ts 和 test/cache_policy.test.ts"
+      ],
+      "non_goals": [
+        "修改 package.json、_eval_verifier.py 或 Git 元数据",
+        "调用子 Agent"
+      ],
+      "acceptance_id": "m12-typescript-cache",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "src/cache_policy.ts",
+        "test/cache_policy.test.ts"
+      ],
+      "expected_changed_files": [
+        "src/cache_policy.ts",
+        "test/cache_policy.test.ts"
+      ],
+      "max_api_requests": 10,
+      "max_tool_calls": 28,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    }
+  },
+  "slice_contract": {
+    "real_problem": "M11 rust_cli was labeled verified_workspace_without_terminal_receipt even though canonical events show the terminal request, Host verifier and rejection all ran; its Host verifier failed because isolated HOME could not resolve rustup while the external verifier used a different environment.",
+    "acceptance": [
+      "classify the historical M11 rustup failure as evaluation_environment_mismatch rather than product loss without emitting raw verifier content",
+      "run Host and external verifier under the same isolated HOME and explicit Rust toolchain link",
+      "freeze two new independent fixed-Pro/high tasks with three runs each and maximum_reruns=0",
+      "require accounting-complete canonical Store/reopen evidence for every admitted arm",
+      "allow a production candidate audit only if one stable non-environment loss repeats across both task IDs"
+    ],
+    "owner": "scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "asymmetric Host/external verifier environment and coarse external-pass plus missing-receipt loss projection",
+    "cutover": "retain one corrected Harness and frozen evidence; do not add a Runtime completion controller unless the corrected cross-task acquisition repeats the same product loss"
+  },
+  "decision_rule": {
+    "complete_reproduction": "only if all 6 scheduled arms are measurement-valid with exact route/lane/reopen/accounting facts; labels may include task loss but false success must remain zero",
+    "stop_incomplete": "on unknown billing, incomplete accounting, identity mismatch, observer failure, cost ceiling, or any pre-registered hard gate; do not rerun, complete a mate, resume, resample, or splice",
+    "record_class": "m12_terminal_convergence_reproduction",
+    "product_metric_eligible": false,
+    "baseline_label_eligible_when_complete": true,
+    "next_candidate_minimum_repeated_independent_tasks": 2,
+    "non_conclusions": [
+      "this reproduction is not a treatment A/B and cannot claim product improvement",
+      "an evaluation environment mismatch is not a product loss",
+      "a single task loss cannot authorize production work",
+      "the reproduction cannot reintroduce Auto, Anthropic, FIM, swarm, multi-Writer, a second Runtime/Store, or LLM Judge"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-25",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_aliases_retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "stream_usage_precedes_done": true,
+      "tool_call_reasoning_replay_required": true
+    }
+  }
+}
