@@ -3,10 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M8-I Host-owned typed Auto 路由已接入
+- 状态：M8-J legacy Thread truth 已删除，canonical RunStore 是唯一持久状态
 - 更新日期：2026-07-24
 - schema：`Run API`（`schema_version = 11`）、`RuntimeEvent`（writer/reader v17）、
-  `State`（schema v22）、`codewhale.exec-stream`（v3）
+  `State`（schema v23）、`codewhale.exec-stream`（v3）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -70,6 +70,7 @@ HTTP 参数互斥。
 - `codewhale app-server --http` / `--mobile`；
 - mobile control page；
 - legacy thread/job/session routes；
+- `codewhale thread` 及其 list/read/resume/fork/archive/name metadata 命令；
 - raw `/v1/chat/completions` proxy；
 - `/prompt` fake loop 和 `/tool` direct invoke；
 - `codewhale serve --acp` / `--mcp`、`codewhale mcp-server` 和
@@ -461,16 +462,18 @@ request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在
 
 Run API v11 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v22 复用 canonical event/snapshot/lease；v21 已退役
-无法补齐 typed tool failure 的旧 run，v22 再退役缺少 route audit 的 materialized run。
-pending Start intent 仍保留，因为 Host Auto policy 在 `RunCreated` 前不再发出模型请求，
-可从 canonical command 精确恢复。
+事件总线或兼容 alias。State schema v23 复用 canonical
+event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
+v22 再退役缺少 route audit 的 materialized run。v23 不退役兼容的 canonical run，只在
+同一 `IMMEDIATE` migration transaction 中物理删除旧 `threads` metadata 表；旧
+`session_index.jsonl` writer/reader 也已删除。pending Start intent 仍保留，因为 Host
+Auto policy 在 `RunCreated` 前不再发出模型请求，可从 canonical command 精确恢复。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v22（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v23（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved

@@ -39,15 +39,17 @@
 - `codewhale exec`、`codewhale app-server` 与交互 TUI 已共用
   `crates/app::AgentApplication`、`AgentRuntime` 和 SQLite `RunStore`。
 - M4 已关闭：旧 TUI engine/Classic shell、私有状态路径和第二模型循环均已删除；
-  Underwater 是唯一交互外壳。当前 Run API v11、RuntimeEvent v17、State schema v22、
+  Underwater 是唯一交互外壳。当前 Run API v11、RuntimeEvent v17、State schema v23、
   exec-stream v3。
 - M5-A 已在 canonical protocol/runtime/state 中建立唯一 TaskContract、EvidenceReceipt
   与 Host completion owner；代码、本地门禁和正式 DeepSeek 显式 verifier A/B 已完成。
   M5-B evidence-aware ContextBroker 也已完成正式 A/B 并 shrink 为仅 hard-limit safety；
   M6-A 单 Writer isolated worktree 已在唯一 Orchestrator 下完成真实 DeepSeek 闭环；M6-B
   证据不准入双 Writer。M7-A 保持 `hold`；M7-B 已完成 Strict 目录准入与 typed 工具失败
-  恢复，因六个默认可执行 actor 均无 Strict treatment surface 而未执行 live A/B。下一独立
-  切片审计并比较 `apply_patch`、`edit_file` 与 FIM 编辑能力。
+  恢复，因六个默认可执行 actor 均无 Strict treatment surface 而未执行 live A/B。
+  M8-H 已删除不可达 FIM production 半分支并保持 FIM re-entry 为 hold；M8-J 又删除旧
+  `codewhale thread`、SQLite `threads`/session index 第二真相和无消费者 protocol DTO，
+  V12 关闭。current V1 matrix 为 10 pass / 6 blocked。
 - 本地 focused 检查脚本：`../scripts/dev-codewhale.sh`。
 - M1 离线能力基线：`../eval/README.md`。
 - 当前配置样例：`../config.example.toml`。
@@ -58,8 +60,10 @@
 
 网站、VS Code scaffold、npm 发布包装、上游社区自动化、版本 dogfood/release、
 remote setup、腾讯云部署、Telegram/Feishu chat bridge 和未接入 Rust runtime 的
-WeCom/Weixin bridge 已从活动开发树移除。通用 Provider、导入 skills 和少量旧 evidence
-仍待后续 DeepSeek-only 切片按真实调用图清理。
+WeCom/Weixin bridge 已从活动开发树移除。generic Provider 与 legacy Thread active path
+也已按真实调用图删除；导入 skills 和少量旧 evidence 仅作为受约束的能力输入/历史材料
+保留。canonical `provider="deepseek"` environment fact 仍用于 replay safety，不是产品
+模式。
 
 新增文档时，应优先更新已有权威文件。只有新的长期架构决策才新增 ADR；不要创建
 新的平行 Roadmap、计划、handoff 或版本 tracker。

@@ -52,6 +52,11 @@
 - M8-D final live admission checkpoint：`26841208`
 - M8-E frozen V1 gap contract / locked-offline artifact：`a12bea45`
 - M8-E frozen-input resolver checkpoint：`f6063a7b`
+- M8-G single TaskGraph production candidate：`64f6bc16`
+- M8-H unreachable FIM half-branch deletion candidate：`7d9aa9a6`
+- M8-I Host typed Auto route candidate：`ef65bafa`
+- M8-J frozen V1 successor / V12 contract：`9e644add`
+- M8-J legacy Thread truth deletion candidate：`bcbc1616`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -145,7 +150,13 @@
   M8-I 又把 `model=auto` 从额外 Flash prompt classifier 收敛为
   `crates/app::ProductionModelRoutePolicy`；prompt/parser/heuristic、pre-RunCreated
   unknown-billing 分支和 whole-tree route inheritance 已删除。
-- 当前协议：Run API v11、RuntimeEvent v17、State schema v22、exec-stream v3。产品默认
+  M8-J 随后重算 current V1 successor，并删除仍可见但断开 canonical RunStore 的
+  `codewhale thread`、SQLite `threads` metadata 表、`session_index.jsonl` sidecar 和
+  无 production consumer 的 Thread/App/Prompt/EventFrame protocol 岛。State v23 在同一
+  迁移事务中删除旧表并保留 current run replay、pending Start、route audit 与 accounting；
+  V12 关闭，current V1 matrix 为 10 pass / 6 blocked。没有模型 treatment，Key 未读取、
+  官方请求 0。
+- 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
 ## 1. 当前结论
@@ -173,8 +184,9 @@ canonical Run command，并从 durable event 投影 root/child 状态。
 canonical Agent Run 的 terminal 也只在该 Runtime 提交。`StateStore` 是唯一生产 SQLite
 `RunStore` 实现；`InMemoryRunStore` 只用于测试。M6-A 的
 `ProductionAgentOrchestrator` 只编排同一 Runtime 和 Git lifecycle，不拥有模型循环、
-工具实现、Store 或 terminal。Fleet/Lane 仍有独立产品消费者和 M6 后续清理债务，但不拥有
-canonical Writer 的 worktree、Agent 模型循环、RunStore 或 terminal。
+工具实现、Store 或 terminal。Fleet/Lane 产品、协议、状态和 process shell 已在 M8-G
+物理删除；canonical Writer 的 worktree、Agent 模型循环、RunStore 与 terminal 没有另建
+兼容路径。
 
 旧生产例外 `workflow -> workflow-tool -> WorkflowTool -> SubAgentRuntime ->
 DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私有 JSON/JSONL
@@ -203,7 +215,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v17 与 State schema v22 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v17 与 State schema v23 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -387,7 +399,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v17 / State v22 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v17 / State v23 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -544,7 +556,8 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 退役的 `crates/tui/src/compaction.rs`、`seam_manager.rs` 以及不再生效的 TUI
   `auto_compact` 开关/阈值状态均已删除；hard-limit compaction 位于
   `crates/context + crates/runtime`，不存在手动 `/compact` 或传输层 command；
-- generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
+- generic Provider/config/UI active path 已删除；保留的 DeepSeek provider 字段只参与
+  canonical environment fingerprint / replay safety，不是用户模式或第二 backend。
 - Work surface 只投影 canonical child/tool facts，不再投影已删除的 TUI 私有 Plan/Todo、
   Goal/Hunt 或 custom-command pause 状态；canonical Run 的工具 allow-list 不从旧 UI
   状态注入。
@@ -562,11 +575,11 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 | `deepseek` | 官方 DeepSeek Chat planner/transport/parser/accounting、完整 stream 证据与 usage 保全 | 只按真实协议失败扩展 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
 | `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 只按新的 production 编辑失败补证 |
-| `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
+| `state` | 唯一 SQLite RunStore、lease、replay；v23 物理删除 legacy thread truth | 只按 canonical Run 协议缺口迁移 |
 | `app` | 唯一 production composition、Run command、显式 Writer policy 与 Orchestrator wiring | M7 策略调优 |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
-| `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
-| `tui` | exec/interactive canonical projection + Provider 遗留 | 删除剩余非 DeepSeek 产品面 |
+| `cli` | 顶层命令与 production config 解析；run list/resume 只走 canonical Store | 只按真实产品入口扩展 |
+| `tui` | exec/interactive canonical Run projection | 不恢复 Provider/thread 私有状态 |
 | `localization` | CLI/TUI 共享 fixed `zh-Hans` compile-time message owner | 只删除失去真实 caller 的 message id，不增加 locale |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
@@ -1460,7 +1473,8 @@ Claude Code/Anthropic 生态，也不需要 Messages request DTO、content-block
 `deepseek-v4-pro`/`deepseek-v4-flash`、Standard/Strict planner、reasoning/tool replay、
 usage/retry/accounting 与 RunStore 链均保留。
 
-M8-E 的其他 architecture blockers 同样是当前事实：
+M8-E 当时冻结的其他 architecture blockers 是以下历史快照；M8-G/H/J 的 successor
+结论会在后文逐项 supersede，不反向改写该 frozen evidence：
 
 - `ProductionAgentOrchestrator` 与 Fleet/Lane 的用户可见命令、协议和状态概念并存；
 - explicit single Writer 有完整 worktree/verify/integrate/cleanup，但 multi-Writer 未准入；
@@ -1549,7 +1563,7 @@ Start/Continue typed facts
        -> failed read-only recheck AgentTask(Pro/Max)
        -> explicit Writer AgentTask(Pro/High or typed rework Max)
   -> DeepSeekModelPort -> ChatCompletions
-  -> RunStore(State v22)
+  -> RunStore(State v23)
 ```
 
 Auto root 始终 Pro；产品没有 typed bounded-low-risk/no-tools 输入，因此当前不授予 root
@@ -1561,7 +1575,8 @@ Flash。read-only child 的 Flash 结果必须返回 Pro root 汇聚，并由既
 classifier prompt/parser、provider DTO、关键词/500 字 heuristic、空 `recent_context`、
 `DeepSeekAutoRouteFailed` 和 creation unknown-billing projection 已物理删除。Auto Start
 的 `RunCreated.accounting_baseline` 现在是 0 次请求，首个且唯一物理请求属于 root。
-RuntimeEvent v17/State v22 强制 route audit 与 child binding；SQLite 重开不重新路由。
+RuntimeEvent v17 与当前 State v23 强制 route audit 与 child binding；该 audit 由 v22
+引入，v23 只删除 legacy Thread truth，SQLite 重开不重新路由。
 
 formal A/B 没有准入：frozen old classifier control 在 `15fea38e`，candidate 在
 `ef65bafa`，而删除旧路径后不存在同时承载 fixed Pro/Flash、旧 classifier 与 Host policy
@@ -1569,6 +1584,36 @@ formal A/B 没有准入：frozen old classifier control 在 `15fea38e`，candida
 已删除的模式和第二 route owner。因此结果为
 `inadmissible_no_single_binary_four_variant_surface`；Key 未读取、官方请求 0。产品默认保持
 固定 Pro，显式 Auto 机制保留但默认 admission 为 hold。
+
+M8-J 当前 state / CLI surface 为：
+
+```text
+codewhale runs | resume | exec --resume/--continue
+  -> AgentApplication
+  -> canonical RunStore(State v23)
+
+legacy codewhale thread <8 subcommands>
+  X no dispatch / no metadata Store / fail closed before model
+```
+
+旧 `codewhale thread` 读写独立 `threads` metadata 表，并把 resume/fork 委托给已退休
+TUI thread 语义；`StateStore` 还维护 `session_index.jsonl` sidecar。protocol 根部的
+Thread/App/Prompt/EventFrame DTO 只有自身 parity test，没有 production caller。candidate
+`bcbc1616` 先保留并验证 canonical `runs`/`resume` caller，再删除以上旧入口、CRUD、
+sidecar、DTO、文案和专属测试。
+
+State `v22 -> v23` 的 migration 在同一 `IMMEDIATE` transaction 中
+`DROP TABLE IF EXISTS threads`，fresh v23 不创建旧表。v22 debt fixture 证明升级后
+current canonical run、pending Start、route audit 与 accounting 原样保留；注入 drop
+failure 时 user_version 和旧对象一起回滚。`RunEnvironment.provider="deepseek"` 仍用于
+environment fingerprint / replay safety，execpolicy network types 也继续服务真实 caller；
+它们不是 generic Provider 产品模式。
+
+该切片把 V12 从 blocked 关闭为 pass，current V1 matrix 为 10 pass / 6 blocked，剩余
+V08/V09/V10/V13/V15/V16。它只提供状态单一真相、删除量和恢复正确性证据，没有模型
+treatment，不能推导 verified success、Token、时间或费用提升；Key 未读取、官方请求 0。
+完整事实见
+[M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
 
 ## 7. 明确非结论
 
@@ -1581,8 +1626,8 @@ formal A/B 没有准入：frozen old classifier control 在 `15fea38e`，candida
   仍只由 CI matrix 拥有而非本机观察；
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
-- M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；16 项完成定义中仍有
-  8 项 blocked；
+- M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；其 frozen matrix
+  保持 8 blocked，M8-G/J successor 已把 current matrix 收敛为 6 blocked，但仍不可发布；
 - 旧模型 alias 退役等于 ChatCompletions surface 退役；官方文档与当前 production
   contract 都证明这是两个不同层次；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，

@@ -189,6 +189,14 @@ Standard Chat 与 lossless Beta Strict fallback。V09 的 frozen `blocked` 不�
 hold FIM re-entry`，详见
 [M8-H FIM 产品范围与历史债收敛](m8-h-fim-scope-debt-2026-07-24.md)。
 
+M8-J successor contract `9e644add` 从 M8-G 后的 current 9 pass / 7 blocked 重新审计
+V12。code candidate `bcbc1616` 删除旧 `codewhale thread`、SQLite `threads` metadata
+表、`session_index.jsonl` 第二真相和无 production consumer 的
+Thread/App/Prompt/EventFrame protocol 岛；State v23 保留 current canonical run、
+pending Start、route audit 与 accounting。V12 当前为 pass，successor matrix 为
+10 pass / 6 blocked；本文件 frozen 8/8 结果不反向改写。详见
+[M8-J V1 successor 与 V12 历史债删除](m8-j-v1-successor-v12-debt-2026-07-24.md)。
+
 ## 7. 非结论
 
 M8-E 不证明：

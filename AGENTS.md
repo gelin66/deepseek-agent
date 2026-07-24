@@ -65,14 +65,13 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v10, State schema is v21, RuntimeEvent is v16, and the
-  compact exec stream is v2. State v21 persists and rebuilds the exact tool
-  catalog advertised by the latest model request, typed DeepSeek response and
-  tool-failure evidence, retry decision, Writer lifecycle, and terminal
-  accounting. It directly retires every pre-v16 materialized run because
-  historical failed ToolOutcome values cannot gain a stable failure code
-  without guessing, while preserving recoverable pending Start intents; no
-  compatibility reader or dual write exists.
+- Current Run API is v11, State schema is v23, RuntimeEvent is v17, and the
+  compact exec stream is v3. State v21 introduced exact advertised tool
+  catalogs and typed tool-failure/retry truth; v22 added immutable Host route
+  audit and retired materialized runs that could not reconstruct it. State v23
+  preserves current canonical runs and recoverable pending Start intents while
+  deleting only the legacy `threads` metadata table in the same migration
+  transaction. No compatibility reader or dual write exists.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
@@ -119,6 +118,19 @@ Changing one of these constraints requires evidence and a new ADR.
   updater/CNB discovery, `codew`, legacy product env/path readers, duplicate
   metrics state, and unconnected deployment assets are deleted. No model,
   Runtime, Store, or protocol surface changed; no Key or DeepSeek API was used.
+- M8-I replaced the pre-run Flash prompt classifier with the Host-owned typed
+  policy in `crates/app`. Root and explicit Writer remain Pro; an ordinary
+  read-only child may use Flash and a typed recheck uses Pro. Every Run keeps
+  immutable route audit in the canonical Runtime/Store. Auto remains explicit
+  and is not the product default without a formal fixed-Pro non-inferiority and
+  efficiency result.
+- M8-J closed V12 at candidate `bcbc1616` by deleting the visible
+  `codewhale thread` path, the SQLite `threads` table,
+  `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame
+  protocol island. Canonical `runs`/`resume`, current run replay, pending Start,
+  accounting, and `RunEnvironment.provider="deepseek"` replay safety remain.
+  The current V1 successor matrix is 10 pass / 6 blocked; no Key or API was
+  used for this deterministic deletion slice.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

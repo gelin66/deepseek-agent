@@ -146,7 +146,15 @@
   candidate 不存在于同 revision/immutable binary，四 variant formal A/B 在 Key 前判定
   `inadmissible_no_single_binary_four_variant_surface`；产品默认保持 fixed Pro，显式 Auto
   机制保留但默认 admission 为 `hold`。Key 未读取、官方请求 0。
-  当前 Run API v11、RuntimeEvent v17、State schema v22、exec-stream v3。CLI、TUI、本地 API 与
+  M8-J 随后从 clean `bce36a53` 重验 M8-E 的 16 项 V1 matrix：M8-G 已使 V06
+  `blocked -> pass`，M8-H/M8-I 不改变 V1 item，current input 为 9 pass / 7 blocked。
+  code candidate `bcbc1616` 删除断开 canonical RunStore 的 `codewhale thread`、SQLite
+  `threads` 表、`session_index.jsonl` 第二真相，以及无 production consumer 的
+  Thread/App/Prompt/EventFrame 协议岛；State `v22 -> v23` 只做同事务物理删除并保留
+  current run replay、pending Start、route audit 与 accounting。V12 因而关闭为 pass，
+  current V1 为 10 pass / 6 blocked；剩余 V08/V09/V10/V13/V15/V16。该切片没有模型
+  treatment，Key 未读取、官方请求 0。
+  当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -260,7 +268,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-A～M8-C 已完成；M8-D prompt candidate 因 final unknown billing 判定 hold；M8-E 退出审计为 8/16 pass，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-J successor audit 为 10/16 pass；V08/V09/V10/V13/V15/V16 仍 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2446,6 +2454,46 @@ default admission**。产品默认保持 fixed Pro；只有未来 successor 在�
 下证明 fixed-Pro 非劣、false success 为 0、关键 strata 无新增 Pro-only success，并在质量
 通过后稳定改善费用或时间约 20%，Auto 才能成为默认。完整结论见
 [M8-I Host typed Auto 路由](../../eval/summaries/m8-i-host-auto-route-2026-07-24.md)。
+
+### M8-J：V1 successor 审计与 V12 历史债删除
+
+M8-J 以 clean `bce36a53`、Run API v11、RuntimeEvent v17、State v22、exec-stream v3
+重新计算 M8-E matrix。冻结输入保持 8/16 不改写；M8-G 已关闭 V06，M8-H 只收敛 FIM
+半分支而没有满足 V09，M8-I 不对应 V1 item。因此候选前 current truth 是 9 pass /
+7 blocked，V12 是最小且仍有真实 production consumer 的 blocker。
+
+只读 caller graph 证明旧链是第二产品/状态真相：
+
+- `codewhale thread` 暴露 list/read/resume/fork/archive/unarchive/set-name/clear-name，
+  但读写的是独立 `threads` metadata 表；resume/fork 委托已退休的 TUI thread 语义；
+- `StateStore` 除 canonical run/event/snapshot/creation 外还维护 `threads` 与
+  `session_index.jsonl`；
+- protocol crate 根部的 Thread/App/Prompt/EventFrame DTO 只有自身 parity test，
+  production consumer 为 0；
+- `RunEnvironment.provider="deepseek"` 是 canonical replay-safety fact，execpolicy 的
+  network policy types 也有真实 caller，不属于 generic Provider 产品债。
+
+manifest commit `9e644add` 先冻结该边界。code candidate `bcbc1616` 迁移真实入口到既有
+`codewhale runs`、`codewhale resume` 与 `exec --resume/--continue`，随后物理删除旧
+CLI dispatch、thread CRUD/session index、无消费者协议/本地化/测试。State schema
+`v22 -> v23` 在同一 `IMMEDIATE` transaction 中 `DROP TABLE IF EXISTS threads`；fresh
+v23 不创建旧表。定向反例证明：
+
+- exact v22 debt 升级后 current canonical run 原样 replay，旧表消失；
+- 注入 drop failure 时 user_version 与旧对象一起回滚；
+- 9 种旧 `thread` spellings 在 config、TUI、RunStore、credential/model 前 fail closed；
+- root/read-only/Writer、HTTP/stdio/exec、SQLite reopen 与 SIGKILL recovery 不退化。
+
+code candidate 为 11 files、`+232/-1,797`，净删除 1,565 行；连同冻结 manifest 相对
+baseline 为 12 files、`+398/-1,797`。决策为
+**keep canonical RunStore / shrink and delete legacy Thread truth / close V12**。
+current matrix 为 10 pass / 6 blocked，剩余 V08 multi-Writer、V09 FIM scope、V10
+RepoGraph、V13 imported-baseline coding A/B、V15 billing-provable 中文 prompt A/B、
+V16 imported-baseline workflow-step A/B。没有模型 treatment 或可付费产品指标，Key
+未读取、官方请求 0。
+
+完整结论见
+[M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
 
 ### 调优
 

@@ -1573,6 +1573,60 @@ manifest/summary：
 - `eval/manifests/m8-i-host-auto-route-v1.json`；
 - [M8-I Host typed Auto 路由](../../eval/summaries/m8-i-host-auto-route-2026-07-24.md)。
 
+### 9.25 M8-J V1 successor 与 V12 历史债删除（2026-07-24）
+
+M8-J 不改写 M8-E 的 frozen 8 pass / 8 blocked 输入，而是以 clean `bce36a53`、
+Run API v11、RuntimeEvent v17、State v22、exec-stream v3 重算 current successor。
+M8-G 已使 V06 `blocked -> pass`；M8-H 只收敛不可达 FIM 半分支，V09 仍 blocked；
+M8-I 不对应 V1 exit item。因此候选前 current matrix 为 9 pass / 7 blocked。
+
+manifest commit `9e644add` 在 production 变更前冻结唯一切片：
+
+| 项目 | 冻结值 |
+|---|---|
+| blocker | V12 no-consumer provider / legacy state vocabulary |
+| baseline | `bce36a53` |
+| code candidate | `bcbc1616` |
+| candidate protocol | Run API v11 / RuntimeEvent v17 / State v23 / exec-stream v3 |
+| live treatment | 无；确定性状态真相删除 |
+| Key / official requests | 0 / 0 |
+
+caller graph 证明旧 `codewhale thread` 的八个子命令读写独立 `threads` metadata 表，
+resume/fork 又委托已退休的 TUI thread 语义；`StateStore` 还维护
+`session_index.jsonl` sidecar。protocol 根部的 Thread/App/Prompt/EventFrame DTO 只有
+自身 parity test，没有 production consumer。相反，canonical
+`RunEnvironment.provider="deepseek"` 参与 environment fingerprint / replay safety，
+execpolicy 的 network policy types 也有真实 caller；两者保留，不把字段名当删除依据。
+
+candidate 先让真实入口继续使用既有 `runs`、`resume` 与
+`exec --resume/--continue`，再物理删除旧 CLI dispatch、thread CRUD/session index、
+无消费者 DTO、文案和测试。State `v22 -> v23` 在同一 `IMMEDIATE` transaction 中删除
+旧表，fresh v23 不创建它；精确迁移测试证明 current canonical run 原样 replay，
+pending Start、route audit 与 accounting 不变，注入 drop failure 时 schema version
+和旧对象一起回滚。九种旧 spelling 在 config、TUI、Store、credential/model 前
+fail closed。
+
+离线门禁覆盖 targeted state/protocol/CLI、focused production composition、
+root/read-only/Writer、HTTP/SSE/stdio/exec、SQLite reopen、SIGKILL recovery、fmt、
+workspace strict Clippy/test 与 diff check。该候选相对 baseline 的代码切换为 11 files、
+`+232/-1,797`，净删除 1,565 行；没有模型 request surface delta，正式 paid A/B
+不适用，不能据此声称 verified success、Token、时间或费用提升。
+
+决策为：
+
+- `keep_canonical_runstore`；
+- `shrink_delete_legacy_thread_truth`；
+- `close_V12`。
+
+current V1 matrix 为 10 pass / 6 blocked；剩余 V08 multi-Writer、V09 FIM scope、
+V10 RepoGraph、V13 imported-baseline coding A/B、V15 billing-provable 中文 prompt A/B
+与 V16 imported-baseline workflow-step A/B。
+
+manifest/summary：
+
+- `eval/manifests/m8-j-v1-successor-v12-debt-v1.json`；
+- [M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
