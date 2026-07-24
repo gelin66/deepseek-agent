@@ -1,0 +1,204 @@
+{
+  "schema": "codewhale.eval.m8-f-anthropic-messages-cutover.v1",
+  "suite_id": "m8-f-anthropic-messages-cutover-f9c9662f-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "control_revision": "f9c9662f220cca97c3206b8ea4b041a24f4a258c",
+  "control_tree": "3f2225698faaf9a72f9beea3e8b9d6c9ee4e1425",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "ff53b4985b18a05847bd617fec2aa2b69e93d579cbe3f3d64f8f874acfaf0ef2",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0"
+  },
+  "authorities": {
+    "product_plan_sha256": "b41577c958bede243abf80c521aa306000b3481db40677c43fa7e15d421ca4ce",
+    "roadmap_sha256": "5534ae0818b9523ace271ae3da9a8b643dd02d2dfe7c626206ec80edd140a2ef",
+    "evaluation_sha256": "59c6c6a72cdf1a23c057d3597deb5e92bdd7801e1050c7638918dd4c77f4657e",
+    "current_architecture_sha256": "b78a93b3150f8c35f97a176514c7da1f092e0bf658501a52859ce0228ba5629f"
+  },
+  "control_blobs": {
+    "deepseek_planner_sha256": "63b49c4db6eb428a010f5e21d3ad252cdf1378929737b57f6402067fcb26dd7b",
+    "deepseek_transport_sha256": "7c130852e9886201c63bee111a42b1c02d7120a4b6249ea3b081cccdb6654333",
+    "deepseek_accounting_sha256": "c9ec0c78f473bf3db0a38ee6d1186447113b9f9b46b5a4eb1bad028ead2fb489",
+    "deepseek_model_port_sha256": "5380d88e60f8fd4d19e375bf2e2456112e7a0491bbc5e429d639bb619301b62b",
+    "deepseek_config_sha256": "62de07f2cddbba7e6ccb8bd7b88c880bc5781ddc2362c34f0428a73174004dbc",
+    "production_application_sha256": "bb893263fe094087468474849e0fad8ce145c0ea013115cc81734696ead8cfd3"
+  },
+  "slice": {
+    "real_problem": "The sole production DeepSeek caller still emits OpenAI ChatCompletions wire data even though the user selected the official Anthropic Messages interface as CodeWhale's release target.",
+    "acceptance": "One DeepSeekModelPort projects, sends, parses, accounts, retries, reopens, and attributes Anthropic Messages requests for root, read-only child, and explicit Writer without a callable Chat production path.",
+    "single_owner": "crates/deepseek",
+    "replaced_path": "OpenAI Chat planner, Bearer sender, choices/delta parser, /chat/completions endpoint, and old official base_url values",
+    "evidence": "offline request/response/SSE fixtures; root/read-only/Writer and CLI/TUI/API conformance; process crash/reopen; locked/offline two-binary artifact; billing-complete limited official canary",
+    "cutover_deletion": "remove the old Chat production planner/parser/sender endpoint and config acceptance plus every temporary control adapter"
+  },
+  "official_contract": {
+    "checked_at": "2026-07-24",
+    "deepseek_guide": "https://api-docs.deepseek.com/guides/anthropic_api/",
+    "deepseek_thinking": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "deepseek_pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "anthropic_messages_reference": "https://platform.claude.com/docs/en/api/messages",
+    "anthropic_streaming_reference": "https://platform.claude.com/docs/en/build-with-claude/streaming",
+    "anthropic_sdk_source": "https://github.com/anthropics/anthropic-sdk-python",
+    "base_url": "https://api.deepseek.com/anthropic",
+    "request_path": "/v1/messages",
+    "request_url": "https://api.deepseek.com/anthropic/v1/messages",
+    "authentication_header": "x-api-key",
+    "compatibility_header": {
+      "name": "anthropic-version",
+      "value": "2023-06-01",
+      "deepseek_behavior": "ignored"
+    },
+    "models": [
+      "deepseek-v4-pro",
+      "deepseek-v4-flash"
+    ],
+    "legacy_alias_retirement": "deepseek-chat and deepseek-reasoner retire at 2026-07-24 15:59 UTC",
+    "stream_terminal": "message_stop",
+    "stream_usage_semantics": "message_start supplies input-side usage; message_delta supplies cumulative output usage; the final normalized usage must be complete before accounting is sealed",
+    "cache_semantics": "Anthropic input_tokens is the uncached remainder; normalized total input is input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
+    "unsupported_input_blocks": [
+      "image",
+      "document",
+      "redacted_thinking"
+    ],
+    "ignored_fields_not_used_as_authority": [
+      "anthropic-beta",
+      "tool_result.is_error",
+      "tool_choice.disable_parallel_tool_use",
+      "thinking.budget_tokens"
+    ]
+  },
+  "parity_contract": [
+    {
+      "id": "P01",
+      "area": "endpoint_and_auth",
+      "control": "POST /chat/completions with Authorization: Bearer",
+      "treatment": "POST /anthropic/v1/messages with x-api-key and anthropic-version",
+      "acceptance": "only the treatment is callable after cutover"
+    },
+    {
+      "id": "P02",
+      "area": "system_and_messages",
+      "control": "system role is embedded in messages",
+      "treatment": "system is top-level and messages contain only user/assistant roles",
+      "acceptance": "canonical ordering and exact text bytes are preserved"
+    },
+    {
+      "id": "P03",
+      "area": "tools",
+      "control": "function definitions, tool_calls, and tool role results",
+      "treatment": "input_schema definitions, tool_use blocks, and user tool_result blocks",
+      "acceptance": "tool ids, names, raw arguments, result order, and all catalog entries are preserved"
+    },
+    {
+      "id": "P04",
+      "area": "thinking_replay",
+      "control": "reasoning_content is replayed on assistant tool-call messages",
+      "treatment": "thinking content blocks are replayed before tool_use blocks",
+      "acceptance": "missing required thinking fails before HTTP and never invents a signature"
+    },
+    {
+      "id": "P05",
+      "area": "stream_content_blocks",
+      "control": "choice deltas plus [DONE]",
+      "treatment": "message/content-block start, delta, stop, message_delta, and message_stop events",
+      "acceptance": "text, thinking, signature, partial_json, ping, keep-alive, error, duplicate, out-of-order, unknown, and truncated cases are typed"
+    },
+    {
+      "id": "P06",
+      "area": "finish_reason",
+      "control": "stop/tool_calls/length/content_filter/insufficient_system_resource",
+      "treatment": "end_turn/stop_sequence/tool_use/max_tokens plus fail-closed unsupported reasons",
+      "acceptance": "tool_use requires at least one complete tool block and non-tool terminal rejects tool blocks"
+    },
+    {
+      "id": "P07",
+      "area": "usage_cache_billing",
+      "control": "prompt/completion/cache-hit/cache-miss/reasoning fields",
+      "treatment": "input/output/cache-read/cache-creation plus optional output token details",
+      "acceptance": "normalized totals, cache classes, pricing, response count, and actor attribution are exact; absent or contradictory fields fail accounting completeness"
+    },
+    {
+      "id": "P08",
+      "area": "retry_and_side_effect",
+      "control": "typed pre-header retry and post-header incomplete-stream evidence",
+      "treatment": "same canonical retry safety using Messages event evidence",
+      "acceptance": "no automatic blind retry after actionable output, trusted finish, message_stop, or ambiguous billing"
+    },
+    {
+      "id": "P09",
+      "area": "crash_and_reopen",
+      "control": "v16/v21 reconstructs exact ModelRequest and derived Chat RequestPlan",
+      "treatment": "v16/v21 reconstructs exact ModelRequest and derived Messages RequestPlan",
+      "acceptance": "prepared, started, partial response, usage, terminal, SIGKILL, and SQLite reopen windows do not duplicate a request or lose accounting"
+    },
+    {
+      "id": "P10",
+      "area": "actor_and_entrypoint_parity",
+      "control": "root, read-only child, explicit Writer, CLI, TUI, HTTP, and stdio share the old caller",
+      "treatment": "the same actors and entrypoints share one Messages caller",
+      "acceptance": "no actor, client, Provider, mode, Runtime, Store, or private transport fork is added"
+    },
+    {
+      "id": "P11",
+      "area": "cutover_deletion",
+      "control": "Chat planner/parser/sender and multiple official base_url values exist",
+      "treatment": "only the Anthropic Messages production URL and parser remain",
+      "acceptance": "no /chat/completions, Bearer DeepSeek auth, choices/delta Chat parser, official /v1, or official /beta config path remains in production"
+    },
+    {
+      "id": "P12",
+      "area": "official_canary",
+      "control": "no M8-F credential or request",
+      "treatment": "limited immutable-binary Messages canary after every offline gate",
+      "acceptance": "response protocol, usage, cache classes, pricing, request identity, and billing are complete; any ambiguity stops without rerun"
+    }
+  ],
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8f-target",
+    "cargo_net_offline": true,
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_read_before_offline_gates": false,
+    "official_api_requests_before_offline_gates": false,
+    "canary_result_path": "eval/results/m8-f-anthropic-messages-canary-v1.json",
+    "canary_result_mode": "0600",
+    "overwrite": false
+  },
+  "gates": [
+    "cargo fmt --all -- --check",
+    "cargo test -p codewhale-deepseek --locked",
+    "cargo check -p codewhale-deepseek --locked",
+    "./scripts/dev-deepseek-agent.sh focused",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "cargo test --workspace --locked",
+    "production-path loopback",
+    "process-level crash/reopen",
+    "root/read-only/explicit Writer conformance",
+    "CLI/TUI/HTTP/stdio parity",
+    "locked/offline codewhale and codewhale-tui artifact",
+    "M8-F manifest self-test",
+    "git diff --check"
+  ],
+  "decision": {
+    "pre_cutover": "not_admitted",
+    "admit_only_if": "all offline gates and limited official canary have complete protocol, usage, cache, pricing, billing, crash/reopen, actor, and artifact evidence",
+    "fail_closed": "hold_release_and_keep_evidence",
+    "forbidden": [
+      "permanent dual transport",
+      "Chat fallback",
+      "new Provider",
+      "new user mode",
+      "second AgentRuntime",
+      "second RunStore",
+      "credential or raw response in Git"
+    ]
+  }
+}
