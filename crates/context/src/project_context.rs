@@ -1157,7 +1157,11 @@ fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
         });
     }
 
-    let mut file = open_context_file(path)?;
+    let mut file =
+        crate::safe_read::open_no_follow(path).map_err(|source| ProjectContextError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let metadata = file
         .metadata()
         .map_err(|source| ProjectContextError::Metadata {
@@ -1273,28 +1277,6 @@ fn load_rules_from_dir(workspace: &Path, rules_dir_name: &str) -> Vec<(PathBuf, 
     }
 
     entries
-}
-
-#[cfg(unix)]
-fn open_context_file(path: &Path) -> Result<fs::File, ProjectContextError> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| ProjectContextError::Read {
-            path: path.to_path_buf(),
-            source,
-        })
-}
-
-#[cfg(not(unix))]
-fn open_context_file(path: &Path) -> Result<fs::File, ProjectContextError> {
-    fs::File::open(path).map_err(|source| ProjectContextError::Read {
-        path: path.to_path_buf(),
-        source,
-    })
 }
 
 /// Create a default AGENTS.md file for a project

@@ -855,6 +855,7 @@ dependencies = [
  "codewhale-config",
  "codewhale-protocol",
  "dirs",
+ "ignore",
  "libc",
  "regex",
  "serde",

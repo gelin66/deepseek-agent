@@ -13,6 +13,7 @@ test-support = []
 codewhale-config = { path = "../config" }
 codewhale-protocol = { path = "../protocol" }
 dirs.workspace = true
+ignore = "0.4"
 regex = "1.11"
 serde.workspace = true
 serde_json.workspace = true
