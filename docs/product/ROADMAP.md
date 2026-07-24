@@ -3126,22 +3126,47 @@ Store、tool catalog、Provider 或模型路由器。
   RunStore reopen、SIGKILL 与 CLI/TUI/API gates 全部通过；
 - 前 4 arms measurement-valid：`readonly_investigation` 与 `typescript_service`
   verified，安全反例正确拒绝，false success=0；`rust_cli` 的双文件 external verifier
-  已通过，但 10 次请求后 terminal blocked 且无 Host receipt，形成唯一
-  `verified_workspace_without_terminal_receipt` current loss；
+  已通过，但 10 次请求后 terminal blocked 且无 Host receipt；M11 当时将它粗粒度投影为
+  `verified_workspace_without_terminal_receipt`；
 - 第 5 个 `root_recovery` 已落下 terminal、canonical Store、credential-free reopen 与
   verifier snapshot，但 `usage_incomplete=true`、accounting complete=false、
   `billing_unknown=false`。Harness 在下一 arm 前停止，没有重跑、补 mate、续跑或拼接；
 - ignored 0600 raw 有 32 个完整 hash-chained records、partial tail=0；5 个 canonical
   trajectories / 4 个 arm results / 1 个 accounting abort 被同一 analyzer 独立复算；
-- 唯一 product loss 只属于 `rust_cli` 一个 task，未达到同一 stable loss 至少跨两个
-  independent tasks 的门槛。因此不立 production candidate，不恢复 M10-A–G treatment，
-  不新增 completion controller、prompt、tool、Runtime/Store 状态或 retry path。
+- M12 后续证明 `rust_cli` 是 Host/external verifier Rust 工具链环境不一致，不是
+  production loss；即使按 M11 当时投影也只属于一个 task。因此不立 production
+  candidate，不恢复 M10-A–G treatment，不新增 completion controller、prompt、tool、
+  Runtime/Store 状态或 retry path。
 
 2026-07-25 官方复核仍确认唯一 production sender 使用
 `https://api.deepseek.com/chat/completions` 与 `deepseek-v4-pro/high`；2026-07-24
 退役的是 legacy model alias，不是 ChatCompletions surface。完整身份、描述性 prefix、
 官方来源、门禁与非结论见
 [M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
+
+#### M12：Host terminal convergence 跨任务复现
+
+M12 只纠正 M11 环境身份并复现假设，不建立 product treatment：
+
+- candidate `5716713f`、admission `0c055929` 冻结两个独立任务
+  `rust_endpoint` / `typescript_cache`，各 3 次，`maximum_reruns=0`；
+- Host 与 external verifier 每个 arm 共享同一隔离 `HOME` 和显式 `.rustup` identity，
+  固定 Rust 1.97.0；M11 app-server 隔离 `HOME` 缺少 rustup default 的稳定错误签名因此
+  被分类为 `evaluation_environment_mismatch`；
+- 6/6 verified、false success=0、32 physical requests、212,278 input tokens、
+  32,904 output tokens、119,552 cache-hit、92,726 cache-miss、known cost
+  USD 0.069395666；每个 arm 都有 latest-revision Host receipt、external verifier、
+  accounting complete 与 exact SQLite reopen；
+- combined M11+M12 analyzer 复算 11 trajectories / 10 labels / 1 historical accounting
+  interruption，current product loss 集合为空，连续两次 report byte-identical；
+- product 决定为 `close_hypothesis_no_repeated_product_loss`。production
+  crate/config/protocol/schema delta=0；不新增终止 controller、预算、prompt、retry 或
+  environment treatment。
+
+完整身份、环境纠正、官方协议复核、门禁和非结论见
+[M12 terminal convergence reproduction](../../eval/summaries/m12-terminal-convergence-2026-07-25.md)。
+后续候选必须来自新的 accounting-complete canonical trajectory，并先满足同一 stable
+current loss 至少跨两个独立 task 重复；不得继续围绕 M11 粗粒度 label 补样。
 
 ### 调优
 

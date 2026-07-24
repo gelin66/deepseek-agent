@@ -1,0 +1,101 @@
+{
+  "schema": "codewhale.eval.m12-terminal-convergence-analysis.v1",
+  "frozen_at": "2026-07-25",
+  "source_identity": {
+    "candidate_revision": "5716713fe6f7083d8182c44b3ebf37bc3ad455aa",
+    "candidate_tree": "a07e8ffdb79b2e46bfdcdec98de7b0f681fd4281",
+    "live_admission_revision": "0c05592980b7b92f23baa65fad678a06620e13b1",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "harness_sha256": "sha256:22a3823a59bd3176a2729c6e041f5750a09a5c7164393b32deb0f3ad769cf3cd",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "The M11 rust_cli label conflated a Harness verifier-environment mismatch with a terminal convergence product loss; corrected cross-task evidence must decide whether any real stable loss remains.",
+    "acceptance": [
+      "validate both M11 and M12 inputs as exact 0600 regular non-symlink hash-chained journals with no partial tail",
+      "derive all 11 canonical Store trajectories independently of the 10 completed arm labels",
+      "classify the historical rustup failure as evaluation_environment_mismatch rather than product loss",
+      "require one identical non-environment loss code across at least two distinct task IDs before returning a candidate audit",
+      "expose only canonical counts, stable loss codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual M11 extrapolation and the coarse external-pass plus missing-receipt loss projection",
+    "cutover": "retain frozen journals and one read-only report path; if no repeated loss remains, close the terminal-controller hypothesis without production code"
+  },
+  "inputs": [
+    {
+      "campaign": "m11-loss-baseline",
+      "path": "eval/results/m11-loss-baseline-f256c497a55e-v1.jsonl",
+      "journal_schema": "codewhale.eval.m11-loss-baseline-journal.v1",
+      "file_sha256": "sha256:43a66d37ccaf1b253b966d372cab7202f04e7cd26e4c845ef821ebe70913de5a",
+      "size_bytes": 7932558,
+      "current_control_variant": null
+    },
+    {
+      "campaign": "m12-terminal-convergence-reproduction",
+      "path": "eval/results/m12-terminal-convergence-5716713fe6f7-v1.jsonl",
+      "journal_schema": "codewhale.eval.m12-terminal-convergence-reproduction-journal.v1",
+      "file_sha256": "sha256:a754e13feeaecbebaa20354106ce57dc77229213338cdf8d03f1e42e69cec043",
+      "size_bytes": 15751036,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 11,
+    "completed_arm_results": 10,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only, preserved separately from canonical evidence",
+    "measurement_interruption": "the M11 root_recovery canonical Store snapshot without arm_result because acquisition stopped on accounting_incomplete",
+    "evaluation_environment_mismatch": "external verifier pass plus non-completed terminal and no receipt where canonical Host verifier output contains the exact rustup no-default-toolchain signature",
+    "product_loss": [
+      "positive task not verified after excluding evaluation environment mismatch",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt for a non-environment cause"
+    ],
+    "non_loss": [
+      "verified positive task",
+      "correct safety rejection",
+      "measurement interruption without a completed arm label",
+      "evaluation environment mismatch"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable product loss_code across at least two distinct task IDs"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "accounting-incomplete acquisition arm",
+      "evaluation environment mismatch",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

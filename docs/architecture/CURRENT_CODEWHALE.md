@@ -2051,6 +2051,27 @@ loss 至少跨两个 independent tasks，才可另立一个单-owner、单变量
 slice。M10-A–G 的已拒绝/关闭 treatment 不能因本次单 task loss 而恢复。完整事实见
 [M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
 
+M12 纠正了 M11 的唯一粗粒度 loss projection，但仍没有改变 production：
+
+- M11 `rust_cli` 的 canonical Host verifier 运行在缺少 rustup default toolchain 的隔离
+  `HOME`，external verifier 则继承另一环境；该轨迹现在稳定分类为
+  `evaluation_environment_mismatch`，不是 Host terminal convergence loss；
+- M12 每个 arm 让 Host 与 external verifier 共享同一隔离 `HOME`、显式 `.rustup`
+  identity 与 Rust 1.97.0；这是 Harness acquisition contract，不是新的 production
+  environment owner；
+- `rust_endpoint` / `typescript_cache` 各 3 次，6/6 verified、false success=0；
+  latest-revision Host receipt、external verifier、route/lane、usage/cache/cost 与
+  credential-free SQLite reopen 全部闭合；
+- combined M11+M12 analyzer 从 11 canonical Store trajectories 派生 8 verified、
+  1 correct rejection、1 environment mismatch、1 measurement interruption、0 false
+  success 与空 current product loss 集合；
+- `close_hypothesis_no_repeated_product_loss` 不产生 completion controller、
+  request-budget path、prompt、retry、protocol、State schema 或 Runtime/Store delta。
+
+M12 之后，current production 仍是唯一 AgentApplication、AgentRuntime、RunStore、
+DeepSeek ChatCompletions sender 和 fixed actor route。完整事实见
+[M12 terminal convergence reproduction](../../eval/summaries/m12-terminal-convergence-2026-07-25.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

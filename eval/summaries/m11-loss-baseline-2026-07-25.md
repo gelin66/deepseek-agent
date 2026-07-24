@@ -4,9 +4,25 @@
 
 正式 acquisition：`stop_incomplete_accounting`
 
-trajectory 决定：`insufficient_repeated_current_loss`
+原始 trajectory 决定：`insufficient_repeated_current_loss`
 
 production candidate：无
+
+## M12 纠正
+
+M12 在不改写本页冻结 raw、manifest、arm label 或停止事实的前提下，复查了
+`rust_cli` 的 canonical Host verifier output。Host 与 external verifier 当时没有共享
+同一工具链环境：app-server 使用隔离 `HOME`，其中没有 rustup default toolchain；
+external verifier 则继承另一环境并通过。因此原先把“external pass + no receipt”
+直接投影为 `verified_workspace_without_terminal_receipt` product loss 过于粗糙。
+
+M12 用显式共享的隔离 `HOME` 与 `.rustup` identity 修正 acquisition contract 后，
+`rust_endpoint` 和独立的 `typescript_cache` 各运行 3 次，6/6 获得 latest-revision
+Host receipt、external verifier pass、exact SQLite reopen 与完整 accounting，
+false success=0。结合 M11 与 M12 的 canonical trajectory report 将历史
+`rust_cli` 重分类为 `evaluation_environment_mismatch`，当前 product loss 集合为空，
+决定为 `close_hypothesis_no_repeated_product_loss`。完整纠正见
+[M12 terminal convergence reproduction](m12-terminal-convergence-2026-07-25.md)。
 
 ## 结论
 
@@ -20,8 +36,9 @@ Harness 没有重跑、补 mate、续跑、resample 或拼接历史 raw。
 
 - `rust_cli`：external verifier 通过，changed files 精确为 `src/lib.rs` 与
   `tests/cli_contract.rs`，route/lane 有效；但 10 个 model requests 后 terminal 为
-  `blocked`、没有 Host receipt。它不是 false success，而是一个
-  `verified_workspace_without_terminal_receipt` current product loss；
+  `blocked`、没有 Host receipt。M11 当时将其投影为
+  `verified_workspace_without_terminal_receipt`；M12 已证明其根因是 Host 与
+  external verifier 的 Rust 工具链环境不一致，不是 current product loss；
 - `readonly_investigation`：verified success，exactly one read-only child、typed handoff
   后 root 修改，Host receipt 与 reopen 一致；
 - `typescript_service`：verified success，双文件 scope、external verifier、Host
@@ -32,10 +49,10 @@ Harness 没有重跑、补 mate、续跑、resample 或拼接历史 raw。
   和 verifier snapshot，但 response usage 不完整。它没有 arm result，不能作为 product
   task loss，也不能进入成本聚合。
 
-完整 prefix 的 false success 为 0。唯一 product loss 只出现在一个独立 task；最低准入门
-要求同一 stable loss code 至少出现在两个独立 task。因此不新增 completion controller、
-prompt、ContextBroker、tool、Runtime/Store 状态或 retry path，也不恢复 M10-A–G 已删除的
-treatment。
+完整 prefix 的 false success 为 0。即使按 M11 当时的粗粒度投影，候选也只出现在一个
+独立 task；M12 纠正后 current product loss 集合为空。因此不新增 completion
+controller、prompt、ContextBroker、tool、Runtime/Store 状态或 retry path，也不恢复
+M10-A–G 已删除的 treatment。
 
 ## 冻结身份
 
@@ -105,17 +122,21 @@ schema、sequence、hash chain、file hash/size 与完整 tail，并从 canonica
 - 4 个 completed arm labels；
 - 1 个 accounting acquisition interruption；
 - 2 verified success、1 correct rejection、0 false success；
-- 1 个 `verified_workspace_without_terminal_receipt`，独立 task 集合仅
-  `["rust_cli"]`；
+- M11 当时派生 1 个 `verified_workspace_without_terminal_receipt`，独立 task 集合仅
+  `["rust_cli"]`；M12 corrected analyzer 已将它重分类为
+  `evaluation_environment_mismatch`；
 - `root_recovery` 归入 `measurement_incomplete`，不伪装成 product loss；
 - candidate result：
   `insufficient_repeated_current_loss`，minimum independent tasks=2。
 
-analysis manifest：
+历史 M11 analysis manifest：
 `sha256:0531248f3206d66442fe2ebeecf72af4f54bb59e1689350d16e5ab6ef3e94529`。
 
-current analyzer Harness：
+M11 decision-time analyzer Harness：
 `sha256:c76f0313bdfb3032ccbe93a548d962917f592e14698877b8212da7252ec8e511`。
+
+M12 corrected analyzer Harness：
+`sha256:22a3823a59bd3176a2729c6e041f5750a09a5c7164393b32deb0f3ad769cf3cd`。
 
 canonical report：
 `sha256:feed43c11a9aee9990f7c8fc59dad6577f0cb9ac26c8c0fcd44f07b8c8f4d83a`。
@@ -170,6 +191,6 @@ M11 不证明：
 - M10-A–G、Auto、Anthropic、FIM、swarm、multi-Writer、LLM Judge 或第二 Runtime/Store
   应重新进入产品。
 
-下一步不是立即实现候选。保留唯一 read-only trajectory analyzer，等待新的
-accounting-complete current task evidence；只有同一 stable loss 在第二个独立 task 重复，
+M12 已执行所需的跨任务复现并关闭该假设。后续仍只能从新的 accounting-complete
+canonical trajectory 取得候选；只有同一 stable current loss 至少跨两个独立 task 重复，
 才审计一个 owner、一个 treatment variable 和明确 old-path deletion。

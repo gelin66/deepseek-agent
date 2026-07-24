@@ -2360,6 +2360,51 @@ accounting interruption 推导实现。
 完整证据见
 [M11 loss baseline](../../eval/summaries/m11-loss-baseline-2026-07-25.md)。
 
+### M12 terminal convergence cross-task reproduction
+
+M12 复用同一 corrected Harness，先纠正 M11 Host/external verifier 环境不一致，再用
+两个独立 fixed-Pro/high coding tasks 复现 terminal convergence 假设。它不是
+control/treatment A/B，也不改变 production。
+
+冻结 contract：
+
+- `rust_endpoint` 与 `typescript_cache` 各 3 次，`maximum_reruns=0`；
+- 同一 candidate revision、immutable release binary、TaskContract、tool catalog、
+  request budget、external verifier 与 official ChatCompletions；
+- Host 与 external verifier 共享每个 arm 的隔离 `HOME`、显式 `.rustup` identity 与
+  Rust 1.97.0；fixture Cargo target 仍在仓库外；
+- terminal、canonical Store、credential-free SQLite reopen、external verifier、
+  route/lane、usage/cache/cost 必须全部闭合才可 label；
+- M11 与 M12 journal 由同一 trajectory mode 合并复算；环境错误、measurement
+  interruption 与 product loss 必须分离；
+- 只有同一非环境 stable loss code 至少跨两个独立 task 重复，才返回 candidate audit。
+
+正式结果：
+
+| metric | result |
+|---|---:|
+| completed / planned arms | 6 / 6 |
+| verified success | 6 |
+| false success | 0 |
+| Host receipts | 6 |
+| exact SQLite reopen | 6 |
+| accounting-complete | 6 |
+| physical requests | 32 |
+| input / output tokens | 212,278 / 32,904 |
+| cache hit / miss input | 119,552 / 92,726 |
+| known cost | USD 0.069395666 |
+
+combined report 覆盖 11 canonical trajectories、10 completed labels 与 1 个历史
+accounting interruption。历史 M11 `rust_cli` 含 rustup no-default-toolchain 稳定签名，
+重分类为 `evaluation_environment_mismatch`；current product loss 集合为空。连续两次
+report byte-identical，candidate result 为 `insufficient_repeated_current_loss`，
+产品决定为 `close_hypothesis_no_repeated_product_loss`。
+
+因此不建立 production treatment，不新增 completion controller、request budget path、
+prompt、retry、Runtime/Store 状态或第二 analyzer。冻结 raw/manifest 不改写，M11 summary
+只增加 superseding correction。完整证据见
+[M12 terminal convergence reproduction](../../eval/summaries/m12-terminal-convergence-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
