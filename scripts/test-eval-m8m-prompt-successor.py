@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Offline contract tests for the M8-D prompt evaluator."""
+"""Offline contract tests for the M8-M prompt successor evaluator."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -14,29 +16,29 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HARNESS_PATH = ROOT / "scripts/eval-m8d-prompt.py"
+HARNESS_PATH = ROOT / "scripts/eval-m8m-prompt-successor.py"
 
 
 def load_harness():
     spec = importlib.util.spec_from_file_location(
-        "codewhale_eval_m8d_prompt", HARNESS_PATH
+        "codewhale_eval_m8m_prompt", HARNESS_PATH
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError("M8-D harness is unavailable")
+        raise RuntimeError("M8-M harness is unavailable")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-M8D = load_harness()
+M8M = load_harness()
 
 
 def prompt_fingerprint(stable: str, suffix: str = "same") -> dict:
     return {
         "actor_label": "root",
         "actor": {"kind": "root", "depth": 0},
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
         "reasoning_effort": "high",
         "semantic_messages_sha256": "sha256:messages",
         "task_generation_count": 1,
@@ -74,49 +76,35 @@ def paired_arm(variant: str) -> dict:
 
 class PromptHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.manifest, self.tasks = M8D.load_manifest(frozen=False)
+        self.manifest, self.tasks = M8M.load_manifest(frozen=False)
 
-    def test_v5_never_reuses_prior_suite_identity(self) -> None:
-        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-d-prompt-ab.v5")
-        self.assertEqual(M8D.RESULT_SCHEMA, "codewhale.eval.m8-d-prompt-result.v5")
+    def test_successor_never_reuses_prior_suite_identity(self) -> None:
+        self.assertEqual(self.manifest["schema"], "codewhale.eval.m8-m-prompt-successor.v1")
+        self.assertEqual(M8M.RESULT_SCHEMA, "codewhale.eval.m8-m-prompt-successor-result.v1")
         self.assertEqual(
             [attempt["suite"] for attempt in self.manifest["prior_attempts"]],
-            [
-                "m8-d-prompt-ab-v1",
-                "m8-d-prompt-ab-v2",
-                "m8-d-prompt-ab-v3",
-                "m8-d-prompt-ab-v4",
-            ],
+            ["m8-d-prompt-ab-v1-v5"],
         )
-        self.assertTrue(
-            all(
-                attempt["status"] == "aborted_measurement_invalid"
-                for attempt in self.manifest["prior_attempts"][:2]
-            )
-        )
-        self.assertEqual(
-            self.manifest["prior_attempts"][2]["status"],
-            "running_process_exited",
-        )
-        self.assertEqual(
-            self.manifest["prior_attempts"][3]["status"],
-            "aborted_writer_lifecycle_invalid",
-        )
+        prior = self.manifest["prior_attempts"][0]
+        self.assertEqual(prior["status"], "hold_unspliceable")
+        self.assertTrue(prior["continuation_forbidden"])
+        self.assertTrue(prior["mate_completion_forbidden"])
+        self.assertTrue(prior["sample_splicing_forbidden"])
         self.assertEqual(self.manifest["experiment"]["maximum_reruns"], 0)
 
     def test_candidate_is_exactly_one_constitution_replacement(self) -> None:
         baseline = (
             ROOT / self.manifest["prompt_treatment"]["baseline"]["source"]
         ).read_text(encoding="utf-8")
-        candidate = M8D.CANDIDATE_PROMPT_PATH.read_text(encoding="utf-8")
-        self.assertTrue(M8D.exact_candidate_delta(baseline, candidate))
+        candidate = M8M.CANDIDATE_PROMPT_PATH.read_text(encoding="utf-8")
+        self.assertTrue(M8M.exact_candidate_delta(baseline, candidate))
         self.assertEqual(
-            M8D.file_hash(M8D.CANDIDATE_PROMPT_PATH),
+            M8M.file_hash(M8M.CANDIDATE_PROMPT_PATH),
             self.manifest["prompt_treatment"]["candidate"]["sha256"],
         )
 
     def test_schedule_is_balanced_and_has_no_reruns(self) -> None:
-        schedule = M8D.formal_schedule(self.manifest)
+        schedule = M8M.formal_schedule(self.manifest)
         self.assertEqual(len(schedule), 30)
         cells = {}
         pairs = {}
@@ -130,7 +118,7 @@ class PromptHarnessTests(unittest.TestCase):
         self.assertTrue(
             all(
                 len(arms) == 2
-                and {arm["variant"] for arm in arms} == set(M8D.VARIANTS)
+                and {arm["variant"] for arm in arms} == set(M8M.VARIANTS)
                 for arms in pairs.values()
             )
         )
@@ -149,7 +137,7 @@ class PromptHarnessTests(unittest.TestCase):
         )
         for task_id, task in self.tasks["tasks"].items():
             self.assertEqual(
-                M8D.M7E.fixture_hash(self.tasks, task_id),
+                M8M.M7E.fixture_hash(self.tasks, task_id),
                 task["fixture_tree_sha256"],
             )
 
@@ -157,14 +145,14 @@ class PromptHarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             for task_id, task in self.tasks["tasks"].items():
-                base = M8D.materialize_fixture(
+                base = M8M.materialize_fixture(
                     self.tasks,
                     task_id,
                     root / task_id,
                 )
                 self.assertEqual(base, task["fixture_base_commit"])
                 self.assertEqual(
-                    M8D.M7E.git_output(
+                    M8M.M7E.git_output(
                         "symbolic-ref",
                         "-q",
                         "HEAD",
@@ -173,7 +161,7 @@ class PromptHarnessTests(unittest.TestCase):
                     "refs/heads/main",
                 )
                 self.assertEqual(
-                    M8D.M7E.git_output(
+                    M8M.M7E.git_output(
                         "status",
                         "--porcelain=v1",
                         "--untracked-files=all",
@@ -183,16 +171,16 @@ class PromptHarnessTests(unittest.TestCase):
                 )
 
     def test_shared_projection_errors_are_formal_suite_errors(self) -> None:
-        self.assertIn(M8D.EvaluationError, M8D.EVALUATION_ERRORS)
-        self.assertIn(M8D.M7E.EvaluationError, M8D.EVALUATION_ERRORS)
+        self.assertIn(M8M.EvaluationError, M8M.EVALUATION_ERRORS)
+        self.assertIn(M8M.M7E.EvaluationError, M8M.EVALUATION_ERRORS)
 
     def test_writer_command_changes_authority_not_prompt_variant(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             workspace = Path(raw)
-            baseline = M8D.start_envelope(
+            baseline = M8M.start_envelope(
                 self.manifest, self.tasks, "w1", workspace, "request-a"
             )
-            candidate = M8D.start_envelope(
+            candidate = M8M.start_envelope(
                 self.manifest, self.tasks, "w1", workspace, "request-b"
             )
         self.assertEqual(baseline["command"], candidate["command"])
@@ -202,7 +190,7 @@ class PromptHarnessTests(unittest.TestCase):
         )
         objective = baseline["command"]["task"]["objective"]
         expected = json.dumps(
-            M8D.writer_arguments(self.manifest, self.tasks["tasks"]["w1"]),
+            M8M.writer_arguments(self.manifest, self.tasks["tasks"]["w1"]),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -212,35 +200,35 @@ class PromptHarnessTests(unittest.TestCase):
     def test_pair_identity_allows_only_constitution_prefix_delta(self) -> None:
         baseline = paired_arm("baseline")
         candidate = paired_arm("candidate")
-        self.assertTrue(M8D.paired_identity_matches(baseline, candidate))
+        self.assertTrue(M8M.paired_identity_matches(baseline, candidate))
         changed = deepcopy(candidate)
         changed["request_identity"]["first_root"]["tools_sha256"] = "sha256:changed"
-        self.assertFalse(M8D.paired_identity_matches(baseline, changed))
+        self.assertFalse(M8M.paired_identity_matches(baseline, changed))
         changed = deepcopy(candidate)
         changed["request_identity"]["first_root"]["prompt"][
             "remaining_blocks_sha256"
         ] = "sha256:changed"
-        self.assertFalse(M8D.paired_identity_matches(baseline, changed))
+        self.assertFalse(M8M.paired_identity_matches(baseline, changed))
         changed = deepcopy(candidate)
         changed["request_identity"]["first_root"]["prompt"][
             "stable_block_sha256"
         ] = "sha256:baseline"
-        self.assertFalse(M8D.paired_identity_matches(baseline, changed))
+        self.assertFalse(M8M.paired_identity_matches(baseline, changed))
 
     def test_process_activation_identity_allows_only_constitution_delta(self) -> None:
         baseline = {
-            "non_prompt": {"model": "deepseek-v4-flash", "tools": "same"},
+            "non_prompt": {"model": "deepseek-v4-pro", "tools": "same"},
             "prompt": prompt_fingerprint("sha256:baseline")["prompt"],
         }
         candidate = deepcopy(baseline)
         candidate["prompt"]["stable_block_sha256"] = "sha256:candidate"
-        self.assertTrue(M8D.activation_identity_matches(baseline, candidate))
+        self.assertTrue(M8M.activation_identity_matches(baseline, candidate))
         changed = deepcopy(candidate)
         changed["non_prompt"]["tools"] = "changed"
-        self.assertFalse(M8D.activation_identity_matches(baseline, changed))
+        self.assertFalse(M8M.activation_identity_matches(baseline, changed))
         changed = deepcopy(candidate)
         changed["prompt"]["stable_suffix_sha256"] = "changed"
-        self.assertFalse(M8D.activation_identity_matches(baseline, changed))
+        self.assertFalse(M8M.activation_identity_matches(baseline, changed))
 
     def test_multi_agent_accounting_uses_the_canonical_aggregate(self) -> None:
         root_usage = {
@@ -283,20 +271,33 @@ class PromptHarnessTests(unittest.TestCase):
             "surface_usage": [
                 {
                     "surface": "standard_chat",
-                    "model": "deepseek-v4-flash",
+                    "model": "deepseek-v4-pro",
+                    "response_count": 3,
+                    "usage_response_count": 3,
                     "usage": aggregate_usage,
                     "cost_nanousd": 123,
                 }
             ],
             "cost_nanousd": 123,
         }
-        projection = M8D.accounting_projection(
+        projection = M8M.accounting_projection(
             {"usage": root_usage, "accounting": accounting}
         )
         self.assertTrue(projection["valid"])
         self.assertEqual(projection["usage"], aggregate_usage)
         self.assertEqual(projection["root_usage"], root_usage)
         self.assertEqual(projection["usage_source"], "accounting.aggregate")
+        self.assertEqual(
+            projection["surface_responses"],
+            {"responses": 3, "usage_responses": 3, "valid": True},
+        )
+        missing = deepcopy(accounting)
+        missing["surface_usage"][0]["usage_response_count"] = 2
+        self.assertFalse(
+            M8M.accounting_projection(
+                {"usage": root_usage, "accounting": missing}
+            )["valid"]
+        )
 
     def test_child_contract_uses_current_nested_agent_task_fields(self) -> None:
         root_events = [
@@ -321,7 +322,7 @@ class PromptHarnessTests(unittest.TestCase):
                 }
             },
         ]
-        projected = M8D.bind_current_child_contract(
+        projected = M8M.bind_current_child_contract(
             root_events,
             [
                 {
@@ -347,19 +348,19 @@ class PromptHarnessTests(unittest.TestCase):
                 ]
             }
         }
-        signature = M8D.prompt_signature(
+        signature = M8M.prompt_signature(
             request, "candidate", baseline, candidate
         )
         self.assertTrue(signature["prefix_valid"])
         self.assertEqual(signature["block_count"], 2)
         request["system_prompt"]["blocks"][0]["text"] = "WRONG"
-        signature = M8D.prompt_signature(
+        signature = M8M.prompt_signature(
             request, "candidate", baseline, candidate
         )
         self.assertFalse(signature["prefix_valid"])
 
     def test_writer_lifecycle_requires_full_ordered_cleanup(self) -> None:
-        kinds = list(M8D.LIFECYCLE_KINDS)
+        kinds = list(M8M.LIFECYCLE_KINDS)
         events = []
         for sequence, kind in enumerate(kinds, start=1):
             event = {"kind": kind}
@@ -377,7 +378,7 @@ class PromptHarnessTests(unittest.TestCase):
                 event["result"] = {"status": "removed"}
             events.append(
                 {
-                    "schema_version": 16,
+                    "schema_version": 17,
                     "sequence": sequence,
                     "event": event,
                 }
@@ -385,7 +386,7 @@ class PromptHarnessTests(unittest.TestCase):
         events.insert(
             1,
             {
-                "schema_version": 16,
+                "schema_version": 17,
                 "sequence": 100,
                 "event": {
                     "kind": "tool_prepared",
@@ -401,9 +402,9 @@ class PromptHarnessTests(unittest.TestCase):
             return ""
 
         with tempfile.TemporaryDirectory() as raw, mock.patch.object(
-            M8D.M7E, "git_output", side_effect=git_output
+            M8M.M7E, "git_output", side_effect=git_output
         ):
-            result = M8D.writer_lifecycle(
+            result = M8M.writer_lifecycle(
                 self.manifest,
                 task,
                 events,
@@ -422,9 +423,9 @@ class PromptHarnessTests(unittest.TestCase):
             if event["event"]["kind"] != "agent_integration_committed"
         ]
         with tempfile.TemporaryDirectory() as raw, mock.patch.object(
-            M8D.M7E, "git_output", side_effect=git_output
+            M8M.M7E, "git_output", side_effect=git_output
         ):
-            result = M8D.writer_lifecycle(
+            result = M8M.writer_lifecycle(
                 self.manifest,
                 task,
                 broken,
@@ -442,7 +443,7 @@ class PromptHarnessTests(unittest.TestCase):
         task = self.tasks["tasks"]["w1"]
         with tempfile.TemporaryDirectory() as raw:
             workspace = Path(raw) / "workspace"
-            base = M8D.materialize_fixture(self.tasks, "w1", workspace)
+            base = M8M.materialize_fixture(self.tasks, "w1", workspace)
             target = workspace / "format_bytes.py"
             target.write_text(
                 target.read_text(encoding="utf-8").replace(
@@ -467,14 +468,14 @@ class PromptHarnessTests(unittest.TestCase):
                     "integrated writer result",
                 ],
             ):
-                result = M8D.M7E.run_command(
+                result = M8M.M7E.run_command(
                     command,
                     cwd=workspace,
-                    environment=M8D.M7E.safe_env(),
+                    environment=M8M.M7E.safe_env(),
                 )
                 self.assertEqual(result.returncode, 0)
             self.assertEqual(
-                M8D.M7E.git_output(
+                M8M.M7E.git_output(
                     "status",
                     "--porcelain=v1",
                     "--untracked-files=all",
@@ -483,7 +484,7 @@ class PromptHarnessTests(unittest.TestCase):
                 "",
             )
             self.assertEqual(
-                M8D.observed_changed_files(
+                M8M.observed_changed_files(
                     workspace,
                     base,
                     task["lane"],
@@ -505,17 +506,91 @@ class PromptHarnessTests(unittest.TestCase):
             "writer": {"required": False, "valid": True},
         }
         self.assertEqual(
-            M8D.accounting_abort_code(self.manifest, arm),
+            M8M.accounting_abort_code(self.manifest, arm),
             "aborted_unknown_billing",
         )
 
+    def test_journal_is_exclusive_hash_chained_and_tamper_evident(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "result.jsonl"
+            payloads = [
+                {"record_type": "suite_plan"},
+                {"record_type": "terminal_snapshot"},
+                {"record_type": "sqlite_reopen_snapshot"},
+                {"record_type": "verifier_snapshot"},
+                {"record_type": "arm_observation"},
+            ]
+            with M8M.Journal.claim(path) as journal:
+                for payload in payloads:
+                    journal.emit(payload)
+            audit = M8M.read_journal(path, allow_partial_tail=False)
+            self.assertEqual(
+                M8M.journal_payload_types(audit),
+                [payload["record_type"] for payload in payloads],
+            )
+            self.assertEqual(audit["partial_tail_bytes"], 0)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            with self.assertRaises(M8M.EvaluationError) as existing:
+                M8M.Journal.claim(path)
+            self.assertEqual(existing.exception.code, "output_claim_failed")
+
+            tampered = root / "tampered.jsonl"
+            lines = path.read_bytes().splitlines()
+            value = json.loads(lines[1])
+            value["payload"]["record_type"] = "changed"
+            lines[1] = M8M.canonical_bytes(value)
+            tampered.write_bytes(b"\n".join(lines) + b"\n")
+            os.chmod(tampered, 0o600)
+            with self.assertRaises(M8M.EvaluationError) as error:
+                M8M.read_journal(tampered, allow_partial_tail=False)
+            self.assertEqual(error.exception.code, "journal_hash_invalid")
+
+    def test_journal_partial_tail_is_detected_and_never_derived(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "partial.jsonl"
+            with M8M.Journal.claim(path) as journal:
+                journal.emit({"record_type": "suite_plan"})
+                encoded, _ = M8M.encode_journal_record(
+                    2,
+                    journal.previous_record_sha256,
+                    {"record_type": "terminal_snapshot"},
+                )
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+            try:
+                os.write(descriptor, encoded[: len(encoded) // 2])
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            audit = M8M.read_journal(path, allow_partial_tail=True)
+            self.assertEqual(M8M.journal_payload_types(audit), ["suite_plan"])
+            self.assertGreater(audit["partial_tail_bytes"], 0)
+            with self.assertRaises(M8M.EvaluationError) as error:
+                M8M.read_journal(path, allow_partial_tail=False)
+            self.assertEqual(error.exception.code, "journal_partial_tail")
+
+    def test_journal_fault_matrix_preserves_fail_before_loss_order(self) -> None:
+        results = M8M.run_journal_fault_matrix()
+        self.assertEqual(len(results), len(M8M.JOURNAL_FAULTS))
+        self.assertTrue(all(result["passed"] for result in results))
+        self.assertTrue(
+            all(
+                "arm_observation" not in result["record_types"]
+                for result in results
+            )
+        )
+
     def test_freeze_report_reads_no_key_and_has_all_identities(self) -> None:
-        report = M8D.freeze_report()
+        report = M8M.freeze_report()
         self.assertEqual(report["schedule_arms"], 30)
         self.assertEqual(set(report["fixtures"]), set(self.tasks["tasks"]))
         self.assertEqual(
             report["candidate_prompt_sha256"],
             self.manifest["prompt_treatment"]["candidate"]["sha256"],
+        )
+        self.assertEqual(
+            report["journal_fault_matrix_sha256"],
+            M8M.journal_fault_contract_hash(),
         )
 
 

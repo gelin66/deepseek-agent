@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""M8-D same-binary Chinese production-prompt A/B evaluator.
+"""M8-M same-binary Chinese production-prompt successor evaluator.
 
-The evaluator drives the current Run API v10 through ``codewhale app-server
---stdio`` and projects only canonical RuntimeEvent v16 / State v21 facts.  It
+The evaluator drives the current Run API v11 through ``codewhale app-server
+--stdio`` and projects only canonical RuntimeEvent v17 / State v23 facts.  It
 does not implement tools, an Agent loop, a verifier, request planning, pricing,
 or retry policy.
 """
@@ -19,29 +19,41 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, BinaryIO
 import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m8-d-prompt-ab-v5.json"
-TEST_PATH = ROOT / "scripts/test-eval-m8d-prompt.py"
+MANIFEST_PATH = ROOT / "eval/manifests/m8-m-prompt-successor-v1.json"
+TEST_PATH = ROOT / "scripts/test-eval-m8m-prompt-successor.py"
 M7E_PATH = ROOT / "scripts/eval-m7e-thinking.py"
 CANDIDATE_PROMPT_PATH = ROOT / "eval/fixtures/m8-d-prompt/v1/constitution.md"
 SINGLE_TASK_SOURCE = ROOT / "eval/manifests/m7-a2-agent-convergence-ab-v1.json"
 WRITER_TASK_SOURCE = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
-SCHEMA = "codewhale.eval.m8-d-prompt-ab.v5"
-RESULT_SCHEMA = "codewhale.eval.m8-d-prompt-result.v5"
+SCHEMA = "codewhale.eval.m8-m-prompt-successor.v1"
+RESULT_SCHEMA = "codewhale.eval.m8-m-prompt-successor-result.v1"
 VARIANTS = ("baseline", "candidate")
-RUN_API = 10
-EVENT_API = 16
-STATE_SCHEMA = 21
+RUN_API = 11
+EVENT_API = 17
+STATE_SCHEMA = 23
 REASONING_EFFORT = "high"
+MODEL = "deepseek-v4-pro"
+JOURNAL_SCHEMA = "codewhale.eval.m8-m-prompt-successor-journal.v1"
+ZERO_HASH = "sha256:" + ("0" * 64)
+JOURNAL_FAULTS = (
+    "after_suite_plan_fsync_kill",
+    "terminal_mid_write_kill",
+    "after_terminal_fsync_kill",
+    "after_reopen_fsync_kill",
+    "after_verifier_fsync_kill",
+    "before_arm_observation_kill",
+)
 LIFECYCLE_KINDS = (
     "agent_task_prepared",
     "agent_workspace_created",
@@ -83,7 +95,10 @@ def load_module(path: Path, name: str) -> Any:
     return module
 
 
-M7E = load_module(M7E_PATH, "codewhale_m8d_m7e_projection")
+M7E = load_module(M7E_PATH, "codewhale_m8m_m7e_projection")
+M7E.RUN_API = RUN_API
+M7E.EVENT_API = EVENT_API
+M7E.STATE_SCHEMA = STATE_SCHEMA
 EVALUATION_ERRORS = (EvaluationError, M7E.EvaluationError)
 
 
@@ -107,6 +122,322 @@ def canonical_hash(value: Any) -> str:
 
 def file_hash(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
+
+
+def fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_all(descriptor: int, value: bytes) -> None:
+    view = memoryview(value)
+    while view:
+        written = os.write(descriptor, view)
+        require(written > 0, "journal_write_failed")
+        view = view[written:]
+
+
+def journal_record_core(
+    sequence: int,
+    previous_record_sha256: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": JOURNAL_SCHEMA,
+        "sequence": sequence,
+        "previous_record_sha256": previous_record_sha256,
+        "payload": payload,
+    }
+
+
+def encode_journal_record(
+    sequence: int,
+    previous_record_sha256: str,
+    payload: dict[str, Any],
+) -> tuple[bytes, str]:
+    core = journal_record_core(sequence, previous_record_sha256, payload)
+    record_sha256 = canonical_hash(core)
+    value = {**core, "record_sha256": record_sha256}
+    return canonical_bytes(value) + b"\n", record_sha256
+
+
+class Journal:
+    def __init__(self, path: Path, stream: BinaryIO) -> None:
+        self.path = path
+        self.stream = stream
+        self.sequence = 0
+        self.previous_record_sha256 = ZERO_HASH
+
+    @classmethod
+    def claim(cls, path: Path) -> "Journal":
+        require(path.is_absolute(), "output_must_be_absolute")
+        require(path.parent.is_dir(), "output_parent_missing")
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_APPEND
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        except OSError as error:
+            raise EvaluationError("output_claim_failed") from error
+        try:
+            os.fchmod(descriptor, 0o600)
+            fsync_directory(path.parent)
+            stream = os.fdopen(descriptor, "wb", buffering=0)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return cls(path, stream)
+
+    def __enter__(self) -> "Journal":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.stream.close()
+
+    def emit(
+        self,
+        payload: dict[str, Any],
+        *,
+        fault: str | None = None,
+    ) -> str:
+        encoded, record_sha256 = encode_journal_record(
+            self.sequence + 1,
+            self.previous_record_sha256,
+            payload,
+        )
+        if fault == "mid_write_kill":
+            write_all(
+                self.stream.fileno(),
+                encoded[: max(1, len(encoded) // 2)],
+            )
+            os.kill(os.getpid(), signal.SIGKILL)
+        write_all(self.stream.fileno(), encoded)
+        self.stream.flush()
+        os.fsync(self.stream.fileno())
+        require(
+            stat.S_IMODE(self.path.stat().st_mode) == 0o600,
+            "output_mode_invalid",
+        )
+        self.sequence += 1
+        self.previous_record_sha256 = record_sha256
+        return record_sha256
+
+
+def read_journal(path: Path, *, allow_partial_tail: bool) -> dict[str, Any]:
+    metadata = path.lstat()
+    require(
+        stat.S_ISREG(metadata.st_mode)
+        and not path.is_symlink()
+        and stat.S_IMODE(metadata.st_mode) == 0o600,
+        "journal_file_invalid",
+    )
+    raw = path.read_bytes()
+    parts = raw.split(b"\n")
+    tail = parts.pop()
+    if tail:
+        require(allow_partial_tail, "journal_partial_tail")
+    records: list[dict[str, Any]] = []
+    previous = ZERO_HASH
+    for index, line in enumerate(parts, start=1):
+        require(bool(line), "journal_blank_record")
+        try:
+            record = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise EvaluationError("journal_record_invalid") from error
+        require(
+            isinstance(record, dict)
+            and record.get("schema") == JOURNAL_SCHEMA
+            and record.get("sequence") == index
+            and record.get("previous_record_sha256") == previous
+            and isinstance(record.get("payload"), dict),
+            "journal_chain_invalid",
+        )
+        core = {
+            key: record[key]
+            for key in (
+                "schema",
+                "sequence",
+                "previous_record_sha256",
+                "payload",
+            )
+        }
+        require(
+            record.get("record_sha256") == canonical_hash(core),
+            "journal_hash_invalid",
+        )
+        previous = record["record_sha256"]
+        records.append(record)
+    return {
+        "records": records,
+        "partial_tail_bytes": len(tail),
+        "partial_tail_sha256": sha256_bytes(tail) if tail else None,
+        "file_sha256": sha256_bytes(raw),
+    }
+
+
+def journal_payload_types(audit: dict[str, Any]) -> list[str]:
+    return [
+        record["payload"].get("record_type")
+        for record in audit["records"]
+    ]
+
+
+def journal_fault_contract_hash() -> str:
+    return canonical_hash(
+        {
+            "faults": list(JOURNAL_FAULTS),
+            "durable_order": [
+                "suite_plan",
+                "terminal_snapshot",
+                "sqlite_reopen_snapshot",
+                "verifier_snapshot",
+                "arm_observation",
+            ],
+            "maximum_reruns": 0,
+        }
+    )
+
+
+def run_journal_fault_child(fault: str, output: Path) -> int:
+    require(fault in JOURNAL_FAULTS, "journal_fault_unknown")
+    with Journal.claim(output) as journal:
+        journal.emit(
+            {
+                "record_type": "suite_plan",
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+        if fault == "after_suite_plan_fsync_kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        journal.emit(
+            {
+                "record_type": "terminal_snapshot",
+                "canonical_store_facts": {"run": "fixture"},
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            },
+            fault=(
+                "mid_write_kill"
+                if fault == "terminal_mid_write_kill"
+                else None
+            ),
+        )
+        if fault == "after_terminal_fsync_kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        journal.emit(
+            {
+                "record_type": "sqlite_reopen_snapshot",
+                "canonical_store_facts": {"run": "fixture"},
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+        if fault == "after_reopen_fsync_kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        journal.emit(
+            {
+                "record_type": "verifier_snapshot",
+                "external_verifier": {"passed": True},
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+        if fault == "after_verifier_fsync_kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        if fault == "before_arm_observation_kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        journal.emit(
+            {
+                "record_type": "arm_observation",
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+    return 0
+
+
+def run_journal_fault_matrix() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(
+        prefix="codewhale-m8m-journal-faults-"
+    ) as raw:
+        root = Path(raw)
+        for fault in JOURNAL_FAULTS:
+            output = root / f"{fault}.jsonl"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "journal-fault-child",
+                    "--fault",
+                    fault,
+                    "--output",
+                    str(output),
+                ],
+                cwd=ROOT,
+                env=M7E.safe_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            require(
+                completed.returncode == -signal.SIGKILL
+                and not completed.stdout
+                and not completed.stderr,
+                "journal_fault_process_invalid",
+                {"fault": fault, "returncode": completed.returncode},
+            )
+            audit = read_journal(output, allow_partial_tail=True)
+            record_types = journal_payload_types(audit)
+            require(
+                record_types
+                and record_types[0] == "suite_plan"
+                and "arm_observation" not in record_types,
+                "journal_fault_derived_observation_committed",
+                {"fault": fault, "record_types": record_types},
+            )
+            if fault == "terminal_mid_write_kill":
+                require(
+                    record_types == ["suite_plan"]
+                    and audit["partial_tail_bytes"] > 0,
+                    "journal_fault_partial_tail_invalid",
+                )
+            elif fault in {
+                "after_reopen_fsync_kill",
+                "after_verifier_fsync_kill",
+                "before_arm_observation_kill",
+            }:
+                require(
+                    "terminal_snapshot" in record_types
+                    and "sqlite_reopen_snapshot" in record_types,
+                    "journal_fault_reopen_order_invalid",
+                )
+            results.append(
+                {
+                    "fault": fault,
+                    "record_types": record_types,
+                    "partial_tail_bytes": audit["partial_tail_bytes"],
+                    "file_sha256": audit["file_sha256"],
+                    "passed": True,
+                }
+            )
+    return results
 
 
 def load_json(path: Path, code: str) -> dict[str, Any]:
@@ -157,9 +488,23 @@ def resolve_manifest_file(path: Path, seen: set[Path] | None = None) -> dict[str
         manifest["suite_lineage"] = overlay["suite_lineage"]
     if "prior_attempts" in overlay:
         manifest["prior_attempts"] = overlay["prior_attempts"]
-    for section in ("source_identity", "experiment", "admission", "output"):
+    for section in (
+        "source_identity",
+        "experiment",
+        "admission",
+        "output",
+        "prompt_treatment",
+    ):
         if section in overlay:
             manifest[section].update(overlay[section])
+    for section in (
+        "binary_identity",
+        "official_protocol_review",
+        "resources",
+        "acceptance",
+    ):
+        if section in overlay:
+            manifest[section] = deepcopy(overlay[section])
     if "offline_gates" in overlay:
         manifest["offline_gates"] = overlay["offline_gates"]
     manifest["frozen_hashes"] = overlay["frozen_hashes"]
@@ -196,7 +541,7 @@ def assemble_tasks(
             task = dict(writer["tasks"][source_task_id])
             task.update(
                 {
-                    "acceptance_id": f"m8d-{task_id}",
+                    "acceptance_id": f"m8m-{task_id}",
                     "evidence_policy": (
                         "failed_write_pass" if task_id == "w3" else "latest_pass"
                     ),
@@ -287,7 +632,7 @@ def materialize_fixture(
 
 
 def probe_fixture_identities(tasks: dict[str, Any]) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="codewhale-m8d-fixtures-") as raw:
+    with tempfile.TemporaryDirectory(prefix="codewhale-m8m-fixtures-") as raw:
         root = Path(raw)
         return {
             task_id: {
@@ -307,7 +652,7 @@ def load_manifest(*, frozen: bool) -> tuple[dict[str, Any], dict[str, Any]]:
         source.get("run_api") == RUN_API
         and source.get("runtime_event") == EVENT_API
         and source.get("state_schema") == STATE_SCHEMA
-        and source.get("exec_stream") == 2,
+        and source.get("exec_stream") == 3,
         "protocol_identity_invalid",
     )
     treatment = manifest.get("prompt_treatment", {})
@@ -412,7 +757,7 @@ def formal_schedule(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def verifier_spec(task_id: str) -> dict[str, Any]:
-    name = f"m8d-{task_id}-exact"
+    name = f"m8m-{task_id}-exact"
     command = {
         "name": name,
         "program": "/usr/bin/python3",
@@ -690,7 +1035,7 @@ def request_projection(
         "count": len(fingerprints),
         "valid": bool(root)
         and all(
-            value["model"] == "deepseek-v4-flash"
+            value["model"] == "deepseek-v4-pro"
             and value["reasoning_effort"] == REASONING_EFFORT
             and value["prompt"]["prefix_valid"]
             for value in fingerprints
@@ -707,14 +1052,123 @@ def request_projection(
 def accounting_projection(run: dict[str, Any]) -> dict[str, Any]:
     accounting = run.get("accounting")
     require(isinstance(accounting, dict), "accounting_missing")
-    aggregate_usage = accounting.get("usage")
-    require(isinstance(aggregate_usage, dict), "aggregate_usage_missing")
-    normalized = dict(run)
-    normalized["usage"] = aggregate_usage
-    projection = M7E.accounting_projection(normalized, REASONING_EFFORT)
-    projection["root_usage"] = run.get("usage")
-    projection["usage_source"] = "accounting.aggregate"
-    return projection
+    usage = accounting.get("usage")
+    root = accounting.get("root")
+    child = accounting.get("child")
+    surface_usage = accounting.get("surface_usage")
+    require(
+        isinstance(usage, dict)
+        and isinstance(root, dict)
+        and isinstance(child, dict)
+        and isinstance(surface_usage, list),
+        "accounting_shape_invalid",
+    )
+    started = root.get("started", 0) + child.get("started", 0)
+    completed = root.get("completed", 0) + child.get("completed", 0)
+    in_flight = root.get("in_flight", 0) + child.get("in_flight", 0)
+    usage_fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_hit_tokens",
+        "cache_miss_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "reasoning_replay_tokens",
+    )
+    surface_usage_sum = {
+        name: sum(
+            bucket.get("usage", {}).get(name, 0)
+            for bucket in surface_usage
+            if isinstance(bucket, dict)
+        )
+        for name in usage_fields
+    }
+    surface_cost = sum(
+        bucket.get("cost_nanousd", 0)
+        for bucket in surface_usage
+        if isinstance(bucket, dict)
+    )
+    surface_response_count = sum(
+        bucket.get("response_count", 0)
+        for bucket in surface_usage
+        if isinstance(bucket, dict)
+    )
+    surface_usage_response_count = sum(
+        bucket.get("usage_response_count", 0)
+        for bucket in surface_usage
+        if isinstance(bucket, dict)
+    )
+    surface_identity_valid = bool(surface_usage) and all(
+        isinstance(bucket, dict)
+        and bucket.get("surface") == "standard_chat"
+        and bucket.get("model") == MODEL
+        and isinstance(bucket.get("response_count"), int)
+        and bucket.get("response_count", 0) > 0
+        and bucket.get("usage_response_count") == bucket.get("response_count")
+        for bucket in surface_usage
+    )
+    totals_valid = (
+        surface_usage_sum == usage
+        and surface_cost == accounting.get("cost_nanousd")
+    )
+    response_counts_valid = bool(
+        started > 0
+        and started == completed
+        and in_flight == 0
+        and surface_response_count == started
+        and surface_usage_response_count == started
+    )
+    complete = bool(
+        accounting.get("hard_request_limit") == 10
+        and accounting.get("sealed") is True
+        and accounting.get("complete") is True
+        and accounting.get("usage_complete") is True
+        and accounting.get("usage_missing") is False
+        and accounting.get("usage_incomplete") is False
+        and accounting.get("billing_unknown") is False
+        and accounting.get("unpriced") is False
+        and accounting.get("usage_missing_responses") == 0
+        and accounting.get("incomplete_responses") == 0
+        and accounting.get("billing_unknown_attempts") == 0
+        and accounting.get("unpriced_usage_responses") == 0
+        and accounting.get("records_after_seal") == 0
+        and accounting.get("transport_retries") == 0
+        and accounting.get("runtime_retries") == 0
+        and surface_identity_valid
+        and totals_valid
+        and response_counts_valid
+    )
+    return {
+        "valid": complete,
+        "sealed": accounting.get("sealed"),
+        "complete": accounting.get("complete"),
+        "usage_complete": accounting.get("usage_complete"),
+        "billing_unknown": accounting.get("billing_unknown"),
+        "billing_unknown_attempts": accounting.get("billing_unknown_attempts"),
+        "unpriced": accounting.get("unpriced"),
+        "hard_request_limit": accounting.get("hard_request_limit"),
+        "requests": {
+            "started": started,
+            "completed": completed,
+            "in_flight": in_flight,
+            "root_started": root.get("started"),
+            "child_started": child.get("started"),
+        },
+        "surface_responses": {
+            "responses": surface_response_count,
+            "usage_responses": surface_usage_response_count,
+            "valid": response_counts_valid,
+        },
+        "transport_retries": accounting.get("transport_retries"),
+        "runtime_retries": accounting.get("runtime_retries"),
+        "usage": usage,
+        "root_usage": run.get("usage"),
+        "usage_source": "accounting.aggregate",
+        "surface_usage": surface_usage,
+        "surface_identity_valid": surface_identity_valid,
+        "surface_totals_valid": totals_valid,
+        "cost_nanousd": accounting.get("cost_nanousd"),
+    }
 
 
 def bind_current_child_contract(
@@ -943,11 +1397,16 @@ def reopen_projection(
     original_events: list[dict[str, Any]],
     original_children: list[list[dict[str, Any]]],
     secret: bytes,
+    journal: Journal,
+    observation_id: str,
+    arm_spec: dict[str, Any],
 ) -> dict[str, Any]:
+    reopen_environment = dict(environment)
+    reopen_environment.pop("DEEPSEEK_API_KEY", None)
     process = start_process(
         binary,
         workspace,
-        environment,
+        reopen_environment,
         stderr_path,
         resources["transport_max_retries_per_request"],
     )
@@ -956,7 +1415,7 @@ def reopen_projection(
     try:
         client = M7E.StdioClient(process, secret)
         run_result = client.call(
-            M7E.query_envelope("get", root_id, f"m8d-reopen-root-{uuid.uuid4().hex}"),
+            M7E.query_envelope("get", root_id, f"m8m-reopen-root-{uuid.uuid4().hex}"),
             M7E.remaining(deadline),
         )
         require(
@@ -965,13 +1424,13 @@ def reopen_projection(
             "reopen_root_missing",
         )
         reopened_events = M7E.fetch_events(
-            client, root_id, deadline, f"m8d-reopen-{uuid.uuid4().hex}"
+            client, root_id, deadline, f"m8m-reopen-{uuid.uuid4().hex}"
         )
         reopened_children: list[list[dict[str, Any]]] = []
         for index, child_id in enumerate(child_ids):
             child_result = client.call(
                 M7E.query_envelope(
-                    "get", child_id, f"m8d-reopen-child-{index}-{uuid.uuid4().hex}"
+                    "get", child_id, f"m8m-reopen-child-{index}-{uuid.uuid4().hex}"
                 ),
                 M7E.remaining(deadline),
             )
@@ -985,10 +1444,10 @@ def reopen_projection(
                     client,
                     child_id,
                     deadline,
-                    f"m8d-reopen-child-events-{index}-{uuid.uuid4().hex}",
+                    f"m8m-reopen-child-events-{index}-{uuid.uuid4().hex}",
                 )
             )
-        return {
+        projection = {
             "valid": (
                 canonical_hash(run_result["run"]) == canonical_hash(original_run)
                 and canonical_hash(reopened_events) == canonical_hash(original_events)
@@ -999,6 +1458,24 @@ def reopen_projection(
             "root_events_sha256": canonical_hash(reopened_events),
             "child_events_sha256": canonical_hash(reopened_children),
         }
+        journal.emit(
+            {
+                "record_type": "sqlite_reopen_snapshot",
+                "observation_id": observation_id,
+                "arm": arm_spec,
+                "credential_present": False,
+                "canonical_store_facts": {
+                    "run_view": run_result["run"],
+                    "root_events": reopened_events,
+                    "child_events": reopened_children,
+                },
+                "projection": projection,
+                "key_accessed": True,
+                "network_accessed": True,
+                "product_metric_eligible": False,
+            }
+        )
+        return projection
     finally:
         if client is not None:
             client.close()
@@ -1015,10 +1492,15 @@ def execute_arm(
     pair_identity: dict[str, Any],
     revision: str,
     key: str,
+    journal: Journal,
 ) -> dict[str, Any]:
     task_id = arm_spec["task_id"]
     variant = arm_spec["variant"]
     task = tasks["tasks"][task_id]
+    observation_id = (
+        f"m8m-arm-{arm_spec['schedule_position']:02d}-"
+        f"{task_id}-{variant}-{arm_spec['run_index']}"
+    )
     started = time.monotonic()
     resources = manifest["resources"]
     deadline = started + resources["harness_wall_time_seconds"]
@@ -1027,7 +1509,7 @@ def execute_arm(
     ).read_text(encoding="utf-8")
     candidate_text = CANDIDATE_PROMPT_PATH.read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory(
-        prefix=f"codewhale-m8d-{task_id}-{variant}-"
+        prefix=f"codewhale-m8m-{task_id}-{variant}-"
     ) as raw:
         root = Path(raw)
         base = materialize_fixture(tasks, task_id, workspace)
@@ -1092,7 +1574,7 @@ def execute_arm(
                 tasks,
                 task_id,
                 workspace,
-                f"m8d-start-{suffix}",
+                f"m8m-start-{suffix}",
             )
             response = client.call(command, M7E.remaining(deadline))
             require(
@@ -1111,7 +1593,65 @@ def execute_arm(
             if client is not None:
                 client.close()
             M7E.stop_process(process)
+        terminal_payload = {
+            "record_type": "terminal_snapshot",
+            "observation_id": observation_id,
+            "arm": arm_spec,
+            "canonical_store_facts": {
+                "run_view": run,
+                "root_events": root_events,
+                "child_runs": children,
+                "child_events": child_ledgers,
+            },
+            "run_view_sha256": canonical_hash(run),
+            "root_events_sha256": canonical_hash(root_events),
+            "child_runs_sha256": canonical_hash(children),
+            "child_events_sha256": canonical_hash(child_ledgers),
+            "key_accessed": True,
+            "network_accessed": True,
+            "product_metric_eligible": False,
+        }
+        require(
+            secret not in canonical_bytes(terminal_payload),
+            "credential_in_terminal_snapshot",
+        )
+        journal.emit(terminal_payload)
+        child_ids = [
+            event.get("child_run_id")
+            for event in M7E.event_values(root_events, "child_started")
+            if isinstance(event.get("child_run_id"), str)
+        ]
+        reopen = reopen_projection(
+            binary,
+            workspace,
+            environment,
+            state_root / "app-server-reopen.stderr",
+            resources,
+            root_id,
+            child_ids,
+            run,
+            root_events,
+            child_ledgers,
+            secret,
+            journal,
+            observation_id,
+            arm_spec,
+        )
         external = M7E.external_verifier(workspace, deadline)
+        verifier_payload = {
+            "record_type": "verifier_snapshot",
+            "observation_id": observation_id,
+            "arm": arm_spec,
+            "external_verifier": external,
+            "key_accessed": True,
+            "network_accessed": True,
+            "product_metric_eligible": False,
+        }
+        require(
+            secret not in canonical_bytes(verifier_payload),
+            "credential_in_verifier_snapshot",
+        )
+        journal.emit(verifier_payload)
         changed = observed_changed_files(
             workspace,
             base,
@@ -1163,24 +1703,6 @@ def execute_arm(
         )
         tool = tool_metrics(
             root_events, child_ledgers, behavioral_verified and measurement_valid
-        )
-        child_ids = [
-            event.get("child_run_id")
-            for event in M7E.event_values(root_events, "child_started")
-            if isinstance(event.get("child_run_id"), str)
-        ]
-        reopen = reopen_projection(
-            binary,
-            workspace,
-            environment,
-            state_root / "app-server-reopen.stderr",
-            resources,
-            root_id,
-            child_ids,
-            run,
-            root_events,
-            child_ledgers,
-            secret,
         )
         state = M7E.state_schema(codewhale_home)
         measurement_valid = bool(
@@ -1597,7 +2119,7 @@ def probe_process_prompt_activation(
         ROOT / manifest["prompt_treatment"]["baseline"]["source"]
     ).read_text(encoding="utf-8")
     candidate_text = CANDIDATE_PROMPT_PATH.read_text(encoding="utf-8")
-    with tempfile.TemporaryDirectory(prefix="codewhale-m8d-activation-") as raw:
+    with tempfile.TemporaryDirectory(prefix="codewhale-m8m-activation-") as raw:
         root = Path(raw)
         workspace = root / "workspace"
         materialize_fixture(tasks, "t1", workspace)
@@ -1614,7 +2136,7 @@ def probe_process_prompt_activation(
                 "HOME": str(home),
                 "CODEWHALE_HOME": str(codewhale_home),
                 "XDG_CONFIG_HOME": str(xdg),
-                "DEEPSEEK_API_KEY": "offline-m8d-activation-key",
+                "DEEPSEEK_API_KEY": "offline-m8m-activation-key",
                 "HTTPS_PROXY": "http://127.0.0.1:1",
                 "HTTP_PROXY": "http://127.0.0.1:1",
                 "ALL_PROXY": "http://127.0.0.1:1",
@@ -1638,14 +2160,16 @@ def probe_process_prompt_activation(
                 0,
             )
             client: Any = None
+            run_id = ""
+            request: dict[str, Any] = {}
             try:
-                client = M7E.StdioClient(process, b"offline-m8d-activation-key")
+                client = M7E.StdioClient(process, b"offline-m8m-activation-key")
                 envelope = start_envelope(
                     manifest,
                     tasks,
                     "t1",
                     workspace,
-                    f"m8d-v2-activation-{variant}",
+                    f"m8m-v2-activation-{variant}",
                 )
                 envelope["command"]["max_api_requests"] = 1
                 envelope["command"]["limits"].update(
@@ -1669,7 +2193,7 @@ def probe_process_prompt_activation(
                     client,
                     run_id,
                     time.monotonic() + 15,
-                    f"m8d-v2-activation-{variant}",
+                    f"m8m-v2-activation-{variant}",
                 )
                 created = M7E.event_values(events, "run_created")
                 require(
@@ -1713,6 +2237,51 @@ def probe_process_prompt_activation(
                 if client is not None:
                     client.close()
                 M7E.stop_process(process)
+            reopen_environment = dict(environment)
+            reopen_environment.pop("DEEPSEEK_API_KEY", None)
+            reopen_process = start_process(
+                binary,
+                workspace,
+                reopen_environment,
+                state_root / "app-server-reopen.stderr",
+                0,
+            )
+            reopen_client: Any = None
+            try:
+                reopen_client = M7E.StdioClient(
+                    reopen_process,
+                    b"offline-m8m-activation-key",
+                )
+                reopened = reopen_client.call(
+                    M7E.query_envelope(
+                        "get",
+                        run_id,
+                        f"m8m-activation-reopen-{variant}",
+                    ),
+                    15,
+                )
+                reopened_events = M7E.fetch_events(
+                    reopen_client,
+                    run_id,
+                    time.monotonic() + 15,
+                    f"m8m-activation-reopen-events-{variant}",
+                )
+                reopened_created = M7E.event_values(
+                    reopened_events,
+                    "run_created",
+                )
+                require(
+                    reopened.get("kind") == "run"
+                    and len(reopened_created) == 1
+                    and canonical_hash(reopened_created[0].get("request"))
+                    == canonical_hash(request),
+                    "activation_no_credential_reopen_invalid",
+                )
+                variants[variant]["no_credential_reopen"] = True
+            finally:
+                if reopen_client is not None:
+                    reopen_client.close()
+                M7E.stop_process(reopen_process)
         require(
             activation_identity_matches(
                 variants["baseline"], variants["candidate"]
@@ -1723,6 +2292,10 @@ def probe_process_prompt_activation(
             "network": "blocked_by_loopback_proxy",
             "external_api_requests": 0,
             "same_non_prompt_identity": True,
+            "no_credential_reopen": all(
+                value.get("no_credential_reopen") is True
+                for value in variants.values()
+            ),
             "variants": variants,
         }
 
@@ -1838,28 +2411,13 @@ def clear_workspace(workspace: Path, root: Path) -> None:
         shutil.rmtree(workspace)
 
 
-def claim_output(path: Path, identity: dict[str, Any], schedule: list[dict[str, Any]]) -> dict[str, Any]:
-    require(path.suffix == ".json", "output_suffix_invalid")
+def validate_output_path(path: Path) -> None:
+    require(path.suffix == ".jsonl", "output_suffix_invalid")
     require(
         path.parent.resolve() == (ROOT / "eval/raw").resolve(),
         "output_directory_invalid",
     )
     require(not path.exists(), "output_exists")
-    value = {
-        "schema": RESULT_SCHEMA,
-        "status": "reserved_before_key",
-        "created_at_unix_ms": int(time.time() * 1000),
-        "identity": identity,
-        "schedule": schedule,
-        "active_arm": None,
-        "arms": [],
-        "aggregate": None,
-        "abort": None,
-        "known_cost_is_lower_bound": True,
-    }
-    M7E.write_private_json(path, value, replace=False)
-    require(stat.S_IMODE(path.stat().st_mode) == 0o600, "output_mode_invalid")
-    return value
 
 
 def run_formal(args: argparse.Namespace) -> int:
@@ -1878,110 +2436,199 @@ def run_formal(args: argparse.Namespace) -> int:
     )
     schedule = formal_schedule(manifest)
     output = Path(args.output).resolve()
-    reservation = claim_output(output, identity, schedule)
+    validate_output_path(output)
     key = ""
-    try:
-        key = M7E.read_key(Path(args.key_file).resolve())
-    except M7E.EvaluationError as error:
-        reservation["status"] = "aborted_before_api"
-        reservation["abort"] = {"code": error.code, "details": error.details}
-        M7E.write_private_json(output, reservation, replace=True)
-        return 2
-    secret = key.encode("utf-8")
-    try:
-        require(secret not in canonical_bytes(reservation), "credential_in_reservation")
-        with tempfile.TemporaryDirectory(prefix="codewhale-m8d-suite-") as raw:
-            suite_root = Path(raw)
-            binaries = suite_root / "bin"
-            workspace_root = suite_root / "paired-workspaces"
-            binaries.mkdir()
-            workspace_root.mkdir()
-            codewhale = binaries / "codewhale"
-            tui = binaries / "codewhale-tui"
-            shutil.copy2(Path(args.binary).resolve(), codewhale)
-            shutil.copy2(Path(args.tui_binary).resolve(), tui)
-            codewhale.chmod(0o700)
-            tui.chmod(0o700)
-            require(
-                file_hash(codewhale)
-                == identity["binary_pair"]["codewhale"]["sha256"]
-                and file_hash(tui)
-                == identity["binary_pair"]["codewhale_tui"]["sha256"],
-                "suite_binary_pair_changed",
+    active_arm: dict[str, Any] | None = None
+    arms: list[dict[str, Any]] = []
+    with Journal.claim(output) as journal:
+        journal.emit(
+            {
+                "record_type": "suite_plan",
+                "result_schema": RESULT_SCHEMA,
+                "created_at_unix_ms": int(time.time() * 1000),
+                "identity": identity,
+                "schedule": schedule,
+                "maximum_reruns": 0,
+                "key_accessed": False,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+        try:
+            key = M7E.read_key(Path(args.key_file).resolve())
+        except M7E.EvaluationError as error:
+            journal.emit(
+                {
+                    "record_type": "suite_abort",
+                    "code": error.code,
+                    "details": error.details,
+                    "active_arm": None,
+                    "maximum_reruns": 0,
+                    "key_accessed": False,
+                    "network_accessed": False,
+                    "product_metric_eligible": False,
+                }
             )
-            for arm_spec in schedule:
-                known_cost = sum(
-                    arm.get("accounting", {}).get("cost_nanousd", 0)
-                    for arm in reservation["arms"]
+            return 2
+        secret = key.encode("utf-8")
+        journal.emit(
+            {
+                "record_type": "credential_access",
+                "key_accessed": True,
+                "network_accessed": False,
+                "product_metric_eligible": False,
+            }
+        )
+        try:
+            require(secret not in output.read_bytes(), "credential_in_reservation")
+            with tempfile.TemporaryDirectory(prefix="codewhale-m8m-suite-") as raw:
+                suite_root = Path(raw)
+                binaries = suite_root / "bin"
+                workspace_root = suite_root / "paired-workspaces"
+                binaries.mkdir()
+                workspace_root.mkdir()
+                codewhale = binaries / "codewhale"
+                tui = binaries / "codewhale-tui"
+                shutil.copy2(Path(args.binary).resolve(), codewhale)
+                shutil.copy2(Path(args.tui_binary).resolve(), tui)
+                codewhale.chmod(0o700)
+                tui.chmod(0o700)
+                require(
+                    file_hash(codewhale)
+                    == identity["binary_pair"]["codewhale"]["sha256"]
+                    and file_hash(tui)
+                    == identity["binary_pair"]["codewhale_tui"]["sha256"],
+                    "suite_binary_pair_changed",
                 )
-                if (
-                    known_cost
-                    + manifest["resources"]["max_known_cost_nanousd_per_arm"]
-                    > manifest["resources"]["formal_suite_known_cost_nanousd"]
-                ):
-                    raise EvaluationError("suite_known_cost_headroom_exhausted")
-                reservation["active_arm"] = arm_spec
-                reservation["status"] = "running"
-                M7E.write_private_json(output, reservation, replace=True)
-                workspace = pair_workspace_slot(
-                    workspace_root,
-                    arm_spec["task_id"],
-                    arm_spec["run_index"],
-                )
-                clear_workspace(workspace, workspace_root)
-                try:
-                    arm = execute_arm(
-                        manifest,
-                        tasks,
-                        arm_spec,
-                        workspace,
-                        codewhale,
-                        tui,
-                        identity["binary_pair"],
-                        args.revision,
-                        key,
+                for arm_spec in schedule:
+                    known_cost = sum(
+                        arm["accounting"]["cost_nanousd"] for arm in arms
                     )
-                finally:
+                    if (
+                        known_cost
+                        + manifest["resources"]["max_known_cost_nanousd_per_arm"]
+                        > manifest["resources"]["formal_suite_known_cost_nanousd"]
+                    ):
+                        raise EvaluationError(
+                            "suite_known_cost_headroom_exhausted"
+                        )
+                    active_arm = arm_spec
+                    journal.emit(
+                        {
+                            "record_type": "arm_plan",
+                            "arm": arm_spec,
+                            "known_cost_nanousd_before_arm": known_cost,
+                            "maximum_reruns": 0,
+                            "key_accessed": True,
+                            "network_accessed": False,
+                            "product_metric_eligible": False,
+                        }
+                    )
+                    workspace = pair_workspace_slot(
+                        workspace_root,
+                        arm_spec["task_id"],
+                        arm_spec["run_index"],
+                    )
                     clear_workspace(workspace, workspace_root)
-                require(secret not in canonical_bytes(arm), "credential_in_arm")
-                reservation["arms"].append(arm)
-                reservation["active_arm"] = None
-                abort_code = suite_abort_code(manifest, reservation["arms"])
-                reservation["aggregate"] = aggregate(manifest, reservation["arms"])
-                reservation["known_cost_is_lower_bound"] = abort_code is not None
-                M7E.write_private_json(output, reservation, replace=True)
-                if abort_code is not None:
-                    raise EvaluationError(abort_code)
-    except EVALUATION_ERRORS as error:
-        reservation["status"] = "aborted"
-        reservation["abort"] = {
-            "code": error.code,
-            "details": error.details,
-            "active_arm": reservation.get("active_arm"),
-        }
-        M7E.write_private_json(output, reservation, replace=True)
-        return 2
-    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
-        reservation["status"] = "aborted"
-        reservation["abort"] = {
-            "code": "harness_internal_error",
-            "error_type": type(error).__name__,
-            "active_arm": reservation.get("active_arm"),
-        }
-        M7E.write_private_json(output, reservation, replace=True)
-        return 2
-    reservation["status"] = "complete"
-    reservation["known_cost_is_lower_bound"] = False
-    reservation["aggregate"] = aggregate(manifest, reservation["arms"])
-    M7E.write_private_json(output, reservation, replace=True)
+                    try:
+                        arm = execute_arm(
+                            manifest,
+                            tasks,
+                            arm_spec,
+                            workspace,
+                            codewhale,
+                            tui,
+                            identity["binary_pair"],
+                            args.revision,
+                            key,
+                            journal,
+                        )
+                    finally:
+                        clear_workspace(workspace, workspace_root)
+                    require(secret not in canonical_bytes(arm), "credential_in_arm")
+                    observed = [*arms, arm]
+                    abort_code = suite_abort_code(manifest, observed)
+                    journal.emit(
+                        {
+                            "record_type": "arm_observation",
+                            "arm": arm_spec,
+                            "projection": arm,
+                            "abort_code": abort_code,
+                            "maximum_reruns": 0,
+                            "key_accessed": True,
+                            "network_accessed": True,
+                            "product_metric_eligible": False,
+                        }
+                    )
+                    if abort_code is not None:
+                        raise EvaluationError(abort_code)
+                    arms = observed
+                    active_arm = None
+        except EVALUATION_ERRORS as error:
+            journal.emit(
+                {
+                    "record_type": "suite_abort",
+                    "code": error.code,
+                    "details": error.details,
+                    "active_arm": active_arm,
+                    "completed_measurement_valid_arms": len(arms),
+                    "known_cost_nanousd_lower_bound": sum(
+                        arm["accounting"]["cost_nanousd"] for arm in arms
+                    ),
+                    "maximum_reruns": 0,
+                    "key_accessed": True,
+                    "network_accessed": True,
+                    "product_metric_eligible": False,
+                }
+            )
+            return 2
+        except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+            journal.emit(
+                {
+                    "record_type": "suite_abort",
+                    "code": "harness_internal_error",
+                    "error_type": type(error).__name__,
+                    "active_arm": active_arm,
+                    "completed_measurement_valid_arms": len(arms),
+                    "known_cost_nanousd_lower_bound": sum(
+                        arm["accounting"]["cost_nanousd"] for arm in arms
+                    ),
+                    "maximum_reruns": 0,
+                    "key_accessed": True,
+                    "network_accessed": True,
+                    "product_metric_eligible": False,
+                }
+            )
+            return 2
+        result = aggregate(manifest, arms)
+        journal.emit(
+            {
+                "record_type": "suite_result",
+                "completed_arms": len(arms),
+                "aggregate": result,
+                "maximum_reruns": 0,
+                "key_accessed": True,
+                "network_accessed": True,
+                "product_metric_eligible": True,
+            }
+        )
+    secret = key.encode("utf-8")
     require(secret not in output.read_bytes(), "credential_in_output")
+    audit = read_journal(output, allow_partial_tail=False)
+    require(
+        audit["partial_tail_bytes"] == 0
+        and audit["records"][-1]["payload"].get("record_type")
+        == "suite_result",
+        "formal_journal_incomplete",
+    )
     print(
         json.dumps(
             {
                 "status": "complete",
                 "output": str(output),
-                "arms": len(reservation["arms"]),
-                "decision": reservation["aggregate"]["decision"],
+                "arms": len(arms),
+                "decision": result["decision"],
+                "journal_sha256": audit["file_sha256"],
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2005,6 +2652,7 @@ def freeze_report() -> dict[str, Any]:
         "candidate_prompt_sha256": file_hash(CANDIDATE_PROMPT_PATH),
         "schedule_sha256": canonical_hash(formal_schedule(manifest)),
         "schedule_arms": len(formal_schedule(manifest)),
+        "journal_fault_matrix_sha256": journal_fault_contract_hash(),
         "fixtures": {
             task_id: M7E.fixture_hash(tasks, task_id)
             for task_id in tasks["tasks"]
@@ -2044,6 +2692,10 @@ def parse_args() -> argparse.Namespace:
     formal.add_argument("--key-file", required=True)
     formal.add_argument("--output", required=True)
     formal.add_argument("--acknowledge-cost", action="store_true")
+    subparsers.add_parser("journal-self-test")
+    fault = subparsers.add_parser("journal-fault-child")
+    fault.add_argument("--fault", choices=JOURNAL_FAULTS, required=True)
+    fault.add_argument("--output", required=True)
     return parser.parse_args()
 
 
@@ -2057,6 +2709,27 @@ def main() -> int:
             return preflight_command(args)
         if args.command == "formal":
             return run_formal(args)
+        if args.command == "journal-self-test":
+            results = run_journal_fault_matrix()
+            print(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "faults": len(results),
+                        "contract_sha256": journal_fault_contract_hash(),
+                        "results": results,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "journal-fault-child":
+            return run_journal_fault_child(
+                args.fault,
+                Path(args.output).resolve(),
+            )
         raise AssertionError(args.command)
     except (EvaluationError, M7E.EvaluationError) as error:
         print(

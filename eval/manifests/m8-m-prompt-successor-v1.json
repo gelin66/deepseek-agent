@@ -1,0 +1,271 @@
+{
+  "schema": "codewhale.eval.m8-m-prompt-successor.v1",
+  "status": "draft_offline",
+  "date": "2026-07-24",
+  "base_manifest": {
+    "path": "eval/manifests/m8-d-prompt-ab-v5.json",
+    "sha256": "sha256:26d511295e254c603b54e2f5d4944392658584a59ac78e65b8fe171226833f57"
+  },
+  "claim": {
+    "name": "M8-M billing-provable 简体中文 Agent prompt successor",
+    "primary_problem": "M8-D v1-v4 的 evaluator identity 无效，v5 首个 arm 又以 canonical billing_unknown=true 停止；旧 arm 不能续跑、补 mate 或拼接。V15 仍需要一个 current same-revision、fixed-Pro、fail-before-loss、billing-provable prompt comparison。",
+    "acceptance": "以 clean d1d6ca5c source 和同一 immutable codewhale/codewhale-tui binary pair，从 position 1 执行 5 tasks × 2 variants × 3 repetitions；除 constitution checklist treatment 外，revision、binary、workspace slot、task、model、reasoning、catalog、authority、budget、retry、verifier 与 request identity 必须逐对相同。每臂 canonical RunStore 必须证明全部 physical requests 都有同 model/surface usage response、cache token、cost、retry、terminal、verifier 和 exact reopen。",
+    "single_owner": "crates/context remains the only production prompt owner; AgentApplication composes it, AgentRuntime and RunStore persist it, crates/deepseek owns official ChatCompletions planning/transport/accounting, and the M8-M evaluator only journals canonical facts.",
+    "replacement": "只有完整 30-arm formal suite 满足 verified-success non-regression、false success=0 与稳定净效率收益时，candidate 才直接替换 crates/context/src/prompts/constitution.md 的五步 checklist。",
+    "cutover_deletion": "无论结论如何，M8-M successor 接管后删除失去消费者的 M8-D Python evaluator/test；M8-D frozen manifests、0600 raw 与 summary 保留作不可拼接历史证据。若 candidate 不通过，删除 M8-M candidate evaluation path 并保持 bundled production prompt 不变；若通过，直接替换 bundled 文本且不保留双默认、selector、mode 或 compatibility branch。"
+  },
+  "suite_lineage": {
+    "base_contract": "M8-D v5 manifest 只提供已冻结的五个 task fixture、tool authority 和 prompt delta provenance；M8-M 覆盖全部 suite、protocol、binary、model、pricing、budget、accounting、observer、admission 和 output identity。",
+    "not_a_rerun": "M8-D v1-v5 raw 全部保持不可覆盖；M8-M 使用 current d1d6ca5c production binary、fixed deepseek-v4-pro、Run API v11/RuntimeEvent v17/State v23/exec-stream v3、全新 suite/output 和 30 个全新 arm，maximum_reruns=0。",
+    "historical_samples_eligible": false
+  },
+  "prior_attempts": [
+    {
+      "suite": "m8-d-prompt-ab-v1-v5",
+      "summary": "eval/summaries/m8-d-native-zh-prompt-ab-2026-07-24.md",
+      "status": "hold_unspliceable",
+      "raw_files": 5,
+      "completed_arms": 21,
+      "physical_request_attempts": 126,
+      "known_cost_nanousd_lower_bound": 52454002,
+      "final_billing": "unknown",
+      "continuation_forbidden": true,
+      "mate_completion_forbidden": true,
+      "sample_splicing_forbidden": true
+    }
+  ],
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "d1d6ca5c8aed06ffcd4be063f14a27666c2a65b8",
+    "starting_tree": "b76a85f889388d5e38c579672a935c22e41c2177",
+    "starting_tree_clean": true,
+    "candidate_binary_revision": "d1d6ca5c8aed06ffcd4be063f14a27666c2a65b8",
+    "candidate_source_tree": "b76a85f889388d5e38c579672a935c22e41c2177",
+    "harness_revision": "",
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "binary_identity": {
+    "delivery_schema": "codewhale.delivery.v1",
+    "product": "CodeWhale",
+    "version": "0.8.68",
+    "target": "aarch64-apple-darwin",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "source_mode": "locked-offline-source",
+    "archive_name": "codewhale-0.8.68-aarch64-apple-darwin-d1d6ca5c8aed.tar.gz",
+    "archive_sha256": "sha256:18dcbcab95e03918b143df954267308ffe33364b08b51b650352645d7fa7c010",
+    "archive_size_bytes": 16972490,
+    "codewhale": {
+      "version": "codewhale 0.8.68 (d1d6ca5c8aed)",
+      "sha256": "sha256:94e3a3839e983179a36e7a4dfc7fdffb7e0f8b49a949764605f09abebfc99456",
+      "size_bytes": 15397024
+    },
+    "codewhale_tui": {
+      "version": "codewhale-tui 0.8.68 (d1d6ca5c8aed)",
+      "sha256": "sha256:064c015985ec6021bd3ac0a06272120b8d5d63f983cc75d040fd98e59a4886bf",
+      "size_bytes": 21348528
+    },
+    "pair_sha256": "sha256:2540375f81a92e96b633d83aa6102ba778e131b96668818b7547d6e7f8769c99"
+  },
+  "official_protocol_review": {
+    "reviewed_on": "2026-07-24",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "tool_calls": "https://api-docs.deepseek.com/guides/tool_calls/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "change_log": "https://api-docs.deepseek.com/updates/",
+    "fixture": {
+      "model": "deepseek-v4-pro",
+      "endpoint": "https://api.deepseek.com/chat/completions",
+      "api_surface": "standard_chat",
+      "context_tokens": 1000000,
+      "provider_max_output_tokens": 384000,
+      "experiment_max_output_tokens": 8192,
+      "thinking": {
+        "type": "enabled"
+      },
+      "reasoning_effort": "high",
+      "tool_reasoning_replay": "assistant reasoning_content is required on every subsequent request after a thinking tool call",
+      "stream_usage_contract": "stream_options.include_usage=true yields one final usage chunk before [DONE]; every admitted response must be represented in canonical surface_usage",
+      "usage_fields": [
+        "prompt_tokens",
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+        "completion_tokens",
+        "total_tokens"
+      ],
+      "finish_reasons": [
+        "stop",
+        "length",
+        "content_filter",
+        "tool_calls",
+        "insufficient_system_resource"
+      ],
+      "prices_usd_per_million_tokens": {
+        "cache_hit_input": "0.003625",
+        "cache_miss_input": "0.435",
+        "output": "0.87"
+      },
+      "legacy_alias_deprecation": "deepseek-chat and deepseek-reasoner retired on 2026-07-24 15:59 UTC; neither alias is admitted"
+    }
+  },
+  "prompt_treatment": {
+    "kind": "same_binary_constitution_override_successor",
+    "baseline": {
+      "id": "baseline",
+      "source": "crates/context/src/prompts/constitution.md",
+      "required_fragment": "1. 修改前读取当前作用域的仓库规则；"
+    },
+    "candidate": {
+      "id": "candidate",
+      "version": "m8-m-fact-gap-successor-v1",
+      "source": "eval/fixtures/m8-d-prompt/v1/constitution.md",
+      "sha256": "sha256:2c3b8018a11c49ca1e0ae9b331ef12621aec77a3d56c631c01e535a74ec50ebf",
+      "required_fragment": "之后根据尚未解决且会改变下一步决策的事实缺口选择调查、",
+      "forbidden_fragment": "1. 修改前读取当前作用域的仓库规则；"
+    },
+    "exact_text_delta": "只把 constitution 的固定五步执行 checklist 替换为两行 fact-gap loop；所有其他 system blocks 由同一 binary 生成。",
+    "activation": "candidate arm 在隔离 CODEWHALE_HOME 写入冻结 constitution 并显式设置 CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE=1；baseline arm 不含 override。",
+    "product_surface": "无用户模式、CLI flag、配置 schema、prompt selector 或第二 prompt owner。"
+  },
+  "experiment": {
+    "kind": "same_revision_same_binary_fixed_pro_prompt_successor_ab",
+    "model": "deepseek-v4-pro",
+    "api_surface": "standard_chat",
+    "reasoning_effort": "high",
+    "variants": [
+      "baseline",
+      "candidate"
+    ],
+    "runs_per_variant_task": 3,
+    "formal_pairs": 15,
+    "formal_arms": 30,
+    "maximum_reruns": 0,
+    "pairing": "同一 task/run_index 共用同一 absolute workspace slot；每 arm 从冻结 fixture 重建，RunStore、run ID 和 CODEWHALE_HOME 隔离。",
+    "round_order": [
+      [
+        "t1",
+        "t3",
+        "t5",
+        "w1",
+        "w3"
+      ],
+      [
+        "t5",
+        "w1",
+        "w3",
+        "t1",
+        "t3"
+      ],
+      [
+        "w3",
+        "t1",
+        "t3",
+        "t5",
+        "w1"
+      ]
+    ]
+  },
+  "resources": {
+    "max_physical_api_attempts_per_arm": 10,
+    "max_logical_model_requests_per_arm": 10,
+    "max_runtime_retries_per_arm": 0,
+    "transport_max_retries_per_request": 0,
+    "max_output_tokens_per_request": 8192,
+    "max_tool_calls_per_arm": 24,
+    "runtime_wall_time_seconds": 225,
+    "harness_wall_time_seconds": 240,
+    "max_known_cost_nanousd_per_arm": 100000000,
+    "formal_suite_known_cost_nanousd": 3000000000,
+    "streaming": true,
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_target_dir": "/private/tmp/codewhale-m8m-target",
+    "cargo_incremental": "0",
+    "cargo_net_offline": "true"
+  },
+  "admission": {
+    "live_api_admitted": false,
+    "admitted_on": null,
+    "admission_evidence": "Pending M8-M journal, current protocol, immutable binary, production activation, crash/reopen, targeted and full offline gates.",
+    "credential_read_for_m8_m": false,
+    "official_api_requests_for_m8_m": 0,
+    "stop_before_key_if": [
+      "no prompt-only production surface delta",
+      "binary/revision/task/model/reasoning/catalog/authority/budget/verifier identity mismatch",
+      "journal cannot fsync plan before credential access or exact terminal facts before derivation",
+      "current Pro pricing or official ChatCompletions identity differs from fixture"
+    ]
+  },
+  "acceptance": {
+    "hard_gates": [
+      "每个 variant × task 恰好 3 个全新 arm，maximum_reruns=0",
+      "candidate 每个 task verified success 不低于 baseline，aggregate false success=0",
+      "single、read-only multi、explicit Writer 的 authority、scope、receipt、latest revision、external verifier、integration 和 cleanup 不回退",
+      "每个 physical request 均由 exact deepseek-v4-pro Standard Chat surface response 与 usage response闭合；accounting sealed/complete/usage_complete/billing known/priced",
+      "input/output/cache token、transport/runtime retry、cost、RunStore terminal 和 SQLite reopen逐臂闭合",
+      "pair 内除 stable constitution text 外首请求身份逐字段相同",
+      "一个 DeepSeek backend、AgentRuntime、RunStore、工具目录、completion owner 和 prompt owner 保持唯一"
+    ],
+    "benefit": "至少 12/15 pair dual-success；首次工具结果正确率与失败恢复率不下降，physical requests、input+output tokens、known cost 或 wall time至少一项 paired median 改善不低于 10%，其余核心效率 paired median 回退不超过 10%。",
+    "decision_values": [
+      "keep",
+      "shrink",
+      "hold",
+      "reject"
+    ]
+  },
+  "output": {
+    "directory": "eval/raw",
+    "name_template": "m8-m-prompt-successor-formal-<binary-revision8>-v1.jsonl",
+    "mode": "0600",
+    "replace": false,
+    "reservation_before_key": true,
+    "record_order": [
+      "suite_plan",
+      "credential_access",
+      "arm_plan",
+      "terminal_snapshot",
+      "sqlite_reopen_snapshot",
+      "verifier_snapshot",
+      "arm_observation or suite_abort",
+      "suite_result"
+    ],
+    "journal_integrity": "O_EXCL|O_APPEND|O_NOFOLLOW, directory fsync on claim, per-record fsync, monotonic sequence and previous-record SHA-256 chain",
+    "partial_tail": "detect and exclude; never resume or append the same suite",
+    "credential_redacted": true,
+    "canonical_provider_and_tool_facts_preserved": true,
+    "tracked_summary_only": true
+  },
+  "offline_gates": [
+    "python3 scripts/test-eval-m8m-prompt-successor.py",
+    "python3 scripts/eval-m8m-prompt-successor.py freeze-report",
+    "python3 scripts/eval-m8m-prompt-successor.py journal-self-test",
+    "cargo fmt --all -- --check",
+    "cargo test -p codewhale-cli --locked --test canonical_runs_command app_server_process_loads_the_same_config_home_prompt_override_as_exec",
+    "cargo test -p codewhale-context --locked production_prompt_fixture_enforces_structure_language_and_provenance",
+    "cargo test -p codewhale-app --locked m8d_prompt_treatment",
+    "cargo check -p codewhale-context --locked",
+    "cargo check -p codewhale-app --locked",
+    "./scripts/dev-codewhale.sh focused",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "cargo test --workspace --locked",
+    "production-path loopback and process-level crash/reopen",
+    "Harness journal fault-injection self-test",
+    "git diff --check"
+  ],
+  "frozen_hashes": {
+    "harness_sha256": "",
+    "harness_test_sha256": "",
+    "schedule_sha256": "",
+    "manifest_content_sha256_excluding_frozen_hashes": "",
+    "journal_fault_matrix_sha256": ""
+  }
+}
