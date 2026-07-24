@@ -56,6 +56,16 @@ WRITER_LIFECYCLE = (
     "agent_cleanup_prepared",
     "agent_cleanup_committed",
 )
+WRITER_ONLY_LIFECYCLE = (
+    "agent_workspace_created",
+    "agent_seal_prepared",
+    "agent_seal_committed",
+    "agent_integration_prepared",
+    "agent_integration_started",
+    "agent_integration_committed",
+    "agent_cleanup_prepared",
+    "agent_cleanup_committed",
+)
 MAY_WRITE_TOOLS = {"apply_patch", "edit_file"}
 USAGE_FIELDS = (
     "input_tokens",
@@ -1193,8 +1203,7 @@ def readonly_lane_audit(
             reasons.append("readonly_child_write")
     if any(
         event_values(root_events, kind)
-        for kind in WRITER_LIFECYCLE
-        if kind not in {"agent_task_prepared", "child_started", "child_finished"}
+        for kind in WRITER_ONLY_LIFECYCLE
     ):
         reasons.append("readonly_writer_lifecycle_present")
     return {
@@ -2065,6 +2074,11 @@ def run_self_test() -> int:
         Counter(item["task_id"] for item in schedule)
         == Counter({task_id: 3 for task_id in TASKS}),
         "self_test_schedule_balance",
+    )
+    require(
+        "agent_result_collected" not in WRITER_ONLY_LIFECYCLE
+        and set(WRITER_ONLY_LIFECYCLE).issubset(WRITER_LIFECYCLE),
+        "self_test_readonly_lifecycle_boundary",
     )
     require(
         {
