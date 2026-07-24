@@ -147,6 +147,17 @@ Changing one of these constraints requires evidence and a new ADR.
   frozen observer false-positive also showed that temporal recovery must accept
   the canonical committed Host `failed_write_pass` receipt, not demand a
   duplicate model-owned final verifier call.
+- M10-B's deterministic budgeted Working-Set selector passed its offline
+  localization benchmark, but the formal fixed-Pro campaign produced one
+  treatment read-only actor-contract false-success label in the first five
+  measurement-valid arms. The sixth arm then failed before response usage with
+  `billing_unknown=true`. The decision is
+  `reject_quality_veto_and_delete`, with acquisition
+  `stop_incomplete_accounting`: selector, safe-read helper, production caller,
+  temporary config/user surface, fixture/benchmark, and Harness treatment
+  branch are deleted. Frozen manifests, ignored 0600 raw, Git history, and the
+  decision summary remain audit evidence only. Production has no budgeted
+  Working-Set map; do not restore it without a new independent slice.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

@@ -7,7 +7,6 @@ pub const DEFAULT_FRAGMENT_MAX_BYTES: usize = 4 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FragmentId {
     Workspace,
-    WorkingSet,
     Permissions,
     Route,
     AgentTopology,
@@ -20,7 +19,6 @@ impl FragmentId {
     pub fn marker(self) -> &'static str {
         match self {
             Self::Workspace => "<!-- cw:ctx:workspace -->",
-            Self::WorkingSet => "<!-- cw:ctx:working_set -->",
             Self::Permissions => "<!-- cw:ctx:permissions -->",
             Self::Route => "<!-- cw:ctx:route -->",
             Self::AgentTopology => "<!-- cw:ctx:agent_topology -->",
@@ -34,7 +32,6 @@ impl FragmentId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FragmentRole {
     Workspace,
-    WorkingSet,
     Permissions,
     Route,
     AgentTopology,

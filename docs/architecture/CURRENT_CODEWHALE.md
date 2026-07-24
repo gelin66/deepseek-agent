@@ -1888,29 +1888,27 @@ M10-A 当前事实：
 完整事实见
 [M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)。
 
-M10-B 当前实现事实：
+M10-B 当前事实：
 
-- `crates/context::working_set` 是 ContextBroker 内的一个有界、确定性、只读 selector，
-  不是 RepoGraph service。它扫描受 ignore/no-follow/size cap 约束的 UTF-8 workspace
-  文件，按 TaskDefinition、path/stack/symbol/content、manifest、test/import adjacency
-  与 Host-observed Git changed paths 排序；
-- 输出只含 region metadata 与当前文件 digest，不含源码正文；默认最多 8 regions、
-  160 行、3900 个 model-visible characters。最终 projection 会先删除无法完整渲染的
-  region 再重算 observation digest，所有 workspace-controlled string 均 JSON escaped；
-- canonical production caller 仍是 `AgentApplication`。只有临时 treatment 开启时，
-  它通过现有 `crates/tools::execute_git_status` 取 changed paths，再为 root、
-  continuation、read-only child 与 Writer 使用同一 task-aware prompt builder；
-- map 是 stable constitution 之后单独的 volatile WorldState fragment。默认
-  working-set off 时原 system prompt identity 不变；开启时 exact map 随 system prompt
-  进入 canonical transcript/RunStore，不新增 event/schema/store；
-- global config 与 TUI 当前临时接受 `[context].working_set = bool` 以构造 same-binary
-  A/B；默认 false、旧 `project_pack` 与未知 context key fail closed。这个入口没有用户
-  文档，必须在 M10-B keep/reject 时删除；
-- v1/v2 offline manifests 都使用同一冻结 fixture；v1 保留 6000-character 历史事实，
-  v2 绑定 3900-character production cap。两者均达到 Recall@5 1.00、median first
-  relevant rank 1、负任务 0 regions，但这不证明 end-task 产品收益；
-- root/read-only/Writer prompt conformance 与 app-server process/SQLite reopen 已覆盖；
-  当前默认仍 fixed pack-on + working-set off，没有 credential/API 事实或 admission。
+- 已删除的 `crates/context::working_set` 候选曾在同一 immutable binary 内提供一个
+  有界确定性 selector；offline localization 达到 Recall@5 1.00、median first relevant
+  rank 1、负任务 0 regions，但这只是机制证据；
+- formal fixed-Pro campaign 的前 5 个 arms measurement-valid：4 个 verified success，
+  1 个 treatment read-only arm 通过外部文件 verifier 和 latest-revision Host receipt，
+  但遗漏冻结的 `wall_time_secs=180`，actor/lane contract 无效并形成 frozen
+  false-success label。绝对质量门因此失败；
+- 第 6 个 treatment safety arm 在 response/usage 前发生 typed transport failure；
+  canonical accounting/reopen 保存 `billing_unknown=true` 并停止，未重跑。矩阵不完整，
+  不能比较 variant 的搜索、Token、时间或费用；
+- 正式决定是 `reject_quality_veto_and_delete`，acquisition 事实为
+  `stop_incomplete_accounting`。selector、safe-read helper、task-aware caller、
+  volatile prompt fragment、`context.working_set` config/CLI/TUI/API、fixture/benchmark
+  与 Harness treatment branch 均已物理删除；
+- production 现在回到固定 project pack、无 Working-Set selector/map 的单路径。frozen
+  manifests、ignored 0600 raw、Git 历史与 summary 只保留审计，不是 current consumer。
+
+完整事实见
+[M10-B budgeted working-set](../../eval/summaries/m10-b-budgeted-working-set-2026-07-24.md)。
 
 ## 7. 明确非结论
 

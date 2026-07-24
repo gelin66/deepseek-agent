@@ -194,17 +194,6 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
         .expect("create prompt override directory");
     std::fs::write(&prompt_path, format!("# 系统契约\n\n{OVERRIDE_MARKER}\n"))
         .expect("write prompt override");
-    std::fs::write(
-        home.path().join("config.toml"),
-        "[context]\nworking_set = true\n",
-    )
-    .expect("write M10-B treatment config");
-    std::fs::create_dir_all(workspace.path().join("src")).expect("create source directory");
-    std::fs::write(
-        workspace.path().join("src/runtime_boundary.rs"),
-        "pub fn locate_runtime_boundary() -> bool { true }\n",
-    )
-    .expect("write working-set source");
 
     let mut child = tokio::process::Command::new(codewhale_binary())
         .current_dir(workspace.path())
@@ -228,9 +217,7 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
         schema_version: RUN_API_SCHEMA_VERSION,
         request_id: "app-server-prompt-override-probe".to_owned(),
         command: RunCommand::Start(StartRunCommand {
-            task: TaskDefinition::host(
-                "调查 locate_runtime_boundary 的实现位置，只建立 prompt 进程级证据",
-            ),
+            task: TaskDefinition::host("只建立 prompt 进程级证据"),
             workspace: workspace.path().display().to_string(),
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
@@ -305,11 +292,6 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
     assert!(
         prompt.contains(OVERRIDE_MARKER),
         "production app-server ignored the config-home prompt override"
-    );
-    assert!(
-        prompt.contains("## Host 预算化工作集")
-            && prompt.contains("path=\"src/runtime_boundary.rs\""),
-        "production app-server did not project the task-aware working set"
     );
 }
 

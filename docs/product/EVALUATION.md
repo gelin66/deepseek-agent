@@ -2138,33 +2138,37 @@ pack-off 未准入，所以不进入 nested scoped-rules treatment；下一独�
 完整证据见
 [M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)。
 
-M10-B 当前只完成 localization 与 production-caller 的离线前置证据，尚无产品准入：
+M10-B 已形成正式 `reject_quality_veto_and_delete` 决定；acquisition 同时以
+`stop_incomplete_accounting` 停止：
 
-- `3a1e2b54` 冻结 8-task/真实临时 Git repo 的 v1 baseline：Recall@5 `1.00`、
-  mean precision@5 `0.881`、median first relevant rank `1`、negative abstention
-  regions `0`，两次选择 byte-equivalent；
-- frozen v1 manifest 保持 6000-character 历史预算不变；v2 successor 只把
-  model-visible budget 收紧为 3900 characters，以保证 selector 最终 region 数、
-  observation digest、offline metric 与既有 4096-byte WorldState fragment 的真实内容
-  一致；
-- selector 只读 task/path/stack/symbol/content/manifest/test/import 与 Host 从
-  canonical `git_status` 得到的 changed paths；不使用 LLM、embedding、RepoGraph、
-  symlink traversal 或第二 store，且 JSON-escape 所有 workspace-controlled prompt 值；
-- production composition 在显式 treatment 时为 root、read-only child、Writer 与
-  continuation 构造同一 volatile map。默认关闭，stable constitution hash 不变；
-  app-server 进程被终止后从 SQLite reopen 可读回包含 exact map 的 persisted system
-  prompt；
-- typed `[context].working_set` 只为同 immutable binary control/treatment 服务，
-  默认 false、未知/旧 nested key fail closed，并预注册在 keep/reject 时物理删除；
-- 本 checkpoint 只运行离线门禁，没有读 Key 或请求 official API。它不能支持
-  “减少搜索/Token/时间/费用”或“提高 verified task success”的结论。
+- candidate `d79ebf43`、live admission `2ec2e8a1` 与 immutable binary 冻结 fixed
+  Pro/high、fixed pack-on、相同 TaskContract/tools/budget/verifier、6 tasks ×
+  2 variants × 3、交错 schedule 和 `maximum_reruns=0`；
+- 前 5 个 arms 均满足 response usage、canonical Store/reopen、external verifier 与
+  accounting 完整性。4 个 verified success，1 个
+  `readonly_investigation / working_set_on` 虽通过 external verifier、只改目标文件并有
+  latest-revision Host receipt，但 child 调用缺失冻结的 `wall_time_secs=180`，actor/lane
+  contract 无效，raw 因而形成 1 个 frozen false-success label；
+- admission 的绝对 `false_success=0` 门已不可满足。这是独立质量 veto，不依赖完整
+  variant 比较，也不能用后续样本抵消；
+- 第 6 个 `safety_false_completion / working_set_on` 在 response headers/usage 前发生
+  typed `deepseek_transport`。Runtime/Store/reopen 保存 started/completed/in-flight
+  `1/1/0`、`billing_unknown=true`、usage complete=false；Harness 立即停止且没有重跑、
+  补 mate、续跑或拼接；
+- 5 个已完成 arms 在 variant/task 上不平衡，且第 6 个 physical attempt 计费未知，
+  因此 discovery calls、Token、cache miss、wall time 与费用都只能是描述性事实，不能
+  构成 control/treatment 比较或产品收益；
+- decision cutover 删除 selector、task-aware production caller、volatile map、
+  `context.working_set` config/CLI/TUI/API 接线、fixture/benchmark 与 M10-B-only
+  Harness branch；production 恢复 fixed pack-on、无 Working-Set map 的原路径，不保留
+  compatibility reader、模式或永久双轨；
+- frozen formal/live/localization manifests、ignored 0600 raw、Git 历史与 summary
+  保持审计。localization mechanism 的 Recall@5 `1.00`、mean precision@5 `0.881`、
+  median first rank `1` 只属于已删除候选，不支持 end-task admission。
 
-正式 end-task A/B 必须使用 fixed Pro、fixed pack-on、同 binary/revision/task/tools/
-budget/verifier、`maximum_reruns=0`。除了 verified success 非劣、false success 0 和关键
-stratum 无 treatment-only failure，还要记录 first effective edit 前 discovery calls、
-重复 search/read、model request、cache-miss input、wall time 与完整 accounting。仅
-localization 指标通过不准入；任何 unknown/incomplete physical accounting 停止 campaign，
-任何无净收益候选完整删除。
+完整证据见
+[M10-B budgeted working-set](../../eval/summaries/m10-b-budgeted-working-set-2026-07-24.md)。
+下一独立切片是 M10-C Acceptance Progress；不得使用 M10-B 不完整 raw 补样。
 
 ## 10. 结果与决策记录
 

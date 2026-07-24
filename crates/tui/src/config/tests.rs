@@ -59,15 +59,6 @@ fn retired_m10a_project_context_pack_setting_is_rejected() {
 }
 
 #[test]
-fn m10b_working_set_treatment_is_typed_and_defaults_off() {
-    assert!(!Config::default().working_set_enabled());
-    let parsed: ConfigFile = toml::from_str("[context]\nworking_set = true\n").unwrap();
-    let config = apply_profile(parsed, None).unwrap();
-    config.validate().unwrap();
-    assert!(config.working_set_enabled());
-}
-
-#[test]
 fn m8a_retired_provider_key_is_rejected_even_when_named_deepseek() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("config.toml");

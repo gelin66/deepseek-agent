@@ -7,10 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use codewhale_config::PromptPreferences;
-use codewhale_context::{
-    InstructionSource, ProductionPromptRequest, WorkingSetBudget, WorkingSetRequest,
-    production_system_prompt, select_working_set,
-};
+use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
 use codewhale_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
     DeepSeekTransport, SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
@@ -36,8 +33,7 @@ use codewhale_state::StateStore;
 use codewhale_tools::sandbox::SandboxPolicy;
 use codewhale_tools::shell::ShellPolicy;
 use codewhale_tools::{
-    ProductionToolConfig, ProductionToolContext, ProductionToolExecutionIdentity,
-    ProductionToolExecutor, execute_git_status,
+    ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -61,9 +57,6 @@ pub struct ProductionPromptConfig {
     pub preferences: PromptPreferences,
     pub instructions: Vec<InstructionSource>,
     pub skills_dir: Option<PathBuf>,
-    /// Temporary M10-B same-binary treatment adapter. It is not a product
-    /// default and must be deleted at the keep/reject cutover.
-    pub working_set_enabled: bool,
     pub verbosity: Option<String>,
     pub skills_scan_codewhale_only: bool,
     pub shell_binary: String,
@@ -75,76 +68,11 @@ impl Default for ProductionPromptConfig {
             preferences: PromptPreferences::default(),
             instructions: Vec::new(),
             skills_dir: None,
-            working_set_enabled: false,
             verbosity: None,
             skills_scan_codewhale_only: false,
             shell_binary: if cfg!(windows) { "powershell" } else { "sh" }.to_owned(),
         }
     }
-}
-
-fn production_task_system_prompt(
-    prompt: &ProductionPromptConfig,
-    workspace: &Path,
-    task: &TaskDefinition,
-    model: &str,
-    tool_mode: bool,
-) -> Result<SystemPrompt, String> {
-    let changed_paths = if prompt.working_set_enabled {
-        working_set_changed_paths(workspace)
-    } else {
-        Vec::new()
-    };
-    let working_set = prompt
-        .working_set_enabled
-        .then(|| {
-            select_working_set(WorkingSetRequest {
-                workspace,
-                task,
-                changed_paths: &changed_paths,
-                budget: WorkingSetBudget::default(),
-            })
-            .map_err(|error| error.to_string())
-        })
-        .transpose()?;
-    Ok(production_system_prompt(ProductionPromptRequest {
-        workspace,
-        model,
-        working_set: working_set.as_ref(),
-        preferences: &prompt.preferences,
-        instructions: &prompt.instructions,
-        skills_dir: prompt.skills_dir.as_deref(),
-        verbosity: prompt.verbosity.as_deref(),
-        skills_scan_codewhale_only: prompt.skills_scan_codewhale_only,
-        shell_binary: &prompt.shell_binary,
-        tool_mode,
-    }))
-}
-
-fn working_set_changed_paths(workspace: &Path) -> Vec<String> {
-    let context = ProductionToolContext::new(workspace);
-    let Ok(outcome) = execute_git_status(serde_json::json!({}), &context) else {
-        return Vec::new();
-    };
-    if !outcome.is_success() {
-        return Vec::new();
-    }
-    parse_git_status_paths(&outcome.content)
-}
-
-fn parse_git_status_paths(content: &str) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    content
-        .lines()
-        .filter(|line| !line.starts_with("## ") && line.len() >= 4)
-        .filter_map(|line| line.get(3..))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.rsplit_once(" -> ").map_or(value, |(_, after)| after))
-        .map(|value| value.trim_matches('"').to_owned())
-        .filter(|value| seen.insert(value.clone()))
-        .take(64)
-        .collect()
 }
 
 /// Concrete, credential-optional configuration for the sole production app.
@@ -430,14 +358,18 @@ impl ProductionFixedRoutePolicy {
         Ok(())
     }
 
-    fn system_prompt(
-        &self,
-        workspace: &Path,
-        task: &TaskDefinition,
-        model: &str,
-        tool_mode: bool,
-    ) -> Result<SystemPrompt, String> {
-        production_task_system_prompt(&self.prompt, workspace, task, model, tool_mode)
+    fn system_prompt(&self, workspace: &Path, model: &str, tool_mode: bool) -> SystemPrompt {
+        production_system_prompt(ProductionPromptRequest {
+            workspace,
+            model,
+            preferences: &self.prompt.preferences,
+            instructions: &self.prompt.instructions,
+            skills_dir: self.prompt.skills_dir.as_deref(),
+            verbosity: self.prompt.verbosity.as_deref(),
+            skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
+            shell_binary: &self.prompt.shell_binary,
+            tool_mode,
+        })
     }
 }
 
@@ -570,12 +502,7 @@ impl ChildRunRoutePolicy for ProductionFixedRoutePolicy {
         tool_mode: bool,
     ) -> Result<SystemPrompt, String> {
         let workspace = Path::new(task.workspace.execution_workspace());
-        self.system_prompt(
-            workspace,
-            &task.task_contract.definition,
-            &task.model,
-            tool_mode,
-        )
+        Ok(self.system_prompt(workspace, &task.model, tool_mode))
     }
 }
 
@@ -713,12 +640,7 @@ impl RunComposition for ProductionComposition {
             &tool_identity,
             &tool_catalog_sha256,
         );
-        let system_prompt = self.system_prompt(
-            &workspace,
-            &command.task,
-            &route.model,
-            !tool_catalog.is_empty(),
-        )?;
+        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
         let accounting_baseline = model_accounting_snapshot(&request_budget);
         let request = RunRequest {
             run_id: Some(run_id.clone()),
@@ -972,8 +894,7 @@ impl RunComposition for ProductionComposition {
             &tool_identity,
             &tool_catalog_sha256,
         );
-        let system_prompt =
-            self.system_prompt(&workspace, &task, &route.model, !tool_catalog.is_empty())?;
+        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
         let mut transcript = source.snapshot.transcript.clone();
         match transcript.entries.first_mut() {
             Some(TranscriptEntry::System { prompt }) => *prompt = system_prompt.clone(),
@@ -1077,12 +998,20 @@ impl ProductionComposition {
     fn system_prompt(
         &self,
         workspace: &Path,
-        task: &TaskDefinition,
         model: &str,
         tool_mode: bool,
-    ) -> Result<codewhale_protocol::agent_runtime::SystemPrompt, RunApiError> {
-        production_task_system_prompt(&self.prompt, workspace, task, model, tool_mode)
-            .map_err(|error| invalid_request(format!("working_set_invalid：{error}")))
+    ) -> codewhale_protocol::agent_runtime::SystemPrompt {
+        production_system_prompt(ProductionPromptRequest {
+            workspace,
+            model,
+            preferences: &self.prompt.preferences,
+            instructions: &self.prompt.instructions,
+            skills_dir: self.prompt.skills_dir.as_deref(),
+            verbosity: self.prompt.verbosity.as_deref(),
+            skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
+            shell_binary: &self.prompt.shell_binary,
+            tool_mode,
+        })
     }
 
     fn execution_fingerprint_sha256(
@@ -4256,99 +4185,6 @@ mod tests {
         assert_eq!(
             explicit_off_read_only.route.reason_code,
             "explicit_model_inherited"
-        );
-    }
-
-    #[test]
-    fn working_set_git_observation_keeps_only_bounded_changed_paths() {
-        let mut status =
-            String::from("## main\n M src/lib.rs\nR  old.rs -> src/new.rs\n?? notes.md\n");
-        for index in 0..80 {
-            status.push_str(&format!("?? generated/{index:02}.rs\n"));
-        }
-        let paths = parse_git_status_paths(&status);
-        assert_eq!(paths.len(), 64);
-        assert!(paths.contains(&"src/lib.rs".to_owned()));
-        assert!(paths.contains(&"src/new.rs".to_owned()));
-        assert!(paths.contains(&"notes.md".to_owned()));
-        assert!(!paths.iter().any(|path| path == "old.rs"));
-    }
-
-    #[test]
-    fn root_read_only_and_writer_prompts_share_the_task_aware_working_set_owner() {
-        let workspace = tempfile::tempdir().expect("working-set actor workspace");
-        std::fs::create_dir_all(workspace.path().join("src")).expect("source directory");
-        std::fs::write(
-            workspace.path().join("src/actor_target.rs"),
-            "pub fn locate_actor_target() -> bool { true }\n",
-        )
-        .expect("actor target");
-        let workspace = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let definition = TaskDefinition::host("调查 locate_actor_target 的实现位置");
-        let policy = ProductionFixedRoutePolicy::new(ProductionPromptConfig {
-            working_set_enabled: true,
-            ..ProductionPromptConfig::default()
-        });
-        let root_prompt = policy
-            .system_prompt(&workspace, &definition, DEEPSEEK_PRO_MODEL, true)
-            .expect("root working-set prompt");
-        let prompt_text = |prompt: &SystemPrompt| {
-            prompt
-                .blocks
-                .iter()
-                .map(|block| block.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        assert!(prompt_text(&root_prompt).contains("path=\"src/actor_target.rs\""));
-
-        let mut parent = test_run_request(RunId::from("working-set-actors"), "parent", "system");
-        parent.environment.workspace = stable_path(&workspace);
-        let mut read_only = writer_task(&parent);
-        read_only.task_contract.definition = definition.clone();
-        read_only.workspace.access = AgentWorkspaceAccess::ReadOnly;
-        read_only.workspace.root_workspace = stable_path(&workspace);
-        read_only.workspace.worktree_path = None;
-        read_only.model = DEEPSEEK_FLASH_MODEL.to_owned();
-        let read_only_prompt = policy
-            .child_system_prompt(&parent, &read_only, true)
-            .expect("read-only working-set prompt");
-        assert!(prompt_text(&read_only_prompt).contains("path=\"src/actor_target.rs\""));
-
-        let mut writer = writer_task(&parent);
-        writer.task_contract.definition = definition;
-        writer.workspace.root_workspace = stable_path(&workspace);
-        writer.workspace.worktree_path = Some(stable_path(&workspace));
-        let writer_prompt = policy
-            .child_system_prompt(&parent, &writer, true)
-            .expect("writer working-set prompt");
-        assert!(prompt_text(&writer_prompt).contains("path=\"src/actor_target.rs\""));
-        assert_eq!(
-            root_prompt
-                .blocks
-                .iter()
-                .filter(|block| block.text.contains("## Host 预算化工作集"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            read_only_prompt
-                .blocks
-                .iter()
-                .filter(|block| block.text.contains("## Host 预算化工作集"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            writer_prompt
-                .blocks
-                .iter()
-                .filter(|block| block.text.contains("## Host 预算化工作集"))
-                .count(),
-            1
         );
     }
 
