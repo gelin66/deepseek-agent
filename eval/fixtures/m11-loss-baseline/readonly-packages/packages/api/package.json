@@ -1,0 +1,6 @@
+{
+  "name": "@cw/api",
+  "engines": {"node": ">=22"},
+  "scripts": {"build": "node build.js", "lint": "node lint.js", "test": "node --test"},
+  "features": ["json-api", "oauth"]
+}

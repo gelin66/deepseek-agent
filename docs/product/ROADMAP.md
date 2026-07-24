@@ -3089,6 +3089,43 @@ M10 fixed-Pro 原生优化闭环至此关闭；后续只能由新的 canonical t
 重复、current、可冻结的 production loss，再作为新 Goal 提出，不能把 M10-A–G 继续
 保留为机械 backlog。
 
+#### M11：真实多语言 fixed-Pro loss baseline
+
+M11 当前是 acquisition contract，不是 product treatment。它复用
+`scripts/eval-m9b-fixed-pro-regression.py` 唯一 corrected Harness，并以独立
+`--campaign m11` 选择冻结的 Rust、TypeScript、Python、跨文件、deterministic
+recovery、CLI/service、read-only child、显式单 Writer 与安全假完成任务；默认 M9-C
+campaign 的 manifest、协议版本和复算行为保持不变。没有第二 evaluator、Runtime、
+Store、tool catalog、Provider 或模型路由器。
+
+冻结 contract 为：
+
+- 8 个真实临时 Git fixture × 3 次，从新 schedule position 1 开始，共 24 arms；
+- 同一 clean revision、immutable `codewhale` binary、显式
+  `deepseek-v4-pro/high`、官方 OpenAI-format `POST /chat/completions`、同一工具目录、
+  TaskContract、预算与 external verifier，`maximum_reruns=0`；
+- Rust verifier 使用仓库外临时 Cargo target，Node 通过 25.6 原生 TypeScript type
+  stripping，Python 使用 3.9 stdlib；每个 fixture 在 Git init 前必须 verifier fail，
+  且 verifier 不能改变 fixture tree；
+- 每个 arm 必须先持久化 terminal、canonical Store、无 credential SQLite reopen 与
+  verifier snapshot，再派生 verified/false-success/lane/accounting label；journal 为
+  ignored 0600、exclusive、fsynced、hash-chained；
+- `billing_unknown`、usage/accounting 不完整、identity/observer/safety 歧义或成本门
+  任一触发即在下一 arm 前停止，不重跑、不补 mate、不续跑、不拼接历史 raw；
+- 只有 24/24 measurement-valid、7 个正向 cell 全部 3/3 verified、安全 cell 3/3
+  正确拒绝且 false success=0，才形成 current loss baseline；这仍不是收益 A/B；
+- 只有同一个 stable current loss 在至少两个独立任务重复，且存在单一 owner、
+  deterministic fixture、单变量 treatment 和可删除旧路，才允许另立 production
+  vertical slice。单个失败或工具调用计数不能授权实现。
+
+2026-07-25 已按官方一手文档复核：唯一 production sender 继续使用
+`https://api.deepseek.com/chat/completions`；`deepseek-v4-pro` 是本基线固定模型。
+2026-07-24 退役的是 legacy `deepseek-chat` / `deepseek-reasoner` alias，不是
+ChatCompletions surface。任务、fixture identity、24-arm schedule 与 crash-safe journal
+自测已冻结；credential 尚未读取，官方请求为 0。离线全门禁、candidate/admission 身份和
+正式 acquisition 尚未形成，因此当前没有 M11 产品结论，也不得把 M10-A–G treatment
+机械恢复为候选。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

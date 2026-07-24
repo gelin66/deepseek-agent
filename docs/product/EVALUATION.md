@@ -2289,6 +2289,60 @@ mode/hash/bytes 不变。完整结论见
 [M10-G read-only fan-out 最终准入审计](../../eval/summaries/m10-g-readonly-fanout-final-audit-2026-07-24.md)。
 M10-A–G 已全部形成 keep/reject/close 决定；不得把它们继续当作无证据的 active backlog。
 
+### M11 current multi-language loss acquisition
+
+M11 只建立 current fixed-Pro loss baseline，不比较 treatment，也不形成产品收益结论。
+唯一 acquisition/trajectory owner 仍是
+`scripts/eval-m9b-fixed-pro-regression.py`；`--campaign m11` 选择独立 frozen manifest，
+不复制 evaluator。默认 M9-C campaign 必须继续 byte-address 其 v11/v17/v23 contract，
+M11 使用 current Run API v12、RuntimeEvent v18、State v24 与 exec-stream v3。
+
+冻结输入为 8 个互相独立的临时 Git task：
+
+| task | stratum | mechanical acceptance |
+|---|---|---|
+| `rust_cli` | Rust CLI / multi-file | `cargo test`、真实 CLI 隐藏 case、限定双文件 diff |
+| `typescript_service` | TypeScript service | Node test、query/fragment/decode 隐藏 case、限定双文件 diff |
+| `python_security` | archive path security | stdlib test、absolute/backslash/sibling-prefix/traversal 隐藏 case |
+| `root_recovery` | deterministic recovery | failed verifier → applied mutation → committed Host pass |
+| `python_cli` | process/JSON contract | exit/stdout/排序/重复 key/含等号 hidden checks |
+| `readonly_investigation` | monorepo audit | exactly one read-only child、typed handoff 后 root 修改 |
+| `writer_migration` | isolated Writer | exactly one Writer、seal/integrate/root reverify/cleanup |
+| `safety_false_completion` | no-tool false completion | workspace unchanged、verifier fail、无 receipt、Host 拒绝完成 |
+
+每个 task 跑 3 次，共 24 arms；从新 schedule position 1 开始，`maximum_reruns=0`。所有
+arm 固定同一 source revision、immutable binary、显式 `deepseek-v4-pro/high`、官方
+OpenAI-format ChatCompletions、TaskContract、tool catalog、预算与 deterministic
+external verifier。fixture 必须在 Git init 前 verifier fail，且 verifier 前后 tree
+byte identity 不变；Rust Cargo output 必须写到 fixture 外临时 target。
+
+measurement-valid arm 必须同时满足：
+
+```text
+terminal snapshot durable before label
+canonical Store snapshot durable before label
+credential-free SQLite reopen == original Store facts
+external verifier and exact changed-file scope frozen
+route/lane/Host latest-revision evidence valid
+accounting complete + usage complete + billing known + priced + sealed
+started == completed, in_flight == 0, retries == 0
+0600 exclusive fsynced hash-chain journal, no partial tail or credential
+```
+
+任一 `billing_unknown`、incomplete usage/accounting、identity mismatch、observer/safety
+ambiguity 或成本 ceiling 在下一 arm 前停止；禁止 rerun、补 mate、resume、resample 和
+历史 raw splice。完整 baseline 只在 24/24 measurement-valid、7 个正向 cells 全部 3/3
+verified、security cell 3/3 correct rejection、false success=0 时成立。完整 baseline
+仍只是 loss label source，不是 product A/B。
+
+后续 candidate 的最低门是同一 stable current loss 在至少两个独立任务重复，并能指定
+一个既有 owner、deterministic fixture、一个主要 treatment variable 和 cutover 要删除的
+旧路。trajectory analyzer 必须继续只从 canonical Store/raw 派生，不得以 LLM Judge、
+模型自修改或人工挑样取代。2026-07-25 的 fixture/tree/base/schedule/journal self-test 已
+通过，M9-C compatibility self-test 同时通过；credential read=false、API requests=0。
+完整 workspace gate、live admission 和正式结果仍待执行，因此当前没有 M11 baseline
+结论或 production candidate。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

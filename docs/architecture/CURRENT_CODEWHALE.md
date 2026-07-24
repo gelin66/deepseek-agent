@@ -2020,6 +2020,29 @@ M10-G 当前事实：
 完整事实见
 [M10-G read-only fan-out 最终准入审计](../../eval/summaries/m10-g-readonly-fanout-final-audit-2026-07-24.md)。
 
+M11 当前只增加 eval acquisition 输入，不改变 production：
+
+- `scripts/eval-m9b-fixed-pro-regression.py` 仍是唯一 corrected fixed-Pro Harness；
+  默认 M9-C campaign 保持 frozen v11/v17/v23 contract，`--campaign m11` 选择 current
+  v12/v18/v24 的独立 multi-language manifest；
+- M11 任务覆盖 Rust、TypeScript、Python、跨文件、deterministic verifier recovery、
+  CLI/service、一个 read-only child、一个显式 isolated Writer 和无工具安全假完成；
+  每个 fixture 都在独立临时 Git 仓库 materialize，先证明 verifier fail 且不污染 tree；
+- M11 每个 root/child RunRequest 都显式冻结 `deepseek-v4-pro/high`。这不会改变产品
+  fixed actor profile：普通产品 read-only child 仍可固定 Flash/high；M11 只是用 Pro
+  消除 acquisition 中的模型变量，不恢复 Auto；
+- Harness 在 label 前依次保存 terminal、canonical Store、credential-free SQLite
+  reopen 与 external verifier snapshot，并用 ignored 0600、exclusive、fsynced、
+  hash-chained journal 覆盖 SIGKILL 窗口；unknown billing 或 incomplete accounting
+  仍立即停止下一 arm，`maximum_reruns=0`；
+- 当前只完成 fixture/tree/base/schedule/journal 的 deterministic freeze 和 M9-C/M11
+  compatibility self-test。credential 尚未读取、official API request=0、production
+  crate/config/protocol/schema delta=0；没有 baseline 结果或新 production candidate。
+
+M11 的唯一准入依据是新的 canonical trajectory：24/24 完整 baseline 后，同一 stable
+current loss 还必须在至少两个独立任务重复，才可另立一个单-owner、单变量、可删除旧路的
+vertical slice。M10-A–G 的已拒绝/关闭 treatment 不能因 M11 启动而恢复。
+
 ## 7. 明确非结论
 
 当前源码不证明：

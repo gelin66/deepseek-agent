@@ -1,0 +1,6 @@
+{
+  "name": "@cw/auth",
+  "engines": {"node": ">=20"},
+  "scripts": {"build": "node build.js", "test": "node --test"},
+  "features": ["oauth", "sessions"]
+}

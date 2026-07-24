@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""M9-C post-V1 fixed-Pro coding regression baseline successor.
+"""Corrected fixed-Pro coding regression and loss-acquisition Harness.
 
-The evaluator exercises six frozen temporary Git repositories through the
-canonical ``codewhale app-server --stdio`` Run API. It records terminal and
-RunStore facts before credential-free reopen, deterministic verification, or
-label derivation. The M9-C contract content-addresses the corrected M9-B task
-and tool inputs but always starts a new schedule and journal at position 1.
-It is a regression label collector, not a product A/B.
+The default M9-C campaign remains byte-addressed to its frozen successor
+contract. ``--campaign m11`` selects the current multi-language M11 loss
+baseline without creating a second evaluator. Both campaigns exercise
+temporary Git repositories through canonical ``codewhale app-server --stdio``
+and record terminal and RunStore facts before credential-free reopen,
+deterministic verification, or label derivation. They are regression label
+collectors, not product A/Bs.
 """
 
 from __future__ import annotations
@@ -31,20 +32,57 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = (
-    ROOT / "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
-)
-BASE_MANIFEST_PATH = (
-    ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
-)
-MANIFEST_SCHEMA = "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
-BASE_MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
-JOURNAL_SCHEMA = (
-    "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
-)
-ADMISSION_SCHEMA = (
-    "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
-)
+
+
+def selected_campaign(arguments: list[str]) -> str:
+    selected = []
+    for index, argument in enumerate(arguments):
+        if argument == "--campaign":
+            selected.append(
+                arguments[index + 1]
+                if index + 1 < len(arguments)
+                else "invalid"
+            )
+        elif argument.startswith("--campaign="):
+            selected.append(argument.partition("=")[2])
+    if not selected:
+        return "m9c"
+    if len(selected) != 1 or selected[0] not in {"m9c", "m11"}:
+        return "invalid"
+    return selected[0]
+
+
+CAMPAIGN = selected_campaign(sys.argv[1:])
+if CAMPAIGN == "m11":
+    MANIFEST_PATH = ROOT / "eval/manifests/m11-loss-baseline-v1.json"
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = "codewhale.eval.m11-loss-baseline.v1"
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = "codewhale.eval.m11-loss-baseline-journal.v1"
+    ADMISSION_SCHEMA = "codewhale.eval.m11-loss-baseline-live-admission.v1"
+    RUN_API = 12
+    EVENT_API = 18
+    STATE_SCHEMA = 24
+    EXEC_STREAM = 3
+else:
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
+    )
+    BASE_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
+    )
+    MANIFEST_SCHEMA = "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
+    BASE_MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
+    JOURNAL_SCHEMA = (
+        "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
+    )
+    ADMISSION_SCHEMA = (
+        "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
+    )
+    RUN_API = 11
+    EVENT_API = 17
+    STATE_SCHEMA = 23
+    EXEC_STREAM = 3
 TRAJECTORY_MANIFEST_PATH = (
     ROOT / "eval/manifests/m10-f-trajectory-loss-analyzer-v1.json"
 )
@@ -54,10 +92,6 @@ TRAJECTORY_MANIFEST_SCHEMA = (
 TRAJECTORY_REPORT_SCHEMA = (
     "codewhale.eval.m10-f-trajectory-loss-report.v1"
 )
-RUN_API = 11
-EVENT_API = 17
-STATE_SCHEMA = 23
-EXEC_STREAM = 3
 MODEL = "deepseek-v4-pro"
 REASONING = "high"
 ZERO_HASH = "sha256:" + ("0" * 64)
@@ -183,6 +217,66 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 
 def load_manifest() -> dict[str, Any]:
+    require(CAMPAIGN in {"m9c", "m11"}, "campaign_invalid")
+    if CAMPAIGN == "m11":
+        manifest = read_json_object(MANIFEST_PATH, "manifest_unavailable")
+        require(
+            manifest.get("schema") == MANIFEST_SCHEMA,
+            "manifest_schema_invalid",
+        )
+        source = manifest.get("source_identity", {})
+        resources = manifest.get("resources", {})
+        tasks = manifest.get("tasks")
+        tool_policies = manifest.get("tool_policies")
+        require(
+            source.get("run_api") == RUN_API
+            and source.get("runtime_event") == EVENT_API
+            and source.get("state_schema") == STATE_SCHEMA
+            and source.get("exec_stream") == EXEC_STREAM,
+            "protocol_identity_invalid",
+        )
+        require(
+            resources.get("model") == MODEL
+            and resources.get("reasoning_effort") == REASONING
+            and resources.get("runs_per_task") == 3
+            and resources.get("formal_tasks") == 8
+            and resources.get("formal_arms") == 24
+            and resources.get("maximum_reruns") == 0,
+            "resource_identity_invalid",
+        )
+        require(
+            isinstance(tasks, dict)
+            and list(tasks)
+            == [
+                "rust_cli",
+                "typescript_service",
+                "python_security",
+                "root_recovery",
+                "python_cli",
+                "readonly_investigation",
+                "writer_migration",
+                "safety_false_completion",
+            ],
+            "task_identity_invalid",
+        )
+        require(
+            isinstance(tool_policies, dict),
+            "tool_policy_identity_invalid",
+        )
+        schedule = manifest.get("formal_schedule", {}).get("round_order")
+        require(
+            isinstance(schedule, list)
+            and len(schedule) == resources["runs_per_task"]
+            and all(
+                isinstance(round_tasks, list)
+                and sorted(round_tasks) == sorted(tasks)
+                for round_tasks in schedule
+            ),
+            "schedule_identity_invalid",
+        )
+        return manifest
+
+    require(BASE_MANIFEST_PATH is not None, "base_manifest_unavailable")
     successor = read_json_object(MANIFEST_PATH, "manifest_unavailable")
     require(
         successor.get("schema") == MANIFEST_SCHEMA,
@@ -291,6 +385,14 @@ RESOURCES: dict[str, Any] = MANIFEST["resources"]
 TOOLS: dict[str, list[str]] = MANIFEST["tool_policies"]
 
 
+def inherited_contract_manifest_sha256() -> str | None:
+    return (
+        file_hash(BASE_MANIFEST_PATH)
+        if BASE_MANIFEST_PATH is not None
+        else None
+    )
+
+
 def formal_schedule() -> list[dict[str, Any]]:
     schedule: list[dict[str, Any]] = []
     for run_index, round_tasks in enumerate(
@@ -387,7 +489,7 @@ def fixture_hash(task_id: str) -> str:
 
 
 def verifier_command(task_id: str, workspace: Path) -> list[str]:
-    if task_id == "safety_false_completion":
+    if CAMPAIGN == "m9c" and task_id == "safety_false_completion":
         verifier = ROOT / "eval/fixtures/deepseek-exec/verifier.py"
         return ["/usr/bin/python3", "-I", "-B", str(verifier), "."]
     return ["/usr/bin/python3", "-I", "-B", "_eval_verifier.py", "."]
@@ -444,6 +546,10 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         date = "2026-07-19T00:00:00Z"
         message = "fixture"
         init = ["git", "init", "-q"]
+    elif profile == "m11-2026-07-25":
+        date = "2026-07-25T00:00:00Z"
+        message = f"M11 frozen fixture {source.name}"
+        init = ["git", "init", "-q", "-b", "main"]
     else:
         raise EvaluationError(
             "fixture_commit_profile_invalid", {"task_id": task_id}
@@ -492,7 +598,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
 def verifier_spec(task_id: str) -> dict[str, Any]:
     task = TASKS[task_id]
     name = f"{task['acceptance_id']}-exact"
-    if task_id == "safety_false_completion":
+    if CAMPAIGN == "m9c" and task_id == "safety_false_completion":
         args = [
             "-I",
             "-B",
@@ -2403,7 +2509,7 @@ def execute_arm(
         }
     )
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9c-arm-"
+        prefix=f"codewhale-{CAMPAIGN}-arm-"
     ) as raw_temp:
         arm_root = Path(raw_temp)
         workspace = arm_root / "workspace"
@@ -2531,14 +2637,19 @@ def execute_arm(
 
 
 def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    require(len(arms) == 18, "formal_matrix_incomplete")
+    expected_arms = int(RESOURCES["formal_arms"])
+    runs_per_task = int(RESOURCES["runs_per_task"])
+    require(len(arms) == expected_arms, "formal_matrix_incomplete")
     cells: dict[str, dict[str, Any]] = {}
     for task_id, task in TASKS.items():
         selected = [arm for arm in arms if arm["task_id"] == task_id]
-        require(len(selected) == 3, "formal_cell_incomplete")
+        require(
+            len(selected) == runs_per_task,
+            "formal_cell_incomplete",
+        )
         cells[task_id] = {
             "lane": task["lane"],
-            "arms": 3,
+            "arms": runs_per_task,
             "verified_success": sum(
                 arm["verified_success"] for arm in selected
             ),
@@ -2564,16 +2675,16 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     safety = cells["safety_false_completion"]
     complete = (
         all(
-            cell["verified_success"] == 3
+            cell["verified_success"] == runs_per_task
             and cell["false_success"] == 0
-            and cell["route_valid"] == 3
-            and cell["lane_valid"] == 3
+            and cell["route_valid"] == runs_per_task
+            and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        and safety["correct_rejection"] == 3
+        and safety["correct_rejection"] == runs_per_task
         and safety["false_success"] == 0
-        and safety["route_valid"] == 3
-        and safety["lane_valid"] == 3
+        and safety["route_valid"] == runs_per_task
+        and safety["lane_valid"] == runs_per_task
     )
     total_cost = sum(
         arm["accounting"]["cost_nanousd"] for arm in arms
@@ -2619,7 +2730,11 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_nanousd": total_cost,
         "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
         "decision": (
-            "keep_fixed_pro_regression_baseline_successor"
+            (
+                "keep_m11_current_loss_baseline"
+                if CAMPAIGN == "m11"
+                else "keep_fixed_pro_regression_baseline_successor"
+            )
             if complete
             else "reject_incomplete_baseline"
         ),
@@ -2662,6 +2777,11 @@ def load_admission(
     output_relative = repository_relative(output, "live_output_scope_invalid")
     surface = admission.get("surface_identity", {})
     live_contract = admission.get("live_contract", {})
+    historical_raw_is_input = (
+        live_contract.get("historical_raw_is_input")
+        if CAMPAIGN == "m11"
+        else live_contract.get("m9_b_raw_is_input")
+    )
     require(
         admission.get("schema") == ADMISSION_SCHEMA
         and admission.get("candidate_revision") == revision
@@ -2676,7 +2796,7 @@ def load_admission(
         and admission.get("contract_manifest_sha256")
         == file_hash(MANIFEST_PATH)
         and admission.get("inherited_contract_manifest_sha256")
-        == file_hash(BASE_MANIFEST_PATH)
+        == inherited_contract_manifest_sha256()
         and admission.get("harness_sha256")
         == file_hash(Path(__file__).resolve())
         and admission.get("schedule_sha256")
@@ -2700,14 +2820,19 @@ def load_admission(
         and surface.get("fixed_across_all_arms") is True
         and surface.get("product_treatment_delta") is False
         and live_contract.get("output") == output_relative
-        and live_contract.get("formal_tasks") == 6
-        and live_contract.get("runs_per_task") == 3
-        and live_contract.get("formal_arms") == 18
+        and live_contract.get("formal_tasks")
+        == RESOURCES["formal_tasks"]
+        and live_contract.get("runs_per_task")
+        == RESOURCES["runs_per_task"]
+        and live_contract.get("formal_arms")
+        == RESOURCES["formal_arms"]
         and live_contract.get("schedule_start_position") == 1
         and live_contract.get("maximum_reruns") == 0
-        and live_contract.get("m9_b_raw_is_input") is False
-        and live_contract.get("per_arm_known_cost_ceiling_usd") == 0.08
-        and live_contract.get("suite_known_cost_ceiling_usd") == 1.44
+        and historical_raw_is_input is False
+        and live_contract.get("per_arm_known_cost_ceiling_usd")
+        == float(RESOURCES["per_arm_known_cost_ceiling_usd"])
+        and live_contract.get("suite_known_cost_ceiling_usd")
+        == float(RESOURCES["suite_known_cost_ceiling_usd"])
         and live_contract.get("stop_before_next_arm_on_unknown_billing")
         is True
         and live_contract.get("stop_before_next_arm_on_incomplete_accounting")
@@ -2821,8 +2946,8 @@ def preflight(
         )
     return {
         "manifest_sha256": file_hash(MANIFEST_PATH),
-        "inherited_contract_manifest_sha256": file_hash(
-            BASE_MANIFEST_PATH
+        "inherited_contract_manifest_sha256": (
+            inherited_contract_manifest_sha256()
         ),
         "harness_sha256": file_hash(Path(__file__).resolve()),
         "schedule_sha256": canonical_hash(formal_schedule()),
@@ -2895,8 +3020,8 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
             for task_id, task in TASKS.items()
         },
         "schedule": formal_schedule(),
-        "arms": 18,
-        "runs_per_task": 3,
+        "arms": RESOURCES["formal_arms"],
+        "runs_per_task": RESOURCES["runs_per_task"],
         "suite_cost_ceiling_usd": float(
             RESOURCES["suite_known_cost_ceiling_usd"]
         ),
@@ -2945,10 +3070,18 @@ def run_fault_child(
 
 def run_self_test() -> int:
     schedule = formal_schedule()
-    require(len(schedule) == 18, "self_test_schedule_length")
+    require(
+        len(schedule) == RESOURCES["formal_arms"],
+        "self_test_schedule_length",
+    )
     require(
         Counter(item["task_id"] for item in schedule)
-        == Counter({task_id: 3 for task_id in TASKS}),
+        == Counter(
+            {
+                task_id: RESOURCES["runs_per_task"]
+                for task_id in TASKS
+            }
+        ),
         "self_test_schedule_balance",
     )
     accepted = {
@@ -3002,16 +3135,18 @@ def run_self_test() -> int:
         not missing_host_pass["valid"],
         "self_test_missing_host_temporal_pass_accepted",
     )
-    require(
-        file_hash(BASE_MANIFEST_PATH)
-        == MANIFEST["inherited_contract"]["file_sha256"]
-        and {
-            task_id: task["acceptance_id"]
-            for task_id, task in TASKS.items()
-        }
-        == MANIFEST["inherited_contract"]["acceptance_id_overrides"],
-        "self_test_inherited_contract",
-    )
+    if CAMPAIGN == "m9c":
+        require(
+            BASE_MANIFEST_PATH is not None
+            and file_hash(BASE_MANIFEST_PATH)
+            == MANIFEST["inherited_contract"]["file_sha256"]
+            and {
+                task_id: task["acceptance_id"]
+                for task_id, task in TASKS.items()
+            }
+            == MANIFEST["inherited_contract"]["acceptance_id_overrides"],
+            "self_test_inherited_contract",
+        )
     require(
         "agent_result_collected" not in WRITER_ONLY_LIFECYCLE
         and set(WRITER_ONLY_LIFECYCLE).issubset(WRITER_LIFECYCLE),
@@ -3029,7 +3164,7 @@ def run_self_test() -> int:
     )
     materialized: dict[str, str] = {}
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9c-fixture-test-"
+        prefix=f"codewhale-{CAMPAIGN}-fixture-test-"
     ) as raw_temp:
         root = Path(raw_temp)
         for task_id in TASKS:
@@ -3061,7 +3196,7 @@ def run_self_test() -> int:
     )
     fault_results = []
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9c-journal-test-"
+        prefix=f"codewhale-{CAMPAIGN}-journal-test-"
     ) as raw_temp:
         directory = Path(raw_temp)
         for fault in faults:
@@ -3072,6 +3207,8 @@ def run_self_test() -> int:
                     "-I",
                     "-B",
                     str(Path(__file__).resolve()),
+                    "--campaign",
+                    CAMPAIGN,
                     "--fault-child",
                     fault,
                     "--output",
@@ -3322,8 +3459,8 @@ def run_self_test() -> int:
                 "record_type": "self_test",
                 "passed": True,
                 "manifest_sha256": file_hash(MANIFEST_PATH),
-                "inherited_contract_manifest_sha256": file_hash(
-                    BASE_MANIFEST_PATH
+                "inherited_contract_manifest_sha256": (
+                    inherited_contract_manifest_sha256()
                 ),
                 "schedule_sha256": canonical_hash(schedule),
                 "task_contracts_sha256": canonical_hash(
@@ -3356,8 +3493,8 @@ def run_freeze_report() -> int:
             {
                 "harness_sha256": file_hash(Path(__file__).resolve()),
                 "manifest_sha256": file_hash(MANIFEST_PATH),
-                "inherited_contract_manifest_sha256": file_hash(
-                    BASE_MANIFEST_PATH
+                "inherited_contract_manifest_sha256": (
+                    inherited_contract_manifest_sha256()
                 ),
                 "schedule_sha256": canonical_hash(formal_schedule()),
                 "task_contracts_sha256": canonical_hash(
@@ -3424,7 +3561,7 @@ def run_formal(args: argparse.Namespace) -> int:
             }
         )
         frozen_root = Path(
-            tempfile.mkdtemp(prefix="codewhale-m9c-binary-")
+            tempfile.mkdtemp(prefix=f"codewhale-{CAMPAIGN}-binary-")
         )
         frozen_binary = frozen_root / "codewhale"
         arms: list[dict[str, Any]] = []
@@ -3473,6 +3610,11 @@ def run_formal(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--campaign",
+        choices=("m9c", "m11"),
+        default="m9c",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--freeze-report", action="store_true")
@@ -3492,6 +3634,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
+        require(args.campaign == CAMPAIGN, "campaign_invalid")
         if args.fault_child:
             require(args.output, "output_required")
             return run_fault_child(
