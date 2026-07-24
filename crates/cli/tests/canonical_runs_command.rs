@@ -184,7 +184,7 @@ fn help_has_command(help: &str, command: &str) -> bool {
 }
 
 #[tokio::test]
-async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec() {
+async fn app_server_process_loads_the_same_config_home_prompt_inputs_as_exec() {
     const OVERRIDE_MARKER: &str = "app-server-process-override-marker";
 
     let home = tempfile::tempdir().expect("temporary app-server CODEWHALE_HOME");
@@ -194,6 +194,11 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
         .expect("create prompt override directory");
     std::fs::write(&prompt_path, format!("# 系统契约\n\n{OVERRIDE_MARKER}\n"))
         .expect("write prompt override");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[context]\nproject_pack = false\n",
+    )
+    .expect("write context treatment config");
 
     let mut child = tokio::process::Command::new(codewhale_binary())
         .current_dir(workspace.path())
@@ -292,6 +297,14 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
     assert!(
         prompt.contains(OVERRIDE_MARKER),
         "production app-server ignored the config-home prompt override"
+    );
+    assert!(
+        prompt.contains("## 有界项目概览"),
+        "pack-off treatment must keep the single fallback overview"
+    );
+    assert!(
+        !prompt.contains("## 项目上下文包"),
+        "production app-server ignored context.project_pack=false"
     );
 }
 

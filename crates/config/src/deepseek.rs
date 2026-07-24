@@ -88,6 +88,7 @@ pub struct ConfigToml {
 impl ConfigToml {
     pub fn validate(&self) -> Result<()> {
         reject_retired_extra_keys(&self.extras)?;
+        let _ = self.project_context_pack_enabled()?;
         if let Some(model) = self.default_text_model.as_deref() {
             canonical_deepseek_model(model)?;
         }
@@ -282,6 +283,25 @@ impl ConfigToml {
         }
     }
 
+    /// Existing local context-pack control shared by exec, TUI, and app-server.
+    ///
+    /// The setting remains in the non-model `extras` table while M10-A
+    /// evaluates whether the project pack has any production value. Invalid
+    /// shapes fail closed instead of silently changing the prompt treatment.
+    pub fn project_context_pack_enabled(&self) -> Result<bool> {
+        let Some(context) = self.extras.get("context") else {
+            return Ok(true);
+        };
+        let table = context
+            .as_table()
+            .context("配置项 'context' 必须是 TOML table")?;
+        match table.get("project_pack") {
+            None => Ok(true),
+            Some(toml::Value::Boolean(enabled)) => Ok(*enabled),
+            Some(_) => bail!("配置项 'context.project_pack' 必须是 boolean"),
+        }
+    }
+
     pub fn resolve_runtime_options(
         &self,
         cli: &CliRuntimeOverrides,
@@ -369,6 +389,7 @@ impl ConfigToml {
                 .clone()
                 .or(env.verbosity)
                 .or_else(|| self.verbosity.clone()),
+            project_context_pack_enabled: self.project_context_pack_enabled()?,
         })
     }
 }
@@ -420,6 +441,7 @@ pub struct ResolvedRuntimeOptions {
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
     pub verbosity: Option<String>,
+    pub project_context_pack_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
