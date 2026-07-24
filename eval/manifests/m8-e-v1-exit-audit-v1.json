@@ -1,0 +1,182 @@
+{
+  "schema": "codewhale.eval.m8-e-v1-exit-audit.v1",
+  "suite_id": "m8-e-v1-exit-audit-433a871b-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "production_revision": "433a871b9e26a09009d99575594c29557ebc7484",
+  "production_tree": "62e2f3f32806b572d06b866fd5c0b31293df40ac",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_tree": true,
+    "run_api": 10,
+    "runtime_event": 16,
+    "state_schema": 21,
+    "exec_stream": 2,
+    "cargo_lock_sha256": "ff53b4985b18a05847bd617fec2aa2b69e93d579cbe3f3d64f8f874acfaf0ef2",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0"
+  },
+  "authorities": {
+    "product_plan_sha256": "b41577c958bede243abf80c521aa306000b3481db40677c43fa7e15d421ca4ce",
+    "roadmap_sha256": "e804f98fda2f9c2411bc90265e837e71a88f03a0f6d6bdd865a18f31fca4343c",
+    "evaluation_sha256": "fcfb434b0380545ab72a6de22f9d7aad08a46d0cfd4c004727c1fdd6fbd7fd3a",
+    "current_architecture_sha256": "1fa22e99a3fd9cc6717d6a60db58e0e5a6e09c881f5147caa08a88d01ebc69cf"
+  },
+  "official_deepseek_recheck": {
+    "checked_at": "2026-07-24",
+    "legacy_model_alias_retirement": "deepseek-chat and deepseek-reasoner retire at 2026-07-24 15:59 UTC",
+    "retained_models": [
+      "deepseek-v4-pro",
+      "deepseek-v4-flash"
+    ],
+    "official_formats": {
+      "openai": {
+        "base_url": "https://api.deepseek.com",
+        "request_path": "/chat/completions",
+        "status": "officially_supported"
+      },
+      "anthropic": {
+        "base_url": "https://api.deepseek.com/anthropic",
+        "request_api": "Messages",
+        "status": "officially_supported"
+      }
+    },
+    "user_selected_release_target": "https://api.deepseek.com/anthropic",
+    "production_target_at_frozen_revision": "https://api.deepseek.com/chat/completions",
+    "decision_boundary": "The July 24 retirement does not remove ChatCompletions. The user-selected Anthropic cutover is nevertheless a release requirement and needs a separate canonical transport/parser/replay/accounting cutover before release."
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/codewhale-m8e-target",
+    "cargo_net_offline": true,
+    "result_path": "eval/results/m8-e-v1-exit-audit-433a871b-v1.json",
+    "result_mode": "0600",
+    "overwrite": false,
+    "credential_read": false,
+    "official_api_requests_allowed": false,
+    "reason": "M8-E is an offline release-evidence audit. M8-D v5 has unknown billing, there is no new model treatment, and the user-selected Anthropic format is not yet a production surface."
+  },
+  "v1_gap_matrix": [
+    {
+      "id": "V01",
+      "requirement": "只有 DeepSeekBackend",
+      "status": "pass",
+      "evidence": "CLI, TUI and app-server consume the single crates/deepseek backend through AgentApplication; M8-A removed the generic model Provider/router production path."
+    },
+    {
+      "id": "V02",
+      "requirement": "只有一个 AgentRuntime",
+      "status": "pass",
+      "evidence": "crates/runtime::AgentRuntime is the only production Agent loop used by root, read-only child and explicit Writer."
+    },
+    {
+      "id": "V03",
+      "requirement": "根 Agent 和子 Agent 通过同一 conformance suite",
+      "status": "pass",
+      "evidence": "Current runtime/app/state suites cover root, read-only child and explicit Writer on the same Runtime/Store contracts."
+    },
+    {
+      "id": "V04",
+      "requirement": "只有一个 canonical RuntimeEvent",
+      "status": "pass",
+      "evidence": "crates/protocol owns RuntimeEvent v16; presentation layers only project StoredRuntimeEvent."
+    },
+    {
+      "id": "V05",
+      "requirement": "只有一个 RunStore",
+      "status": "pass",
+      "evidence": "StateStore is the sole production SQLite RunStore; InMemoryRunStore is test-only."
+    },
+    {
+      "id": "V06",
+      "requirement": "只有一个 TaskGraph 产品概念",
+      "status": "blocked",
+      "evidence": "The canonical ProductionAgentOrchestrator coexists with user-visible Fleet and Lane protocols, commands, configuration and persistent lifecycle concepts."
+    },
+    {
+      "id": "V07",
+      "requirement": "CLI/TUI/API 是同一 Runtime 的薄客户端",
+      "status": "pass",
+      "evidence": "exec, interactive TUI and app-server all enter AgentApplication -> AgentRuntime -> RunStore; the old private loops were deleted."
+    },
+    {
+      "id": "V08",
+      "requirement": "多写 Agent 有完整 worktree/review/verify/merge/cleanup",
+      "status": "blocked",
+      "evidence": "One explicit isolated Writer has a complete lifecycle, but multi-Writer is intentionally not admitted after M6-B1 and the V1 plural requirement is not satisfied."
+    },
+    {
+      "id": "V09",
+      "requirement": "DeepSeek Standard、Strict 和 FIM 路由准确",
+      "status": "blocked",
+      "evidence": "Standard Chat and lossless Strict fallback are production-proven. FIM has only request planning/accounting foundations and no canonical production caller, response parser or Host apply lifecycle. The user-selected Anthropic Messages target is also absent."
+    },
+    {
+      "id": "V10",
+      "requirement": "RepoGraph 能处理跨文件代码理解",
+      "status": "blocked",
+      "evidence": "M5-C remains evidence-triggered and unimplemented; current context only has project instructions and explicit file/search tools."
+    },
+    {
+      "id": "V11",
+      "requirement": "完成状态依赖最新 EvidenceReceipt",
+      "status": "pass",
+      "evidence": "M5-A established the sole TaskContract/EvidenceReceipt/Host completion gate and current v16/v21 recovery preserves latest-revision binding."
+    },
+    {
+      "id": "V12",
+      "requirement": "其他 Provider、旧 updater、重复状态和重复运行路径已清除",
+      "status": "blocked",
+      "evidence": "Model routing and updater paths are removed, but Fleet/Lane remain separate product/state concepts and generic provider credential/config vocabulary remains in production crates outside the model backend."
+    },
+    {
+      "id": "V13",
+      "requirement": "真实评测证明产品优于导入时的 CodeWhale 基线",
+      "status": "blocked",
+      "evidence": "M1-C's fixed real coding A/B against imported revision 352e86a6 has not been executed; later A/B results use adjacent or post-import baselines."
+    },
+    {
+      "id": "V14",
+      "requirement": "保留的人类交互链路固定 zh-Hans 且无未批准英文泄漏",
+      "status": "pass",
+      "evidence": "M8-C L01-L14 passed with one shared 427-key catalog, CJK layout, machine/raw preservation and installed-artifact coverage."
+    },
+    {
+      "id": "V15",
+      "requirement": "中文原生 Agent 提示词同任务 A/B 通过且可追溯回滚",
+      "status": "blocked",
+      "evidence": "M8-D ended hold_prompt_candidate after v5 unknown billing; the bundled production prompt was not switched."
+    },
+    {
+      "id": "V16",
+      "requirement": "使用步骤没有因为架构重构而变复杂",
+      "status": "blocked",
+      "evidence": "Current help and delivery flows are tested, but there is no frozen same-task imported-baseline workflow comparison proving non-increased user steps."
+    }
+  ],
+  "release_decision": {
+    "status": "not_releasable",
+    "pass_count": 8,
+    "blocked_count": 8,
+    "keep": [
+      "single DeepSeek/AgentApplication/AgentRuntime/RunStore chain",
+      "latest-revision completion evidence",
+      "single explicit Writer mechanism",
+      "fixed zh-Hans owner",
+      "reproducible two-binary delivery"
+    ],
+    "hold": [
+      "Chinese prompt candidate",
+      "FIM production integration",
+      "automatic read-only fan-out",
+      "broader request/reasoning/cache optimization"
+    ],
+    "required_successors": [
+      "canonical DeepSeek Anthropic Messages transport cutover requested by the user",
+      "single TaskGraph product cutover and Fleet/Lane duplicate-concept deletion",
+      "V1-scope decision for multi-Writer and RepoGraph backed by current tasks",
+      "imported-baseline real coding and workflow-complexity A/B",
+      "new billing-provable Chinese prompt successor"
+    ]
+  }
+}
