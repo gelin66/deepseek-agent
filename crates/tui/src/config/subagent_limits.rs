@@ -10,6 +10,10 @@ pub const DEFAULT_MAX_SUBAGENTS: usize = 64;
 /// above the default so operators can opt into larger API-bound fanout without
 /// code changes while the full resource budget gate lands.
 pub const MAX_SUBAGENTS: usize = 128;
+/// Default recursion budget below a root Agent.
+pub const DEFAULT_SPAWN_DEPTH: u32 = 3;
+/// Hard ceiling for configured child-Agent recursion.
+pub const MAX_SPAWN_DEPTH: u32 = 8;
 /// Default per-SSE-chunk idle timeout, in seconds.
 pub const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 900;
 /// Minimum accepted stream chunk timeout.

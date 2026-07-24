@@ -4,28 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod agent_runtime;
-pub mod fleet;
 pub mod run_api;
 pub mod task;
-
-/// Common trait for lifecycle status enums across the protocol layer.
-///
-/// Every status enum — thread, fleet run, worker, and job status —
-/// implements this trait so generic code can ask three universal questions
-/// without matching on every variant.
-pub trait Status {
-    /// Returns `true` when this status represents a final, non-progressable state
-    /// (e.g. Completed, Failed, Cancelled, Archived, Retired).
-    fn is_terminal(&self) -> bool;
-
-    /// Returns `true` when work is currently in-flight
-    /// (e.g. Running, Active, Busy, Queued, Pending).
-    fn is_active(&self) -> bool;
-
-    /// Returns `true` when the item has been explicitly paused by the user
-    /// or system (e.g. Paused).
-    fn is_paused(&self) -> bool;
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope<T> {
@@ -44,18 +24,6 @@ pub enum ThreadStatus {
     Failed,
     Paused,
     Archived,
-}
-
-impl Status for ThreadStatus {
-    fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Archived)
-    }
-    fn is_active(&self) -> bool {
-        matches!(self, Self::Running)
-    }
-    fn is_paused(&self) -> bool {
-        matches!(self, Self::Paused)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -719,7 +719,7 @@ impl Secrets {
 
     /// Resolve a secret by key name with an optional source constraint.
     ///
-    /// This is the fleet-worker secret resolution path. Unlike
+    /// This is the exact-key secret resolution path. Unlike
     /// [`resolve`](Secrets::resolve), this does NOT map provider names
     /// to their canonical env vars — the caller controls the exact key
     /// and resolution order.

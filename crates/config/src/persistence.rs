@@ -1,5 +1,5 @@
 //! Transactional persistence, atomic writes, and secret redaction for the
-//! v0.8.67 constitution-first setup lane (#3410).
+//! constitution-first setup flow (#3410).
 //!
 //! This is the safety layer under every setup step. A setup session may touch
 //! several files (the setup-state sidecar, the user-global constitution, and —

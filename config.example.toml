@@ -65,43 +65,6 @@ max_depth = 3
 [search]
 provider = "duckduckgo"
 
-# Fleet workers use the same AgentRuntime and fixed DeepSeek backend.
-[fleet]
-default_trust_level = "sandbox"
-require_identity_verification = true
-max_trust_level = "operator"
-
-[fleet.exec]
-allowed_tools = []
-disallowed_tools = []
-max_turns = 4294967295
-max_spawn_depth = 3
-append_system_prompt = ""
-output_format = "text"
-
-[fleet.roles.reviewer]
-description = "Read-only code and documentation review"
-tool_profile = "read-only"
-timeout_seconds = 600
-
-# A Fleet profile may pin only an official DeepSeek model. Provider pins were
-# deleted; absence of `model` inherits the run's model.
-[fleet.profiles.scout]
-slot = "scout"
-role = "scout"
-loadout = "fast"
-model = "deepseek-v4-flash"
-reasoning_effort = "high"
-
-[fleet.profiles.scout.permissions]
-allow_shell = false
-trust = false
-approval_required = true
-
-[fleet.profiles.scout.delegation]
-max_spawn_depth = 2
-max_concurrency = 2
-
 # Named profiles may override non-model TUI/local settings only. They cannot
 # contain api_key, base_url, default_text_model, provider, or providers tables.
 [profiles.quiet]
@@ -109,5 +72,5 @@ verbosity = "concise"
 allow_shell = false
 
 # Project-local `.codewhale/config.toml` is untrusted. It may tighten approval
-# and sandbox posture and set safe local tool/Fleet values, but cannot change
+# and sandbox posture and set safe local tool values, but cannot change
 # credentials, endpoint, model, telemetry, or provider identity.

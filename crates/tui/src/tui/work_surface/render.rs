@@ -151,7 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     .split_once(':')
                     .map(|(kind, _)| match kind {
                         "task" => format!("{} · ", app.tr(MessageId::SidebarTasksLabel)),
-                        "worker" => format!("{} · ", app.tr(MessageId::FleetRosterWorkers)),
+                        "worker" => format!("{} · ", app.tr(MessageId::SidebarWorkersLabel)),
                         _ => String::new(),
                     })
                     .unwrap_or_default()

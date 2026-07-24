@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::fleet::{FleetConfigToml, ToolsToml};
 use crate::paths::{
     checked_path_exists, normalize_config_file_path, normalize_project_workspace,
     read_checked_config_file, reject_path_symlink, resolve_config_path,
@@ -20,6 +19,17 @@ use crate::{CONFIG_FILE_NAME, Secrets, persistence};
 
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 900;
+const MIN_STREAM_CHUNK_TIMEOUT_SECS: u64 = 1;
+const MAX_STREAM_CHUNK_TIMEOUT_SECS: u64 = 3600;
+
+/// On-disk schema for the canonical native-tool configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsToml {
+    /// Native tool names to keep loaded outside the default core catalog.
+    #[serde(default)]
+    pub always_load: Vec<String>,
+}
 
 const RETIRED_ROOT_KEYS: &[&str] = &[
     "apiKey",
@@ -42,6 +52,7 @@ const RETIRED_ROOT_KEYS: &[&str] = &[
     "harness_profiles",
     "model_catalog",
     "models",
+    "fleet",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -69,8 +80,6 @@ pub struct ConfigToml {
     pub sandbox_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsToml>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet: Option<FleetConfigToml>,
     /// Non-model TUI and local-development settings keep their existing owner.
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
@@ -120,9 +129,6 @@ impl ConfigToml {
         }
         if project.tools.is_some() {
             self.tools = project.tools;
-        }
-        if project.fleet.is_some() {
-            self.fleet = project.fleet;
         }
     }
 
@@ -252,9 +258,6 @@ impl ConfigToml {
 
     #[must_use]
     pub fn stream_chunk_timeout_secs(&self) -> u64 {
-        const DEFAULT: u64 = crate::fleet::DEFAULT_STREAM_CHUNK_TIMEOUT_SECS;
-        const MIN: u64 = crate::fleet::MIN_STREAM_CHUNK_TIMEOUT_SECS;
-        const MAX: u64 = crate::fleet::MAX_STREAM_CHUNK_TIMEOUT_SECS;
         let raw = self
             .extras
             .get("tui")
@@ -271,11 +274,11 @@ impl ConfigToml {
                     .get("stream_chunk_timeout_secs")
                     .and_then(toml_value_as_u64)
             })
-            .unwrap_or(DEFAULT);
+            .unwrap_or(DEFAULT_STREAM_CHUNK_TIMEOUT_SECS);
         if raw == 0 {
-            DEFAULT
+            DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
         } else {
-            raw.clamp(MIN, MAX)
+            raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
         }
     }
 

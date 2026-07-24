@@ -1076,7 +1076,7 @@ fn status_classifier_does_not_paint_negated_success_green() {
     assert_ne!(level, StatusToastLevel::Success);
 
     // Genuine successes still classify green.
-    let (level, _, _) = App::classify_status_text("Fleet profile saved: reviewer.toml");
+    let (level, _, _) = App::classify_status_text("Agent task saved: reviewer.toml");
     assert_eq!(level, StatusToastLevel::Success);
 
     // Both cancel spellings classify as Warning.

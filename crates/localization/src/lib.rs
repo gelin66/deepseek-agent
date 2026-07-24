@@ -22,8 +22,6 @@ pub enum MessageId {
     CliCommandInit,
     CliCommandSetup,
     CliCommandExec,
-    CliCommandFleet,
-    CliCommandLane,
     CliCommandMcp,
     CliCommandFeatures,
     CliCommandCompletions,
@@ -110,7 +108,6 @@ pub enum MessageId {
     DoctorSetupSource,
     DoctorFirstRun,
     DoctorUpdateCheckpoint,
-    DoctorOperateFleet,
     DoctorConstitutionAutonomy,
     DoctorRuntimePosture,
     DoctorNextActions,
@@ -426,8 +423,7 @@ pub enum MessageId {
     ChipPermissionAutoApprove,
     // Underwater post-launch empty state.
     EmptyStateMcpLabel,
-    // Fleet roster room.
-    FleetRosterWorkers,
+    SidebarWorkersLabel,
     // Sidebar work strip.
     SidebarTasksLabel,
     // Composer slash menu.
@@ -471,8 +467,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CliCommandInit,
     MessageId::CliCommandSetup,
     MessageId::CliCommandExec,
-    MessageId::CliCommandFleet,
-    MessageId::CliCommandLane,
     MessageId::CliCommandMcp,
     MessageId::CliCommandFeatures,
     MessageId::CliCommandCompletions,
@@ -559,7 +553,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::DoctorSetupSource,
     MessageId::DoctorFirstRun,
     MessageId::DoctorUpdateCheckpoint,
-    MessageId::DoctorOperateFleet,
     MessageId::DoctorConstitutionAutonomy,
     MessageId::DoctorRuntimePosture,
     MessageId::DoctorNextActions,
@@ -862,7 +855,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ChipPermissionAsk,
     MessageId::ChipPermissionAutoApprove,
     MessageId::EmptyStateMcpLabel,
-    MessageId::FleetRosterWorkers,
+    MessageId::SidebarWorkersLabel,
     MessageId::SidebarTasksLabel,
     MessageId::ComposerSlashMenuHint,
     MessageId::HistoryReasoningTitle,

@@ -516,13 +516,13 @@ fn workspace_mcp_config_counts_global_and_project_servers() {
 #[test]
 fn plugin_mcp_servers_are_qualified_and_resolve_relative_cwd() {
     let dir = tempfile::tempdir().unwrap();
-    let plugin_base = dir.path().join("plugins").join("fleet");
+    let plugin_base = dir.path().join("plugins").join("sample");
     fs::create_dir_all(&plugin_base).unwrap();
 
     let manifest = toml::from_str::<crate::plugins::manifest::PluginManifest>(
         r#"
 [plugin]
-name = "fleet"
+name = "sample"
 
 [mcp_servers.local]
 command = "node"
@@ -545,12 +545,12 @@ url = "https://example.invalid/mcp"
         serde_json::from_str(r#"{"command":"node","args":["global.js"]}"#).unwrap(),
     );
 
-    let cfg =
-        merge_plugin_mcp_servers_from_plugins(config, vec![("fleet".to_string(), plugin)]).unwrap();
+    let cfg = merge_plugin_mcp_servers_from_plugins(config, vec![("sample".to_string(), plugin)])
+        .unwrap();
 
     assert!(cfg.servers.contains_key("global"));
 
-    let local = cfg.servers.get("fleet-local").unwrap();
+    let local = cfg.servers.get("sample-local").unwrap();
     assert_eq!(local.command.as_deref(), Some("node"));
     assert_eq!(local.args, vec!["server.js"]);
     assert_eq!(
@@ -558,7 +558,7 @@ url = "https://example.invalid/mcp"
         Some(plugin_base.join("servers/local").as_path())
     );
 
-    let remote = cfg.servers.get("fleet-remote").unwrap();
+    let remote = cfg.servers.get("sample-remote").unwrap();
     assert_eq!(remote.url.as_deref(), Some("https://example.invalid/mcp"));
     assert!(remote.cwd.is_none());
 }

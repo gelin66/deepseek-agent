@@ -1,5 +1,4 @@
 mod deepseek;
-mod fleet;
 mod paths;
 
 pub mod persistence;
@@ -9,7 +8,6 @@ pub mod user_constitution;
 
 pub use codewhale_secrets::Secrets;
 pub use deepseek::*;
-pub use fleet::*;
 pub use paths::*;
 pub use prompt_preferences::{
     PromptPreferences, SettingsSource, load_prompt_preferences, load_settings_source, settings_path,

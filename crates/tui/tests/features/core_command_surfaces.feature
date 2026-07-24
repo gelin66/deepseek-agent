@@ -22,9 +22,7 @@ Feature: Core command visible surfaces
     Then the message window should include "模型已切换："
     And the message window should include "auto"
 
-  Scenario: Persistent work commands report visible dispatch requests
+  Scenario: Canonical child work reports a visible dispatch request
     Given a CodeWhale core command workspace
     When the user runs the core command "/agent 2 summarize logs"
     Then the message window should include "Opening persistent sub-agent at depth 2"
-    When the user runs the core command "/fleet help"
-    Then the message window should include "/fleet status shows live Fleet worker status"

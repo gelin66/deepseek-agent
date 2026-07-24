@@ -122,5 +122,13 @@ fn m8a_shipped_example_loads_through_the_interactive_entry() {
     let config = apply_profile(parsed, None).unwrap();
     config.validate().unwrap();
     assert_eq!(config.default_model(), "deepseek-v4-pro");
-    assert!(config.fleet.is_some());
+    assert!(!config.extra.contains_key("fleet"));
+}
+
+#[test]
+fn m8g_interactive_config_rejects_retired_fleet_table() {
+    let parsed: ConfigFile = toml::from_str("[fleet]\nmax_workers = 4\n").unwrap();
+    let config = apply_profile(parsed, None).unwrap();
+    let error = config.validate().expect_err("fleet table must be retired");
+    assert!(error.to_string().contains("fleet"));
 }

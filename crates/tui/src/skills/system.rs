@@ -10,7 +10,6 @@ const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md"
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
 const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
 const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
-const FLEET_MANAGER_BODY: &str = include_str!("../../assets/skills/fleet-manager/SKILL.md");
 const DOCUMENTS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
 const PRESENTATIONS_BODY: &str = include_str!("../../assets/skills/presentations/SKILL.md");
 const SPREADSHEETS_BODY: &str = include_str!("../../assets/skills/spreadsheets/SKILL.md");
@@ -48,11 +47,6 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "mcp-builder",
         body: MCP_BUILDER_BODY,
         introduced_in: 3,
-    },
-    BundledSkill {
-        name: "fleet-manager",
-        body: FLEET_MANAGER_BODY,
-        introduced_in: 4,
     },
     BundledSkill {
         name: "documents",

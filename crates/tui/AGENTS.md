@@ -44,7 +44,7 @@ The default shell is the underwater system (`src/tui/underwater.rs`,
   `ALL_MESSAGE_IDS` entry, and `zh-Hans.json` key; the exact-parity test keeps
   those three sources synchronized. See `locales/AGENTS.md`.
 - Glyphs (`▸ · ▾ ─`), key names (`Enter`, `Alt+?`), and commands
-  (`/fleet setup`) are composed in code, not embedded in translations.
+  (`/agent`) are composed in code, not embedded in translations.
 - Protocol values, config keys, tool names, paths, source code, and raw tool
   output remain in their native machine-facing form.
 

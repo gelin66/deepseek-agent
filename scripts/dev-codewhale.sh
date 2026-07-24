@@ -29,7 +29,7 @@ test_args=(-p codewhale-tui --bin codewhale-tui --locked)
 
 run_focused_tests() {
   local filters=(
-    "fleet::worker_runtime::tests"
+    "m8a_deepseek_only_entry_tests::taskgraph_cutover"
     "tui::canonical_commands::tests"
     "tui::run_client::tests"
     "tui::run_projection::tests"

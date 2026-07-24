@@ -1387,7 +1387,7 @@ fn render(f: &mut Frame, app: &mut App) {
     crate::tui::underwater::render_header(header_area, f.buffer_mut(), app);
 
     // Render the transcript. The canonical work surface owns task and worker
-    // facts, Fleet owns `/fleet`, and dense context owns its inspector.
+    // facts, canonical child runs own Agent activity, and dense context owns its inspector.
     let shell_ocean;
     {
         // Defensive backstop (#400): fill the entire body area with ink

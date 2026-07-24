@@ -33,7 +33,6 @@ mod exec_output;
 mod exec_runtime;
 mod execpolicy;
 mod features;
-mod fleet;
 mod hashing;
 mod logging;
 mod mcp;
@@ -186,8 +185,6 @@ enum Commands {
     Logout,
     /// Run a non-interactive prompt. Use --auto for agent-with-tools mode.
     Exec(ExecArgs),
-    /// Manage local Agent Fleet runs and workers
-    Fleet(FleetArgs),
     /// Open the TUI pre-seeded with a GitHub PR's title, body, and diff
     Pr {
         /// PR number
@@ -409,136 +406,6 @@ fn resolve_exec_allowed_tools(
     }
 
     env_tool_surface.map(|ExecToolSurface::ShellOnly| shell_only_exec_allowed_tools())
-}
-
-#[derive(Args, Debug, Clone)]
-struct FleetArgs {
-    #[command(subcommand)]
-    command: FleetCommand,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-enum FleetCommand {
-    /// Initialize the local fleet ledger for this workspace
-    Init,
-    /// Create a run from a task spec and start the foreground manager loop
-    Run(FleetRunArgs),
-    /// Show queued/running/completed/failed/stale fleet counts
-    Status,
-    /// Inspect one worker's status, heartbeat, latest event, and artifacts
-    Inspect {
-        /// Worker id printed by `codewhale fleet run`
-        worker_id: String,
-    },
-    /// Print bounded log artifacts for one worker
-    Logs {
-        /// Worker id printed by `codewhale fleet run`
-        worker_id: String,
-    },
-    /// List artifact refs for one worker
-    Artifacts {
-        /// Worker id printed by `codewhale fleet run`
-        worker_id: String,
-    },
-    /// Interrupt a running worker task and record a terminal cancellation
-    Interrupt {
-        /// Worker id printed by `codewhale fleet run`
-        worker_id: String,
-    },
-    /// Restart the latest task for a worker
-    Restart {
-        /// Worker id printed by `codewhale fleet run`
-        worker_id: String,
-    },
-    /// Resume a run from durable ledger state, reconciling orphaned/stale leases
-    Resume {
-        /// Run id printed by `codewhale fleet run`
-        run_id: String,
-        /// Seconds without heartbeat before a leased task is treated as stale
-        #[arg(long, default_value_t = 300)]
-        stale_after_seconds: u64,
-    },
-    /// Stop all queued and running fleet work
-    Stop {
-        /// Confirm stopping all queued and running fleet tasks
-        #[arg(long, required = true)]
-        all: bool,
-    },
-    /// Render a redacted fleet alert payload without sending it
-    AlertDryRun(FleetAlertDryRunArgs),
-}
-
-#[derive(Args, Debug, Clone)]
-struct FleetRunArgs {
-    /// JSON or TOML task spec to enqueue
-    #[arg(value_name = "TASK_SPEC")]
-    task_spec: PathBuf,
-    /// Maximum local workers to lease concurrently
-    #[arg(long, default_value_t = 4)]
-    max_workers: usize,
-    /// Seconds without heartbeat before a running task is counted stale
-    #[arg(long, default_value_t = 300)]
-    stale_after_seconds: u64,
-    /// Schedule once and return instead of staying in the manager loop
-    #[arg(long, hide = true, default_value_t = false)]
-    once: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-struct FleetAlertDryRunArgs {
-    /// Alert event class to render
-    #[arg(long, value_enum)]
-    event: FleetAlertEventArg,
-    /// Fleet run id
-    #[arg(long)]
-    run_id: String,
-    /// Worker id, when the event belongs to one worker
-    #[arg(long)]
-    worker_id: Option<String>,
-    /// Task id, when the event belongs to one task
-    #[arg(long)]
-    task_id: Option<String>,
-    /// Short human-readable reason for the alert
-    #[arg(long, default_value = "manual fleet alert dry-run")]
-    reason: String,
-    /// Status label to include in the payload
-    #[arg(long)]
-    status: Option<String>,
-    /// Adapter payload shape to render
-    #[arg(long, value_enum, default_value_t = FleetAlertAdapterArg::Slack)]
-    adapter: FleetAlertAdapterArg,
-    /// Environment variable containing the Slack webhook URL
-    #[arg(long, default_value = "CODEWHALE_FLEET_SLACK_WEBHOOK")]
-    slack_webhook_env: String,
-    /// Environment variable containing the generic webhook URL
-    #[arg(long, default_value = "CODEWHALE_FLEET_WEBHOOK_URL")]
-    webhook_url_env: String,
-    /// Optional environment variable containing the generic webhook secret
-    #[arg(long)]
-    webhook_secret_env: Option<String>,
-    /// Environment variable containing the PagerDuty routing key
-    #[arg(long, default_value = "CODEWHALE_FLEET_PAGERDUTY_ROUTING_KEY")]
-    pagerduty_routing_key_env: String,
-    /// PagerDuty severity to render
-    #[arg(long, default_value = "error")]
-    pagerduty_severity: String,
-}
-
-#[derive(ValueEnum, Debug, Clone, Copy)]
-enum FleetAlertEventArg {
-    Stale,
-    RestartExhausted,
-    NeedsHuman,
-    BudgetExceeded,
-    VerifierFailed,
-    RunCompleted,
-}
-
-#[derive(ValueEnum, Debug, Clone, Copy)]
-enum FleetAlertAdapterArg {
-    Slack,
-    Webhook,
-    PagerDuty,
 }
 
 /// Spawn a tokio task that listens for terminating signals (SIGINT
@@ -1017,7 +884,6 @@ fn tui_command_message(name: &str) -> Option<MessageId> {
         "login" => MessageId::CliCommandLogin,
         "logout" => MessageId::CliCommandLogout,
         "exec" => MessageId::CliCommandExec,
-        "fleet" => MessageId::CliCommandFleet,
         "pr" => MessageId::CliCommandPr,
         "mcp" => MessageId::CliCommandMcp,
         "execpolicy" => MessageId::CliCommandExecPolicy,
@@ -1222,7 +1088,7 @@ fn run_main() -> Result<()> {
     }));
 
     // The interactive runtime intentionally carries a large state machine:
-    // terminal rendering, modal dispatch, DeepSeek authentication, and fleet/workflow
+    // terminal rendering, modal dispatch, DeepSeek authentication, and Agent execution
     // events all share one async owner. Debug builds retain enough stack
     // temporaries that nesting a modal event over the TUI loop can exceed the
     // platform main-thread default (8 MiB on macOS). Give that owner an
@@ -1386,11 +1252,6 @@ async fn run_async_main() -> Result<()> {
                 )
                 .await
             }
-            Commands::Fleet(args) => {
-                let config = load_config_from_cli(&cli)?;
-                let workspace = resolve_workspace(&cli);
-                run_fleet_command(&workspace, &config, args).await
-            }
             Commands::Pr {
                 number,
                 repo,
@@ -1459,398 +1320,6 @@ fn generate_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(shell, &mut cmd, name, &mut io::stdout());
-}
-
-async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -> Result<()> {
-    use crate::fleet::alerts::{
-        FleetAlertAdapterConfig, FleetAlertConfig, FleetAlertDispatcher, FleetAlertEvent,
-        FleetEnvSecretResolver,
-    };
-    use crate::fleet::executor::FleetExecutor;
-    use crate::fleet::manager::{FleetManager, FleetStatusSnapshot, FleetWorkerInspection};
-    use codewhale_protocol::fleet::{
-        FleetAlertEventClass, FleetArtifactKind, FleetRunId, FleetWorkerEventPayload,
-        FleetWorkerStatus,
-    };
-
-    fn worker_status_label(status: &FleetWorkerStatus) -> &'static str {
-        match status {
-            FleetWorkerStatus::Unknown => "unknown",
-            FleetWorkerStatus::Online => "online",
-            FleetWorkerStatus::Busy => "busy",
-            FleetWorkerStatus::Offline => "offline",
-            FleetWorkerStatus::Unhealthy => "unhealthy",
-            FleetWorkerStatus::Draining => "draining",
-            FleetWorkerStatus::Retired => "retired",
-        }
-    }
-
-    fn artifact_kind_label(kind: &FleetArtifactKind) -> String {
-        match kind {
-            FleetArtifactKind::Log => "log".to_string(),
-            FleetArtifactKind::Patch => "patch".to_string(),
-            FleetArtifactKind::TestResult => "test_result".to_string(),
-            FleetArtifactKind::Report => "report".to_string(),
-            FleetArtifactKind::Checkpoint => "checkpoint".to_string(),
-            FleetArtifactKind::Receipt => "receipt".to_string(),
-            FleetArtifactKind::Other(value) => value.clone(),
-        }
-    }
-
-    fn event_label(payload: &FleetWorkerEventPayload) -> String {
-        match payload {
-            FleetWorkerEventPayload::Queued => "queued".to_string(),
-            FleetWorkerEventPayload::Leased { .. } => "leased".to_string(),
-            FleetWorkerEventPayload::Starting => "starting".to_string(),
-            FleetWorkerEventPayload::Running => "running".to_string(),
-            FleetWorkerEventPayload::ModelWait { model } => model
-                .as_ref()
-                .map(|model| format!("model_wait model={model}"))
-                .unwrap_or_else(|| "model_wait".to_string()),
-            FleetWorkerEventPayload::RunningTool { tool, call_id } => call_id
-                .as_ref()
-                .map(|call_id| format!("running_tool tool={tool} call_id={call_id}"))
-                .unwrap_or_else(|| format!("running_tool tool={tool}")),
-            FleetWorkerEventPayload::Heartbeat { .. } => "heartbeat".to_string(),
-            FleetWorkerEventPayload::Artifact(artifact) => {
-                format!("artifact kind={}", artifact_kind_label(&artifact.kind))
-            }
-            FleetWorkerEventPayload::Completed { exit_code, summary } => match (exit_code, summary)
-            {
-                (Some(code), Some(summary)) => format!("completed exit_code={code} {summary}"),
-                (Some(code), None) => format!("completed exit_code={code}"),
-                (None, Some(summary)) => format!("completed {summary}"),
-                (None, None) => "completed".to_string(),
-            },
-            FleetWorkerEventPayload::Failed {
-                reason,
-                recoverable,
-            } => {
-                format!("failed recoverable={recoverable} reason={reason}")
-            }
-            FleetWorkerEventPayload::Cancelled { cancelled_by } => cancelled_by
-                .as_ref()
-                .map(|by| format!("cancelled by={by}"))
-                .unwrap_or_else(|| "cancelled".to_string()),
-            FleetWorkerEventPayload::Interrupted { signal } => signal
-                .as_ref()
-                .map(|signal| format!("interrupted signal={signal}"))
-                .unwrap_or_else(|| "interrupted".to_string()),
-            FleetWorkerEventPayload::Stale { last_heartbeat_at } => last_heartbeat_at
-                .as_ref()
-                .map(|ts| format!("stale last_heartbeat_at={ts}"))
-                .unwrap_or_else(|| "stale".to_string()),
-            FleetWorkerEventPayload::Restarted { restart_count } => {
-                format!("restarted count={restart_count}")
-            }
-            FleetWorkerEventPayload::Escalated { channel, alert_id } => alert_id
-                .as_ref()
-                .map(|alert_id| format!("escalated channel={channel} alert_id={alert_id}"))
-                .unwrap_or_else(|| format!("escalated channel={channel}")),
-        }
-    }
-
-    fn print_status(status: &FleetStatusSnapshot) {
-        println!(
-            "fleet: runs={} queued={} running={} completed={} partial={} failed={} restarted={} escalated={} transport_failed={} task_failed={} verifier_failed={} cancelled={} stale={}",
-            status.runs,
-            status.queued,
-            status.running,
-            status.completed,
-            status.partial,
-            status.failed,
-            status.restarted,
-            status.escalated,
-            status.transport_failed,
-            status.task_failed,
-            status.verifier_failed,
-            status.cancelled,
-            status.stale
-        );
-        if !status.workers.is_empty() {
-            println!("workers:");
-            for (worker_id, worker_status) in &status.workers {
-                println!("  {worker_id} {}", worker_status_label(worker_status));
-            }
-        }
-    }
-
-    fn print_inspection(inspection: &FleetWorkerInspection) {
-        println!("worker: {}", inspection.worker_id);
-        println!("status: {}", worker_status_label(&inspection.status));
-        if let Some(run_id) = &inspection.current_run_id {
-            println!("run: {}", run_id.0);
-        }
-        if let Some(task_id) = &inspection.current_task_id {
-            println!("task: {task_id}");
-        }
-        if let Some(objective) = &inspection.objective {
-            println!("objective: {objective}");
-        }
-        if let Some(role) = &inspection.role {
-            println!("role: {role}");
-        }
-        if let Some(host) = &inspection.host {
-            println!("host: {host}");
-        }
-        if let Some(heartbeat) = &inspection.latest_heartbeat_at {
-            println!("heartbeat: {heartbeat}");
-        }
-        if let Some(event) = &inspection.latest_event {
-            println!(
-                "latest_event: seq={} {}",
-                event.seq,
-                event_label(&event.payload)
-            );
-        }
-        if !inspection.artifacts.is_empty() {
-            println!("artifacts:");
-            for artifact in &inspection.artifacts {
-                println!(
-                    "  {} {}",
-                    artifact_kind_label(&artifact.kind),
-                    artifact.path.display()
-                );
-            }
-        }
-        if let Some(receipt) = &inspection.receipt_summary {
-            println!("receipt: {receipt}");
-        }
-        if let Some(error) = &inspection.last_error {
-            println!("last_error: {error}");
-        }
-        if let Some(alert) = &inspection.alert_state {
-            println!("alert: {alert}");
-        }
-    }
-
-    fn print_artifacts(inspection: &FleetWorkerInspection) {
-        if inspection.artifacts.is_empty() {
-            println!("artifacts: none");
-            return;
-        }
-        println!("artifacts:");
-        for artifact in &inspection.artifacts {
-            let size = artifact
-                .size_bytes
-                .map(|size| format!(" size={size}"))
-                .unwrap_or_default();
-            let mime = artifact
-                .mime_type
-                .as_ref()
-                .map(|mime| format!(" mime={mime}"))
-                .unwrap_or_default();
-            println!(
-                "  {} {}{}{}",
-                artifact_kind_label(&artifact.kind),
-                artifact.path.display(),
-                size,
-                mime
-            );
-        }
-    }
-
-    fn print_logs(workspace: &Path, inspection: &FleetWorkerInspection) -> Result<()> {
-        let mut printed = false;
-        for artifact in inspection
-            .artifacts
-            .iter()
-            .filter(|artifact| matches!(artifact.kind, FleetArtifactKind::Log))
-        {
-            let path = workspace.join(&artifact.path);
-            println!("== {} ==", artifact.path.display());
-            let contents = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading fleet log {}", path.display()))?;
-            let preview: String = contents.chars().take(16 * 1024).collect();
-            print!("{preview}");
-            if contents.chars().count() > preview.chars().count() {
-                println!("\n[truncated]");
-            } else if !preview.ends_with('\n') {
-                println!();
-            }
-            printed = true;
-        }
-        if !printed {
-            println!("logs: none");
-        }
-        Ok(())
-    }
-
-    fn alert_event_class(arg: FleetAlertEventArg) -> FleetAlertEventClass {
-        match arg {
-            FleetAlertEventArg::Stale => FleetAlertEventClass::Stale,
-            FleetAlertEventArg::RestartExhausted => FleetAlertEventClass::RestartExhausted,
-            FleetAlertEventArg::NeedsHuman => FleetAlertEventClass::NeedsHuman,
-            FleetAlertEventArg::BudgetExceeded => FleetAlertEventClass::BudgetExceeded,
-            FleetAlertEventArg::VerifierFailed => FleetAlertEventClass::VerifierFailed,
-            FleetAlertEventArg::RunCompleted => FleetAlertEventClass::RunCompleted,
-        }
-    }
-
-    fn alert_status(class: FleetAlertEventClass, override_status: Option<String>) -> String {
-        if let Some(status) = override_status {
-            return status;
-        }
-        match class {
-            FleetAlertEventClass::Stale => "stale",
-            FleetAlertEventClass::RestartExhausted => "failed",
-            FleetAlertEventClass::NeedsHuman => "needs_human",
-            FleetAlertEventClass::BudgetExceeded => "budget_exceeded",
-            FleetAlertEventClass::VerifierFailed => "verifier_failed",
-            FleetAlertEventClass::RunCompleted => "completed",
-        }
-        .to_string()
-    }
-
-    fn alert_adapter(args: &FleetAlertDryRunArgs) -> FleetAlertAdapterConfig {
-        match args.adapter {
-            FleetAlertAdapterArg::Slack => FleetAlertAdapterConfig::Slack {
-                webhook_env: args.slack_webhook_env.clone(),
-                channel: None,
-            },
-            FleetAlertAdapterArg::Webhook => FleetAlertAdapterConfig::Webhook {
-                url_env: args.webhook_url_env.clone(),
-                secret_env: args.webhook_secret_env.clone(),
-            },
-            FleetAlertAdapterArg::PagerDuty => FleetAlertAdapterConfig::PagerDuty {
-                routing_key_env: args.pagerduty_routing_key_env.clone(),
-                severity: args.pagerduty_severity.clone(),
-            },
-        }
-    }
-
-    fn fleet_codewhale_binary() -> String {
-        std::env::var("CODEWHALE_FLEET_CODEWHALE_BINARY")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "codewhale".to_string())
-    }
-
-    let fleet_config = config.fleet_config();
-    // The configured route is the operator: fleet workers without a
-    // task/profile model pin inherit the session's active model.
-    let manager = FleetManager::open(workspace)?
-        .with_exec_config(fleet_config.exec.clone())
-        .with_fleet_config(fleet_config)
-        .with_session_model(config.default_model());
-    match args.command {
-        FleetCommand::Init => {
-            println!("fleet ledger: {}", manager.ledger_path().display());
-            Ok(())
-        }
-        FleetCommand::Run(args) => {
-            let max_workers = args.max_workers.clamp(1, 128);
-            let manager =
-                manager.with_stale_after(Duration::from_secs(args.stale_after_seconds.max(1)));
-            let report = manager.create_run_from_task_spec_path(&args.task_spec, max_workers)?;
-            println!(
-                "fleet run: {} tasks={} leased={} queued={}",
-                report.run_id.0, report.task_count, report.leased, report.queued
-            );
-            println!("workers:");
-            for worker_id in &report.worker_ids {
-                println!("  {worker_id}");
-            }
-            if args.once {
-                print_status(&manager.run_status(&report.run_id)?);
-                return Ok(());
-            }
-            println!(
-                "manager loop running; use `codewhale fleet status`, `inspect`, `interrupt`, or `stop --all` from another terminal."
-            );
-            let mut executor = FleetExecutor::new(workspace);
-            let codewhale_binary = fleet_codewhale_binary();
-            let status = manager
-                .run_to_completion(
-                    &report.run_id,
-                    max_workers,
-                    &mut executor,
-                    &codewhale_binary,
-                    None,
-                    Duration::from_secs(2),
-                )
-                .await?;
-            print_status(&status);
-            Ok(())
-        }
-        FleetCommand::Status => {
-            print_status(&manager.status()?);
-            Ok(())
-        }
-        FleetCommand::Inspect { worker_id } => {
-            print_inspection(&manager.inspect_worker(&worker_id)?);
-            Ok(())
-        }
-        FleetCommand::Logs { worker_id } => {
-            let inspection = manager.inspect_worker(&worker_id)?;
-            print_logs(workspace, &inspection)
-        }
-        FleetCommand::Artifacts { worker_id } => {
-            let inspection = manager.inspect_worker(&worker_id)?;
-            print_artifacts(&inspection);
-            Ok(())
-        }
-        FleetCommand::Interrupt { worker_id } => {
-            let inspection = manager.interrupt_worker(&worker_id)?;
-            print_inspection(&inspection);
-            Ok(())
-        }
-        FleetCommand::Restart { worker_id } => {
-            let inspection = manager.restart_worker(&worker_id)?;
-            print_inspection(&inspection);
-            Ok(())
-        }
-        FleetCommand::Resume {
-            run_id,
-            stale_after_seconds,
-        } => {
-            let manager = manager.with_stale_after(Duration::from_secs(stale_after_seconds.max(1)));
-            let report = manager.resume_run(&FleetRunId::from(run_id))?;
-            println!(
-                "fleet resume: {} reclaimed_stale={} restarted={} failed={} escalated={}",
-                report.run_id.0,
-                report.reclaimed_stale,
-                report.restarted,
-                report.failed,
-                report.escalated
-            );
-            print_status(&report.status);
-            Ok(())
-        }
-        FleetCommand::Stop { all } => {
-            if !all {
-                bail!("pass --all to stop all fleet work");
-            }
-            let stopped = manager.stop_all()?;
-            println!("stopped: {stopped}");
-            Ok(())
-        }
-        FleetCommand::AlertDryRun(args) => {
-            let class = alert_event_class(args.event);
-            let adapter = alert_adapter(&args);
-            let event = FleetAlertEvent {
-                class,
-                run_id: FleetRunId::from(args.run_id.clone()),
-                worker_id: args.worker_id.clone(),
-                task_id: args.task_id.clone(),
-                status: alert_status(class, args.status.clone()),
-                reason: args.reason.clone(),
-            };
-            let dispatcher = FleetAlertDispatcher::new(
-                FleetAlertConfig::dry_run_for_adapter(adapter),
-                FleetEnvSecretResolver,
-            );
-            let deliveries = dispatcher.dispatch(&event)?;
-            for delivery in deliveries {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&delivery.redacted_payload)?
-                );
-            }
-            Ok(())
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3119,18 +2588,12 @@ fn print_doctor_setup_report(
 
     let first_run_ready = state.first_run_ready();
     let update_ready = state.update_ready(LEGACY_SETUP_CHECKPOINT_VERSION);
-    let operate_ready = state.operate_ready();
     let first_run_icon = if first_run_ready {
         "✓".truecolor(ok_rgb.0, ok_rgb.1, ok_rgb.2)
     } else {
         "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2)
     };
     let update_icon = if update_ready {
-        "✓".truecolor(ok_rgb.0, ok_rgb.1, ok_rgb.2)
-    } else {
-        "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2)
-    };
-    let operate_icon = if operate_ready {
         "✓".truecolor(ok_rgb.0, ok_rgb.1, ok_rgb.2)
     } else {
         "!".truecolor(warn_rgb.0, warn_rgb.1, warn_rgb.2)
@@ -3157,11 +2620,6 @@ fn print_doctor_setup_report(
         tr(MessageId::DoctorUpdateCheckpoint)
             .replace("{version}", LEGACY_SETUP_CHECKPOINT_VERSION)
             .replace("{status}", doctor_ready_label(update_ready).as_ref())
-    );
-    println!(
-        "  {operate_icon} {}",
-        tr(MessageId::DoctorOperateFleet)
-            .replace("{status}", doctor_ready_label(operate_ready).as_ref())
     );
     println!(
         "  · {}",
@@ -3359,7 +2817,7 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     )
 }
 
-fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_json::Value {
+fn doctor_task_graph_report_json(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
     let has_credentials_or_local = crate::config::has_api_key(config);
@@ -3370,24 +2828,14 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
         Some(config.subagents_disabled_reason().unwrap_or("disabled"))
     };
     let max_subagents = config.max_subagents();
-    let roster = crate::fleet::roster::FleetRoster::load(&config.fleet_config(), workspace);
-    let mut built_in_members = 0usize;
-    let mut config_members = 0usize;
-    let mut workspace_members = 0usize;
-    for member in roster.members() {
-        match member.origin {
-            crate::fleet::roster::ProfileOrigin::BuiltIn => built_in_members += 1,
-            crate::fleet::roster::ProfileOrigin::Config => config_members += 1,
-            crate::fleet::roster::ProfileOrigin::Workspace => workspace_members += 1,
-        }
-    }
-    let roster_members = roster.members().len();
-    let custom_members = config_members + workspace_members;
-    let roster_ready = roster_members > 0;
-    let runtime_ready = subagents_enabled;
 
     json!({
-        "ready": has_credentials_or_local && runtime_ready && roster_ready,
+        "ready": has_credentials_or_local && subagents_enabled,
+        "owner": {
+            "runtime": "AgentRuntime",
+            "persistent_truth": "RunStore",
+            "writer_workspace_side_effects": "ProductionAgentOrchestrator",
+        },
         "provider": {
             "id": crate::config::DEEPSEEK_PROVIDER_ID,
             "auth": {
@@ -3395,26 +2843,20 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
                 "source": doctor_api_key_source_label(resolve_api_key_source(config)),
             },
         },
-        "worker_runtime": {
-            "ready": runtime_ready,
+        "actors": {
+            "root": true,
+            "read_only_child": subagents_enabled,
+            "explicit_writer": subagents_enabled,
             "enabled": subagents_enabled,
             "disabled_reason": disabled_reason,
             "max_subagents": max_subagents,
-        },
-        "roster": {
-            "ready": roster_ready,
-            "total": roster_members,
-            "built_in": built_in_members,
-            "config": config_members,
-            "workspace": workspace_members,
-            "custom": custom_members,
-            "starter_roster_available": built_in_members > 0,
-            "readiness_rule": "built-in starter roster or custom roster",
         },
         "concurrency": {
             "max_subagents": max_subagents,
             "plan_limit_probed": false,
         },
+        "remote_fleet": false,
+        "multi_writer": false,
     })
 }
 
@@ -3494,7 +2936,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "checkpoint_version": LEGACY_SETUP_CHECKPOINT_VERSION,
         "first_run_ready": state.first_run_ready(),
         "update_ready": state.update_ready(LEGACY_SETUP_CHECKPOINT_VERSION),
-        "operate_ready": state.operate_ready(),
         "constitution": {
             "choice": constitution_choice_id(state.constitution_choice),
             "source": constitution_source_id(state.constitution_source),
@@ -3525,14 +2966,14 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             },
         },
         "provider_model": doctor_provider_model_report_json(config),
-        "operate_fleet": doctor_operate_fleet_report_json(config, workspace),
+        "task_graph": doctor_task_graph_report_json(config),
         "consistency": doctor_setup_consistency(&state, source),
         "next_actions": {
             "constitution": "/constitution",
             "setup_report": "/setup report",
             "provider_model": "codewhale auth status/set, or /model",
             "runtime_posture": "~/.codewhale/config.toml",
-            "operate_fleet": "/setup fleet (readiness), /fleet setup (explicit profile authoring)",
+            "task_graph": "使用 canonical agent 能力；通过 codewhale runs/resume 查看或恢复运行",
             "tools_mcp": "/setup tools",
             "persistence": "/setup persistence",
         },
@@ -3547,7 +2988,6 @@ fn setup_step_id(step: codewhale_config::SetupStep) -> &'static str {
         codewhale_config::SetupStep::ToolsMcp => "tools_mcp",
         codewhale_config::SetupStep::Persistence => "persistence",
         codewhale_config::SetupStep::Constitution => "constitution",
-        codewhale_config::SetupStep::OperateFleet => "operate_fleet",
         codewhale_config::SetupStep::Verification => "verification",
     }
 }
@@ -5529,6 +4969,16 @@ mod m8a_deepseek_only_entry_tests {
         assert_eq!(route["provider"], "deepseek");
         assert_eq!(route["wire_protocol"], "chat_completions");
         assert_eq!(route["auth"]["scheme"], "bearer");
+    }
+
+    #[test]
+    fn taskgraph_cutover_removes_direct_fleet_shell() {
+        let commands = Cli::command()
+            .get_subcommands()
+            .map(|command| command.get_name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(commands.len(), 14, "{commands:?}");
+        assert!(!commands.iter().any(|command| command == "fleet"));
     }
 }
 

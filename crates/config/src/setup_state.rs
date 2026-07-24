@@ -1,4 +1,4 @@
-//! Unified setup-state model for the v0.8.67 constitution-first setup lane
+//! Unified setup-state model for the constitution-first setup flow
 //! (#3403).
 //!
 //! This is the single record every setup step (#3404–#3412) reads and writes so
@@ -11,7 +11,7 @@
 //! The record holds two things:
 //!
 //! 1. A per-[`SetupStep`] [`StepEntry`] (status, required, safe summary,
-//!    writing lane version).
+//!    writing release version).
 //! 2. The constitution-first fields the wizard, the update checkpoint, and
 //!    `/constitution` all coordinate on.
 //!
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::persistence;
 
 /// Current schema version of the persisted setup-state record.
-pub const SETUP_STATE_SCHEMA_VERSION: u32 = 1;
+pub const SETUP_STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Filename of the setup-state sidecar under `$CODEWHALE_HOME`.
 pub const SETUP_STATE_FILE_NAME: &str = "setup_state.json";
@@ -47,11 +47,7 @@ pub enum SetupStep {
     TrustSandbox,
     /// User-global constitution choice / checkpoint.
     Constitution,
-    /// Operate/Fleet readiness: provider auth, worker runtime, roster, and
-    /// concurrency review. Plan-limit detection remains a separate product
-    /// decision; this step only records reviewed current facts.
-    OperateFleet,
-    /// Tools / MCP / skills / plugins (later lanes; tracked for completeness).
+    /// Tools / MCP / skills / plugins.
     ToolsMcp,
     /// Persistence paths for setup state, config, constitution, memory, and notes.
     Persistence,
@@ -61,11 +57,10 @@ pub enum SetupStep {
 
 impl SetupStep {
     /// All steps in canonical first-run order.
-    pub const ALL: [SetupStep; 7] = [
+    pub const ALL: [SetupStep; 6] = [
         SetupStep::ProviderModel,
         SetupStep::TrustSandbox,
         SetupStep::Constitution,
-        SetupStep::OperateFleet,
         SetupStep::ToolsMcp,
         SetupStep::Persistence,
         SetupStep::Verification,
@@ -118,15 +113,15 @@ impl StepStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepEntry {
     pub status: StepStatus,
-    /// Whether this step blocks "ready" for the lane that owns it. First-run and
-    /// update lanes differ; see the readiness helpers on [`SetupState`].
+    /// Whether this step blocks "ready" for the flow that owns it. First-run
+    /// and update flows differ; see the readiness helpers on [`SetupState`].
     #[serde(default)]
     pub required: bool,
     /// Short, safe human-facing summary — provider name, model id, mode name,
     /// health. **Never a secret.**
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
-    /// Lane (e.g. `"0.8.67"`) that last wrote this entry, so staleness is
+    /// Release (e.g. `"0.8.67"`) that last wrote this entry, so staleness is
     /// visible to `/setup`, `doctor`, and the context report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -184,8 +179,8 @@ impl ConstitutionChoice {
 /// [`ConstitutionChoice::GuidedCustom`] so `/setup`, `doctor`, and the report
 /// can show provenance without parsing free-text step results.
 ///
-/// This is a *new optional field* rather than a new [`ConstitutionChoice`]
-/// variant so records written by this lane still load in older binaries
+/// This is an optional field rather than a new [`ConstitutionChoice`]
+/// variant so records written by the same schema remain structurally stable
 /// (unknown fields are ignored on read; an unknown enum variant would fail the
 /// whole parse and force the inherited-state fallback).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,7 +264,7 @@ pub struct SetupState {
     /// The user's constitution decision.
     #[serde(default)]
     pub constitution_choice: ConstitutionChoice,
-    /// Lane version (e.g. `"0.8.67"`) whose constitution checkpoint the user has
+    /// Release version (e.g. `"0.8.67"`) whose constitution checkpoint the user has
     /// completed. Drives the once-per-version update checkpoint (#3794).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constitution_checkpoint_completed_for: Option<String>,
@@ -294,12 +289,6 @@ pub struct SetupState {
     /// Where the current runtime posture came from.
     #[serde(default)]
     pub runtime_posture_source: RuntimePostureSource,
-
-    /// Host-enforced Orchestrator dispatch and terminal receipts have been proven
-    /// for this installation. Older records did not carry this proof and must
-    /// deserialize false even if their Operate/Fleet card was marked Verified.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub operate_receipts_verified: bool,
 
     /// True when this record was *derived* from existing config rather than
     /// persisted by an explicit setup run. Lets `/setup` and `doctor` explain
@@ -326,7 +315,6 @@ impl Default for SetupState {
             constitution_preview_hash: None,
             constitution_preview_version: 0,
             runtime_posture_source: RuntimePostureSource::default(),
-            operate_receipts_verified: false,
             inherited: false,
         }
     }
@@ -369,11 +357,6 @@ impl SetupState {
         self
     }
 
-    #[must_use]
-    fn step_verified(&self, step: SetupStep) -> bool {
-        self.status(step) == StepStatus::Verified
-    }
-
     /// Provider/model is acceptable for first-run readiness when it is either
     /// verified or in an actionable needs-action state (the EPIC keeps a
     /// failed-key path reaching the ready screen).
@@ -394,20 +377,7 @@ impl SetupState {
             && self.constitution_choice.is_explicit()
     }
 
-    /// Operate/Fleet "ready": provider credentials are verified, runtime
-    /// posture has been reviewed, and the user has explicitly reviewed the
-    /// Fleet/Operate on-ramp. This is intentionally separate from
-    /// [`first_run_ready`](Self::first_run_ready): a local-first user can be
-    /// ready for ordinary first use before enabling durable multi-worker work.
-    #[must_use]
-    pub fn operate_ready(&self) -> bool {
-        self.first_run_ready()
-            && self.step_verified(SetupStep::ProviderModel)
-            && self.step_verified(SetupStep::OperateFleet)
-            && self.operate_receipts_verified
-    }
-
-    /// Update "ready" for `version`: the constitution checkpoint for that lane is
+    /// Update "ready" for `version`: the constitution checkpoint for that release is
     /// complete. Everything else is inherited from existing config.
     #[must_use]
     pub fn update_ready(&self, version: &str) -> bool {
@@ -466,7 +436,7 @@ impl SetupState {
         }
 
         // Constitution: classify the active surface, but never auto-complete the
-        // checkpoint — the update lane requires the user to acknowledge it once.
+        // checkpoint — the update flow requires the user to acknowledge it once.
         if facts.has_expert_override {
             state.constitution_source = ConstitutionSource::ExpertOverride;
             state.constitution_choice = ConstitutionChoice::ExpertOverride;
@@ -514,7 +484,16 @@ impl SetupState {
             }
         };
         match serde_json::from_str::<SetupState>(&raw) {
-            Ok(state) => Some(state),
+            Ok(state) if state.schema_version == SETUP_STATE_SCHEMA_VERSION => Some(state),
+            Ok(state) => {
+                tracing::warn!(
+                    target: "config::setup_state",
+                    "{} uses retired setup-state schema {}; deriving status from existing config",
+                    path.display(),
+                    state.schema_version
+                );
+                None
+            }
             Err(e) => {
                 tracing::warn!(
                     target: "config::setup_state",
@@ -578,7 +557,6 @@ mod tests {
             StepEntry::new(StepStatus::NeedsAction, false, "0.8.67"),
         );
         assert!(state.first_run_ready());
-        assert!(!state.operate_ready());
     }
 
     #[test]
@@ -590,54 +568,6 @@ mod tests {
         assert!(!state.first_run_ready());
         state.constitution_choice = ConstitutionChoice::Bundled;
         assert!(state.first_run_ready());
-    }
-
-    #[test]
-    fn operate_ready_is_separate_from_first_run_ready() {
-        let mut state = SetupState::default();
-        state.set_step(SetupStep::ProviderModel, verified("0.8.67"));
-        state.runtime_posture_source = RuntimePostureSource::Confirmed;
-        state.constitution_choice = ConstitutionChoice::Bundled;
-        assert!(state.first_run_ready());
-        assert!(!state.operate_ready());
-
-        state.set_step(SetupStep::OperateFleet, verified("0.8.67"));
-        assert!(
-            !state.operate_ready(),
-            "a legacy Verified card is not receipt proof"
-        );
-        state.operate_receipts_verified = true;
-        assert!(state.operate_ready());
-    }
-
-    #[test]
-    fn legacy_verified_operate_card_without_receipt_proof_fails_closed() {
-        let mut legacy = SetupState::default();
-        legacy.set_step(SetupStep::ProviderModel, verified("0.8.67"));
-        legacy.set_step(SetupStep::OperateFleet, verified("0.8.67"));
-        legacy.runtime_posture_source = RuntimePostureSource::Confirmed;
-        legacy.constitution_choice = ConstitutionChoice::Bundled;
-        let raw = serde_json::to_string(&legacy).expect("serialize legacy-style state");
-        assert!(!raw.contains("operate_receipts_verified"), "{raw}");
-
-        let loaded: SetupState = serde_json::from_str(&raw).expect("load legacy-style state");
-
-        assert_eq!(loaded.status(SetupStep::OperateFleet), StepStatus::Verified);
-        assert!(!loaded.operate_receipts_verified);
-        assert!(!loaded.operate_ready());
-    }
-
-    #[test]
-    fn operate_ready_requires_verified_provider_not_needs_action() {
-        let mut state = SetupState::default();
-        state.set_step(
-            SetupStep::ProviderModel,
-            StepEntry::new(StepStatus::NeedsAction, true, "0.8.67"),
-        );
-        state.runtime_posture_source = RuntimePostureSource::Confirmed;
-        state.set_step(SetupStep::OperateFleet, verified("0.8.67"));
-
-        assert!(!state.operate_ready());
     }
 
     #[test]
@@ -666,7 +596,7 @@ mod tests {
         state.complete_constitution_checkpoint("0.8.67", ConstitutionChoice::Bundled);
         assert!(state.update_ready("0.8.67"));
         assert!(!state.needs_constitution_checkpoint("0.8.67"));
-        // A later lane re-arms the checkpoint.
+        // A later release re-arms the checkpoint.
         assert!(state.needs_constitution_checkpoint("0.8.68"));
     }
 
@@ -761,18 +691,31 @@ mod tests {
 
     #[test]
     fn record_without_authoring_field_still_loads() {
-        // Records written before the model-drafting lane carry no
+        // Records written before the model-drafting field carry no
         // constitution_authoring key; they must load with None, not fail.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SETUP_STATE_FILE_NAME);
         std::fs::write(
             &path,
-            r#"{"schema_version":1,"constitution_choice":"guided_custom"}"#,
+            r#"{"schema_version":2,"constitution_choice":"guided_custom"}"#,
         )
         .unwrap();
         let loaded = SetupState::load_from(&path).expect("legacy record should load");
         assert_eq!(loaded.constitution_authoring, None);
         assert_eq!(loaded.constitution_choice, ConstitutionChoice::GuidedCustom);
+    }
+
+    #[test]
+    fn retired_setup_state_schema_is_not_reopened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SETUP_STATE_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"steps":{"operate_fleet":{"status":"verified","required":true}}}"#,
+        )
+        .unwrap();
+
+        assert!(SetupState::load_from(&path).is_none());
     }
 
     #[test]

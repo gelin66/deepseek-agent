@@ -211,8 +211,6 @@ pub struct Config {
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
-    pub fleet: Option<codewhale_config::FleetConfigToml>,
-    #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
     #[serde(flatten)]
     pub(crate) extra: HashMap<String, toml::Value>,
@@ -274,6 +272,7 @@ impl Config {
             "path_suffix",
             "pathSuffix",
             "harness_profiles",
+            "fleet",
         ] {
             if self.extra.contains_key(retired) {
                 anyhow::bail!(
@@ -486,8 +485,8 @@ impl Config {
         self.subagents
             .as_ref()
             .and_then(|subagents| subagents.max_depth)
-            .unwrap_or(codewhale_config::DEFAULT_SPAWN_DEPTH)
-            .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING)
+            .unwrap_or(DEFAULT_SPAWN_DEPTH)
+            .min(MAX_SPAWN_DEPTH)
     }
 
     #[must_use]
@@ -507,11 +506,6 @@ impl Config {
         } else {
             raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
         }
-    }
-
-    #[must_use]
-    pub fn fleet_config(&self) -> codewhale_config::FleetConfigToml {
-        self.fleet.clone().unwrap_or_default()
     }
 
     #[must_use]
@@ -690,7 +684,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
         context: ContextConfig {
             project_pack: selected.context.project_pack.or(base.context.project_pack),
         },
-        fleet: selected.fleet.or(base.fleet),
         subagents: selected.subagents.or(base.subagents),
         extra,
     }

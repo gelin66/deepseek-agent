@@ -6,8 +6,3 @@ pub(crate) fn reqwest_client_builder() -> reqwest::ClientBuilder {
     ensure_rustls_crypto_provider();
     reqwest::Client::builder()
 }
-
-pub(crate) fn reqwest_blocking_client_builder() -> reqwest::blocking::ClientBuilder {
-    ensure_rustls_crypto_provider();
-    reqwest::blocking::Client::builder()
-}

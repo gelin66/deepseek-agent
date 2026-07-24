@@ -119,25 +119,6 @@ non-interactive filesystem/shell tool use, matching the supported automation
 path used by stream-json wrappers.
 ")]
     Exec(TuiPassthroughArgs),
-    /// Manage durable Agent Fleet runs via the TUI runtime.
-    Fleet(TuiPassthroughArgs),
-    /// Internal detached-runtime output/receipt supervisor.
-    #[command(name = "lane-log-proxy", hide = true)]
-    LaneLogProxy(LaneLogProxyArgs),
-    /// Manage running workflow instances (Lanes) and Runtime backends (#4176).
-    #[command(after_help = "\
-Examples:
-  codewhale lane list
-  codewhale lane status <lane-id>
-  codewhale lane attach <lane-id>
-  codewhale lane logs <lane-id>
-  codewhale lane stop <lane-id>
-  codewhale lane start --workflow stopship --fleet v0868-stopship --runtime tmux --issue 4090 -- echo hello
-
-Lane records persist under $CODEWHALE_HOME/lanes/. tmux durability belongs to
-Runtime, not Fleet.
-")]
-    Lane(LaneArgs),
     /// Manage TUI MCP servers.
     Mcp(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
@@ -216,345 +197,6 @@ struct RunsArgs {
 struct TuiPassthroughArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-struct LaneLogProxyArgs {
-    #[arg(long, value_name = "PATH")]
-    log_path: PathBuf,
-    #[arg(long, value_name = "PATH")]
-    receipt_path: PathBuf,
-    #[arg(long, value_name = "PATH")]
-    receipt_tmp_path: PathBuf,
-    #[arg(long, value_name = "PATH")]
-    environment_path: Option<PathBuf>,
-    #[arg(long)]
-    lane_id: String,
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
-    command: Vec<String>,
-}
-
-/// `codewhale lane …` — running workflow instances (#4176).
-#[derive(Debug, Args)]
-struct LaneArgs {
-    #[command(subcommand)]
-    command: LaneCommand,
-}
-
-#[derive(Debug, Subcommand)]
-// Clap constructs this command enum once at process startup. Keeping the
-// fields inline makes the generated CLI shape explicit; boxing them only to
-// reduce this transient value would add indirection without runtime benefit.
-#[allow(clippy::large_enum_variant)]
-enum LaneCommand {
-    /// List known lanes (newest first).
-    List {
-        /// Emit JSON.
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    /// Show one lane's status and attach metadata.
-    Status {
-        /// Lane id (e.g. `lane-a1b2c3d4`).
-        lane_id: String,
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-    /// Attach to a tmux-backed lane (prints attach command; execs when possible).
-    Attach {
-        lane_id: String,
-        /// Only print the attach command; do not exec.
-        #[arg(long, default_value_t = false)]
-        print: bool,
-    },
-    /// Tail the lane stream-json / NDJSON journal.
-    Logs {
-        lane_id: String,
-        /// Follow the log file (like `tail -f`).
-        #[arg(long, short = 'f', default_value_t = false)]
-        follow: bool,
-        /// Number of trailing lines when not following (default 50).
-        #[arg(long, default_value_t = 50)]
-        tail: usize,
-    },
-    /// Stop a running lane.
-    Stop { lane_id: String },
-    /// Start a lane under a Runtime backend (tmux|inline|vm|ci).
-    Start {
-        /// Workflow name (e.g. `stopship`).
-        #[arg(long)]
-        workflow: Option<String>,
-        /// Fleet roster name (e.g. `v0868-stopship`).
-        #[arg(long)]
-        fleet: Option<String>,
-        /// Issue id binding.
-        #[arg(long)]
-        issue: Option<String>,
-        /// Free-form goal text.
-        #[arg(long)]
-        goal: Option<String>,
-        /// Runtime backend: tmux, inline, vm, or ci.
-        #[arg(long, default_value = "tmux")]
-        runtime: String,
-        /// Command to run in the runtime (after `--`).
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-}
-
-struct LaneStartRequest {
-    workflow: Option<String>,
-    fleet: Option<String>,
-    issue: Option<String>,
-    goal: Option<String>,
-    runtime: String,
-    command: Vec<String>,
-    environment: Vec<(String, String)>,
-    cwd: Option<PathBuf>,
-}
-
-fn start_lane(request: LaneStartRequest) -> Result<()> {
-    use codewhale_lane::{LaneRegistry, LaneStartSpec, RuntimeBackendKind, resolve_backend};
-
-    let LaneStartRequest {
-        workflow,
-        fleet,
-        issue,
-        goal,
-        runtime,
-        command,
-        environment,
-        cwd,
-    } = request;
-    let kind = RuntimeBackendKind::parse(&runtime)?;
-    let reg = LaneRegistry::open_default()?;
-    let mut record = reg.create_pending(workflow, fleet, issue, goal, kind)?;
-    let cmd = if command.is_empty() {
-        vec![
-            "sh".into(),
-            "-c".into(),
-            format!("echo lane {} started", record.id),
-        ]
-    } else {
-        command
-    };
-    let spec = LaneStartSpec {
-        command: cmd,
-        cwd,
-        environment,
-        log_proxy: (kind == RuntimeBackendKind::Tmux)
-            .then(std::env::current_exe)
-            .transpose()
-            .context("resolve current Codewhale executable for tmux log proxy")?,
-    };
-    let backend = resolve_backend(kind);
-    backend.start(&reg, &mut record, &spec)?;
-    println!("started {}", record.id);
-    println!("status:  {}", record.status.as_str());
-    println!("runtime: {}", record.runtime.as_str());
-    println!("log:     {}", record.log_path.display());
-    if let Some(attach) = backend.attach_command(&record) {
-        println!("attach:  {attach}");
-    }
-    Ok(())
-}
-
-fn run_lane_command(args: LaneArgs) -> Result<()> {
-    use codewhale_lane::{LaneRegistry, backend_for};
-    use std::io::{BufRead, Seek, Write};
-    use std::process::Command;
-    use std::thread;
-    use std::time::Duration;
-
-    match args.command {
-        LaneCommand::List { json } => {
-            let reg = LaneRegistry::open_default()?;
-            let mut lanes = reg.list()?;
-            for lane in &mut lanes {
-                if let Err(err) = backend_for(lane).reconcile(&reg, lane) {
-                    eprintln!("warning: could not reconcile lane `{}`: {err:#}", lane.id);
-                }
-            }
-            if json {
-                println!("{}", serde_json::to_string_pretty(&lanes)?);
-            } else if lanes.is_empty() {
-                println!("No lanes under {}", reg.root().display());
-            } else {
-                println!(
-                    "{:<16} {:<10} {:<12} {:<16} {:<10} STARTED",
-                    "ID", "STATUS", "RUNTIME", "WORKFLOW", "ISSUE"
-                );
-                for lane in lanes {
-                    println!(
-                        "{:<16} {:<10} {:<12} {:<16} {:<10} {}",
-                        lane.id,
-                        lane.status.as_str(),
-                        lane.runtime.as_str(),
-                        lane.workflow.as_deref().unwrap_or("-"),
-                        lane.issue.as_deref().unwrap_or("-"),
-                        lane.started_at,
-                    );
-                }
-            }
-            Ok(())
-        }
-        LaneCommand::Status { lane_id, json } => {
-            let reg = LaneRegistry::open_default()?;
-            let mut lane = reg.load(&lane_id)?;
-            backend_for(&lane).reconcile(&reg, &mut lane)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&lane)?);
-            } else {
-                println!("lane:     {}", lane.id);
-                println!("status:   {}", lane.status.as_str());
-                println!("runtime:  {}", lane.runtime.as_str());
-                println!("workflow: {}", lane.workflow.as_deref().unwrap_or("-"));
-                println!("fleet:    {}", lane.fleet.as_deref().unwrap_or("-"));
-                println!("issue:    {}", lane.issue.as_deref().unwrap_or("-"));
-                println!("goal:     {}", lane.goal.as_deref().unwrap_or("-"));
-                println!("started:  {}", lane.started_at);
-                println!("stopped:  {}", lane.stopped_at.as_deref().unwrap_or("-"));
-                println!("tmux:     {}", lane.tmux_session.as_deref().unwrap_or("-"));
-                println!(
-                    "socket:   {}",
-                    lane.tmux_socket
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-                println!("attach:   {}", lane.attach_target.as_deref().unwrap_or("-"));
-                println!("log:      {}", lane.log_path.display());
-            }
-            Ok(())
-        }
-        LaneCommand::Attach { lane_id, print } => {
-            let reg = LaneRegistry::open_default()?;
-            let mut lane = reg.load(&lane_id)?;
-            let backend = backend_for(&lane);
-            backend.reconcile(&reg, &mut lane)?;
-            let Some(attach) = backend.attach_command(&lane) else {
-                if !lane.status.is_active() {
-                    bail!(
-                        "lane `{lane_id}` is {} and has no active attach target",
-                        lane.status.as_str()
-                    );
-                }
-                bail!(
-                    "lane `{lane_id}` runtime `{}` has no attach target",
-                    lane.runtime.as_str()
-                );
-            };
-            if print {
-                println!("{attach}");
-                return Ok(());
-            }
-            if let Some(session) = lane.tmux_session.as_deref() {
-                let socket = lane
-                    .tmux_socket
-                    .as_deref()
-                    .context("tmux lane is missing its pinned server socket")?;
-                let status = Command::new("tmux")
-                    .arg("-S")
-                    .arg(socket)
-                    .args(["attach", "-t", session])
-                    .status();
-                match status {
-                    Ok(s) if s.success() => Ok(()),
-                    Ok(s) => bail!("tmux attach failed ({s}); command was: {attach}"),
-                    Err(err) => {
-                        eprintln!("could not exec tmux: {err}");
-                        println!("{attach}");
-                        bail!("tmux attach unavailable");
-                    }
-                }
-            } else {
-                println!("{attach}");
-                Ok(())
-            }
-        }
-        LaneCommand::Logs {
-            lane_id,
-            follow,
-            tail,
-        } => {
-            let reg = LaneRegistry::open_default()?;
-            let lane = reg.load(&lane_id)?;
-            let path = lane.log_path;
-            if !path.exists() {
-                bail!("log file missing: {}", path.display());
-            }
-            let content = std::fs::read(&path)?;
-            let lines: Vec<&[u8]> = content
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.is_empty())
-                .collect();
-            let start = lines.len().saturating_sub(tail);
-            let mut stdout = std::io::stdout().lock();
-            for line in &lines[start..] {
-                stdout.write_all(String::from_utf8_lossy(line).as_bytes())?;
-                stdout.write_all(b"\n")?;
-            }
-            stdout.flush()?;
-            if !follow {
-                return Ok(());
-            }
-            let mut file = std::fs::File::open(&path)?;
-            file.seek(std::io::SeekFrom::End(0))?;
-            let mut reader = std::io::BufReader::new(file);
-            loop {
-                let mut line = Vec::new();
-                match reader.read_until(b'\n', &mut line) {
-                    Ok(0) => {
-                        thread::sleep(Duration::from_millis(200));
-                        continue;
-                    }
-                    Ok(_) => {
-                        let mut stdout = std::io::stdout().lock();
-                        stdout.write_all(String::from_utf8_lossy(&line).as_bytes())?;
-                        stdout.flush()?;
-                    }
-                    Err(err) => return Err(err.into()),
-                }
-            }
-        }
-        LaneCommand::Stop { lane_id } => {
-            let reg = LaneRegistry::open_default()?;
-            let mut lane = reg.load(&lane_id)?;
-            let backend = backend_for(&lane);
-            backend.stop(&reg, &mut lane)?;
-            println!("stopped {}", lane.id);
-            Ok(())
-        }
-        LaneCommand::Start {
-            workflow,
-            fleet,
-            issue,
-            goal,
-            runtime,
-            command,
-        } => start_lane(LaneStartRequest {
-            workflow,
-            fleet,
-            issue,
-            goal,
-            runtime,
-            command,
-            environment: Vec::new(),
-            cwd: None,
-        }),
-    }
-}
-
-fn run_lane_log_proxy_command(args: LaneLogProxyArgs) -> Result<()> {
-    let exit_code = codewhale_lane::run_lane_log_proxy(codewhale_lane::LaneLogProxySpec {
-        command: args.command,
-        log_path: args.log_path,
-        receipt_path: args.receipt_path,
-        receipt_tmp_path: args.receipt_tmp_path,
-        environment_path: args.environment_path,
-        lane_id: args.lane_id,
-    })?;
-    std::process::exit(exit_code);
 }
 
 #[derive(Debug, Args)]
@@ -775,15 +417,6 @@ pub fn run_cli() -> std::process::ExitCode {
     }
 }
 
-fn split_lane_log_proxy_command(
-    command: Option<Commands>,
-) -> (Option<LaneLogProxyArgs>, Option<Commands>) {
-    match command {
-        Some(Commands::LaneLogProxy(args)) => (Some(args), None),
-        command => (None, command),
-    }
-}
-
 fn reject_retired_command(cli: &Cli) -> Result<()> {
     if cli.prompt_flag.is_none() && cli.command.is_none() {
         match cli.prompt.first().map(String::as_str) {
@@ -811,6 +444,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("workflow-tool") => {
                 bail!("命令 `codewhale workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
             }
+            Some("fleet") | Some("lane") => bail!(
+                "命令 `codewhale fleet` / `codewhale lane` 已删除；多 Agent 任务统一由 canonical AgentRuntime、RunStore 与 Writer Orchestrator 执行"
+            ),
             Some("review") => {
                 bail!("命令 `codewhale review` 已删除；请使用 canonical Agent 审查当前 git diff")
             }
@@ -838,8 +474,6 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
         "init" => MessageId::CliCommandInit,
         "setup" => MessageId::CliCommandSetup,
         "exec" => MessageId::CliCommandExec,
-        "fleet" => MessageId::CliCommandFleet,
-        "lane" => MessageId::CliCommandLane,
         "mcp" => MessageId::CliCommandMcp,
         "features" => MessageId::CliCommandFeatures,
         "completions" => MessageId::CliCommandCompletions,
@@ -979,15 +613,7 @@ fn run() -> Result<()> {
     // an old command can never become an accidental paid prompt.
     reject_retired_command(&cli)?;
 
-    // The detached log proxy must not depend on user config parsing: its job
-    // is to frame child output and publish a terminal receipt even when the
-    // delegated command's own config is malformed.
-    let (proxy, command) = split_lane_log_proxy_command(cli.command.take());
-    if let Some(args) = proxy {
-        return run_lane_log_proxy_command(args);
-    }
-
-    let command = match command {
+    let command = match cli.command.take() {
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "codewhale", &mut io::stdout());
@@ -1035,12 +661,6 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_exec_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
         }
-        Some(Commands::Fleet(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("fleet", args))
-        }
-        Some(Commands::LaneLogProxy(_)) => unreachable!("lane log proxy dispatched above"),
-        Some(Commands::Lane(args)) => run_lane_command(args),
         Some(Commands::Mcp(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
@@ -2074,6 +1694,24 @@ mod tests {
         assert!(auth.contains("clear"));
         assert!(!auth.contains("--provider"));
         assert!(!auth.contains("list"));
+    }
+
+    #[test]
+    fn m8g_taskgraph_cutover_removes_two_user_workflow_shells() {
+        let commands = Cli::command()
+            .get_subcommands()
+            .filter(|command| !command.is_hide_set())
+            .map(|command| command.get_name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(commands.len(), 18, "{commands:?}");
+        assert!(!commands.iter().any(|command| command == "fleet"));
+        assert!(!commands.iter().any(|command| command == "lane"));
+
+        for retired in ["fleet", "lane"] {
+            let cli = parse_ok(&["codewhale", retired]);
+            let error = reject_retired_command(&cli).expect_err("retired shell must fail closed");
+            assert!(error.to_string().contains("已删除"));
+        }
     }
 
     #[test]

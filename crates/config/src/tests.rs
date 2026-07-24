@@ -260,15 +260,6 @@ fn m8a_config_commands_reject_retired_keys_and_redact_secrets() {
 }
 
 #[test]
-fn m8a_fleet_profiles_reject_provider_pins() {
-    let error = toml::from_str::<ConfigToml>(
-        "[fleet.profiles.scout]\nprovider = \"deepseek\"\nmodel = \"deepseek-v4-flash\"\n",
-    )
-    .expect_err("fleet provider pin is retired");
-    assert!(error.to_string().contains("unknown field `provider`"));
-}
-
-#[test]
 fn m8a_shipped_example_matches_the_deepseek_only_schema() {
     let config: ConfigToml = toml::from_str(include_str!("../../../config.example.toml")).unwrap();
     config.validate().unwrap();
@@ -276,9 +267,16 @@ fn m8a_shipped_example_matches_the_deepseek_only_schema() {
         config.default_text_model.as_deref(),
         Some("deepseek-v4-pro")
     );
-    assert!(config.fleet.is_some());
+    assert!(!config.extras.contains_key("fleet"));
     assert!(!config.extras.contains_key("provider"));
     assert!(!config.extras.contains_key("providers"));
+}
+
+#[test]
+fn m8g_rejects_retired_fleet_configuration() {
+    let config: ConfigToml = toml::from_str("[fleet]\nmax_workers = 4\n").unwrap();
+    let error = config.validate().expect_err("fleet config must be retired");
+    assert!(error.to_string().contains("fleet"));
 }
 
 #[test]

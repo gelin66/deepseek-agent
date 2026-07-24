@@ -19,7 +19,7 @@ single-user product boundary, not a fallback locale.
 - Product terms may remain English when that is the clearest established name.
   Plain explanatory text should be natural Simplified Chinese and stay short
   enough for footers and row controls.
-- Key names (`Enter`, `Alt+?`), commands (`/fleet setup`), and glyphs are
+- Key names (`Enter`, `Alt+?`), commands (`/agent`), and glyphs are
   never in translations; they are composed in code.
 - Preserve intentional leading/trailing spaces (pane titles, `Rule  `,
   the slash-menu hint).

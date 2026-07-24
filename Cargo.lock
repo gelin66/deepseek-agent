@@ -817,7 +817,6 @@ dependencies = [
  "codewhale-config",
  "codewhale-context",
  "codewhale-execpolicy",
- "codewhale-lane",
  "codewhale-localization",
  "codewhale-protocol",
  "codewhale-runtime",
@@ -889,21 +888,6 @@ dependencies = [
  "anyhow",
  "codewhale-protocol",
  "serde",
-]
-
-[[package]]
-name = "codewhale-lane"
-version = "0.8.68"
-dependencies = [
- "anyhow",
- "chrono",
- "codewhale-config",
- "fd-lock",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]
@@ -4356,7 +4340,6 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

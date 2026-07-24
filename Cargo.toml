@@ -8,7 +8,6 @@ members = [
     "crates/context",
     "crates/deepseek",
     "crates/execpolicy",
-    "crates/lane",
     "crates/localization",
     "crates/orchestrator",
     "crates/protocol",
