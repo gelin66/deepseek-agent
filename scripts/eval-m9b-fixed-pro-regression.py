@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""M9-C post-V1 fixed-Pro coding regression baseline successor.
+"""Canonical fixed-Pro regression and Working-Set evaluation Harness.
 
 The evaluator exercises six frozen temporary Git repositories through the
 canonical ``codewhale app-server --stdio`` Run API. It records terminal and
 RunStore facts before credential-free reopen, deterministic verification, or
-label derivation. The M9-C contract content-addresses the corrected M9-B task
-and tool inputs but always starts a new schedule and journal at position 1.
-It is a regression label collector, not a product A/B.
+label derivation. Its default M9-C mode is the frozen regression-label
+successor. ``--working-set-ab`` selects the M10-B same-binary Working-Set
+off/on campaign while retaining the same task, tool, accounting, and replay
+owner.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import shutil
 import signal
 import sqlite3
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -31,26 +33,41 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = (
-    ROOT / "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
+WORKING_SET_AB = "--working-set-ab" in sys.argv
+MANIFEST_PATH = ROOT / (
+    "eval/manifests/m10-b-working-set-ab-v1.json"
+    if WORKING_SET_AB
+    else "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
 )
 BASE_MANIFEST_PATH = (
     ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
 )
-MANIFEST_SCHEMA = "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
+MANIFEST_SCHEMA = (
+    "codewhale.eval.m10-b-working-set-ab.v1"
+    if WORKING_SET_AB
+    else "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
+)
 BASE_MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
 JOURNAL_SCHEMA = (
-    "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
+    "codewhale.eval.m10-b-working-set-ab-journal.v1"
+    if WORKING_SET_AB
+    else "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
 )
 ADMISSION_SCHEMA = (
-    "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
+    "codewhale.eval.m10-b-working-set-live-admission.v1"
+    if WORKING_SET_AB
+    else "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
 )
-RUN_API = 11
-EVENT_API = 17
-STATE_SCHEMA = 23
+RUN_API = 12 if WORKING_SET_AB else 11
+EVENT_API = 18 if WORKING_SET_AB else 17
+STATE_SCHEMA = 24 if WORKING_SET_AB else 23
 EXEC_STREAM = 3
 MODEL = "deepseek-v4-pro"
 REASONING = "high"
+WORKING_SET_OFF = "working_set_off"
+WORKING_SET_ON = "working_set_on"
+WORKING_SET_MARKER = "<!-- cw:ctx:working_set -->"
+DISCOVERY_TOOLS = {"file_search", "grep_files", "list_dir", "read_file"}
 ZERO_HASH = "sha256:" + ("0" * 64)
 MAX_FRAME = 16 * 1024 * 1024
 HARNESS_GRACE_SECONDS = 30
@@ -221,9 +238,11 @@ def load_manifest() -> dict[str, Any]:
     )
     tasks = json.loads(json.dumps(base_tasks, ensure_ascii=False))
     for task_id, acceptance_id in acceptance_overrides.items():
+        expected_prefix = "m10b" if WORKING_SET_AB else "m9c"
         require(
             isinstance(acceptance_id, str)
-            and acceptance_id == f"m9c-{task_id.replace('_', '-')}",
+            and acceptance_id
+            == f"{expected_prefix}-{task_id.replace('_', '-')}",
             "acceptance_override_invalid",
             {"task_id": task_id},
         )
@@ -245,10 +264,23 @@ def load_manifest() -> dict[str, Any]:
         and resources.get("reasoning_effort") == REASONING
         and resources.get("runs_per_task") == 3
         and resources.get("formal_tasks") == 6
-        and resources.get("formal_arms") == 18
+        and resources.get("formal_arms")
+        == (36 if WORKING_SET_AB else 18)
         and resources.get("maximum_reruns") == 0,
         "resource_identity_invalid",
     )
+    if WORKING_SET_AB:
+        baseline = manifest.get("localization_baseline", {})
+        baseline_path = ROOT / str(baseline.get("path", ""))
+        require(
+            baseline.get("path")
+            == "eval/manifests/m10-b-working-set-localization-v2.json"
+            and baseline.get("file_sha256") == file_hash(baseline_path)
+            and baseline.get("policy_version") == "m10b-working-set-v1"
+            and baseline.get("max_rendered_chars") == 3900
+            and baseline.get("mechanism_evidence_only") is True,
+            "localization_baseline_identity_invalid",
+        )
     require(
         isinstance(tasks, dict)
         and list(tasks)
@@ -263,16 +295,51 @@ def load_manifest() -> dict[str, Any]:
         "task_identity_invalid",
     )
     schedule = manifest.get("formal_schedule", {}).get("round_order")
-    require(
-        isinstance(schedule, list)
-        and len(schedule) == resources["runs_per_task"]
-        and all(
-            isinstance(round_tasks, list)
-            and sorted(round_tasks) == sorted(tasks)
-            for round_tasks in schedule
-        ),
-        "schedule_identity_invalid",
-    )
+    if WORKING_SET_AB:
+        require(
+            isinstance(schedule, list)
+            and len(schedule) == resources["runs_per_task"] * 2
+            and all(
+                isinstance(round_arms, list)
+                and len(round_arms) == len(tasks)
+                and all(
+                    isinstance(arm, dict)
+                    and arm.get("task_id") in tasks
+                    and arm.get("variant")
+                    in {WORKING_SET_OFF, WORKING_SET_ON}
+                    for arm in round_arms
+                )
+                for round_arms in schedule
+            ),
+            "schedule_identity_invalid",
+        )
+        cells = Counter(
+            (arm["task_id"], arm["variant"])
+            for round_arms in schedule
+            for arm in round_arms
+        )
+        require(
+            cells
+            == Counter(
+                {
+                    (task_id, variant): resources["runs_per_task"]
+                    for task_id in tasks
+                    for variant in (WORKING_SET_OFF, WORKING_SET_ON)
+                }
+            ),
+            "schedule_balance_invalid",
+        )
+    else:
+        require(
+            isinstance(schedule, list)
+            and len(schedule) == resources["runs_per_task"]
+            and all(
+                isinstance(round_tasks, list)
+                and sorted(round_tasks) == sorted(tasks)
+                for round_tasks in schedule
+            ),
+            "schedule_identity_invalid",
+        )
     return manifest
 
 
@@ -284,10 +351,21 @@ TOOLS: dict[str, list[str]] = MANIFEST["tool_policies"]
 
 def formal_schedule() -> list[dict[str, Any]]:
     schedule: list[dict[str, Any]] = []
-    for run_index, round_tasks in enumerate(
+    for round_index, round_arms in enumerate(
         MANIFEST["formal_schedule"]["round_order"]
     ):
-        for position, task_id in enumerate(round_tasks):
+        for position, scheduled in enumerate(round_arms):
+            if WORKING_SET_AB:
+                task_id = scheduled["task_id"]
+                arm = {
+                    "variant": scheduled["variant"],
+                    "round_index": round_index,
+                }
+                run_index = round_index // 2
+            else:
+                task_id = scheduled
+                arm = {}
+                run_index = round_index
             schedule.append(
                 {
                     "arm_index": len(schedule),
@@ -295,6 +373,7 @@ def formal_schedule() -> list[dict[str, Any]]:
                     "round_position": position,
                     "task_id": task_id,
                     "lane": TASKS[task_id]["lane"],
+                    **arm,
                 }
             )
     return schedule
@@ -764,12 +843,26 @@ def launch_server(
     state_root: Path,
     key: str | None,
     stderr_path: Path,
+    variant: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
     codewhale_home = state_root / "codewhale"
     xdg = state_root / "xdg"
     for directory in (state_root, home, codewhale_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
+    if WORKING_SET_AB:
+        require(
+            variant in {WORKING_SET_OFF, WORKING_SET_ON},
+            "working_set_variant_invalid",
+        )
+        config_path = codewhale_home / "config.toml"
+        config_path.write_text(
+            "[context]\n"
+            "working_set = "
+            f"{'true' if variant == WORKING_SET_ON else 'false'}\n",
+            encoding="utf-8",
+        )
+        os.chmod(config_path, 0o600)
     environment = {
         **safe_env(),
         "HOME": str(home),
@@ -1061,6 +1154,215 @@ def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
         "root_route": route,
         "root_model_requests": len(root_requests),
         "child_model_requests": child_request_counts,
+    }
+
+
+def working_set_audit(
+    task_id: str, variant: str, facts: dict[str, Any]
+) -> dict[str, Any]:
+    lanes = [("root", facts["root_events"])]
+    lanes.extend(
+        ("child", child["events"]) for child in facts["children"]
+    )
+    reasons: list[str] = []
+    requests: list[dict[str, Any]] = []
+    stable_prefix_hashes: list[str] = []
+    for actor, events in lanes:
+        for event in event_values(events, "model_request_prepared"):
+            request = event.get("request", {})
+            system_prompt = request.get("system_prompt", {})
+            blocks = system_prompt.get("blocks", [])
+            if (
+                not isinstance(system_prompt, dict)
+                or not isinstance(blocks, list)
+                or not blocks
+                or any(
+                    not isinstance(block, dict)
+                    or not isinstance(block.get("text"), str)
+                    or block.get("cache_control")
+                    not in {"stable", "volatile"}
+                    for block in blocks
+                )
+            ):
+                reasons.append("system_prompt_invalid")
+                continue
+            text = "\n\n".join(block["text"] for block in blocks)
+            stable = [
+                block["text"]
+                for block in blocks
+                if block["cache_control"] == "stable"
+            ]
+            marker_count = text.count(WORKING_SET_MARKER)
+            body_count = text.count("## Host 预算化工作集")
+            if marker_count > 1 or body_count > 1:
+                reasons.append("working_set_duplicate")
+            if marker_count != body_count:
+                reasons.append("working_set_marker_body_mismatch")
+            if any(WORKING_SET_MARKER in block for block in stable):
+                reasons.append("working_set_in_stable_prefix")
+            if not stable:
+                reasons.append("stable_prefix_missing")
+            stable_hash = canonical_hash(stable)
+            stable_prefix_hashes.append(stable_hash)
+            requests.append(
+                {
+                    "actor": actor,
+                    "marker_count": marker_count,
+                    "body_count": body_count,
+                    "system_prompt_bytes": len(text.encode("utf-8")),
+                    "system_prompt_sha256": canonical_hash(system_prompt),
+                    "stable_prefix_sha256": stable_hash,
+                }
+            )
+    root_requests = [
+        request for request in requests if request["actor"] == "root"
+    ]
+    if not requests or not root_requests:
+        reasons.append("model_request_missing")
+    if variant == WORKING_SET_OFF:
+        if any(request["marker_count"] != 0 for request in requests):
+            reasons.append("working_set_off_marker_present")
+    elif variant == WORKING_SET_ON:
+        expected_root_markers = (
+            0 if TASKS[task_id]["lane"] == "safety" else 1
+        )
+        if any(
+            request["marker_count"] != expected_root_markers
+            for request in root_requests
+        ):
+            reasons.append("working_set_on_root_projection_mismatch")
+        if TASKS[task_id]["lane"] == "safety" and any(
+            request["marker_count"] != 0 for request in requests
+        ):
+            reasons.append("working_set_safety_abstention_mismatch")
+    else:
+        reasons.append("working_set_variant_invalid")
+    return {
+        "valid": not reasons,
+        "reasons": sorted(set(reasons)),
+        "variant": variant,
+        "request_count": len(requests),
+        "requests": requests,
+        "stable_prefix_sha256": sorted(set(stable_prefix_hashes)),
+    }
+
+
+def prepared_discovery(
+    events: list[dict[str, Any]], before_sequence: int | None = None
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for stored in events:
+        if event_kind(stored) != "tool_prepared":
+            continue
+        sequence = stored.get("sequence")
+        event = stored.get("event", {})
+        if (
+            isinstance(sequence, int)
+            and (before_sequence is None or sequence < before_sequence)
+            and tool_name(event) in DISCOVERY_TOOLS
+        ):
+            selected.append(stored)
+    return selected
+
+
+def first_effective_write_sequence(
+    events: list[dict[str, Any]]
+) -> int | None:
+    for stored in events:
+        if event_kind(stored) != "tool_outcome_committed":
+            continue
+        event = stored.get("event", {})
+        outcome = event.get("outcome", {})
+        if (
+            event.get("name") in MAY_WRITE_TOOLS
+            and tool_outcome_success(outcome)
+            and outcome.get("side_effect") == "applied"
+        ):
+            sequence = stored.get("sequence")
+            if isinstance(sequence, int):
+                return sequence
+    return None
+
+
+def first_sequence(events: list[dict[str, Any]], kind: str) -> int | None:
+    for stored in events:
+        if event_kind(stored) == kind and isinstance(
+            stored.get("sequence"), int
+        ):
+            return stored["sequence"]
+    return None
+
+
+def tool_observation(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
+    all_event_sets = [facts["root_events"]]
+    all_event_sets.extend(child["events"] for child in facts["children"])
+    prepared = [
+        stored
+        for events in all_event_sets
+        for stored in events
+        if event_kind(stored) == "tool_prepared"
+    ]
+    discovery = [
+        stored
+        for stored in prepared
+        if tool_name(stored["event"]) in DISCOVERY_TOOLS
+    ]
+    signatures = [
+        canonical_hash(
+            {
+                "name": tool_name(stored["event"]),
+                "arguments": parsed_tool_arguments(stored["event"]),
+            }
+        )
+        for stored in discovery
+    ]
+    root_events = facts["root_events"]
+    lane = TASKS[task_id]["lane"]
+    if lane in {"root", "read_only"}:
+        root_write = first_effective_write_sequence(root_events)
+        before_edit = prepared_discovery(root_events, root_write)
+        if lane == "read_only":
+            before_edit.extend(
+                stored
+                for child in facts["children"]
+                for stored in prepared_discovery(child["events"])
+            )
+    elif lane == "writer":
+        assignment = first_sequence(root_events, "agent_task_prepared")
+        before_edit = prepared_discovery(root_events, assignment)
+        for child in facts["children"]:
+            child_write = first_effective_write_sequence(child["events"])
+            before_edit.extend(
+                prepared_discovery(child["events"], child_write)
+            )
+    else:
+        before_edit = []
+    counts = Counter(tool_name(stored["event"]) for stored in prepared)
+    discovery_counts = Counter(
+        tool_name(stored["event"]) for stored in discovery
+    )
+    effective_edit_observed = (
+        False
+        if lane == "safety"
+        else (
+            first_effective_write_sequence(root_events) is not None
+            or any(
+                first_effective_write_sequence(child["events"])
+                is not None
+                for child in facts["children"]
+            )
+        )
+    )
+    return {
+        "total": len(prepared),
+        "by_name": dict(sorted(counts.items())),
+        "discovery": len(discovery),
+        "discovery_by_name": dict(sorted(discovery_counts.items())),
+        "repeated_discovery": len(signatures) - len(set(signatures)),
+        "discovery_before_first_effective_edit": (
+            len(before_edit) if effective_edit_observed else None
+        ),
+        "effective_edit_observed": effective_edit_observed,
     }
 
 
@@ -1467,6 +1769,24 @@ def derive_arm(
     terminal_state = run.get("terminal", {}).get("state")
     route = route_audit(task_id, facts)
     accounting = accounting_projection(task_id, run)
+    working_set = (
+        working_set_audit(task_id, schedule["variant"], facts)
+        if WORKING_SET_AB
+        else None
+    )
+    if working_set is not None:
+        require(
+            working_set["valid"],
+            "working_set_observer_invalid",
+            {
+                "task_id": task_id,
+                "variant": schedule["variant"],
+                "reasons": working_set["reasons"],
+            },
+        )
+    observations = (
+        tool_observation(task_id, facts) if WORKING_SET_AB else None
+    )
     if task["lane"] == "root":
         lane = root_lane_audit(task_id, facts)
     elif task["lane"] == "read_only":
@@ -1487,6 +1807,7 @@ def derive_arm(
             and not changed
             and not receipt
             and lane["valid"]
+            and (working_set is None or working_set["valid"])
         )
         verified_success = False
         correct_rejection = behavior_valid and route["valid"]
@@ -1499,6 +1820,14 @@ def derive_arm(
             and receipt
             and lane["valid"]
             and route["valid"]
+            and (
+                not WORKING_SET_AB
+                or (
+                    observations is not None
+                    and observations["effective_edit_observed"]
+                )
+            )
+            and (working_set is None or working_set["valid"])
         )
         verified_success = behavior_valid
         correct_rejection = False
@@ -1534,7 +1863,17 @@ def derive_arm(
         "expected_changed_files": expected_changed,
         "host_receipt": receipt,
         "route": route,
+        **(
+            {"working_set": working_set}
+            if working_set is not None
+            else {}
+        ),
         "lane_audit": lane,
+        **(
+            {"tool_observation": observations}
+            if observations is not None
+            else {}
+        ),
         "accounting": accounting,
         "failed_tool_outcomes": sum(failure_codes.values()),
         "failure_codes": dict(sorted(failure_codes.items())),
@@ -1708,7 +2047,11 @@ def execute_arm(
         }
     )
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m9c-arm-"
+        prefix=(
+            "codewhale-m10b-arm-"
+            if WORKING_SET_AB
+            else "codewhale-m9c-arm-"
+        )
     ) as raw_temp:
         arm_root = Path(raw_temp)
         workspace = arm_root / "workspace"
@@ -1717,7 +2060,12 @@ def execute_arm(
         stderr_path = state_root / "app-server.stderr"
         state_root.mkdir()
         process, client = launch_server(
-            binary, workspace, state_root, key, stderr_path
+            binary,
+            workspace,
+            state_root,
+            key,
+            stderr_path,
+            schedule.get("variant"),
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
@@ -1766,7 +2114,12 @@ def execute_arm(
 
         reopen_stderr = state_root / "app-server-reopen.stderr"
         reopen_process, reopen_client = launch_server(
-            binary, workspace, state_root, None, reopen_stderr
+            binary,
+            workspace,
+            state_root,
+            None,
+            reopen_stderr,
+            schedule.get("variant"),
         )
         try:
             run_id = run.get("run_id")
@@ -1835,7 +2188,7 @@ def execute_arm(
         return arm
 
 
-def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_m9c(arms: list[dict[str, Any]]) -> dict[str, Any]:
     require(len(arms) == 18, "formal_matrix_incomplete")
     cells: dict[str, dict[str, Any]] = {}
     for task_id, task in TASKS.items():
@@ -1934,6 +2287,282 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def aggregate_m10b(arms: list[dict[str, Any]]) -> dict[str, Any]:
+    require(len(arms) == 36, "formal_matrix_incomplete")
+    cells: dict[str, dict[str, Any]] = {}
+    for task_id, task in TASKS.items():
+        for variant in (WORKING_SET_OFF, WORKING_SET_ON):
+            selected = [
+                arm
+                for arm in arms
+                if arm["task_id"] == task_id
+                and arm["variant"] == variant
+            ]
+            require(len(selected) == 3, "formal_cell_incomplete")
+            before_edit = [
+                arm["tool_observation"][
+                    "discovery_before_first_effective_edit"
+                ]
+                for arm in selected
+                if arm["tool_observation"][
+                    "discovery_before_first_effective_edit"
+                ]
+                is not None
+            ]
+            cells[f"{task_id}:{variant}"] = {
+                "task_id": task_id,
+                "variant": variant,
+                "lane": task["lane"],
+                "arms": len(selected),
+                "verified_success": sum(
+                    arm["verified_success"] for arm in selected
+                ),
+                "correct_rejection": sum(
+                    arm["correct_rejection"] for arm in selected
+                ),
+                "false_success": sum(
+                    arm["false_success"] for arm in selected
+                ),
+                "route_valid": sum(
+                    arm["route"]["valid"] for arm in selected
+                ),
+                "lane_valid": sum(
+                    arm["lane_audit"]["valid"] for arm in selected
+                ),
+                "working_set_valid": sum(
+                    arm["working_set"]["valid"] for arm in selected
+                ),
+                "requests": sum(
+                    arm["accounting"]["requests"] for arm in selected
+                ),
+                "discovery_before_first_effective_edit": sum(before_edit),
+                "median_discovery_before_first_effective_edit": (
+                    statistics.median(before_edit) if before_edit else None
+                ),
+                "discovery_tool_calls": sum(
+                    arm["tool_observation"]["discovery"]
+                    for arm in selected
+                ),
+                "repeated_discovery": sum(
+                    arm["tool_observation"]["repeated_discovery"]
+                    for arm in selected
+                ),
+                "cache_miss_tokens": sum(
+                    arm["accounting"]["tokens"]["cache_miss_tokens"]
+                    for arm in selected
+                ),
+                "cost_nanousd": sum(
+                    arm["accounting"]["cost_nanousd"]
+                    for arm in selected
+                ),
+                "wall_time_ms": sum(
+                    arm["wall_time_ms"] for arm in selected
+                ),
+            }
+
+    variants: dict[str, dict[str, Any]] = {}
+    for variant in (WORKING_SET_OFF, WORKING_SET_ON):
+        selected = [arm for arm in arms if arm["variant"] == variant]
+        positive = [
+            arm for arm in selected if arm["lane"] != "safety"
+        ]
+        before_edit = [
+            arm["tool_observation"][
+                "discovery_before_first_effective_edit"
+            ]
+            for arm in positive
+            if arm["tool_observation"][
+                "discovery_before_first_effective_edit"
+            ]
+            is not None
+        ]
+        variants[variant] = {
+            "arms": len(selected),
+            "verified_success": sum(
+                arm["verified_success"] for arm in selected
+            ),
+            "correct_rejection": sum(
+                arm["correct_rejection"] for arm in selected
+            ),
+            "false_success": sum(
+                arm["false_success"] for arm in selected
+            ),
+            "requests": sum(
+                arm["accounting"]["requests"] for arm in selected
+            ),
+            "median_requests": statistics.median(
+                arm["accounting"]["requests"] for arm in selected
+            ),
+            "discovery_before_first_effective_edit": sum(before_edit),
+            "median_discovery_before_first_effective_edit": (
+                statistics.median(before_edit) if before_edit else None
+            ),
+            "effective_edit_metric_complete": (
+                len(before_edit) == len(positive)
+            ),
+            "discovery_tool_calls": sum(
+                arm["tool_observation"]["discovery"]
+                for arm in selected
+            ),
+            "repeated_discovery": sum(
+                arm["tool_observation"]["repeated_discovery"]
+                for arm in selected
+            ),
+            "input_tokens": sum(
+                arm["accounting"]["tokens"]["input_tokens"]
+                for arm in selected
+            ),
+            "cache_hit_tokens": sum(
+                arm["accounting"]["tokens"]["cache_hit_tokens"]
+                for arm in selected
+            ),
+            "cache_miss_tokens": sum(
+                arm["accounting"]["tokens"]["cache_miss_tokens"]
+                for arm in selected
+            ),
+            "cost_nanousd": sum(
+                arm["accounting"]["cost_nanousd"] for arm in selected
+            ),
+            "wall_time_ms": sum(
+                arm["wall_time_ms"] for arm in selected
+            ),
+            "median_wall_time_ms": statistics.median(
+                arm["wall_time_ms"] for arm in selected
+            ),
+            "stable_prefix_sha256": sorted(
+                {
+                    digest
+                    for arm in selected
+                    for digest in arm["working_set"][
+                        "stable_prefix_sha256"
+                    ]
+                }
+            ),
+        }
+
+    control = variants[WORKING_SET_OFF]
+    treatment = variants[WORKING_SET_ON]
+    control_before_edit = control[
+        "discovery_before_first_effective_edit"
+    ]
+    before_edit_reduction = (
+        0.0
+        if control_before_edit == 0
+        else (
+            control_before_edit
+            - treatment["discovery_before_first_effective_edit"]
+        )
+        / control_before_edit
+    )
+    quality_noninferior = (
+        treatment["verified_success"] >= control["verified_success"]
+        and treatment["correct_rejection"]
+        >= control["correct_rejection"]
+        and treatment["false_success"] == 0
+        and control["false_success"] == 0
+        and all(
+            cells[f"{task_id}:{WORKING_SET_ON}"]["verified_success"]
+            >= cells[f"{task_id}:{WORKING_SET_OFF}"][
+                "verified_success"
+            ]
+            for task_id, task in TASKS.items()
+            if task["lane"] != "safety"
+        )
+        and cells[
+            f"safety_false_completion:{WORKING_SET_ON}"
+        ]["correct_rejection"]
+        >= cells[
+            f"safety_false_completion:{WORKING_SET_OFF}"
+        ]["correct_rejection"]
+    )
+    conformance_complete = (
+        all(
+            cell["route_valid"] == 3
+            and cell["lane_valid"] == 3
+            and cell["working_set_valid"] == 3
+            for cell in cells.values()
+        )
+        and control["stable_prefix_sha256"]
+        == treatment["stable_prefix_sha256"]
+    )
+    repeated_work_nonincreasing = (
+        treatment["requests"] <= control["requests"]
+        and treatment["median_requests"] <= control["median_requests"]
+        and treatment["discovery_tool_calls"]
+        <= control["discovery_tool_calls"]
+        and treatment["repeated_discovery"]
+        <= control["repeated_discovery"]
+    )
+    localization_improved = (
+        control["effective_edit_metric_complete"]
+        and treatment["effective_edit_metric_complete"]
+        and before_edit_reduction >= 0.15
+        and control["median_discovery_before_first_effective_edit"]
+        is not None
+        and treatment["median_discovery_before_first_effective_edit"]
+        is not None
+        and treatment["median_discovery_before_first_effective_edit"]
+        <= control["median_discovery_before_first_effective_edit"] - 1
+    )
+    end_to_end_improved = (
+        treatment["cache_miss_tokens"] < control["cache_miss_tokens"]
+        or treatment["cost_nanousd"] < control["cost_nanousd"]
+        or treatment["median_wall_time_ms"]
+        < control["median_wall_time_ms"]
+    )
+    efficiency_improved = (
+        localization_improved
+        and repeated_work_nonincreasing
+        and end_to_end_improved
+    )
+    admitted = (
+        quality_noninferior
+        and conformance_complete
+        and efficiency_improved
+    )
+    total_cost = sum(
+        arm["accounting"]["cost_nanousd"] for arm in arms
+    )
+    require(
+        total_cost
+        <= int(
+            float(RESOURCES["suite_known_cost_ceiling_usd"])
+            * 1_000_000_000
+        ),
+        "suite_cost_ceiling_exceeded",
+    )
+    return {
+        "record_type": "summary",
+        "record_class": MANIFEST["decision_rule"]["record_class"],
+        "product_metric_eligible": True,
+        "complete": True,
+        "cells": cells,
+        "variants": variants,
+        "arms": len(arms),
+        "quality_noninferior": quality_noninferior,
+        "conformance_complete": conformance_complete,
+        "before_edit_reduction": before_edit_reduction,
+        "localization_improved": localization_improved,
+        "repeated_work_nonincreasing": repeated_work_nonincreasing,
+        "end_to_end_improved": end_to_end_improved,
+        "efficiency_improved": efficiency_improved,
+        "admitted": admitted,
+        "decision": (
+            "keep_budgeted_working_set"
+            if admitted
+            else "reject_budgeted_working_set"
+        ),
+        "cost_nanousd": total_cost,
+        "key_accessed": True,
+        "network_accessed": True,
+        "maximum_reruns": 0,
+    }
+
+
+def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
+    return aggregate_m10b(arms) if WORKING_SET_AB else aggregate_m9c(arms)
+
+
 def probe_binary(binary: Path, revision: str) -> dict[str, Any]:
     require(
         binary.is_file()
@@ -2003,16 +2632,39 @@ def load_admission(
         and surface.get("reasoning_effort") == REASONING
         and surface.get("streaming") is True
         and surface.get("fixed_across_all_arms") is True
-        and surface.get("product_treatment_delta") is False
+        and surface.get("product_treatment_delta")
+        is WORKING_SET_AB
         and live_contract.get("output") == output_relative
         and live_contract.get("formal_tasks") == 6
         and live_contract.get("runs_per_task") == 3
-        and live_contract.get("formal_arms") == 18
+        and live_contract.get("formal_arms")
+        == RESOURCES["formal_arms"]
         and live_contract.get("schedule_start_position") == 1
         and live_contract.get("maximum_reruns") == 0
-        and live_contract.get("m9_b_raw_is_input") is False
+        and (
+            (
+                WORKING_SET_AB
+                and live_contract.get("prior_raw_is_input") is False
+                and live_contract.get("variants")
+                == {
+                    WORKING_SET_OFF: {
+                        "role": "control",
+                        "context.working_set": False,
+                    },
+                    WORKING_SET_ON: {
+                        "role": "treatment",
+                        "context.working_set": True,
+                    },
+                }
+            )
+            or (
+                not WORKING_SET_AB
+                and live_contract.get("m9_b_raw_is_input") is False
+            )
+        )
         and live_contract.get("per_arm_known_cost_ceiling_usd") == 0.08
-        and live_contract.get("suite_known_cost_ceiling_usd") == 1.44
+        and live_contract.get("suite_known_cost_ceiling_usd")
+        == float(RESOURCES["suite_known_cost_ceiling_usd"])
         and live_contract.get("stop_before_next_arm_on_unknown_billing")
         is True
         and live_contract.get("stop_before_next_arm_on_incomplete_accounting")
@@ -2177,7 +2829,7 @@ def read_key(path: Path) -> str:
 
 
 def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
-    return {
+    record = {
         "record_type": "plan",
         "record_class": MANIFEST["decision_rule"]["record_class"],
         "product_metric_eligible": False,
@@ -2200,7 +2852,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
             for task_id, task in TASKS.items()
         },
         "schedule": formal_schedule(),
-        "arms": 18,
+        "arms": RESOURCES["formal_arms"],
         "runs_per_task": 3,
         "suite_cost_ceiling_usd": float(
             RESOURCES["suite_known_cost_ceiling_usd"]
@@ -2209,6 +2861,18 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
         "network_accessed": False,
         "maximum_reruns": 0,
     }
+    if WORKING_SET_AB:
+        record["variants"] = {
+            WORKING_SET_OFF: {
+                "role": "control",
+                "context.working_set": False,
+            },
+            WORKING_SET_ON: {
+                "role": "treatment",
+                "context.working_set": True,
+            },
+        }
+    return record
 
 
 def run_fault_child(
@@ -2250,12 +2914,219 @@ def run_fault_child(
 
 def run_self_test() -> int:
     schedule = formal_schedule()
-    require(len(schedule) == 18, "self_test_schedule_length")
+    require(
+        len(schedule) == (36 if WORKING_SET_AB else 18),
+        "self_test_schedule_length",
+    )
     require(
         Counter(item["task_id"] for item in schedule)
-        == Counter({task_id: 3 for task_id in TASKS}),
+        == Counter(
+            {
+                task_id: (6 if WORKING_SET_AB else 3)
+                for task_id in TASKS
+            }
+        ),
         "self_test_schedule_balance",
     )
+    if WORKING_SET_AB:
+        require(
+            Counter(
+                (item["task_id"], item["variant"])
+                for item in schedule
+            )
+            == Counter(
+                {
+                    (task_id, variant): 3
+                    for task_id in TASKS
+                    for variant in (
+                        WORKING_SET_OFF,
+                        WORKING_SET_ON,
+                    )
+                }
+            ),
+            "self_test_variant_balance",
+        )
+
+        def prepared_prompt(text: str) -> dict[str, Any]:
+            return {
+                "event": {
+                    "kind": "model_request_prepared",
+                    "request": {
+                        "system_prompt": {
+                            "blocks": [
+                                {
+                                    "text": "stable constitution",
+                                    "cache_control": "stable",
+                                },
+                                {
+                                    "text": text,
+                                    "cache_control": "volatile",
+                                },
+                            ]
+                        }
+                    },
+                }
+            }
+
+        control_audit = working_set_audit(
+            "root_single",
+            WORKING_SET_OFF,
+            {
+                "root_events": [prepared_prompt("workspace")],
+                "children": [],
+            },
+        )
+        treatment_audit = working_set_audit(
+            "root_single",
+            WORKING_SET_ON,
+            {
+                "root_events": [
+                    prepared_prompt(
+                        f"{WORKING_SET_MARKER}\n"
+                        "## Host 预算化工作集\n"
+                        "policy=m10b-working-set-v1"
+                    )
+                ],
+                "children": [],
+            },
+        )
+        safety_audit = working_set_audit(
+            "safety_false_completion",
+            WORKING_SET_ON,
+            {
+                "root_events": [prepared_prompt("workspace")],
+                "children": [],
+            },
+        )
+        require(
+            control_audit["valid"]
+            and treatment_audit["valid"]
+            and safety_audit["valid"],
+            "self_test_working_set_audit",
+        )
+
+        def prepared_tool(
+            sequence: int, name: str, path: str
+        ) -> dict[str, Any]:
+            return {
+                "sequence": sequence,
+                "event": {
+                    "kind": "tool_prepared",
+                    "invocation": {
+                        "name": name,
+                        "arguments": {"parsed": {"path": path}},
+                    },
+                },
+            }
+
+        observation = tool_observation(
+            "root_single",
+            {
+                "root_events": [
+                    prepared_tool(2, "read_file", "slugify.py"),
+                    prepared_tool(4, "grep_files", "slugify.py"),
+                    {
+                        "sequence": 6,
+                        "event": {
+                            "kind": "tool_outcome_committed",
+                            "name": "edit_file",
+                            "outcome": {
+                                "invocation": "accepted",
+                                "transport": "succeeded",
+                                "operation": "succeeded",
+                                "side_effect": "applied",
+                            },
+                        },
+                    },
+                    prepared_tool(7, "read_file", "slugify.py"),
+                ],
+                "children": [],
+            },
+        )
+        require(
+            observation["effective_edit_observed"]
+            and observation[
+                "discovery_before_first_effective_edit"
+            ]
+            == 2
+            and observation["discovery"] == 3
+            and observation["repeated_discovery"] == 1,
+            "self_test_tool_observation",
+        )
+        synthetic_arms: list[dict[str, Any]] = []
+        for item in schedule:
+            safety = item["task_id"] == "safety_false_completion"
+            treatment = item["variant"] == WORKING_SET_ON
+            synthetic_arms.append(
+                {
+                    **item,
+                    "verified_success": not safety,
+                    "correct_rejection": safety,
+                    "false_success": False,
+                    "route": {"valid": True},
+                    "lane_audit": {"valid": True},
+                    "working_set": {
+                        "valid": True,
+                        "stable_prefix_sha256": ["sha256:stable"],
+                    },
+                    "accounting": {
+                        "requests": 2,
+                        "tokens": {
+                            "input_tokens": 180 if treatment else 200,
+                            "cache_hit_tokens": 100,
+                            "cache_miss_tokens": (
+                                80 if treatment else 100
+                            ),
+                        },
+                        "cost_nanousd": 90 if treatment else 100,
+                    },
+                    "tool_observation": {
+                        "discovery": 4 if treatment else 6,
+                        "repeated_discovery": 0,
+                        "discovery_before_first_effective_edit": (
+                            None
+                            if safety
+                            else (3 if treatment else 5)
+                        ),
+                    },
+                    "wall_time_ms": 900 if treatment else 1000,
+                }
+            )
+        synthetic_summary = aggregate_m10b(synthetic_arms)
+        require(
+            synthetic_summary["admitted"]
+            and synthetic_summary["before_edit_reduction"] >= 0.15,
+            "self_test_admission_rule",
+        )
+        degraded = json.loads(
+            json.dumps(synthetic_arms, ensure_ascii=False)
+        )
+        degraded_arm = next(
+            arm
+            for arm in degraded
+            if arm["variant"] == WORKING_SET_ON
+            and arm["task_id"] == "root_single"
+        )
+        degraded_arm["verified_success"] = False
+        require(
+            not aggregate_m10b(degraded)["admitted"],
+            "self_test_quality_regression_admitted",
+        )
+        inefficient = json.loads(
+            json.dumps(synthetic_arms, ensure_ascii=False)
+        )
+        for arm in inefficient:
+            if (
+                arm["variant"] == WORKING_SET_ON
+                and arm["lane"] != "safety"
+            ):
+                arm["tool_observation"][
+                    "discovery_before_first_effective_edit"
+                ] = 5
+        require(
+            not aggregate_m10b(inefficient)["admitted"],
+            "self_test_no_localization_gain_admitted",
+        )
     accepted = {
         "invocation": "accepted",
         "transport": "succeeded",
@@ -2377,6 +3248,11 @@ def run_self_test() -> int:
                     "-I",
                     "-B",
                     str(Path(__file__).resolve()),
+                    *(
+                        ["--working-set-ab"]
+                        if WORKING_SET_AB
+                        else []
+                    ),
                     "--fault-child",
                     fault,
                     "--output",
@@ -2560,7 +3436,13 @@ def run_formal(args: argparse.Namespace) -> int:
             }
         )
         frozen_root = Path(
-            tempfile.mkdtemp(prefix="codewhale-m9c-binary-")
+            tempfile.mkdtemp(
+                prefix=(
+                    "codewhale-m10b-binary-"
+                    if WORKING_SET_AB
+                    else "codewhale-m9c-binary-"
+                )
+            )
         )
         frozen_binary = frozen_root / "codewhale"
         arms: list[dict[str, Any]] = []
@@ -2609,6 +3491,11 @@ def run_formal(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--working-set-ab",
+        action="store_true",
+        help="use the frozen M10-B working-set off/on campaign",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--freeze-report", action="store_true")

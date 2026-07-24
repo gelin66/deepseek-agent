@@ -1,0 +1,237 @@
+{
+  "schema": "codewhale.eval.m10-b-working-set-ab.v1",
+  "suite_id": "m10-b-working-set-ab-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "5f028d1ba735e96906d53b0b6ae66fe319de8bc3",
+    "starting_tree": "95cbffc0554ff685a0797e58162d16ca75b399b5",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo_lock_sha256": "sha256:b60b41dcec45ccd07ade8ab694eb8a1d9cbdb66265e80a352321291fbc42e475",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:b9ab949efcb10a0405393d0a16f8b6e1dbb232869085b0f988c45f5139864668",
+    "roadmap": "sha256:72b12f0eae686698ee30e6f9ecc34935817ce428493dfef25bf25c48c2e212cd",
+    "evaluation": "sha256:96fac7a889f7834ffb83dce6c1c1b2ef7346e4b5f30ba4bb486bf0b94b48b801",
+    "current_architecture": "sha256:b6f42edec0416e60f5b828d80fbe618ab8f470e0ea169e330c93dc5c9ed8e7d5"
+  },
+  "slice_contract": {
+    "real_problem": "The root, read-only child, and Writer can spend repeated search/read turns locating files before an effective edit even though the Host can derive a bounded deterministic repository working set from the frozen TaskContract and current Git facts.",
+    "acceptance": [
+      "freeze working_set_off and working_set_on as the only treatment delta through the existing temporary typed context.working_set setting and one immutable production binary",
+      "reuse the exact six M9-B repository, TaskContract, tool, verifier, model, reasoning, request-budget, and actor-lane contracts with three fresh runs per variant and task",
+      "record exact root and child system-prompt block identity, stable-prefix identity, first effective edit, discovery/search/read repetitions, terminal and Store facts, no-credential SQLite reopen, external verifier, usage, cost, and wall time before deriving labels",
+      "stop before the next arm on unknown billing, incomplete accounting, identity mismatch, observer ambiguity, safety ambiguity, or any physical-attempt uncertainty; maximum_reruns remains zero",
+      "admit the Working-Set selector only when verified success is non-inferior in every positive stratum, false success is zero, safety rejection does not regress, route/lane/reopen conformance is complete, aggregate pre-edit discovery falls by at least fifteen percent with median at least one call lower, repeated work does not increase, and cache-miss input, known cost, or median wall time improves"
+    ],
+    "single_owner": "crates/context ContextBroker measured by scripts/eval-m9b-fixed-pro-regression.py over the canonical AgentApplication -> AgentRuntime -> RunStore chain",
+    "old_path": "root and child agents repeatedly discover repository scope without a Host-derived bounded task-aware map",
+    "cutover_deletion": [
+      "if admitted, make the single bounded selector unconditional for eligible coding TaskContracts, then delete working_set_enabled, context.working_set, the TUI/config treatment surface, and off/on-only tests after real callers migrate",
+      "if rejected, delete the selector, production caller, temporary config, candidate fixture/benchmark consumers, and M10-B-only Harness branch while preserving the immutable manifest, decision summary, and any required 0600 raw evidence"
+    ],
+    "forbidden": [
+      "a RepoGraph crate, embedding, vector database, LLM reranker, second evaluator, ContextBroker, Runtime, Store, model route, Provider, FIM surface, classifier, or dynamic router",
+      "selective reruns, mate completion, historical raw splicing, model or reasoning changes, project-pack changes, or a cost claim after unknown billing"
+    ]
+  },
+  "localization_baseline": {
+    "path": "eval/manifests/m10-b-working-set-localization-v2.json",
+    "file_sha256": "sha256:a83f52049caaa6f46d937c03d1bf6d7f5c69bb4f261bc33a592f8b876138ab6d",
+    "policy_version": "m10b-working-set-v1",
+    "max_rendered_chars": 3900,
+    "mechanism_evidence_only": true
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m9-b-fixed-pro-regression-v1.json",
+    "file_sha256": "sha256:00fc21663441dafc28370002305f19ed2a212c119fbe38140abbac6fad89f0c5",
+    "sections": {
+      "tasks": "sha256:591b3515cbd246d41b963d24ec58bfd4aa8f0ef35c82fb81bc7a7d5563e84b0c",
+      "tool_policies": "sha256:75975810b99da9b66a6b29e4ec2beee63d744cbc8067c7b2ae79b53a7335cbdd",
+      "official_review": "sha256:6f45bd0c11be2496b02b91a1f5fa1a162062a81a9d62377c5288eb575973b334"
+    },
+    "acceptance_id_overrides": {
+      "root_single": "m10b-root-single",
+      "root_migration": "m10b-root-migration",
+      "root_recovery": "m10b-root-recovery",
+      "readonly_investigation": "m10b-readonly-investigation",
+      "writer_migration": "m10b-writer-migration",
+      "safety_false_completion": "m10b-safety-false-completion"
+    },
+    "excluded_sections": [
+      "source_identity",
+      "authority_sha256",
+      "slice_contract",
+      "resources",
+      "formal_schedule",
+      "hard_gates",
+      "decision_rule",
+      "execution"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-24",
+    "sources": [
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_aliases_retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87"
+    }
+  },
+  "variants": {
+    "working_set_off": {
+      "role": "control",
+      "context.working_set": false,
+      "context.project_pack": true
+    },
+    "working_set_on": {
+      "role": "treatment",
+      "context.working_set": true,
+      "context.project_pack": true
+    }
+  },
+  "resources": {
+    "runs_per_task": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 6,
+    "formal_arms": 36,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 8192,
+    "model_event_idle_ms": 120000,
+    "runtime_wall_time_ms": 300000,
+    "harness_wall_time_ms": 330000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 30,
+    "per_arm_known_cost_ceiling_usd": "0.08",
+    "suite_known_cost_ceiling_usd": "2.88",
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m10b-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        {"task_id": "root_single", "variant": "working_set_off"},
+        {"task_id": "root_migration", "variant": "working_set_on"},
+        {"task_id": "root_recovery", "variant": "working_set_off"},
+        {"task_id": "readonly_investigation", "variant": "working_set_on"},
+        {"task_id": "writer_migration", "variant": "working_set_off"},
+        {"task_id": "safety_false_completion", "variant": "working_set_on"}
+      ],
+      [
+        {"task_id": "safety_false_completion", "variant": "working_set_off"},
+        {"task_id": "writer_migration", "variant": "working_set_on"},
+        {"task_id": "readonly_investigation", "variant": "working_set_off"},
+        {"task_id": "root_recovery", "variant": "working_set_on"},
+        {"task_id": "root_migration", "variant": "working_set_off"},
+        {"task_id": "root_single", "variant": "working_set_on"}
+      ],
+      [
+        {"task_id": "root_recovery", "variant": "working_set_off"},
+        {"task_id": "safety_false_completion", "variant": "working_set_on"},
+        {"task_id": "root_single", "variant": "working_set_off"},
+        {"task_id": "readonly_investigation", "variant": "working_set_on"},
+        {"task_id": "writer_migration", "variant": "working_set_off"},
+        {"task_id": "root_migration", "variant": "working_set_on"}
+      ],
+      [
+        {"task_id": "readonly_investigation", "variant": "working_set_off"},
+        {"task_id": "root_single", "variant": "working_set_on"},
+        {"task_id": "root_migration", "variant": "working_set_off"},
+        {"task_id": "writer_migration", "variant": "working_set_on"},
+        {"task_id": "safety_false_completion", "variant": "working_set_off"},
+        {"task_id": "root_recovery", "variant": "working_set_on"}
+      ],
+      [
+        {"task_id": "writer_migration", "variant": "working_set_off"},
+        {"task_id": "readonly_investigation", "variant": "working_set_on"},
+        {"task_id": "root_recovery", "variant": "working_set_off"},
+        {"task_id": "root_migration", "variant": "working_set_on"},
+        {"task_id": "root_single", "variant": "working_set_off"},
+        {"task_id": "safety_false_completion", "variant": "working_set_on"}
+      ],
+      [
+        {"task_id": "root_migration", "variant": "working_set_off"},
+        {"task_id": "root_recovery", "variant": "working_set_on"},
+        {"task_id": "safety_false_completion", "variant": "working_set_off"},
+        {"task_id": "root_single", "variant": "working_set_on"},
+        {"task_id": "readonly_investigation", "variant": "working_set_off"},
+        {"task_id": "writer_migration", "variant": "working_set_on"}
+      ]
+    ],
+    "schedule_semantics": "six balanced rounds; every task receives exactly three working_set_off and three working_set_on fresh repositories; each round interleaves three control and three treatment arms; maximum_reruns=0"
+  },
+  "hard_gates": {
+    "identity": [
+      "one clean candidate revision and one immutable codewhale binary for all 36 arms",
+      "working_set_off and working_set_on use explicit 0600 config files in isolated homes; context.working_set is the only treatment delta and project context pack stays enabled",
+      "all task, actor, tool, verifier, model, reasoning, endpoint, request budget, source, schedule, and binary identities match this manifest"
+    ],
+    "measurement": [
+      "control has no Working-Set marker; treatment positive root requests have exactly one bounded marker/body; the safety counterexample abstains; the marker never enters the stable prefix",
+      "terminal, canonical Store, no-credential SQLite reopen, external verifier, first effective edit, discovery repetition, usage, cost, and prompt identity are durable before arm derivation",
+      "accounting complete=true, usage_complete=true, billing_unknown=false, unpriced=false, sealed=true, in_flight=0, and started=completed for every physical attempt"
+    ],
+    "quality": [
+      "verified success is non-inferior overall and in every positive stratum",
+      "false success is zero in both variants and safety correct rejection does not regress",
+      "root, read-only child, Writer, recovery, latest revision evidence, route audit, and SQLite reopen conformance are complete"
+    ],
+    "efficiency": [
+      "aggregate discovery calls before first effective edit fall by at least fifteen percent and their median falls by at least one call",
+      "aggregate discovery calls, repeated search/read signatures, and aggregate/median model requests do not increase",
+      "aggregate cache-miss input, aggregate known cost, or median wall time improves"
+    ]
+  },
+  "decision_rule": {
+    "admit": "keep_budgeted_working_set only when all 36 arms are measurement-valid and every identity, quality, conformance, localization, and efficiency hard gate passes",
+    "reject": "reject_budgeted_working_set when the complete matrix fails any quality or efficiency gate; delete the selector and all treatment paths",
+    "stop_incomplete": "on unknown billing, incomplete accounting, identity mismatch, observer failure, safety ambiguity, cost ceiling, or any pre-registered hard gate; do not rerun, complete a mate, resume, resample, or splice",
+    "record_class": "m10_b_working_set_ab",
+    "product_metric_eligible": true,
+    "non_conclusions": [
+      "this experiment does not evaluate nested scoped rules, Acceptance Progress, typed recovery, environment artifacts, Auto, Flash routing, FIM, Provider, or multi-Agent admission",
+      "offline localization scores or one successful arm cannot admit the selector",
+      "unknown billing cannot support a cost or product conclusion"
+    ]
+  },
+  "execution": {
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_before_live_admission": false,
+    "official_api_requests_before_live_admission": 0,
+    "raw_path_template": "eval/results/m10-b-working-set-<candidate12>-v1.jsonl",
+    "raw_mode": "ignored_0600_exclusive_hash_chained",
+    "live_api_admitted_at_freeze": false
+  }
+}
