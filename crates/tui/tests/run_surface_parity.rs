@@ -411,6 +411,7 @@ fn production_application(
             .kind()
             .binary()
             .to_owned(),
+        acceptance_progress_enabled: false,
     };
     let config = ProductionApplicationConfig::official()
         .with_state_db_path(state_path)

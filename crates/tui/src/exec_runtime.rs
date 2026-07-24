@@ -907,6 +907,7 @@ pub(crate) fn production_application_config(
             .kind()
             .binary()
             .to_owned(),
+        acceptance_progress_enabled: config.acceptance_progress_enabled(),
     };
 
     let trusted = crate::workspace_trust::WorkspaceTrust::load_for(workspace);

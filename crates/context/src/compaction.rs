@@ -15,6 +15,7 @@ use codewhale_protocol::task::{
     CompletionRejection, EvidenceReceipt, TaskAcceptance, TaskContract, WorkspaceRevision,
     WorkspaceState,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 const TOOL_RESULT_PRUNE_CHARS: usize = 16 * 1024;
@@ -33,11 +34,131 @@ pub struct ContextInput<'a> {
     pub projection: Option<&'a ContextProjection>,
     pub task_contract: Option<&'a TaskContract>,
     pub workspace_state: &'a WorkspaceState,
+    /// Runtime-owned, request-local derivation of the current acceptance state.
+    ///
+    /// `None` preserves the frozen control renderer while M10-C is evaluated.
+    /// This value is never persisted as a second plan or completion truth.
+    pub acceptance_progress: Option<&'a AcceptanceProgressProjection>,
     pub evidence_receipts: &'a [EvidenceReceipt],
     pub last_completion_rejection: Option<&'a CompletionRejection>,
     pub last_verifier_failure: Option<&'a codewhale_protocol::agent_runtime::ToolOutcome>,
     pub last_verifier_failure_workspace: Option<&'a WorkspaceState>,
     pub tools: &'a [ToolDefinition],
+}
+
+/// Request-local status of one frozen acceptance criterion.
+///
+/// These are presentation facts derived by AgentRuntime from the canonical
+/// snapshot. They are not Runtime events or durable state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceProgressStatus {
+    Satisfied,
+    Pending,
+    Invalidated,
+    EvidenceNeeded,
+}
+
+/// Stable reason for the current derived acceptance status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceProgressReason {
+    HostReviewPending,
+    VerifierPending,
+    CurrentReceipt,
+    StaleReceipt,
+    VerifierPassObserved,
+    VerifierFailureObserved,
+    TemporalFailureObserved,
+    TemporalMutationObserved,
+    WorkspaceMutationObserved,
+    VerifierObservationMissing,
+    VerifierSpecMismatch,
+    VerifierWorkspaceUnstable,
+    VerifierArtifactUnavailable,
+    VerifierFailed,
+    VerifierIncomplete,
+    VerifierOutcomeInconsistent,
+    EvidenceLineageUnavailable,
+    EvidenceReceiptInvalid,
+}
+
+/// Next class of evidence or Host action needed for one acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceEvidenceNeed {
+    HostCompletionReview,
+    FailedVerifierObservation,
+    EffectiveWorkspaceMutation,
+    LatestHostVerifierPass,
+    EvidenceLineageRepair,
+    HostVerifierContractRepair,
+    HostVerifierExecutionRepair,
+}
+
+/// Concise model-visible item derived from one canonical acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcceptanceProgressItem {
+    pub acceptance_id: String,
+    pub status: AcceptanceProgressStatus,
+    pub reason: AcceptanceProgressReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_evidence: Option<AcceptanceEvidenceNeed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_workspace_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_workspace_revision: Option<String>,
+}
+
+/// Complete request-local acceptance projection for one TaskContract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcceptanceProgressProjection {
+    pub items: Vec<AcceptanceProgressItem>,
+    /// A failed Host verifier is not part of the model transcript. Runtime
+    /// raises this only while the current task still needs that diagnostic.
+    pub include_last_host_verifier_failure: bool,
+}
+
+impl AcceptanceProgressProjection {
+    fn validate_for(&self, contract: &TaskContract) -> Result<(), ContextProjectionError> {
+        if self.items.len() != contract.definition.acceptance.len()
+            || self
+                .items
+                .iter()
+                .zip(&contract.definition.acceptance)
+                .any(|(item, acceptance)| item.acceptance_id != acceptance.id().0)
+        {
+            return Err(ContextProjectionError::InvalidAcceptanceProgress(
+                "items must match the frozen TaskContract in exact order".to_owned(),
+            ));
+        }
+        for item in &self.items {
+            let has_receipt = item.receipt_id.is_some()
+                && item.evidence_workspace_generation.is_some()
+                && item.evidence_workspace_revision.is_some();
+            let has_no_receipt = item.receipt_id.is_none()
+                && item.evidence_workspace_generation.is_none()
+                && item.evidence_workspace_revision.is_none();
+            let valid = match item.status {
+                AcceptanceProgressStatus::Satisfied => has_receipt && item.next_evidence.is_none(),
+                AcceptanceProgressStatus::Invalidated => {
+                    has_receipt && item.next_evidence.is_some()
+                }
+                AcceptanceProgressStatus::Pending | AcceptanceProgressStatus::EvidenceNeeded => {
+                    has_no_receipt && item.next_evidence.is_some()
+                }
+            };
+            if !valid {
+                return Err(ContextProjectionError::InvalidAcceptanceProgress(format!(
+                    "acceptance '{}' has inconsistent status fields",
+                    item.acceptance_id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +203,8 @@ pub enum ContextProjectionError {
     Digest(String),
     #[error("invalid context policy: {0}")]
     InvalidPolicy(String),
+    #[error("invalid acceptance progress projection: {0}")]
+    InvalidAcceptanceProgress(String),
 }
 
 /// Materialize the exact model-visible request context.
@@ -495,17 +618,22 @@ fn render_host_facts(
             lines.push("### 冻结任务契约".to_owned());
             lines.push(rendered);
         }
-        let acceptance_ids = contract
-            .definition
-            .acceptance
-            .iter()
-            .map(|acceptance| acceptance.id().0.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        lines.push(format!(
-            "- task_generation: `{}`\n- acceptance_ids: `{acceptance_ids}`",
-            contract.generation_id.0
-        ));
+        lines.push(format!("- task_generation: `{}`", contract.generation_id.0));
+        if let Some(progress) = input.acceptance_progress {
+            progress.validate_for(contract)?;
+            let encoded = serde_json::to_string(&progress.items)
+                .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+            lines.push(format!("### 验收进度（Host 派生）\n`{encoded}`"));
+        } else {
+            let acceptance_ids = contract
+                .definition
+                .acceptance
+                .iter()
+                .map(|acceptance| acceptance.id().0.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            lines.push(format!("- acceptance_ids: `{acceptance_ids}`"));
+        }
     }
 
     let revision = match &input.workspace_state.revision {
@@ -517,18 +645,26 @@ fn render_host_facts(
         input.workspace_state.generation
     ));
 
-    if let Some(receipt) = latest_valid_receipt(input) {
-        let encoded = serde_json::to_string(receipt)
-            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
-        lines.push(format!("### 当前有效 EvidenceReceipt\n`{encoded}`"));
+    let show_last_host_verifier_failure = if let Some(progress) = input.acceptance_progress {
+        progress.include_last_host_verifier_failure
     } else {
-        lines.push("- current_evidence_receipt: `none`".to_owned());
-    }
-
-    if let Some(rejection) = unresolved_rejection(input) {
-        let encoded = serde_json::to_string(rejection)
-            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
-        lines.push(format!("### 未解决的完成拒绝\n`{encoded}`"));
+        if let Some(receipt) = latest_valid_receipt(input) {
+            let encoded = serde_json::to_string(receipt)
+                .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+            lines.push(format!("### 当前有效 EvidenceReceipt\n`{encoded}`"));
+        } else {
+            lines.push("- current_evidence_receipt: `none`".to_owned());
+        }
+        if let Some(rejection) = unresolved_rejection(input) {
+            let encoded = serde_json::to_string(rejection)
+                .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+            lines.push(format!("### 未解决的完成拒绝\n`{encoded}`"));
+            true
+        } else {
+            false
+        }
+    };
+    if show_last_host_verifier_failure {
         if let Some(outcome) = input.last_verifier_failure {
             let mut outcome = outcome.clone();
             for artifact in &mut outcome.artifacts {
@@ -855,6 +991,7 @@ mod tests {
             projection,
             task_contract: Some(contract),
             workspace_state: workspace,
+            acceptance_progress: None,
             evidence_receipts: receipts,
             last_completion_rejection: rejection,
             last_verifier_failure: None,
@@ -985,6 +1122,139 @@ mod tests {
         assert!(!rendered.contains("receipt-1"));
         assert!(rendered.contains("current_evidence_receipt"));
         assert!(rendered.contains("`none`"));
+    }
+
+    #[test]
+    fn derived_progress_replaces_duplicate_acceptance_and_receipt_prose() {
+        let contract = contract();
+        let transcript = long_transcript(&contract);
+        let current_workspace = workspace(5, "sha256:current");
+        let receipt = EvidenceReceipt {
+            id: EvidenceReceiptId::from("receipt-1"),
+            generation_id: contract.generation_id.clone(),
+            acceptance_id: AcceptanceId::from("accept-1"),
+            verification_id: VerificationId::from("verification-1"),
+            verifier: verifier(),
+            workspace_state: current_workspace.clone(),
+            artifact_ids: vec!["artifact-1".to_owned()],
+            lineage: EvidenceLineage::LatestPass,
+        };
+        let receipts = vec![receipt];
+        let legacy = effective_context(input(
+            &transcript,
+            None,
+            &contract,
+            &current_workspace,
+            &receipts,
+            None,
+        ))
+        .expect("legacy control");
+        let progress = AcceptanceProgressProjection {
+            items: vec![AcceptanceProgressItem {
+                acceptance_id: "accept-1".to_owned(),
+                status: AcceptanceProgressStatus::Satisfied,
+                reason: AcceptanceProgressReason::CurrentReceipt,
+                next_evidence: None,
+                receipt_id: Some("receipt-1".to_owned()),
+                evidence_workspace_generation: Some(5),
+                evidence_workspace_revision: Some("sha256:current".to_owned()),
+            }],
+            include_last_host_verifier_failure: false,
+        };
+        let mut treatment_input = input(
+            &transcript,
+            None,
+            &contract,
+            &current_workspace,
+            &receipts,
+            None,
+        );
+        treatment_input.acceptance_progress = Some(&progress);
+        let treatment = effective_context(treatment_input).expect("derived treatment");
+        let ModelMessage::User {
+            content: legacy_tail,
+        } = legacy.messages.last().expect("legacy Host facts")
+        else {
+            panic!("legacy request must end in Host facts")
+        };
+        let ModelMessage::User {
+            content: treatment_tail,
+        } = treatment.messages.last().expect("treatment Host facts")
+        else {
+            panic!("treatment request must end in Host facts")
+        };
+        assert!(treatment_tail.contains("验收进度（Host 派生）"));
+        assert!(treatment_tail.contains("\"status\":\"satisfied\""));
+        assert!(!treatment_tail.contains("acceptance_ids"));
+        assert!(!treatment_tail.contains("当前有效 EvidenceReceipt"));
+        assert!(
+            treatment_tail.len() < legacy_tail.len(),
+            "concise progress must replace, not duplicate, the legacy receipt prose"
+        );
+    }
+
+    #[test]
+    fn derived_progress_controls_untranscribed_host_failure_visibility() {
+        let contract = contract();
+        let workspace = workspace(2, "sha256:broken");
+        let transcript = long_transcript(&contract);
+        let mut outcome = ToolOutcome::error("EXPECTED_HOST_FAILURE");
+        outcome.artifacts.push(ToolArtifact {
+            id: "artifact-1".to_owned(),
+            status: ToolArtifactStatus::Available,
+            sha256: Some("sha256:artifact".to_owned()),
+            media_type: Some("application/json".to_owned()),
+            byte_len: Some(24),
+            inline_content: Some(json!({"secret": "INLINE_ARTIFACT_SENTINEL"})),
+        });
+        let progress = AcceptanceProgressProjection {
+            items: vec![AcceptanceProgressItem {
+                acceptance_id: "accept-1".to_owned(),
+                status: AcceptanceProgressStatus::EvidenceNeeded,
+                reason: AcceptanceProgressReason::VerifierFailed,
+                next_evidence: Some(AcceptanceEvidenceNeed::EffectiveWorkspaceMutation),
+                receipt_id: None,
+                evidence_workspace_generation: None,
+                evidence_workspace_revision: None,
+            }],
+            include_last_host_verifier_failure: true,
+        };
+        let mut current = input(&transcript, None, &contract, &workspace, &[], None);
+        current.acceptance_progress = Some(&progress);
+        current.last_verifier_failure = Some(&outcome);
+        current.last_verifier_failure_workspace = Some(&workspace);
+        let projected = effective_context(current).expect("derived failure context");
+        let rendered = serde_json::to_string(&projected.messages).expect("messages");
+        assert!(rendered.contains("evidence_needed"));
+        assert!(rendered.contains("effective_workspace_mutation"));
+        assert!(rendered.contains("EXPECTED_HOST_FAILURE"));
+        assert!(!rendered.contains("INLINE_ARTIFACT_SENTINEL"));
+        assert!(!rendered.contains("未解决的完成拒绝"));
+    }
+
+    #[test]
+    fn progress_must_match_the_frozen_contract_exactly() {
+        let contract = contract();
+        let workspace = workspace(1, "sha256:current");
+        let transcript = long_transcript(&contract);
+        let progress = AcceptanceProgressProjection {
+            items: vec![AcceptanceProgressItem {
+                acceptance_id: "wrong-id".to_owned(),
+                status: AcceptanceProgressStatus::Pending,
+                reason: AcceptanceProgressReason::VerifierPending,
+                next_evidence: Some(AcceptanceEvidenceNeed::LatestHostVerifierPass),
+                receipt_id: None,
+                evidence_workspace_generation: None,
+                evidence_workspace_revision: None,
+            }],
+            include_last_host_verifier_failure: false,
+        };
+        let mut current = input(&transcript, None, &contract, &workspace, &[], None);
+        current.acceptance_progress = Some(&progress);
+        assert!(matches!(
+            effective_context(current),
+            Err(ContextProjectionError::InvalidAcceptanceProgress(_))
+        ));
     }
 
     #[test]

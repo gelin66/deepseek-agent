@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use codewhale_context::compaction::{
-    ContextCompactionPreparation, ContextInput, effective_context, estimate_projection_tokens,
-    prepare_compaction,
+    ContextCompactionPreparation, effective_context, estimate_projection_tokens, prepare_compaction,
 };
 use codewhale_protocol::run_api::{PendingCreationKind, RunCommand};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use super::*;
+use crate::acceptance_progress::RuntimeContextInput;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLease {
@@ -574,7 +574,8 @@ pub fn apply_event(
             after_tokens,
         } => {
             validate_compaction_safe_boundary(snapshot, &run_id)?;
-            let input = context_input(snapshot, tools);
+            let runtime_context = RuntimeContextInput::new(snapshot, tools);
+            let input = runtime_context.as_context_input();
             let current =
                 effective_context(input).map_err(|error| corrupt(&run_id, error.to_string()))?;
             if projection.source_entry_count != current.source_entry_count
@@ -656,7 +657,8 @@ pub fn apply_event(
                 ));
             }
             validate_model_request_safe_boundary(snapshot, &run_id)?;
-            let effective = effective_context(context_input(snapshot, &request.tools))
+            let runtime_context = RuntimeContextInput::new(snapshot, &request.tools);
+            let effective = effective_context(runtime_context.as_context_input())
                 .map_err(|error| corrupt(&run_id, error.to_string()))?;
             if request.parent_run_id != snapshot.request.parent_run_id
                 || request.actor != snapshot.request.actor
@@ -3264,26 +3266,6 @@ fn validate_model_request_safe_boundary(
     Ok(())
 }
 
-fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> ContextInput<'a> {
-    ContextInput {
-        transcript: &snapshot.transcript,
-        projection: snapshot.context_projection.as_ref(),
-        task_contract: snapshot.request.task_contract.as_ref(),
-        workspace_state: &snapshot.workspace_state,
-        evidence_receipts: &snapshot.evidence_receipts,
-        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
-        last_verifier_failure: snapshot
-            .last_host_verification_failure
-            .as_ref()
-            .map(|failure| &failure.outcome),
-        last_verifier_failure_workspace: snapshot
-            .last_host_verification_failure
-            .as_ref()
-            .map(|failure| &failure.workspace_state),
-        tools,
-    }
-}
-
 fn validate_tool_preparation_binding(
     snapshot: &RunSnapshot,
     run_id: &RunId,
@@ -4355,7 +4337,8 @@ mod tests {
                     description: "fixture tool".to_owned(),
                     input_schema: json!({"type": "object"}),
                 }];
-                let context = effective_context(context_input(&snapshot, &tools))
+                let runtime_context = RuntimeContextInput::new(&snapshot, &tools);
+                let context = effective_context(runtime_context.as_context_input())
                     .expect("fixture model context");
                 let request_number = snapshot.local_turns.saturating_add(1);
                 let attempt_id = AttemptId(format!("fixture-attempt-{request_number}"));

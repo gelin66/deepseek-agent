@@ -1424,6 +1424,7 @@ mod tests {
             projection: None,
             task_contract: Some(&task_contract),
             workspace_state: &workspace,
+            acceptance_progress: None,
             evidence_receipts: &no_receipts,
             last_completion_rejection: None,
             last_verifier_failure: None,

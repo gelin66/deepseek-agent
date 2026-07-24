@@ -68,6 +68,7 @@ fn m8a_default_runtime_is_official_deepseek() {
     assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
     assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
     assert_eq!(resolved.api_key, None);
+    assert!(!resolved.acceptance_progress_enabled);
 }
 
 #[test]
@@ -78,6 +79,30 @@ fn retired_m10a_project_context_pack_setting_fails_closed() {
         .validate()
         .expect_err("retired pack-off treatment must fail closed");
     assert!(error.to_string().contains("context.project_pack"));
+}
+
+#[test]
+fn m10c_acceptance_progress_treatment_is_typed_and_defaults_off() {
+    assert!(!ConfigToml::default().acceptance_progress_enabled().unwrap());
+
+    let enabled: ConfigToml =
+        toml::from_str("[context]\nacceptance_progress = true\n").expect("typed context treatment");
+    assert!(enabled.acceptance_progress_enabled().unwrap());
+    enabled.validate().unwrap();
+
+    let invalid: ConfigToml = toml::from_str("[context]\nacceptance_progress = \"true\"\n")
+        .expect("raw invalid context treatment");
+    let error = invalid
+        .validate()
+        .expect_err("non-boolean treatment must fail closed");
+    assert!(error.to_string().contains("context.acceptance_progress"));
+
+    let unknown: ConfigToml =
+        toml::from_str("[context]\nunknown = true\n").expect("raw unknown context treatment");
+    let error = unknown
+        .validate()
+        .expect_err("unknown context treatment must fail closed");
+    assert!(error.to_string().contains("context.unknown"));
 }
 
 #[test]
