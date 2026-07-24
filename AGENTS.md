@@ -139,6 +139,17 @@ Changing one of these constraints requires evidence and a new ADR.
   post-V1 candidates, not literal V1 requirements. The current matrix is
   13 pass / 3 blocked; no production surface changed and no Key or API was
   used.
+- M8-L independently proved that imported `352e86a6` can share the official
+  ChatCompletions/model, task fixture, external verifier, and binary identity,
+  but cannot natively report physical request count, retry, incomplete usage,
+  root/child ledger, cost completeness, or exact reopen truth. The paid
+  cross-revision A/B is therefore
+  `inadmissible_incomplete_baseline_accounting` before credential access.
+  ADR-0006 retains the qualified M5-A 12/12 official DeepSeek coding/
+  false-success evidence, adds exact-current production retention gates, and
+  proves five common user workflows remain 5 -> 5 actions. V13/V16 are closed;
+  the current matrix is 15 pass / 1 blocked, with only V15 remaining. This is
+  not a current-vs-imported quality or cost claim.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

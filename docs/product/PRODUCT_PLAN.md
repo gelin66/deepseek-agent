@@ -369,11 +369,14 @@ V1 必须同时满足：
   预算内完成；RepoGraph 实现不作为 V1 门槛；
 - 完成状态依赖最新 EvidenceReceipt；
 - 其他 Provider、旧 updater、重复状态和重复运行路径已清除；
-- 真实评测证明产品优于导入时的 CodeWhale 基线；
+- release benchmark 同时保留合格的真实官方 DeepSeek coding evidence 与 exact current
+  production retention；不要求对缺失完整 physical accounting 的旧 revision 伪造不可计量的
+  imported superiority；
 - 保留的人类交互链路只使用 `zh-Hans`，不存在语言状态、选择器或其他语言包，也没有未列入
   技术白名单的英文泄漏；
 - 中文原生 Agent 提示词通过同任务 A/B，版本可追溯、可回滚且没有能力回归；
-- 使用步骤没有因为架构重构而变复杂。
+- login、interactive start、headless coding、run inspection 与 resume 等共同用户 workflow
+  的显式动作数不高于 imported baseline。
 
 ## 15. 来源与许可
 

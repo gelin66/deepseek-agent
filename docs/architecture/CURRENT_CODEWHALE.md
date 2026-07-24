@@ -59,6 +59,7 @@
 - M8-J legacy Thread truth deletion candidate：`bcbc1616`
 - M8-K frozen V1 scope successor：`b44d7ff9`
 - M8-K accepted scope candidate：`6a99cb79`
+- M8-L frozen release benchmark successor：`14319b11`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -166,6 +167,17 @@
   search/read/diff + ContextBroker + deterministic verifier 的 bounded cross-file 结果。
   current matrix 为 13 pass / 3 blocked；production source、协议版本和默认 fixed Pro
   均未改变，Key 未读取、官方请求 0。
+  M8-L 随后证明 imported `352e86a6` 的 task/model/surface、external fixture/verifier 与
+  binary identity 可对齐，但其 exec-stream v1 没有 physical request count、有效 retry
+  count、failed/incomplete usage、root/child aggregate、cost completeness/bucket 或
+  canonical reopen ledger；同一旧 Engine 又有两层透明 request reissue。paid cross-revision
+  A/B 因而在 credential 前判定 `inadmissible_incomplete_baseline_accounting`。ADR-0006
+  保留 M5-A 12/12 qualified official DeepSeek coding/false-success evidence，并要求
+  exact current candidate 通过 production Git edit、verifier recovery、completion
+  rejection、accounting/RequestPlan SQLite reopen 与 process CLI regression。五个共同
+  workflow 的用户动作总数为 `5 -> 5`。V13/V16 关闭，current matrix 为
+  15 pass / 1 blocked；V15 仍 blocked，V1 仍不可发布。production source/protocol/model
+  surface 不变，Key 未读取、official requests 0。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -1645,6 +1657,33 @@ DeepSeek ChatCompletions backend、AgentRuntime、RunStore 或工具目录。V08
 按现有可验证能力关闭后 current V1 matrix 为 13 pass / 3 blocked，剩余 V13/V15/V16，
 V1 仍不可发布。完整事实见
 [M8-K V1 产品范围 successor](../../eval/summaries/m8-k-v1-scope-successor-2026-07-24.md)。
+
+M8-L 没有修改 production source。imported/current audit 证明同一 task、official
+Chat/model、external verifier 与 wall-time 可以冻结，但旧 terminal 的
+`retry_count=null`、物理请求/failed usage/cost/reopen 缺失使 paid A/B 不能生成完整
+measurement。Harness 不补猜旧账，结果为
+`inadmissible_incomplete_baseline_accounting`，credential/API 均未使用。
+
+ADR-0006 接受如下 release evidence chain：
+
+```text
+M5-A qualified official DeepSeek evidence
+  + exact current AgentApplication/Runtime/Store production regression
+  + imported/current common user-action comparison
+  = V13/V16 release benchmark successor
+```
+
+M5-A 12/12 arms 只覆盖一个 coding task 和一个 false-claim 反例：coding 两侧均 3/3
+verified，candidate false-success 0；false-claim candidate 3/3 correct rejection，
+accounting 完整。current candidate 另行证明 Git edit、verifier fail→recovery、latest
+receipt、false completion rejection、root/read-only/Writer RequestPlan/accounting reopen
+与 resume no-request。login/interactive/headless/inspect/resume 的显式用户动作是
+`5 -> 5`。两层证据不能推导 current 相对 imported 的 success/Token/time/cost delta，也
+不能用祖先结果免除未来 model-visible treatment A/B。
+
+V13/V16 关闭后 current matrix 为 15 pass / 1 blocked；只剩 V15 billing-provable
+Simplified Chinese Agent prompt comparison，V1 仍不可发布。完整事实见
+[M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
 
 ## 7. 明确非结论
 

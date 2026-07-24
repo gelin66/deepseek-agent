@@ -162,6 +162,16 @@
   retrieval`，三种优化实现继续 evidence-gated hold。current matrix 为 13 pass /
   3 blocked，剩余 V13/V15/V16；没有 production 或 model treatment，Key 未读取、
   官方请求 0。
+  M8-L 随后从 clean `4fef6a34` 合并审计 V13/V16。exact imported `352e86a6` 可以使用
+  同一 official ChatCompletions/model、外部 task fixture 和 deterministic verifier，
+  但 exec-stream v1 的 `retry_count` 永远为 `null`，没有 physical request count、
+  failed/incomplete usage、root/child ledger、cost completeness/bucket 或 crash/reopen
+  request truth；其 Engine 又有两层透明重发。因此跨 revision paid A/B 在 credential 前
+  判定 `inadmissible_incomplete_baseline_accounting`。ADR-0006 接受 release benchmark
+  successor：保留 M5-A 12/12 合格 official DeepSeek coding/false-success evidence，
+  exact current candidate 再通过 production Git/verifier/reopen regression；五个共同
+  用户 workflow 的显式动作数为 `5 -> 5`。V13/V16 因而关闭，current matrix 为
+  15 pass / 1 blocked；只剩 V15，V1 仍不可发布。Key 未读取、official requests 0。
   当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -269,14 +279,14 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | 里程碑 | 目标 | 状态 | 主要退出门槛 |
 |---|---|---|---|
 | M0 | 保护基线、整理仓库、建立唯一文档真相 | 已完成 | 工作区可追溯，产品方案落库，现有 WIP 被隔离说明 |
-| M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
+| M1 | 建立原始 DeepSeek 能力基准 | 已完成（M8-L 按 ADR-0006 接受 qualified real coding + exact-current release benchmark successor） | 真实编码证据、假成功、完整 accounting 与 current production retention 可复核；不伪造不可计量 imported A/B |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | ContextBroker、跨文件检索和 canonical 证据链 | 已完成（M5-A 完成；M5-B shrink；RepoGraph 按 ADR-0005 转为 post-V1 证据准入） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；现有跨文件检索可验证，结构索引不按名称堆功能 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-K successor 为 13/16 pass；V13/V15/V16 仍 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-L successor 为 15/16 pass；仅 V15 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2543,9 +2553,57 @@ accepted scope candidate 为 `6a99cb79ee1a63c57215456b5f0f040659b9426d`，tree
 `60e80a06c8d0a0f4b097a6af6d22a5df39205d25`。完整结论见
 [M8-K V1 产品范围 successor](../../eval/summaries/m8-k-v1-scope-successor-2026-07-24.md)。
 
+### M8-L：V13/V16 release benchmark successor
+
+M8-L 以 clean `4fef6a34`、Run API v11、RuntimeEvent v17、State v23、exec-stream v3 和
+13 pass / 3 blocked matrix 开始。manifest/Harness commit `14319b11` 在 authority
+变化前冻结 imported/current 可比性、qualified real-model evidence、current release
+regression 与 user-action contract。
+
+只读 audit 独立确认 exact imported `352e86a6` 的 task/model/surface、binary、外部
+fixture/verifier 与 wall-time boundary 可以对齐；不能对齐的是它没有记录的物理事实：
+
+- terminal `retry_count` 在三个 production 构造点都是 `None`；
+- 没有 `api_request_count`、started/in-flight、failed/incomplete usage、root/child
+  aggregate 或 cost completeness/bucket；
+- 旧 Engine 内至少两层可以重新发送相同 stream request，最终 `TurnComplete` 只携带
+  observed aggregate usage；
+- 旧 app-server 没有 canonical `TaskContract`/`EvidenceReceipt`，SQLite reopen 不能重建
+  每个 root/child attempt。
+
+因此 paid imported/current A/B 为
+`inadmissible_incomplete_baseline_accounting`。它在 Key/output/API 前停止；不修改旧
+revision，不用外部价格估算补账。
+
+ADR-0006 把 V13 收敛为一条可复核 evidence chain，而不是伪造旧臂 superiority：
+
+1. M5-A 的 12/12 official DeepSeek arms 作为窄范围 real coding/false-success evidence：
+   coding 两侧均 3/3 verified，candidate false-success 0；forced false claim 从 baseline
+   3/3 false-success 变为 candidate 3/3 correct rejection，全部 accounting 完整；
+2. exact current candidate 通过
+   `AgentApplication -> AgentRuntime -> RunStore` 的临时 Git edit、verifier
+   failure/recovery、latest receipt、completion rejection、root/read-only/Writer
+   RequestPlan/accounting 与 SQLite reopen regression；
+3. 未来任何 model-visible treatment 仍须自己的 current same-binary A/B，不能借祖先结果
+   跳过准入。
+
+V16 把步骤单位冻结为一次显式 command submission 或 TUI start。login、interactive
+start、headless coding、run inspection 与 resume 五个共同 workflow 在 imported/current
+均各需一次动作，总数 `5 -> 5`；Runtime event、model request 与内部 verifier step 不算
+用户动作，已删除 Fleet/Lane/Thread/session truth 不恢复为 compatibility step。
+
+决策为 **reject inadmissible imported paid A/B / keep release benchmark successor /
+close V13 and V16**。current V1 matrix 为 15 pass / 1 blocked；V15 billing-provable
+Simplified Chinese Agent prompt comparison 仍 blocked，V1 仍不可发布。production
+model/transport/Runtime/Store/protocol/tool catalog 无变化，Key 未读取、official API
+requests 0。完整结论见
+[M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
+
 ### 调优
 
-- imported `352e86a6` 与 current 的同任务 coding/workflow-step A/B；
+- release benchmark 持续验证 qualified real coding evidence、current exact-production
+  regression 与 common workflow action contract；不得重开缺失 legacy accounting 的
+  imported paid A/B；
 - Auto 只允许使用 RunStore 真实 verified outcome/cost 标签做新 successor；不恢复额外
   LLM classifier，也不把 prompt 关键词当 authority；
 - 只有满足 M8-H re-entry gate 才重开 `apply_patch/search-replace/FIM` A/B；

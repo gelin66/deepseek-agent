@@ -1683,6 +1683,66 @@ accepted scope candidate 为 `6a99cb79ee1a63c57215456b5f0f040659b9426d`，tree
 `60e80a06c8d0a0f4b097a6af6d22a5df39205d25`。完整结论见
 [M8-K V1 产品范围 successor](../../eval/summaries/m8-k-v1-scope-successor-2026-07-24.md)。
 
+### 9.27 M8-L V13/V16 release benchmark successor（2026-07-24）
+
+M8-L 从 clean `4fef6a34` 独立复核 imported `352e86a6` 的 live A/B 准入。task fixture、
+external deterministic verifier、official `/chat/completions`、`deepseek-v4-pro`、
+binary/prompt/tool identity 与 wall-time boundary 都可对齐；baseline 原生 accounting
+不能对齐：
+
+| Fact | imported exec-stream v1 | current exec-stream v3 |
+|---|---|---|
+| physical request count | absent | root + child started |
+| retry count | field exists but every terminal writes `null` | transport/runtime typed |
+| failed/incomplete response usage | absent from terminal truth | typed completeness/missing/incomplete |
+| cost | separate observed-turn scorecard only | surface/model bucket + completeness |
+| crash/reopen | Engine/SessionManager aggregate | canonical RunStore request ledger |
+
+旧 Engine 至少有 inner/outer 两层透明重发，最终 `TurnComplete` 只携带 observed aggregate
+usage。外部 estimator 无法区分“未发生”和“发生但旧 schema 未记录”，修改旧 revision 又会
+改变被测 baseline。因此正式 paid A/B 在 credential 前 fail closed：
+
+```text
+decision = inadmissible_incomplete_baseline_accounting
+credential_read = false
+official_api_requests = 0
+maximum_reruns = 0
+```
+
+ADR-0006 不把这个 inadmissibility 伪装成 current superiority，而是冻结 release evidence
+chain：
+
+1. qualified real-model evidence 是 M5-A 12/12 official DeepSeek arms。coding baseline /
+   candidate 均 3/3 verified，candidate false-success 0；forced false claim baseline
+   3/3 false-success，candidate 3/3 correct rejection；12/12 measurement/contract/
+   completion/accounting valid，总计 40 requests、144,903 tokens、USD 0.004110153。
+2. exact current candidate 必须通过五个 offline production gates：
+
+   - 临时 Git repo 中 `before -> broken -> after`，Host verifier fail 后 recovery，
+     latest-revision receipt、5 physical requests 与 SQLite no-request reopen；
+   - frozen verifier fail 时拒绝 model completion；
+   - root/read-only/explicit Writer RequestPlan 与 accounting 从 SQLite exact rebuild；
+   - current public help 只保留 canonical `runs`；
+   - resume 同一 terminal 不再发 model request。
+
+3. 未来 prompt/model/reasoning/catalog/budget/routing/surface treatment 仍必须有独立 current
+   same-revision immutable A/B；M5-A 不能替代新 treatment 证据。
+
+V16 使用 atomic user action 作为单位：login、interactive start、headless coding、
+run inspection、resume 在 imported/current 均为每项一次，总数 `5 -> 5`。内部 event、
+model request 与 verifier step 不计作用户动作；已删除 Fleet/Lane/Thread/session truth
+不恢复为 required workflow。
+
+五个 current gate 与 M8-L contract/Harness 通过后，V13/V16 关闭，current matrix 为
+15 pass / 1 blocked。V15 billing-provable Simplified Chinese Agent prompt comparison
+仍 blocked，V1 仍不可发布。本结论不产生 current-vs-imported success、Token、time 或
+cost delta，也不把 loopback 当作 live model quality。
+
+manifest/summary：
+
+- `eval/manifests/m8-l-release-benchmark-successor-v1.json`；
+- [M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
