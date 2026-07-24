@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
-use codewhale_state::{SessionSource, StateStore, ThreadListFilters, ThreadMetadata, ThreadStatus};
+use codewhale_state::StateStore;
 use rusqlite::Connection;
 
-const RETIRED_TABLES: [&str; 10] = [
+const RETIRED_TABLES: [&str; 11] = [
+    "threads",
     "thread_goals",
     "thread_dynamic_tools",
     "messages",
@@ -34,34 +35,23 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     .unwrap_or_else(|error| panic!("inspect table {table}: {error}"))
 }
 
-fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
-    let sql = format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1)");
-    conn.query_row(&sql, [column], |row| row.get(0))
-        .unwrap_or_else(|error| panic!("inspect {table}.{column}: {error}"))
-}
-
 fn assert_current_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 22);
+    assert_eq!(user_version, 23);
 
     for table in [
-        "threads",
         "agent_runs",
         "agent_run_events",
         "agent_run_snapshots",
         "agent_run_creations",
     ] {
-        assert!(table_exists(conn, table), "missing retained table {table}");
+        assert!(table_exists(conn, table), "missing canonical table {table}");
     }
     for table in RETIRED_TABLES {
         assert!(!table_exists(conn, table), "retired table {table} survived");
     }
-    assert!(
-        !column_exists(conn, "threads", "current_leaf_id"),
-        "retired current_leaf_id projection survived"
-    );
     let foreign_key_errors: i64 = conn
         .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
             row.get(0)
@@ -70,80 +60,22 @@ fn assert_current_schema(conn: &Connection) {
     assert_eq!(foreign_key_errors, 0);
 }
 
-fn test_thread(now: i64) -> ThreadMetadata {
-    ThreadMetadata {
-        id: "thread-test-1".to_string(),
-        rollout_path: Some(PathBuf::from("/tmp/rollout.jsonl")),
-        preview: "hello".to_string(),
-        ephemeral: false,
-        model_provider: "deepseek".to_string(),
-        created_at: now,
-        updated_at: now,
-        status: ThreadStatus::Running,
-        path: Some(PathBuf::from("/tmp/project")),
-        cwd: PathBuf::from("/tmp/project"),
-        cli_version: "0.0.0-test".to_string(),
-        source: SessionSource::Interactive,
-        name: Some("Test Thread".to_string()),
-        sandbox_policy: Some("workspace-write".to_string()),
-        approval_mode: Some("on-request".to_string()),
-        archived: false,
-        archived_at: None,
-        git_sha: None,
-        git_branch: None,
-        git_origin_url: None,
-        memory_mode: Some("extended".to_string()),
-    }
-}
-
 #[test]
-fn upsert_and_resume_thread_metadata() {
-    let path = temp_state_path("upsert_resume");
-    let store = StateStore::open(Some(path.clone())).expect("open state store");
-    let thread = test_thread(chrono::Utc::now().timestamp());
-    store.upsert_thread(&thread).expect("upsert thread");
-
-    let loaded = store
-        .get_thread("thread-test-1")
-        .expect("read thread")
-        .expect("thread must exist");
-    assert_eq!(loaded.id, "thread-test-1");
-    assert_eq!(loaded.name.as_deref(), Some("Test Thread"));
-    assert_eq!(loaded.memory_mode.as_deref(), Some("extended"));
-    assert_eq!(
-        loaded.rollout_path,
-        Some(PathBuf::from("/tmp/rollout.jsonl"))
-    );
-
-    store
-        .mark_archived("thread-test-1")
-        .expect("archive thread");
-    let archived = store
-        .get_thread("thread-test-1")
-        .expect("read archived thread")
-        .expect("thread exists after archive");
-    assert!(archived.archived);
-
-    let listed = store
-        .list_threads(ThreadListFilters {
-            include_archived: true,
-            limit: Some(10),
-        })
-        .expect("list threads");
-    assert_eq!(listed.len(), 1);
-}
-
-#[test]
-fn fresh_schema_contains_only_retained_state_surfaces() {
-    let path = temp_state_path("fresh_schema");
+fn fresh_schema_contains_only_canonical_run_state() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let path = directory.path().join("state.db");
     StateStore::open(Some(path.clone())).expect("open state store");
 
     let conn = Connection::open(path).expect("open state db");
     assert_current_schema(&conn);
+    assert!(
+        !directory.path().join("session_index.jsonl").exists(),
+        "retired thread-name sidecar was recreated"
+    );
 }
 
 #[test]
-fn v1_schema_drops_retired_state_and_preserves_thread_metadata() {
+fn v1_schema_deletes_all_retired_thread_and_workflow_state() {
     let path = temp_state_path("v1_retired_state_cleanup");
     let conn = Connection::open(&path).expect("open state db");
     conn.execute_batch(
@@ -259,15 +191,7 @@ fn v1_schema_drops_retired_state_and_preserves_thread_metadata() {
     .expect("create legacy v1 state");
     drop(conn);
 
-    let store = StateStore::open(Some(path.clone())).expect("migrate legacy state");
-    let thread = store
-        .get_thread("thread-test-1")
-        .expect("read thread")
-        .expect("thread metadata survives migration");
-    assert_eq!(thread.preview, "hello");
-    assert_eq!(thread.model_provider, "deepseek");
-    drop(store);
-
+    StateStore::open(Some(path.clone())).expect("migrate legacy state");
     let conn = Connection::open(path).expect("inspect migrated state");
     assert_current_schema(&conn);
 }

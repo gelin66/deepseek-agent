@@ -510,6 +510,15 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         .expect("write malformed config");
 
     for args in [
+        vec!["thread"],
+        vec!["thread", "list"],
+        vec!["thread", "read", "legacy-thread-id"],
+        vec!["thread", "resume", "legacy-thread-id"],
+        vec!["thread", "fork", "legacy-thread-id"],
+        vec!["thread", "archive", "legacy-thread-id"],
+        vec!["thread", "unarchive", "legacy-thread-id"],
+        vec!["thread", "set-name", "legacy-thread-id", "name"],
+        vec!["thread", "clear-name", "legacy-thread-id"],
         vec!["sessions"],
         vec!["sessions", "--json"],
         vec!["fork", "legacy-session-id"],

@@ -25,7 +25,6 @@ use codewhale_protocol::run_api::{
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
 };
 use codewhale_secrets::Secrets;
-use codewhale_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -135,8 +134,6 @@ path used by stream-json wrappers.
     Config(ConfigArgs),
     /// 查看或设置 DeepSeek 模型。
     Model(ModelArgs),
-    /// Manage thread/session metadata and resume/fork flows.
-    Thread(ThreadArgs),
     /// Evaluate sandbox/approval policy decisions.
     Sandbox(SandboxArgs),
     /// Run the canonical local Run API over HTTP/SSE or stdio.
@@ -273,46 +270,6 @@ enum ModelCommand {
 }
 
 #[derive(Debug, Args)]
-struct ThreadArgs {
-    #[command(subcommand)]
-    command: ThreadCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ThreadCommand {
-    List {
-        #[arg(long, default_value_t = false)]
-        all: bool,
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-    Read {
-        thread_id: String,
-    },
-    Resume {
-        thread_id: String,
-    },
-    Fork {
-        thread_id: String,
-    },
-    Archive {
-        thread_id: String,
-    },
-    Unarchive {
-        thread_id: String,
-    },
-    SetName {
-        thread_id: String,
-        name: String,
-    },
-    /// Remove the custom name from a thread, restoring the default
-    /// `(unnamed)` rendering in `thread list`.
-    ClearName {
-        thread_id: String,
-    },
-}
-
-#[derive(Debug, Args)]
 struct SandboxArgs {
     #[command(subcommand)]
     command: SandboxCommand,
@@ -420,6 +377,9 @@ pub fn run_cli() -> std::process::ExitCode {
 fn reject_retired_command(cli: &Cli) -> Result<()> {
     if cli.prompt_flag.is_none() && cli.command.is_none() {
         match cli.prompt.first().map(String::as_str) {
+            Some("thread") => bail!(
+                "命令 `codewhale thread` 已删除；请使用 `codewhale runs` 查看 canonical Agent 运行，或使用 `codewhale resume <RUN_ID>` 继续运行"
+            ),
             Some("sessions") => bail!(
                 "命令 `codewhale sessions` 已删除；请使用 `codewhale runs` 查看当前工作区的 canonical Agent 运行"
             ),
@@ -482,7 +442,6 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
         "auth" => MessageId::CliCommandAuth,
         "config" => MessageId::CliCommandConfig,
         "model" => MessageId::CliCommandModel,
-        "thread" => MessageId::CliCommandThread,
         "sandbox" => MessageId::CliCommandSandbox,
         "app-server" => MessageId::CliCommandAppServer,
         "completion" => MessageId::CliCommandCompletion,
@@ -678,7 +637,6 @@ fn run() -> Result<()> {
         Some(Commands::Auth(args)) => run_auth_command(&mut store, args.command),
         Some(Commands::Config(args)) => run_config_command(&mut store, args.command),
         Some(Commands::Model(args)) => run_model_command(&mut store, args.command),
-        Some(Commands::Thread(args)) => run_thread_command(args.command),
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
@@ -1041,86 +999,6 @@ fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<(
             store.config.default_text_model = Some(canonical.clone());
             store.save()?;
             println!("已将默认 DeepSeek 模型设为 `{canonical}`");
-            Ok(())
-        }
-    }
-}
-
-fn run_thread_command(command: ThreadCommand) -> Result<()> {
-    let state = StateStore::open(None)?;
-    match command {
-        ThreadCommand::List { all, limit } => {
-            let threads = state.list_threads(ThreadListFilters {
-                include_archived: all,
-                limit,
-            })?;
-            for thread in threads {
-                println!(
-                    "{} | {} | {} | {}",
-                    thread.id,
-                    thread
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| "(unnamed)".to_string()),
-                    thread.model_provider,
-                    thread.cwd.display()
-                );
-            }
-            Ok(())
-        }
-        ThreadCommand::Read { thread_id } => {
-            let thread = state.get_thread(&thread_id)?;
-            println!("{}", serde_json::to_string_pretty(&thread)?);
-            Ok(())
-        }
-        ThreadCommand::Resume { thread_id } => {
-            let args = vec!["resume".to_string(), thread_id];
-            delegate_simple_tui(args)
-        }
-        ThreadCommand::Fork { thread_id } => {
-            let args = vec!["fork".to_string(), thread_id];
-            delegate_simple_tui(args)
-        }
-        ThreadCommand::Archive { thread_id } => {
-            state.mark_archived(&thread_id)?;
-            println!(
-                "{}",
-                tr(MessageId::CliThreadArchived).replace("{thread_id}", &thread_id)
-            );
-            Ok(())
-        }
-        ThreadCommand::Unarchive { thread_id } => {
-            state.mark_unarchived(&thread_id)?;
-            println!(
-                "{}",
-                tr(MessageId::CliThreadUnarchived).replace("{thread_id}", &thread_id)
-            );
-            Ok(())
-        }
-        ThreadCommand::SetName { thread_id, name } => {
-            let mut thread = state.get_thread(&thread_id)?.with_context(|| {
-                tr(MessageId::CliThreadNotFound).replace("{thread_id}", &thread_id)
-            })?;
-            thread.name = Some(name);
-            thread.updated_at = chrono::Utc::now().timestamp();
-            state.upsert_thread(&thread)?;
-            println!(
-                "{}",
-                tr(MessageId::CliThreadRenamed).replace("{thread_id}", &thread_id)
-            );
-            Ok(())
-        }
-        ThreadCommand::ClearName { thread_id } => {
-            let mut thread = state.get_thread(&thread_id)?.with_context(|| {
-                tr(MessageId::CliThreadNotFound).replace("{thread_id}", &thread_id)
-            })?;
-            thread.name = None;
-            thread.updated_at = chrono::Utc::now().timestamp();
-            state.upsert_thread(&thread)?;
-            println!(
-                "{}",
-                tr(MessageId::CliThreadNameCleared).replace("{thread_id}", &thread_id)
-            );
             Ok(())
         }
     }
@@ -1519,15 +1397,6 @@ fn exit_with_tui_status(status: std::process::ExitStatus) -> Result<()> {
     bail!("{}", tr(MessageId::CliTuiNoExitCode))
 }
 
-fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
-    let tui = locate_sibling_tui_binary()?;
-    let status = Command::new(&tui)
-        .args(args)
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-    exit_with_tui_status(status)
-}
-
 fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
     format!(
         "failed to spawn companion TUI binary at {}: {err}\n\
@@ -1697,17 +1566,18 @@ mod tests {
     }
 
     #[test]
-    fn m8g_taskgraph_cutover_removes_two_user_workflow_shells() {
+    fn m8j_v12_cutover_keeps_only_canonical_run_shells() {
         let commands = Cli::command()
             .get_subcommands()
             .filter(|command| !command.is_hide_set())
             .map(|command| command.get_name().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(commands.len(), 18, "{commands:?}");
+        assert_eq!(commands.len(), 17, "{commands:?}");
         assert!(!commands.iter().any(|command| command == "fleet"));
         assert!(!commands.iter().any(|command| command == "lane"));
+        assert!(!commands.iter().any(|command| command == "thread"));
 
-        for retired in ["fleet", "lane"] {
+        for retired in ["fleet", "lane", "thread"] {
             let cli = parse_ok(&["codewhale", retired]);
             let error = reject_retired_command(&cli).expect_err("retired shell must fail closed");
             assert!(error.to_string().contains("已删除"));

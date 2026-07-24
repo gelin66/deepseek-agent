@@ -964,7 +964,6 @@ dependencies = [
  "dirs",
  "libc",
  "rusqlite",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
