@@ -9,8 +9,10 @@ use codewhale_protocol::task::TaskDefinition;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const MANIFEST: &str =
+const FROZEN_V1_MANIFEST: &str =
     include_str!("../../../eval/manifests/m10-b-working-set-localization-v1.json");
+const PROMPT_BOUND_V2_MANIFEST: &str =
+    include_str!("../../../eval/manifests/m10-b-working-set-localization-v2.json");
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -80,12 +82,24 @@ struct DecisionRule {
 }
 
 #[test]
-fn frozen_localization_baseline_meets_budget_recall_and_abstention_contract() {
-    let manifest: Manifest = serde_json::from_str(MANIFEST).expect("valid frozen manifest");
-    assert_eq!(
-        manifest.schema,
-        "codewhale.eval.m10-b-working-set-localization.v1"
-    );
+fn frozen_localization_baselines_meet_budget_recall_and_abstention_contract() {
+    for (raw, expected_schema) in [
+        (
+            FROZEN_V1_MANIFEST,
+            "codewhale.eval.m10-b-working-set-localization.v1",
+        ),
+        (
+            PROMPT_BOUND_V2_MANIFEST,
+            "codewhale.eval.m10-b-working-set-localization.v2",
+        ),
+    ] {
+        verify_manifest(raw, expected_schema);
+    }
+}
+
+fn verify_manifest(raw: &str, expected_schema: &str) {
+    let manifest: Manifest = serde_json::from_str(raw).expect("valid frozen manifest");
+    assert_eq!(manifest.schema, expected_schema);
     assert!(!manifest.product_metric_eligible);
     assert!(!manifest.official_api_required);
     assert!(!manifest.decision_rule.production_admission);
@@ -155,11 +169,20 @@ fn frozen_localization_baseline_meets_budget_recall_and_abstention_contract() {
                 .sum::<usize>()
                 <= budget.max_total_lines
         );
+        let rendered = projection.render_prompt_block(budget.max_rendered_chars);
         assert!(
-            projection
-                .render_prompt_block(budget.max_rendered_chars)
+            rendered
+                .as_ref()
                 .is_none_or(|block| block.len() <= budget.max_rendered_chars)
         );
+        if let Some(rendered) = rendered.as_deref() {
+            assert!(projection.regions.iter().all(|region| {
+                rendered.contains(&format!(
+                    "path={}",
+                    serde_json::to_string(&region.path).expect("benchmark path serializes")
+                ))
+            }));
+        }
         assert!(projection.regions.iter().all(|region| {
             region.sha256.starts_with("sha256:")
                 && region.expand_hint.starts_with("read_file path=")

@@ -88,6 +88,7 @@ pub struct ConfigToml {
 impl ConfigToml {
     pub fn validate(&self) -> Result<()> {
         reject_retired_extra_keys(&self.extras)?;
+        let _ = self.working_set_enabled()?;
         if let Some(model) = self.default_text_model.as_deref() {
             canonical_deepseek_model(model)?;
         }
@@ -102,6 +103,32 @@ impl ConfigToml {
             bail!("DeepSeek API Key 不能为空字符串");
         }
         Ok(())
+    }
+
+    /// Temporary M10-B same-binary treatment adapter.
+    ///
+    /// This remains global-config-only and must be removed at the M10-B
+    /// keep/reject cutover. It is deliberately not a default product mode.
+    pub fn working_set_enabled(&self) -> Result<bool> {
+        let Some(context) = self.extras.get("context") else {
+            return Ok(false);
+        };
+        let table = context
+            .as_table()
+            .context("配置项 'context' 必须是 TOML table")?;
+        if let Some(key) = table.keys().find(|key| key.as_str() != "working_set") {
+            if key == "project_pack" {
+                bail!(
+                    "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留"
+                );
+            }
+            bail!("不支持配置项 'context.{key}'");
+        }
+        match table.get("working_set") {
+            None => Ok(false),
+            Some(toml::Value::Boolean(enabled)) => Ok(*enabled),
+            Some(_) => bail!("配置项 'context.working_set' 必须是 boolean"),
+        }
     }
 
     /// Repo-local config is untrusted. It may tighten execution posture and
@@ -369,6 +396,7 @@ impl ConfigToml {
                 .clone()
                 .or(env.verbosity)
                 .or_else(|| self.verbosity.clone()),
+            working_set_enabled: self.working_set_enabled()?,
         })
     }
 }
@@ -420,6 +448,7 @@ pub struct ResolvedRuntimeOptions {
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
     pub verbosity: Option<String>,
+    pub working_set_enabled: bool,
 }
 
 #[derive(Debug, Clone)]

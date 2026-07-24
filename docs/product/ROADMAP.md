@@ -2931,6 +2931,36 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 - cutover：无最终任务净收益即删除 selector；不建 RepoGraph crate、embedding、向量库或
   LLM reranker。
 
+当前 offline 与 production-caller checkpoint：
+
+- `3a1e2b54` 在 `crates/context` 唯一 owner 内加入确定性 selector 与 no-follow
+  workspace read：最多扫描 4096 个文件/16 MiB，最多输出 8 个 region/160 行；
+  task/path/stack/symbol/content/manifest/test/import/Git changed-path 信号只形成
+  `path/range/reason/evidence/digest/expand_hint`，不读取 Key、不调用模型、不持久化
+  第二份仓库真相；
+- frozen v1 fixture 使用真实临时 Git repo 的 8 类任务，达到 Recall@5 `1.00`、
+  median first relevant rank `1`、mean precision@5 `0.881`，负任务输出 0 region；
+  这是 localization mechanism 证据，不是 end-task 产品收益；
+- v1 manifest 的 6000 字符预算保持历史字节不变；production caller 使用
+  `m10-b-working-set-localization-v2.json` 的 3900 字符 successor，使每个计入指标的
+  region 都能完整进入既有 4096-byte volatile fragment，路径/evidence/expand 均按 JSON
+  string 转义；
+- `AgentApplication` 现在能从 canonical `TaskDefinition` 与现有
+  `crates/tools::execute_git_status` 派生同一 map；root、read-only child、Writer 和
+  continuation 共用该 builder，map 作为独立 volatile prompt fact，不改变 stable prefix，
+  exact system prompt 由当前 transcript/RunStore 持久化并在 SQLite reopen 后重建；
+- `[context].working_set` 目前只是默认关闭、未写入产品文档的同 binary treatment
+  adapter；CLI/app-server/TUI 读取同一个 typed bool，未知或旧 context key fail closed。
+  它必须在 keep/reject cutover 删除，不能成为模式或永久双轨；
+- focused、root/read-only/Writer、process app-server/SQLite reopen、fmt、workspace
+  strict clippy/test 为该 production-caller checkpoint 的离线门；Key 未读取、official
+  API 请求 0、默认仍为 fixed pack-on + working-set off。
+
+下一门只允许 fixed-Pro end-task same-binary A/B，control 为 working-set off、treatment
+为 on，其他 model/reasoning/TaskContract/tools/budget/verifier 不变。若 accounting
+不完整则按现有契约停止；若 verified success/false-success 质量门或有效修改前调用数等
+净收益门不通过，删除 selector、临时 config 与 Harness branch。
+
 #### M10-C：Acceptance Progress Projection
 
 - 真实问题：Runtime 已在 completion 时逐项构造 `AcceptanceSatisfaction`，ContextBroker

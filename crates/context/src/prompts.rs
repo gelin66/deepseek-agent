@@ -20,6 +20,7 @@ use std::sync::{LazyLock, Mutex};
 pub struct ProductionPromptRequest<'a> {
     pub workspace: &'a Path,
     pub model: &'a str,
+    pub working_set: Option<&'a crate::working_set::WorkingSetProjection>,
     pub preferences: &'a PromptPreferences,
     pub instructions: &'a [InstructionSource],
     pub skills_dir: Option<&'a Path>,
@@ -37,6 +38,7 @@ pub enum PromptContextLayer {
     ProjectContext,
     UserConstitution,
     ProjectContextPack,
+    WorkingSet,
     OutputDiscipline,
     SkillsCatalog,
     Language,
@@ -744,17 +746,29 @@ fn assemble_system_prompt(
     // environment and instruction changes can render independently.
 
     // Workspace fragment: deterministic environment facts.
-    let workspace_body = render_environment_block(request.shell_binary);
+    let environment_body = render_environment_block(request.shell_binary);
     if capture_ledger {
         ledger.entries.push(prompt_ledger_entry(
             PromptContextLayer::Environment,
             "host:runtime_environment",
             PromptContextScope::Run,
             PromptContextStability::Volatile,
-            &workspace_body,
+            &environment_body,
         ));
     }
-
+    let working_set_body = request.working_set.and_then(|projection| {
+        projection
+            .render_prompt_block(crate::working_set::WorkingSetBudget::default().max_rendered_chars)
+    });
+    if capture_ledger && let Some(body) = working_set_body.as_deref() {
+        ledger.entries.push(prompt_ledger_entry(
+            PromptContextLayer::WorkingSet,
+            "host:budgeted_working_set",
+            PromptContextScope::Run,
+            PromptContextStability::Volatile,
+            body,
+        ));
+    }
     // Permissions fragment: configured `instructions = [...]` files (#454).
     let permissions_body = render_instructions_block(request.instructions);
     if capture_ledger && let Some(body) = permissions_body.as_deref() {
@@ -779,14 +793,17 @@ fn assemble_system_prompt(
         ));
     }
 
-    let world_state = world_state_from_session_facts(
-        Some(workspace_body.as_str()),
+    let mut world_state = world_state_from_session_facts(
+        Some(environment_body.as_str()),
         permissions_body.as_deref(),
         Some(route_body.as_str()),
         None, // AgentTopology is updated by runtime callers when available.
         None, // Skills stay in the constitution prefix (skills-dir-static).
         None,
     );
+    if let Some(body) = working_set_body {
+        world_state = world_state.with_working_set(body);
+    }
 
     let prompt = SystemPrompt {
         blocks: crate::model_context::WorldStateSnapshot {
@@ -1012,6 +1029,7 @@ mod tests {
         let prompt = production_system_prompt(ProductionPromptRequest {
             workspace: &workspace,
             model: "deepseek-v4-pro",
+            working_set: None,
             preferences: &preferences,
             instructions: &instructions,
             skills_dir: Some(&workspace.join(".codewhale/skills")),
@@ -1134,6 +1152,7 @@ mod tests {
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {
             workspace: &workspace,
             model: "deepseek-v4-pro",
+            working_set: None,
             preferences: &preferences,
             instructions: &instructions,
             skills_dir: Some(&workspace.join(".codewhale/skills")),
@@ -1167,6 +1186,7 @@ mod tests {
         let fallback_request = || ProductionPromptRequest {
             workspace: fallback_workspace.as_path(),
             model: "deepseek-v4-pro",
+            working_set: None,
             preferences: &preferences,
             instructions: &[],
             skills_dir: Some(fallback_skills_dir.as_path()),
@@ -1235,5 +1255,70 @@ mod tests {
         );
 
         fs::remove_dir_all(&fixture).expect("remove fixture");
+    }
+
+    #[test]
+    fn budgeted_working_set_is_one_volatile_prompt_fact_and_ledger_layer() {
+        let workspace = tempfile::tempdir().expect("working-set prompt workspace");
+        fs::create_dir_all(workspace.path().join("src")).expect("source directory");
+        fs::write(
+            workspace.path().join("src/target.rs"),
+            "pub fn locate_prompt_target() -> bool { true }\n",
+        )
+        .expect("working-set source");
+        let task =
+            codewhale_protocol::task::TaskDefinition::host("调查 locate_prompt_target 的实现位置");
+        let projection =
+            crate::working_set::select_working_set(crate::working_set::WorkingSetRequest {
+                workspace: workspace.path(),
+                task: &task,
+                changed_paths: &[],
+                budget: crate::working_set::WorkingSetBudget::default(),
+            })
+            .expect("working-set projection");
+        let preferences = PromptPreferences::default();
+        let build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: workspace.path(),
+            model: "deepseek-v4-pro",
+            working_set: Some(&projection),
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: None,
+            verbosity: None,
+            skills_scan_codewhale_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+
+        let entry = build
+            .ledger
+            .entries
+            .iter()
+            .find(|entry| entry.layer == PromptContextLayer::WorkingSet)
+            .expect("working-set ledger entry");
+        assert_eq!(entry.source, "host:budgeted_working_set");
+        assert_eq!(entry.scope, PromptContextScope::Run);
+        assert_eq!(entry.stability, PromptContextStability::Volatile);
+        assert_eq!(
+            build
+                .prompt
+                .blocks
+                .iter()
+                .filter(|block| block.text.contains("## Host 预算化工作集"))
+                .count(),
+            1
+        );
+        assert!(
+            build
+                .prompt
+                .blocks
+                .iter()
+                .skip(1)
+                .any(|block| block.text.contains("path=\"src/target.rs\""))
+        );
+        assert!(
+            !build.prompt.blocks[0].text.contains("## Host 预算化工作集"),
+            "task-specific map must not disturb the stable prefix"
+        );
     }
 }

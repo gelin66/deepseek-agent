@@ -106,6 +106,28 @@ pub struct TuiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct ContextConfig {
+    #[serde(default)]
+    pub working_set: Option<bool>,
+    #[serde(flatten)]
+    extra: HashMap<String, toml::Value>,
+}
+
+impl ContextConfig {
+    fn validate(&self) -> Result<()> {
+        if self.extra.contains_key("project_pack") {
+            anyhow::bail!(
+                "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留。"
+            );
+        }
+        if let Some(key) = self.extra.keys().next() {
+            anyhow::bail!("不支持配置项 'context.{key}'");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentsConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -163,6 +185,8 @@ pub struct Config {
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
     pub search: Option<SearchConfig>,
+    #[serde(default)]
+    pub context: ContextConfig,
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
     #[serde(flatten)]
@@ -226,19 +250,14 @@ impl Config {
             "pathSuffix",
             "harness_profiles",
             "fleet",
-            "context",
         ] {
             if self.extra.contains_key(retired) {
-                if retired == "context" {
-                    anyhow::bail!(
-                        "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留。"
-                    );
-                }
                 anyhow::bail!(
                     "配置项 '{retired}' 已删除；CodeWhale 仅使用官方 DeepSeek 模型目录。"
                 );
             }
         }
+        self.context.validate()?;
         if let Some(key) = self.api_key.as_deref()
             && key.trim().is_empty()
         {
@@ -481,6 +500,11 @@ impl Config {
     }
 
     #[must_use]
+    pub fn working_set_enabled(&self) -> bool {
+        self.context.working_set.unwrap_or(false)
+    }
+
+    #[must_use]
     pub fn features(&self) -> Features {
         let mut features = Features::with_defaults();
         if let Some(table) = &self.features {
@@ -643,6 +667,14 @@ fn merge_config(base: Config, selected: Config) -> Config {
         tui: selected.tui.or(base.tui),
         skills: selected.skills.or(base.skills),
         search: selected.search.or(base.search),
+        context: ContextConfig {
+            working_set: selected.context.working_set.or(base.context.working_set),
+            extra: if selected.context.extra.is_empty() {
+                base.context.extra
+            } else {
+                selected.context.extra
+            },
+        },
         subagents: selected.subagents.or(base.subagents),
         extra,
     }

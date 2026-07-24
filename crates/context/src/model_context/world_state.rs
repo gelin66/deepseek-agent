@@ -40,6 +40,11 @@ impl WorldState {
     }
 
     #[must_use]
+    pub fn with_working_set(self, body: impl Into<String>) -> Self {
+        self.with_fragment(FragmentId::WorkingSet, FragmentRole::WorkingSet, body)
+    }
+
+    #[must_use]
     pub fn with_permissions(self, body: impl Into<String>) -> Self {
         self.with_fragment(FragmentId::Permissions, FragmentRole::Permissions, body)
     }

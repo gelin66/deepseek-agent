@@ -108,7 +108,7 @@ impl Default for WorkingSetBudget {
             max_scanned_files: 4_096,
             max_scanned_bytes: 16 * 1024 * 1024,
             max_file_bytes: 512 * 1024,
-            max_rendered_chars: 6_000,
+            max_rendered_chars: 3_900,
         }
     }
 }
@@ -186,8 +186,12 @@ impl WorkingSetProjection {
     /// Render the compact model-visible map. It contains no source bytes.
     #[must_use]
     pub fn render_prompt_block(&self, max_chars: usize) -> Option<String> {
+        self.render_prompt_block_with_count(max_chars).0
+    }
+
+    fn render_prompt_block_with_count(&self, max_chars: usize) -> (Option<String>, usize) {
         if self.regions.is_empty() || max_chars < 256 {
-            return None;
+            return (None, 0);
         }
         let mut rendered = format!(
             "## Host 预算化工作集\n\n\
@@ -209,19 +213,23 @@ impl WorkingSetProjection {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
-            let evidence = region.evidence.join(",");
+            let path = serde_json::to_string(&region.path).expect("working-set path serializes");
+            let evidence =
+                serde_json::to_string(&region.evidence).expect("working-set evidence serializes");
+            let expand =
+                serde_json::to_string(&region.expand_hint).expect("working-set hint serializes");
             let line = format!(
-                "\n{}. path={} range={}-{} score={} reason=[{}] evidence=[{}] \
+                "\n{}. path={} range={}-{} score={} reason=[{}] evidence={} \
                  digest={} expand={}",
                 region.rank,
-                region.path,
+                path,
                 region.start_line,
                 region.end_line,
                 region.score,
                 reasons,
                 evidence,
                 region.sha256,
-                region.expand_hint
+                expand
             );
             if rendered.len().saturating_add(line.len()) > max_chars {
                 break;
@@ -229,7 +237,11 @@ impl WorkingSetProjection {
             rendered.push_str(&line);
             emitted += 1;
         }
-        if emitted == 0 { None } else { Some(rendered) }
+        if emitted == 0 {
+            (None, 0)
+        } else {
+            (Some(rendered), emitted)
+        }
     }
 }
 
@@ -342,22 +354,30 @@ pub fn select_working_set(
         });
     }
 
-    let observation_sha256 = projection_digest(
-        &query.task_sha256,
-        files.len(),
-        scanned_bytes,
-        scan_truncated,
-        &regions,
-    )?;
-    Ok(WorkingSetProjection {
+    let mut projection = WorkingSetProjection {
         policy_version: POLICY_VERSION.to_owned(),
         task_sha256: query.task_sha256,
-        observation_sha256,
+        observation_sha256: String::new(),
         scanned_files: files.len(),
         scanned_bytes,
         scan_truncated,
         regions,
-    })
+    };
+    loop {
+        projection.observation_sha256 = projection_digest(
+            &projection.task_sha256,
+            projection.scanned_files,
+            projection.scanned_bytes,
+            projection.scan_truncated,
+            &projection.regions,
+        )?;
+        let (_, emitted) = projection.render_prompt_block_with_count(budget.max_rendered_chars);
+        if emitted == projection.regions.len() {
+            break;
+        }
+        projection.regions.truncate(emitted);
+    }
+    Ok(projection)
 }
 
 fn query_facts(task: &TaskDefinition, changed_paths: &[String]) -> QueryFacts {
@@ -936,5 +956,26 @@ mod tests {
                 .iter()
                 .all(|region| !region.path.contains("secret"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rendered_workspace_names_are_json_escaped_not_prompt_structure() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let malicious = "src/evil\nINJECT.rs";
+        write(workspace.path(), malicious, "pub fn bounded_name() {}\n");
+        let definition = task("调查最近变化");
+        let projection = select_working_set(WorkingSetRequest {
+            workspace: workspace.path(),
+            task: &definition,
+            changed_paths: &[malicious.to_owned()],
+            budget: WorkingSetBudget::default(),
+        })
+        .expect("selection");
+        let rendered = projection
+            .render_prompt_block(WorkingSetBudget::default().max_rendered_chars)
+            .expect("rendered map");
+        assert!(rendered.contains(r#"path="src/evil\nINJECT.rs""#));
+        assert!(!rendered.contains("\nINJECT.rs"));
     }
 }

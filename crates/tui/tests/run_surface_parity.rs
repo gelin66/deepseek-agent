@@ -405,6 +405,7 @@ fn production_application(
         preferences: PromptPreferences::default(),
         instructions: Vec::new(),
         skills_dir: Some(skills_dir.to_path_buf()),
+        working_set_enabled: false,
         verbosity: None,
         skills_scan_codewhale_only: false,
         shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()

@@ -1,0 +1,93 @@
+{
+  "schema": "codewhale.eval.m10-b-working-set-localization.v2",
+  "frozen_at": "2026-07-24",
+  "supersedes": "codewhale.eval.m10-b-working-set-localization.v1",
+  "successor_reason": "bind every measured region to the existing 4096-byte volatile prompt-fragment cap",
+  "product_metric_eligible": false,
+  "official_api_required": false,
+  "fixture": {
+    "path": "eval/fixtures/m10-working-set/repository",
+    "tree_sha256": "sha256:47721cb03038aaaf924f54476e82d6508a3e0208513d18bb06ff4c9591df15a6"
+  },
+  "selector": {
+    "policy_version": "m10b-working-set-v1",
+    "budget": {
+      "max_regions": 8,
+      "max_total_lines": 160,
+      "max_region_lines": 32,
+      "max_scanned_files": 4096,
+      "max_scanned_bytes": 16777216,
+      "max_file_bytes": 524288,
+      "max_rendered_chars": 3900
+    }
+  },
+  "tasks": [
+    {
+      "id": "explicit_stack_path",
+      "objective": "根据堆栈 src/config/loader.rs:7 修复 parse_runtime_policy 的空值边界",
+      "changed_paths": [],
+      "relevant_paths": ["src/config/loader.rs"]
+    },
+    {
+      "id": "symbol_test_adjacency",
+      "objective": "修复 retry backoff 的 bounded_retry_delay，并同步对应测试",
+      "changed_paths": [],
+      "relevant_paths": [
+        "src/retry/backoff.rs",
+        "tests/backoff_test.rs"
+      ]
+    },
+    {
+      "id": "error_import_adjacency",
+      "objective": "定位 dispatcher 中 incomplete_stream 错误的传播边界",
+      "changed_paths": [],
+      "relevant_paths": [
+        "src/runtime/dispatcher.rs",
+        "src/runtime/stream.rs"
+      ]
+    },
+    {
+      "id": "typescript_test_adjacency",
+      "objective": "修复 session 的 restoreSession 恢复逻辑并核对前端测试",
+      "changed_paths": [],
+      "relevant_paths": [
+        "web/src/session.ts",
+        "web/tests/session.test.ts"
+      ]
+    },
+    {
+      "id": "manifest_entry",
+      "objective": "调整 Cargo workspace 的 recovery feature 依赖清单",
+      "changed_paths": [],
+      "relevant_paths": ["Cargo.toml"]
+    },
+    {
+      "id": "git_changed_path",
+      "objective": "调查最近未提交的 tenant policy 回归",
+      "changed_paths": ["src/config/tenant.rs"],
+      "relevant_paths": ["src/config/tenant.rs"]
+    },
+    {
+      "id": "unicode_region",
+      "objective": "修复 用户名规范化 的 Unicode 大小写边界",
+      "changed_paths": [],
+      "relevant_paths": ["src/用户/规范化.rs"]
+    },
+    {
+      "id": "abstain_non_repository",
+      "objective": "只解释 TCP 慢启动原理，不调查或修改仓库",
+      "changed_paths": [],
+      "relevant_paths": []
+    }
+  ],
+  "decision_rule": {
+    "recall_at_k": 5,
+    "minimum_recall_at_k": 1.0,
+    "minimum_mean_precision_at_k": 0.75,
+    "maximum_median_first_relevant_rank": 2.0,
+    "maximum_abstention_regions": 0,
+    "deterministic_repeats": 2,
+    "production_admission": false,
+    "next_gate": "fixed-Pro end-task same-binary A/B"
+  }
+}

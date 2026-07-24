@@ -1203,6 +1203,7 @@ fn production_application_config(
     let prompt = ProductionPromptConfig {
         preferences: load_prompt_preferences()
             .context(tr(MessageId::CliPromptPreferencesFailed).into_owned())?,
+        working_set_enabled: resolved_runtime.working_set_enabled,
         verbosity: resolved_runtime.verbosity.clone(),
         ..ProductionPromptConfig::default()
     };

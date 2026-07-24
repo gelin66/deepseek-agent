@@ -2138,6 +2138,34 @@ pack-off 未准入，所以不进入 nested scoped-rules treatment；下一独�
 完整证据见
 [M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)。
 
+M10-B 当前只完成 localization 与 production-caller 的离线前置证据，尚无产品准入：
+
+- `3a1e2b54` 冻结 8-task/真实临时 Git repo 的 v1 baseline：Recall@5 `1.00`、
+  mean precision@5 `0.881`、median first relevant rank `1`、negative abstention
+  regions `0`，两次选择 byte-equivalent；
+- frozen v1 manifest 保持 6000-character 历史预算不变；v2 successor 只把
+  model-visible budget 收紧为 3900 characters，以保证 selector 最终 region 数、
+  observation digest、offline metric 与既有 4096-byte WorldState fragment 的真实内容
+  一致；
+- selector 只读 task/path/stack/symbol/content/manifest/test/import 与 Host 从
+  canonical `git_status` 得到的 changed paths；不使用 LLM、embedding、RepoGraph、
+  symlink traversal 或第二 store，且 JSON-escape 所有 workspace-controlled prompt 值；
+- production composition 在显式 treatment 时为 root、read-only child、Writer 与
+  continuation 构造同一 volatile map。默认关闭，stable constitution hash 不变；
+  app-server 进程被终止后从 SQLite reopen 可读回包含 exact map 的 persisted system
+  prompt；
+- typed `[context].working_set` 只为同 immutable binary control/treatment 服务，
+  默认 false、未知/旧 nested key fail closed，并预注册在 keep/reject 时物理删除；
+- 本 checkpoint 只运行离线门禁，没有读 Key 或请求 official API。它不能支持
+  “减少搜索/Token/时间/费用”或“提高 verified task success”的结论。
+
+正式 end-task A/B 必须使用 fixed Pro、fixed pack-on、同 binary/revision/task/tools/
+budget/verifier、`maximum_reruns=0`。除了 verified success 非劣、false success 0 和关键
+stratum 无 treatment-only failure，还要记录 first effective edit 前 discovery calls、
+重复 search/read、model request、cache-miss input、wall time 与完整 accounting。仅
+localization 指标通过不准入；任何 unknown/incomplete physical accounting 停止 campaign，
+任何无净收益候选完整删除。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
