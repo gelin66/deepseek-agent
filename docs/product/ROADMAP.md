@@ -2843,6 +2843,114 @@ physical accounting 完整的 arms 形成 Token/费用结论。任何准入规�
 不得在候选评测中临时修改。完整证据见
 [M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
 
+### M10：fixed-Pro 原生能力优化闭环
+
+M10 不按 Codex/Claude/Kiro/Cursor/Devin 等产品复制功能，而把有效机制收敛到当前唯一
+控制闭环：
+
+```text
+TaskContract -> 目标/参考输入
+ContextBroker -> 状态估计与高信噪比观测选择
+AgentRuntime -> 唯一执行控制器
+canonical tools + ToolOutcome -> 执行器与传感器
+EvidenceReceipt + verifier artifact -> revision-bound 反馈
+crates/app typed recovery policy -> 误差控制器
+RunStore -> 精确轨迹与恢复状态
+corrected eval Harness -> 离线系统辨识与候选准入
+```
+
+调用图复核确认已有机制不重建：单 Writer worktree、skills metadata-only/JIT 正文读取、
+TaskContract/EvidenceReceipt/latest-revision completion gate、RunStore exact replay、
+read-before-edit/atomic tools/typed failure、DeepSeek stable prefix/accounting/reasoning replay
+全部保留。M5-B proactive compaction shrink、M7-F cache treatment hold、M7-G read-only
+fan-out 未准入结论不改写。
+
+执行顺序固定为 A→B→C→D→E→trajectory analyzer→最后才讨论 read-only fan-out。
+每个产品候选都用 fixed Pro、单变量、真实 caller、external verifier 和 accounting-complete
+arms；质量门失败或无归因净收益时完整删除 treatment。
+
+#### M10-A：Scoped Context Map
+
+- 真实问题：`ProductionPromptConfig.project_context_pack_enabled=true` 默认在
+  `AGENTS.md`/项目指令之后再追加 broad pack；没有说明文件时 ephemeral overview 与 pack
+  又调用同一个 `build_project_context_pack`，形成字节级重复。`.codewhale/rules` 和
+  `.claude/rules` 的全部 Markdown 当前可 eager 合并至 500 KB。
+- 验收：先冻结 prompt fragment ledger；pack-off 单变量必须 verified success 非劣、
+  false success 0、关键任务无 treatment-only failure，并使 median cache-miss input
+  实质下降（预注册门为至少 10%）且重复 read/search/request 不增加。随后 scoped rules
+  只在目标 path/working set 命中时读取正文，compaction/reopen identity 一致。
+- owner：`crates/context`；`crates/app` 只保留唯一 production 接线。
+- 替代旧路：默认 project context pack、fallback duplicate、eager all-rules assembly；
+  不替代 root authority、短 fallback overview 或 skills progressive disclosure。
+- 证据：offline byte/token/source/scope/digest ledger 与 fixture；通过后才做同 binary
+  fixed-Pro A/B。
+- cutover：pack-off 通过则删除配置开关、默认追加和失去消费者的 pack renderer/tests；
+  scoped rules 通过则删除 eager rules block。任一阶段失败只删除该 treatment。
+
+#### M10-B：Budgeted Working-Set Selector
+
+- 真实问题：当前 ContextBroker 只做 transcript/Host facts 的 deterministic projection
+  与 hard-limit compaction；没有 task-aware ranked repository regions。
+- 验收：在固定行数/Token 预算内输出 `path/range/reason/evidence/digest/expand_hint`；
+  localization benchmark 记录 Recall@K、first relevant rank、预算覆盖与无关上下文，
+  end-task A/B 还必须降低有效修改前调用数且 verified success 非劣。
+- owner：`crates/context` 的现有 ContextBroker。
+- 替代旧路：启动 broad pack 和 root 无目标反复 discovery；不替代 `rg/read`。
+- 证据：先 deterministic fixture/离线 benchmark，再 fixed-Pro end-task A/B。
+- cutover：无最终任务净收益即删除 selector；不建 RepoGraph crate、embedding、向量库或
+  LLM reranker。
+
+#### M10-C：Acceptance Progress Projection
+
+- 真实问题：Runtime 已在 completion 时逐项构造 `AcceptanceSatisfaction`，ContextBroker
+  也会投影 acceptance IDs、latest receipt 与 rejection，但执行中没有统一派生的
+  `satisfied/pending/invalidated/evidence_needed` 视图。
+- 验收：投影只从 TaskContract、ToolOutcome、workspace revision、verifier observation
+  和 EvidenceReceipt 派生；revision 变化自动失效旧证据；compaction/reopen 后逐项一致，
+  跨文件/恢复任务重复工具轮次和漏验收下降、false success 0。
+- owner：`crates/runtime`；ContextBroker 只消费派生结果。
+- 替代旧路：重复 Host-facts prose 和模型自行回忆剩余验收。
+- 证据：负向 revision/old receipt/reopen fixtures 与 fixed-Pro task A/B。
+- cutover：机械投影覆盖后删重复 prose；无收益删除 projection，不建第二 plan truth、
+  update-plan 工具或 Goal/Hunt store。
+
+#### M10-D：Failure-Directed Recovery Controller
+
+- 真实问题：typed ToolOutcome、completion rejection、transport retry 与 verifier recovery
+  已存在，但 `crates/app` 尚无按稳定 failure facts 选择 ContextBroker/重读/环境诊断/
+  Pro-max recheck 的完整 Host 映射。
+- 验收：预注册 context_missing、wrong scope、verifier_failed、stale/conflict、
+  schema error、reasoning insufficient、incomplete stream、unknown billing、
+  budget/environment failure；相同预算恢复率上升、重复副作用为零、false success 0、
+  exact replay 一致。
+- owner：`crates/app`，复用唯一 Runtime/Store/tools。
+- 替代旧路：通用 continuation、盲重试和重复全上下文。
+- 证据：确定性故障注入后才做 fixed-Pro recovery A/B。
+- cutover：逐类接管后删除对应通用分支；失败删除策略候选，不增加分类模型请求或第二
+  controller loop。
+
+#### M10-E：Reproducible Environment + Runtime Artifacts
+
+- 真实问题：`RunEnvironment` 当前保存 workspace/provider/catalog/execution fingerprint/
+  sandbox 等运行事实，ToolArtifact 主要覆盖 verifier payload；没有 deterministic
+  ProjectEnvironmentProfile 或按 TaskContract 选择的 service/UI runtime evidence。
+- 验收：language/build system/tool versions/build-test-lint commands/worktree init 与
+  environment fingerprint 可重放；只有 TaskContract 要求时才收集 health/process log/
+  browser console-network/screenshot/interaction artifact，且全部绑定 latest revision。
+- owner：高层 `crates/app`，执行仍在 `crates/tools`，持久化复用现有
+  RunEnvironment/ToolArtifact/EvidenceReceipt。
+- 替代旧路：模型反复猜命令和用静态测试冒充真实运行验证。
+- 证据：environment setup、root/worktree parity、planted UI/service failure 与时间开销。
+- cutover：删除重复环境探测/提示词说明；无收益的 runtime profile 完整删除。
+
+#### M10-F：Trajectory Learning（只读 eval）
+
+现有 `eval/` 有多个冻结 runner/summary，但没有从 RunStore/raw 统一派生
+task stratum、failure code、context source、tool repetition、evidence deficit 和 recovery
+outcome 的只读 analyzer。M10-F 只能增强 corrected Harness：输出可独立重算的 loss
+aggregation 和下一候选 manifest 输入；不允许 production 自修改、LLM judge 完成权或
+第二 memory/plan store。决策后无消费者 analyzer 必须删除。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

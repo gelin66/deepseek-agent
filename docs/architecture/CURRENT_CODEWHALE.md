@@ -1849,6 +1849,22 @@ Key 未读取、official API 请求 0，现有 `billing_unknown -> formal campai
 保持。完整事实见
 [M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
 
+M10 前置调用图复核确认，当前唯一控制闭环已经具备 TaskContract、ContextBroker、
+AgentRuntime、canonical ToolOutcome、EvidenceReceipt/verifier artifact、RunStore 与
+corrected Harness，但五个产品缺口仍然分离：
+
+- prompt 默认继续追加 project context pack；无说明文件时 fallback overview 与 pack 共用
+  `build_project_context_pack`，`.codewhale/.claude rules` 仍 eager 注入；
+- ContextBroker 没有 task-aware、预算化 ranked working-set regions；
+- acceptance satisfaction 只在 completion gate 构造，运行中没有派生 progress view；
+- app 只有部分 typed recovery/recheck 选择，没有完整 failure-directed Host controller；
+- RunEnvironment/ToolArtifact 没有 deterministic project environment profile 与
+  TaskContract-scoped runtime artifacts。
+
+skills 已经只把 name/description/path 放入 prompt，正文按需读取；single Writer
+worktree、latest-revision Stop Gate、RunStore exact replay、atomic tools 和 stable-prefix/
+accounting 均已有，不能在 M10 重复建设。后续 A→E 只允许增强上述现有 owner。
+
 ## 7. 明确非结论
 
 当前源码不证明：

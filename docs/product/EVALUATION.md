@@ -2055,6 +2055,48 @@ physical attempt unknown，campaign 继续 fail closed。放宽当前准入规�
 
 - [M9-E billing evidence boundary](../../eval/summaries/m9-e-billing-evidence-boundary-2026-07-24.md)。
 
+### 9.35 M10 fixed-Pro 原生能力吸收预注册（2026-07-24）
+
+当前代码与目标矩阵的差异已经按唯一 owner 逐项确认：
+
+| Slice | 已有且保留 | 当前真实缺口 | 禁止的新 owner |
+|---|---|---|---|
+| A Scoped Context | AGENTS/constitution、fallback overview、skills metadata-only、stable/volatile blocks | default broad pack、fallback duplicate、eager rules up to 500 KB、无 fragment scope/token ledger | 第二 ContextBroker、skill framework |
+| B Working Set | rg/read/git/tool catalog、deterministic compaction | 无 task-aware ranked region selector 和 localization metrics | RepoGraph crate、embedding/vector DB、LLM reranker |
+| C Acceptance Progress | TaskContract、receipt、latest-revision completion gate、completion-time satisfaction | 无执行中派生的逐 acceptance progress | plan store、Goal/Hunt、update-plan tool |
+| D Recovery | typed failure/retry/side-effect、transport retry、verifier recovery、fixed Pro/max recheck | 无完整 failure→Host action controller | classifier request、第二 loop |
+| E Environment | RunEnvironment、execution fingerprint、worktree、ToolArtifact/verifier artifact | 无 deterministic project profile 和 task-scoped runtime artifacts | 云平台、全局 browser/MCP |
+| F Trajectory | frozen manifests/raw/summaries、corrected Harness | 无通用只读 loss aggregation | production self-modification、LLM judge |
+
+统一约束：
+
+- fixed Pro 是所有产品质量 control；Auto、FIM、multi-Writer、default swarm 不重开；
+- 一个正式 A/B 只改变一个主要变量，同 binary/revision/TaskContract/tools/budget/
+  verifier，`maximum_reruns=0`；
+- verified success 非劣、false success 0、关键 stratum 无 treatment-only failure、
+  latest revision evidence 和 accounting 完整先于效率；
+- 质量通过后至少一项 token/cache-miss/request/wall/recovery/localization 指标取得预注册
+  净收益，代码复杂度为正，才允许 cutover；
+- treatment 失败时删除 production branch、配置、fixture/runner 中只为它增加的路径；
+  frozen evidence 保留。
+
+M10-A 第一阶段只允许一个 delta：关闭默认 project context pack。offline fixture 必须先
+证明当没有说明文件时 overview/pack 来自同一 `build_project_context_pack`，并建立每个
+prompt layer 的 source/bytes/estimated tokens/stability ledger。正式门：
+
+```text
+verified success non-inferior
+false success = 0
+no critical-stratum treatment-only failure
+median cache-miss input reduction >= 10%
+no increase in repeated read/search/model requests
+wall time or known cost improves
+all physical accounting complete
+```
+
+pack-off 通过后才进入 scoped rules；未通过则删除 treatment、保持当前默认。B–F 不与
+M10-A 混入同一 candidate。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
