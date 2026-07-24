@@ -1743,6 +1743,55 @@ manifest/summary：
 - `eval/manifests/m8-l-release-benchmark-successor-v1.json`；
 - [M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
 
+### 9.28 M8-M billing-provable 中文 prompt successor（2026-07-24）
+
+M8-M 不续跑或拼接 M8-D v1-v5。它从 clean `d1d6ca5c` 使用同一 immutable
+`codewhale`/`codewhale-tui` binary pair、fixed `deepseek-v4-pro`、当前 Standard
+ChatCompletions、5 个冻结任务和全新 30-arm schedule，从 position 1 比较 bundled
+constitution 与唯一 fact-gap successor。两臂除 stable constitution text 外的
+revision、TaskContract、actor/authority、workspace slot、tool catalog、reasoning、预算、
+retry、cache controls、verifier 与 binary identity 必须逐对相同。
+
+Harness 在读取 Key 前通过 19/19 contract tests、6/6 SIGKILL journal fault windows、
+prompt-only production activation、no-credential SQLite reopen、focused、fmt、workspace
+strict Clippy/test、process-level crash/reopen 和 immutable binary preflight。raw 采用
+`O_EXCL|O_APPEND|O_NOFOLLOW`、目录/逐 record fsync 和 SHA-256 previous-record chain；
+terminal、reopen、verifier snapshot 必须先 durable，最后才允许 arm observation。
+
+正式 suite 的前 5 个 arm 全部 measurement valid、verified success，false success 为 0；
+31 个 usage-bearing Standard Chat responses、144,976 input tokens、13,637 output tokens、
+known-cost lower bound `$0.042682606` 均由 canonical ledger 闭合。第 6 arm（t5
+candidate）的首个 root request 产生 typed `deepseek_transport`，没有收到 response
+headers、content、finish reason 或 usage：
+
+```text
+started = 1
+surface responses = 0
+usage responses = 0
+billing_unknown_attempts = 1
+billing_unknown = true
+complete = false
+```
+
+按 `maximum_reruns=0` 和 frozen accounting gate，Harness 在 6/30 arm 立即写入
+`aborted_unknown_billing` 并退出；没有第 7 arm、续跑或自动重试。日志为 33 个完整
+hash-chained records、0 partial-tail bytes，SHA-256
+`641d7d80129b4673bd93eb4d4a0af57f278b326357af71c04188b8eae74acec7`。
+该次无 usage attempt 是否计费无法证明，因此 5 个完成 arm 只是停止证据，不是
+product-metric eligible aggregate；两个完整 pair 也不能满足 15-pair 硬门槛。
+
+结论是
+**hold prompt candidate / keep bundled prompt / do not resume or splice**。production
+prompt 不切换；candidate-only M8-M runner/test 在记录冻结 hash 后删除，M8-D/M8-M
+manifest、summary 和 ignored `0600` raw 保留。V15 仍 blocked，current V1 matrix 保持
+15 pass / 1 blocked，V1 仍不可发布。
+
+manifest/raw/summary：
+
+- `eval/manifests/m8-m-prompt-successor-v1.json`；
+- ignored `eval/raw/m8-m-prompt-successor-formal-d1d6ca5c-v1.jsonl`（`0600`）；
+- [M8-M billing-provable 中文 prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

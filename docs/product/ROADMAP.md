@@ -172,6 +172,17 @@
   exact current candidate 再通过 production Git/verifier/reopen regression；五个共同
   用户 workflow 的显式动作数为 `5 -> 5`。V13/V16 因而关闭，current matrix 为
   15 pass / 1 blocked；只剩 V15，V1 仍不可发布。Key 未读取、official requests 0。
+  M8-M 随后从 clean `d1d6ca5c` 冻结 current fixed-Pro、same-revision immutable-binary
+  中文 prompt successor。19/19 Harness、6/6 journal SIGKILL、production activation、
+  focused、workspace clippy/test 和 process crash/reopen 全部离线通过。正式 30-arm
+  suite 的前 5 arm 均 verified、false success 为 0、31 个 usage response 和
+  `$0.042682606` known-cost lower bound 闭合；第 6 arm 的首个
+  `deepseek_transport` 没有 response headers/usage，canonical accounting 因而记录
+  `billing_unknown=true`。Harness 按 `maximum_reruns=0` 在 6/30 立即停止，没有续跑、
+  补 mate 或拼样。结论为
+  `hold_prompt_candidate / keep_bundled_prompt / do_not_resume_or_splice`；candidate-only
+  evaluator path 删除，production prompt 不变。V15 仍 blocked，current matrix 保持
+  15 pass / 1 blocked，V1 仍不可发布。
   当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -286,7 +297,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | ContextBroker、跨文件检索和 canonical 证据链 | 已完成（M5-A 完成；M5-B shrink；RepoGraph 按 ADR-0005 转为 post-V1 证据准入） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；现有跨文件检索可验证，结构索引不按名称堆功能 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-L successor 为 15/16 pass；仅 V15 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 进行中（M8-M formal 因 active-arm unknown billing 停止；仍为 15/16 pass，仅 V15 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2600,6 +2611,50 @@ requests 0。accepted benchmark candidate 为 `d27553c4c8145a5c0bd3bb0edcf6b6bef
 tree `f8e7a15694b7f8a62ddd98044fc0838ad1dbeec6`；private formal result SHA-256 为
 `fdf2865659fe9bbe61ebf4951e5e0e02adb5cb718c0737ce762911047746fd86`。完整结论见
 [M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
+
+### M8-M：billing-provable 中文 Agent prompt successor
+
+M8-M 以 clean `d1d6ca5c`、Run API v11、RuntimeEvent v17、State v23、exec-stream v3
+和 15 pass / 1 blocked matrix 开始。它不续跑 M8-D v1-v5，而是冻结同一 current
+revision、immutable `codewhale`/`codewhale-tui` binary pair、fixed
+`deepseek-v4-pro`、5 个任务、30 个全新 arms 和 `maximum_reruns=0`。candidate 仍只把
+constitution 五步 checklist 替换为两行 fact-gap loop，不增加 selector、mode、Provider、
+Runtime、Store 或 prompt owner。
+
+Harness commit `d723d0b3` 物理替代旧 M8-D Python evaluator/test，并建立 fail-before-loss
+`0600` journal：suite plan 在 credential 前 fsync；每 arm 的 exact terminal、无 Key
+SQLite reopen 和 verifier snapshot 在 observation 前依次 fsync；日志使用 exclusive
+claim、append/no-follow、单调 sequence 和 SHA-256 chain。19/19 self-tests、6/6 SIGKILL
+fault windows、immutable production activation、focused、fmt、workspace strict
+Clippy/test、exec/HTTP/stdio/TUI parity 和 process crash/reopen 全部通过。live admission
+单独冻结在 `d60d5e52`。
+
+正式 suite 的前 5 个 arm 全部 measurement-valid/verified，false success 为 0；31 个
+physical responses、144,976 input tokens、13,637 output tokens 和
+`$0.042682606` known-cost lower bound 闭合。第 6 个 t5 candidate arm 的首个 Pro
+request 产生 typed `deepseek_transport`，response headers/content/finish/usage 均未
+观察到。RunStore exact reopen 后 accounting 为：
+
+```text
+started=1
+surface_responses=0
+usage_responses=0
+billing_unknown=true
+complete=false
+```
+
+Harness 按冻结门禁立即写入 `aborted_unknown_billing`，没有执行第 7 arm、重试、补 mate
+或续跑。raw 有 33 个完整 hash-chained records、0 partial tail，SHA-256 为
+`641d7d80129b4673bd93eb4d4a0af57f278b326357af71c04188b8eae74acec7`。完成的 5 arms
+不是 product-metric eligible aggregate，两个完整 pair 不能支持 keep/reject 质量结论。
+
+决策为 **hold prompt candidate / keep bundled prompt / do not resume or splice**。
+candidate-only M8-M runner/test 在记录冻结 identity 后删除；frozen manifest、summary 与
+ignored `0600` raw 保留。V15 仍 blocked，current matrix 保持 15 pass / 1 blocked，
+V1 仍不可发布。
+
+完整结论见
+[M8-M billing-provable 中文 Agent prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
 
 ### 调优
 

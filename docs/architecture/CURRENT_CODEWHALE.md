@@ -61,6 +61,8 @@
 - M8-K accepted scope candidate：`6a99cb79`
 - M8-L frozen release benchmark successor：`14319b11`
 - M8-L accepted release benchmark candidate：`d27553c4`
+- M8-M prompt successor Harness：`d723d0b3`
+- M8-M fixed-Pro live admission：`d60d5e52`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -179,6 +181,14 @@
   workflow 的用户动作总数为 `5 -> 5`。V13/V16 关闭，current matrix 为
   15 pass / 1 blocked；V15 仍 blocked，V1 仍不可发布。production source/protocol/model
   surface 不变，Key 未读取、official requests 0。
+  M8-M 随后以 current `d1d6ca5c` fixed-Pro immutable binary 建立全新 30-arm 中文
+  prompt successor；旧 M8-D evaluator/test 被替代。离线 identity、journal SIGKILL、
+  focused、workspace clippy/test 与 process reopen 全部通过。正式 suite 前 5 arm
+  verified/false-success=0，第 6 arm 的首个 physical request 没有收到 response
+  headers/usage，canonical ledger 记录 `billing_unknown=true`，按 frozen
+  `maximum_reruns=0` 在 6/30 fail closed。production bundled prompt 不变，
+  candidate-only evaluator path 删除；V15 继续 blocked，current matrix 仍为
+  15 pass / 1 blocked，V1 不可发布。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -1686,6 +1696,33 @@ V13/V16 关闭后 current matrix 为 15 pass / 1 blocked；只剩 V15 billing-pr
 Simplified Chinese Agent prompt comparison，V1 仍不可发布。完整事实见
 [M8-L release benchmark successor](../../eval/summaries/m8-l-release-benchmark-successor-2026-07-24.md)。
 
+M8-M 没有修改 production source 或 bundled constitution。它只用已有显式 prompt
+override，把同一 immutable fixed-Pro binary 的 current prompt 与唯一 fact-gap candidate
+送入 canonical production chain：
+
+```text
+isolated CODEWHALE_HOME / constitution variant
+  -> ProductionComposition
+  -> AgentApplication -> AgentRuntime
+  -> DeepSeekModelPort -> POST /chat/completions
+  -> canonical usage/retry/accounting
+  -> RunStore -> no-credential SQLite reopen
+  -> external deterministic verifier
+```
+
+preflight 证明两臂除 stable constitution bytes 外的 actor、authority、TaskContract、
+catalog、reasoning、budget、cache controls、remaining prompt blocks 和 binary identity
+相同。正式 suite 在第 6 arm 的第 1 次 request 遇到无 response headers/usage 的 typed
+transport failure；RunStore sealed/reopen 后仍保留 `started=1`、
+`surface_responses=0`、`billing_unknown=true`、`complete=false`。Harness 没有把它重试、
+估价或当作 0 cost，而是以 `aborted_unknown_billing` 停止。
+
+因此 current architecture 仍只有 `crates/context` 一个 production prompt owner；没有
+candidate selector、模式、fallback、第二 model loop、Provider 或 transport。M8-M
+candidate-only Python runner/test 已删除，frozen manifest、summary 和 ignored `0600`
+raw 只作为停止证据。V15 仍 blocked。完整事实见
+[M8-M billing-provable 中文 Agent prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1697,6 +1734,9 @@ Simplified Chinese Agent prompt comparison，V1 仍不可发布。完整事实�
   仍只由 CI matrix 拥有而非本机观察；
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
+- M8-M successor 已关闭 V15 或证明 candidate 更好/更差；formal 只完成 5 个
+  measurement-valid arms，第 6 arm 因无 response/usage 的 unknown billing 停止，旧/新
+  samples 均不得补 mate、续跑或拼接；
 - M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；其 frozen matrix
   保持 8 blocked，M8-G/J/K successor 已把 current matrix 收敛为 3 blocked，但仍不可发布；
 - 旧模型 alias 退役等于 ChatCompletions surface 退役；官方文档与当前 production

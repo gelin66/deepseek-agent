@@ -11,6 +11,13 @@
 - 协议身份：Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2
 - 最终决策：`hold_prompt_candidate / keep_app_server_override_consistency`
 
+> 2026-07-24 successor：M8-M 以 current `d1d6ca5c` fixed-Pro immutable binary、
+> 全新 30-arm suite 和 fail-before-loss journal 取代旧 evaluator。它完成 5 个
+> measurement-valid arms 后，第 6 arm 的首个请求无 response/usage，按
+> `aborted_unknown_billing` 停止。旧 M8-D 与 M8-M 样本均不可续跑或拼接，bundled prompt
+> 仍不切换。见
+> [M8-M billing-provable 中文 Agent prompt successor](m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
+
 ## 1. 结论
 
 M8-D 没有产生可采纳的完整正式 A/B。production bundled prompt 保持原样，候选不接管：
