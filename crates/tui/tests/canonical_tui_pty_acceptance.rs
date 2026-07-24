@@ -44,10 +44,6 @@ const ONBOARDING_KEY: &str = "sk-offline-canonical-onboarding-key";
 const RECOVERY_CREATION_ID: &str = "pty-recover-explicit-creation";
 const RECOVERY_RESERVED_RUN_ID: &str = "pty-reserved-explicit-run";
 const RECOVERY_PROMPT: &str = "恢复中断的显式创建，不得生成第二个 run。";
-const UNKNOWN_CREATION_ID: &str = "pty-recover-unknown-billing";
-const UNKNOWN_RESERVED_RUN_ID: &str = "pty-reserved-unknown-billing";
-const UNKNOWN_PENDING_PROMPT: &str = "这条自动选模请求已经处于未知计费状态。";
-const GUARDED_INITIAL_PROMPT: &str = "这条 CLI 初始提示必须等待我明确按 Enter。";
 
 #[test]
 fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow::Result<()> {
@@ -361,74 +357,6 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
         RECOVERY_RESERVED_RUN_ID,
     )?;
     assert_no_legacy_execution_json(isolated.home());
-    Ok(())
-}
-
-#[test]
-fn unknown_billing_blocks_automatic_cli_prompt_and_all_deepseek_posts() -> anyhow::Result<()> {
-    let fixture = CountingDeepSeekFixture::spawn()?;
-    let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    let state_path = codewhale_home.join("state.db");
-    let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
-        .display()
-        .to_string();
-    seed_pending_start(
-        &state_path,
-        &canonical_workspace,
-        UNKNOWN_CREATION_ID,
-        UNKNOWN_RESERVED_RUN_ID,
-        UNKNOWN_PENDING_PROMPT,
-        None,
-    )?;
-
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-        .cwd(isolated.workspace())
-        .clear_env()
-        .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
-        .env("DEEPSEEK_API_KEY", "offline-canonical-unknown-billing-key")
-        .env("DEEPSEEK_BASE_URL", fixture.base_url())
-        .env("NO_ANIMATIONS", "1")
-        .env("RUST_LOG", "warn")
-        .args([
-            "--workspace",
-            isolated
-                .workspace()
-                .to_str()
-                .expect("UTF-8 fixture workspace"),
-            "--no-project-config",
-            "--skip-onboarding",
-            "--prompt",
-            GUARDED_INITIAL_PROMPT,
-        ])
-        .size(40, 140)
-        .spawn()?;
-
-    tui.wait_for_text("计费状态未知", BOOT_TIMEOUT)?;
-    tui.wait_for_text(UNKNOWN_CREATION_ID, Duration::from_secs(5))?;
-    tui.wait_for_text(GUARDED_INITIAL_PROMPT, Duration::from_secs(5))?;
-    std::thread::sleep(Duration::from_millis(750));
-    assert_eq!(
-        fixture.post_count(),
-        0,
-        "unknown-billing startup must not issue a DeepSeek chat request"
-    );
-
-    assert_unknown_creation_remains_pending(
-        &state_path,
-        &canonical_workspace,
-        UNKNOWN_CREATION_ID,
-        UNKNOWN_RESERVED_RUN_ID,
-    )?;
-    tui.send(b"\x04")?;
-    assert_eq!(
-        tui.wait_for_exit(EXIT_TIMEOUT),
-        Some(0),
-        "unknown-billing warning did not leave the TUI usable and exit-safe:\n{}",
-        tui.debug_dump()
-    );
-    fixture.shutdown()?;
     Ok(())
 }
 
@@ -765,41 +693,6 @@ fn assert_recovered_creation_sqlite_truth(
                 reservation.run_id == RunId::from(reserved_run_id) && reservation.intent.is_none()
             }),
         "durable creation receipt lost its run identity or retained private intent"
-    );
-    Ok(())
-}
-
-fn assert_unknown_creation_remains_pending(
-    state_path: &Path,
-    workspace: &str,
-    creation_request_id: &str,
-    reserved_run_id: &str,
-) -> anyhow::Result<()> {
-    let store = StateStore::open(Some(state_path.to_path_buf()))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    assert!(
-        runtime
-            .block_on(store.list_root_runs(workspace, 10))?
-            .is_empty(),
-        "unknown-billing startup must not create a replacement root"
-    );
-    assert!(
-        runtime
-            .block_on(store.load(&RunId::from(reserved_run_id)))?
-            .is_none(),
-        "unknown-billing startup must not create the reserved run"
-    );
-    let pending = runtime.block_on(store.list_pending_creations(workspace, 10))?;
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].command_id, CommandId::from(creation_request_id));
-    assert_eq!(pending[0].run_id, RunId::from(reserved_run_id));
-    assert!(
-        pending[0]
-            .intent
-            .as_ref()
-            .is_some_and(CreationIntent::is_unknown_billing)
     );
     Ok(())
 }

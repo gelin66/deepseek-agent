@@ -723,9 +723,10 @@ fn decode_creation_intent(
     }))
 }
 
-/// State v21 cannot replay pre-v16 tool failures, so all materialized runs are
-/// retired. Keep only pending Start intents whose canonical command and stored
-/// metadata can still reconstruct a valid root creation without a source run.
+/// State v21/v22 cannot replay incompatible materialized run requests, so all
+/// such runs are retired. Keep only pending Start intents whose canonical
+/// command and stored metadata can still reconstruct a valid root creation
+/// without a source run or a pre-RunCreated model request.
 pub(super) fn retain_recoverable_start_creation_intents(
     tx: &rusqlite::Transaction<'_>,
 ) -> Result<(), RunStoreError> {

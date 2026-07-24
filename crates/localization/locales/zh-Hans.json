@@ -301,7 +301,6 @@
     "CanonicalRecoveringInterruptedRun": "正在恢复中断的运行：{run_id}",
     "CanonicalInitialCommandConfirmation": "启动参数中的交互命令已保留在输入框，请按 Enter 确认执行",
     "CanonicalUnknownValue": "未知",
-    "CanonicalUnknownBillingCreation": "检测到上次自动选模创建未确认（creation：{creation}，run：{run}）。计费状态未知，已禁止自动重发原请求；如需开始新任务，请检查后在输入框按 Enter 明确提交。",
     "CanonicalAmbiguousPendingCreations": "工作区 {workspace} 有 {count} 个中断的创建请求，未自动选择（{preview}）。CLI 初始提示未自动发送；请通过本地 Run API 按 creation ID 恢复，或在输入框按 Enter 明确开始新任务。",
     "CanonicalAmbiguousPendingCreationsMore": "工作区 {workspace} 有 {count} 个中断的创建请求，未自动选择（{preview} 等）。CLI 初始提示未自动发送；请通过本地 Run API 按 creation ID 恢复，或在输入框按 Enter 明确开始新任务。",
     "CanonicalCancelAwaitTerminal": "正在取消当前运行，等待 canonical 终态…",

@@ -270,8 +270,8 @@ impl TuiRunClient {
 
     /// Recover one exact canonical creation receipt and adopt its reserved Run.
     ///
-    /// `AgentApplication` owns payload replay and unknown-billing policy. This
-    /// client only supplies the durable creation identity and then uses the
+    /// `AgentApplication` owns exact payload replay. This client only supplies
+    /// the durable creation identity and then uses the
     /// same adoption/monitoring path as Start, Continue, and Resume.
     pub async fn recover_creation(
         &self,
@@ -568,7 +568,7 @@ mod tests {
         AgentOutcome, CommandId, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
         RuntimeEventKind, TerminalState, ToolPolicy,
     };
-    use codewhale_protocol::run_api::{PendingCreationKind, RunApiErrorCode, RunProductControls};
+    use codewhale_protocol::run_api::{PendingCreationKind, RunProductControls};
     use codewhale_protocol::task::TaskDefinition;
     use codewhale_runtime::{CreationIntent, RunStore};
     use codewhale_state::StateStore;
@@ -927,10 +927,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_billing_returns_canonical_error_without_second_model_request() {
+    async fn auto_pending_creation_recovers_once_through_the_host_policy() {
         let fixture = RecoveryFixture::new().await;
-        let creation_request_id = "tui-recover-unknown-billing";
-        let reserved_run_id = "tui-reserved-unknown-billing";
+        let creation_request_id = "tui-recover-host-policy";
+        let reserved_run_id = "tui-reserved-host-policy";
         let mut command = start_command("不得重复自动路由");
         command.workspace = fixture.workspace.clone();
         command.model = None;
@@ -943,25 +943,33 @@ mod tests {
             .await;
         let (client, _events) = TuiRunClient::new(fixture.application.clone());
 
-        let error = client
+        let recovered = client
             .recover_pending_for_workspace(fixture.workspace.clone())
             .await
-            .expect_err("unknown billing must fail closed");
-        let TuiRunClientError::Application(error) = error else {
-            panic!("expected typed canonical application error, got {error:?}")
-        };
-        assert_eq!(error.code, RunApiErrorCode::RunRecoveryRequired);
-        let creation = error
-            .creation
-            .as_deref()
-            .expect("unknown billing must carry creation context");
-        assert_eq!(creation.creation_request_id, creation_request_id);
-        assert_eq!(error.run_id, Some(RunId::from(reserved_run_id)));
-        assert!(creation.unknown_billing);
+            .expect("deterministic Host routing is safe to recover")
+            .expect("one pending creation");
+        assert_eq!(recovered.run_id, RunId::from(reserved_run_id));
+        let replay = fixture
+            .store
+            .load(&recovered.run_id)
+            .await
+            .expect("load recovered Auto run")
+            .expect("recovered Auto run exists");
+        assert_eq!(replay.snapshot.request.model, "deepseek-v4-pro");
         assert_eq!(
-            fixture.received_model_requests().await,
-            0,
-            "TUI recovery must not resubmit the original prompt or rerun auto routing"
+            replay.snapshot.request.route.requested_model_mode,
+            codewhale_runtime::ModelRouteRequestedMode::Auto
+        );
+        assert_eq!(
+            replay.snapshot.request.route.reason_code,
+            "auto_root_responsible"
+        );
+        assert!(
+            client
+                .list_pending_creations(fixture.workspace, 10)
+                .await
+                .expect("list consumed Auto creation")
+                .is_empty()
         );
     }
 

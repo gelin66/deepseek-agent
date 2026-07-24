@@ -5,8 +5,8 @@ use std::sync::{Arc, Barrier};
 use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentActorKind, AgentTask, AgentTaskId,
-    AgentWorkspaceAccess, AgentWorkspaceAssignment, InheritedRunFacts, ReasoningEffort, RunLimits,
-    ToolPolicy,
+    AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy, InheritedRunFacts,
+    ModelRouteAudit, ModelRouteRequestedMode, ReasoningEffort, RunLimits, ToolPolicy,
 };
 use codewhale_protocol::run_api::{
     ContinueRunCommand, PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
@@ -82,6 +82,11 @@ fn read_only_child_request(
             allowed_paths: Vec::new(),
             owner_token: None,
         },
+        model: request.model.clone(),
+        reasoning_effort: request.reasoning_effort,
+        max_output_tokens: request.max_output_tokens,
+        context_policy: request.context_policy,
+        route: request.route.clone(),
         tool_policy: request.tool_policy.clone(),
         limits: request.limits,
         deadline_unix_ms: request.deadline_unix_ms,
@@ -154,6 +159,16 @@ fn writer_parity_task() -> AgentTask {
             branch: Some("codewhale/writer/writer-parity-task".to_owned()),
             allowed_paths: vec!["src/lib.rs".to_owned()],
             owner_token: Some("writer-parity-owner".to_owned()),
+        },
+        model: "deepseek-v4-pro".to_owned(),
+        reasoning_effort: ReasoningEffort::High,
+        max_output_tokens: None,
+        context_policy: ContextPolicy::default(),
+        route: ModelRouteAudit {
+            requested_model_mode: ModelRouteRequestedMode::Auto,
+            requested_reasoning_effort: ReasoningEffort::Auto,
+            policy_version: "fixture_host_auto_v1".to_owned(),
+            reason_code: "auto_isolated_writer".to_owned(),
         },
         tool_policy: ToolPolicy::default(),
         limits: RunLimits::default(),
@@ -2462,7 +2477,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2554,7 +2569,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
 }
 
 #[tokio::test]
@@ -2626,7 +2641,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
 }
 
 #[tokio::test]
@@ -2670,7 +2685,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
 }
 
 #[tokio::test]
@@ -2751,7 +2766,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2790,7 +2805,10 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_thread_metadat
         unreachable!("creation fixture is Start")
     };
     pending_start.model = None;
-    assert!(pending_intent.is_unknown_billing());
+    assert!(matches!(
+        pending_intent.command,
+        RunCommand::Start(ref command) if command.model.is_none()
+    ));
     let pending = store
         .reserve_creation(
             &pending_command_id,
@@ -2855,19 +2873,16 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_thread_metadat
         .expect("pending Run API v9 reservation must survive RuntimeEvent cutover");
     assert_eq!(retained_pending, pending.reservation);
     assert_eq!(retained_pending.intent, Some(pending_intent));
-    assert!(
-        retained_pending
-            .intent
-            .as_ref()
-            .is_some_and(codewhale_runtime::CreationIntent::is_unknown_billing)
-    );
+    assert!(retained_pending.intent.as_ref().is_some_and(|intent| {
+        matches!(&intent.command, RunCommand::Start(command) if command.model.is_none())
+    }));
     drop(reopened);
 
     let conn = Connection::open(path).expect("inspect v19 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -2968,7 +2983,7 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
@@ -3173,7 +3188,7 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read v21 version"),
-        21
+        22
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3185,6 +3200,124 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
             .expect("count retained pending starts"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pending_start() {
+    let path = temp_state_path("v21_route_audit_cutover");
+    let workspace = "/tmp/v21-route-audit";
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+
+    let finalized_command_id = CommandId::from("v21-finalized-route");
+    let finalized_run_id = RunId::from("v21-finalized-route-run");
+    store
+        .reserve_creation(
+            &finalized_command_id,
+            "sha256:v21-finalized-route",
+            finalized_run_id.clone(),
+            creation_intent(workspace),
+        )
+        .await
+        .expect("reserve finalized route fixture");
+    store
+        .create(request(&finalized_run_id.0, workspace))
+        .await
+        .expect("materialize route fixture");
+
+    let pending_start_id = CommandId::from("v21-pending-auto-start");
+    let mut pending_start_intent = creation_intent(workspace);
+    let RunCommand::Start(pending_command) = &mut pending_start_intent.command else {
+        unreachable!("fixture creation is Start")
+    };
+    pending_command.model = None;
+    let pending_start = store
+        .reserve_creation(
+            &pending_start_id,
+            "sha256:v21-pending-auto-start",
+            RunId::from("v21-pending-auto-start-run"),
+            pending_start_intent.clone(),
+        )
+        .await
+        .expect("reserve pending Auto start");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare exact v21 route fixture");
+    let event_json: String = conn
+        .query_row(
+            "SELECT event_json FROM agent_run_events WHERE run_id = ?1 AND sequence = 1",
+            [&finalized_run_id.0],
+            |row| row.get(0),
+        )
+        .expect("read RunCreated JSON");
+    let mut event: serde_json::Value =
+        serde_json::from_str(&event_json).expect("decode RunCreated JSON");
+    event["event"]["request"]
+        .as_object_mut()
+        .expect("RunCreated request object")
+        .remove("route");
+    conn.execute(
+        "UPDATE agent_run_events
+         SET schema_version = 16, event_json = ?1
+         WHERE run_id = ?2 AND sequence = 1",
+        params![
+            serde_json::to_string(&event).expect("encode v16 RunCreated"),
+            &finalized_run_id.0
+        ],
+    )
+    .expect("write v16 request without route audit");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"v21_without_route_audit\"}'
+         WHERE run_id = ?1",
+        [&finalized_run_id.0],
+    )
+    .expect("write incompatible v21 snapshot");
+    conn.pragma_update(None, "user_version", 21)
+        .expect("mark exact v21 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v22 cutover");
+    assert!(
+        reopened
+            .load(&finalized_run_id)
+            .await
+            .expect("query retired v21 run")
+            .is_none()
+    );
+    assert!(
+        reopened
+            .creation(&finalized_command_id)
+            .await
+            .expect("query finalized route receipt")
+            .is_none()
+    );
+    let retained = reopened
+        .creation(&pending_start_id)
+        .await
+        .expect("read pending Auto start")
+        .expect("pending Auto start survives");
+    assert_eq!(retained, pending_start.reservation);
+    assert_eq!(retained.intent, Some(pending_start_intent));
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v22 database");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("read v22 version"),
+        22
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retired v21 runs"),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retained pending Auto starts"),
         1
     );
 }
@@ -3225,7 +3358,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     for column in [
         "creation_kind",
         "workspace",
@@ -3264,7 +3397,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
 }
 
 #[tokio::test]
@@ -3288,7 +3421,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
 }
 
 #[tokio::test]
@@ -3380,7 +3513,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -3434,7 +3567,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -3503,7 +3636,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 21);
+    assert_eq!(user_version, 22);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3619,7 +3752,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -4343,13 +4476,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 22)
+    conn.pragma_update(None, "user_version", 23)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 21")
+            .contains("newer than supported version 22")
     );
 }

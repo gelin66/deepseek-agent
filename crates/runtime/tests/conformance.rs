@@ -744,6 +744,18 @@ fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunReq
         role: "conformance".to_owned(),
         task_contract: contract.clone(),
         workspace: workspace.clone(),
+        model: "deepseek-v4-flash".to_owned(),
+        reasoning_effort: ReasoningEffort::Auto,
+        max_output_tokens: None,
+        context_policy: ContextPolicy {
+            hard_input_tokens: 900_000,
+        },
+        route: ModelRouteAudit {
+            requested_model_mode: ModelRouteRequestedMode::Explicit,
+            requested_reasoning_effort: ReasoningEffort::Auto,
+            policy_version: "runtime_explicit_v1".to_owned(),
+            reason_code: "explicit_model".to_owned(),
+        },
         tool_policy: ToolPolicy::default(),
         limits,
         deadline_unix_ms: None,

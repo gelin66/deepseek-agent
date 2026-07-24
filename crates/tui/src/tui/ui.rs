@@ -547,26 +547,6 @@ async fn recover_creation_at_startup(
             run_id: run.run_id,
             active: run.terminal.is_none(),
         }),
-        Err(TuiRunClientError::Application(error))
-            if error
-                .creation
-                .as_deref()
-                .is_some_and(|creation| creation.unknown_billing) =>
-        {
-            let creation = error
-                .creation
-                .as_deref()
-                .expect("unknown-billing guard requires creation context");
-            let run = error.run_id.as_ref().map_or_else(
-                || tr(MessageId::CanonicalUnknownValue).into_owned(),
-                ToString::to_string,
-            );
-            Ok(StartupCreationRecovery::Warning(
-                tr(MessageId::CanonicalUnknownBillingCreation)
-                    .replace("{creation}", &creation.creation_request_id)
-                    .replace("{run}", &run),
-            ))
-        }
         Err(TuiRunClientError::AmbiguousPendingCreations {
             workspace,
             creation_request_ids,

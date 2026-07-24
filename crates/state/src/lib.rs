@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 21;
+const STATE_SCHEMA_VERSION: u32 = 22;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -410,6 +410,25 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-tool-failure canonical run state")?;
         }
+        if user_version < 22 {
+            // RuntimeEvent v17 makes the requested model mode, requested
+            // reasoning, Host policy version, reason code, and every child
+            // selection mandatory replay facts. Existing run rows cannot
+            // recover caller intent from only the selected model. Preserve
+            // pending Start commands because the app-owned policy is now
+            // deterministic and has no pre-RunCreated network side effect.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire unrecoverable pre-route-audit creations")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-intent creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-route-audit canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -580,6 +599,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 21)
                 .context("failed to commit typed tool failure state cutover")?;
             user_version = 21;
+        }
+        if user_version < 22 {
+            tx.pragma_update(None, "user_version", 22)
+                .context("failed to commit Host route audit state cutover")?;
+            user_version = 22;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

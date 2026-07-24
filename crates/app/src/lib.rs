@@ -466,15 +466,6 @@ impl AgentApplication {
                         run: Box::new(project_run(&replay)),
                     };
                 }
-                Ok(None)
-                    if reservation
-                        .reservation
-                        .intent
-                        .as_ref()
-                        .is_some_and(CreationIntent::is_unknown_billing) =>
-                {
-                    return error_result(unknown_billing_creation_error(&reservation.reservation));
-                }
                 Ok(None) => {}
                 Err(error) => return error_result(store_error(error)),
             }
@@ -491,7 +482,6 @@ impl AgentApplication {
                         "start creation reservation has no canonical Start command",
                         &reservation.reservation.command_id.0,
                         Some(reservation.reservation.run_id.clone()),
-                        false,
                     ));
                 }
             }
@@ -638,7 +628,6 @@ impl AgentApplication {
                         "continuation reservation has no canonical Continue command",
                         &reservation.reservation.command_id.0,
                         Some(reservation.reservation.run_id.clone()),
-                        false,
                     ));
                 }
             };
@@ -648,7 +637,6 @@ impl AgentApplication {
                     format!("reserved continuation task is invalid: {message}"),
                     &reservation.reservation.command_id.0,
                     Some(reservation.reservation.run_id.clone()),
-                    false,
                 ));
             }
             let source = match self.continuation_source(&stored).await {
@@ -715,7 +703,6 @@ impl AgentApplication {
                     ),
                     creation_request_id,
                     None,
-                    false,
                 ));
             }
             Err(error) => return error_result(store_error(error)),
@@ -735,12 +722,8 @@ impl AgentApplication {
                 "creation reservation has no pending canonical command",
                 creation_request_id,
                 Some(reservation.run_id),
-                false,
             ));
         };
-        if intent.is_unknown_billing() {
-            return error_result(unknown_billing_creation_error(&reservation));
-        }
         let digest = reservation.command_sha256.clone();
         match intent.command {
             RunCommand::Start(command) => self.start(command_id, digest, command).await,
@@ -751,7 +734,6 @@ impl AgentApplication {
                         format!("reserved continuation task is invalid: {message}"),
                         creation_request_id,
                         Some(reservation.run_id),
-                        false,
                     ));
                 }
                 let source = match self.continuation_source(&command).await {
@@ -765,7 +747,6 @@ impl AgentApplication {
                 "pending creation payload is not a creation command",
                 creation_request_id,
                 Some(reservation.run_id),
-                false,
             )),
         }
     }
@@ -1241,14 +1222,12 @@ fn project_root_run(record: RootRunRecord) -> RootRunSummary {
 
 fn project_pending_creation(reservation: CreationReservation) -> Option<PendingCreationSummary> {
     let intent = reservation.intent?;
-    let unknown_billing = intent.is_unknown_billing();
     Some(PendingCreationSummary {
         creation_request_id: reservation.command_id.0,
         reserved_run_id: reservation.run_id,
         kind: intent.kind,
         workspace: intent.workspace,
         source_run_id: intent.source_run_id,
-        unknown_billing,
         created_at_unix_ms: reservation.created_at_unix_ms,
     })
 }
@@ -1409,7 +1388,6 @@ fn creation_error(
     message: impl Into<String>,
     creation_request_id: &str,
     run_id: Option<RunId>,
-    unknown_billing: bool,
 ) -> RunApiError {
     RunApiError {
         code,
@@ -1419,19 +1397,8 @@ fn creation_error(
         terminal: None,
         creation: Some(Box::new(CreationRecoveryContext {
             creation_request_id: creation_request_id.to_owned(),
-            unknown_billing,
         })),
     }
-}
-
-fn unknown_billing_creation_error(reservation: &CreationReservation) -> RunApiError {
-    creation_error(
-        RunApiErrorCode::RunRecoveryRequired,
-        "run_creation_recovery_required：自动路由请求可能已发出，但 run_created 尚未提交；为避免重复计费，当前 creation 不会再次路由",
-        &reservation.command_id.0,
-        Some(reservation.run_id.clone()),
-        true,
-    )
 }
 
 fn error_result(error: RunApiError) -> RunCommandResult {
@@ -2219,7 +2186,6 @@ mod tests {
         assert_eq!(creations.len(), 1);
         assert_eq!(creations[0].creation_request_id, creation_request_id);
         assert_eq!(creations[0].reserved_run_id, reserved_run_id);
-        assert!(!creations[0].unknown_billing);
 
         let responses = execute_concurrently(
             app.clone(),
@@ -2352,7 +2318,6 @@ mod tests {
         assert_eq!(creations.len(), 1);
         let pending = &creations[0];
         assert_eq!(pending.creation_request_id, CREATION_CRASH_REQUEST_ID);
-        assert!(!pending.unknown_billing);
         let reserved_run_id = pending.reserved_run_id.clone();
 
         let recovered = run_result(
@@ -2519,7 +2484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_auto_route_fails_closed_with_typed_unknown_billing() {
+    async fn pending_auto_start_recovers_exact_reserved_run_without_a_preruntime_request() {
         let (app, store, composition) = new_fixture(ModelMode::Complete).await;
         let creation_request_id = "recover-auto-start";
         let mut auto_command = start_command("恢复自动路由创建");
@@ -2541,7 +2506,7 @@ mod tests {
             .await
             .expect("reserve interrupted auto route");
 
-        let recovery_error = error(
+        let recovered = run_result(
             app.execute(envelope(
                 "recover-auto-caller",
                 RunCommand::RecoverCreation {
@@ -2550,25 +2515,14 @@ mod tests {
             ))
             .await,
         );
-        assert_eq!(recovery_error.code, RunApiErrorCode::RunRecoveryRequired);
-        let recovery_context = recovery_error
-            .creation
-            .as_deref()
-            .expect("typed creation recovery context");
-        assert_eq!(recovery_context.creation_request_id, creation_request_id);
-        assert_eq!(recovery_error.run_id, Some(reserved_run_id.clone()));
-        assert!(recovery_context.unknown_billing);
-        assert_eq!(composition.starts.load(Ordering::Acquire), 0);
+        assert_eq!(recovered.run_id, reserved_run_id);
+        wait_terminal(store.as_ref(), &recovered.run_id).await;
+        assert_eq!(composition.starts.load(Ordering::Acquire), 1);
 
-        let retry_error = error(app.execute(envelope(creation_request_id, command)).await);
-        assert!(
-            retry_error
-                .creation
-                .as_deref()
-                .is_some_and(|context| context.unknown_billing)
-        );
-        assert_eq!(composition.starts.load(Ordering::Acquire), 0);
-        assert!(store.load(&reserved_run_id).await.expect("load").is_none());
+        let replayed = run_result(app.execute(envelope(creation_request_id, command)).await);
+        assert_eq!(replayed.run_id, recovered.run_id);
+        assert_eq!(composition.starts.load(Ordering::Acquire), 1);
+        assert!(store.load(&reserved_run_id).await.expect("load").is_some());
 
         let listed = app
             .execute(envelope(
@@ -2582,8 +2536,7 @@ mod tests {
         let RunCommandResult::PendingCreations { creations, .. } = listed.result else {
             panic!("expected pending creations");
         };
-        assert_eq!(creations.len(), 1);
-        assert!(creations[0].unknown_billing);
+        assert!(creations.is_empty());
     }
 
     #[tokio::test]

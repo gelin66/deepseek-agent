@@ -841,7 +841,8 @@ mod tests {
         TerminalState, ToolPolicy, UserInteractionResponse,
     };
     use codewhale_protocol::run_api::{
-        ContinueRunCommand, PendingCreationKind, RunProductControls, RunView, StartRunCommand,
+        ContinueRunCommand, PendingCreationKind, RunApiErrorReason, RunProductControls, RunView,
+        StartRunCommand,
     };
     use codewhale_protocol::task::TaskDefinition;
     use serde_json::json;
@@ -1526,8 +1527,6 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary creation recovery workspace");
         let fixture = DeepSeekFixture::start().await;
         let state_db = temp.path().join("state.db");
-        let application = production_app(&state_db, &fixture, true);
-        let app = router(application.clone(), &test_options(None)).expect("Run API router");
         let workspace = temp
             .path()
             .canonicalize()
@@ -1538,23 +1537,35 @@ mod tests {
         let creation_request_id = "creation-http-recover";
         let mut start = production_start(temp.path(), "中断自动路由创建");
         start.model = None;
-        let interrupted_app = app.clone();
         let interrupted_start = RunCommandEnvelope {
             schema_version: RUN_API_SCHEMA_VERSION,
             request_id: creation_request_id.to_owned(),
             command: RunCommand::Start(start),
         };
-        let interrupted = tokio::spawn(async move {
-            post_command(&interrupted_app, "/v1/runs", &interrupted_start, None).await
-        });
-        fixture.wait_requests(1).await;
-        interrupted.abort();
-        assert!(
-            interrupted
-                .await
-                .expect_err("interrupted creation must not return an HTTP response")
-                .is_cancelled()
+        let no_key_application = production_app(&state_db, &fixture, false);
+        let no_key_app =
+            router(no_key_application, &test_options(None)).expect("no-Key Run API router");
+        let (status, response) =
+            post_command(&no_key_app, "/v1/runs", &interrupted_start, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    reason: Some(RunApiErrorReason::DeepSeekCredentialMissing),
+                    ..
+                }
+            }
+        ));
+        assert_eq!(
+            fixture.requests.load(Ordering::Acquire),
+            0,
+            "Host routing must not issue a pre-RunCreated model request"
         );
+
+        let application = production_app(&state_db, &fixture, true);
+        let app = router(application.clone(), &test_options(None)).expect("Run API router");
 
         let uri = format!(
             "/v1/runs/pending-creations?workspace={}&limit=7",
@@ -1573,7 +1584,6 @@ mod tests {
         assert_eq!(creations.len(), 1);
         assert_eq!(creations[0].creation_request_id, creation_request_id);
         assert_eq!(creations[0].kind, PendingCreationKind::Start);
-        assert!(creations[0].unknown_billing);
 
         let recover = envelope(RunCommand::RecoverCreation {
             creation_request_id: creation_request_id.to_owned(),
@@ -1586,21 +1596,12 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(
             response, application_response,
             "HTTP framing must not rewrite the application typed error"
         );
-        assert!(matches!(
-            response.result,
-            RunCommandResult::Error {
-                error: RunApiError {
-                    code: RunApiErrorCode::RunRecoveryRequired,
-                    creation: Some(ref creation),
-                    ..
-                }
-            } if creation.creation_request_id == creation_request_id && creation.unknown_billing
-        ));
+        assert!(matches!(response.result, RunCommandResult::Run { .. }));
 
         let (status, response) = post_command(
             &app,
@@ -1620,6 +1621,7 @@ mod tests {
                 }
             }
         ));
+        fixture.release_one();
     }
 
     #[tokio::test]

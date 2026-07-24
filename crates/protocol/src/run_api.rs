@@ -16,7 +16,7 @@ use crate::agent_runtime::{
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 10;
+pub const RUN_API_SCHEMA_VERSION: u32 = 11;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -113,8 +113,6 @@ pub struct PendingCreationSummary {
     pub workspace: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_run_id: Option<RunId>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub unknown_billing: bool,
     pub created_at_unix_ms: u64,
 }
 
@@ -249,8 +247,6 @@ pub enum RunApiErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunApiErrorReason {
-    #[serde(rename = "deepseek_auto_route_failed")]
-    DeepSeekAutoRouteFailed,
     #[serde(rename = "deepseek_credential_missing")]
     DeepSeekCredentialMissing,
     WorkspaceMismatch,
@@ -281,8 +277,6 @@ pub struct RunApiError {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CreationRecoveryContext {
     pub creation_request_id: String,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub unknown_billing: bool,
 }
 
 /// Transport-neutral result payload for every Run command.
@@ -316,10 +310,6 @@ pub enum RunCommandResult {
 
 const fn default_run_list_limit() -> u32 {
     DEFAULT_RUN_LIST_LIMIT
-}
-
-const fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Versioned response correlated with one [`RunCommandEnvelope`].
@@ -414,7 +404,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 10,
+                "schema_version": 11,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -698,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_creation_projection_and_unknown_billing_error_are_typed() {
+    fn pending_creation_projection_and_recovery_identity_are_typed() {
         let response = RunCommandResponse {
             schema_version: RUN_API_SCHEMA_VERSION,
             request_id: "list-pending".to_owned(),
@@ -710,7 +700,6 @@ mod tests {
                     kind: PendingCreationKind::Start,
                     workspace: "/workspace/project".to_owned(),
                     source_run_id: None,
-                    unknown_billing: true,
                     created_at_unix_ms: 123,
                 }],
             },
@@ -725,7 +714,11 @@ mod tests {
             encoded["result"]["creations"][0]["reserved_run_id"],
             "reserved-auto"
         );
-        assert_eq!(encoded["result"]["creations"][0]["unknown_billing"], true);
+        assert!(
+            encoded["result"]["creations"][0]
+                .get("unknown_billing")
+                .is_none()
+        );
         assert_eq!(
             serde_json::from_value::<RunCommandResponse>(encoded).expect("round-trip pending"),
             response
@@ -739,13 +732,12 @@ mod tests {
             terminal: None,
             creation: Some(Box::new(CreationRecoveryContext {
                 creation_request_id: "creation-auto".to_owned(),
-                unknown_billing: true,
             })),
         };
         let encoded = serde_json::to_value(&error).expect("serialize recovery error");
         assert_eq!(encoded["creation"]["creation_request_id"], "creation-auto");
         assert_eq!(encoded["run_id"], "reserved-auto");
-        assert_eq!(encoded["creation"]["unknown_billing"], true);
+        assert!(encoded["creation"].get("unknown_billing").is_none());
     }
 
     #[test]
@@ -778,10 +770,6 @@ mod tests {
         }
 
         let reasons = [
-            (
-                RunApiErrorReason::DeepSeekAutoRouteFailed,
-                "deepseek_auto_route_failed",
-            ),
             (
                 RunApiErrorReason::DeepSeekCredentialMissing,
                 "deepseek_credential_missing",

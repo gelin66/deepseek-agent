@@ -27,12 +27,12 @@ use codewhale_app_server::{AppServerOptions, router, serve_stdio};
 use codewhale_config::PromptPreferences;
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AgentResultDetails,
-    AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting,
-    OperationId, ReasoningEffort, RunId, RunRequest, RuntimeEventId, RuntimeEventKind,
-    StoredRuntimeEvent, TerminalState, ToolArtifact, ToolArtifactStatus, ToolPolicy, Usage,
-    WriterArtifactState, WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase,
-    WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope, WriterIntegrationStatus,
-    WriterRemovalState, writer_path_set_sha256,
+    AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy,
+    ModelAccounting, ModelRouteAudit, ModelRouteRequestedMode, OperationId, ReasoningEffort, RunId,
+    RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, TerminalState, ToolArtifact,
+    ToolArtifactStatus, ToolPolicy, Usage, WriterArtifactState, WriterCleanupMode,
+    WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
+    WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState, writer_path_set_sha256,
 };
 use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -853,6 +853,18 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
         role: "implementer".to_owned(),
         task_contract: task_contract.clone(),
         workspace: assignment.clone(),
+        model: "deepseek-v4-pro".to_owned(),
+        reasoning_effort: ReasoningEffort::High,
+        max_output_tokens: Some(262_144),
+        context_policy: ContextPolicy {
+            hard_input_tokens: 90_000,
+        },
+        route: ModelRouteAudit {
+            requested_model_mode: ModelRouteRequestedMode::Explicit,
+            requested_reasoning_effort: ReasoningEffort::High,
+            policy_version: "fixture_explicit_v1".to_owned(),
+            reason_code: "explicit_model".to_owned(),
+        },
         tool_policy: ToolPolicy {
             enabled: true,
             allowed: Some(vec!["read_file".to_owned(), "apply_patch".to_owned()]),

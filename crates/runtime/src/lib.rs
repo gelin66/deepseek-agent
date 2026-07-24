@@ -18,8 +18,8 @@ mod orchestration;
 mod store;
 
 pub use agent::{
-    AgentControl, AgentRuntime, ControlError, ModelToolAuthority, RunReadyError, RuntimeJoinError,
-    RuntimeRun,
+    AgentControl, AgentRuntime, ChildRouteContext, ChildRunRoutePolicy, ChildRunRouteSelection,
+    ControlError, ModelToolAuthority, RunReadyError, RuntimeJoinError, RuntimeRun,
 };
 pub use orchestration::{
     AgentOrchestrationError, AgentOrchestrationErrorKind, AgentOrchestrator, WriterBinding,

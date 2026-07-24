@@ -3404,8 +3404,8 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
     use codewhale_deepseek::{
-        ChatPlanInput, DEEPSEEK_AUTO_ROUTE_PRO_MODEL, DeepSeekCredential, ReasoningMode,
-        ResponseMode, SharedApiRequestBudget, official_model_capabilities, plan_chat,
+        ChatPlanInput, DeepSeekCredential, ReasoningMode, ResponseMode, SharedApiRequestBudget,
+        official_model_capabilities, plan_chat,
     };
 
     let connection = crate::exec_runtime::deepseek_connection_config(config)?;
@@ -3421,7 +3421,7 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
     )?;
     let configured_model = config.default_model();
     let probe_model = if configured_model.eq_ignore_ascii_case("auto") {
-        DEEPSEEK_AUTO_ROUTE_PRO_MODEL
+        "deepseek-v4-pro"
     } else {
         configured_model.as_str()
     };

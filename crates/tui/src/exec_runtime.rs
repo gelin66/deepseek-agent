@@ -70,8 +70,7 @@ enum ExecStartupFailure {
     ResumeToolCatalogMismatch,
     ResumeFingerprintMissing,
     ResumeFingerprintMismatch,
-    Route,
-    RouteTimeout,
+    StartupTimeout,
     Client,
     ToolContext,
 }
@@ -87,8 +86,7 @@ impl ExecStartupFailure {
             Self::ResumeToolCatalogMismatch => "exec_resume_tool_catalog_mismatch",
             Self::ResumeFingerprintMissing => "exec_resume_fingerprint_missing",
             Self::ResumeFingerprintMismatch => "exec_resume_fingerprint_mismatch",
-            Self::Route => "exec_route_failed",
-            Self::RouteTimeout => "exec_watchdog_timeout",
+            Self::StartupTimeout => "exec_watchdog_timeout",
             Self::Client => "exec_client_startup_failed",
             Self::ToolContext => "exec_tool_startup_failed",
         }
@@ -96,8 +94,7 @@ impl ExecStartupFailure {
 
     fn category(self) -> &'static str {
         match self {
-            Self::RouteTimeout => "timeout",
-            Self::Route => "route",
+            Self::StartupTimeout => "timeout",
             Self::Client | Self::ToolContext => "internal",
             Self::InvalidArguments
             | Self::RunStore
@@ -112,7 +109,7 @@ impl ExecStartupFailure {
 
     fn termination_reason(self) -> RunTerminationReason {
         match self {
-            Self::RouteTimeout => RunTerminationReason::Timeout,
+            Self::StartupTimeout => RunTerminationReason::Timeout,
             Self::InvalidArguments
             | Self::RunStore
             | Self::ResumeNotFound
@@ -121,7 +118,6 @@ impl ExecStartupFailure {
             | Self::ResumeToolCatalogMismatch
             | Self::ResumeFingerprintMissing
             | Self::ResumeFingerprintMismatch
-            | Self::Route
             | Self::Client
             | Self::ToolContext => RunTerminationReason::InfrastructureError,
         }
@@ -204,13 +200,13 @@ pub(crate) async fn run_exec_runtime(
         } else if is_continue {
             "run_store_continue"
         } else if requested_auto_model {
-            "auto_resolver"
+            "host_policy"
         } else {
             "explicit_or_configured"
         };
         let remaining_runtime_ms = absolute_deadline_unix_ms.saturating_sub(unix_ms_now());
         if remaining_runtime_ms == 0 {
-            startup_failure = ExecStartupFailure::RouteTimeout;
+            startup_failure = ExecStartupFailure::StartupTimeout;
             stop_exec_signal_controller(&mut signal_task).await;
             bail!("exec_watchdog_timeout: AgentApplication 启动前已耗尽全局运行时间");
         }
@@ -237,7 +233,7 @@ pub(crate) async fn run_exec_runtime(
                     ) => match response {
                         Ok(response) => response,
                         Err(_) => {
-                            startup_failure = ExecStartupFailure::RouteTimeout;
+                            startup_failure = ExecStartupFailure::StartupTimeout;
                             stop_exec_signal_controller(&mut signal_task).await;
                             bail!("exec_watchdog_timeout: 查询最近 Agent 运行超过最大运行时间");
                         }
@@ -322,11 +318,7 @@ pub(crate) async fn run_exec_runtime(
                 },
             }),
         };
-        startup_failure = if requested_auto_model {
-            ExecStartupFailure::Route
-        } else {
-            ExecStartupFailure::InvalidArguments
-        };
+        startup_failure = ExecStartupFailure::InvalidArguments;
         // Schema v8 creation reservations are global to the RunStore. Generate
         // this once per Start/Continue intent so distinct exec invocations
         // cannot conflict, while any retry of this call reuses the same key.
@@ -353,7 +345,7 @@ pub(crate) async fn run_exec_runtime(
             ) => match response {
                 Ok(response) => response,
                 Err(_) => {
-                    startup_failure = ExecStartupFailure::RouteTimeout;
+                    startup_failure = ExecStartupFailure::StartupTimeout;
                     stop_exec_signal_controller(&mut signal_task).await;
                     bail!("exec_watchdog_timeout: AgentApplication 启动超过最大运行时间");
                 }
@@ -875,9 +867,6 @@ fn startup_failure_for_run_api(error: &RunApiError) -> ExecStartupFailure {
             RunApiErrorCode::RunEnvironmentMismatch,
             Some(RunApiErrorReason::ExecutionFingerprintMismatch),
         ) => ExecStartupFailure::ResumeFingerprintMismatch,
-        (RunApiErrorCode::InvalidRequest, Some(RunApiErrorReason::DeepSeekAutoRouteFailed)) => {
-            ExecStartupFailure::Route
-        }
         (RunApiErrorCode::InvalidRequest, Some(RunApiErrorReason::DeepSeekCredentialMissing)) => {
             ExecStartupFailure::Client
         }

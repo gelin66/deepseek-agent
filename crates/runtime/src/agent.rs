@@ -37,6 +37,73 @@ pub struct AgentRuntime {
     sink: Arc<dyn RuntimeEventSink>,
     store: Arc<dyn RunStore>,
     orchestrator: Option<Arc<dyn AgentOrchestrator>>,
+    child_route_policy: Arc<dyn ChildRunRoutePolicy>,
+}
+
+/// Typed Host facts available when resolving one child run before its
+/// `AgentTask` is committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildRouteContext {
+    pub prior_read_only_child_failed: bool,
+    pub prior_isolated_writer_failed: bool,
+    pub typed_recovery: bool,
+}
+
+/// Exact selection the application policy freezes into an `AgentTask`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildRunRouteSelection {
+    pub model: String,
+    pub reasoning_effort: ReasoningEffort,
+    pub max_output_tokens: Option<u32>,
+    pub context_policy: ContextPolicy,
+    pub route: ModelRouteAudit,
+}
+
+/// Application-owned policy port used by the Runtime only when preparing a
+/// child contract. The Runtime supplies typed authority/evidence and applies
+/// the returned immutable selection; it does not classify prompts.
+pub trait ChildRunRoutePolicy: Send + Sync {
+    fn select_child(
+        &self,
+        parent: &RunRequest,
+        workspace_access: AgentWorkspaceAccess,
+        context: ChildRouteContext,
+    ) -> Result<ChildRunRouteSelection, String>;
+
+    fn child_system_prompt(
+        &self,
+        parent: &RunRequest,
+        task: &AgentTask,
+        tool_mode: bool,
+    ) -> Result<SystemPrompt, String>;
+}
+
+struct InheritedChildRunRoutePolicy;
+
+impl ChildRunRoutePolicy for InheritedChildRunRoutePolicy {
+    fn select_child(
+        &self,
+        parent: &RunRequest,
+        _workspace_access: AgentWorkspaceAccess,
+        _context: ChildRouteContext,
+    ) -> Result<ChildRunRouteSelection, String> {
+        Ok(ChildRunRouteSelection {
+            model: parent.model.clone(),
+            reasoning_effort: parent.reasoning_effort,
+            max_output_tokens: parent.max_output_tokens,
+            context_policy: parent.context_policy,
+            route: parent.route.clone(),
+        })
+    }
+
+    fn child_system_prompt(
+        &self,
+        parent: &RunRequest,
+        _task: &AgentTask,
+        _tool_mode: bool,
+    ) -> Result<SystemPrompt, String> {
+        Ok(parent.system_prompt.clone())
+    }
 }
 
 /// Model-visible workspace authority derived from persisted Host facts.
@@ -104,12 +171,22 @@ impl AgentRuntime {
             sink,
             store,
             orchestrator: None,
+            child_route_policy: Arc::new(InheritedChildRunRoutePolicy),
         }
     }
 
     #[must_use]
     pub fn with_orchestrator(mut self, orchestrator: Arc<dyn AgentOrchestrator>) -> Self {
         self.orchestrator = Some(orchestrator);
+        self
+    }
+
+    #[must_use]
+    pub fn with_child_route_policy(
+        mut self,
+        child_route_policy: Arc<dyn ChildRunRoutePolicy>,
+    ) -> Self {
+        self.child_route_policy = child_route_policy;
         self
     }
 
@@ -125,6 +202,7 @@ impl AgentRuntime {
             sink: self.sink.clone(),
             store: self.store.clone(),
             orchestrator: self.orchestrator.clone(),
+            child_route_policy: self.child_route_policy.clone(),
         })
     }
 
@@ -1980,6 +2058,33 @@ impl AgentRuntime {
                 TaskDefinition::host(child_input)
             },
         };
+        let route_context =
+            ChildRouteContext {
+                prior_read_only_child_failed: state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                    lifecycle.task.workspace.access == AgentWorkspaceAccess::ReadOnly
+                        && lifecycle.finished.as_ref().is_some_and(|finished| {
+                            !matches!(finished.outcome.terminal, TerminalState::Completed { .. })
+                        })
+                }),
+                prior_isolated_writer_failed: state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                    lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                        && lifecycle.finished.as_ref().is_some_and(|finished| {
+                            !matches!(finished.outcome.terminal, TerminalState::Completed { .. })
+                        })
+                }),
+                typed_recovery: state.snapshot.request.inherited_facts.as_ref().is_some_and(
+                    |facts| {
+                        facts.last_completion_rejection.is_some()
+                            || facts.last_host_verification_failure.is_some()
+                    },
+                ),
+            };
+        let route = self
+            .child_route_policy
+            .select_child(&state.snapshot.request, workspace.access, route_context)
+            .map_err(|message| {
+                orchestration_recovery(&task_id, "child_route_policy_failed", message)
+            })?;
         let task = AgentTask {
             task_id: task_id.clone(),
             root_run_id,
@@ -1989,6 +2094,11 @@ impl AgentRuntime {
             role: role.to_owned(),
             task_contract: task_contract.clone(),
             workspace: workspace.clone(),
+            model: route.model,
+            reasoning_effort: route.reasoning_effort,
+            max_output_tokens: route.max_output_tokens,
+            context_policy: route.context_policy,
+            route: route.route,
             tool_policy: child_policy.clone(),
             limits: child_limits,
             deadline_unix_ms: child_deadline_unix_ms,
@@ -2074,11 +2184,15 @@ impl AgentRuntime {
         .await
         .map_err(store_terminal)?;
 
-        let mut child_request = child_request_from_task(state, &task, fork_context);
         let child_runtime = writer_binding.as_ref().map_or_else(
             || self.clone(),
             |binding| self.with_tools(binding.tools.clone()),
         );
+        let mut child_request = child_runtime
+            .child_request_from_task(state, &task, fork_context)
+            .map_err(|message| {
+                orchestration_recovery(&task.task_id, "child_route_prompt_failed", message)
+            })?;
         child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
         let child = child_runtime.start_inner(
             child_request,
@@ -2307,7 +2421,11 @@ impl AgentRuntime {
                         "恢复尚未创建的 writer child 时无法保留最终模型请求",
                     )
                 })?;
-                let mut child_request = child_request_from_task(state, task, fork_context);
+                let mut child_request = child_runtime
+                    .child_request_from_task(state, task, fork_context)
+                    .map_err(|message| {
+                        orchestration_recovery(&task.task_id, "child_route_prompt_failed", message)
+                    })?;
                 child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
                 child_runtime.start_inner(
                     child_request,
@@ -4963,80 +5081,97 @@ fn cleanup_uncertainty_code(result: &WriterCleanupResult) -> Option<&str> {
     }
 }
 
-fn child_request_from_task(state: &RunState, task: &AgentTask, fork_context: bool) -> RunRequest {
-    let mut system_prompt = state
-        .snapshot
-        .transcript
-        .entries
-        .iter()
-        .find_map(|entry| match entry {
-            TranscriptEntry::System { prompt } => Some(prompt.clone()),
-            _ => None,
+impl AgentRuntime {
+    fn child_request_from_task(
+        &self,
+        state: &RunState,
+        task: &AgentTask,
+        fork_context: bool,
+    ) -> Result<RunRequest, String> {
+        let child_depth = state.snapshot.request.actor.depth.saturating_add(1);
+        let authority = match task.workspace.access {
+            AgentWorkspaceAccess::ReadOnly => ModelToolAuthority::ReadOnly,
+            AgentWorkspaceAccess::IsolatedWrite => ModelToolAuthority::IsolatedWriter,
+        };
+        let tool_mode = !self
+            .tool_definitions(
+                &task.tool_policy,
+                Some(&task.task_contract.definition),
+                authority,
+                child_depth,
+                task.limits.max_depth,
+                false,
+            )
+            .is_empty();
+        let mut system_prompt = self
+            .child_route_policy
+            .child_system_prompt(&state.snapshot.request, task, tool_mode)
+            .map_err(|message| format!("无法为 Host 冻结的 child route 重建系统提示：{message}"))?;
+        system_prompt.blocks.push(SystemPromptBlock {
+            text: match task.workspace.access {
+                AgentWorkspaceAccess::ReadOnly => format!(
+                    "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。",
+                    task.role
+                ),
+                AgentWorkspaceAccess::IsolatedWrite => format!(
+                    "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据。必须使用本次实际提供的文件工具完成任务，不得只描述或声称已修改；已有文件先读取，再用写工具修改，写后重新读取相关文件核对最终内容。至少一次写工具成功前不得提出完成；最终结果仍由 Host 的冻结 exact verifier 验收。",
+                    task.role
+                ),
+            },
+            cache_control: PromptCacheControl::Volatile,
+        });
+        let transcript = if fork_context {
+            let mut transcript = state.snapshot.transcript.clone();
+            if let Some(current_turn) = transcript
+                .entries
+                .iter()
+                .rposition(|entry| matches!(entry, TranscriptEntry::Assistant { .. }))
+            {
+                transcript.entries.truncate(current_turn);
+            }
+            if let Some(TranscriptEntry::System { prompt }) = transcript.entries.first_mut() {
+                *prompt = system_prompt.clone();
+            }
+            transcript
+        } else {
+            CanonicalTranscript::default()
+        };
+        let mut environment = state.snapshot.request.environment.clone();
+        environment.workspace = task.workspace.execution_workspace().to_owned();
+        environment.interactive = false;
+        if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite {
+            environment.trust_mode = false;
+            environment.allow_sandbox_elevation = false;
+            environment.sandbox = Some("isolated_writer".to_owned());
+        }
+        Ok(RunRequest {
+            run_id: Some(task.child_run_id.clone()),
+            parent_run_id: Some(task.parent_run_id.clone()),
+            continued_from_run_id: None,
+            model: task.model.clone(),
+            route: task.route.clone(),
+            task_contract: Some(task.task_contract.clone()),
+            system_prompt,
+            transcript,
+            reasoning_effort: task.reasoning_effort,
+            max_output_tokens: task.max_output_tokens,
+            streaming: false,
+            actor: AgentActor {
+                kind: AgentActorKind::Child,
+                depth: child_depth,
+            },
+            agent_task: Some(task.clone()),
+            deadline_unix_ms: task.deadline_unix_ms,
+            tool_policy: task.tool_policy.clone(),
+            limits: task.limits,
+            environment,
+            context_policy: task.context_policy,
+            context_projection: fork_context
+                .then(|| state.snapshot.context_projection.clone())
+                .flatten(),
+            inherited_facts: None,
+            accounting_baseline: state.accounting_epoch_baseline.clone(),
         })
-        .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
-    system_prompt.blocks.push(SystemPromptBlock {
-        text: match task.workspace.access {
-            AgentWorkspaceAccess::ReadOnly => format!(
-                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。",
-                task.role
-            ),
-            AgentWorkspaceAccess::IsolatedWrite => format!(
-                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据。必须使用本次实际提供的文件工具完成任务，不得只描述或声称已修改；已有文件先读取，再用写工具修改，写后重新读取相关文件核对最终内容。至少一次写工具成功前不得提出完成；最终结果仍由 Host 的冻结 exact verifier 验收。",
-                task.role
-            ),
-        },
-        cache_control: PromptCacheControl::Volatile,
-    });
-    let transcript = if fork_context {
-        let mut transcript = state.snapshot.transcript.clone();
-        if let Some(current_turn) = transcript
-            .entries
-            .iter()
-            .rposition(|entry| matches!(entry, TranscriptEntry::Assistant { .. }))
-        {
-            transcript.entries.truncate(current_turn);
-        }
-        if let Some(TranscriptEntry::System { prompt }) = transcript.entries.first_mut() {
-            *prompt = system_prompt.clone();
-        }
-        transcript
-    } else {
-        CanonicalTranscript::default()
-    };
-    let mut environment = state.snapshot.request.environment.clone();
-    environment.workspace = task.workspace.execution_workspace().to_owned();
-    environment.interactive = false;
-    if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite {
-        environment.trust_mode = false;
-        environment.allow_sandbox_elevation = false;
-        environment.sandbox = Some("isolated_writer".to_owned());
-    }
-    RunRequest {
-        run_id: Some(task.child_run_id.clone()),
-        parent_run_id: Some(task.parent_run_id.clone()),
-        continued_from_run_id: None,
-        model: state.snapshot.request.model.clone(),
-        task_contract: Some(task.task_contract.clone()),
-        system_prompt,
-        transcript,
-        reasoning_effort: state.snapshot.request.reasoning_effort,
-        max_output_tokens: state.snapshot.request.max_output_tokens,
-        streaming: false,
-        actor: AgentActor {
-            kind: AgentActorKind::Child,
-            depth: state.snapshot.request.actor.depth.saturating_add(1),
-        },
-        agent_task: Some(task.clone()),
-        deadline_unix_ms: task.deadline_unix_ms,
-        tool_policy: task.tool_policy.clone(),
-        limits: task.limits,
-        environment,
-        context_policy: state.snapshot.request.context_policy,
-        context_projection: fork_context
-            .then(|| state.snapshot.context_projection.clone())
-            .flatten(),
-        inherited_facts: None,
-        accounting_baseline: state.accounting_epoch_baseline.clone(),
     }
 }
 

@@ -53,13 +53,6 @@ pub struct CreationIntent {
     pub command: RunCommand,
 }
 
-impl CreationIntent {
-    #[must_use]
-    pub fn is_unknown_billing(&self) -> bool {
-        matches!(&self.command, RunCommand::Start(command) if command.model.is_none())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreationReservation {
     pub command_id: CommandId,
@@ -3878,6 +3871,16 @@ mod tests {
                 allowed_paths: vec!["src/lib.rs".to_owned()],
                 owner_token: Some("owner-1".to_owned()),
             },
+            model: "deepseek-v4-pro".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: None,
+            context_policy: ContextPolicy::default(),
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Explicit,
+                requested_reasoning_effort: ReasoningEffort::High,
+                policy_version: "runtime_explicit_v1".to_owned(),
+                reason_code: "explicit_model".to_owned(),
+            },
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),
             deadline_unix_ms: None,
@@ -4100,6 +4103,16 @@ mod tests {
                 branch: None,
                 allowed_paths: Vec::new(),
                 owner_token: None,
+            },
+            model: "deepseek-v4-flash".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: None,
+            context_policy: ContextPolicy::default(),
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Auto,
+                requested_reasoning_effort: ReasoningEffort::Auto,
+                policy_version: "fixture_host_auto_v1".to_owned(),
+                reason_code: "auto_read_only_investigation".to_owned(),
             },
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),

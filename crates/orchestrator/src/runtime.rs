@@ -944,7 +944,8 @@ mod tests {
     use std::process::Command;
 
     use codewhale_runtime::{
-        AgentTaskId, RunId, RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
+        AgentTaskId, ContextPolicy, ModelRouteAudit, ModelRouteRequestedMode, ReasoningEffort,
+        RunId, RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
     };
     use codewhale_tools::shell::ShellPolicy;
     use tempfile::TempDir;
@@ -1784,6 +1785,18 @@ mod tests {
                 definition: TaskDefinition::host("修改 src/lib.rs"),
             },
             workspace,
+            model: "deepseek-v4-pro".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(262_144),
+            context_policy: ContextPolicy {
+                hard_input_tokens: 90_000,
+            },
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Auto,
+                requested_reasoning_effort: ReasoningEffort::Auto,
+                policy_version: "fixture_host_auto_v1".to_owned(),
+                reason_code: "auto_isolated_writer".to_owned(),
+            },
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),
             deadline_unix_ms: None,

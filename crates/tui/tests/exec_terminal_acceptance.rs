@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
-    RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind, StoredRuntimeEvent,
-    TerminalState,
+    ModelRouteRequestedMode, RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind,
+    StoredRuntimeEvent, TerminalState,
 };
 use codewhale_state::StateStore;
 use serde_json::{Value, json};
@@ -114,20 +114,11 @@ impl Respond for MultiAgentResponder {
 }
 
 #[derive(Clone, Copy)]
-struct AutoRouteResponder;
+struct AutoHostPolicyResponder;
 
-impl Respond for AutoRouteResponder {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body = request.body_json::<Value>().unwrap_or(Value::Null);
-        if body.get("stream").and_then(Value::as_bool) != Some(true) {
-            non_streaming_response_with_usage(
-                r#"{"provider":"deepseek","model":"deepseek-v4-flash","thinking":"off"}"#,
-                7,
-                2,
-            )
-        } else {
-            sse_response(complete_sse("auto-route-production-marker"))
-        }
+impl Respond for AutoHostPolicyResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        sse_response(complete_sse("auto-route-production-marker"))
     }
 }
 
@@ -146,22 +137,12 @@ impl Respond for UnauthorizedWriteResponder {
 }
 
 #[derive(Clone, Copy)]
-struct SlowRouteAndRootResponder;
+struct SlowRootResponder;
 
-impl Respond for SlowRouteAndRootResponder {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body = request.body_json::<Value>().unwrap_or(Value::Null);
-        if body.get("stream").and_then(Value::as_bool) != Some(true) {
-            non_streaming_response_with_usage(
-                r#"{"provider":"deepseek","model":"deepseek-v4-flash","thinking":"off"}"#,
-                7,
-                2,
-            )
-            .set_delay(Duration::from_secs(1))
-        } else {
-            sse_response(complete_sse("must-not-outlive-the-global-deadline"))
-                .set_delay(Duration::from_secs(4))
-        }
+impl Respond for SlowRootResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        sse_response(complete_sse("must-not-outlive-the-global-deadline"))
+            .set_delay(Duration::from_secs(4))
     }
 }
 
@@ -1183,18 +1164,18 @@ async fn non_deepseek_startup_fails_before_runtime_and_network() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn route_and_runtime_share_one_absolute_wall_clock_deadline() {
+async fn host_policy_adds_no_request_before_the_runtime_wall_clock_deadline() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(SlowRouteAndRootResponder)
+        .respond_with(SlowRootResponder)
         .mount(&server)
         .await;
     let (command, _workspace, _home) = prepare_exec_with_options(
         &server.uri(),
         3,
-        "prove route time is charged to the same deadline",
+        "prove Host routing adds no model call before the runtime deadline",
         "",
         None,
         "auto",
@@ -1202,10 +1183,7 @@ async fn route_and_runtime_share_one_absolute_wall_clock_deadline() {
         None,
     );
     let output = run_with_timeout(command, PROCESS_TIMEOUT);
-    assert!(
-        !output.status.success(),
-        "combined route/runtime delay must fail"
-    );
+    assert!(!output.status.success(), "the slow root request must fail");
     let events = parse_strict_ndjson(&output.stdout);
     let metadata = assert_terminal_tail(&events, Some("exec_watchdog_timeout"));
     assert_eq!(metadata["termination_reason"], "timeout");
@@ -1213,19 +1191,19 @@ async fn route_and_runtime_share_one_absolute_wall_clock_deadline() {
         metadata["duration_ms"]
             .as_u64()
             .is_some_and(|duration| duration < 4_000),
-        "route and runtime exceeded the single 3-second lifecycle: {metadata:#?}"
+        "the root request exceeded the single 3-second lifecycle: {metadata:#?}"
     );
-    assert_eq!(chat_request_count(&server).await, 2);
+    assert_eq!(chat_request_count(&server).await, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_router_and_root_agent_share_one_exact_request_ledger() {
+async fn auto_host_policy_uses_one_root_request_and_one_exact_ledger() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(AutoRouteResponder)
+        .respond_with(AutoHostPolicyResponder)
         .mount(&server)
         .await;
 
@@ -1251,9 +1229,8 @@ async fn auto_router_and_root_agent_share_one_exact_request_ledger() {
     let metadata = assert_terminal_tail(&events, None);
     assert_eq!(metadata["status"], "completed");
     assert_eq!(metadata["termination_reason"], "resolved");
-    assert_eq!(metadata["route_source"], "auto_resolver");
-    // Router: 7/2 tokens. Root execution: 11/3 tokens.
-    assert_exact_success_accounting(metadata, 2, 18, 5);
+    assert_eq!(metadata["route_source"], "host_policy");
+    assert_exact_success_accounting(metadata, 1, 11, 3);
 
     let run_id = RunId::from(
         metadata["run_id"]
@@ -1271,19 +1248,26 @@ async fn auto_router_and_root_agent_share_one_exact_request_ledger() {
         RuntimeEventKind::RunCreated { request } => &request.accounting_baseline,
         event => panic!("first canonical event must be run_created, got {event:?}"),
     };
-    assert_eq!(baseline.total_started(), 1);
-    assert_eq!(baseline.total_completed(), 1);
+    assert_eq!(baseline.total_started(), 0);
+    assert_eq!(baseline.total_completed(), 0);
     assert_eq!(baseline.total_in_flight(), 0);
-    assert_eq!(baseline.usage_responses, 1);
-    assert_eq!(baseline.usage.input_tokens, 7);
-    assert_eq!(baseline.usage.output_tokens, 2);
-    assert!(baseline.cost_nanousd > 0);
-    assert!(baseline.cost_nanocny > 0);
+    assert_eq!(baseline.usage_responses, 0);
+    assert_eq!(baseline.usage.input_tokens, 0);
+    assert_eq!(baseline.usage.output_tokens, 0);
+    assert_eq!(baseline.cost_nanousd, 0);
+    assert_eq!(baseline.cost_nanocny, 0);
     assert!(baseline.complete);
     assert!(baseline.usage_complete);
-    assert_eq!(baseline.surface_usage.len(), 1);
-    assert_eq!(baseline.surface_usage[0].response_count, 1);
-    assert_eq!(baseline.surface_usage[0].usage_response_count, 1);
+    assert!(baseline.surface_usage.is_empty());
+    assert_eq!(replay.snapshot.request.model, "deepseek-v4-pro");
+    assert_eq!(
+        replay.snapshot.request.route.requested_model_mode,
+        ModelRouteRequestedMode::Auto
+    );
+    assert_eq!(
+        replay.snapshot.request.route.reason_code,
+        "auto_root_responsible"
+    );
 
     let chat_requests = server
         .received_requests()
@@ -1292,20 +1276,19 @@ async fn auto_router_and_root_agent_share_one_exact_request_ledger() {
         .into_iter()
         .filter(|request| request.url.path() == "/v1/chat/completions")
         .collect::<Vec<_>>();
-    assert_eq!(chat_requests.len(), 2, "router + root request expected");
-    assert_ne!(
-        chat_requests[0].body_json::<Value>().expect("router body")["stream"],
-        true,
-        "router request must be non-streaming"
+    assert_eq!(chat_requests.len(), 1, "only the root request is admitted");
+    assert_eq!(
+        chat_requests[0].body_json::<Value>().expect("root body")["stream"],
+        true
     );
     assert_eq!(
-        chat_requests[1].body_json::<Value>().expect("root body")["stream"],
-        true
+        chat_requests[0].body_json::<Value>().expect("root body")["model"],
+        "deepseek-v4-pro"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_model_alias_fails_before_any_classifier_or_root_request() {
+async fn explicit_model_alias_fails_before_any_root_request() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
@@ -2158,6 +2141,7 @@ async fn create_released_run(store: &StateStore, environment: RunEnvironment) ->
         "fixture system prompt",
     );
     request.model = TEST_MODEL.to_owned();
+    request.route.policy_version = "deepseek_explicit_v1".to_owned();
     request.environment = environment;
     let created = store.create(request).await.expect("create mismatch run");
     let run_id = created.lease.run_id.clone();

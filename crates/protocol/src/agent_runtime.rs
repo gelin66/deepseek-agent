@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 16;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 16;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 17;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 17;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -75,6 +75,36 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Max,
+}
+
+/// Whether the caller requested one exact official model or delegated the
+/// choice to the Host product policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRouteRequestedMode {
+    Explicit,
+    Auto,
+}
+
+/// Minimal durable audit fact for one immutable per-run model selection.
+///
+/// The selected model and reasoning remain the canonical `RunRequest`
+/// fields. This record keeps only the caller intent and Host policy decision
+/// identity needed to audit or reopen that selection without routing again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ModelRouteAudit {
+    pub requested_model_mode: ModelRouteRequestedMode,
+    pub requested_reasoning_effort: ReasoningEffort,
+    pub policy_version: String,
+    pub reason_code: String,
+}
+
+impl ModelRouteAudit {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_reason_code("model route policy version", &self.policy_version)?;
+        validate_reason_code("model route reason code", &self.reason_code)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +409,13 @@ pub struct AgentTask {
     pub role: String,
     pub task_contract: TaskContract,
     pub workspace: AgentWorkspaceAssignment,
+    /// Host-frozen official model selection for this child run.
+    pub model: String,
+    pub reasoning_effort: ReasoningEffort,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    pub context_policy: ContextPolicy,
+    pub route: ModelRouteAudit,
     pub tool_policy: ToolPolicy,
     pub limits: RunLimits,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -395,6 +432,8 @@ impl AgentTask {
         require_agent_text("Agent call id", &self.call_id)?;
         require_agent_text("Agent role", &self.role)?;
         require_agent_text("expected artifact", &self.expected_artifact)?;
+        require_agent_text("Agent task model", &self.model)?;
+        self.route.validate()?;
         if self.child_run_id == self.root_run_id || self.child_run_id == self.parent_run_id {
             return Err("child run id must differ from root and parent run ids".to_owned());
         }
@@ -428,6 +467,9 @@ pub struct RunRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from_run_id: Option<RunId>,
     pub model: String,
+    /// Host-owned audit identity for the immutable `model` and
+    /// `reasoning_effort` selected for this run.
+    pub route: ModelRouteAudit,
     /// Frozen Host task boundary for this Agent run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_contract: Option<TaskContract>,
@@ -479,6 +521,12 @@ impl RunRequest {
             parent_run_id: None,
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Explicit,
+                requested_reasoning_effort: ReasoningEffort::Auto,
+                policy_version: "runtime_explicit_v1".to_owned(),
+                reason_code: "explicit_model".to_owned(),
+            },
             task_contract: Some(task_contract),
             system_prompt: system_prompt.into(),
             transcript: CanonicalTranscript::default(),
@@ -501,6 +549,8 @@ impl RunRequest {
     /// Validate the exact relationship between a persisted run and its
     /// orchestration task. Reducers call this when accepting `RunCreated`.
     pub fn validate_agent_task_binding(&self) -> Result<(), String> {
+        require_agent_text("RunRequest model", &self.model)?;
+        self.route.validate()?;
         match self.actor.kind {
             AgentActorKind::Root => {
                 if self.parent_run_id.is_some() || self.agent_task.is_some() {
@@ -516,6 +566,11 @@ impl RunRequest {
                 if self.run_id.as_ref() != Some(&task.child_run_id)
                     || self.parent_run_id.as_ref() != Some(&task.parent_run_id)
                     || self.task_contract.as_ref() != Some(&task.task_contract)
+                    || self.model != task.model
+                    || self.reasoning_effort != task.reasoning_effort
+                    || self.max_output_tokens != task.max_output_tokens
+                    || self.context_policy != task.context_policy
+                    || self.route != task.route
                     || self.tool_policy != task.tool_policy
                     || self.limits != task.limits
                     || self.deadline_unix_ms != task.deadline_unix_ms
@@ -3258,6 +3313,18 @@ mod tests {
                 allowed_paths: Vec::new(),
                 owner_token: None,
             },
+            model: "deepseek-v4-flash".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(262_144),
+            context_policy: ContextPolicy {
+                hard_input_tokens: 90_000,
+            },
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Auto,
+                requested_reasoning_effort: ReasoningEffort::Auto,
+                policy_version: "fixture_host_auto_v1".to_owned(),
+                reason_code: "auto_read_only_investigation".to_owned(),
+            },
             tool_policy: ToolPolicy {
                 enabled: true,
                 allowed: Some(vec!["read".to_owned()]),
@@ -3277,8 +3344,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 16);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 16);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 17);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 17);
     }
 
     #[test]
@@ -3346,6 +3413,11 @@ mod tests {
             kind: AgentActorKind::Child,
             depth: 1,
         };
+        request.model = task.model.clone();
+        request.reasoning_effort = task.reasoning_effort;
+        request.max_output_tokens = task.max_output_tokens;
+        request.context_policy = task.context_policy;
+        request.route = task.route.clone();
         request.tool_policy = task.tool_policy.clone();
         request.limits = task.limits;
         request.deadline_unix_ms = task.deadline_unix_ms;
@@ -3356,6 +3428,9 @@ mod tests {
         let mut mismatched = request.clone();
         mismatched.environment.workspace = "/workspace/other".to_owned();
         assert!(mismatched.validate_agent_task_binding().is_err());
+        let mut mismatched_route = request.clone();
+        mismatched_route.route.reason_code = "auto_read_only_recheck".to_owned();
+        assert!(mismatched_route.validate_agent_task_binding().is_err());
 
         let mut root = request;
         root.actor = AgentActor::default();

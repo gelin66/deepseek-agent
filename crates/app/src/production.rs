@@ -9,24 +9,25 @@ use async_trait::async_trait;
 use codewhale_config::PromptPreferences;
 use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
 use codewhale_deepseek::{
-    DeepSeekAutoRouteFallback, DeepSeekAutoRouteInput, DeepSeekConnectionConfig,
-    DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort, DeepSeekTransport,
-    SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
-    official_model_capabilities, resolve_deepseek_auto_route, resume_api_request_budget,
+    DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
+    DeepSeekTransport, SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
+    official_model_capabilities, resume_api_request_budget,
 };
 use codewhale_orchestrator::ProductionAgentOrchestrator;
 use codewhale_protocol::agent_runtime::{
-    ActorRequestAccounting, AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts,
-    ModelAccounting, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
-    TranscriptEntry, Usage,
+    ActorRequestAccounting, AgentActor, AgentActorKind, AgentTask, AgentWorkspaceAccess,
+    CanonicalTranscript, ContextPolicy, InheritedRunFacts, ModelAccounting, ModelRouteAudit,
+    ModelRouteRequestedMode, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
+    SystemPrompt, TranscriptEntry, Usage,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunApiErrorReason, RunProductControls, StartRunCommand,
 };
 use codewhale_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
-    AgentRuntime, ModelPort, ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun,
-    ToolExecutor, canonical_tool_catalog_sha256,
+    AgentRuntime, ChildRouteContext, ChildRunRoutePolicy, ChildRunRouteSelection, ModelPort,
+    ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun, ToolExecutor,
+    canonical_tool_catalog_sha256,
 };
 use codewhale_state::StateStore;
 use codewhale_tools::sandbox::SandboxPolicy;
@@ -43,6 +44,10 @@ use super::{
 };
 
 const DEEPSEEK_PROVIDER: &str = "deepseek";
+const DEEPSEEK_PRO_MODEL: &str = "deepseek-v4-pro";
+const DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
+const HOST_AUTO_ROUTE_POLICY_VERSION: &str = "deepseek_host_auto_v1";
+const EXPLICIT_ROUTE_POLICY_VERSION: &str = "deepseek_explicit_v1";
 const CONTEXT_INPUT_SAFETY_TOKENS: u32 = 32_000;
 pub const DEFAULT_MAX_API_REQUESTS: u32 = 64;
 
@@ -226,6 +231,235 @@ struct ProductionComposition {
     default_max_api_requests: NonZeroU32,
 }
 
+#[derive(Clone)]
+struct ProductionModelRoutePolicy {
+    prompt: ProductionPromptConfig,
+}
+
+struct ProductionRootRoute {
+    model: String,
+    reasoning_effort: ReasoningEffort,
+    max_output_tokens: u32,
+    context_policy: ContextPolicy,
+    route: ModelRouteAudit,
+}
+
+impl ProductionModelRoutePolicy {
+    fn new(prompt: ProductionPromptConfig) -> Self {
+        Self { prompt }
+    }
+
+    fn resolve_root(
+        &self,
+        requested_model: Option<&str>,
+        requested_reasoning_effort: ReasoningEffort,
+        requested_max_output_tokens: Option<u32>,
+        typed_recovery: bool,
+    ) -> Result<ProductionRootRoute, RunApiError> {
+        let (model, reasoning_effort, route) = if let Some(model) = requested_model {
+            (
+                official_model_capabilities(model)
+                    .map_err(|error| invalid_request(error.to_string()))?
+                    .model
+                    .to_owned(),
+                requested_reasoning_effort,
+                ModelRouteAudit {
+                    requested_model_mode: ModelRouteRequestedMode::Explicit,
+                    requested_reasoning_effort,
+                    policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
+                    reason_code: "explicit_model".to_owned(),
+                },
+            )
+        } else {
+            let reasoning_effort =
+                resolve_auto_reasoning(requested_reasoning_effort, typed_recovery);
+            (
+                DEEPSEEK_PRO_MODEL.to_owned(),
+                reasoning_effort,
+                ModelRouteAudit {
+                    requested_model_mode: ModelRouteRequestedMode::Auto,
+                    requested_reasoning_effort,
+                    policy_version: HOST_AUTO_ROUTE_POLICY_VERSION.to_owned(),
+                    reason_code: if typed_recovery {
+                        "auto_root_recovery"
+                    } else {
+                        "auto_root_responsible"
+                    }
+                    .to_owned(),
+                },
+            )
+        };
+        let capability = official_model_capabilities(&model)
+            .map_err(|error| invalid_request(error.to_string()))?;
+        let max_output_tokens = capability
+            .resolve_output_tokens(requested_max_output_tokens)
+            .map_err(|error| invalid_request(error.to_string()))?;
+        Ok(ProductionRootRoute {
+            model,
+            reasoning_effort,
+            max_output_tokens,
+            context_policy: production_context_policy(capability, max_output_tokens),
+            route,
+        })
+    }
+
+    fn validate_persisted_route(
+        &self,
+        run_id: &RunId,
+        request: &RunRequest,
+    ) -> Result<(), RunApiError> {
+        request.route.validate().map_err(|message| {
+            environment_mismatch(run_id, format!("run_resume_route_invalid：{message}"))
+        })?;
+        let expected_version = match request.route.requested_model_mode {
+            ModelRouteRequestedMode::Explicit => EXPLICIT_ROUTE_POLICY_VERSION,
+            ModelRouteRequestedMode::Auto => HOST_AUTO_ROUTE_POLICY_VERSION,
+        };
+        if request.route.policy_version != expected_version {
+            return Err(environment_mismatch(
+                run_id,
+                "run_resume_route_policy_mismatch：持久化模型路由 policy 与当前 production policy 不一致",
+            ));
+        }
+        if request.actor.kind == AgentActorKind::Root {
+            match request.route.requested_model_mode {
+                ModelRouteRequestedMode::Explicit => {
+                    if request.route.reason_code != "explicit_model" {
+                        return Err(environment_mismatch(
+                            run_id,
+                            "run_resume_route_reason_mismatch：显式 root route reason 不一致",
+                        ));
+                    }
+                }
+                ModelRouteRequestedMode::Auto => {
+                    let recovery = match request.route.reason_code.as_str() {
+                        "auto_root_responsible" => false,
+                        "auto_root_recovery" => true,
+                        _ => {
+                            return Err(environment_mismatch(
+                                run_id,
+                                "run_resume_route_reason_mismatch：Auto root route reason 不一致",
+                            ));
+                        }
+                    };
+                    if request.model != DEEPSEEK_PRO_MODEL
+                        || request.reasoning_effort
+                            != resolve_auto_reasoning(
+                                request.route.requested_reasoning_effort,
+                                recovery,
+                            )
+                    {
+                        return Err(environment_mismatch(
+                            run_id,
+                            "run_resume_route_selection_mismatch：Auto root 的 model/reasoning 与持久化 Host route 不一致",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn system_prompt(&self, workspace: &Path, model: &str, tool_mode: bool) -> SystemPrompt {
+        production_system_prompt(ProductionPromptRequest {
+            workspace,
+            model,
+            preferences: &self.prompt.preferences,
+            instructions: &self.prompt.instructions,
+            skills_dir: self.prompt.skills_dir.as_deref(),
+            project_context_pack_enabled: self.prompt.project_context_pack_enabled,
+            verbosity: self.prompt.verbosity.as_deref(),
+            skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
+            shell_binary: &self.prompt.shell_binary,
+            tool_mode,
+        })
+    }
+}
+
+impl ChildRunRoutePolicy for ProductionModelRoutePolicy {
+    fn select_child(
+        &self,
+        parent: &RunRequest,
+        workspace_access: AgentWorkspaceAccess,
+        context: ChildRouteContext,
+    ) -> Result<ChildRunRouteSelection, String> {
+        if parent.route.requested_model_mode == ModelRouteRequestedMode::Explicit {
+            return Ok(ChildRunRouteSelection {
+                model: parent.model.clone(),
+                reasoning_effort: parent.reasoning_effort,
+                max_output_tokens: parent.max_output_tokens,
+                context_policy: parent.context_policy,
+                route: ModelRouteAudit {
+                    requested_model_mode: ModelRouteRequestedMode::Explicit,
+                    requested_reasoning_effort: parent.route.requested_reasoning_effort,
+                    policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
+                    reason_code: "explicit_model_inherited".to_owned(),
+                },
+            });
+        }
+
+        let recovery = context.typed_recovery
+            || match workspace_access {
+                AgentWorkspaceAccess::ReadOnly => context.prior_read_only_child_failed,
+                AgentWorkspaceAccess::IsolatedWrite => context.prior_isolated_writer_failed,
+            };
+        let (model, reason_code) = match (workspace_access, recovery) {
+            (AgentWorkspaceAccess::ReadOnly, false) => {
+                (DEEPSEEK_FLASH_MODEL, "auto_read_only_investigation")
+            }
+            (AgentWorkspaceAccess::ReadOnly, true) => {
+                (DEEPSEEK_PRO_MODEL, "auto_read_only_recheck")
+            }
+            (AgentWorkspaceAccess::IsolatedWrite, false) => {
+                (DEEPSEEK_PRO_MODEL, "auto_isolated_writer")
+            }
+            (AgentWorkspaceAccess::IsolatedWrite, true) => {
+                (DEEPSEEK_PRO_MODEL, "auto_isolated_writer_rework")
+            }
+        };
+        let reasoning_effort =
+            resolve_auto_reasoning(parent.route.requested_reasoning_effort, recovery);
+        let capability = official_model_capabilities(model).map_err(|error| error.to_string())?;
+        let max_output_tokens = capability
+            .resolve_output_tokens(parent.max_output_tokens)
+            .map_err(|error| error.to_string())?;
+        Ok(ChildRunRouteSelection {
+            model: model.to_owned(),
+            reasoning_effort,
+            max_output_tokens: Some(max_output_tokens),
+            context_policy: production_context_policy(capability, max_output_tokens),
+            route: ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Auto,
+                requested_reasoning_effort: parent.route.requested_reasoning_effort,
+                policy_version: HOST_AUTO_ROUTE_POLICY_VERSION.to_owned(),
+                reason_code: reason_code.to_owned(),
+            },
+        })
+    }
+
+    fn child_system_prompt(
+        &self,
+        _parent: &RunRequest,
+        task: &AgentTask,
+        tool_mode: bool,
+    ) -> Result<SystemPrompt, String> {
+        let workspace = Path::new(task.workspace.execution_workspace());
+        Ok(self.system_prompt(workspace, &task.model, tool_mode))
+    }
+}
+
+fn resolve_auto_reasoning(requested: ReasoningEffort, recovery: bool) -> ReasoningEffort {
+    if requested == ReasoningEffort::Auto {
+        if recovery {
+            ReasoningEffort::Max
+        } else {
+            ReasoningEffort::High
+        }
+    } else {
+        requested
+    }
+}
+
 impl AgentApplication {
     /// Construct the sole production composition root without requiring a Key.
     pub fn production(
@@ -313,12 +547,6 @@ impl RunComposition for ProductionComposition {
             .wall_time_ms
             .map(|duration| unix_ms_now().saturating_add(duration));
         let workspace = canonical_start_workspace(&command.workspace)?;
-        let explicit_capability = command
-            .model
-            .as_deref()
-            .map(official_model_capabilities)
-            .transpose()
-            .map_err(|error| invalid_request(error.to_string()))?;
         let tool_config = tool_config_for_run(&self.tools, &workspace, &command.controls)?;
         let tool_identity = tool_config.execution_identity();
         let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
@@ -329,58 +557,27 @@ impl RunComposition for ProductionComposition {
             )
         })?;
 
+        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        let route = route_policy.resolve_root(
+            command.model.as_deref(),
+            command.reasoning_effort,
+            command.max_output_tokens,
+            false,
+        )?;
         let request_budget = SharedApiRequestBudget::new(
             command
                 .max_api_requests
                 .unwrap_or(self.default_max_api_requests),
         );
         let transport = self.bind_live_transport(request_budget.clone())?;
-        let (model, reasoning_effort) = if let Some(capability) = explicit_capability {
-            (capability.model.to_owned(), command.reasoning_effort)
-        } else {
-            let fallback = DeepSeekAutoRouteFallback::for_request(
-                &command.task.objective,
-                Some(command.reasoning_effort),
-            );
-            let selected = resolve_deepseek_auto_route(
-                &transport,
-                DeepSeekAutoRouteInput {
-                    latest_request: &command.task.objective,
-                    recent_context: "",
-                    session_mode: "agent",
-                    selected_model_mode: "auto",
-                    selected_thinking_mode: reasoning_effort_label(command.reasoning_effort),
-                    fallback,
-                },
-            )
-            .await
-            .map_err(|error| {
-                invalid_request_reason(
-                    RunApiErrorReason::DeepSeekAutoRouteFailed,
-                    format!("DeepSeek 自动路由失败：{error}"),
-                )
-            })?;
-            (
-                selected.model().to_owned(),
-                selected
-                    .reasoning_effort()
-                    .unwrap_or(command.reasoning_effort),
-            )
-        };
-
-        let capability = official_model_capabilities(&model)
-            .map_err(|error| invalid_request(error.to_string()))?;
-        let max_output_tokens = capability
-            .resolve_output_tokens(command.max_output_tokens)
-            .map_err(|error| invalid_request(error.to_string()))?;
-        let context_policy = production_context_policy(capability, max_output_tokens);
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
         let runtime = Arc::new(
             AgentRuntime::new(model_port, tool_executor, sink, store)
-                .with_orchestrator(orchestrator),
+                .with_orchestrator(orchestrator)
+                .with_child_route_policy(route_policy),
         );
         let tool_catalog = runtime.tool_definitions(
             &command.tool_policy,
@@ -391,23 +588,28 @@ impl RunComposition for ProductionComposition {
             command.controls.interactive,
         );
         let tool_catalog_sha256 = canonical_tool_catalog_sha256(&tool_catalog);
-        let execution_fingerprint_sha256 =
-            self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
-        let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
+        let execution_fingerprint_sha256 = self.execution_fingerprint_sha256(
+            &route.model,
+            &route.route,
+            &tool_identity,
+            &tool_catalog_sha256,
+        );
+        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
         let accounting_baseline = model_accounting_snapshot(&request_budget);
         let request = RunRequest {
             run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: None,
-            model,
+            model: route.model,
+            route: route.route,
             task_contract: Some(TaskContract {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
                 definition: command.task,
             }),
             system_prompt,
             transcript: CanonicalTranscript::default(),
-            reasoning_effort,
-            max_output_tokens: Some(max_output_tokens),
+            reasoning_effort: route.reasoning_effort,
+            max_output_tokens: Some(route.max_output_tokens),
             streaming: command.streaming,
             actor: AgentActor::default(),
             agent_task: None,
@@ -426,7 +628,7 @@ impl RunComposition for ProductionComposition {
                 interactive: command.controls.interactive,
                 sandbox: command.controls.sandbox,
             },
-            context_policy,
+            context_policy: route.context_policy,
             context_projection: None,
             inherited_facts: None,
             accounting_baseline,
@@ -455,6 +657,8 @@ impl RunComposition for ProductionComposition {
                 "持久化运行未绑定官方 DeepSeek Provider",
             ));
         }
+        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        route_policy.validate_persisted_route(&run_id, request)?;
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
         let controls = controls_from_environment(&request.environment);
         let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
@@ -482,7 +686,8 @@ impl RunComposition for ProductionComposition {
         };
         let runtime = Arc::new(
             AgentRuntime::new(model_port, tool_executor, sink, store)
-                .with_orchestrator(orchestrator),
+                .with_orchestrator(orchestrator)
+                .with_child_route_policy(route_policy),
         );
         let tool_catalog = runtime.tool_definitions(
             &request.tool_policy,
@@ -518,6 +723,7 @@ impl RunComposition for ProductionComposition {
             })?;
         let current_fingerprint = self.execution_fingerprint_sha256(
             &request.model,
+            &request.route,
             &tool_identity,
             &current_catalog_sha256,
         );
@@ -572,6 +778,8 @@ impl RunComposition for ProductionComposition {
                 "来源运行未绑定官方 DeepSeek Provider",
             ));
         }
+        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        route_policy.validate_persisted_route(&source_run_id, source_request)?;
         if source_request
             .environment
             .execution_fingerprint_sha256
@@ -603,20 +811,27 @@ impl RunComposition for ProductionComposition {
             .unwrap_or(self.default_max_api_requests);
         let request_budget = SharedApiRequestBudget::new(request_limit);
         let transport = self.bind_live_transport(request_budget.clone())?;
-        let model = source_request.model.clone();
-        let capability = official_model_capabilities(&model)
-            .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
-        let max_output_tokens = capability
-            .resolve_output_tokens(source_request.max_output_tokens)
-            .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
-        let context_policy = production_context_policy(capability, max_output_tokens);
+        let typed_recovery = source.snapshot.last_completion_rejection.is_some()
+            || source.snapshot.last_host_verification_failure.is_some();
+        let requested_model = (source_request.route.requested_model_mode
+            == ModelRouteRequestedMode::Explicit)
+            .then_some(source_request.model.as_str());
+        let route = route_policy
+            .resolve_root(
+                requested_model,
+                source_request.route.requested_reasoning_effort,
+                source_request.max_output_tokens,
+                typed_recovery,
+            )
+            .map_err(|error| environment_mismatch(&source_run_id, error.message))?;
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
         let runtime = Arc::new(
             AgentRuntime::new(model_port, tool_executor, sink, store)
-                .with_orchestrator(orchestrator),
+                .with_orchestrator(orchestrator)
+                .with_child_route_policy(route_policy),
         );
         let tool_catalog = runtime.tool_definitions(
             &source_request.tool_policy,
@@ -627,9 +842,13 @@ impl RunComposition for ProductionComposition {
             source_request.environment.interactive,
         );
         let tool_catalog_sha256 = canonical_tool_catalog_sha256(&tool_catalog);
-        let execution_fingerprint_sha256 =
-            self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
-        let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
+        let execution_fingerprint_sha256 = self.execution_fingerprint_sha256(
+            &route.model,
+            &route.route,
+            &tool_identity,
+            &tool_catalog_sha256,
+        );
+        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
         let mut transcript = source.snapshot.transcript.clone();
         match transcript.entries.first_mut() {
             Some(TranscriptEntry::System { prompt }) => *prompt = system_prompt.clone(),
@@ -648,15 +867,16 @@ impl RunComposition for ProductionComposition {
             run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: Some(source_run_id),
-            model,
+            model: route.model,
+            route: route.route,
             task_contract: Some(TaskContract {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
                 definition: task,
             }),
             system_prompt,
             transcript,
-            reasoning_effort: source_request.reasoning_effort,
-            max_output_tokens: Some(max_output_tokens),
+            reasoning_effort: route.reasoning_effort,
+            max_output_tokens: Some(route.max_output_tokens),
             streaming: source_request.streaming,
             actor: AgentActor::default(),
             agent_task: None,
@@ -675,7 +895,7 @@ impl RunComposition for ProductionComposition {
                 interactive: controls.interactive,
                 sandbox: controls.sandbox,
             },
-            context_policy,
+            context_policy: route.context_policy,
             context_projection: source.snapshot.context_projection.clone(),
             inherited_facts: Some(InheritedRunFacts {
                 workspace_state: source.snapshot.workspace_state.clone(),
@@ -752,6 +972,7 @@ impl ProductionComposition {
     fn execution_fingerprint_sha256(
         &self,
         model: &str,
+        route: &ModelRouteAudit,
         tool_identity: &ProductionToolExecutionIdentity,
         tool_catalog_sha256: &str,
     ) -> String {
@@ -760,6 +981,9 @@ impl ProductionComposition {
             composition_build_revision: &self.composition_build_revision,
             provider: DEEPSEEK_PROVIDER,
             model,
+            route_policy_version: &route.policy_version,
+            route_requested_model_mode: route.requested_model_mode,
+            route_reason_code: &route.reason_code,
             endpoint_root_sha256: sha256(self.deepseek.endpoint.root().as_bytes()),
             strict_tools: self.deepseek.strict_tools,
             response_header_timeout_ms: duration_millis(self.deepseek.response_header_timeout),
@@ -784,6 +1008,9 @@ struct ProductionExecutionFingerprint<'a> {
     composition_build_revision: &'a str,
     provider: &'a str,
     model: &'a str,
+    route_policy_version: &'a str,
+    route_requested_model_mode: ModelRouteRequestedMode,
+    route_reason_code: &'a str,
     endpoint_root_sha256: String,
     strict_tools: bool,
     response_header_timeout_ms: u64,
@@ -1084,17 +1311,6 @@ fn unix_ms_now() -> u64 {
 
 fn stable_path(path: &Path) -> String {
     path.display().to_string()
-}
-
-fn reasoning_effort_label(effort: ReasoningEffort) -> &'static str {
-    match effort {
-        ReasoningEffort::Off => "off",
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-        ReasoningEffort::Auto => "auto",
-        ReasoningEffort::Max => "max",
-    }
 }
 
 fn invalid_request(message: impl Into<String>) -> RunApiError {
@@ -1569,6 +1785,15 @@ mod tests {
         request
     }
 
+    fn explicit_route(reasoning_effort: ReasoningEffort) -> ModelRouteAudit {
+        ModelRouteAudit {
+            requested_model_mode: ModelRouteRequestedMode::Explicit,
+            requested_reasoning_effort: reasoning_effort,
+            policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
+            reason_code: "explicit_model".to_owned(),
+        }
+    }
+
     fn test_production_composition(
         temp: &Path,
         connection: DeepSeekConnectionConfig,
@@ -1639,6 +1864,7 @@ mod tests {
         };
         let mut request = test_run_request(run_id, "恢复 production Agent", "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
+        request.route = explicit_route(request.reasoning_effort);
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.limits.max_depth = 1;
         request.context_policy = production_context_policy(
@@ -1683,6 +1909,7 @@ mod tests {
         request.environment.execution_fingerprint_sha256 =
             Some(composition.execution_fingerprint_sha256(
                 &request.model,
+                &request.route,
                 &tool_identity,
                 &catalog_sha256,
             ));
@@ -1720,6 +1947,11 @@ mod tests {
                 allowed_paths: vec!["src/lib.rs".to_owned()],
                 owner_token: Some(format!("owner-{}", child_run_id.0)),
             },
+            model: request.model.clone(),
+            reasoning_effort: request.reasoning_effort,
+            max_output_tokens: request.max_output_tokens,
+            context_policy: request.context_policy,
+            route: request.route.clone(),
             tool_policy,
             limits: RunLimits {
                 max_depth: 0,
@@ -1937,9 +2169,10 @@ mod tests {
         let mut request = RunRequest::new(task.task_contract.clone(), "writer child prompt");
         request.run_id = Some(task.child_run_id.clone());
         request.parent_run_id = Some(task.parent_run_id.clone());
-        request.model = parent.model.clone();
-        request.reasoning_effort = parent.reasoning_effort;
-        request.max_output_tokens = parent.max_output_tokens;
+        request.model = task.model.clone();
+        request.route = task.route.clone();
+        request.reasoning_effort = task.reasoning_effort;
+        request.max_output_tokens = task.max_output_tokens;
         request.streaming = false;
         request.actor = AgentActor {
             kind: AgentActorKind::Child,
@@ -1953,7 +2186,7 @@ mod tests {
         request.environment.workspace = task.workspace.execution_workspace().to_owned();
         request.environment.interactive = false;
         request.environment.sandbox = Some("isolated_writer".to_owned());
-        request.context_policy = parent.context_policy;
+        request.context_policy = task.context_policy;
         request.accounting_baseline = accounting;
         request
     }
@@ -2785,13 +3018,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m7g_production_loopback_read_only_children_overlap_and_reopen_exactly() {
+    async fn m8i_auto_root_routes_read_only_children_to_flash_and_reopens_exactly() {
         let server = FanoutDeepSeekServer::start().await;
         let temp = tempfile::tempdir().expect("temp root");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir(&workspace).expect("workspace");
         let state_path = temp.path().join("state.db");
-        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        let mut command = start_command(&workspace, None);
         command.task = TaskDefinition::host("并行调查两个相互独立的只读事实后汇总");
         command.reasoning_effort = ReasoningEffort::High;
         command.tool_policy.allowed = Some(vec![AGENT_TOOL_NAME.to_owned()]);
@@ -2841,6 +3074,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![AGENT_TOOL_NAME]
         );
+        assert_eq!(captured[0].body["model"], DEEPSEEK_PRO_MODEL);
+        assert_eq!(captured[1].body["model"], DEEPSEEK_FLASH_MODEL);
+        assert_eq!(captured[2].body["model"], DEEPSEEK_FLASH_MODEL);
+        assert_eq!(captured[3].body["model"], DEEPSEEK_PRO_MODEL);
         assert!(captured[1].body.get("tools").is_none());
         assert!(captured[2].body.get("tools").is_none());
 
@@ -2894,6 +3131,13 @@ mod tests {
             .filter_map(|stored| match &stored.event {
                 RuntimeEventKind::AgentTaskPrepared { task } => {
                     assert_eq!(task.workspace.access, AgentWorkspaceAccess::ReadOnly);
+                    assert_eq!(task.model, DEEPSEEK_FLASH_MODEL);
+                    assert_eq!(task.reasoning_effort, ReasoningEffort::High);
+                    assert_eq!(
+                        task.route.requested_model_mode,
+                        ModelRouteRequestedMode::Auto
+                    );
+                    assert_eq!(task.route.reason_code, "auto_read_only_investigation");
                     Some(task.child_run_id.clone())
                 }
                 _ => None,
@@ -2918,8 +3162,19 @@ mod tests {
             ));
             assert_eq!(child.snapshot.request.actor.kind, AgentActorKind::Child);
             assert_eq!(child.snapshot.request.actor.depth, 1);
+            assert_eq!(child.snapshot.request.model, DEEPSEEK_FLASH_MODEL);
+            assert_eq!(
+                child.snapshot.request.route.reason_code,
+                "auto_read_only_investigation"
+            );
             child_replays.push(child);
         }
+
+        assert_eq!(replay.snapshot.request.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(
+            replay.snapshot.request.route.reason_code,
+            "auto_root_responsible"
+        );
 
         assert_eq!(replay.snapshot.runtime_model_requests, 4);
         assert_eq!(replay.snapshot.accounting.root.started, 2);
@@ -3676,17 +3931,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_route_and_root_share_one_hard_ledger_and_persist_exact_host_fields() {
-        let server = MockDeepSeekServer::start(vec![
-            response(
-                "deepseek-v4-flash",
-                r#"{"provider":"deepseek","model":"deepseek-v4-pro","thinking":"max"}"#,
-                7,
-                2,
-            ),
-            response("deepseek-v4-pro", "完成", 11, 3),
-        ])
-        .await;
+    async fn host_auto_policy_starts_one_pro_request_and_persists_exact_audit_fields() {
+        let server =
+            MockDeepSeekServer::start(vec![response("deepseek-v4-pro", "完成", 11, 3)]).await;
         let temp = tempfile::tempdir().expect("temp workspace");
         let mut command = start_command(temp.path(), None);
         command.tool_policy.allowed = Some(vec!["read_file".to_owned()]);
@@ -3708,10 +3955,8 @@ mod tests {
         );
         let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].body["model"], "deepseek-v4-flash");
-        assert!(requests[0].body.get("tools").is_none());
-        assert_eq!(requests[1].body["model"], "deepseek-v4-pro");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body["model"], "deepseek-v4-pro");
 
         let persisted = &replay.snapshot.request;
         assert_eq!(persisted.model, "deepseek-v4-pro");
@@ -3723,7 +3968,20 @@ mod tests {
                 .definition,
             command.task
         );
-        assert_eq!(persisted.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(persisted.reasoning_effort, ReasoningEffort::High);
+        assert_eq!(
+            persisted.route.requested_model_mode,
+            ModelRouteRequestedMode::Auto
+        );
+        assert_eq!(
+            persisted.route.requested_reasoning_effort,
+            command.reasoning_effort
+        );
+        assert_eq!(
+            persisted.route.policy_version,
+            HOST_AUTO_ROUTE_POLICY_VERSION
+        );
+        assert_eq!(persisted.route.reason_code, "auto_root_responsible");
         assert_eq!(
             persisted.max_output_tokens,
             Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS)
@@ -3759,8 +4017,8 @@ mod tests {
             Some("workspace-write")
         );
         assert_eq!(persisted.accounting_baseline.hard_request_limit, Some(64));
-        assert_eq!(persisted.accounting_baseline.root.started, 1);
-        assert_eq!(replay.snapshot.accounting.root.started, 2);
+        assert_eq!(persisted.accounting_baseline.root.started, 0);
+        assert_eq!(replay.snapshot.accounting.root.started, 1);
         assert_eq!(replay.snapshot.runtime_model_requests, 1);
         assert!(
             persisted
@@ -3770,6 +4028,104 @@ mod tests {
                 .expect("runtime prompt block")
                 .text
                 .contains("唯一 AgentRuntime")
+        );
+    }
+
+    #[test]
+    fn host_auto_policy_matrix_uses_only_typed_actor_authority_and_failure_facts() {
+        let policy = ProductionModelRoutePolicy::new(ProductionPromptConfig::default());
+        let root = policy
+            .resolve_root(None, ReasoningEffort::Auto, None, false)
+            .expect("ordinary Auto root route");
+        assert_eq!(root.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(root.reasoning_effort, ReasoningEffort::High);
+        assert_eq!(root.route.reason_code, "auto_root_responsible");
+
+        let recovery_root = policy
+            .resolve_root(None, ReasoningEffort::Auto, None, true)
+            .expect("typed recovery Auto root route");
+        assert_eq!(recovery_root.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(recovery_root.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(recovery_root.route.reason_code, "auto_root_recovery");
+
+        let explicit = policy
+            .resolve_root(Some(DEEPSEEK_FLASH_MODEL), ReasoningEffort::Off, None, true)
+            .expect("explicit route");
+        assert_eq!(explicit.model, DEEPSEEK_FLASH_MODEL);
+        assert_eq!(explicit.reasoning_effort, ReasoningEffort::Off);
+        assert_eq!(
+            explicit.route.requested_model_mode,
+            ModelRouteRequestedMode::Explicit
+        );
+
+        let run_id = RunId::from("host-policy-parent");
+        let mut parent = test_run_request(run_id, "typed route matrix", "system");
+        parent.model = root.model;
+        parent.reasoning_effort = root.reasoning_effort;
+        parent.max_output_tokens = Some(root.max_output_tokens);
+        parent.context_policy = root.context_policy;
+        parent.route = root.route;
+
+        let ordinary = ChildRouteContext {
+            prior_read_only_child_failed: false,
+            prior_isolated_writer_failed: false,
+            typed_recovery: false,
+        };
+        let read_only = policy
+            .select_child(&parent, AgentWorkspaceAccess::ReadOnly, ordinary)
+            .expect("ordinary read-only child route");
+        assert_eq!(read_only.model, DEEPSEEK_FLASH_MODEL);
+        assert_eq!(read_only.reasoning_effort, ReasoningEffort::High);
+        assert_eq!(read_only.route.reason_code, "auto_read_only_investigation");
+
+        let read_only_recheck = policy
+            .select_child(
+                &parent,
+                AgentWorkspaceAccess::ReadOnly,
+                ChildRouteContext {
+                    prior_read_only_child_failed: true,
+                    ..ordinary
+                },
+            )
+            .expect("typed read-only recheck route");
+        assert_eq!(read_only_recheck.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(read_only_recheck.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(
+            read_only_recheck.route.reason_code,
+            "auto_read_only_recheck"
+        );
+
+        let writer = policy
+            .select_child(&parent, AgentWorkspaceAccess::IsolatedWrite, ordinary)
+            .expect("ordinary isolated Writer route");
+        assert_eq!(writer.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(writer.reasoning_effort, ReasoningEffort::High);
+        assert_eq!(writer.route.reason_code, "auto_isolated_writer");
+
+        let writer_rework = policy
+            .select_child(
+                &parent,
+                AgentWorkspaceAccess::IsolatedWrite,
+                ChildRouteContext {
+                    prior_isolated_writer_failed: true,
+                    ..ordinary
+                },
+            )
+            .expect("typed isolated Writer rework route");
+        assert_eq!(writer_rework.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(writer_rework.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(
+            writer_rework.route.reason_code,
+            "auto_isolated_writer_rework"
+        );
+
+        parent.route.requested_reasoning_effort = ReasoningEffort::Off;
+        let explicit_off_read_only = policy
+            .select_child(&parent, AgentWorkspaceAccess::ReadOnly, ordinary)
+            .expect("explicit reasoning is preserved");
+        assert_eq!(
+            explicit_off_read_only.reasoning_effort,
+            ReasoningEffort::Off
         );
     }
 
@@ -4031,6 +4387,11 @@ mod tests {
                     role: lane.to_owned(),
                     task_contract,
                     workspace: assignment,
+                    model: request.model.clone(),
+                    reasoning_effort: request.reasoning_effort,
+                    max_output_tokens: request.max_output_tokens,
+                    context_policy: request.context_policy,
+                    route: request.route.clone(),
                     tool_policy: child_policy.clone(),
                     limits: request.limits,
                     deadline_unix_ms: None,
@@ -4581,6 +4942,7 @@ mod tests {
         let mut request =
             test_run_request(run_id.clone(), format!("恢复 {suffix}"), "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
+        request.route = explicit_route(request.reasoning_effort);
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.limits.max_depth = 0;
         request.environment = RunEnvironment {
@@ -4765,6 +5127,12 @@ mod tests {
         });
         let fingerprint = composition.execution_fingerprint_sha256(
             "deepseek-v4-pro",
+            &ModelRouteAudit {
+                requested_model_mode: ModelRouteRequestedMode::Explicit,
+                requested_reasoning_effort: ReasoningEffort::Auto,
+                policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
+                reason_code: "explicit_model".to_owned(),
+            },
             &tool_identity,
             &catalog_sha256,
         );
@@ -4772,6 +5140,7 @@ mod tests {
         let mut request =
             test_run_request(run_id.clone(), "恢复陈旧上下文策略", "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
+        request.route = explicit_route(request.reasoning_effort);
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.limits.max_depth = 0;
         request.context_policy = ContextPolicy::default();
