@@ -1,0 +1,238 @@
+{
+  "schema": "codewhale.eval.m8-k-v1-scope-successor.v1",
+  "frozen_at": "2026-07-24",
+  "branch": "deepseek-agent",
+  "baseline": {
+    "revision": "49a465811e96036bc985a23fcd4a69a6391861fe",
+    "tree": "245a2ef233922026351a6484954fd0bcee05e231",
+    "cargo_lock_sha256": "f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "worktree_clean": true
+  },
+  "authority_inputs": {
+    "product_plan": {
+      "path": "docs/product/PRODUCT_PLAN.md",
+      "sha256": "b41577c958bede243abf80c521aa306000b3481db40677c43fa7e15d421ca4ce"
+    },
+    "roadmap": {
+      "path": "docs/product/ROADMAP.md",
+      "sha256": "614f9cfbac486d26d53b8cf73e8b445d343dfa641052b24f67febe9dca541463"
+    },
+    "evaluation": {
+      "path": "docs/product/EVALUATION.md",
+      "sha256": "dfcf4376b1cbe49fa022978202d4b7662dc08ebe3a1c8f1c73f9ba98c0df0b58"
+    },
+    "current_architecture": {
+      "path": "docs/architecture/CURRENT_CODEWHALE.md",
+      "sha256": "4301b22ff52a8bfe4d0024add73cc5786bd1ccb5c6e0764187e7a187b302e2a2"
+    },
+    "subagents": {
+      "path": "docs/architecture/SUBAGENTS.md",
+      "sha256": "006041adeefd760cf251368321fa6c7782b6292f79eece3002b6c66969456532"
+    },
+    "multi_agent_adr": {
+      "path": "docs/decisions/0003-multi-agent-worktrees.md",
+      "sha256": "e01a16b957259d1cfb1ee6436c95564cfbe7d0635ee0ec7a0a31ff05ce2c26f3"
+    }
+  },
+  "current_v1_matrix": {
+    "pass_count": 10,
+    "blocked_count": 6,
+    "items": {
+      "V01": "pass",
+      "V02": "pass",
+      "V03": "pass",
+      "V04": "pass",
+      "V05": "pass",
+      "V06": "pass",
+      "V07": "pass",
+      "V08": "blocked_multi_writer_literal_scope",
+      "V09": "blocked_fim_literal_scope",
+      "V10": "blocked_repograph_literal_scope",
+      "V11": "pass",
+      "V12": "pass",
+      "V13": "blocked_imported_baseline_coding_comparison",
+      "V14": "pass",
+      "V15": "blocked_billing_provable_prompt_comparison",
+      "V16": "blocked_imported_baseline_workflow_step_comparison"
+    }
+  },
+  "problem": "PRODUCT_PLAN V08/V09/V10 still encode multi-Writer, FIM and RepoGraph implementation names as V1 exit requirements even though accepted architecture and subsequent production evidence do not admit those implementations. Continuing by checklist would restore rejected or deleted paths without a current attributable task loss.",
+  "selection_gate": {
+    "required_for_implementation": [
+      "a current production failure sample after the latest owning decision",
+      "a canonical production caller whose loss is attributable to the missing capability",
+      "a deterministic verifier for the affected task",
+      "a same-revision immutable-binary control and material treatment",
+      "complete request, usage, retry, wall-time and cost accounting",
+      "a minimal vertical owner and an explicit cutover deletion"
+    ],
+    "decision_rule": "Implement at most one blocker only when every required fact exists. Otherwise make an explicit product-scope decision without adding production code or consuming credentials.",
+    "selected_path": "product_scope_successor_adr",
+    "selected_implementation_blocker": null,
+    "reason_code": "no_candidate_has_current_attributable_failure_and_admissible_treatment"
+  },
+  "capability_audit": {
+    "V08": {
+      "literal_requirement": "multi-Writer worktree/review/verify/merge/cleanup",
+      "accepted_architecture": "AgentRuntime x N plus Orchestrator; every writing agent must use an isolated worktree. ADR-0003 does not require more than one concurrent Writer.",
+      "current_production": [
+        "one explicit isolated Writer per root",
+        "same AgentRuntime as root and read-only children",
+        "Host-owned worktree, diff, verifier, fast-forward integration, latest-root verification and exact cleanup",
+        "second Writer in the same or a later turn is typed rejected before allocation"
+      ],
+      "current_source_facts": {
+        "multi_writer_identifiers": 0,
+        "max_writer_configuration_fields": 0,
+        "single_writer_test": "crates/runtime/tests/writer_orchestration.rs::one_root_rejects_a_second_writer_in_the_same_batch_or_a_later_turn"
+      },
+      "formal_evidence": {
+        "v2_manifest_sha256": "3c0f0893c2e906ddcf7408e960cbebe80193ab56116bd94fc85b10",
+        "v2_result_sha256": "cd9c81bf07e3e45a1f4fd9f631544a36d0c8ac4b0e08b75701b30e6eef1de8b5",
+        "v2_summary_sha256": "860846d3bb9a5c9d7d0e1e89ff7c994ba715ece04da5827543c5761a4a81cf88",
+        "v2_pairs_arms": "18/36",
+        "v2_verified_single_writer": "2/18 -> 4/18",
+        "v2_false_success_single_writer": "15 -> 7",
+        "v2_writer_overhead": {
+          "tokens": "+35.5%",
+          "cost": "+52.5%",
+          "wall_time": "+39.8%"
+        },
+        "v2_decision": "reject_and_rework",
+        "v3_manifest_sha256": "96bc7030c19945501ab0d658a85325ba5a28ef9f50a1da9365f116eaa651087e",
+        "v3_result_sha256": "2bc41e464888e49c7894881f36b2ad8eed5b10e47191ddd2b2a5991148acb2c1",
+        "v3_summary_sha256": "a42352e438a1b62fae3ee470432e6467df2f7e505ffc5f28a55449031a614a8f",
+        "v3_decision": "hold_mechanism_after_unknown_billing",
+        "multi_writer_admitted": false
+      },
+      "current_post_decision_failure_samples_requiring_multi_writer": 0,
+      "canonical_multi_writer_treatment": false,
+      "scope_decision_candidate": "keep explicit single Writer lifecycle; reject multi-Writer as a V1 exit requirement; hold evidence-gated re-entry"
+    },
+    "V09": {
+      "literal_requirement": "DeepSeek Standard, Strict and FIM routing",
+      "current_production": [
+        "official DeepSeek OpenAI ChatCompletions sender and parser",
+        "Standard Chat",
+        "whole-catalog Strict compatibility planning with atomic lossless Standard fallback",
+        "canonical usage, retry, accounting and RunStore replay"
+      ],
+      "current_source_facts": {
+        "runtime_api_surfaces": [
+          "standard_chat",
+          "strict_chat"
+        ],
+        "fim_api_surface_variants": 0,
+        "plan_fim_callers": 0,
+        "beta_completions_urls": 0,
+        "fim_apply_reopen_consumers": 0
+      },
+      "formal_evidence": {
+        "m8_h_manifest_sha256": "f7a2fd51f3385b33a7fdb39ffb953b69c17f1ec67cdce63ef33d705e64afd873",
+        "m8_h_summary_sha256": "b81d46ce4c9282cf055a1de8ac732901ac1060cf40ccd9d0ddb012ec4d4a7c32",
+        "m7_c_deterministic_edit_matrix": "12/12",
+        "post_m7_c_current_edit_generation_failure_samples": 0,
+        "decision": "keep_standard_strict / reject_unreachable_fim_production_half_branch / hold_fim_reentry",
+        "live_ab": "inadmissible_no_surface_delta"
+      },
+      "official_recheck": {
+        "reviewed_at": "2026-07-24",
+        "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion",
+        "tool_calls": "https://api-docs.deepseek.com/guides/tool_calls",
+        "fim_guide": "https://api-docs.deepseek.com/guides/fim_completion/",
+        "fim_api": "https://api-docs.deepseek.com/api/create-completion",
+        "v4_release": "https://api-docs.deepseek.com/news/news260424/",
+        "facts": [
+          "ordinary Chat uses POST /chat/completions at https://api.deepseek.com",
+          "Strict is a Beta Chat capability and requires every function in the request catalog to be strict-compatible",
+          "FIM remains a distinct Beta POST /completions surface at https://api.deepseek.com/beta",
+          "the current FIM API reference lists deepseek-v4-pro and a 4K output limit",
+          "the 2026-07-24 retirement applies to deepseek-chat and deepseek-reasoner model aliases, not ChatCompletions"
+        ]
+      },
+      "scope_decision_candidate": "keep Standard/Strict routing and lossless fallback; reject FIM as a V1 exit requirement; hold full Host-owned FIM re-entry behind new attributable edit failures"
+    },
+    "V10": {
+      "literal_requirement": "RepoGraph implementation handles cross-file code understanding",
+      "accepted_product_outcome": "bounded, verified cross-file code understanding; a named graph implementation is flexible under PRODUCT_PLAN section 12",
+      "current_production": [
+        "evidence-aware ContextBroker projection and hard-limit compaction",
+        "canonical file_search, grep_files, list_dir, read_file, git_diff and git_status tools",
+        "TaskContract and deterministic verifier completion gate"
+      ],
+      "current_source_facts": {
+        "repograph_identifiers": 0,
+        "tree_sitter_owners": 0,
+        "lsp_context_owners": 0,
+        "canonical_production_tool_count": 11,
+        "canonical_cross_file_retrieval_tools": [
+          "file_search",
+          "grep_files",
+          "list_dir",
+          "read_file",
+          "git_diff",
+          "git_status"
+        ]
+      },
+      "formal_evidence": {
+        "m5_b_summary_sha256": "f4e9052a49d0f60446c653132e2c1b1341b0abb5a9d45134f186e964f3ff01bc",
+        "m5_b_candidate_on_off_verified": "6/6 vs 6/6",
+        "retrieval_gap_attributed_failures": 0,
+        "m5_c_decision": "evidence-triggered; do not develop RepoGraph until a production retrieval failure is localized"
+      },
+      "current_post_decision_failure_samples_requiring_repograph": 0,
+      "canonical_repograph_treatment": false,
+      "scope_decision_candidate": "keep verified cross-file outcome and canonical retrieval owners; reject RepoGraph as a named V1 exit implementation; hold structural index re-entry behind measured retrieval loss"
+    }
+  },
+  "scope_successor_acceptance": [
+    "an accepted ADR records why the three implementation literals are not V1 requirements and preserves their user-visible capability outcomes",
+    "PRODUCT_PLAN changes only after the ADR exists and keeps exactly sixteen V1 completion items",
+    "V08 requires the existing explicit single Writer lifecycle and does not admit multi-Writer",
+    "V09 requires current Standard/Strict Chat routing and lossless fallback and does not claim FIM quality",
+    "V10 requires canonical bounded cross-file retrieval plus deterministic verification and does not claim a RepoGraph exists",
+    "ROADMAP, EVALUATION, CURRENT_CODEWHALE and architecture references use one consistent 13 pass / 3 blocked successor matrix",
+    "no production model, Runtime, Store, protocol, tool catalog or routing code changes",
+    "no credential read or official API request",
+    "focused, targeted contract, fmt, workspace clippy/test and git diff --check pass"
+  ],
+  "projected_effect_if_accepted": {
+    "run_api": "remains 11",
+    "runtime_event": "remains 17",
+    "state_schema": "remains 23",
+    "exec_stream": "remains 3",
+    "production_source_delta": 0,
+    "v1_matrix": "10 pass / 6 blocked -> 13 pass / 3 blocked",
+    "remaining_blockers": [
+      "V13 imported-baseline coding comparison",
+      "V15 billing-provable Simplified Chinese prompt comparison",
+      "V16 imported-baseline workflow-step comparison"
+    ],
+    "live_ab": "inadmissible_no_material_treatment"
+  },
+  "execution": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8k-target",
+    "credential_read": false,
+    "official_api_requests_allowed": false,
+    "raw_output_policy": "none"
+  },
+  "non_conclusions": [
+    "Multi-Writer, FIM and RepoGraph are not implemented or proven beneficial by this slice.",
+    "The existing explicit single Writer has not proven net product benefit and remains explicit-only.",
+    "FIM is not judged worse than patch/edit; it lacks a current attributable failure and a complete production treatment.",
+    "Canonical search/read tools are not claimed to dominate every future structural index.",
+    "The frozen M6, M5, M7, M8-E, M8-H and M8-J evidence is not rewritten.",
+    "No verified-success, token, wall-time or API-cost improvement is claimed.",
+    "V1 remains unreleasable while V13, V15 and V16 are blocked."
+  ]
+}
