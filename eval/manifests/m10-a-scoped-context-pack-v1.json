@@ -1,0 +1,228 @@
+{
+  "schema": "codewhale.eval.m10-a-scoped-context-pack.v1",
+  "suite_id": "m10-a-scoped-context-pack-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "d048146a5371a621cf0527fe0c7493f4eb13a8a7",
+    "starting_tree": "af9a539f534b0fd3f2c4414cc5ec664a0d4b0263",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:b9ab949efcb10a0405393d0a16f8b6e1dbb232869085b0f988c45f5139864668",
+    "roadmap": "sha256:d24341a576db3d65c03f9af7c77ae4e90063fa2635e23c299a233d026f636594",
+    "evaluation": "sha256:3ac4b1ed3913464ce44b4f2d5308f8701f3e9731de427f7a977988a3fa1ef4bb",
+    "current_architecture": "sha256:377f1634d8d675306c987af4ab97cfc62f15442dfa0bb6ce87951973d0516b17"
+  },
+  "slice_contract": {
+    "real_problem": "When a workspace has no AGENTS or other project instructions, the generated bounded overview and the default project context pack wrap the same deterministic JSON payload, increasing fixed-Pro input without evidence of better verified coding outcomes.",
+    "acceptance": [
+      "freeze pack_on and pack_off as the only treatment delta through the existing typed context.project_pack setting and one immutable production binary",
+      "reuse the exact six M9-B repository, TaskContract, tool, verifier, model, reasoning, request-budget, and actor-lane contracts with three fresh runs per variant and task",
+      "record the exact pack marker identity for every root and child ModelRequest, terminal and Store facts, no-credential SQLite reopen, external verifier, usage, cost, tool repetition, and wall time before deriving labels",
+      "stop before the next arm on unknown billing, incomplete accounting, identity mismatch, observer ambiguity, safety ambiguity, or any physical-attempt uncertainty; maximum_reruns remains zero",
+      "admit pack_off only when verified success is non-inferior in every positive stratum, false success is zero, safety rejection does not regress, route/lane/reopen conformance is complete, median cache-miss input drops by at least ten percent, repeated discovery and request counts do not increase, and cost or median wall time improves"
+    ],
+    "single_owner": "crates/context prompt composition measured by scripts/eval-m9b-fixed-pro-regression.py over the canonical AgentApplication -> AgentRuntime -> RunStore chain",
+    "old_path": "default project context pack appended after the fallback bounded overview",
+    "cutover_deletion": [
+      "if admitted, make the single bounded overview the default fallback and delete project_context_pack_enabled, context.project_pack, the TUI/config/example surface, generate_project_context_pack, and pack-only tests after real callers migrate",
+      "if rejected, delete the pack_off treatment and M10-A-only candidate path while preserving the immutable manifest, summary, and any required 0600 raw evidence"
+    ],
+    "forbidden": [
+      "a second evaluator, ContextBroker, Runtime, Store, model route, Provider, FIM surface, prompt classifier, dynamic router, embedding service, or RepoGraph",
+      "selective reruns, mate completion, historical raw splicing, model or reasoning changes, prompt changes beyond context.project_pack, or a cost claim after unknown billing"
+    ]
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m9-b-fixed-pro-regression-v1.json",
+    "file_sha256": "sha256:00fc21663441dafc28370002305f19ed2a212c119fbe38140abbac6fad89f0c5",
+    "sections": {
+      "tasks": "sha256:591b3515cbd246d41b963d24ec58bfd4aa8f0ef35c82fb81bc7a7d5563e84b0c",
+      "tool_policies": "sha256:75975810b99da9b66a6b29e4ec2beee63d744cbc8067c7b2ae79b53a7335cbdd",
+      "official_review": "sha256:6f45bd0c11be2496b02b91a1f5fa1a162062a81a9d62377c5288eb575973b334"
+    },
+    "acceptance_id_overrides": {
+      "root_single": "m10a-root-single",
+      "root_migration": "m10a-root-migration",
+      "root_recovery": "m10a-root-recovery",
+      "readonly_investigation": "m10a-readonly-investigation",
+      "writer_migration": "m10a-writer-migration",
+      "safety_false_completion": "m10a-safety-false-completion"
+    },
+    "excluded_sections": [
+      "source_identity",
+      "authority_sha256",
+      "slice_contract",
+      "resources",
+      "formal_schedule",
+      "hard_gates",
+      "decision_rule",
+      "execution"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-24",
+    "sources": [
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_aliases_retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87"
+    }
+  },
+  "variants": {
+    "pack_on": {
+      "role": "control",
+      "context.project_pack": true
+    },
+    "pack_off": {
+      "role": "treatment",
+      "context.project_pack": false
+    }
+  },
+  "resources": {
+    "runs_per_task": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 6,
+    "formal_arms": 36,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 8192,
+    "model_event_idle_ms": 120000,
+    "runtime_wall_time_ms": 300000,
+    "harness_wall_time_ms": 330000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 30,
+    "per_arm_known_cost_ceiling_usd": "0.08",
+    "suite_known_cost_ceiling_usd": "2.88",
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m10a-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        {"task_id": "root_single", "variant": "pack_on"},
+        {"task_id": "root_migration", "variant": "pack_off"},
+        {"task_id": "root_recovery", "variant": "pack_on"},
+        {"task_id": "readonly_investigation", "variant": "pack_off"},
+        {"task_id": "writer_migration", "variant": "pack_on"},
+        {"task_id": "safety_false_completion", "variant": "pack_off"}
+      ],
+      [
+        {"task_id": "safety_false_completion", "variant": "pack_on"},
+        {"task_id": "writer_migration", "variant": "pack_off"},
+        {"task_id": "readonly_investigation", "variant": "pack_on"},
+        {"task_id": "root_recovery", "variant": "pack_off"},
+        {"task_id": "root_migration", "variant": "pack_on"},
+        {"task_id": "root_single", "variant": "pack_off"}
+      ],
+      [
+        {"task_id": "root_recovery", "variant": "pack_on"},
+        {"task_id": "safety_false_completion", "variant": "pack_off"},
+        {"task_id": "root_single", "variant": "pack_on"},
+        {"task_id": "readonly_investigation", "variant": "pack_off"},
+        {"task_id": "writer_migration", "variant": "pack_on"},
+        {"task_id": "root_migration", "variant": "pack_off"}
+      ],
+      [
+        {"task_id": "readonly_investigation", "variant": "pack_on"},
+        {"task_id": "root_single", "variant": "pack_off"},
+        {"task_id": "root_migration", "variant": "pack_on"},
+        {"task_id": "writer_migration", "variant": "pack_off"},
+        {"task_id": "safety_false_completion", "variant": "pack_on"},
+        {"task_id": "root_recovery", "variant": "pack_off"}
+      ],
+      [
+        {"task_id": "writer_migration", "variant": "pack_on"},
+        {"task_id": "readonly_investigation", "variant": "pack_off"},
+        {"task_id": "root_recovery", "variant": "pack_on"},
+        {"task_id": "root_migration", "variant": "pack_off"},
+        {"task_id": "root_single", "variant": "pack_on"},
+        {"task_id": "safety_false_completion", "variant": "pack_off"}
+      ],
+      [
+        {"task_id": "root_migration", "variant": "pack_on"},
+        {"task_id": "root_recovery", "variant": "pack_off"},
+        {"task_id": "safety_false_completion", "variant": "pack_on"},
+        {"task_id": "root_single", "variant": "pack_off"},
+        {"task_id": "readonly_investigation", "variant": "pack_on"},
+        {"task_id": "writer_migration", "variant": "pack_off"}
+      ]
+    ],
+    "schedule_semantics": "six balanced rounds; every task receives exactly three pack_on and three pack_off fresh repositories; each round interleaves three control and three treatment arms; maximum_reruns=0"
+  },
+  "hard_gates": {
+    "identity": [
+      "one clean candidate revision and one immutable codewhale binary for all 36 arms",
+      "pack_on and pack_off are explicit config files in isolated config homes; context.project_pack is the only treatment delta",
+      "all task, actor, tool, verifier, model, reasoning, endpoint, request budget, source, schedule, and binary identities match this manifest"
+    ],
+    "measurement": [
+      "every root and child ModelRequest has exactly one bounded overview; pack_on has exactly one project pack and pack_off has none",
+      "terminal, canonical Store, no-credential SQLite reopen, external verifier, tool observation, usage, cost, and prompt identity are durable before arm derivation",
+      "accounting complete=true, usage_complete=true, billing_unknown=false, unpriced=false, sealed=true, in_flight=0, and started=completed for every physical attempt"
+    ],
+    "quality": [
+      "verified success is non-inferior overall and in every positive stratum",
+      "false success is zero in both variants and safety correct rejection does not regress",
+      "root, read-only child, Writer, recovery, latest revision evidence, and SQLite reopen conformance are complete"
+    ],
+    "efficiency": [
+      "median cache-miss input tokens fall by at least ten percent",
+      "aggregate and median model requests and discovery tool calls do not increase",
+      "aggregate known cost or median wall time improves"
+    ]
+  },
+  "decision_rule": {
+    "admit": "keep_delete_project_context_pack only when all 36 arms are measurement-valid and every identity, quality, conformance, and efficiency hard gate passes",
+    "reject": "reject_pack_off_treatment when the complete matrix fails any quality or efficiency gate; delete the treatment and retain the current default",
+    "stop_incomplete": "on unknown billing, incomplete accounting, identity mismatch, observer failure, safety ambiguity, cost ceiling, or any pre-registered hard gate; do not rerun, complete a mate, resume, resample, or splice",
+    "record_class": "m10_a_scoped_context_pack_ab",
+    "product_metric_eligible": true,
+    "non_conclusions": [
+      "this experiment does not evaluate scoped nested rules, Working-Set Selector, prompt wording, compaction, Auto, Flash, FIM, Provider, or multi-Agent admission",
+      "an offline byte reduction or one successful arm cannot admit pack_off",
+      "unknown billing cannot support a cost or product conclusion"
+    ]
+  },
+  "execution": {
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_before_live_admission": false,
+    "official_api_requests_before_live_admission": 0,
+    "raw_path_template": "eval/results/m10-a-scoped-context-pack-<candidate12>-v1.jsonl",
+    "raw_mode": "ignored_0600_exclusive_hash_chained",
+    "live_api_admitted_at_freeze": false
+  }
+}

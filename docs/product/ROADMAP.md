@@ -2887,6 +2887,20 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 - cutover：pack-off 通过则删除配置开关、默认追加和失去消费者的 pack renderer/tests；
   scoped rules 通过则删除 eager rules block。任一阶段失败只删除该 treatment。
 
+当前第一阶段 checkpoint：
+
+- `92c8c0db` 在 canonical prompt composer 内建立只读 fragment ledger，记录
+  source/scope/sha256/bytes/estimated tokens/stability；正常 production prompt 路径不做
+  ledger hash/token 工作，既有模型可见 block fixture 哈希完全不变；
+- offline fixture 已证明无说明文件时 overview 与 pack 内含同一序列化 payload，pack-on
+  的 README 哨兵出现两次、pack-off 只出现一次；
+- `d048146a` 让 app-server 与 exec/TUI 一样读取现有 typed
+  `context.project_pack`，从而同一个 immutable binary 可显式构造 control/treatment；
+  这不是新模式或 evaluation-only flag；
+- `eval/manifests/m10-a-scoped-context-pack-v1.json` 冻结 6 tasks × 2 variants ×
+  3 runs = 36 arms，唯一 corrected Harness 以 `--context-pack-ab` 选择该 campaign。
+  当前只完成 offline self-test；Key 未读取、official API 请求为 0、pack-off 尚未准入。
+
 #### M10-B：Budgeted Working-Set Selector
 
 - 真实问题：当前 ContextBroker 只做 transcript/Host facts 的 deterministic projection

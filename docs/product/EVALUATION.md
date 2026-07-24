@@ -2097,6 +2097,22 @@ all physical accounting complete
 pack-off 通过后才进入 scoped rules；未通过则删除 treatment、保持当前默认。B–F 不与
 M10-A 混入同一 candidate。
 
+M10-A offline checkpoint 已固定以下事实：
+
+- `92c8c0db` 的 derived ledger 不持久化第二份 prompt truth，且 production fixture 的
+  block/hash 身份未变化；
+- no-instructions fixture 中 bounded overview 与 project pack 的内部 JSON byte-identical，
+  pack-on 重复同一 README payload，pack-off 保留唯一 overview；
+- `d048146a` 使 canonical app-server 读取与 exec/TUI 相同的既有 typed
+  `context.project_pack`；invalid type fail closed；
+- frozen manifest `eval/manifests/m10-a-scoped-context-pack-v1.json` 复用 M9-B 的 task、
+  tool、verifier 与 official surface contract，预注册 36 个平衡交错 arms。corrected
+  Harness 的 default M9-C self-test 与 M10-A variant/journal/admission-rule self-test 均通过。
+
+这些只是 treatment identity、离线重复证据与 Harness 机制证据，不是产品收益。当前
+`live_api_admitted_at_freeze=false`，Key 未读取、official API 请求 0；只有完整 offline
+gate、immutable binary 和单独 live admission 封存后才可开始 position 1。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -1865,6 +1865,19 @@ skills 已经只把 name/description/path 放入 prompt，正文按需读取；s
 worktree、latest-revision Stop Gate、RunStore exact replay、atomic tools 和 stable-prefix/
 accounting 均已有，不能在 M10 重复建设。后续 A→E 只允许增强上述现有 owner。
 
+M10-A 当前代码 checkpoint 为 `d048146a`：
+
+- `crates/context` 可在显式测量调用中从 canonical prompt composition 派生 fragment
+  ledger；正常 production 调用仍只返回完全相同的 `SystemPrompt`，不持久化 ledger；
+- no-instructions offline fixture 已冻结 fallback overview 与默认 pack 的相同 JSON
+  payload；这是真实重复候选，但尚无 live task 收益结论；
+- `codewhale app-server` 现在与 exec/TUI 一样从现有 config 读取 typed
+  `context.project_pack`，因此 corrected Harness 可用同 binary、隔离 config home
+  产生显式 pack-on/pack-off；invalid value 在 model/RunStore 前失败；
+- M10-A manifest/Harness 只完成 36-arm schedule、variant prompt marker、accounting/
+  reopen/verifier/tool repetition 与 decision-rule self-test。Key 未读取、API 请求 0，
+  production 默认仍为 pack-on。
+
 ## 7. 明确非结论
 
 当前源码不证明：
