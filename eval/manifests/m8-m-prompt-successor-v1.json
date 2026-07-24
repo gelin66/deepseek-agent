@@ -1,6 +1,6 @@
 {
   "schema": "codewhale.eval.m8-m-prompt-successor.v1",
-  "status": "draft_offline",
+  "status": "frozen_offline",
   "date": "2026-07-24",
   "base_manifest": {
     "path": "eval/manifests/m8-d-prompt-ab-v5.json",
@@ -41,7 +41,7 @@
     "starting_tree_clean": true,
     "candidate_binary_revision": "d1d6ca5c8aed06ffcd4be063f14a27666c2a65b8",
     "candidate_source_tree": "b76a85f889388d5e38c579672a935c22e41c2177",
-    "harness_revision": "",
+    "harness_revision": "d723d0b3cc01f19d78fd0e2807a96919bafe6e05",
     "run_api": 11,
     "runtime_event": 17,
     "state_schema": 23,
@@ -262,10 +262,10 @@
     "git diff --check"
   ],
   "frozen_hashes": {
-    "harness_sha256": "",
-    "harness_test_sha256": "",
-    "schedule_sha256": "",
-    "manifest_content_sha256_excluding_frozen_hashes": "",
-    "journal_fault_matrix_sha256": ""
+    "harness_sha256": "sha256:fb054706bcf79da6e254da71973d99fcddfec5011818da555d2a36e01730d876",
+    "harness_test_sha256": "sha256:5e927876cb52db94cf3dc44198d41af04220dadcb5bca7041c495ed1a961c28d",
+    "schedule_sha256": "sha256:4c299076985e433d0294efcf64fefb9bd1ca3402da70fa66d43901d791a399ae",
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:8c64fa0cd4520707630df4ee8719ddb77de9f708430e65f9e58846b24776de91",
+    "journal_fault_matrix_sha256": "sha256:4a73403238c7450b2955308bdff2b6100a962b14982f8c55cfd5df1717beb6a2"
   }
 }
