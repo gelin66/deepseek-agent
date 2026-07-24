@@ -493,7 +493,7 @@ mod tests {
             system_prompt: SystemPrompt::default(),
             messages: Vec::new(),
             tools: Vec::new(),
-            reasoning_effort: ReasoningEffort::Auto,
+            reasoning_effort: ReasoningEffort::High,
             max_output_tokens: None,
             streaming: false,
             actor: AgentActor::default(),

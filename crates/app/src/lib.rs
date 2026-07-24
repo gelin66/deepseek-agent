@@ -2484,13 +2484,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_auto_start_recovers_exact_reserved_run_without_a_preruntime_request() {
+    async fn pending_start_without_model_recovers_exact_reserved_run_without_an_extra_request() {
         let (app, store, composition) = new_fixture(ModelMode::Complete).await;
-        let creation_request_id = "recover-auto-start";
-        let mut auto_command = start_command("恢复自动路由创建");
-        auto_command.model = None;
-        let command = RunCommand::Start(auto_command);
-        let reserved_run_id = RunId::from("reserved-auto-start");
+        let creation_request_id = "recover-fixed-start";
+        let mut fixed_command = start_command("恢复固定路由创建");
+        fixed_command.model = None;
+        let command = RunCommand::Start(fixed_command);
+        let reserved_run_id = RunId::from("reserved-fixed-start");
         store
             .reserve_creation(
                 &CommandId::from(creation_request_id),
@@ -2504,11 +2504,11 @@ mod tests {
                 },
             )
             .await
-            .expect("reserve interrupted auto route");
+            .expect("reserve interrupted fixed route");
 
         let recovered = run_result(
             app.execute(envelope(
-                "recover-auto-caller",
+                "recover-fixed-caller",
                 RunCommand::RecoverCreation {
                     creation_request_id: creation_request_id.to_owned(),
                 },
@@ -2526,7 +2526,7 @@ mod tests {
 
         let listed = app
             .execute(envelope(
-                "list-pending-auto",
+                "list-pending-fixed",
                 RunCommand::ListPendingCreations {
                     workspace: "/workspace/project".to_owned(),
                     limit: 10,

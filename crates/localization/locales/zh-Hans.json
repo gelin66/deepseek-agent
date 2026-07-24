@@ -49,7 +49,7 @@
     "CliArgApprovalPolicy": "工具审批策略",
     "CliArgSandboxMode": "sandbox 策略",
     "CliArgBaseUrl": "官方 DeepSeek API base_url",
-    "CliArgReasoningEffort": "本次运行的 thinking 强度：auto、off、low、medium、high 或 max",
+    "CliArgReasoningEffort": "本次运行的 thinking 强度：off、low、medium、high 或 max",
     "CliArgAuto": "启用工具 Agent 并自动批准工具；不会授予 sandbox 提升权限",
     "CliArgSandbox": "本次 exec 的 sandbox 策略；与 --auto 相互独立",
     "CliArgAllowSandboxElevation": "明确允许被 sandbox 拒绝的工具以 danger-full-access 重试",

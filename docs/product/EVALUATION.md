@@ -1569,6 +1569,9 @@ immutable binary 同时承载 A/B/C/D 的真实 production surface。恢复 clas
 - `hold_auto_default_admission`；
 - product default 固定 `deepseek-v4-pro`，显式 Auto 不附带成功率/成本收益声明。
 
+这是 M8-I 当时的历史结论；M9-D/ADR-0008 已 supersede 其 Auto future-admission 条款并
+删除 Auto 产品方向，冻结证据本身不改写。
+
 manifest/summary：
 
 - `eval/manifests/m8-i-host-auto-route-v1.json`；
@@ -1878,6 +1881,9 @@ reasoning 与 Host typed policy 保留，不恢复 classifier。M9-A-only runner
 manifest/live-admission、summary 与 ignored raw 保留；新 successor 必须从 position 1
 开始。
 
+这是 M9-A 当时的历史结论。M9-D/ADR-0008 后续退休并删除 Auto，因此不再存在当前或未来
+Auto successor；“position 1”仅保留为不得拼接该历史 raw 的审计事实。
+
 证据：
 
 - `eval/manifests/m9-a-host-auto-release-admission-v1.json`；
@@ -1973,6 +1979,44 @@ unknown-billing transport ambiguity 截断；下一次 paid suite 前应先冻�
 - `eval/manifests/m9-c-fixed-pro-regression-live-admission-v1.json`；
 - ignored `eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl`（`0600`）；
 - [M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
+### 9.33 M9-D Auto retirement / fixed actor route cutover（2026-07-24）
+
+M9-D 是用户接受的产品范围删除，不是模型 treatment，也不需要用付费 A/B 证明 Auto
+没有收益。切片的真实问题是：M8-I/M9-A 已经没有默认准入证据，Auto 仍通过
+model/reasoning 枚举、config、CLI/TUI/API、Host policy、route audit 和 evaluator 投影
+增加 current production 复杂度。
+
+acceptance contract：
+
+1. config、CLI、TUI、Run API 当前输入均拒绝 model/reasoning Auto；
+2. 未显式指定模型的 root 为 Pro/high；显式 Pro/Flash/reasoning 精确继承；fixed-profile
+   read-only child 为 Flash/high，Writer 为 Pro/high，typed recovery/recheck/rework 为
+   Pro/max；
+3. `ModelRouteProfile::{Explicit, FixedActor}` 只审计实际 route，不保留 Auto caller
+   intent 或第二份派生真相；
+4. 没有 classifier 请求、关键词 fallback、运行中动态 router、兼容 reader 或 dual write；
+5. Run API v12、RuntimeEvent v18、State v24 的 new run、child binding、RequestPlan、
+   pending Start、SQLite reopen、crash/recovery、accounting 与 CLI/TUI/API projection
+   一致；
+6. v23 materialized run 因旧 `reasoning=auto` 的 omitted wire 语义无法无损映射而直接
+   退休；只有能按 v18 command 直接反序列化的 pending Start 保留；
+7. M8-I/M9-A frozen manifest/summary/raw byte 不改写，current authority 明确其产品方向
+   已退休。
+
+离线证据覆盖 config fail-closed、root/read-only/Writer/recovery route matrix、显式
+fixed-Pro inheritance、production loopback、process creation/reopen、protocol/state
+migration、current Harness self-test、focused、fmt、workspace strict Clippy/test 与
+`git diff --check`。没有 Key 读取、official API 请求或外部付费 A/B。
+
+结论为 **retire_and_delete_auto / keep neutral actual-route audit / keep fixed-Pro
+effect-first**。M9-A 的 `hold_auto_default_admission` 保留为发生时的历史结论，但不再是
+当前 roadmap 或未来候选。P0 billing acquisition 此后只服务 fixed-Pro 的真实效果实验。
+
+证据：
+
+- [ADR-0008](../decisions/0008-fixed-deepseek-routing-and-auto-retirement.md)；
+- [M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
 ## 10. 结果与决策记录
 

@@ -23,7 +23,6 @@ fn create_test_app() -> App {
     };
     let mut app = App::new(options, &Config::default());
     app.model = "deepseek-v4-pro".to_string();
-    app.auto_model = false;
     app.status_message = None;
     app
 }
@@ -478,18 +477,12 @@ fn canonical_start_command_honors_disabled_subagents() {
 }
 
 #[test]
-fn canonical_start_command_projects_exact_model_or_auto() {
+fn canonical_start_command_projects_exact_official_model() {
     let config = Config::default();
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_owned();
-    app.auto_model = false;
     let explicit = canonical_start_command(&app, &config, "检查项目".to_owned());
     assert_eq!(explicit.model.as_deref(), Some("deepseek-v4-flash"));
-
-    app.model = "auto".to_owned();
-    app.auto_model = true;
-    let automatic = canonical_start_command(&app, &config, "检查项目".to_owned());
-    assert_eq!(automatic.model, None);
 }
 
 #[test]
@@ -515,7 +508,6 @@ fn canonical_start_command_projects_every_reasoning_effort() {
         (ReasoningEffort::Low, RuntimeReasoningEffort::Low),
         (ReasoningEffort::Medium, RuntimeReasoningEffort::Medium),
         (ReasoningEffort::High, RuntimeReasoningEffort::High),
-        (ReasoningEffort::Auto, RuntimeReasoningEffort::Auto),
         (ReasoningEffort::Max, RuntimeReasoningEffort::Max),
     ];
 

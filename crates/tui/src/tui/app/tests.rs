@@ -54,7 +54,7 @@ fn m8a_app_projection_is_deepseek_only() {
 }
 
 #[test]
-fn auto_model_preserves_explicit_reasoning_setting() {
+fn configured_model_preserves_explicit_reasoning_setting() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
@@ -64,11 +64,11 @@ fn auto_model_preserves_explicit_reasoning_setting() {
         ..Config::default()
     };
     let mut options = test_options(false);
-    options.model = "auto".to_owned();
+    options.model = "deepseek-v4-pro".to_owned();
 
     let app = App::new(options, &config);
 
-    assert!(app.auto_model);
+    assert_eq!(app.model, "deepseek-v4-pro");
     assert_eq!(app.reasoning_effort, ReasoningEffort::Off);
 }
 

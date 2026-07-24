@@ -565,8 +565,7 @@ pub fn canonical_deepseek_model(model: &str) -> Result<String> {
         "pro" | "deepseek-v4pro" => "deepseek-v4-pro".to_string(),
         "flash" | "deepseek-v4flash" => "deepseek-v4-flash".to_string(),
         "deepseek-v4-pro" | "deepseek-v4-flash" => lower,
-        "auto" => "auto".to_string(),
-        _ => bail!("不支持模型 '{trimmed}'；仅支持 auto、deepseek-v4-pro 或 deepseek-v4-flash"),
+        _ => bail!("不支持模型 '{trimmed}'；仅支持 deepseek-v4-pro 或 deepseek-v4-flash"),
     };
     Ok(canonical)
 }

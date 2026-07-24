@@ -78,6 +78,7 @@ fn m8h_model_ids_are_bounded_to_the_current_official_catalog() {
         "deepseek-v4-flash"
     );
     for unsupported in [
+        "auto",
         "deepseek-chat",
         "deepseek-reasoner",
         "deepseek-future",

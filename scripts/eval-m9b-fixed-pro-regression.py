@@ -998,8 +998,8 @@ def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
         reasons.append("root_model_mismatch")
     if root.get("reasoning_effort") != REASONING:
         reasons.append("root_reasoning_mismatch")
-    if route.get("requested_model_mode") != "explicit":
-        reasons.append("root_requested_mode_mismatch")
+    if route.get("profile") != "explicit":
+        reasons.append("root_route_profile_mismatch")
     if route.get("policy_version") != "deepseek_explicit_v1":
         reasons.append("root_policy_mismatch")
     if route.get("reason_code") != "explicit_model":
@@ -1029,7 +1029,7 @@ def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
             task.get("model") != MODEL
             or task.get("reasoning_effort") != REASONING
             or task.get("workspace", {}).get("access") != expected_access
-            or child_route.get("requested_model_mode") != "explicit"
+            or child_route.get("profile") != "explicit"
             or child_route.get("policy_version") != "deepseek_explicit_v1"
             or child_route.get("reason_code") != "explicit_model_inherited"
         ):

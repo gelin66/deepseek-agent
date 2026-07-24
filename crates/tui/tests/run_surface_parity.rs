@@ -28,7 +28,7 @@ use codewhale_config::PromptPreferences;
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AgentResultDetails,
     AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy,
-    ModelAccounting, ModelRouteAudit, ModelRouteRequestedMode, OperationId, ReasoningEffort, RunId,
+    ModelAccounting, ModelRouteAudit, ModelRouteProfile, OperationId, ReasoningEffort, RunId,
     RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, TerminalState, ToolArtifact,
     ToolArtifactStatus, ToolPolicy, Usage, WriterArtifactState, WriterCleanupMode,
     WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
@@ -465,7 +465,7 @@ fn assert_exec_command_contract(request: &RunRequest, workspace: &Path) {
             .display()
             .to_string()
     );
-    assert_eq!(request.reasoning_effort, ReasoningEffort::Auto);
+    assert_eq!(request.reasoning_effort, ReasoningEffort::High);
     assert!(request.streaming);
     assert_eq!(
         request.tool_policy,
@@ -860,8 +860,7 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
             hard_input_tokens: 90_000,
         },
         route: ModelRouteAudit {
-            requested_model_mode: ModelRouteRequestedMode::Explicit,
-            requested_reasoning_effort: ReasoningEffort::High,
+            profile: ModelRouteProfile::Explicit,
             policy_version: "fixture_explicit_v1".to_owned(),
             reason_code: "explicit_model".to_owned(),
         },

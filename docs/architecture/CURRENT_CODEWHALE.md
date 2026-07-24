@@ -220,8 +220,11 @@
   与第二轮两个 arm；第 9 个 scheduled arm 在 response/usage 前发生 transport failure，
   canonical ledger 记录 unknown billing 并停止。M9-C 同样不续跑、不拼接，18-arm
   baseline 仍为 hold，旧 M6/M7 runner 不删除。
-- 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
-  仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
+  M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
+  Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
+  Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
+- 当前协议：Run API v12、RuntimeEvent v18、State schema v24、exec-stream v3。产品默认
+  固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 ## 1. 当前结论
 
@@ -279,7 +282,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v17 与 State schema v23 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v18 与 State schema v24 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -388,7 +391,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v17 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+当前 RuntimeEvent v18 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
 Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -463,7 +466,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v17 / State v23 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v18 / State v24 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -488,12 +491,13 @@ EvidenceReceipt 可以满足 root TaskContract。
 - root/child physical request attribution；
 - 官方模型 capability、output limit 和 pricing fixture。
 
-产品 `model=auto` policy 不在 backend。唯一 owner 是
-`crates/app::ProductionModelRoutePolicy`：显式模型/reasoning 原样保留；Auto root 与
-explicit isolated Writer 使用 Pro，普通 read-only child 可使用 Flash，typed
-recheck/rework 使用 Pro；Auto reasoning 通常为 high，只有 typed recovery facts 才提升
-为 max，永不自行选择 off。每个 child selection 先冻结进 `AgentTask`，再由同一
-`AgentRuntime` 构造 exact `RunRequest`；不在一个 Run 内切换模型。
+固定 actor route policy 不在 backend。唯一 owner 是
+`crates/app::ProductionFixedRoutePolicy`：未显式指定模型的 root 使用 Pro/high；
+显式 Pro/Flash/reasoning 原样保留并由 child 精确继承；fixed-profile 普通 read-only
+child 使用 Flash/high，explicit isolated Writer 使用 Pro/high，typed
+recheck/rework/recovery 使用 Pro/max。每个 child selection 先冻结进 `AgentTask`，再由
+同一 `AgentRuntime` 构造 exact `RunRequest`；不在一个 Run 内切换模型，也不存在 Auto
+输入、classifier 或额外路由请求。
 
 普通工具调用不因存在工具就误走 Beta；只有整组 schema strict-compatible 时使用
 Beta Strict Chat。M7-B 冻结的六个默认可执行 actor 目录在 Strict 候选下均仍原子回退
@@ -543,9 +547,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v23；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v24；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v17；
+- 当前 canonical RuntimeEvent writer/reader 为 v18；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -569,11 +573,13 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   `failure_code`；只保留可从 canonical command 重建的 pending Start intent，不分类历史
   错误文本，不建立兼容 reader；
 - v22 直接退役缺少 `ModelRouteAudit` 的 pre-v17 materialized run，因为 selected model
-  不能诚实反推 caller requested mode/reasoning；保留 pending Start intent，因为 Host Auto
-  policy 在 `RunCreated` 前没有网络或计费副作用；
+  不能诚实反推 caller requested mode/reasoning；保留 pending Start intent，因为当时的
+  Host policy 在 `RunCreated` 前没有网络或计费副作用；
 - v23 在同一 `IMMEDIATE` migration transaction 中删除 legacy `threads` metadata 表；
-  fresh schema 不创建它，并保留 current canonical run、pending Start、route audit 与
-  accounting；
+  fresh schema 不创建它；
+- v24 退休包含 Auto route/reasoning 语义的全部 v23 materialized run，因为 omitted
+  reasoning wire 不能无损映射为 high/max；只保留能直接按 RuntimeEvent v18 命令反序列化
+  的 pending Start，并以中性 explicit/fixed-actor profile 保存 actual route audit；
 - no-key terminal replay。
 
 旧 `codewhale thread`、SQLite `threads` metadata 表与 `session_index.jsonl` 已删除；
@@ -601,9 +607,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v11 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v12 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v17；
+  writer/reader 为 v18；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -871,17 +877,16 @@ M4-C foreground 切换后还已物理删除：
   当前证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、指定
   widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和 diff-check。
 - 交互 TUI 现在在合并 user/workspace/project 配置后只接受官方 DeepSeek Provider，以及
-  `auto`、`deepseek-v4-pro`、`deepseek-v4-flash` 三种模型投影；失败发生在 raw terminal、
+  `deepseek-v4-pro`、`deepseek-v4-flash` 两种显式模型投影；失败发生在 raw terminal、
   RunStore 和 HTTP 之前。`run_tui` 会在终端初始化前再次核对 `TuiOptions.model` 与配置投影，
   `App::new` 不再允许持久 Settings 覆盖 provider/model。旧启动后 Provider 强制改写和 App
   私有 `provider_models` 状态已经删除。应用层也会在持久 creation reservation 前校验显式
   模型，因此 CLI、TUI 和本地 API 不会为非法模型留下 pending creation。交互入口读取
   provider-scoped/root 的原始显式模型并先行校验，不能再经通用默认解析把外国模型静默
-  回落成 V4 Pro；确实没有配置时才采用官方默认。`auto` 仍走官方
-  DeepSeek production planner，onboarding 仍可写入官方 Key；通用 Provider 配置 schema 尚待
-  M7 删除，Beta FIM transport 也没有被本切片实现或替代。当前 focused、App 38/38（另 1 个
-  外部进程 helper 忽略）、canonical Run 19/19、canonical PTY 7/7、TUI bin 1,537/1,537
-  （另 1 个忽略）、通用 PTY 9/9、app/TUI all-target check、fmt 和 diff-check 均通过。
+  回落成 V4 Pro；确实没有配置时才采用官方默认。Run API 省略 model 时使用中性 fixed
+  actor profile：root Pro/high、普通 read-only child Flash/high、Writer Pro/high、typed
+  recovery/recheck/rework Pro/max。不存在 model/reasoning Auto 或额外 route request。
+  onboarding 仍可写入官方 Key；Beta FIM transport 没有被实现或替代。
 - exec stream-json 中零调用的旧 stdout 直写 helper 已删除。真实输出仍由 `ExecOutput` 队列
   统一写出，事件序列化继续由 `exec_stream_line`/`exec_stream_value` 拥有，terminal 仍通过
   `write_exec_stream_terminal` 等待 acknowledgement；canonical Runtime/RunStore、工具和子
@@ -1290,7 +1295,8 @@ RunStore、run ID 与 binary copy，并在 pair 闭合时立即核对 messages�
 预算、revision、binary、fixture 和 schedule。它不拥有第二套 planner、Runtime、Store 或
 accounting。由于 v4 被外部停止时 active arm 可能已有无法重建最终 billing 的 in-flight
 request，v5 的 `live_api_admitted=false` 在 preflight、output reservation、Key read 和 API
-之前 fail closed。当前默认 `Auto` / thinking-enabled 没有改变。
+之前 fail closed。该历史 M7-E 切片当时没有改变默认路由；M9-D 后续已删除
+model/reasoning Auto，当前 fixed actor route 由 ADR-0008 约束。
 
 M7-F 没有新增 production owner。`SystemPrompt` 继续保存 stable constitution 与 ordered
 volatile world-state blocks；`runtime_system_instructions` 将它们用固定 separator 拼成一个
@@ -1619,45 +1625,46 @@ cost completeness/bucket 或 canonical root/child reopen ledger，retry count �
 因此 live coding/workflow-step A/B 为
 `inadmissible_incomplete_baseline_accounting`；旧 revision 不修改，Key 未读取。
 
-M8-I 当前 production route 为：
+M8-I 当时把 pre-run Flash classifier 收敛为 Host typed policy，并删除了额外
+non-streaming Flash 请求、classifier prompt/parser、provider DTO、关键词/500 字
+heuristic、空 `recent_context`、`DeepSeekAutoRouteFailed` 和 creation unknown-billing
+projection。其 frozen manifest/summary 继续记录当时事实，但 Auto 产品结论已由
+ADR-0008/M9-D supersede。
+
+M9-D 当前 production route 为：
 
 ```text
 Start/Continue typed facts
-  -> AgentApplication::ProductionModelRoutePolicy
-  -> RunRequest(model, reasoning, ModelRouteAudit)
+  -> AgentApplication::ProductionFixedRoutePolicy
+  -> RunRequest(actual model, actual reasoning, neutral ModelRouteAudit)
   -> AgentRuntime
+       -> explicit child(inherit exact model/reasoning)
        -> read-only AgentTask(Flash/High)
        -> failed read-only recheck AgentTask(Pro/Max)
        -> explicit Writer AgentTask(Pro/High or typed rework Max)
   -> DeepSeekModelPort -> ChatCompletions
-  -> RunStore(State v23)
+  -> RunStore(State v24)
 ```
 
-Auto root 始终 Pro；产品没有 typed bounded-low-risk/no-tools 输入，因此当前不授予 root
-Flash。read-only child 的 Flash 结果必须返回 Pro root 汇聚，并由既有 Host evidence gate
-验收；failed handoff 只允许启动新的 Pro child 重查，不在原 Run 中偷偷切模型。显式
-`deepseek-v4-pro`、`deepseek-v4-flash` 和显式 reasoning 完全绕过 Auto policy。
+未显式指定模型的 root 固定 Pro/high；显式 `deepseek-v4-pro`、
+`deepseek-v4-flash` 和明确 reasoning 由 child 精确继承。fixed-profile read-only child
+的 Flash handoff 必须返回 Pro root 汇聚并由 Host evidence gate 验收；失败后新建
+Pro/max recheck，不在原 Run 中切模型。Writer 使用 Pro/high，typed recovery/rework 使用
+Pro/max。RuntimeEvent v18/State v24 不包含 Auto caller intent，只保存 actual
+model/reasoning、actor、中性 route profile/policy/reason。SQLite 重开只验证该选择，不再
+路由。
 
-旧 `crates/deepseek/src/auto_route.rs`、额外 non-streaming Flash 请求、128-token
-classifier prompt/parser、provider DTO、关键词/500 字 heuristic、空 `recent_context`、
-`DeepSeekAutoRouteFailed` 和 creation unknown-billing projection 已物理删除。Auto Start
-的 `RunCreated.accounting_baseline` 现在是 0 次请求，首个且唯一物理请求属于 root。
-RuntimeEvent v17 与当前 State v23 强制 route audit 与 child binding；该 audit 由 v22
-引入，v23 只删除 legacy Thread truth，SQLite 重开不重新路由。
-
-formal A/B 没有准入：frozen old classifier control 在 `15fea38e`，candidate 在
-`ef65bafa`，而删除旧路径后不存在同时承载 fixed Pro/Flash、旧 classifier 与 Host policy
-的同 revision/immutable binary。为跑满矩阵恢复 production classifier toggle 会重新制造
-已删除的模式和第二 route owner。因此结果为
-`inadmissible_no_single_binary_four_variant_surface`；Key 未读取、官方请求 0。产品默认保持
-固定 Pro，显式 Auto 机制保留但默认 admission 为 hold。
+config、CLI、TUI、API、帮助和 current evaluator 不再接受或显示 model/reasoning Auto。
+不存在 classifier、额外路由请求、关键词分支、运行中 dynamic router 或兼容 reader。
+State v24 直接退休无法无损映射 exact omitted-reasoning wire 的 v23 materialized run，
+只保留 v18-safe pending Start。
 
 M8-J 当前 state / CLI surface 为：
 
 ```text
 codewhale runs | resume | exec --resume/--continue
   -> AgentApplication
-  -> canonical RunStore(State v23)
+  -> canonical RunStore(State v24)
 
 legacy codewhale thread <8 subcommands>
   X no dispatch / no metadata Store / fail closed before model
@@ -1776,17 +1783,16 @@ app-server/exec/TUI 共用 override loader 和进程级一致性测试保留。c
 **16 pass / 0 blocked**，发布状态为 **V1 可发布**（只表示 release-ready）。完整事实见
 [M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
 
-M9-A 没有增加 production route。它确认当前三个调用面由同一
-`ProductionModelRoutePolicy` 解析：显式 Pro/Flash 由 child 精确继承；Auto root 为 Pro，
-普通 read-only child 为 Flash，typed recheck 与 explicit Writer 为 Pro。TUI 现在与
-exec/app-server 一样独立保留显式 reasoning，不再因为 `model=auto` 把它改写为 Auto。
+M9-A 没有增加 production route。它在当时确认三个调用面由同一 Host policy 解析，
+显式 Pro/Flash 由 child 精确继承，typed read-only/Writer route 使用已冻结的 model。
 `AgentTask`、child `RunRequest`、route audit、request ledger 与 accounting 继续由现有
 protocol/runtime/state 精确持久化和重开。
 
 正式 Auto admission 使用 candidate `29c4980f` 的唯一 official ChatCompletions backend。
 第 18 arm 在无 headers/usage 的 transport failure 后由 canonical ledger 标为
-`billing_unknown=true` 并停止；17 个完整 arms 不能构成 27-arm product metric。默认仍
-fixed `deepseek-v4-pro`，Auto 为 hold。实验专属 runner 已删除；没有 classifier、
+`billing_unknown=true` 并停止；17 个完整 arms 不能构成 27-arm product metric。该
+历史 campaign 当时结论为 hold，现已由 ADR-0008 的范围退休 supersede。实验专属 runner
+已删除；没有 classifier、
 Provider、production variant、第二 Runtime/Store 或第二 transport 留在当前源码。完整
 事实见
 [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
@@ -1802,8 +1808,8 @@ usage/cost、Host receipt 与 SQLite reopen 继续来自 canonical Store。
 `agent_result_collected` 是 root/read-only/Writer 共用事件，却被 Harness 当成
 Writer-only lifecycle。Runtime 与 Store facts 本身正确；修正后对同一 durable snapshot
 重放得到 child completed、零 child writes、handoff 后 root mutation 与 lane valid。
-campaign 按 observer-failure gate 在第 3 arm 中止，没有 rerun/splice。当前生产默认仍
-fixed `deepseek-v4-pro`，Auto 仍 hold；没有 classifier、Provider、FIM、Anthropic、
+campaign 按 observer-failure gate 在第 3 arm 中止，没有 rerun/splice。当时生产默认
+fixed `deepseek-v4-pro`；没有 classifier、Provider、FIM、Anthropic、
 第二 Runtime/Store 或第二工具目录。原 admission 绑定 pre-fix Harness hash，corrected
 runner 会 fail closed，不会复用旧 campaign。完整事实见
 [M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
@@ -1820,9 +1826,19 @@ arm result 的 route/lane/reopen/accounting 均有效、false success 0。第二
 child 创建前的第一个 root request 遇到无 response/usage 的
 `deepseek_transport`。Store 没有伪造 Token 或费用，而是保存
 `billing_unknown=true`、`complete=false`；Harness 在 terminal/Store/reopen/verifier
-落盘后停止。没有重跑或拼接，也没有完整 18-arm baseline。默认仍 fixed Pro，Auto 仍
-hold；旧 M6/M7 runner 因 cutover gate 未满足而保留。完整事实见
+落盘后停止。没有重跑或拼接，也没有完整 18-arm baseline。默认仍 fixed Pro；旧 M6/M7
+runner 因 cutover gate 未满足而保留。完整事实见
 [M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
+M9-D 没有模型 treatment。它接受 fixed-Pro effect-first 的长期产品范围，删除
+model/reasoning Auto 的用户面、protocol state、app policy 分支、TUI 投影和 current
+Harness 旧字段；保留实际 model/reasoning/actor 与
+`ModelRouteProfile::{Explicit, FixedActor}`。Run API v12、RuntimeEvent v18、State v24
+在一个 direct cutover 中工作；pre-v18 materialized run 因 exact wire 语义不可无损映射
+而退休，v18-safe pending Start 保留。默认 root/Writer 为 Pro/high，fixed-profile
+read-only child 为 Flash/high，typed recovery/recheck/rework 为 Pro/max。M8-I/M9-A
+frozen evidence 未改写；Key 未读取，official API 请求 0。完整事实见
+[M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
 ## 7. 明确非结论
 
@@ -1866,7 +1882,7 @@ hold；旧 M6/M7 runner 因 cutover gate 未满足而保留。完整事实见
 - M8-I 已证明 read-only Flash child 相对 fixed Pro 质量非劣或成本/时间稳定改善约 20%；
   M9-A 虽产生 17 个完整成功 arms，但第 18 arm 因 unknown billing 停止，27-arm matrix
   不完整；6 个描述性 Auto/Pro pairs 的 cost/wall 改善也只有约 13.0%/10.8%，Auto 不是
-  默认；
+  默认；M9-D 的 Auto 删除是用户接受的范围决策，不把该不完整历史改写为收益结论；
 - M9-B 已建立可用于 release regression 的完整 fixed-Pro 18-arm baseline；v1 只产生
   2 个完整 arm results，第 2 个又因 read-only/Writer observer 分类错误而
   measurement-ineligible，第 3 arm 没有 terminal/accounting snapshot。修正重放只能

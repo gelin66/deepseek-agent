@@ -16,7 +16,7 @@ use crate::agent_runtime::{
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 11;
+pub const RUN_API_SCHEMA_VERSION: u32 = 12;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -60,8 +60,8 @@ pub struct StartRunCommand {
     pub reasoning_effort: ReasoningEffort,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    /// Maximum physical DeepSeek HTTP requests started by route selection,
-    /// transport retries, the root run, and all of its child runs. The hard
+    /// Maximum physical DeepSeek HTTP requests started by the root run,
+    /// transport retries, and all of its child runs. The hard
     /// limit becomes durable through canonical model accounting at RunCreated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_api_requests: Option<NonZeroU32>,
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 11,
+                "schema_version": 12,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",

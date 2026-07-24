@@ -16,12 +16,6 @@ Feature: Core command visible surfaces
     Then the message window should include "codewhale 主面板"
     And the message window should include "/links"
 
-  Scenario: Core state commands report visible changes
-    Given a CodeWhale core command workspace
-    When the user runs the core command "/model auto"
-    Then the message window should include "模型已切换："
-    And the message window should include "auto"
-
   Scenario: Canonical child work reports a visible dispatch request
     Given a CodeWhale core command workspace
     When the user runs the core command "/agent 2 summarize logs"

@@ -6,7 +6,7 @@ use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentActorKind, AgentTask, AgentTaskId,
     AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy, InheritedRunFacts,
-    ModelRouteAudit, ModelRouteRequestedMode, ReasoningEffort, RunLimits, ToolPolicy,
+    ModelRouteAudit, ModelRouteProfile, ReasoningEffort, RunLimits, ToolPolicy,
 };
 use codewhale_protocol::run_api::{
     ContinueRunCommand, PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
@@ -165,10 +165,9 @@ fn writer_parity_task() -> AgentTask {
         max_output_tokens: None,
         context_policy: ContextPolicy::default(),
         route: ModelRouteAudit {
-            requested_model_mode: ModelRouteRequestedMode::Auto,
-            requested_reasoning_effort: ReasoningEffort::Auto,
-            policy_version: "fixture_host_auto_v1".to_owned(),
-            reason_code: "auto_isolated_writer".to_owned(),
+            profile: ModelRouteProfile::FixedActor,
+            policy_version: "deepseek_fixed_actor_v1".to_owned(),
+            reason_code: "fixed_isolated_writer".to_owned(),
         },
         tool_policy: ToolPolicy::default(),
         limits: RunLimits::default(),
@@ -2477,7 +2476,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2569,7 +2568,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 }
 
 #[tokio::test]
@@ -2641,7 +2640,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 }
 
 #[tokio::test]
@@ -2685,7 +2684,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 }
 
 #[tokio::test]
@@ -2754,7 +2753,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2853,7 +2852,7 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_pending_creati
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -2934,7 +2933,7 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
@@ -3119,7 +3118,7 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        23
+        24
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3157,7 +3156,7 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
         .await
         .expect("materialize route fixture");
 
-    let pending_start_id = CommandId::from("v21-pending-auto-start");
+    let pending_start_id = CommandId::from("v21-pending-fixed-start");
     let mut pending_start_intent = creation_intent(workspace);
     let RunCommand::Start(pending_command) = &mut pending_start_intent.command else {
         unreachable!("fixture creation is Start")
@@ -3166,12 +3165,12 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     let pending_start = store
         .reserve_creation(
             &pending_start_id,
-            "sha256:v21-pending-auto-start",
-            RunId::from("v21-pending-auto-start-run"),
+            "sha256:v21-pending-fixed-start",
+            RunId::from("v21-pending-fixed-start-run"),
             pending_start_intent.clone(),
         )
         .await
-        .expect("reserve pending Auto start");
+        .expect("reserve pending fixed start");
     drop(store);
 
     let conn = Connection::open(&path).expect("prepare exact v21 route fixture");
@@ -3227,8 +3226,8 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     let retained = reopened
         .creation(&pending_start_id)
         .await
-        .expect("read pending Auto start")
-        .expect("pending Auto start survives");
+        .expect("read pending fixed start")
+        .expect("pending fixed start survives");
     assert_eq!(retained, pending_start.reservation);
     assert_eq!(retained.intent, Some(pending_start_intent));
     drop(reopened);
@@ -3237,7 +3236,7 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        23
+        24
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3248,17 +3247,126 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retained pending Auto starts"),
+            .expect("count retained pending fixed starts"),
         1
     );
 }
 
 #[tokio::test]
-async fn v23_cutover_deletes_legacy_threads_and_preserves_current_run_replay() {
+async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pending_start() {
+    let path = temp_state_path("v24_fixed_route_cutover");
+    let workspace = "/tmp/v24-fixed-route";
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+
+    let created = store
+        .create(request("v23-materialized-auto-run", workspace))
+        .await
+        .expect("create pre-cutover materialized run");
+    let run_id = created.lease.run_id.clone();
+    store
+        .release(&created.lease)
+        .await
+        .expect("release pre-cutover run");
+
+    let safe_id = CommandId::from("v23-safe-pending-start");
+    let safe = store
+        .reserve_creation(
+            &safe_id,
+            "sha256:v23-safe-pending-start",
+            RunId::from("v23-safe-pending-start-run"),
+            creation_intent(workspace),
+        )
+        .await
+        .expect("reserve v18-safe pending Start");
+
+    let incompatible_id = CommandId::from("v23-auto-pending-start");
+    store
+        .reserve_creation(
+            &incompatible_id,
+            "sha256:v23-auto-pending-start",
+            RunId::from("v23-auto-pending-start-run"),
+            creation_intent(workspace),
+        )
+        .await
+        .expect("reserve pending Start to mutate to v23 Auto");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare exact v23 route state");
+    let command_json: String = conn
+        .query_row(
+            "SELECT command_json FROM agent_run_creations WHERE command_id = ?1",
+            [&incompatible_id.0],
+            |row| row.get(0),
+        )
+        .expect("read pending Start JSON");
+    let mut command: serde_json::Value =
+        serde_json::from_str(&command_json).expect("decode pending Start JSON");
+    command["start"]["model"] = serde_json::Value::String("auto".to_owned());
+    command["start"]["reasoning_effort"] = serde_json::Value::String("auto".to_owned());
+    conn.execute(
+        "UPDATE agent_run_creations SET command_json = ?1 WHERE command_id = ?2",
+        params![
+            serde_json::to_string(&command).expect("encode v23 Auto command"),
+            &incompatible_id.0
+        ],
+    )
+    .expect("write incompatible v23 Auto command");
+    conn.pragma_update(None, "user_version", 23)
+        .expect("mark exact v23 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v24 route cutover");
+    assert!(
+        reopened
+            .load(&run_id)
+            .await
+            .expect("query retired materialized run")
+            .is_none()
+    );
+    let retained = reopened
+        .creation(&safe_id)
+        .await
+        .expect("read safe pending Start")
+        .expect("safe pending Start survives");
+    assert_eq!(retained, safe.reservation);
+    assert!(
+        reopened
+            .creation(&incompatible_id)
+            .await
+            .expect("query incompatible pending Start")
+            .is_none()
+    );
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v24 cutover");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("read current version"),
+        24
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retired materialized runs"),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retained safe pending Starts"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn v23_thread_deletion_and_v24_route_cutover_are_atomic_and_direct() {
     let path = temp_state_path("v23_run_store_only_cutover");
     let store = StateStore::open(Some(path.clone())).expect("open current state");
     let created = store
-        .create(request("v23-retained-run", "/tmp/v23-run-store-only"))
+        .create(request(
+            "v23-pre-fixed-route-run",
+            "/tmp/v23-run-store-only",
+        ))
         .await
         .expect("create current canonical run");
     let run_id = created.lease.run_id.clone();
@@ -3307,22 +3415,22 @@ async fn v23_cutover_deletes_legacy_threads_and_preserves_current_run_replay() {
     .expect("install v22 legacy thread debt");
     drop(conn);
 
-    let reopened = StateStore::open(Some(path.clone())).expect("apply v23 cutover");
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v23 and v24 cutovers");
     assert!(
         reopened
             .load(&run_id)
             .await
-            .expect("load retained current run")
-            .is_some(),
-        "v23 state-only deletion retired a compatible canonical run"
+            .expect("load pre-fixed-route run")
+            .is_none(),
+        "v24 must retire pre-fixed-route materialized runs"
     );
     drop(reopened);
 
-    let conn = Connection::open(path).expect("inspect v23 cutover");
+    let conn = Connection::open(path).expect("inspect v23 and v24 cutovers");
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
-            .expect("read v23 version"),
-        23
+            .expect("read current version"),
+        24
     );
     let threads_exists: bool = conn
         .query_row(
@@ -3334,12 +3442,12 @@ async fn v23_cutover_deletes_legacy_threads_and_preserves_current_run_replay() {
     assert!(!threads_exists);
     assert_eq!(
         conn.query_row(
-            "SELECT COUNT(*) FROM agent_runs WHERE run_id = 'v23-retained-run'",
+            "SELECT COUNT(*) FROM agent_runs WHERE run_id = 'v23-pre-fixed-route-run'",
             [],
             |row| row.get::<_, i64>(0)
         )
-        .expect("count retained current run"),
-        1
+        .expect("count retired pre-fixed-route run"),
+        0
     );
 }
 
@@ -3417,7 +3525,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     for column in [
         "creation_kind",
         "workspace",
@@ -3456,7 +3564,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 }
 
 #[tokio::test]
@@ -3480,7 +3588,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 }
 
 #[tokio::test]
@@ -3590,7 +3698,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -3641,7 +3749,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -3698,7 +3806,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3814,7 +3922,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 23);
+        assert_eq!(user_version, 24);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -4538,13 +4646,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 24)
+    conn.pragma_update(None, "user_version", 25)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 23")
+            .contains("newer than supported version 24")
     );
 }

@@ -39,7 +39,7 @@ fn assert_current_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 23);
+    assert_eq!(user_version, 24);
 
     for table in [
         "agent_runs",

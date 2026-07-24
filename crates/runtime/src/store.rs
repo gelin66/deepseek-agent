@@ -3876,8 +3876,7 @@ mod tests {
             max_output_tokens: None,
             context_policy: ContextPolicy::default(),
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Explicit,
-                requested_reasoning_effort: ReasoningEffort::High,
+                profile: ModelRouteProfile::Explicit,
                 policy_version: "runtime_explicit_v1".to_owned(),
                 reason_code: "explicit_model".to_owned(),
             },
@@ -4109,10 +4108,9 @@ mod tests {
             max_output_tokens: None,
             context_policy: ContextPolicy::default(),
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Auto,
-                requested_reasoning_effort: ReasoningEffort::Auto,
-                policy_version: "fixture_host_auto_v1".to_owned(),
-                reason_code: "auto_read_only_investigation".to_owned(),
+                profile: ModelRouteProfile::FixedActor,
+                policy_version: "deepseek_fixed_actor_v1".to_owned(),
+                reason_code: "fixed_read_only_investigation".to_owned(),
             },
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),

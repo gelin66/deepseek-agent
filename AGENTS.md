@@ -65,13 +65,14 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v11, State schema is v23, RuntimeEvent is v17, and the
+- Current Run API is v12, State schema is v24, RuntimeEvent is v18, and the
   compact exec stream is v3. State v21 introduced exact advertised tool
   catalogs and typed tool-failure/retry truth; v22 added immutable Host route
   audit and retired materialized runs that could not reconstruct it. State v23
-  preserves current canonical runs and recoverable pending Start intents while
-  deleting only the legacy `threads` metadata table in the same migration
-  transaction. No compatibility reader or dual write exists.
+  deleted only the legacy `threads` metadata table. State v24 retires
+  pre-v18 materialized runs whose Auto/omitted-reasoning wire plan cannot be
+  mapped losslessly and preserves only v18-safe pending Start intents. No
+  compatibility reader or dual write exists.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
@@ -121,9 +122,13 @@ Changing one of these constraints requires evidence and a new ADR.
 - M8-I replaced the pre-run Flash prompt classifier with the Host-owned typed
   policy in `crates/app`. Root and explicit Writer remain Pro; an ordinary
   read-only child may use Flash and a typed recheck uses Pro. Every Run keeps
-  immutable route audit in the canonical Runtime/Store. Auto remains explicit
-  and is not the product default without a formal fixed-Pro non-inferiority and
-  efficiency result.
+  immutable route audit in the canonical Runtime/Store. ADR-0008/M9-D later
+  retired and deleted Auto as a product direction: model/reasoning Auto is no
+  longer accepted by config, CLI, TUI, API, protocol or app policy. Omitted
+  root uses Pro/high; fixed-profile read-only child uses Flash/high, Writer
+  uses Pro/high, and typed recovery/recheck/rework uses Pro/max. Explicit
+  Pro/Flash/reasoning remains exact and replayable. Do not restore Auto,
+  classifiers, keyword routing, dynamic routers or an extra model request.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

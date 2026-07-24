@@ -5,8 +5,8 @@
 
 - 状态：M8-J legacy Thread truth 已删除，canonical RunStore 是唯一持久状态
 - 更新日期：2026-07-24
-- schema：`Run API`（`schema_version = 11`）、`RuntimeEvent`（writer/reader v17）、
-  `State`（schema v23）、`codewhale.exec-stream`（v3）
+- schema：`Run API`（`schema_version = 12`）、`RuntimeEvent`（writer/reader v18）、
+  `State`（schema v24）、`codewhale.exec-stream`（v3）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -146,8 +146,7 @@ resolve_interaction
 客户端可控制：
 
 - 结构化 `task`、`workspace`；
-- 官方模型或 `model=auto`；显式模型保持原值，Auto 只由
-  `AgentApplication` 根据 actor/workspace authority 和 typed recovery facts 决定；
+- 可省略模型以使用 fixed actor profile，或显式指定官方 Pro/Flash；不存在 Auto 模式；
 - reasoning、streaming、输出和请求预算；
 - `ToolPolicy`、`RunLimits`；
 - 本地 trust、approval 和 sandbox posture；
@@ -446,13 +445,14 @@ artifact 和 workspace revision。模型可见失败反馈只由该 outcome 确�
 原样。`ToolPrepared` 后 crash 不能重复不安全调用，`ToolOutcomeCommitted` 后恢复只回放
 已提交结果。
 
-RuntimeEvent v17 让每个 `RunRequest` 和 child `AgentTask` 强制绑定最小
-`ModelRouteAudit`：requested model mode、requested reasoning、Host policy version 和稳定
-reason code。selected model/reasoning 仍只存于既有 canonical 字段，actor/workspace
-authority 仍只存于 `RunRequest`/`AgentTask`，不建立第二份派生真相。Auto root 固定 Pro，
-普通 read-only child 可选 Flash，typed recheck 与 explicit Writer 选 Pro；一个 Run 内
-selection immutable。pre-v17 materialized run 无法从结果模型反推原始请求意图，因此
-State v22 直接退役，不提供兼容 reader。
+RuntimeEvent v17 曾让每个 `RunRequest` 和 child `AgentTask` 绑定 requested mode/reasoning
+与 Host policy audit。RuntimeEvent v18 删除已退休的 Auto caller intent，只保留中性
+`ModelRouteProfile::{Explicit, FixedActor}`、policy version 和稳定 reason code。
+actual model/reasoning 仍只存于既有 canonical 字段，actor/workspace authority 仍只存于
+`RunRequest`/`AgentTask`，不建立第二份派生真相。未显式指定模型的 root 为 Pro/high；
+fixed-profile 普通 read-only child 为 Flash/high，Writer 为 Pro/high，typed recovery/
+recheck/rework 为 Pro/max；显式 Pro/Flash/reasoning 由 child 精确继承，一个 Run 内
+selection immutable。
 
 M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
 持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
@@ -460,25 +460,25 @@ M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalo
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v11 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+Run API v12 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v23 复用 canonical
+事件总线或兼容 alias。State schema v24 复用 canonical
 event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
-v22 再退役缺少 route audit 的 materialized run。v23 不退役兼容的 canonical run，只在
-同一 `IMMEDIATE` migration transaction 中物理删除旧 `threads` metadata 表；旧
-`session_index.jsonl` writer/reader 也已删除。pending Start intent 仍保留，因为 Host
-Auto policy 在 `RunCreated` 前不再发出模型请求，可从 canonical command 精确恢复。
+v22 再退役缺少 route audit 的 materialized run，v23 物理删除旧 `threads` metadata 表。
+v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 materialized run，只
+保留能按 v18 command 直接反序列化的 pending Start。旧 `session_index.jsonl`
+writer/reader 已删除；没有 compatibility reader 或 dual write。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v23（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v24（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved
-  run ID，不能再生成第二个 run。Auto 路由完全由 Host typed facts 确定，创建前没有
-  classifier 网络请求或未知计费窗口，pending Start 可安全恢复 exact reserved run。
+  run ID，不能再生成第二个 run。fixed route 在创建前没有 classifier 网络请求或未知
+  计费窗口，v18-safe pending Start 可恢复 exact reserved run。
 - `start`/`resume` 只有在 canonical Store 已持久创建或取得 lease 后才确认。
 - 同进程 active run 通过一个 process-local control registry 投递 steer、interrupt、cancel 和
   interaction response；registry 不是持久事实，命令回执和结果事件才是持久事实。

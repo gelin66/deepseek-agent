@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 23;
+const STATE_SCHEMA_VERSION: u32 = 24;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -279,6 +279,28 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-route-audit canonical run state")?;
         }
+        if user_version < 24 {
+            // RuntimeEvent v18 retires the Auto model/reasoning product
+            // semantics and keeps only neutral explicit/fixed actor route
+            // audit. A v23 materialized run may contain `reasoning=auto`,
+            // whose exact DeepSeek wire plan cannot be reconstructed as
+            // off/high/max without guessing. Preserve only pending Start
+            // intents that already deserialize under the v18 contract; retire
+            // incompatible intents and every materialized run in the same
+            // transaction. No compatibility reader or dual state truth is
+            // retained.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire incompatible pre-fixed-route creations")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-intent creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-fixed-route canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -457,6 +479,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 23)
                 .context("failed to commit canonical RunStore-only state cutover")?;
             user_version = 23;
+        }
+        if user_version < 24 {
+            tx.pragma_update(None, "user_version", 24)
+                .context("failed to commit fixed actor route state cutover")?;
+            user_version = 24;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

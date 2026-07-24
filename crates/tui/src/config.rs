@@ -249,8 +249,16 @@ impl Config {
         if let Some(model) = self.default_text_model.as_deref()
             && normalize_model_name(model).is_none()
         {
+            anyhow::bail!("不支持模型 '{model}'；仅支持 deepseek-v4-pro 或 deepseek-v4-flash。");
+        }
+        if let Some(effort) = self.reasoning_effort.as_deref()
+            && !matches!(
+                effort.trim().to_ascii_lowercase().as_str(),
+                "off" | "low" | "medium" | "high" | "max"
+            )
+        {
             anyhow::bail!(
-                "不支持模型 '{model}'；仅支持 auto、deepseek-v4-pro 或 deepseek-v4-flash。"
+                "reasoning_effort 无效：'{effort}'；应为 off、low、medium、high 或 max。"
             );
         }
         if let Some(base_url) = self.base_url.as_deref() {
@@ -865,7 +873,7 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 # base_url = "https://api.deepseek.com"
 
 default_text_model = "{DEFAULT_TEXT_MODEL}"
-reasoning_effort = "auto"
+reasoning_effort = "high"
 "#
     );
     write_config_file_secure(&path, &content)

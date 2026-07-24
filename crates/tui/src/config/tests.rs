@@ -22,8 +22,8 @@ fn m8h_model_names_delegate_to_the_current_official_catalog() {
         normalize_model_name("flash").as_deref(),
         Some("deepseek-v4-flash")
     );
-    assert_eq!(normalize_model_name("auto").as_deref(), Some("auto"));
     for unsupported in [
+        "auto",
         "deepseek-chat",
         "deepseek-reasoner",
         "deepseek-future",
@@ -31,6 +31,21 @@ fn m8h_model_names_delegate_to_the_current_official_catalog() {
     ] {
         assert!(normalize_model_name(unsupported).is_none());
     }
+}
+
+#[test]
+fn auto_model_and_reasoning_are_rejected_at_the_config_boundary() {
+    let model = Config {
+        default_text_model: Some("auto".to_owned()),
+        ..Config::default()
+    };
+    assert!(model.validate().is_err());
+
+    let reasoning = Config {
+        reasoning_effort: Some("auto".to_owned()),
+        ..Config::default()
+    };
+    assert!(reasoning.validate().is_err());
 }
 
 #[test]

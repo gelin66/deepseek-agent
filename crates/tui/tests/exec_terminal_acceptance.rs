@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
-    ModelRouteRequestedMode, RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind,
+    ModelRouteProfile, RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind,
     StoredRuntimeEvent, TerminalState,
 };
 use codewhale_state::StateStore;
@@ -114,11 +114,11 @@ impl Respond for MultiAgentResponder {
 }
 
 #[derive(Clone, Copy)]
-struct AutoHostPolicyResponder;
+struct FixedProResponder;
 
-impl Respond for AutoHostPolicyResponder {
+impl Respond for FixedProResponder {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
-        sse_response(complete_sse("auto-route-production-marker"))
+        sse_response(complete_sse("fixed-pro-production-marker"))
     }
 }
 
@@ -1164,7 +1164,7 @@ async fn non_deepseek_startup_fails_before_runtime_and_network() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn host_policy_adds_no_request_before_the_runtime_wall_clock_deadline() {
+async fn fixed_route_adds_no_request_before_the_runtime_wall_clock_deadline() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1178,7 +1178,7 @@ async fn host_policy_adds_no_request_before_the_runtime_wall_clock_deadline() {
         "prove Host routing adds no model call before the runtime deadline",
         "",
         None,
-        "auto",
+        "deepseek-v4-pro",
         None,
         None,
     );
@@ -1197,30 +1197,30 @@ async fn host_policy_adds_no_request_before_the_runtime_wall_clock_deadline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_host_policy_uses_one_root_request_and_one_exact_ledger() {
+async fn explicit_fixed_pro_uses_one_root_request_and_one_exact_ledger() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(AutoHostPolicyResponder)
+        .respond_with(FixedProResponder)
         .mount(&server)
         .await;
 
     let (command, _workspace, home) = prepare_exec_with_options(
         &server.uri(),
         10,
-        "return the auto route production marker",
+        "return the fixed Pro production marker",
         "",
         None,
-        "auto",
+        "deepseek-v4-pro",
         None,
         None,
     );
     let output = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(
         output.status.success(),
-        "auto-routed exec exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        "fixed-Pro exec exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
         output.stdout,
         output.stderr
     );
@@ -1229,7 +1229,7 @@ async fn auto_host_policy_uses_one_root_request_and_one_exact_ledger() {
     let metadata = assert_terminal_tail(&events, None);
     assert_eq!(metadata["status"], "completed");
     assert_eq!(metadata["termination_reason"], "resolved");
-    assert_eq!(metadata["route_source"], "host_policy");
+    assert_eq!(metadata["route_source"], "explicit_or_configured");
     assert_exact_success_accounting(metadata, 1, 11, 3);
 
     let run_id = RunId::from(
@@ -1238,12 +1238,12 @@ async fn auto_host_policy_uses_one_root_request_and_one_exact_ledger() {
             .expect("terminal metadata must expose the canonical run id"),
     );
     let store = StateStore::open(Some(home.path().join(".codewhale/state.db")))
-        .expect("open auto-route production state db");
+        .expect("open fixed-Pro production state db");
     let replay = store
         .load(&run_id)
         .await
-        .expect("load auto-route run")
-        .expect("auto-route run exists");
+        .expect("load fixed-Pro run")
+        .expect("fixed-Pro run exists");
     let baseline = match &replay.events[0].event {
         RuntimeEventKind::RunCreated { request } => &request.accounting_baseline,
         event => panic!("first canonical event must be run_created, got {event:?}"),
@@ -1261,13 +1261,10 @@ async fn auto_host_policy_uses_one_root_request_and_one_exact_ledger() {
     assert!(baseline.surface_usage.is_empty());
     assert_eq!(replay.snapshot.request.model, "deepseek-v4-pro");
     assert_eq!(
-        replay.snapshot.request.route.requested_model_mode,
-        ModelRouteRequestedMode::Auto
+        replay.snapshot.request.route.profile,
+        ModelRouteProfile::Explicit
     );
-    assert_eq!(
-        replay.snapshot.request.route.reason_code,
-        "auto_root_responsible"
-    );
+    assert_eq!(replay.snapshot.request.route.reason_code, "explicit_model");
 
     let chat_requests = server
         .received_requests()

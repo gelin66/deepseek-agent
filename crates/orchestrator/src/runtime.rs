@@ -944,8 +944,8 @@ mod tests {
     use std::process::Command;
 
     use codewhale_runtime::{
-        AgentTaskId, ContextPolicy, ModelRouteAudit, ModelRouteRequestedMode, ReasoningEffort,
-        RunId, RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
+        AgentTaskId, ContextPolicy, ModelRouteAudit, ModelRouteProfile, ReasoningEffort, RunId,
+        RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
     };
     use codewhale_tools::shell::ShellPolicy;
     use tempfile::TempDir;
@@ -1792,10 +1792,9 @@ mod tests {
                 hard_input_tokens: 90_000,
             },
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Auto,
-                requested_reasoning_effort: ReasoningEffort::Auto,
-                policy_version: "fixture_host_auto_v1".to_owned(),
-                reason_code: "auto_isolated_writer".to_owned(),
+                profile: ModelRouteProfile::FixedActor,
+                policy_version: "deepseek_fixed_actor_v1".to_owned(),
+                reason_code: "fixed_isolated_writer".to_owned(),
             },
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),

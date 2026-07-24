@@ -745,14 +745,13 @@ fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunReq
         task_contract: contract.clone(),
         workspace: workspace.clone(),
         model: "deepseek-v4-flash".to_owned(),
-        reasoning_effort: ReasoningEffort::Auto,
+        reasoning_effort: ReasoningEffort::High,
         max_output_tokens: None,
         context_policy: ContextPolicy {
             hard_input_tokens: 900_000,
         },
         route: ModelRouteAudit {
-            requested_model_mode: ModelRouteRequestedMode::Explicit,
-            requested_reasoning_effort: ReasoningEffort::Auto,
+            profile: ModelRouteProfile::Explicit,
             policy_version: "runtime_explicit_v1".to_owned(),
             reason_code: "explicit_model".to_owned(),
         },

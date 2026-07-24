@@ -17,7 +17,7 @@ use codewhale_orchestrator::ProductionAgentOrchestrator;
 use codewhale_protocol::agent_runtime::{
     ActorRequestAccounting, AgentActor, AgentActorKind, AgentTask, AgentWorkspaceAccess,
     CanonicalTranscript, ContextPolicy, InheritedRunFacts, ModelAccounting, ModelRouteAudit,
-    ModelRouteRequestedMode, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
+    ModelRouteProfile, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
     SystemPrompt, TranscriptEntry, Usage,
 };
 use codewhale_protocol::run_api::{
@@ -46,7 +46,7 @@ use super::{
 const DEEPSEEK_PROVIDER: &str = "deepseek";
 const DEEPSEEK_PRO_MODEL: &str = "deepseek-v4-pro";
 const DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
-const HOST_AUTO_ROUTE_POLICY_VERSION: &str = "deepseek_host_auto_v1";
+const FIXED_ACTOR_ROUTE_POLICY_VERSION: &str = "deepseek_fixed_actor_v1";
 const EXPLICIT_ROUTE_POLICY_VERSION: &str = "deepseek_explicit_v1";
 const CONTEXT_INPUT_SAFETY_TOKENS: u32 = 32_000;
 pub const DEFAULT_MAX_API_REQUESTS: u32 = 64;
@@ -232,7 +232,7 @@ struct ProductionComposition {
 }
 
 #[derive(Clone)]
-struct ProductionModelRoutePolicy {
+struct ProductionFixedRoutePolicy {
     prompt: ProductionPromptConfig,
 }
 
@@ -244,7 +244,7 @@ struct ProductionRootRoute {
     route: ModelRouteAudit,
 }
 
-impl ProductionModelRoutePolicy {
+impl ProductionFixedRoutePolicy {
     fn new(prompt: ProductionPromptConfig) -> Self {
         Self { prompt }
     }
@@ -252,40 +252,41 @@ impl ProductionModelRoutePolicy {
     fn resolve_root(
         &self,
         requested_model: Option<&str>,
-        requested_reasoning_effort: ReasoningEffort,
+        reasoning_effort: ReasoningEffort,
         requested_max_output_tokens: Option<u32>,
         typed_recovery: bool,
     ) -> Result<ProductionRootRoute, RunApiError> {
-        let (model, reasoning_effort, route) = if let Some(model) = requested_model {
+        let (model, reasoning_effort, route) = if typed_recovery {
+            (
+                DEEPSEEK_PRO_MODEL.to_owned(),
+                ReasoningEffort::Max,
+                ModelRouteAudit {
+                    profile: ModelRouteProfile::FixedActor,
+                    policy_version: FIXED_ACTOR_ROUTE_POLICY_VERSION.to_owned(),
+                    reason_code: "fixed_root_recovery".to_owned(),
+                },
+            )
+        } else if let Some(model) = requested_model {
             (
                 official_model_capabilities(model)
                     .map_err(|error| invalid_request(error.to_string()))?
                     .model
                     .to_owned(),
-                requested_reasoning_effort,
+                reasoning_effort,
                 ModelRouteAudit {
-                    requested_model_mode: ModelRouteRequestedMode::Explicit,
-                    requested_reasoning_effort,
+                    profile: ModelRouteProfile::Explicit,
                     policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
                     reason_code: "explicit_model".to_owned(),
                 },
             )
         } else {
-            let reasoning_effort =
-                resolve_auto_reasoning(requested_reasoning_effort, typed_recovery);
             (
                 DEEPSEEK_PRO_MODEL.to_owned(),
-                reasoning_effort,
+                ReasoningEffort::High,
                 ModelRouteAudit {
-                    requested_model_mode: ModelRouteRequestedMode::Auto,
-                    requested_reasoning_effort,
-                    policy_version: HOST_AUTO_ROUTE_POLICY_VERSION.to_owned(),
-                    reason_code: if typed_recovery {
-                        "auto_root_recovery"
-                    } else {
-                        "auto_root_responsible"
-                    }
-                    .to_owned(),
+                    profile: ModelRouteProfile::FixedActor,
+                    policy_version: FIXED_ACTOR_ROUTE_POLICY_VERSION.to_owned(),
+                    reason_code: "fixed_root_responsible".to_owned(),
                 },
             )
         };
@@ -311,9 +312,9 @@ impl ProductionModelRoutePolicy {
         request.route.validate().map_err(|message| {
             environment_mismatch(run_id, format!("run_resume_route_invalid：{message}"))
         })?;
-        let expected_version = match request.route.requested_model_mode {
-            ModelRouteRequestedMode::Explicit => EXPLICIT_ROUTE_POLICY_VERSION,
-            ModelRouteRequestedMode::Auto => HOST_AUTO_ROUTE_POLICY_VERSION,
+        let expected_version = match request.route.profile {
+            ModelRouteProfile::Explicit => EXPLICIT_ROUTE_POLICY_VERSION,
+            ModelRouteProfile::FixedActor => FIXED_ACTOR_ROUTE_POLICY_VERSION,
         };
         if request.route.policy_version != expected_version {
             return Err(environment_mismatch(
@@ -321,41 +322,40 @@ impl ProductionModelRoutePolicy {
                 "run_resume_route_policy_mismatch：持久化模型路由 policy 与当前 production policy 不一致",
             ));
         }
-        if request.actor.kind == AgentActorKind::Root {
-            match request.route.requested_model_mode {
-                ModelRouteRequestedMode::Explicit => {
+        match request.actor.kind {
+            AgentActorKind::Root => match request.route.profile {
+                ModelRouteProfile::Explicit => {
                     if request.route.reason_code != "explicit_model" {
                         return Err(environment_mismatch(
                             run_id,
                             "run_resume_route_reason_mismatch：显式 root route reason 不一致",
                         ));
                     }
+                    official_model_capabilities(&request.model)
+                        .map_err(|error| environment_mismatch(run_id, error.to_string()))?;
                 }
-                ModelRouteRequestedMode::Auto => {
-                    let recovery = match request.route.reason_code.as_str() {
-                        "auto_root_responsible" => false,
-                        "auto_root_recovery" => true,
+                ModelRouteProfile::FixedActor => {
+                    let expected_reasoning = match request.route.reason_code.as_str() {
+                        "fixed_root_responsible" => ReasoningEffort::High,
+                        "fixed_root_recovery" => ReasoningEffort::Max,
                         _ => {
                             return Err(environment_mismatch(
                                 run_id,
-                                "run_resume_route_reason_mismatch：Auto root route reason 不一致",
+                                "run_resume_route_reason_mismatch：fixed root route reason 不一致",
                             ));
                         }
                     };
                     if request.model != DEEPSEEK_PRO_MODEL
-                        || request.reasoning_effort
-                            != resolve_auto_reasoning(
-                                request.route.requested_reasoning_effort,
-                                recovery,
-                            )
+                        || request.reasoning_effort != expected_reasoning
                     {
                         return Err(environment_mismatch(
                             run_id,
-                            "run_resume_route_selection_mismatch：Auto root 的 model/reasoning 与持久化 Host route 不一致",
+                            "run_resume_route_selection_mismatch：fixed root 的 model/reasoning 与持久化 Host route 不一致",
                         ));
                     }
                 }
-            }
+            },
+            AgentActorKind::Child => validate_child_route(run_id, request)?,
         }
         Ok(())
     }
@@ -376,22 +376,78 @@ impl ProductionModelRoutePolicy {
     }
 }
 
-impl ChildRunRoutePolicy for ProductionModelRoutePolicy {
+fn validate_child_route(run_id: &RunId, request: &RunRequest) -> Result<(), RunApiError> {
+    let task = request.agent_task.as_ref().ok_or_else(|| {
+        environment_mismatch(
+            run_id,
+            "run_resume_route_task_missing：child 缺少 canonical AgentTask",
+        )
+    })?;
+    if request.model != task.model
+        || request.reasoning_effort != task.reasoning_effort
+        || request.route != task.route
+    {
+        return Err(environment_mismatch(
+            run_id,
+            "run_resume_route_task_mismatch：child model/reasoning/route 与 canonical AgentTask 不一致",
+        ));
+    }
+    if request.route.profile == ModelRouteProfile::Explicit {
+        if request.route.reason_code != "explicit_model_inherited" {
+            return Err(environment_mismatch(
+                run_id,
+                "run_resume_route_reason_mismatch：显式 child route reason 不一致",
+            ));
+        }
+        official_model_capabilities(&request.model)
+            .map_err(|error| environment_mismatch(run_id, error.to_string()))?;
+        return Ok(());
+    }
+    let (expected_model, expected_reasoning) =
+        match (task.workspace.access, request.route.reason_code.as_str()) {
+            (AgentWorkspaceAccess::ReadOnly, "fixed_read_only_investigation") => {
+                (DEEPSEEK_FLASH_MODEL, ReasoningEffort::High)
+            }
+            (AgentWorkspaceAccess::ReadOnly, "fixed_read_only_recheck") => {
+                (DEEPSEEK_PRO_MODEL, ReasoningEffort::Max)
+            }
+            (AgentWorkspaceAccess::IsolatedWrite, "fixed_isolated_writer") => {
+                (DEEPSEEK_PRO_MODEL, ReasoningEffort::High)
+            }
+            (AgentWorkspaceAccess::IsolatedWrite, "fixed_isolated_writer_rework") => {
+                (DEEPSEEK_PRO_MODEL, ReasoningEffort::Max)
+            }
+            _ => {
+                return Err(environment_mismatch(
+                    run_id,
+                    "run_resume_route_reason_mismatch：child fixed actor route reason 不一致",
+                ));
+            }
+        };
+    if request.model != expected_model || request.reasoning_effort != expected_reasoning {
+        return Err(environment_mismatch(
+            run_id,
+            "run_resume_route_selection_mismatch：child model/reasoning 与 fixed actor route 不一致",
+        ));
+    }
+    Ok(())
+}
+
+impl ChildRunRoutePolicy for ProductionFixedRoutePolicy {
     fn select_child(
         &self,
         parent: &RunRequest,
         workspace_access: AgentWorkspaceAccess,
         context: ChildRouteContext,
     ) -> Result<ChildRunRouteSelection, String> {
-        if parent.route.requested_model_mode == ModelRouteRequestedMode::Explicit {
+        if parent.route.profile == ModelRouteProfile::Explicit {
             return Ok(ChildRunRouteSelection {
                 model: parent.model.clone(),
                 reasoning_effort: parent.reasoning_effort,
                 max_output_tokens: parent.max_output_tokens,
                 context_policy: parent.context_policy,
                 route: ModelRouteAudit {
-                    requested_model_mode: ModelRouteRequestedMode::Explicit,
-                    requested_reasoning_effort: parent.route.requested_reasoning_effort,
+                    profile: ModelRouteProfile::Explicit,
                     policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
                     reason_code: "explicit_model_inherited".to_owned(),
                 },
@@ -403,22 +459,28 @@ impl ChildRunRoutePolicy for ProductionModelRoutePolicy {
                 AgentWorkspaceAccess::ReadOnly => context.prior_read_only_child_failed,
                 AgentWorkspaceAccess::IsolatedWrite => context.prior_isolated_writer_failed,
             };
-        let (model, reason_code) = match (workspace_access, recovery) {
-            (AgentWorkspaceAccess::ReadOnly, false) => {
-                (DEEPSEEK_FLASH_MODEL, "auto_read_only_investigation")
-            }
-            (AgentWorkspaceAccess::ReadOnly, true) => {
-                (DEEPSEEK_PRO_MODEL, "auto_read_only_recheck")
-            }
-            (AgentWorkspaceAccess::IsolatedWrite, false) => {
-                (DEEPSEEK_PRO_MODEL, "auto_isolated_writer")
-            }
-            (AgentWorkspaceAccess::IsolatedWrite, true) => {
-                (DEEPSEEK_PRO_MODEL, "auto_isolated_writer_rework")
-            }
+        let (model, reasoning_effort, reason_code) = match (workspace_access, recovery) {
+            (AgentWorkspaceAccess::ReadOnly, false) => (
+                DEEPSEEK_FLASH_MODEL,
+                ReasoningEffort::High,
+                "fixed_read_only_investigation",
+            ),
+            (AgentWorkspaceAccess::ReadOnly, true) => (
+                DEEPSEEK_PRO_MODEL,
+                ReasoningEffort::Max,
+                "fixed_read_only_recheck",
+            ),
+            (AgentWorkspaceAccess::IsolatedWrite, false) => (
+                DEEPSEEK_PRO_MODEL,
+                ReasoningEffort::High,
+                "fixed_isolated_writer",
+            ),
+            (AgentWorkspaceAccess::IsolatedWrite, true) => (
+                DEEPSEEK_PRO_MODEL,
+                ReasoningEffort::Max,
+                "fixed_isolated_writer_rework",
+            ),
         };
-        let reasoning_effort =
-            resolve_auto_reasoning(parent.route.requested_reasoning_effort, recovery);
         let capability = official_model_capabilities(model).map_err(|error| error.to_string())?;
         let max_output_tokens = capability
             .resolve_output_tokens(parent.max_output_tokens)
@@ -429,9 +491,8 @@ impl ChildRunRoutePolicy for ProductionModelRoutePolicy {
             max_output_tokens: Some(max_output_tokens),
             context_policy: production_context_policy(capability, max_output_tokens),
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Auto,
-                requested_reasoning_effort: parent.route.requested_reasoning_effort,
-                policy_version: HOST_AUTO_ROUTE_POLICY_VERSION.to_owned(),
+                profile: ModelRouteProfile::FixedActor,
+                policy_version: FIXED_ACTOR_ROUTE_POLICY_VERSION.to_owned(),
                 reason_code: reason_code.to_owned(),
             },
         })
@@ -445,18 +506,6 @@ impl ChildRunRoutePolicy for ProductionModelRoutePolicy {
     ) -> Result<SystemPrompt, String> {
         let workspace = Path::new(task.workspace.execution_workspace());
         Ok(self.system_prompt(workspace, &task.model, tool_mode))
-    }
-}
-
-fn resolve_auto_reasoning(requested: ReasoningEffort, recovery: bool) -> ReasoningEffort {
-    if requested == ReasoningEffort::Auto {
-        if recovery {
-            ReasoningEffort::Max
-        } else {
-            ReasoningEffort::High
-        }
-    } else {
-        requested
     }
 }
 
@@ -557,7 +606,7 @@ impl RunComposition for ProductionComposition {
             )
         })?;
 
-        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
         let route = route_policy.resolve_root(
             command.model.as_deref(),
             command.reasoning_effort,
@@ -657,7 +706,7 @@ impl RunComposition for ProductionComposition {
                 "持久化运行未绑定官方 DeepSeek Provider",
             ));
         }
-        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
         route_policy.validate_persisted_route(&run_id, request)?;
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
         let controls = controls_from_environment(&request.environment);
@@ -778,7 +827,7 @@ impl RunComposition for ProductionComposition {
                 "来源运行未绑定官方 DeepSeek Provider",
             ));
         }
-        let route_policy = Arc::new(ProductionModelRoutePolicy::new(self.prompt.clone()));
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
         route_policy.validate_persisted_route(&source_run_id, source_request)?;
         if source_request
             .environment
@@ -813,13 +862,13 @@ impl RunComposition for ProductionComposition {
         let transport = self.bind_live_transport(request_budget.clone())?;
         let typed_recovery = source.snapshot.last_completion_rejection.is_some()
             || source.snapshot.last_host_verification_failure.is_some();
-        let requested_model = (source_request.route.requested_model_mode
-            == ModelRouteRequestedMode::Explicit)
+        let requested_model = (source_request.route.profile == ModelRouteProfile::Explicit
+            && !typed_recovery)
             .then_some(source_request.model.as_str());
         let route = route_policy
             .resolve_root(
                 requested_model,
-                source_request.route.requested_reasoning_effort,
+                source_request.reasoning_effort,
                 source_request.max_output_tokens,
                 typed_recovery,
             )
@@ -982,7 +1031,7 @@ impl ProductionComposition {
             provider: DEEPSEEK_PROVIDER,
             model,
             route_policy_version: &route.policy_version,
-            route_requested_model_mode: route.requested_model_mode,
+            route_profile: route.profile,
             route_reason_code: &route.reason_code,
             endpoint_root_sha256: sha256(self.deepseek.endpoint.root().as_bytes()),
             strict_tools: self.deepseek.strict_tools,
@@ -1009,7 +1058,7 @@ struct ProductionExecutionFingerprint<'a> {
     provider: &'a str,
     model: &'a str,
     route_policy_version: &'a str,
-    route_requested_model_mode: ModelRouteRequestedMode,
+    route_profile: ModelRouteProfile,
     route_reason_code: &'a str,
     endpoint_root_sha256: String,
     strict_tools: bool,
@@ -1784,10 +1833,9 @@ mod tests {
         request
     }
 
-    fn explicit_route(reasoning_effort: ReasoningEffort) -> ModelRouteAudit {
+    fn explicit_route(_reasoning_effort: ReasoningEffort) -> ModelRouteAudit {
         ModelRouteAudit {
-            requested_model_mode: ModelRouteRequestedMode::Explicit,
-            requested_reasoning_effort: reasoning_effort,
+            profile: ModelRouteProfile::Explicit,
             policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
             reason_code: "explicit_model".to_owned(),
         }
@@ -2474,7 +2522,7 @@ mod tests {
     }
 
     #[test]
-    fn production_start_preparation_accepts_only_auto_or_official_models() {
+    fn production_start_preparation_accepts_omitted_or_official_models() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         let tools = ProductionToolConfig::new(workspace.path());
 
@@ -2485,7 +2533,12 @@ mod tests {
             assert_eq!(prepared.model.as_deref(), model);
         }
 
-        for model in ["deepseek-chat", "deepseek-reasoner", "gpt-5.5-codex"] {
+        for model in [
+            "auto",
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "gpt-5.5-codex",
+        ] {
             let error = prepare_production_start_command(
                 start_command(workspace.path(), Some(model)),
                 &tools,
@@ -3017,7 +3070,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m8i_auto_root_routes_read_only_children_to_flash_and_reopens_exactly() {
+    async fn fixed_actor_root_routes_read_only_children_to_flash_and_reopens_exactly() {
         let server = FanoutDeepSeekServer::start().await;
         let temp = tempfile::tempdir().expect("temp root");
         let workspace = temp.path().join("workspace");
@@ -3132,11 +3185,8 @@ mod tests {
                     assert_eq!(task.workspace.access, AgentWorkspaceAccess::ReadOnly);
                     assert_eq!(task.model, DEEPSEEK_FLASH_MODEL);
                     assert_eq!(task.reasoning_effort, ReasoningEffort::High);
-                    assert_eq!(
-                        task.route.requested_model_mode,
-                        ModelRouteRequestedMode::Auto
-                    );
-                    assert_eq!(task.route.reason_code, "auto_read_only_investigation");
+                    assert_eq!(task.route.profile, ModelRouteProfile::FixedActor);
+                    assert_eq!(task.route.reason_code, "fixed_read_only_investigation");
                     Some(task.child_run_id.clone())
                 }
                 _ => None,
@@ -3164,7 +3214,7 @@ mod tests {
             assert_eq!(child.snapshot.request.model, DEEPSEEK_FLASH_MODEL);
             assert_eq!(
                 child.snapshot.request.route.reason_code,
-                "auto_read_only_investigation"
+                "fixed_read_only_investigation"
             );
             child_replays.push(child);
         }
@@ -3172,7 +3222,7 @@ mod tests {
         assert_eq!(replay.snapshot.request.model, DEEPSEEK_PRO_MODEL);
         assert_eq!(
             replay.snapshot.request.route.reason_code,
-            "auto_root_responsible"
+            "fixed_root_responsible"
         );
 
         assert_eq!(replay.snapshot.runtime_model_requests, 4);
@@ -3930,7 +3980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_auto_policy_starts_one_pro_request_and_persists_exact_audit_fields() {
+    async fn fixed_actor_policy_starts_one_pro_request_and_persists_exact_audit_fields() {
         let server =
             MockDeepSeekServer::start(vec![response("deepseek-v4-pro", "完成", 11, 3)]).await;
         let temp = tempfile::tempdir().expect("temp workspace");
@@ -3949,7 +3999,7 @@ mod tests {
         ))
         .expect("production app");
         let run = run_result(
-            app.execute(envelope("auto", RunCommand::Start(command.clone())))
+            app.execute(envelope("fixed-actor", RunCommand::Start(command.clone())))
                 .await,
         );
         let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
@@ -3968,19 +4018,12 @@ mod tests {
             command.task
         );
         assert_eq!(persisted.reasoning_effort, ReasoningEffort::High);
-        assert_eq!(
-            persisted.route.requested_model_mode,
-            ModelRouteRequestedMode::Auto
-        );
-        assert_eq!(
-            persisted.route.requested_reasoning_effort,
-            command.reasoning_effort
-        );
+        assert_eq!(persisted.route.profile, ModelRouteProfile::FixedActor);
         assert_eq!(
             persisted.route.policy_version,
-            HOST_AUTO_ROUTE_POLICY_VERSION
+            FIXED_ACTOR_ROUTE_POLICY_VERSION
         );
-        assert_eq!(persisted.route.reason_code, "auto_root_responsible");
+        assert_eq!(persisted.route.reason_code, "fixed_root_responsible");
         assert_eq!(
             persisted.max_output_tokens,
             Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS)
@@ -4031,31 +4074,43 @@ mod tests {
     }
 
     #[test]
-    fn host_auto_policy_matrix_uses_only_typed_actor_authority_and_failure_facts() {
-        let policy = ProductionModelRoutePolicy::new(ProductionPromptConfig::default());
+    fn fixed_actor_policy_matrix_uses_only_typed_actor_authority_and_failure_facts() {
+        let policy = ProductionFixedRoutePolicy::new(ProductionPromptConfig::default());
         let root = policy
-            .resolve_root(None, ReasoningEffort::Auto, None, false)
-            .expect("ordinary Auto root route");
+            .resolve_root(None, ReasoningEffort::High, None, false)
+            .expect("ordinary fixed root route");
         assert_eq!(root.model, DEEPSEEK_PRO_MODEL);
         assert_eq!(root.reasoning_effort, ReasoningEffort::High);
-        assert_eq!(root.route.reason_code, "auto_root_responsible");
+        assert_eq!(root.route.profile, ModelRouteProfile::FixedActor);
+        assert_eq!(root.route.reason_code, "fixed_root_responsible");
 
         let recovery_root = policy
-            .resolve_root(None, ReasoningEffort::Auto, None, true)
-            .expect("typed recovery Auto root route");
+            .resolve_root(None, ReasoningEffort::High, None, true)
+            .expect("typed recovery fixed root route");
         assert_eq!(recovery_root.model, DEEPSEEK_PRO_MODEL);
         assert_eq!(recovery_root.reasoning_effort, ReasoningEffort::Max);
-        assert_eq!(recovery_root.route.reason_code, "auto_root_recovery");
+        assert_eq!(recovery_root.route.profile, ModelRouteProfile::FixedActor);
+        assert_eq!(recovery_root.route.reason_code, "fixed_root_recovery");
 
         let explicit = policy
-            .resolve_root(Some(DEEPSEEK_FLASH_MODEL), ReasoningEffort::Off, None, true)
+            .resolve_root(
+                Some(DEEPSEEK_FLASH_MODEL),
+                ReasoningEffort::Off,
+                None,
+                false,
+            )
             .expect("explicit route");
         assert_eq!(explicit.model, DEEPSEEK_FLASH_MODEL);
         assert_eq!(explicit.reasoning_effort, ReasoningEffort::Off);
-        assert_eq!(
-            explicit.route.requested_model_mode,
-            ModelRouteRequestedMode::Explicit
-        );
+        assert_eq!(explicit.route.profile, ModelRouteProfile::Explicit);
+        assert_eq!(explicit.route.reason_code, "explicit_model");
+
+        let explicit_recovery = policy
+            .resolve_root(Some(DEEPSEEK_FLASH_MODEL), ReasoningEffort::Off, None, true)
+            .expect("typed recovery overrides the explicit route");
+        assert_eq!(explicit_recovery.model, DEEPSEEK_PRO_MODEL);
+        assert_eq!(explicit_recovery.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(explicit_recovery.route.reason_code, "fixed_root_recovery");
 
         let run_id = RunId::from("host-policy-parent");
         let mut parent = test_run_request(run_id, "typed route matrix", "system");
@@ -4075,7 +4130,7 @@ mod tests {
             .expect("ordinary read-only child route");
         assert_eq!(read_only.model, DEEPSEEK_FLASH_MODEL);
         assert_eq!(read_only.reasoning_effort, ReasoningEffort::High);
-        assert_eq!(read_only.route.reason_code, "auto_read_only_investigation");
+        assert_eq!(read_only.route.reason_code, "fixed_read_only_investigation");
 
         let read_only_recheck = policy
             .select_child(
@@ -4091,7 +4146,7 @@ mod tests {
         assert_eq!(read_only_recheck.reasoning_effort, ReasoningEffort::Max);
         assert_eq!(
             read_only_recheck.route.reason_code,
-            "auto_read_only_recheck"
+            "fixed_read_only_recheck"
         );
 
         let writer = policy
@@ -4099,7 +4154,7 @@ mod tests {
             .expect("ordinary isolated Writer route");
         assert_eq!(writer.model, DEEPSEEK_PRO_MODEL);
         assert_eq!(writer.reasoning_effort, ReasoningEffort::High);
-        assert_eq!(writer.route.reason_code, "auto_isolated_writer");
+        assert_eq!(writer.route.reason_code, "fixed_isolated_writer");
 
         let writer_rework = policy
             .select_child(
@@ -4115,16 +4170,25 @@ mod tests {
         assert_eq!(writer_rework.reasoning_effort, ReasoningEffort::Max);
         assert_eq!(
             writer_rework.route.reason_code,
-            "auto_isolated_writer_rework"
+            "fixed_isolated_writer_rework"
         );
 
-        parent.route.requested_reasoning_effort = ReasoningEffort::Off;
+        parent.model = explicit.model;
+        parent.reasoning_effort = explicit.reasoning_effort;
+        parent.max_output_tokens = Some(explicit.max_output_tokens);
+        parent.context_policy = explicit.context_policy;
+        parent.route = explicit.route;
         let explicit_off_read_only = policy
             .select_child(&parent, AgentWorkspaceAccess::ReadOnly, ordinary)
             .expect("explicit reasoning is preserved");
+        assert_eq!(explicit_off_read_only.model, DEEPSEEK_FLASH_MODEL);
         assert_eq!(
             explicit_off_read_only.reasoning_effort,
             ReasoningEffort::Off
+        );
+        assert_eq!(
+            explicit_off_read_only.route.reason_code,
+            "explicit_model_inherited"
         );
     }
 
@@ -4875,8 +4939,7 @@ mod tests {
         let fingerprint = composition.execution_fingerprint_sha256(
             "deepseek-v4-pro",
             &ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Explicit,
-                requested_reasoning_effort: ReasoningEffort::Auto,
+                profile: ModelRouteProfile::Explicit,
                 policy_version: EXPLICIT_ROUTE_POLICY_VERSION.to_owned(),
                 reason_code: "explicit_model".to_owned(),
             },

@@ -687,7 +687,6 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         ReasoningEffort::Low => RuntimeReasoningEffort::Low,
         ReasoningEffort::Medium => RuntimeReasoningEffort::Medium,
         ReasoningEffort::High => RuntimeReasoningEffort::High,
-        ReasoningEffort::Auto => RuntimeReasoningEffort::Auto,
         ReasoningEffort::Max => RuntimeReasoningEffort::Max,
     };
     let mut limits = RunLimits::default();
@@ -697,7 +696,7 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
     StartRunCommand {
         task: TaskDefinition::host(input),
         workspace: app.workspace.display().to_string(),
-        model: (!app.auto_model).then(|| app.model.clone()),
+        model: Some(app.model.clone()),
         reasoning_effort,
         max_output_tokens: Some(384_000),
         max_api_requests: None,

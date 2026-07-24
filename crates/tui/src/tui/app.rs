@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use ratatui::layout::Rect;
 
-use crate::config::{Config, DEFAULT_TEXT_MODEL, has_api_key};
+use crate::config::{Config, has_api_key};
 use crate::palette::{self, UiTheme};
 use crate::pricing::CostCurrency;
 use crate::settings::Settings;
@@ -106,15 +106,14 @@ pub enum ReasoningEffort {
     Off,
     Low,
     Medium,
-    High,
-    Auto,
     #[default]
+    High,
     Max,
 }
 
 impl ReasoningEffort {
     /// Parse a config-file string into an effort tier. Unknown values fall
-    /// back to the default (`Max`) rather than erroring out.
+    /// back to the default (`High`) rather than erroring out.
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -122,7 +121,6 @@ impl ReasoningEffort {
             "low" | "minimal" => Self::Low,
             "medium" | "mid" => Self::Medium,
             "high" => Self::High,
-            "auto" | "automatic" => Self::Auto,
             "max" | "maximum" | "xhigh" | "ultracode" => Self::Max,
             _ => Self::default(),
         }
@@ -806,9 +804,6 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
-    /// When true, the Host selects the official model from typed run facts.
-    /// Explicit reasoning remains independent from this model selection.
-    pub auto_model: bool,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Ctrl+T; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
@@ -1009,7 +1004,6 @@ impl App {
         {
             ui_theme = ui_theme.with_background_color(background);
         }
-        let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1096,7 +1090,6 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
-            auto_model,
             reasoning_effort,
             workspace,
             config_path,
@@ -1854,19 +1847,10 @@ impl App {
     }
 
     pub fn effective_model_for_budget(&self) -> &str {
-        if self.auto_model && self.model.eq_ignore_ascii_case("auto") {
-            return DEFAULT_TEXT_MODEL;
-        }
         &self.model
     }
 
     pub fn model_display_label(&self) -> String {
-        if self.auto_model {
-            if !self.model.eq_ignore_ascii_case("auto") {
-                return format!("auto: {}", self.model);
-            }
-            return "auto".to_string();
-        }
         self.model.clone()
     }
 }

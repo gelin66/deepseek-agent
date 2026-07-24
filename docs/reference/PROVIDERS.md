@@ -76,8 +76,8 @@ created.
 
 ## Models
 
-Config and CLI accept `auto`, the two retained public DeepSeek ids, and the
-bounded convenience forms `pro`, `flash`, `deepseek-v4pro`, and
+Config and CLI accept the two retained public DeepSeek ids and the bounded
+convenience forms `pro`, `flash`, `deepseek-v4pro`, and
 `deepseek-v4flash`. Retired aliases, speculative future ids, foreign ids, and
 values containing whitespace, secret material, or delimiter injection are
 rejected before a model request.
@@ -88,7 +88,9 @@ Aliases normalize as follows:
 | --- | --- |
 | `pro`, `deepseek-v4pro` | `deepseek-v4-pro` |
 | `flash`, `deepseek-v4flash` | `deepseek-v4-flash` |
-| `auto` | Host-selected retained DeepSeek model |
+
+`auto` is retired and rejected. An omitted model at the Run API boundary uses
+the fixed Host actor profile; it is not a selectable model mode.
 
 Transient limits and protocol behavior belong to `crates/deepseek` fixtures,
 not to a generic model catalog or user config. CodeWhale does not fetch

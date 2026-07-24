@@ -193,14 +193,10 @@ pub(crate) async fn run_exec_runtime(
             launch,
             ExecRunLaunch::Continue(_) | ExecRunLaunch::ContinueLatest
         );
-        let requested_auto_model =
-            !is_resume && !is_continue && model.trim().eq_ignore_ascii_case("auto");
         let route_source = if is_resume {
             "run_store_resume"
         } else if is_continue {
             "run_store_continue"
-        } else if requested_auto_model {
-            "host_policy"
         } else {
             "explicit_or_configured"
         };
@@ -287,7 +283,7 @@ pub(crate) async fn run_exec_runtime(
             ExecRunLaunch::Fresh => RunCommand::Start(StartRunCommand {
                 task: TaskDefinition::host(prompt),
                 workspace: workspace.display().to_string(),
-                model: (!requested_auto_model).then(|| model.to_owned()),
+                model: Some(model.to_owned()),
                 reasoning_effort: config
                     .reasoning_effort
                     .as_deref()
@@ -1060,7 +1056,7 @@ fn runtime_reasoning_effort(value: &str) -> ReasoningEffort {
         "medium" => ReasoningEffort::Medium,
         "high" => ReasoningEffort::High,
         "max" => ReasoningEffort::Max,
-        _ => ReasoningEffort::Auto,
+        _ => ReasoningEffort::High,
     }
 }
 

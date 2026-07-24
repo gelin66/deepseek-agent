@@ -249,7 +249,7 @@ struct ExecArgs {
     )]
     _retired_provider: Option<String>,
     /// Override reasoning/thinking effort for this run.
-    /// Accepted values: auto, off, low, medium, high, max.
+    /// Accepted values: off, low, medium, high, max.
     #[arg(long = "reasoning-effort", value_name = "EFFORT")]
     reasoning_effort: Option<String>,
     /// Enable agent-with-tools mode with automatic tool approvals. This does
@@ -626,10 +626,6 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
         return Ok(crate::config::DEFAULT_TEXT_MODEL.to_owned());
     };
     let configured_model = configured_model.trim();
-    if configured_model.eq_ignore_ascii_case("auto") {
-        return Ok("auto".to_owned());
-    }
-
     crate::config::normalize_model_name(configured_model).ok_or_else(|| {
         anyhow!("交互式 Agent 只接受官方 DeepSeek 模型 ID；当前模型为 {configured_model}。")
     })
@@ -3420,12 +3416,7 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
         request_budget,
     )?;
     let configured_model = config.default_model();
-    let probe_model = if configured_model.eq_ignore_ascii_case("auto") {
-        "deepseek-v4-pro"
-    } else {
-        configured_model.as_str()
-    };
-    let model = official_model_capabilities(probe_model)?.model;
+    let model = official_model_capabilities(&configured_model)?.model;
     let plan = plan_chat(
         &root,
         false,
@@ -4655,10 +4646,9 @@ fn normalize_cli_reasoning_effort(value: &str) -> Result<Option<String>> {
         "low" | "minimal" => "low",
         "medium" | "mid" => "medium",
         "high" => "high",
-        "auto" | "automatic" => "auto",
         "max" | "maximum" | "xhigh" | "ultracode" => "max",
         _ => bail!(
-            "Unrecognized --reasoning-effort {trimmed:?}. Expected: auto, off, low, medium, high, max, or default."
+            "Unrecognized --reasoning-effort {trimmed:?}. Expected: off, low, medium, high, max, or default."
         ),
     };
     Ok(Some(normalized.to_string()))

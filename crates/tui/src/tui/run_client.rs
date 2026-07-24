@@ -927,11 +927,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_pending_creation_recovers_once_through_the_host_policy() {
+    async fn fixed_actor_pending_creation_recovers_once_through_the_host_policy() {
         let fixture = RecoveryFixture::new().await;
         let creation_request_id = "tui-recover-host-policy";
         let reserved_run_id = "tui-reserved-host-policy";
-        let mut command = start_command("不得重复自动路由");
+        let mut command = start_command("不得重复固定 actor 路由");
         command.workspace = fixture.workspace.clone();
         command.model = None;
         fixture
@@ -953,22 +953,22 @@ mod tests {
             .store
             .load(&recovered.run_id)
             .await
-            .expect("load recovered Auto run")
-            .expect("recovered Auto run exists");
+            .expect("load recovered fixed route run")
+            .expect("recovered fixed route run exists");
         assert_eq!(replay.snapshot.request.model, "deepseek-v4-pro");
         assert_eq!(
-            replay.snapshot.request.route.requested_model_mode,
-            codewhale_runtime::ModelRouteRequestedMode::Auto
+            replay.snapshot.request.route.profile,
+            codewhale_runtime::ModelRouteProfile::FixedActor
         );
         assert_eq!(
             replay.snapshot.request.route.reason_code,
-            "auto_root_responsible"
+            "fixed_root_responsible"
         );
         assert!(
             client
                 .list_pending_creations(fixture.workspace, 10)
                 .await
-                .expect("list consumed Auto creation")
+                .expect("list consumed fixed route creation")
                 .is_empty()
         );
     }

@@ -331,11 +331,10 @@ fn normalize_reasoning_effort_setting(value: &str) -> Result<Option<String>> {
         "low" | "minimal" => "low",
         "medium" | "mid" => "medium",
         "high" => "high",
-        "auto" | "automatic" => "auto",
         "max" | "maximum" | "xhigh" | "ultracode" => "max",
         _ => {
             anyhow::bail!(
-                "Failed to update setting: invalid reasoning_effort '{value}'. Expected: auto, off, low, medium, high, max, xhigh, ultracode, or default."
+                "Failed to update setting: invalid reasoning_effort '{value}'. Expected: off, low, medium, high, max, xhigh, ultracode, or default."
             );
         }
     };

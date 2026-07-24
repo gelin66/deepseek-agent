@@ -66,7 +66,6 @@ pub struct RequestPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningMode {
     Off,
-    Auto,
     High,
     Max,
 }
@@ -76,7 +75,6 @@ impl ReasoningMode {
     pub fn from_runtime(effort: ReasoningEffort) -> Self {
         match effort {
             ReasoningEffort::Off => Self::Off,
-            ReasoningEffort::Auto => Self::Auto,
             ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => Self::High,
             ReasoningEffort::Max => Self::Max,
         }
@@ -293,7 +291,7 @@ pub fn plan_chat(
         body["tool_choice"] = tool_choice;
     }
     match input.reasoning {
-        ReasoningMode::Off | ReasoningMode::Auto => {}
+        ReasoningMode::Off => {}
         ReasoningMode::High => body["reasoning_effort"] = json!("high"),
         ReasoningMode::Max => body["reasoning_effort"] = json!("max"),
     }
@@ -1674,7 +1672,7 @@ mod tests {
                 response_mode: ResponseMode::NonStreaming,
                 tools: None,
                 tool_choice: None,
-                reasoning: ReasoningMode::Auto,
+                reasoning: ReasoningMode::High,
                 temperature: None,
                 top_p: None,
             },
@@ -1694,7 +1692,7 @@ mod tests {
                     input_schema: compatible_tool("read_file").input_schema,
                 }]),
                 tool_choice: None,
-                reasoning: ReasoningMode::Auto,
+                reasoning: ReasoningMode::High,
                 temperature: None,
                 top_p: None,
             },

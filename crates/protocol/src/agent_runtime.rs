@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 17;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 17;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 18;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 18;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -69,33 +69,33 @@ impl From<&str> for SystemPrompt {
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     Off,
-    #[default]
-    Auto,
     Low,
     Medium,
+    #[default]
     High,
     Max,
 }
 
-/// Whether the caller requested one exact official model or delegated the
-/// choice to the Host product policy.
+/// Stable origin of one immutable model selection.
+///
+/// `FixedActor` is a Host-owned actor profile, not a user-selectable model
+/// mode. The selected model and reasoning effort remain on `RunRequest`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModelRouteRequestedMode {
+pub enum ModelRouteProfile {
     Explicit,
-    Auto,
+    FixedActor,
 }
 
 /// Minimal durable audit fact for one immutable per-run model selection.
 ///
 /// The selected model and reasoning remain the canonical `RunRequest`
-/// fields. This record keeps only the caller intent and Host policy decision
+/// fields. This record keeps only the neutral profile and Host decision
 /// identity needed to audit or reopen that selection without routing again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ModelRouteAudit {
-    pub requested_model_mode: ModelRouteRequestedMode,
-    pub requested_reasoning_effort: ReasoningEffort,
+    pub profile: ModelRouteProfile,
     pub policy_version: String,
     pub reason_code: String,
 }
@@ -522,15 +522,14 @@ impl RunRequest {
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Explicit,
-                requested_reasoning_effort: ReasoningEffort::Auto,
+                profile: ModelRouteProfile::Explicit,
                 policy_version: "runtime_explicit_v1".to_owned(),
                 reason_code: "explicit_model".to_owned(),
             },
             task_contract: Some(task_contract),
             system_prompt: system_prompt.into(),
             transcript: CanonicalTranscript::default(),
-            reasoning_effort: ReasoningEffort::Auto,
+            reasoning_effort: ReasoningEffort::High,
             max_output_tokens: None,
             streaming: true,
             actor: AgentActor::default(),
@@ -3320,10 +3319,9 @@ mod tests {
                 hard_input_tokens: 90_000,
             },
             route: ModelRouteAudit {
-                requested_model_mode: ModelRouteRequestedMode::Auto,
-                requested_reasoning_effort: ReasoningEffort::Auto,
-                policy_version: "fixture_host_auto_v1".to_owned(),
-                reason_code: "auto_read_only_investigation".to_owned(),
+                profile: ModelRouteProfile::FixedActor,
+                policy_version: "fixture_fixed_actor_v1".to_owned(),
+                reason_code: "fixed_read_only_investigation".to_owned(),
             },
             tool_policy: ToolPolicy {
                 enabled: true,
@@ -3344,8 +3342,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 17);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 17);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 18);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 18);
     }
 
     #[test]
@@ -3429,7 +3427,7 @@ mod tests {
         mismatched.environment.workspace = "/workspace/other".to_owned();
         assert!(mismatched.validate_agent_task_binding().is_err());
         let mut mismatched_route = request.clone();
-        mismatched_route.route.reason_code = "auto_read_only_recheck".to_owned();
+        mismatched_route.route.reason_code = "fixed_read_only_recheck".to_owned();
         assert!(mismatched_route.validate_agent_task_binding().is_err());
 
         let mut root = request;
@@ -4129,7 +4127,7 @@ mod tests {
                         system_prompt: SystemPrompt::from_text("system"),
                         messages: Vec::new(),
                         tools: Vec::new(),
-                        reasoning_effort: ReasoningEffort::Auto,
+                        reasoning_effort: ReasoningEffort::High,
                         max_output_tokens: None,
                         streaming: true,
                         request_number: 1,

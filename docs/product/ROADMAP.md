@@ -193,7 +193,11 @@
   失去消费者的 M8-D candidate-only Rust test/current-tree fixture 已删除，通用
   app-server/exec/TUI override consistency 保留。V15 关闭后 current matrix 为
   16 pass / 0 blocked，决策为 `V1 可发布`（release-ready，不代表已经 push 或发布）。
-  当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
+  M9-B/M9-C 的 fixed-Pro regression acquisition 因真实 transport-before-usage 的
+  unknown billing 保持 incomplete；corrected Harness 保留，不能续跑或拼样。M9-D 已按
+  ADR-0008 退休并删除 Auto 产品语义，先于后续 billing acquisition 独立收敛；P0 以后
+  只服务 fixed-Pro 效果实验。
+  当前 Run API v12、RuntimeEvent v18、State schema v24、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -1341,19 +1345,20 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   定向证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、
   指定 widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和
   diff-check。
-- M4-C 已把交互 TUI 的 provider/model 收敛为单一 DeepSeek 入口真相：user、workspace、
-  project 配置合并后，非官方 DeepSeek Provider 或非 `auto`/`deepseek-v4-pro`/
+- M4-C 当时已把交互 TUI 的 provider/model 收敛为单一 DeepSeek 入口真相：user、workspace、
+  project 配置合并后，非官方 DeepSeek Provider 或非当时准入的 `auto`/`deepseek-v4-pro`/
   `deepseek-v4-flash` 模型会在 raw terminal、RunStore 和 HTTP 之前以简体中文失败；TUI
   入口还会二次校验 `TuiOptions` 没有偏离同一配置投影。旧的启动后强制改写 Provider、
   `Settings.default_provider`/`provider_models`/`default_model` 路由覆盖和 App 私有
   `provider_models` 状态已删除。`AgentApplication` 同时在创建 reservation 之前校验所有入口
-  的显式模型，非法模型不会留下 pending creation。`auto` 仍由 production DeepSeek planner
+  的显式模型，非法模型不会留下 pending creation。当时的 `auto` 由 production DeepSeek planner
   决定官方模型；onboarding 只持久化/安装官方 DeepSeek Key，并幂等写回同一个 DeepSeek
   Provider，不改变已校验模型路由。最终集成门又证明通用 `Config::default_model` 会把显式
   外国模型静默回落到默认 V4 Pro；交互入口现先读取 provider-scoped/root 的原始显式值，
   只有确实未配置时才使用默认模型，并在任何回落前完成官方模型校验。过期的 Z.ai PTY
   fixture 同步改为官方 DeepSeek dispatcher 配置。通用 Settings/Config schema 的物理清理仍属于 M7，
-  本切片不声称 FIM transport 已完成。定向与 focused 证据为 App 38/38（另 1 个外部进程
+  本切片不声称 FIM transport 已完成；该历史 Auto surface 已由 M9-D/ADR-0008 直接
+  supersede 并删除。定向与 focused 证据为 App 38/38（另 1 个外部进程
   helper 忽略）、Runtime conformance 53/53、DeepSeek 35/35、工具 299/299、exec 24/24、
   canonical Run 19/19、canonical PTY 7/7；集成修复后的 TUI bin 为 1,537/1,537（另 1 个
   忽略）、通用 PTY 为 9/9，并通过 app/TUI all-target check、fmt 和 diff-check。
@@ -2018,7 +2023,7 @@ eager-join suite 的 154 个请求包含 21,349 reasoning tokens 与 27,629 repl
 `high`/`off` 又是当前 `crates/deepseek` 已拥有的 Standard Chat production 字段，因此它是
 唯一能在不增加工具、Runtime、Store、模型循环或产品模式的情况下形成同 binary 非编辑
 treatment 的候选。candidate `b9b83cdf` 只补 protocol/production contract 与冻结 Harness，
-没有改变默认 `Auto` 行为。
+没有改变该切片当时的默认 `Auto` 行为；该历史行为已由 M9-D/ADR-0008 supersede 并删除。
 
 正式目标为 5 tasks × 2 variants × 3 runs，15 pair / 30 arms，
 `maximum_reruns=0`。v1 把成功 verifier 的保守 side-effect 投影误判为歧义；v2/v3 又把任务
@@ -2490,10 +2495,9 @@ owner/cutover 删除边界。因此准入结论为
 `inadmissible_no_single_binary_four_variant_surface`，不产生 verified success、Token、费用
 或 wall-time 产品指标。
 
-决策为 **keep explicit models and Host policy / delete prompt classifier / hold Auto
-default admission**。产品默认保持 fixed Pro；只有未来 successor 在同 immutable identity
-下证明 fixed-Pro 非劣、false success 为 0、关键 strata 无新增 Pro-only success，并在质量
-通过后稳定改善费用或时间约 20%，Auto 才能成为默认。完整结论见
+当时决策为 **keep explicit models and Host policy / delete prompt classifier / hold Auto
+default admission**。该未来准入条款已被 M9-D/ADR-0008 supersede：Auto 产品方向现已
+退休且不会重开。完整历史结论见
 [M8-I Host typed Auto 路由](../../eval/summaries/m8-i-host-auto-route-2026-07-24.md)。
 
 ### M8-J：V1 successor 审计与 V12 历史债删除
@@ -2721,9 +2725,10 @@ route/lifecycle/reopen/accounting 有效，但 formal matrix 不完整，不能�
 6 个已完成 Auto/Pro pair 的描述性费用 ratio 为 `0.8698`、wall ratio 为 `0.8922`，也未
 达到约 20% 门。
 
-决策是 **keep Host typed policy / hold Auto default / keep fixed Pro default**。显式
+当时决策是 **keep Host typed policy / hold Auto default / keep fixed Pro default**。显式
 Pro/Flash/reasoning 保留；M9-A-only 1,551 行 runner 删除，manifest/summary 与 ignored
-0600 raw 保留。任何 successor 必须从 position 1 重开，不能续跑本次 raw。完整事实见
+0600 raw 保留。M9-D/ADR-0008 后续删除 Auto，因此该 successor 条件不再是当前产品路线；
+若只复核历史 campaign 也不能续跑本次 raw。完整事实见
 [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
 
 ### M9-B：post-V1 fixed-Pro coding regression baseline
@@ -2787,18 +2792,41 @@ aggregate，不删除 `eval-m6-writer-benefit.py`、`eval-m6-writer-canary.py`�
 `eval-m7-agent-convergence.py` 或 `eval-m7g-readonly-fanout.py`。manifest、admission、
 summary 与 ignored 0600 raw 保留。
 
-M9-A 与 M9-C 都因 response 前 transport failure 导致 unknown billing。下一切片先审计
-不选择性重采样、仍 fail-before-loss 的 billing-provable campaign acquisition contract；
-不得机械再开 successor、弱化 accounting 或把部分成功包装成 Auto admission。完整事实见
+M9-A 与 M9-C 都因 response 前 transport failure 导致 unknown billing。M9-D 的范围删除
+先独立完成；此后才审计不选择性重采样、仍 fail-before-loss 的 billing-provable
+campaign acquisition contract。不得机械再开 successor或弱化 accounting。完整事实见
 [M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
+### M9-D：Auto retirement / fixed actor route cutover
+
+用户明确接受 fixed-Pro effect-first 作为长期方向，并要求彻底删除 Auto，而不是继续
+`hold` 或保留未来 admission。ADR-0008 因而冻结唯一 production route policy：
+
+- 未显式指定模型的 root 为 Pro/high；
+- 显式 Pro/Flash/reasoning 原样保留并由 child 精确继承；
+- fixed-profile 普通 read-only child 为 Flash/high，显式 isolated Writer 为 Pro/high；
+- typed recovery/recheck/rework 为 Pro/max；
+- 不存在启动前 classifier、关键词 heuristic、额外模型路由请求或运行中动态切换。
+
+切片物理删除 model/reasoning Auto 的 config、CLI/TUI/API 输入、protocol 枚举/字段、
+app policy 分支、显示与 current fixed-Pro Harness 旧投影。中性 `ModelRouteProfile`
+继续记录 actual route，不保存第二份 caller Auto intent。Run API v12、RuntimeEvent v18
+与 State v24 直接切换；v23 materialized runs 可能包含无法无损映射的 omitted
+reasoning wire 语义，因此整体退休，只保留能按 v18 命令直接反序列化的 pending Start。
+没有 compatibility reader 或 dual write。
+
+这是用户接受的范围删除，不是模型 treatment：不读取 Key、不调用官方 API、不重开
+M9-A，也不需要付费证明 Auto 无收益。M8-I/M9-A 的 frozen manifest/summary/raw 保持
+历史字节不变；当前权威结论改为 `retire_and_delete_auto / keep fixed actor route audit`。
+完整事实见
+[M9-D Auto retirement](../../eval/summaries/m9-d-auto-retirement-2026-07-24.md)。
 
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production
   regression 与 common workflow action contract；不得重开缺失 legacy accounting 的
   imported paid A/B；
-- Auto 只允许使用 RunStore 真实 verified outcome/cost 标签做新 successor；不恢复额外
-  LLM classifier，也不把 prompt 关键词当 authority；
+- Auto 已按 ADR-0008 退休并删除，不再做 successor、A/B、默认准入或未来调优；
 - 只有满足 M8-H re-entry gate 才重开 `apply_patch/search-replace/FIM` A/B；
 - thinking、上下文预算和压缩策略；
 - stable prefix/cache；

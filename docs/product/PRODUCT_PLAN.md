@@ -188,6 +188,18 @@ response parser、Host apply 和 reopen consumer 已删除；只有新的 curren
 reasoning/tool replay、usage/retry/accounting 与 RunStore 已形成唯一 production 链。
 协议 loopback/canary 只能证明 wire correctness，不能替代真实编码任务验收。
 
+模型与 reasoning 使用固定、可重放的 actor profile，不提供 Auto 产品模式：
+
+- 未显式指定模型的 root 固定为 `deepseek-v4-pro` + `high`；
+- 显式 Pro/Flash/reasoning 保持原值，并由该 Run 的 child 精确继承；
+- fixed-profile 普通 read-only child 可用 Flash/high，显式 isolated Writer 使用
+  Pro/high，已有 typed recovery/recheck/rework 事实时使用 Pro/max；
+- 每个 Run 的实际 model、reasoning、actor 与中性 route audit 在 RunStore 中不可变；
+- 不增加任务难度 classifier、额外模型路由请求、关键词 heuristic 或运行中动态切换。
+
+完整长期决策见
+[ADR-0008](../decisions/0008-fixed-deepseek-routing-and-auto-retirement.md)。
+
 ### 6.1 中文原生交互与 Agent 提示词
 
 中文原生产品分为两个解耦层次：

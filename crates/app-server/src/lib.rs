@@ -1535,7 +1535,7 @@ mod tests {
             .to_string();
 
         let creation_request_id = "creation-http-recover";
-        let mut start = production_start(temp.path(), "中断自动路由创建");
+        let mut start = production_start(temp.path(), "中断固定路由创建");
         start.model = None;
         let interrupted_start = RunCommandEnvelope {
             schema_version: RUN_API_SCHEMA_VERSION,

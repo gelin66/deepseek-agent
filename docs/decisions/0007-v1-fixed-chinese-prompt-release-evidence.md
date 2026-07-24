@@ -76,6 +76,7 @@ M8-N 接受以下现有证据：
   manifests、summaries 和 `0600` raw 不改写。
 - 本决策不改写为中文 prompt 优于英文 prompt。`b088fd13` 的 full Chinese treatment
   仍为拒绝，M8-D/M8-M candidate 仍为 hold；它们不证明更好、更差或等价。
-- 本决策不改变默认 fixed Pro、Auto admission、official DeepSeek
+- 本决策在接受时不改变默认 fixed Pro 或当时的 Auto admission；Auto 产品方向随后由
+  [ADR-0008](0008-fixed-deepseek-routing-and-auto-retirement.md) supersede 并删除。official DeepSeek
   ChatCompletions、AgentRuntime、RunStore、工具目录或协议版本，也不准入 Anthropic、
   FIM、Provider、第二 transport、第二 Runtime 或第二 Store。
