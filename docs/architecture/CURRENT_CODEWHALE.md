@@ -57,6 +57,8 @@
 - M8-I Host typed Auto route candidate：`ef65bafa`
 - M8-J frozen V1 successor / V12 contract：`9e644add`
 - M8-J legacy Thread truth deletion candidate：`bcbc1616`
+- M8-K frozen V1 scope successor：`b44d7ff9`
+- M8-K accepted scope candidate：`6a99cb79`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -156,6 +158,14 @@
   迁移事务中删除旧表并保留 current run replay、pending Start、route audit 与 accounting；
   V12 关闭，current V1 matrix 为 10 pass / 6 blocked。没有模型 treatment，Key 未读取、
   官方请求 0。
+  M8-K 随后按 frozen implementation admission contract 重验 V08/V09/V10。current
+  production 没有 multi-Writer/FIM/RepoGraph owner 或同 revision treatment，也没有归因到
+  缺少它们的新 failure sample；M6-B1、M7-C/M8-H 与 M5-B 的既有证据不支持为清单恢复
+  已拒绝或已删除路径。ADR-0005 因而把 V1 验收收敛为一个显式 isolated Writer 的完整
+  lifecycle、Standard Chat + Strict 整目录准入/无损回退，以及 canonical
+  search/read/diff + ContextBroker + deterministic verifier 的 bounded cross-file 结果。
+  current matrix 为 13 pass / 3 blocked；production source、协议版本和默认 fixed Pro
+  均未改变，Key 未读取、官方请求 0。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -479,7 +489,7 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v22；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v23；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
 - 当前 canonical RuntimeEvent writer/reader 为 v17；
 - append-only canonical event；
@@ -507,11 +517,14 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - v22 直接退役缺少 `ModelRouteAudit` 的 pre-v17 materialized run，因为 selected model
   不能诚实反推 caller requested mode/reasoning；保留 pending Start intent，因为 Host Auto
   policy 在 `RunCreated` 前没有网络或计费副作用；
+- v23 在同一 `IMMEDIATE` migration transaction 中删除 legacy `threads` metadata 表；
+  fresh schema 不创建它，并保留 current canonical run、pending Start、route audit 与
+  accounting；
 - no-key terminal replay。
 
-旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
-foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径删除，没有迁为
-`RunStore` 双写。
+旧 `codewhale thread`、SQLite `threads` metadata 表与 `session_index.jsonl` 已删除；
+没有 compatibility reader 或双写。旧 Workflow/SubAgent JSON/JSONL 写入链也已随隐藏
+执行路径删除，没有迁为 `RunStore` 双写。
 
 ## 3. 当前入口
 
@@ -1615,6 +1628,24 @@ treatment，不能推导 verified success、Token、时间或费用提升；Key 
 完整事实见
 [M8-J V1 successor 与 V12 历史债删除](../../eval/summaries/m8-j-v1-successor-v12-debt-2026-07-24.md)。
 
+M8-K 没有添加 production 功能。frozen manifest `b44d7ff9` 要求候选必须同时具备
+current attributable failure、canonical caller、deterministic verifier、同 revision
+immutable treatment、完整 accounting、单一 owner 和 cutover 删除。V08/V09/V10 的
+current production audit 都不满足这组条件：
+
+| Item | 当前能力 | 可归因新失败 / treatment | V1 scope 决策 |
+|---|---|---|---|
+| V08 | 每 root 一个 explicit isolated Writer，完整 Host lifecycle | 0 / 无 | keep single Writer；multi-Writer evidence-gated |
+| V09 | official Standard Chat；Strict whole-catalog admission/lossless fallback | 0 / 无 FIM caller | keep Chat；FIM evidence-gated |
+| V10 | canonical search/read/diff、ContextBroker、deterministic verifier | 0 / 无 RepoGraph caller | keep bounded cross-file outcome；RepoGraph evidence-gated |
+
+ADR-0005 只删除了 PRODUCT_PLAN 中没有证据支撑的 implementation-name literals，没有
+宣布 multi-Writer、FIM 或 RepoGraph 已实现或质量较差，也没有改变 ADR-0003、唯一
+DeepSeek ChatCompletions backend、AgentRuntime、RunStore 或工具目录。V08/V09/V10
+按现有可验证能力关闭后 current V1 matrix 为 13 pass / 3 blocked，剩余 V13/V15/V16，
+V1 仍不可发布。完整事实见
+[M8-K V1 产品范围 successor](../../eval/summaries/m8-k-v1-scope-successor-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1627,14 +1658,15 @@ treatment，不能推导 verified success、Token、时间或费用提升；Key 
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
 - M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；其 frozen matrix
-  保持 8 blocked，M8-G/J successor 已把 current matrix 收敛为 6 blocked，但仍不可发布；
+  保持 8 blocked，M8-G/J/K successor 已把 current matrix 收敛为 3 blocked，但仍不可发布；
 - 旧模型 alias 退役等于 ChatCompletions surface 退役；官方文档与当前 production
   contract 都证明这是两个不同层次；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
   [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
-- RepoGraph、多 Writer 并发、通用 DAG 或自动冲突修复已完成；
+- RepoGraph、多 Writer 并发、通用 DAG 或自动冲突修复已完成；M8-K 只删除没有证据
+  支撑的 V1 implementation literals，并未作这些实现的质量结论；
 - M5-A 只在一个固定 Python 编码任务和一个伪完成反例上证明 false-success 下降，尚未证明
   所有真实项目的假成功归零或获得通用 Token/时间收益；
 - eager join 已在广泛任务上提高 multi verified success、降低 Token/费用或缩短时间；

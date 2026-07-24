@@ -131,6 +131,14 @@ Changing one of these constraints requires evidence and a new ADR.
   accounting, and `RunEnvironment.provider="deepseek"` replay safety remain.
   The current V1 successor matrix is 10 pass / 6 blocked; no Key or API was
   used for this deterministic deletion slice.
+- M8-K accepted ADR-0005 at candidate `6a99cb79`: V1 now requires the complete
+  lifecycle of one explicit isolated Writer, current Standard Chat plus Strict
+  whole-catalog admission/lossless fallback, and bounded verified cross-file
+  work through the canonical search/read/diff tools and ContextBroker.
+  Multi-Writer, FIM, and a named RepoGraph implementation are evidence-gated
+  post-V1 candidates, not literal V1 requirements. The current matrix is
+  13 pass / 3 blocked; no production surface changed and no Key or API was
+  used.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

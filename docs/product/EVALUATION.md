@@ -1679,6 +1679,10 @@ manifest：
 
 - `eval/manifests/m8-k-v1-scope-successor-v1.json`。
 
+accepted scope candidate 为 `6a99cb79ee1a63c57215456b5f0f040659b9426d`，tree
+`60e80a06c8d0a0f4b097a6af6d22a5df39205d25`。完整结论见
+[M8-K V1 产品范围 successor](../../eval/summaries/m8-k-v1-scope-successor-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
