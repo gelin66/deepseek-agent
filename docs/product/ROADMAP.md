@@ -3041,11 +3041,28 @@ stratum，且能冻结 typed runtime contract，才允许窄切片重开。
 
 #### M10-F：Trajectory Learning（只读 eval）
 
-现有 `eval/` 有多个冻结 runner/summary，但没有从 RunStore/raw 统一派生
-task stratum、failure code、context source、tool repetition、evidence deficit 和 recovery
-outcome 的只读 analyzer。M10-F 只能增强 corrected Harness：输出可独立重算的 loss
-aggregation 和下一候选 manifest 输入；不允许 production 自修改、LLM judge 完成权或
-第二 memory/plan store。决策后无消费者 analyzer 必须删除。
+正式决定为 `keep_read_only_analyzer`，产品结论为
+`insufficient_current_loss_evidence_for_a_new_product_candidate`：
+
+- corrected M9-C Harness 增加唯一 `--trajectory-report` 只读 mode；它验证三份 0600
+  frozen journal 的 schema/sequence/hash-chain/file identity，并从 canonical Store
+  snapshots 派生 strata/context/tool/failure/evidence/recovery，不输出 raw 或 id；
+- 37 trajectories / 34 labels / 3 accounting stops 被独立重算；9 个 typed-failure
+  trajectories 全部以 canonical Host evidence 恢复，1 个 M10-A frozen false-success
+  是已纠正 observer contradiction，1 个 M10-B false-success 是已删除 treatment 的
+  child-call contract failure；
+- 166 次 read_file 不能直接解释为重复损失。按同 actor、同 mutation epoch、且旧 Tool
+  message 仍在下一 ModelRequest 的严格 identity，current controls 的 visible duplicate
+  read/tool 都为 0；唯一 visible duplicate 是 treatment 的 1 次 run_verifiers；
+- analyzer 因能替代 M10-D/E one-off jq、复算已知结论并拒绝 naive repetition 假信号而
+  保留；它不进入 production、不自改 prompt、不用 LLM judge/Key/network；
+- 当前没有满足重复、单 owner、离线 fixture、单变量与旧路删除条件的下一 production
+  candidate。不得为保持开发节奏恢复 M10-A–E treatment。
+
+完整证据见
+[M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
+下一步只做最终 read-only fan-out evidence audit；无新的 current quality/time 证据则保持
+现有 explicit/conditional 范围。
 
 ### 调优
 

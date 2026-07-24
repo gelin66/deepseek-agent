@@ -1,0 +1,114 @@
+{
+  "schema": "codewhale.eval.m10-f-trajectory-loss-analyzer.v1",
+  "frozen_at": "2026-07-24",
+  "source_identity": {
+    "commit": "096b9462ec68aca49564778f022e9b01b43d1d08",
+    "tree": "565032f9e848d68ad83b2aef6c7a8f95a576af52",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "corrected_harness_before_sha256": "sha256:7850e9300feafcbe6176f0da752380e98d413bc35f0992b6a7b4376a8aee07e4",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "current candidate selection still requires one-off jq and evaluator-specific interpretation instead of one independently recomputable read-only loss aggregation over canonical RunStore snapshots",
+    "acceptance": [
+      "validate every input as a 0600 regular non-symlink hash-chained journal",
+      "content-address every input journal and reject schema, hash, sequence or partial-tail mismatch",
+      "derive task stratum, tool and context observations, typed failures, evidence deficits, recovery outcome and measurement stops without exposing raw prompt, tool arguments or credentials",
+      "derive repeated exact tool observations separately per actor and reset the observation epoch after an applied workspace mutation",
+      "separate canonical evidence facts from frozen evaluator labels",
+      "produce canonical JSON whose bytes and hash are identical across repeated runs",
+      "make no network request and never read a credential",
+      "add no production dependency, Runtime event, State field, memory store, plan truth, LLM judge or prompt self-modification"
+    ],
+    "owner": "scripts/eval-m9b-fixed-pro-regression.py corrected Harness",
+    "old_path_replaced": "manual one-off jq aggregation used by M10-D and M10-E loss audits",
+    "cutover_if_kept": "retain one read-only trajectory-report mode and delete no frozen evidence",
+    "cutover_if_rejected": "delete the analyzer mode and treatment-only self-tests; retain this frozen manifest and decision summary"
+  },
+  "inputs": [
+    {
+      "campaign": "m9-c-fixed-pro-regression",
+      "path": "eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl",
+      "journal_schema": "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1",
+      "file_sha256": "sha256:c73a01a4934b82b3f4a4042791aae89e5da56feaea1ffbea188a80d4e6e05b77",
+      "size_bytes": 11611383,
+      "current_control_variant": null
+    },
+    {
+      "campaign": "m10-a-scoped-context-pack",
+      "path": "eval/results/m10-a-scoped-context-pack-14c922de3066-v1.jsonl",
+      "journal_schema": "codewhale.eval.m10-a-scoped-context-pack-journal.v1",
+      "file_sha256": "sha256:0c81935b2e6c4afb2e80c76d0a3746689e068a90c17ee16644176b8d710a0d66",
+      "size_bytes": 31169005,
+      "current_control_variant": "pack_on"
+    },
+    {
+      "campaign": "m10-b-working-set",
+      "path": "eval/results/m10-b-working-set-d79ebf43b0d9-v1.jsonl",
+      "journal_schema": "codewhale.eval.m10-b-working-set-ab-journal.v1",
+      "file_sha256": "sha256:69b44fa8ebcc8555fe102369bbf4fc25c66149aa713a8d4fa2157578f87da1d0",
+      "size_bytes": 7445467,
+      "current_control_variant": "working_set_off"
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 37,
+    "completed_arm_results": 34,
+    "accounting_abort_records": 3,
+    "allowed_abort_code": "accounting_incomplete",
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only, preserved separately from canonical evidence",
+    "task_stratum_source": "arm_started task_id/lane/variant joined by evaluation_id",
+    "context_sources": [
+      "system prompt block cache class and stable marker",
+      "workspace read tools",
+      "git observation tools",
+      "child handoff",
+      "verifier observation"
+    ],
+    "observation_epoch": "per run_id; reset after a ToolOutcome with side_effect=applied",
+    "duplicate_identity": "canonical hash of tool name plus parsed arguments inside one observation epoch",
+    "recovery_success": "typed failed ToolOutcome followed by canonical completed terminal plus Host receipt for a non-safety task",
+    "evidence_deficits": [
+      "positive terminal completed without Host receipt",
+      "frozen false-success label with invalid lane contract",
+      "frozen false-success label contradicted by valid canonical Host and external verifier evidence",
+      "started trajectory without arm_result because acquisition stopped"
+    ]
+  },
+  "candidate_rule": {
+    "quality_first": true,
+    "exclude": [
+      "already corrected evaluator observer mismatch",
+      "M9-E billing reconciliation infeasibility",
+      "loss belonging only to a deleted treatment",
+      "raw tool repetition without same-actor same-epoch identity",
+      "historical data from a non-current Runtime or tool catalog"
+    ],
+    "admissible_signal": [
+      "current fixed-Pro loss repeats in at least two trajectories",
+      "canonical facts identify one existing owner",
+      "the loss has a deterministic offline fixture",
+      "one product variable can change while TaskContract, model, tools, budget and verifier stay fixed",
+      "candidate can replace and delete an old path"
+    ],
+    "result_classes": [
+      "next_candidate",
+      "insufficient_current_loss_evidence"
+    ]
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

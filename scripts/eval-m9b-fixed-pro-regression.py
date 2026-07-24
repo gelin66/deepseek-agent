@@ -45,6 +45,15 @@ JOURNAL_SCHEMA = (
 ADMISSION_SCHEMA = (
     "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
 )
+TRAJECTORY_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m10-f-trajectory-loss-analyzer-v1.json"
+)
+TRAJECTORY_MANIFEST_SCHEMA = (
+    "codewhale.eval.m10-f-trajectory-loss-analyzer.v1"
+)
+TRAJECTORY_REPORT_SCHEMA = (
+    "codewhale.eval.m10-f-trajectory-loss-report.v1"
+)
 RUN_API = 11
 EVENT_API = 17
 STATE_SCHEMA = 23
@@ -1636,8 +1645,13 @@ class Journal:
         return record_sha256
 
 
-def read_journal(path: Path, *, allow_partial_tail: bool) -> dict[str, Any]:
-    metadata = path.lstat()
+def read_hash_chained_journal(
+    path: Path, expected_schema: str, *, allow_partial_tail: bool
+) -> dict[str, Any]:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise EvaluationError("journal_file_invalid") from error
     require(
         stat.S_ISREG(metadata.st_mode)
         and not path.is_symlink()
@@ -1667,7 +1681,7 @@ def read_journal(path: Path, *, allow_partial_tail: bool) -> dict[str, Any]:
             )
         }
         require(
-            core["schema"] == JOURNAL_SCHEMA
+            core["schema"] == expected_schema
             and core["sequence"] == index
             and core["previous_record_sha256"] == previous
             and isinstance(core["payload"], dict),
@@ -1684,6 +1698,687 @@ def read_journal(path: Path, *, allow_partial_tail: bool) -> dict[str, Any]:
         "partial_tail_bytes": len(tail),
         "file_sha256": sha256_bytes(raw),
     }
+
+
+def read_journal(path: Path, *, allow_partial_tail: bool) -> dict[str, Any]:
+    return read_hash_chained_journal(
+        path, JOURNAL_SCHEMA, allow_partial_tail=allow_partial_tail
+    )
+
+
+def load_trajectory_manifest() -> dict[str, Any]:
+    manifest = read_json_object(
+        TRAJECTORY_MANIFEST_PATH, "trajectory_manifest_unavailable"
+    )
+    require(
+        manifest.get("schema") == TRAJECTORY_MANIFEST_SCHEMA,
+        "trajectory_manifest_schema_invalid",
+    )
+    inputs = manifest.get("inputs")
+    require(
+        isinstance(inputs, list)
+        and len(inputs) >= 1
+        and all(isinstance(item, dict) for item in inputs),
+        "trajectory_inputs_invalid",
+    )
+    paths = [item.get("path") for item in inputs]
+    require(
+        all(isinstance(path, str) and path for path in paths)
+        and len(paths) == len(set(paths)),
+        "trajectory_input_paths_invalid",
+    )
+    return manifest
+
+
+def trajectory_event_streams(
+    facts: dict[str, Any],
+) -> list[list[dict[str, Any]]]:
+    root_events = facts.get("root_events")
+    children = facts.get("children")
+    require(
+        isinstance(root_events, list) and isinstance(children, list),
+        "trajectory_facts_invalid",
+    )
+    streams = [root_events]
+    for child in children:
+        require(
+            isinstance(child, dict) and isinstance(child.get("events"), list),
+            "trajectory_child_facts_invalid",
+        )
+        streams.append(child["events"])
+    return streams
+
+
+def trajectory_argument_identity(invocation: dict[str, Any]) -> str:
+    arguments = invocation.get("arguments")
+    require(isinstance(arguments, dict), "trajectory_arguments_invalid")
+    parsed = arguments.get("parsed")
+    if parsed is None:
+        raw = arguments.get("raw")
+        require(isinstance(raw, str), "trajectory_arguments_invalid")
+        parsed = {"raw_sha256": sha256_bytes(raw.encode("utf-8"))}
+    return canonical_hash(
+        {"name": invocation.get("name"), "arguments": parsed}
+    )
+
+
+def trajectory_prompt_markers(text: str) -> list[str]:
+    markers = []
+    for marker, needle in (
+        ("project_instructions", "<project_instructions"),
+        ("project_context_pack", "<project_context_pack>"),
+        ("working_set", "cw:ctx:working_set"),
+        ("runtime_workspace", "cw:ctx:workspace"),
+        ("runtime_route", "cw:ctx:route"),
+    ):
+        if needle in text:
+            markers.append(marker)
+    if not markers:
+        markers.append("constitution_or_runtime_contract")
+    return markers
+
+
+def trajectory_tool_source(name: str) -> str:
+    if name in {"read_file", "grep_files", "list_dir"}:
+        return "workspace_read"
+    if name in {"git_diff", "git_status"}:
+        return "git_observation"
+    if name == "agent":
+        return "child_handoff"
+    if name in {"run_tests", "run_verifiers"}:
+        return "verifier_observation"
+    if name in MAY_WRITE_TOOLS:
+        return "workspace_mutation"
+    return "other_tool"
+
+
+def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
+    tool_prepared = Counter()
+    tool_outcomes = Counter()
+    tool_sources = Counter()
+    failure_codes = Counter()
+    prompt_cache_blocks = Counter()
+    prompt_cache_bytes = Counter()
+    prompt_markers = Counter()
+    exact_duplicates = Counter()
+    visible_exact_duplicates = Counter()
+    model_requests = 0
+    receipt_present = False
+
+    streams = trajectory_event_streams(facts)
+    for stream in streams:
+        latest_visible_tool_calls: set[str] = set()
+        seen_in_epoch: dict[str, str] = {}
+        last_workspace_revision: str | None = None
+        for envelope in stream:
+            require(
+                isinstance(envelope, dict)
+                and isinstance(envelope.get("event"), dict),
+                "trajectory_event_invalid",
+            )
+            event = envelope["event"]
+            kind = event.get("kind")
+            if kind == "model_request_prepared":
+                request = event.get("request")
+                require(
+                    isinstance(request, dict),
+                    "trajectory_model_request_invalid",
+                )
+                messages = request.get("messages")
+                require(
+                    isinstance(messages, list),
+                    "trajectory_model_request_invalid",
+                )
+                latest_visible_tool_calls = {
+                    message.get("call_id")
+                    for message in messages
+                    if isinstance(message, dict)
+                    and message.get("role") == "tool"
+                    and isinstance(message.get("call_id"), str)
+                }
+                system_prompt = request.get("system_prompt")
+                require(
+                    isinstance(system_prompt, dict)
+                    and isinstance(system_prompt.get("blocks"), list),
+                    "trajectory_system_prompt_invalid",
+                )
+                model_requests += 1
+                request_markers: set[str] = set()
+                for block in system_prompt["blocks"]:
+                    require(
+                        isinstance(block, dict)
+                        and isinstance(block.get("text"), str),
+                        "trajectory_system_prompt_invalid",
+                    )
+                    cache_control = block.get("cache_control")
+                    require(
+                        cache_control in {"stable", "volatile"},
+                        "trajectory_cache_control_invalid",
+                    )
+                    text = block["text"]
+                    prompt_cache_blocks[cache_control] += 1
+                    prompt_cache_bytes[cache_control] += len(
+                        text.encode("utf-8")
+                    )
+                    request_markers.update(
+                        trajectory_prompt_markers(text)
+                    )
+                prompt_markers.update(request_markers)
+            elif kind == "tool_prepared":
+                invocation = event.get("invocation")
+                require(
+                    isinstance(invocation, dict)
+                    and isinstance(invocation.get("name"), str)
+                    and isinstance(invocation.get("call_id"), str),
+                    "trajectory_tool_prepared_invalid",
+                )
+                name = invocation["name"]
+                identity = trajectory_argument_identity(invocation)
+                previous_call_id = seen_in_epoch.get(identity)
+                if previous_call_id is not None:
+                    exact_duplicates[name] += 1
+                    if previous_call_id in latest_visible_tool_calls:
+                        visible_exact_duplicates[name] += 1
+                seen_in_epoch[identity] = invocation["call_id"]
+                tool_prepared[name] += 1
+                tool_sources[trajectory_tool_source(name)] += 1
+            elif kind == "tool_outcome_committed":
+                name = event.get("name")
+                outcome = event.get("outcome")
+                require(
+                    isinstance(name, str) and isinstance(outcome, dict),
+                    "trajectory_tool_outcome_invalid",
+                )
+                tool_outcomes[name] += 1
+                if not tool_outcome_success(outcome):
+                    code = outcome.get("failure_code")
+                    failure_codes[
+                        code if isinstance(code, str) else "missing_failure_code"
+                    ] += 1
+                if outcome.get("side_effect") == "applied":
+                    seen_in_epoch.clear()
+            elif kind == "workspace_observed":
+                workspace_state = event.get("workspace_state")
+                revision = (
+                    workspace_state.get("revision")
+                    if isinstance(workspace_state, dict)
+                    else None
+                )
+                sha256 = (
+                    revision.get("sha256")
+                    if isinstance(revision, dict)
+                    else None
+                )
+                if (
+                    isinstance(sha256, str)
+                    and last_workspace_revision is not None
+                    and sha256 != last_workspace_revision
+                ):
+                    seen_in_epoch.clear()
+                if isinstance(sha256, str):
+                    last_workspace_revision = sha256
+            elif kind == "host_verification_committed":
+                if isinstance(event.get("receipt"), dict):
+                    receipt_present = True
+
+    run = facts.get("run")
+    require(isinstance(run, dict), "trajectory_run_invalid")
+    terminal = run.get("terminal")
+    terminal_state = (
+        terminal.get("state") if isinstance(terminal, dict) else None
+    )
+    return {
+        "terminal_state": terminal_state,
+        "host_receipt": receipt_present,
+        "model_requests": model_requests,
+        "tool_prepared": dict(sorted(tool_prepared.items())),
+        "tool_outcomes": dict(sorted(tool_outcomes.items())),
+        "tool_sources": dict(sorted(tool_sources.items())),
+        "failure_codes": dict(sorted(failure_codes.items())),
+        "prompt_cache_blocks": dict(sorted(prompt_cache_blocks.items())),
+        "prompt_cache_bytes": dict(sorted(prompt_cache_bytes.items())),
+        "prompt_marker_requests": dict(sorted(prompt_markers.items())),
+        "exact_duplicate_calls_same_actor_epoch": dict(
+            sorted(exact_duplicates.items())
+        ),
+        "visible_exact_duplicate_calls_same_actor_epoch": dict(
+            sorted(visible_exact_duplicates.items())
+        ),
+    }
+
+
+def trajectory_label_projection(
+    lane: str,
+    analysis: dict[str, Any],
+    arm_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if arm_result is None:
+        return {
+            "status": "acquisition_incomplete",
+            "verified_success": False,
+            "correct_rejection": False,
+            "false_success": False,
+            "evidence_deficit": "arm_result_missing",
+        }
+    false_success = arm_result.get("false_success") is True
+    lane_audit = arm_result.get("lane_audit")
+    lane_valid = (
+        lane_audit.get("valid")
+        if isinstance(lane_audit, dict)
+        else None
+    )
+    external = arm_result.get("external_verifier")
+    external_passed = (
+        external.get("passed")
+        if isinstance(external, dict)
+        else None
+    )
+    lane_reasons = (
+        lane_audit.get("reasons")
+        if isinstance(lane_audit, dict)
+        and isinstance(lane_audit.get("reasons"), list)
+        else []
+    )
+    terminal_completed = analysis["terminal_state"] == "completed"
+    receipt = analysis["host_receipt"]
+    deficit = None
+    if lane != "safety" and terminal_completed and not receipt:
+        deficit = "completed_without_host_receipt"
+    elif (
+        false_success
+        and external_passed is True
+        and terminal_completed
+        and receipt
+        and analysis["failure_codes"]
+        and lane_reasons == ["failure_mutation_pass_order_missing"]
+    ):
+        deficit = "observer_label_contradiction"
+    elif false_success and lane_valid is False:
+        deficit = "lane_contract_failure"
+    elif (
+        false_success
+        and lane_valid is True
+        and external_passed is True
+        and terminal_completed
+        and receipt
+    ):
+        deficit = "observer_label_contradiction"
+    elif false_success:
+        deficit = "frozen_false_success_other"
+    return {
+        "status": "labeled",
+        "verified_success": arm_result.get("verified_success") is True,
+        "correct_rejection": arm_result.get("correct_rejection") is True,
+        "false_success": false_success,
+        "evidence_deficit": deficit,
+    }
+
+
+def trajectory_recovery_projection(
+    lane: str, analysis: dict[str, Any]
+) -> str:
+    if not analysis["failure_codes"]:
+        return "no_typed_failure"
+    if lane == "safety":
+        return "safety_no_recovery_expected"
+    if (
+        analysis["terminal_state"] == "completed"
+        and analysis["host_receipt"]
+    ):
+        return "recovered_with_host_evidence"
+    return "typed_failure_not_recovered"
+
+
+def sum_counter_values(target: Counter, values: dict[str, Any]) -> None:
+    for key, value in values.items():
+        require(
+            isinstance(key, str)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0,
+            "trajectory_counter_invalid",
+        )
+        target[key] += value
+
+
+def aggregate_trajectory_loss(
+    campaigns: list[dict[str, Any]],
+    expected_shape: dict[str, Any],
+) -> dict[str, Any]:
+    strata: dict[str, Counter] = {}
+    variants = Counter()
+    tools = Counter()
+    outcomes = Counter()
+    tool_sources = Counter()
+    failures = Counter()
+    prompt_blocks = Counter()
+    prompt_bytes = Counter()
+    prompt_markers = Counter()
+    duplicates = Counter()
+    visible_duplicates = Counter()
+    control_visible_duplicates = Counter()
+    deficits = Counter()
+    recoveries = Counter()
+    labels = Counter()
+    model_requests = 0
+    completed_arm_results = 0
+    trajectories = 0
+    acquisition_aborts = 0
+    duplicate_trajectories = 0
+    control_duplicate_trajectories = 0
+    control_campaigns_with_visible_read_duplicates: set[str] = set()
+
+    for campaign in campaigns:
+        acquisition_aborts += campaign["accounting_aborts"]
+        for trajectory in campaign["trajectories"]:
+            trajectories += 1
+            lane = trajectory["lane"]
+            task_id = trajectory["task_id"]
+            variant = trajectory["variant"]
+            analysis = trajectory["analysis"]
+            label = trajectory["label"]
+            recovery = trajectory["recovery"]
+            is_control = trajectory["is_current_control"]
+            stratum = f"{lane}/{task_id}"
+            strata.setdefault(stratum, Counter())
+            strata[stratum]["trajectories"] += 1
+            strata[stratum][f"terminal:{analysis['terminal_state']}"] += 1
+            strata[stratum][f"label:{label['status']}"] += 1
+            variants[f"{campaign['campaign']}:{variant}"] += 1
+            labels["verified_success"] += int(label["verified_success"])
+            labels["correct_rejection"] += int(label["correct_rejection"])
+            labels["false_success"] += int(label["false_success"])
+            completed_arm_results += int(label["status"] == "labeled")
+            if label["evidence_deficit"] is not None:
+                deficits[label["evidence_deficit"]] += 1
+            recoveries[recovery] += 1
+            model_requests += analysis["model_requests"]
+            sum_counter_values(tools, analysis["tool_prepared"])
+            sum_counter_values(outcomes, analysis["tool_outcomes"])
+            sum_counter_values(tool_sources, analysis["tool_sources"])
+            sum_counter_values(failures, analysis["failure_codes"])
+            sum_counter_values(
+                prompt_blocks, analysis["prompt_cache_blocks"]
+            )
+            sum_counter_values(
+                prompt_bytes, analysis["prompt_cache_bytes"]
+            )
+            sum_counter_values(
+                prompt_markers, analysis["prompt_marker_requests"]
+            )
+            sum_counter_values(
+                duplicates,
+                analysis["exact_duplicate_calls_same_actor_epoch"],
+            )
+            sum_counter_values(
+                visible_duplicates,
+                analysis[
+                    "visible_exact_duplicate_calls_same_actor_epoch"
+                ],
+            )
+            visible_count = sum(
+                analysis[
+                    "visible_exact_duplicate_calls_same_actor_epoch"
+                ].values()
+            )
+            if visible_count:
+                duplicate_trajectories += 1
+            if is_control:
+                sum_counter_values(
+                    control_visible_duplicates,
+                    analysis[
+                        "visible_exact_duplicate_calls_same_actor_epoch"
+                    ],
+                )
+                if visible_count:
+                    control_duplicate_trajectories += 1
+                if (
+                    analysis[
+                        "visible_exact_duplicate_calls_same_actor_epoch"
+                    ].get("read_file", 0)
+                    > 0
+                ):
+                    control_campaigns_with_visible_read_duplicates.add(
+                        campaign["campaign"]
+                    )
+
+    require(
+        trajectories == expected_shape.get("canonical_store_snapshots")
+        and completed_arm_results
+        == expected_shape.get("completed_arm_results")
+        and acquisition_aborts
+        == expected_shape.get("accounting_abort_records"),
+        "trajectory_input_shape_mismatch",
+        {
+            "canonical_store_snapshots": trajectories,
+            "completed_arm_results": completed_arm_results,
+            "accounting_abort_records": acquisition_aborts,
+        },
+    )
+    control_visible_reads = control_visible_duplicates.get("read_file", 0)
+    control_campaign_count = len(
+        control_campaigns_with_visible_read_duplicates
+    )
+    if control_visible_reads >= 2 and control_campaign_count >= 2:
+        candidate = {
+            "result_class": "next_candidate",
+            "candidate_id": "revision_bound_read_observation_quality",
+            "owner_to_audit": [
+                "crates/tools read_file freshness owner",
+                "crates/context request projection"
+            ],
+            "signal": {
+                "control_visible_read_calls": control_visible_reads,
+                "control_trajectories_with_visible_duplicate":
+                    control_duplicate_trajectories,
+                "control_campaigns_with_visible_read_duplicates":
+                    control_campaign_count,
+            },
+            "next_gate": (
+                "prove that the prior read observation remains selected and "
+                "byte-current at the duplicate call; then test one stale-safe "
+                "compact observation treatment without blocking intentional "
+                "rereads"
+            ),
+        }
+    else:
+        candidate = {
+            "result_class": "insufficient_current_loss_evidence",
+            "candidate_id": None,
+            "signal": {
+                "control_visible_read_calls": control_visible_reads,
+                "control_campaigns_with_visible_read_duplicates":
+                    control_campaign_count,
+            },
+        }
+    return {
+        "trajectories": trajectories,
+        "completed_arm_results": completed_arm_results,
+        "accounting_aborts": acquisition_aborts,
+        "model_requests": model_requests,
+        "task_strata": {
+            key: dict(sorted(value.items()))
+            for key, value in sorted(strata.items())
+        },
+        "variants": dict(sorted(variants.items())),
+        "labels": dict(sorted(labels.items())),
+        "tools_prepared": dict(sorted(tools.items())),
+        "tool_outcomes": dict(sorted(outcomes.items())),
+        "tool_context_sources": dict(sorted(tool_sources.items())),
+        "typed_failure_codes": dict(sorted(failures.items())),
+        "prompt_cache_blocks": dict(sorted(prompt_blocks.items())),
+        "prompt_cache_bytes": dict(sorted(prompt_bytes.items())),
+        "prompt_marker_requests": dict(sorted(prompt_markers.items())),
+        "exact_duplicate_calls_same_actor_epoch": dict(
+            sorted(duplicates.items())
+        ),
+        "visible_exact_duplicate_calls_same_actor_epoch": dict(
+            sorted(visible_duplicates.items())
+        ),
+        "current_control_visible_exact_duplicate_calls_same_actor_epoch": dict(
+            sorted(control_visible_duplicates.items())
+        ),
+        "trajectories_with_any_visible_duplicate": duplicate_trajectories,
+        "current_control_trajectories_with_any_visible_duplicate":
+            control_duplicate_trajectories,
+        "evidence_deficits": dict(sorted(deficits.items())),
+        "recovery_outcomes": dict(sorted(recoveries.items())),
+        "candidate": candidate,
+    }
+
+
+def build_trajectory_report() -> dict[str, Any]:
+    manifest = load_trajectory_manifest()
+    expected_shape = manifest.get("expected_input_shape")
+    require(
+        isinstance(expected_shape, dict),
+        "trajectory_expected_shape_invalid",
+    )
+    campaigns = []
+    input_identity = []
+    allowed_abort = expected_shape.get("allowed_abort_code")
+    for item in manifest["inputs"]:
+        relative = item.get("path")
+        expected_schema = item.get("journal_schema")
+        require(
+            isinstance(relative, str)
+            and isinstance(expected_schema, str)
+            and isinstance(item.get("campaign"), str),
+            "trajectory_input_invalid",
+        )
+        path = (ROOT / relative).resolve()
+        require(
+            repository_relative(path, "trajectory_input_scope_invalid")
+            == relative,
+            "trajectory_input_scope_invalid",
+        )
+        require(
+            path.stat().st_size == item.get("size_bytes")
+            and file_hash(path) == item.get("file_sha256"),
+            "trajectory_input_identity_invalid",
+            {"path": relative},
+        )
+        audit = read_hash_chained_journal(
+            path, expected_schema, allow_partial_tail=False
+        )
+        payloads = [record["payload"] for record in audit["records"]]
+        starts: dict[str, dict[str, Any]] = {}
+        snapshots: dict[str, dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
+        aborts = []
+        for payload in payloads:
+            record_type = payload.get("record_type")
+            if record_type in {
+                "arm_started",
+                "canonical_store_snapshot",
+                "arm_result",
+            }:
+                evaluation_id = payload.get("evaluation_id")
+                require(
+                    isinstance(evaluation_id, str) and evaluation_id,
+                    "trajectory_evaluation_id_invalid",
+                )
+                target = {
+                    "arm_started": starts,
+                    "canonical_store_snapshot": snapshots,
+                    "arm_result": results,
+                }[record_type]
+                require(
+                    evaluation_id not in target,
+                    "trajectory_evaluation_duplicate",
+                )
+                target[evaluation_id] = payload
+            elif record_type == "abort":
+                require(
+                    payload.get("error_code") == allowed_abort
+                    and payload.get("maximum_reruns") == 0,
+                    "trajectory_abort_invalid",
+                )
+                aborts.append(payload)
+        require(
+            set(snapshots).issubset(starts)
+            and set(results).issubset(snapshots)
+            and len(starts) == len(snapshots),
+            "trajectory_join_invalid",
+            {"campaign": item["campaign"]},
+        )
+        trajectories = []
+        control_variant = item.get("current_control_variant")
+        for evaluation_id, snapshot in snapshots.items():
+            start = starts[evaluation_id]
+            require(
+                start.get("maximum_reruns") == 0,
+                "trajectory_rerun_contract_invalid",
+            )
+            lane = start.get("lane")
+            task_id = start.get("task_id")
+            variant = start.get("variant")
+            require(
+                isinstance(lane, str) and isinstance(task_id, str),
+                "trajectory_stratum_invalid",
+            )
+            analysis = analyze_trajectory_facts(snapshot.get("facts", {}))
+            label = trajectory_label_projection(
+                lane, analysis, results.get(evaluation_id)
+            )
+            trajectories.append(
+                {
+                    "lane": lane,
+                    "task_id": task_id,
+                    "variant": variant or "fixed_pro",
+                    "is_current_control": (
+                        variant == control_variant
+                        if control_variant is not None
+                        else variant is None
+                    ),
+                    "analysis": analysis,
+                    "label": label,
+                    "recovery": trajectory_recovery_projection(
+                        lane, analysis
+                    ),
+                }
+            )
+        campaigns.append(
+            {
+                "campaign": item["campaign"],
+                "accounting_aborts": len(aborts),
+                "trajectories": trajectories,
+            }
+        )
+        input_identity.append(
+            {
+                "campaign": item["campaign"],
+                "path": relative,
+                "journal_schema": expected_schema,
+                "file_sha256": audit["file_sha256"],
+                "records": len(audit["records"]),
+                "partial_tail_bytes": audit["partial_tail_bytes"],
+            }
+        )
+    aggregate_result = aggregate_trajectory_loss(
+        campaigns, expected_shape
+    )
+    return {
+        "schema": TRAJECTORY_REPORT_SCHEMA,
+        "manifest_sha256": file_hash(TRAJECTORY_MANIFEST_PATH),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "inputs": input_identity,
+        "aggregate": aggregate_result,
+        "security": {
+            "credential_read": False,
+            "network_accessed": False,
+            "raw_prompt_output": False,
+            "raw_tool_argument_output": False,
+            "raw_tool_content_output": False,
+            "evaluation_id_output": False,
+        },
+    }
+
+
+def run_trajectory_report() -> int:
+    report = build_trajectory_report()
+    sys.stdout.buffer.write(canonical_bytes(report) + b"\n")
+    return 0
 
 
 def execute_arm(
@@ -2457,6 +3152,169 @@ def run_self_test() -> int:
             )
         else:
             raise EvaluationError("journal_tamper_accepted")
+    secret_argument = "sk-trajectory-self-test-do-not-output"
+    request = {
+        "messages": [],
+        "system_prompt": {
+            "blocks": [
+                {
+                    "cache_control": "stable",
+                    "text": "constitution",
+                }
+            ]
+        },
+    }
+    synthetic_events = [
+        {"event": {"kind": "model_request_prepared", "request": request}},
+        {
+            "event": {
+                "kind": "tool_prepared",
+                "invocation": {
+                    "name": "read_file",
+                    "call_id": "read-1",
+                    "arguments": {
+                        "parsed": {"path": secret_argument},
+                        "raw": "{}",
+                    },
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_outcome_committed",
+                "name": "read_file",
+                "outcome": {
+                    **accepted,
+                    "side_effect": "not_applicable",
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "model_request_prepared",
+                "request": {
+                    **request,
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "call_id": "read-1",
+                            "name": "read_file",
+                            "content": "redacted",
+                        }
+                    ],
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_prepared",
+                "invocation": {
+                    "name": "read_file",
+                    "call_id": "read-2",
+                    "arguments": {
+                        "parsed": {"path": secret_argument},
+                        "raw": "{}",
+                    },
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_outcome_committed",
+                "name": "read_file",
+                "outcome": {
+                    **accepted,
+                    "side_effect": "not_applicable",
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_prepared",
+                "invocation": {
+                    "name": "edit_file",
+                    "call_id": "edit-1",
+                    "arguments": {
+                        "parsed": {
+                            "path": "target",
+                            "search": "a",
+                            "replace": "b",
+                        },
+                        "raw": "{}",
+                    },
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_outcome_committed",
+                "name": "edit_file",
+                "outcome": {
+                    **accepted,
+                    "side_effect": "applied",
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "model_request_prepared",
+                "request": {
+                    **request,
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "call_id": "read-2",
+                            "name": "read_file",
+                            "content": "redacted",
+                        }
+                    ],
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "tool_prepared",
+                "invocation": {
+                    "name": "read_file",
+                    "call_id": "read-3",
+                    "arguments": {
+                        "parsed": {"path": secret_argument},
+                        "raw": "{}",
+                    },
+                },
+            }
+        },
+        {
+            "event": {
+                "kind": "host_verification_committed",
+                "receipt": {"id": "receipt:trajectory-self-test"},
+            }
+        },
+    ]
+    trajectory_projection = analyze_trajectory_facts(
+        {
+            "root_events": synthetic_events,
+            "children": [],
+            "run": {"terminal": {"state": "completed"}},
+        }
+    )
+    require(
+        trajectory_projection[
+            "exact_duplicate_calls_same_actor_epoch"
+        ].get("read_file")
+        == 1
+        and trajectory_projection[
+            "visible_exact_duplicate_calls_same_actor_epoch"
+        ].get("read_file")
+        == 1
+        and trajectory_projection["host_receipt"] is True,
+        "self_test_trajectory_projection_invalid",
+    )
+    require(
+        secret_argument
+        not in canonical_bytes(trajectory_projection).decode("utf-8"),
+        "self_test_trajectory_secret_exposed",
+    )
     print(
         json.dumps(
             {
@@ -2476,6 +3334,12 @@ def run_self_test() -> int:
                 ),
                 "materialized_base_commits": materialized,
                 "fault_results": fault_results,
+                "trajectory_projection": {
+                    "exact_duplicate_reads": 1,
+                    "visible_exact_duplicate_reads": 1,
+                    "epoch_reset_after_applied_mutation": True,
+                    "raw_arguments_exposed": False,
+                },
                 "key_accessed": False,
                 "network_accessed": False,
             },
@@ -2612,6 +3476,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--freeze-report", action="store_true")
+    mode.add_argument("--trajectory-report", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
@@ -2638,6 +3503,8 @@ def main() -> int:
             return run_self_test()
         if args.freeze_report:
             return run_freeze_report()
+        if args.trajectory_report:
+            return run_trajectory_report()
         require(args.binary, "binary_required")
         if args.dry_run:
             return run_dry(args)

@@ -191,6 +191,16 @@ Changing one of these constraints requires evidence and a new ADR.
   decision is `reject_no_measured_environment_or_runtime_artifact_loss`: no
   production candidate, Key, API request, second environment truth, or runtime
   platform was created.
+- M10-F retained one read-only trajectory mode in the corrected M9-C Harness.
+  It validates and aggregates the canonical M9-C/M10-A/M10-B 0600
+  hash-chained journals without exposing prompts, arguments, credentials, or
+  evaluation ids. It independently reproduces nine typed-failure recoveries,
+  one corrected observer contradiction, one deleted-treatment lane-contract
+  failure, and three accounting stops. Same-actor, same-mutation-epoch,
+  model-visible identity reduces naive repeated-read counts to zero duplicate
+  reads/tools in current controls. The result is
+  `insufficient_current_loss_evidence_for_a_new_product_candidate`; do not
+  restore M10-A–E treatments from raw tool frequency alone.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

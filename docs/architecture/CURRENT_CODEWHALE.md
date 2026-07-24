@@ -1978,6 +1978,27 @@ M10-E 当前事实：
 完整事实见
 [M10-E Environment / Runtime Artifacts](../../eval/summaries/m10-e-environment-runtime-artifacts-2026-07-24.md)。
 
+M10-F 当前事实：
+
+- `scripts/eval-m9b-fixed-pro-regression.py --trajectory-report` 是唯一 current read-only
+  loss analyzer；没有新 runner、production dependency、Store、event、prompt mutation
+  或完成权；
+- analyzer 验证 M9-C/M10-A/M10-B frozen 0600 journal 的 schema、sequence、hash chain、
+  file hash/size 与完整 tail，从 canonical Store snapshots/Runtime events 派生聚合；
+- 输出只有 strata/count/hash/status，不含 raw prompt、tool arguments/content、
+  credential 或 evaluation id；连续两次输出 byte-identical；
+- 37 trajectories 中 9 个 typed failure 全部以 Host evidence 恢复；两个 frozen
+  false-success 被区分为已纠正 observer contradiction 与已删除 treatment lane failure；
+  3 个缺失 label 是既有 accounting stops；
+- 重复 observation 按 actor 分离，并在 applied mutation/revision change 后重置；只有
+  prior Tool message 仍在当前 ModelRequest 才算 visible duplicate。current controls 的
+  visible duplicate read/tool 均为 0；
+- 当前 report 为 `insufficient_current_loss_evidence`，没有新的 production candidate。
+  analyzer 保留用于后续 loss identification；Key/API/network/new raw 为 0。
+
+完整事实见
+[M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

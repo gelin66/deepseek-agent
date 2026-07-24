@@ -2066,7 +2066,7 @@ physical attempt unknown，campaign 继续 fail closed。放宽当前准入规�
 | C Acceptance Progress | TaskContract、receipt、latest-revision completion gate、completion-time satisfaction | 无执行中派生的逐 acceptance progress | plan store、Goal/Hunt、update-plan tool |
 | D Recovery | typed failure/retry/side-effect、transport retry、verifier recovery、fixed Pro/max recheck | 无完整 failure→Host action controller | classifier request、第二 loop |
 | E Environment | RunEnvironment、execution fingerprint、exact verifier、worktree、revision-bound ToolArtifact | current 轨迹无 environment/runtime loss，profile 候选已否决 | 云平台、全局 browser/MCP |
-| F Trajectory | frozen manifests/raw/summaries、corrected Harness | 无通用只读 loss aggregation | production self-modification、LLM judge |
+| F Trajectory | frozen manifests/raw/summaries、corrected Harness | 只读 canonical loss analyzer 已接管；当前无新 product candidate | production self-modification、LLM judge |
 
 统一约束：
 
@@ -2244,6 +2244,29 @@ M10-E 已形成 `reject_no_measured_environment_or_runtime_artifact_loss`：
 [M10-E Environment / Runtime Artifacts](../../eval/summaries/m10-e-environment-runtime-artifacts-2026-07-24.md)。
 下一独立切片是 M10-F 只读 trajectory loss analyzer；不得从“未来可能需要 runtime
 artifact”推导“当前先造通用平台”。
+
+M10-F 已形成 `keep_read_only_analyzer`，同时决定
+`insufficient_current_loss_evidence_for_a_new_product_candidate`：
+
+- corrected M9-C Harness 的唯一 trajectory mode 读取并验证 M9-C/M10-A/M10-B 三份
+  frozen 0600 hash-chain journal；输出 canonical JSON，不泄露 prompt、arguments/content、
+  credential 或 evaluation id；
+- 37 trajectories、34 labels、3 accounting stops、210 model requests、280 tool outcomes
+  可独立复算；3 个 missing labels 都是既有 accounting abort；
+- 9 个 typed-failure trajectories 全部 recovered_with_host_evidence；没有
+  typed_failure_not_recovered，复核 M10-D 结论；
+- 两个 frozen false-success 分离为 1 个已纠正 M10-A observer contradiction 与 1 个
+  已删除 M10-B treatment 的 lane contract failure；current controls 无重复；
+- naive path grouping 会把 actor/revision/compaction 边界混在一起。严格按同 actor、
+  mutation epoch 与 prior Tool message model-visible 计算后，current controls 的
+  visible exact duplicate read/tool 都为 0；全数据仅 treatment 有 1 次重复 verifier；
+- report 双跑 byte-identical。analyzer 因替代 one-off jq 并能拒绝 false candidate 而
+  保留，但没有产生可准入 product treatment；credential/API/network/raw 为 0。
+
+完整证据见
+[M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
+下一步只允许最终 read-only parallel evidence audit；不得把高 read_file 频率或多 Agent
+数量本身包装成能力。
 
 ## 10. 结果与决策记录
 
