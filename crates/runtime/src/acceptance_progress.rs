@@ -445,10 +445,11 @@ fn receipt_item(
 mod tests {
     use std::collections::BTreeMap;
 
+    use codewhale_context::compaction::effective_context;
     use codewhale_protocol::agent_runtime::{
-        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, HostVerificationFailure, RunId, RunRequest,
-        RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, TemporalEvidenceProgress,
-        ToolArtifact, ToolEvidence, VerificationArtifactPayload,
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, HostVerificationFailure, PromptCacheControl, RunId,
+        RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, SystemPromptBlock,
+        TemporalEvidenceProgress, ToolArtifact, ToolEvidence, VerificationArtifactPayload,
     };
     use codewhale_protocol::task::{
         CompletionCandidateId, EvidenceLineage, EvidenceReceiptId, FailedVerifierEvidence,
@@ -593,6 +594,60 @@ mod tests {
             artifact_ids: vec![artifact_id],
         });
         outcome
+    }
+
+    fn projected_tokens(snapshot: &RunSnapshot, treatment: bool) -> u64 {
+        let mut snapshot = snapshot.clone();
+        if treatment {
+            let marker = SystemPromptBlock {
+                text: "<!-- cw:ctx:acceptance_progress:v1 -->".to_owned(),
+                cache_control: PromptCacheControl::Volatile,
+            };
+            snapshot.request.system_prompt.blocks.push(marker.clone());
+            let TranscriptEntry::System { prompt } = &mut snapshot.transcript.entries[0] else {
+                panic!("fixture starts with system prompt")
+            };
+            prompt.blocks.push(marker);
+        }
+        let tools = Vec::new();
+        let runtime_context = RuntimeContextInput::new(&snapshot, &tools);
+        effective_context(runtime_context.as_context_input())
+            .expect("projected context")
+            .estimated_tokens
+    }
+
+    #[test]
+    fn frozen_offline_projection_token_costs_are_exact() {
+        let pending = snapshot(VerifierEvidencePolicy::LatestPass);
+        let pending_delta = (
+            projected_tokens(&pending, false),
+            projected_tokens(&pending, true),
+        );
+
+        let mut rejected = pending.clone();
+        let rejection = rejection(&rejected, EvidenceSealRejection::VerifierFailed);
+        rejected.last_completion_rejection = Some(rejection.clone());
+        rejected.last_host_verification_failure = Some(HostVerificationFailure {
+            outcome: ToolOutcome::error("deterministic verifier failed"),
+            workspace_state: rejected.workspace_state.clone(),
+            rejection,
+        });
+        let rejected_delta = (
+            projected_tokens(&rejected, false),
+            projected_tokens(&rejected, true),
+        );
+
+        let mut satisfied = pending.clone();
+        satisfied
+            .evidence_receipts
+            .push(receipt(&satisfied, satisfied.workspace_state.clone()));
+        let satisfied_delta = (
+            projected_tokens(&satisfied, false),
+            projected_tokens(&satisfied, true),
+        );
+        assert_eq!(pending_delta, (235, 356));
+        assert_eq!(rejected_delta, (538, 547));
+        assert_eq!(satisfied_delta, (492, 386));
     }
 
     #[test]

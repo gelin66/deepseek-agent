@@ -1,0 +1,141 @@
+{
+  "schema": "codewhale.eval.m10-c-acceptance-progress-offline.v1",
+  "frozen_at": "2026-07-24T17:14:26Z",
+  "decision": "reject_offline_viability_and_delete",
+  "product_metric_eligible": false,
+  "live_admitted": false,
+  "credential_read": false,
+  "official_api_requests": 0,
+  "slice_contract": {
+    "real_problem": "canonical TaskContract, verifier observations, completion rejection and EvidenceReceipt facts exist, but model-visible Host facts do not provide one derived per-acceptance satisfied/pending/invalidated/evidence_needed projection during execution",
+    "acceptance": [
+      "derive only from canonical facts and latest workspace revision",
+      "preserve exact compaction and SQLite reopen behavior",
+      "reduce repeated tool rounds or missed acceptance work",
+      "verified success non-inferior",
+      "false success zero",
+      "produce an attributable efficiency or reliability gain",
+      "delete the treatment if any admission gate fails"
+    ],
+    "owner": "crates/runtime",
+    "consumer": "existing crates/context ContextBroker",
+    "old_path_replaced_only_after_admission": "repeated legacy Host-facts prose and model reconstruction of remaining acceptance work",
+    "forbidden": [
+      "second plan truth",
+      "plan store",
+      "Goal/Hunt restoration",
+      "update-plan tool",
+      "second completion authority"
+    ],
+    "cutover_on_rejection": "delete projection, prompt marker, config/user wiring and treatment-only tests; retain the single legacy Host-facts production path"
+  },
+  "identity": {
+    "starting_commit": "11528a990a6f0b46fa7adeeaaf47295d841fbeb1",
+    "starting_tree": "4c2a825844d30599e1641aaa84438b1e465fc1c7",
+    "wip_candidate_commit": "9fd1ff8db91199d6b37d615b333f86a28ed7fcef",
+    "wip_candidate_tree": "c0d70f22e873e8b6356fbd3c19c878e0ab92af46",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "candidate_delta": {
+    "files_changed": 20,
+    "insertions": 1587,
+    "deletions": 86,
+    "net_lines": 1501,
+    "state_schema_changed": false,
+    "runtime_event_changed": false,
+    "second_persistent_truth_added": false
+  },
+  "offline_projection": {
+    "estimator": "canonical ContextBroker estimated_tokens on the same deterministic RunSnapshot fixture",
+    "control": "legacy Host-facts renderer",
+    "treatment": "typed acceptance-progress renderer selected by the immutable system-prompt marker",
+    "states": [
+      {
+        "state": "pending_before_terminal_evidence",
+        "control_tokens": 235,
+        "treatment_tokens": 356,
+        "delta_tokens": 121,
+        "delta_percent": 51.5,
+        "request_visible": true
+      },
+      {
+        "state": "verifier_rejected",
+        "control_tokens": 538,
+        "treatment_tokens": 547,
+        "delta_tokens": 9,
+        "delta_percent": 1.7,
+        "request_visible": true
+      },
+      {
+        "state": "receipt_satisfied",
+        "control_tokens": 492,
+        "treatment_tokens": 386,
+        "delta_tokens": -106,
+        "delta_percent": -21.5,
+        "request_visible": false,
+        "reason": "canonical Host receipt sealing immediately accepts terminal completion; there is no subsequent model request that can consume this reduction"
+      }
+    ],
+    "conclusion": "every measured model-request-visible state is non-improving; the only smaller projection is terminal-only and cannot affect a production request"
+  },
+  "current_fixed_pro_recovery_evidence": {
+    "raw_path": "eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl",
+    "raw_sha256": "sha256:c73a01a4934b82b3f4a4042791aae89e5da56feaea1ffbea188a80d4e6e05b77",
+    "raw_size_bytes": 11611383,
+    "observations": [
+      {
+        "record_sha256": "sha256:b8ce3a7ad2858903f1e79a20778d6997fd8b6c7513c4e1dfca28cc0867795af0",
+        "arm_index": 5,
+        "task_id": "root_recovery",
+        "verified_success": true,
+        "false_success": false,
+        "requests": 5,
+        "direct_writes": [
+          "run_verifiers",
+          "edit_file",
+          "run_verifiers"
+        ],
+        "accounting_complete": true,
+        "input_tokens": 22189,
+        "cache_miss_tokens": 10029,
+        "wall_time_ms": 29637
+      },
+      {
+        "record_sha256": "sha256:ced6cb4ddbf9e22ddaacff71dea57e374ae1a01c0f605b3b743fbc4030560143",
+        "arm_index": 7,
+        "task_id": "root_recovery",
+        "verified_success": true,
+        "false_success": false,
+        "requests": 5,
+        "direct_writes": [
+          "run_verifiers",
+          "edit_file",
+          "run_verifiers"
+        ],
+        "accounting_complete": true,
+        "input_tokens": 19164,
+        "cache_miss_tokens": 4316,
+        "wall_time_ms": 22449
+      }
+    ],
+    "interpretation": "the current fixed-Pro path already recovers through the deterministic failure-edit-pass sequence; no observed baseline acceptance-progress failure establishes product headroom for this candidate"
+  },
+  "decision_rule": {
+    "live_campaign_required": false,
+    "reason": "the candidate fails offline viability before credential access: it increases every request-visible measured projection, adds 1501 net lines, and has no observed current-baseline acceptance failure to repair",
+    "billing_boundary": "do not expose another physical request to M9-E's unreconcilable pre-header billing window when the candidate has already failed the offline quality/complexity gate",
+    "result": "delete the treatment and advance to an independently scoped failure-directed recovery slice"
+  },
+  "non_conclusions": [
+    "does not claim that all derived acceptance projections are intrinsically harmful",
+    "does not compare live fixed-Pro control and treatment",
+    "does not change canonical TaskContract, EvidenceReceipt or Host completion semantics",
+    "does not change the M9-C product conclusion",
+    "does not authorize Auto, FIM, Anthropic Messages, a second Runtime/Store or a plan store"
+  ]
+}
