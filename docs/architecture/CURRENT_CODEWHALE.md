@@ -70,6 +70,9 @@
 - M9-B fixed-Pro regression candidate：`983fa9ce`
 - M9-B fixed-Pro live admission：`37c4cc96`
 - M9-B read-only observer correction：`9342fb03`
+- M9-C fixed-Pro successor contract：`d79b2a36`
+- M9-C corrected Harness / immutable candidate：`7a91bbaa`
+- M9-C fixed-Pro successor live admission：`84e20cd9`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -213,7 +216,10 @@
   M9-B 又尝试建立六类 post-V1 fixed-Pro regression baseline；offline gates 全通过，
   但正式 v1 在第 2 个完整 arm 暴露 read-only/Writer observer 分类缺陷并在第 3 arm
   中止。observer 已修复并自测，旧 admission 因 Harness hash 改变自动失效；18-arm
-  baseline 仍为 hold，不能续跑或拼接。
+  baseline 仍为 hold，不能续跑或拼接。M9-C 从新 position 1 重开并完成第一轮 6/6
+  与第二轮两个 arm；第 9 个 scheduled arm 在 response/usage 前发生 transport failure，
+  canonical ledger 记录 unknown billing 并停止。M9-C 同样不续跑、不拼接，18-arm
+  baseline 仍为 hold，旧 M6/M7 runner 不删除。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -1802,6 +1808,22 @@ fixed `deepseek-v4-pro`，Auto 仍 hold；没有 classifier、Provider、FIM、A
 runner 会 fail closed，不会复用旧 campaign。完整事实见
 [M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
 
+M9-C 继续使用同一个 corrected current Harness，没有复制第二个 evaluator 或修改
+production。successor 从新的 manifest/admission/raw position 1 开始，只按 hash 解析
+M9-B 的 task/tool contract 并使用新的 acceptance ID。candidate `7a91bbaa` 的 binary
+仍是唯一 `codewhale app-server --stdio`、Run API v11、RuntimeEvent v17、State v23、
+AgentApplication/AgentRuntime/RunStore 与 official DeepSeek Standard Chat production
+composition；root、read-only child 与 Writer 全部显式 fixed Pro/high。
+
+正式 campaign 第一轮六类 task 各完成一次，第二轮再完成 read-only 与 recovery；8 个
+arm result 的 route/lane/reopen/accounting 均有效、false success 0。第二轮 Writer 在
+child 创建前的第一个 root request 遇到无 response/usage 的
+`deepseek_transport`。Store 没有伪造 Token 或费用，而是保存
+`billing_unknown=true`、`complete=false`；Harness 在 terminal/Store/reopen/verifier
+落盘后停止。没有重跑或拼接，也没有完整 18-arm baseline。默认仍 fixed Pro，Auto 仍
+hold；旧 M6/M7 runner 因 cutover gate 未满足而保留。完整事实见
+[M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1849,6 +1871,11 @@ runner 会 fail closed，不会复用旧 campaign。完整事实见
   2 个完整 arm results，第 2 个又因 read-only/Writer observer 分类错误而
   measurement-ineligible，第 3 arm 没有 terminal/accounting snapshot。修正重放只能
   证明 observer defect，不能补算、续跑或拼接为 baseline；
+- M9-C 已建立可用于 release regression 的完整 fixed-Pro 18-arm baseline；successor
+  只有 8 个 measurement-valid arm results，第 9 个 scheduled arm 因 response 前
+  transport failure 形成 `billing_unknown=true` 并按规则停止。第一轮 6/6、八个完整
+  observations 和 false success 0 都不能替代 18-arm aggregate，也不能准入 Auto 或
+  触发旧 runner 删除；
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；

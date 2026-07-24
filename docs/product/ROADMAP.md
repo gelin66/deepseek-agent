@@ -2762,6 +2762,36 @@ M6/M7 one-off runner。v1 未满足 cutover，相关脚本暂时保留；fresh s
 manifest/admission/raw 从 position 1 开始。完整事实见
 [M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
 
+### M9-C：position-1 fixed-Pro regression successor
+
+M9-C 没有续跑 M9-B。新的 successor manifest 只按 SHA-256 继承 M9-B 的 task、
+tool-policy 与 official-review contract，替换六个 acceptance ID，并从新的 candidate、
+admission、immutable binary、schedule position 1 与独占 raw 开始。旧 M9-B admission
+在 credential 前被 corrected single Harness 拒绝。candidate `7a91bbaa` 的 fixture、
+Harness hash-chain/SIGKILL、focused、fmt、workspace strict Clippy/test、production
+root/read-only/Writer/recovery/reopen/CLI/TUI/API loopback、release build、dry-run 与
+formal preflight 全部通过。
+
+正式 campaign 第一轮六类 task 全部完成；第二轮又完成 read-only 与 recovery，共 8 个
+measurement-valid arm result、49 个已结算请求、known cost `$0.075802984`，全部达到
+预期 outcome 且 false success 0。第 9 个 scheduled arm 是第二轮 explicit Writer；
+它在 child 创建前的首个 Pro 请求发生无 response headers/usage 的 typed
+`deepseek_transport`。RunStore 精确记录 started/completed `1/1`、usage responses 0、
+`billing_unknown=true`、`complete=false`。Harness 写完 terminal、Store、无凭据
+SQLite reopen 与 verifier 后以 `accounting_incomplete` 停止，没有第 10 arm、重跑、
+补 mate、续跑或拼接。
+
+决策是 **hold incomplete M9-C successor / keep fixed Pro default / keep corrected
+Harness / retain old M6/M7 runners**。18-arm cutover gate 未满足，因此不生成 baseline
+aggregate，不删除 `eval-m6-writer-benefit.py`、`eval-m6-writer-canary.py`、
+`eval-m7-agent-convergence.py` 或 `eval-m7g-readonly-fanout.py`。manifest、admission、
+summary 与 ignored 0600 raw 保留。
+
+M9-A 与 M9-C 都因 response 前 transport failure 导致 unknown billing。下一切片先审计
+不选择性重采样、仍 fail-before-loss 的 billing-provable campaign acquisition contract；
+不得机械再开 successor、弱化 accounting 或把部分成功包装成 Auto admission。完整事实见
+[M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

@@ -1932,6 +1932,48 @@ Auto/Flash/FIM/prompt/reasoning/routing 或 production capability 结论。旧 M
 - ignored `eval/results/m9-b-fixed-pro-regression-983fa9cee711-v1.jsonl`（`0600`）；
 - [M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
 
+### 9.32 M9-C fixed-Pro coding regression successor（2026-07-24）
+
+M9-C 使用新的 successor manifest/admission/raw identity 从 position 1 重开，不读取或
+拼接 M9-B raw。successor 只 content-address M9-B 的 task、tool-policy 与 official-review
+section，并冻结新的 acceptance ID、三轮顺序、candidate `7a91bbaa`、release binary、
+Harness、TaskContract 和 result path。旧 M9-B admission 在 credential/raw 前 fail
+closed。
+
+Key 前，继承 section 与 fixture/base identity、18-arm schedule、hash-chain/tamper 与四个
+SIGKILL window、focused、fmt、workspace strict Clippy/test、root/read-only/Writer、
+verifier recovery、RunStore reopen、pending Start SIGKILL、CLI/TUI/API loopback、
+release build、credential-free dry-run 和 formal preflight 全部通过。
+
+正式 raw 有 56 个完整 hash-chained records、无 partial tail、11,611,383 bytes、0600，
+SHA-256
+`c73a01a4934b82b3f4a4042791aae89e5da56feaea1ffbea188a80d4e6e05b77`。
+前 8 个 arm result 全部 measurement-valid：第一轮六类 task 各 1 次，第二轮 read-only
+与 recovery 各 1 次；7 个正向 verified、1 个 safety correct rejection、false success
+0。它们包含 49 个结算 response/usage、287,156 input、27,074 output、168,448
+cache-hit、118,708 cache-miss 与 `$0.075802984` known cost，只能作为停止前描述性事实。
+
+第 9 个 scheduled arm 是第二轮 `writer_migration`。Writer child 尚未创建时，root
+第一个 Pro 请求发生 typed `deepseek_transport`，没有 response headers、surface response
+或 usage。canonical ledger 是 root started/completed/in-flight `1/1/0`、usage response
+0、sealed=true、`billing_unknown=true`、`complete=false`。Harness 保存 terminal/
+Store/无凭据 reopen/verifier 后写入 `accounting_incomplete` abort；
+`completed_arms=8`、`maximum_reruns=0`，没有下一 arm、重跑、补 mate、续跑或拼接。
+
+结论为 **hold incomplete successor / keep fixed Pro default / keep corrected Harness /
+retain old M6/M7 runners**。没有 summary record，`baseline_label_eligible=false`；
+8/18 observations 不能准入 release regression 或 Auto。18-arm cutover 未满足，四个
+旧 one-off runner 不删除。M9-A/M9-C 已两次证明 formal campaign 会被 response 前
+unknown-billing transport ambiguity 截断；下一次 paid suite 前应先冻结不选择性重采样、
+不弱化 accounting 的 evidence-acquisition contract。
+
+证据：
+
+- `eval/manifests/m9-c-fixed-pro-regression-successor-v1.json`；
+- `eval/manifests/m9-c-fixed-pro-regression-live-admission-v1.json`；
+- ignored `eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl`（`0600`）；
+- [M9-C fixed-Pro regression successor](../../eval/summaries/m9-c-fixed-pro-regression-successor-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
