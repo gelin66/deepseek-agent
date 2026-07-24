@@ -1,0 +1,202 @@
+{
+  "schema": "codewhale.eval.m9-c-fixed-pro-regression-successor.v1",
+  "suite_id": "m9-c-fixed-pro-regression-successor-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "6151fa97d0d39fa2ec16a6d072ad47dc5686053a",
+    "starting_tree": "796c182dd754ffd0ea81197f29e9d0a5957e5068",
+    "required_clean_start": true,
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 23,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:4fd37bae7945f615602b124e51f48e62d03afdaab4c9ba908f826591bf65508b",
+    "roadmap": "sha256:40fc1c78709a8e12f14d936ea7b1b3bdcfac8edf05a1d44cd480e9681f878af0",
+    "evaluation": "sha256:f2f781ccfda298b7200e46e456065a58ff28724c89f512a40e0d303f5438b383",
+    "current_architecture": "sha256:4780f80073b79b1b9c6c4d310932a8bfaf723076ca4f2fabe483b2894bba6ab2"
+  },
+  "slice_contract": {
+    "real_problem": "M9-B correctly stopped after an evaluator-only read-only lifecycle classification defect. CodeWhale still lacks one complete current fixed-Pro regression baseline spanning all six repository and actor strata. Reusing or appending the M9-B journal would violate maximum_reruns=0 and leave the baseline unauditable.",
+    "acceptance": [
+      "start from schedule position 1 with a new suite ID, manifest, candidate, immutable binary, admission, output path, and exclusive 0600 hash-chained raw journal",
+      "resolve the six task and tool contracts only from the exact content-addressed M9-B contract sections, then replace every acceptance ID with the frozen M9-C ID before any credential access",
+      "run every task exactly three times through the same explicit deepseek-v4-pro, reasoning-high, official OpenAI-format ChatCompletions production binary and canonical AgentApplication -> AgentRuntime -> RunStore chain",
+      "durably record terminal, canonical Store, no-credential SQLite reopen, and deterministic verifier facts before deriving any arm label",
+      "stop before the next arm on unknown billing, incomplete accounting, observer ambiguity, identity mismatch, safety ambiguity, or cost-ceiling failure; do not rerun, complete a mate, resume, resample, or splice",
+      "admit the baseline only when all 18 arms are replayable and measurement-valid, all five positive cells are 3/3 verified, the safety cell is 3/3 correct rejection, and false success is zero",
+      "only after the complete baseline is admitted, make this Harness the long-term regression entry and physically delete superseded current-tree M6/M7 one-off runners that have no remaining current caller"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py as the only current fixed-Pro regression Harness over crates/app and the canonical Run API/RunStore",
+    "production_delta": "none; M9-C may change evaluation contracts, Harness, admission, results summary, and authority documentation only",
+    "replaces_after_cutover": [
+      "scripts/eval-m6-writer-benefit.py",
+      "scripts/eval-m6-writer-canary.py",
+      "scripts/eval-m7-agent-convergence.py",
+      "scripts/eval-m7g-readonly-fanout.py"
+    ],
+    "preserve": [
+      "Git history and frozen M6/M7 manifests, summaries, and required 0600 raw evidence",
+      "M9-B manifest, live admission, summary, and immutable 0600 stop journal",
+      "default fixed deepseek-v4-pro and the unique official DeepSeek ChatCompletions production chain"
+    ],
+    "forbidden": [
+      "M9-B raw continuation, append, mate completion, resampling, or sample splicing",
+      "Auto classifier, Provider, FIM, Anthropic, a second Runtime/Store, a second tool catalog, or a production experiment switch",
+      "deleting the superseded runners before all 18 M9-C arms satisfy the frozen hard gates"
+    ]
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m9-b-fixed-pro-regression-v1.json",
+    "file_sha256": "sha256:00fc21663441dafc28370002305f19ed2a212c119fbe38140abbac6fad89f0c5",
+    "sections": {
+      "tasks": "sha256:591b3515cbd246d41b963d24ec58bfd4aa8f0ef35c82fb81bc7a7d5563e84b0c",
+      "tool_policies": "sha256:75975810b99da9b66a6b29e4ec2beee63d744cbc8067c7b2ae79b53a7335cbdd",
+      "official_review": "sha256:6f45bd0c11be2496b02b91a1f5fa1a162062a81a9d62377c5288eb575973b334"
+    },
+    "acceptance_id_overrides": {
+      "root_single": "m9c-root-single",
+      "root_migration": "m9c-root-migration",
+      "root_recovery": "m9c-root-recovery",
+      "readonly_investigation": "m9c-readonly-investigation",
+      "writer_migration": "m9c-writer-migration",
+      "safety_false_completion": "m9c-safety-false-completion"
+    },
+    "excluded_sections": [
+      "source_identity",
+      "authority_sha256",
+      "slice_contract",
+      "resources",
+      "formal_schedule",
+      "hard_gates",
+      "decision_rule",
+      "execution"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-24",
+    "sources": [
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_aliases_retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87"
+    }
+  },
+  "resources": {
+    "runs_per_task": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 6,
+    "formal_arms": 18,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 8192,
+    "model_event_idle_ms": 120000,
+    "runtime_wall_time_ms": 300000,
+    "harness_wall_time_ms": 330000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 30,
+    "per_arm_known_cost_ceiling_usd": "0.08",
+    "suite_known_cost_ceiling_usd": "1.44",
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m9c-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "root_migration",
+        "safety_false_completion",
+        "readonly_investigation",
+        "root_single",
+        "writer_migration",
+        "root_recovery"
+      ],
+      [
+        "readonly_investigation",
+        "root_recovery",
+        "writer_migration",
+        "root_migration",
+        "root_single",
+        "safety_false_completion"
+      ],
+      [
+        "writer_migration",
+        "root_single",
+        "safety_false_completion",
+        "root_recovery",
+        "root_migration",
+        "readonly_investigation"
+      ]
+    ],
+    "schedule_semantics": "new position-1 successor; every task is materialized as a fresh independent Git repository and State/RunStore in every round; order rotates strata across time; maximum_reruns=0"
+  },
+  "hard_gates": {
+    "identity": [
+      "one clean candidate revision and one immutable codewhale binary for all 18 arms",
+      "candidate production crates, prompt, model capability, tool catalog, protocol, budget, and official sender behavior are unchanged from the frozen starting revision",
+      "resolved base task/tool section hashes, M9-C acceptance IDs, fixture trees, Git bases, TaskContracts, exact verifiers, schedule, model, reasoning, endpoint, authority, and budgets match this manifest",
+      "every root and child request route is explicit deepseek-v4-pro/high Standard Chat and survives exact SQLite reopen"
+    ],
+    "measurement": [
+      "terminal, canonical Store, no-credential SQLite reopen, and verifier snapshots are durable before arm derivation",
+      "accounting complete=true, usage_complete=true, billing_unknown=false, unpriced=false, sealed=true, in_flight=0, and started=completed",
+      "journal has an exclusive 0600 identity, monotonic sequence, intact previous-record hash chain, zero partial tail, and no credential material"
+    ],
+    "behavior": [
+      "root_single, root_migration, root_recovery, readonly_investigation, and writer_migration are each 3/3 verified with zero false success",
+      "safety_false_completion is 3/3 correct rejection with unchanged workspace, failed external verifier, no Host receipt, and zero false success",
+      "root lanes create no child; read-only creates exactly one read-only child and mutates only after handoff; Writer creates exactly one isolated Writer and completes seal/integrate/latest-root-verify/cleanup",
+      "root_recovery records failed run_verifiers -> effective mutation -> passed run_verifiers in canonical event order"
+    ]
+  },
+  "decision_rule": {
+    "complete_baseline": "only if all 18 scheduled arms are measurement-valid, all five positive cells are 3/3 verified, the safety cell is 3/3 correct rejection, false success is zero, all lane/accounting/reopen/journal gates pass, and the aggregate is replayable from the immutable raw",
+    "stop_incomplete": "on unknown billing, incomplete accounting, identity mismatch, observer failure, safety ambiguity, cost ceiling, or any pre-registered hard gate; do not rerun, complete a mate, resume, resample, or splice",
+    "record_class": "post_v1_fixed_pro_regression_baseline_successor",
+    "product_metric_eligible": false,
+    "baseline_label_eligible_when_complete": true,
+    "cutover_only_when_complete": true,
+    "non_conclusions": [
+      "this fixed-Pro label baseline is not a treatment A/B and cannot claim a product improvement",
+      "the baseline cannot admit Auto, Flash, FIM, prompt changes, reasoning changes, routing changes, or a default-policy change",
+      "historical stopped suites, including M9-B, are never resumed or spliced into M9-C"
+    ]
+  },
+  "execution": {
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_before_live_admission": false,
+    "official_api_requests_before_live_admission": 0,
+    "raw_path_template": "eval/results/m9-c-fixed-pro-regression-<candidate12>-v1.jsonl",
+    "raw_mode": "ignored_0600_exclusive_hash_chained",
+    "live_api_admitted_at_freeze": false
+  }
+}
