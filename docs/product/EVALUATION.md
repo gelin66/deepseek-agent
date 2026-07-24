@@ -2065,7 +2065,7 @@ physical attempt unknown，campaign 继续 fail closed。放宽当前准入规�
 | B Working Set | rg/read/git/tool catalog、deterministic compaction | 无 task-aware ranked region selector 和 localization metrics | RepoGraph crate、embedding/vector DB、LLM reranker |
 | C Acceptance Progress | TaskContract、receipt、latest-revision completion gate、completion-time satisfaction | 无执行中派生的逐 acceptance progress | plan store、Goal/Hunt、update-plan tool |
 | D Recovery | typed failure/retry/side-effect、transport retry、verifier recovery、fixed Pro/max recheck | 无完整 failure→Host action controller | classifier request、第二 loop |
-| E Environment | RunEnvironment、execution fingerprint、worktree、ToolArtifact/verifier artifact | 无 deterministic project profile 和 task-scoped runtime artifacts | 云平台、全局 browser/MCP |
+| E Environment | RunEnvironment、execution fingerprint、exact verifier、worktree、revision-bound ToolArtifact | current 轨迹无 environment/runtime loss，profile 候选已否决 | 云平台、全局 browser/MCP |
 | F Trajectory | frozen manifests/raw/summaries、corrected Harness | 无通用只读 loss aggregation | production self-modification、LLM judge |
 
 统一约束：
@@ -2218,6 +2218,32 @@ M10-D 已形成 `reject_no_safe_independent_controller_delta`：
 [M10-D Failure-Directed Recovery](../../eval/summaries/m10-d-failure-directed-recovery-2026-07-24.md)。
 下一独立切片是 M10-E Environment/Runtime Artifacts；不得把没有环境因果事实的
 `operation_failed` 自动解释成“修改产品代码”或“重试”。
+
+M10-E 已形成 `reject_no_measured_environment_or_runtime_artifact_loss`：
+
+- current exact-production owner 已闭合 execution identity、verifier plan 与 latest
+  revision evidence：RunEnvironment/fingerprint 在 resume 重算，TaskContract verifier
+  在 RunCreated 前解析为 exact plan，ToolArtifact/EvidenceReceipt 绑定执行前后相同
+  workspace revision，Writer 使用 fresh worktree tools 并由 root post-merge reverify；
+- M9-C/M10-A/M10-B 的 37 个 canonical Store snapshots 共 280 个 ToolOutcome；
+  `exec_shell=0`、`run_tests=0`，没有 environment/setup/service/UI failure；
+- 37/37 acceptance 都是单步 exact `run_verifiers`，frozen program 均为
+  `/usr/bin/python3`。既没有“猜命令”baseline loss，也没有可供 profile 替代的
+  production caller；
+- current TaskAcceptance 只有 Host/Verifier，没有 typed service/UI runtime profile。
+  因而 service/browser artifact 只能靠文本或 generic operation failure 猜测，违反
+  task-scoped 与单一事实边界；
+- existing deterministic conformance 通过 resolver/execution environment identity、
+  verifier workspace cleanliness、caller plan replacement、latest-revision receipt、
+  HTTP 前 fingerprint rejection 与 Writer fresh tools/root reverify；
+- production code delta=0、credential read=false、official API requests=0、raw=none。
+  不新增 ProjectEnvironmentProfile、第二 environment truth、browser/service mode，也
+  不删除 TUI Doctor 或 tool-specific diagnostics。
+
+完整证据见
+[M10-E Environment / Runtime Artifacts](../../eval/summaries/m10-e-environment-runtime-artifacts-2026-07-24.md)。
+下一独立切片是 M10-F 只读 trajectory loss analyzer；不得从“未来可能需要 runtime
+artifact”推导“当前先造通用平台”。
 
 ## 10. 结果与决策记录
 

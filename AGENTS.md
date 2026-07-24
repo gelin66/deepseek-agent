@@ -179,6 +179,18 @@ Changing one of these constraints requires evidence and a new ADR.
   failure are not stable causal facts. The decision is
   `reject_no_safe_independent_controller_delta`: no production candidate, Key,
   API request, classifier, automatic rollback, or second loop was created.
+- M10-E found no current environment or runtime-artifact product loss.
+  Across 37 canonical M9-C/M10-A/M10-B Store snapshots, 280 ToolOutcome
+  commits contained no `exec_shell`, `run_tests`, environment setup, service,
+  or UI-runtime failure; all 37 acceptance contracts froze one exact
+  `/usr/bin/python3` verifier step. RunEnvironment/execution fingerprint,
+  production exact-verifier resolution, revision-bound ToolArtifact receipts,
+  and fresh Writer worktree tools already own the observed reproducibility
+  facts. TaskAcceptance has no typed service/UI trigger, so a project profile
+  or global browser/service collector would duplicate owners or guess. The
+  decision is `reject_no_measured_environment_or_runtime_artifact_loss`: no
+  production candidate, Key, API request, second environment truth, or runtime
+  platform was created.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

@@ -1851,19 +1851,21 @@ Key 未读取、official API 请求 0，现有 `billing_unknown -> formal campai
 
 M10 前置调用图复核确认，当前唯一控制闭环已经具备 TaskContract、ContextBroker、
 AgentRuntime、canonical ToolOutcome、EvidenceReceipt/verifier artifact、RunStore 与
-corrected Harness，但五个产品缺口仍然分离：
+corrected Harness；当时预注册的五个独立候选缺口为：
 
 - prompt 默认继续追加 project context pack；无说明文件时 fallback overview 与 pack 共用
   `build_project_context_pack`，`.codewhale/.claude rules` 仍 eager 注入；
 - ContextBroker 没有 task-aware、预算化 ranked working-set regions；
 - acceptance satisfaction 只在 completion gate 构造，运行中没有派生 progress view；
 - app 只有部分 typed recovery/recheck 选择，没有完整 failure-directed Host controller；
-- RunEnvironment/ToolArtifact 没有 deterministic project environment profile 与
-  TaskContract-scoped runtime artifacts。
+- RunEnvironment/ToolArtifact 没有单独的 deterministic project environment profile
+  或 TaskContract-scoped service/UI runtime artifacts；M10-E 已证明 current fixed-Pro
+  轨迹没有可由它们修复的 measured loss，因此这不是已准入缺口。
 
 skills 已经只把 name/description/path 放入 prompt，正文按需读取；single Writer
 worktree、latest-revision Stop Gate、RunStore exact replay、atomic tools 和 stable-prefix/
-accounting 均已有，不能在 M10 重复建设。后续 A→E 只允许增强上述现有 owner。
+accounting 均已有，不能在 M10 重复建设。A→E 只有通过各自证据门才允许增强上述现有
+owner；M10-A 至 M10-E 的实际结果以下列 current facts 为准。
 
 M10-A 当前事实：
 
@@ -1953,6 +1955,28 @@ M10-D 当前事实：
 
 完整事实见
 [M10-D Failure-Directed Recovery](../../eval/summaries/m10-d-failure-directed-recovery-2026-07-24.md)。
+
+M10-E 当前事实：
+
+- production 没有 ProjectEnvironmentProfile、第二 environment store、service manager、
+  global browser mode 或 console/network/screenshot artifact tool；
+- RunEnvironment 与 ProductionExecutionFingerprint 已绑定 canonical workspace、
+  DeepSeek provider、fixed route、tool catalog、retry、tool execution identity 与
+  sandbox controls；resume mismatch 在任何 HTTP 前失败；
+- TaskContract verifier 在 RunCreated 前由 production resolver 转为 exact plan，resume
+  要求同一解析结果；run_verifiers 的 mutable auto ecosystem plan 只供 advisory tool
+  使用，不能签发 Host acceptance；
+- verifier 在执行前后捕获 workspace revision，只对稳定 revision 产生 hash-checked
+  inline ToolArtifact；Writer 用 fresh worktree tools，集成后 root 重新签收证据；
+- current M9-C/M10-A/M10-B 的 37 个 canonical snapshots、280 个 ToolOutcome 中没有
+  exec_shell/run_tests/environment/setup/service/UI failure；37 个 acceptance 都是单步
+  exact `/usr/bin/python3` verifier；
+- TaskAcceptance 当前只有 Host/Verifier，没有 service/UI runtime typed trigger。
+  M10-E 因而拒绝新增 profile/runtime-artifact 分支；Key/API/raw 为 0，Run API v12、
+  RuntimeEvent v18、State v24、exec-stream v3 未变化。
+
+完整事实见
+[M10-E Environment / Runtime Artifacts](../../eval/summaries/m10-e-environment-runtime-artifacts-2026-07-24.md)。
 
 ## 7. 明确非结论
 

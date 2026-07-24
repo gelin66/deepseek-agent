@@ -3014,17 +3014,30 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 
 #### M10-E：Reproducible Environment + Runtime Artifacts
 
-- 真实问题：`RunEnvironment` 当前保存 workspace/provider/catalog/execution fingerprint/
-  sandbox 等运行事实，ToolArtifact 主要覆盖 verifier payload；没有 deterministic
-  ProjectEnvironmentProfile 或按 TaskContract 选择的 service/UI runtime evidence。
-- 验收：language/build system/tool versions/build-test-lint commands/worktree init 与
-  environment fingerprint 可重放；只有 TaskContract 要求时才收集 health/process log/
-  browser console-network/screenshot/interaction artifact，且全部绑定 latest revision。
-- owner：高层 `crates/app`，执行仍在 `crates/tools`，持久化复用现有
-  RunEnvironment/ToolArtifact/EvidenceReceipt。
-- 替代旧路：模型反复猜命令和用静态测试冒充真实运行验证。
-- 证据：environment setup、root/worktree parity、planted UI/service failure 与时间开销。
-- cutover：删除重复环境探测/提示词说明；无收益的 runtime profile 完整删除。
+正式决定为 `reject_no_measured_environment_or_runtime_artifact_loss`：
+
+- current owner 已覆盖可复现执行核心：RunEnvironment/execution fingerprint 绑定
+  workspace、fixed route、tool catalog、retry、authority 与 sandbox；app 在 RunCreated
+  前把 TaskContract verifier 解析为 exact plan，resume 要求同一解析结果；
+  run_verifiers 捕获执行前后 revision 并只在稳定时产生 hash-checked ToolArtifact/
+  EvidenceReceipt；Writer 使用 fresh worktree tools 并在 root 集成后重验；
+- M9-C/M10-A/M10-B 的 37 个 canonical Store snapshots 共含 280 个 ToolOutcome：
+  `exec_shell=0`、`run_tests=0`、environment/setup/service/UI failure=0；全部 37 个
+  acceptance 都是单步 exact `/usr/bin/python3` verifier；
+- current TaskAcceptance 只有 Host/Verifier，没有 service/UI runtime 的 typed trigger。
+  新增 ProjectEnvironmentProfile 会复制 run_verifiers 的 Rust/Node/Python/Go 确定性
+  resolver；全局 browser/service collector 则必须从任务文本、manifest 或泛
+  `operation_failed` 猜测，形成第二环境真相；
+- deterministic conformance 通过 exact resolver/execution 环境一致、成功/失败 verifier
+  不污染 workspace、caller plan 覆盖、latest-revision receipt、HTTP 前 fingerprint
+  rejection 与 Writer fresh tools/root reverify；
+- 没有 production candidate、Key、API、raw 或 live A/B；不新增 profile/schema/store/
+  config/browser/service path，也不删除 TUI Doctor 或 tool-specific dependency diagnostics。
+
+完整矩阵见
+[M10-E Environment / Runtime Artifacts](../../eval/summaries/m10-e-environment-runtime-artifacts-2026-07-24.md)。
+下一独立切片为 M10-F；未来只有 trajectory 指向一个真实 service/UI false-success
+stratum，且能冻结 typed runtime contract，才允许窄切片重开。
 
 #### M10-F：Trajectory Learning（只读 eval）
 

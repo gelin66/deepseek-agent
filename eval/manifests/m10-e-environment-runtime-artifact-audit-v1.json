@@ -1,0 +1,166 @@
+{
+  "schema": "codewhale.eval.m10-e-environment-runtime-artifact-audit.v1",
+  "frozen_at": "2026-07-24",
+  "decision": "reject_no_measured_environment_or_runtime_artifact_loss",
+  "product_metric_eligible": false,
+  "production_candidate_created": false,
+  "credential_read": false,
+  "official_api_requests": 0,
+  "identity": {
+    "commit": "a0cc817af15201cf5fb42b8548392d6e12021f2d",
+    "tree": "ce9fd03efe8f62944c4fa7849e4bee974f81f553",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "source_sha256": {
+      "crates/protocol/src/agent_runtime.rs": "sha256:5fd097cf6aee5ab29834e97befa865900ed0f0fca12c60c2c27803e578381a59",
+      "crates/app/src/production.rs": "sha256:8af03649746a24075d61bdbd9841e1e45af910c170506235587e148102cd801a",
+      "crates/tools/src/production.rs": "sha256:29232606aec1adb223bf30a436c748b6a0b47baf3dcff8492c1ac71f060ec1ac",
+      "crates/tools/src/run_verifiers.rs": "sha256:6da2eb5a143e4832fec8e0e890465775274926d901efc4ba9174c1d09a5069db",
+      "crates/tools/src/verification_artifact.rs": "sha256:870ac010b826b927a4df2d0597fc4408b45e17a8b6b4a7c3521c0044269402b6",
+      "crates/tui/src/dependencies.rs": "sha256:9d005253bf1773f18459a837f94c1b088dc0536c932231a810f98010afa79bf1"
+    }
+  },
+  "slice_contract": {
+    "real_problem": "determine whether current fixed-Pro production trajectories contain a measured environment-command, setup, service or UI-runtime verification loss that a deterministic ProjectEnvironmentProfile can independently fix",
+    "acceptance": [
+      "derive the profile from deterministic project and tool facts",
+      "bind every admitted runtime artifact to the latest workspace revision",
+      "activate service or UI collection only from a typed TaskContract requirement",
+      "reduce environment setup failure or guessed commands",
+      "preserve verified success and false_success=0",
+      "preserve root and isolated Writer parity",
+      "add no second environment store, platform, browser mode or tool owner",
+      "delete any replaced duplicate detection after caller migration"
+    ],
+    "owner_if_admitted": "crates/app",
+    "execution_owner_if_admitted": "crates/tools",
+    "canonical_facts_to_reuse": [
+      "RunEnvironment",
+      "ProductionExecutionFingerprint",
+      "ProductionToolExecutionIdentity",
+      "TaskContract exact VerifierSpec",
+      "ToolArtifact inline verification payload",
+      "EvidenceReceipt",
+      "workspace revision",
+      "explicit Writer worktree"
+    ],
+    "cutover_on_no_delta": "create no production profile or runtime artifact branch and retain the existing exact verifier and execution-fingerprint owners"
+  },
+  "current_owner_graph": [
+    {
+      "fact": "run execution identity",
+      "owner": "crates/app plus crates/protocol",
+      "current_behavior": "RunEnvironment persists canonical workspace, provider, tool catalog, execution fingerprint, write mode and sandbox controls; resume recomputes and rejects catalog or fingerprint mismatch before HTTP"
+    },
+    {
+      "fact": "tool execution identity",
+      "owner": "crates/tools",
+      "current_behavior": "ProductionToolExecutionIdentity freezes workspace, authority, shell and sandbox policy, external-path trust and non-secret policy digests"
+    },
+    {
+      "fact": "Host acceptance command plan",
+      "owner": "crates/app plus crates/tools",
+      "current_behavior": "production resolves caller parameters to one exact VerifierSpec before RunCreated and requires the same resolver result on resume"
+    },
+    {
+      "fact": "project ecosystem detection",
+      "owner": "crates/tools run_verifiers",
+      "current_behavior": "the advisory auto profile deterministically recognizes Rust, Node, Python and Go manifests and commands; Host acceptance rejects mutable auto plans and requires exact commands"
+    },
+    {
+      "fact": "latest-revision evidence",
+      "owner": "crates/tools plus crates/runtime",
+      "current_behavior": "verification captures revision before and after execution, emits an inline hash-checked ToolArtifact only when stable, and the Host seals the matching EvidenceReceipt"
+    },
+    {
+      "fact": "external dependency diagnostics",
+      "owner": "retained TUI doctor and tool-specific production configuration",
+      "current_behavior": "the TUI doctor probes Python, Pandoc, pdftotext, rustc and gh for user diagnostics; it is not a canonical AgentRuntime project-profile caller and cannot become a second environment truth"
+    }
+  ],
+  "current_trajectory_evidence": {
+    "raw": [
+      {
+        "path": "eval/results/m9-c-fixed-pro-regression-7a91bbaab590-v1.jsonl",
+        "sha256": "sha256:c73a01a4934b82b3f4a4042791aae89e5da56feaea1ffbea188a80d4e6e05b77",
+        "size_bytes": 11611383
+      },
+      {
+        "path": "eval/results/m10-a-scoped-context-pack-14c922de3066-v1.jsonl",
+        "sha256": "sha256:0c81935b2e6c4afb2e80c76d0a3746689e068a90c17ee16644176b8d710a0d66",
+        "size_bytes": 31169005,
+        "observer_note": "one frozen false-success label is the already documented evaluator false positive, not an environment failure"
+      },
+      {
+        "path": "eval/results/m10-b-working-set-d79ebf43b0d9-v1.jsonl",
+        "sha256": "sha256:69b44fa8ebcc8555fe102369bbf4fc25c66149aa713a8d4fa2157578f87da1d0",
+        "size_bytes": 7445467,
+        "quality_note": "the frozen quality veto is a child-call argument mismatch, not an environment failure"
+      }
+    ],
+    "aggregate": {
+      "canonical_store_snapshots": 37,
+      "completed_arm_results": 34,
+      "tool_outcome_commits": 280,
+      "tool_outcomes_by_name": {
+        "agent": 12,
+        "apply_patch": 7,
+        "edit_file": 31,
+        "git_diff": 16,
+        "git_status": 5,
+        "grep_files": 2,
+        "list_dir": 3,
+        "read_file": 166,
+        "run_verifiers": 38
+      },
+      "exec_shell_outcomes": 0,
+      "run_tests_outcomes": 0,
+      "environment_or_setup_failure_outcomes": 0,
+      "typed_failure_outcomes": {
+        "verifier_failed": 8,
+        "workspace_precondition": 1
+      },
+      "task_acceptance_verifier_specs": 37,
+      "exact_profile_specs": 37,
+      "single_step_specs": 37,
+      "frozen_programs": {
+        "/usr/bin/python3": 37
+      },
+      "service_or_ui_runtime_acceptance_specs": 0
+    }
+  },
+  "missing_trigger_fact": {
+    "task_acceptance_variants": [
+      "host",
+      "verifier"
+    ],
+    "typed_service_or_ui_requirement": null,
+    "typed_environment_failure": null,
+    "consequence": "a global profile or browser/service collector would have no canonical task-scoped caller and would need to guess from task text, manifests or generic operation_failed"
+  },
+  "offline_conformance": [
+    "run_verifiers auto plan recognizes all supported ecosystems",
+    "exact resolver injects the same deterministic environment used at execution",
+    "successful Python verification leaves the workspace clean",
+    "failed Python verification leaves no ignored cache",
+    "production start replaces a caller-authored verifier plan with the canonical exact plan",
+    "production resolves and seals the exact latest-revision Host receipt",
+    "catalog or execution-fingerprint mismatch fails before any HTTP request",
+    "Writer uses one Runtime with fresh worktree tools and root post-merge evidence"
+  ],
+  "decision_rule": {
+    "candidate_required": false,
+    "reason": "current production data contains no environment/setup/runtime-artifact loss and no typed TaskContract trigger; the existing exact verifier already owns deterministic build/test command execution and revision-bound evidence",
+    "forbidden_result": "do not duplicate run_verifiers ecosystem detection, persist a second project profile, enable a global browser/service mode, or interpret generic operation_failed as an environment cause",
+    "next_slice": "M10-F read-only trajectory loss analyzer"
+  },
+  "non_conclusions": [
+    "does not claim that service or UI tasks never need runtime artifacts",
+    "does not claim that current tool-version identity covers every future reproducibility need",
+    "does not admit static verification as a substitute for runtime behavior when a future typed TaskContract requires runtime evidence",
+    "does not delete the TUI doctor or tool-specific dependency diagnostics",
+    "does not change fixed actor routing, exact verifier completion authority or billing_unknown fail-closed behavior"
+  ]
+}
