@@ -1792,6 +1792,53 @@ manifest/raw/summary：
 - ignored `eval/raw/m8-m-prompt-successor-formal-d1d6ca5c-v1.jsonl`（`0600`）；
 - [M8-M billing-provable 中文 prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
 
+### 9.29 M8-N V15 fixed-Chinese baseline release-scope successor（2026-07-24）
+
+M8-N 不创建第三个 prompt treatment，也不重跑、补 mate 或拼接 M8-D/M8-M。它先冻结
+`PRODUCT_PLAN` 的两个不同 contract：
+
+- 第 6.1 节是未来模型可见 prompt 候选的 admission rule：接管前必须 current
+  same-revision 同任务 A/B，verified success 不回归且有明确净收益；
+- V15 是 shipped fixed-Chinese baseline 的 release evidence：immutable 版本与回滚身份、
+  合格 official DeepSeek coding/false-success evidence 和 exact-current production
+  retention。
+
+离线 Harness 固定 clean baseline `21200ccf`、constitution SHA-256
+`39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409`、历史 evidence
+hash/mode、7 个 current gates、locked/offline release artifact 和
+`maximum_reruns=0`。审计结果是：
+
+1. current constitution 与 M5-A baseline/candidate、M6-A Writer canary、M8-M
+   immutable binary 中的 constitution byte-identical；
+2. M5-A raw 为 `0600`，12/12 arms 均 product-metric eligible；coding 两臂 3/3
+   verified，candidate false-success=0；forced-false-claim candidate 3/3 correct
+   rejection，40 requests、144,903 tokens、`$0.004110153` accounting 完整；
+3. M8-M stopped raw 保持 `0600` 和原 SHA；t1/t3/t5 三个 current baseline observations
+   均 measurement-valid、verified、false-success=false，candidate benefit 仍不可计算；
+4. M6-A Writer 只提供机制证据；current gates 另行覆盖 prompt provenance、
+   root/read-only/Writer RequestPlan/accounting reopen、verifier failure/recovery 和
+   false completion rejection；
+5. 现有 delivery owner 绑定 source revision/tree、Cargo.lock、toolchain 和 binary
+   SHA-256，并负责 immutable install、atomic current/previous、rollback 和保留用户数据的
+   uninstall。prompt 不增加第二 version store，回滚等于 whole-release rollback。
+
+M8-N 没有 material model-visible treatment，因此真实 A/B 在 credential 前判定
+`inadmissible_no_material_treatment`。Key 未读取，official API requests=0，external
+network=false。这个结论不把 `b088fd13` 的拒绝结果或 M8-D/M8-M hold 重写为中文优于英文、
+candidate 更好/更差或等价；未来任何 prompt 语义候选仍必须完成自己的计费可证明 A/B。
+
+ADR-0007 接受该 release-scope successor。失去消费者的 M8-D candidate-only app
+test/current-tree fixture 删除；通用 app-server/exec/TUI override consistency、冻结 Git
+history/manifests/summaries 和 `0600` raw 保留。V15 由 blocked 关闭为 pass，current
+matrix 为 **16 pass / 0 blocked**，发布结论为 **V1 可发布**（release-ready，不执行
+push/publish）。
+
+manifest/result/summary：
+
+- `eval/manifests/m8-n-v15-release-scope-successor-v1.json`；
+- ignored `eval/results/m8-n-v15-release-scope-21200ccf-v1.json`（`0600`）；
+- [M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

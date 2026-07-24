@@ -374,7 +374,9 @@ V1 必须同时满足：
   imported superiority；
 - 保留的人类交互链路只使用 `zh-Hans`，不存在语言状态、选择器或其他语言包，也没有未列入
   技术白名单的英文泄漏；
-- 中文原生 Agent 提示词通过同任务 A/B，版本可追溯、可回滚且没有能力回归；
+- 固定中文 Agent prompt 具有可追溯、可回滚的版本身份，并保留合格的官方 DeepSeek
+  coding/false-success evidence 与 exact current production retention；
+  任何新的模型可见提示语义候选仍须在接管前通过 current same-revision 同任务 A/B；
 - login、interactive start、headless coding、run inspection 与 resume 等共同用户 workflow
   的显式动作数不高于 imported baseline。
 

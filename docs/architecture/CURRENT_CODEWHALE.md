@@ -63,6 +63,7 @@
 - M8-L accepted release benchmark candidate：`d27553c4`
 - M8-M prompt successor Harness：`d723d0b3`
 - M8-M fixed-Pro live admission：`d60d5e52`
+- M8-N V15 release-scope successor contract：`1a656bee`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -189,6 +190,18 @@
   `maximum_reruns=0` 在 6/30 fail closed。production bundled prompt 不变，
   candidate-only evaluator path 删除；V15 继续 blocked，current matrix 仍为
   15 pass / 1 blocked，V1 不可发布。
+  M8-N 随后审计 `PRODUCT_PLAN` 的 candidate admission 与 fixed-Chinese baseline
+  release evidence 边界。current constitution 在 M5-A baseline/candidate、M6-A Writer
+  canary、M8-M immutable binary 与 current source 中 byte-identical；M5-A 保留
+  12/12 product-metric-eligible official DeepSeek coding/false-success arms，M8-M 保留
+  三个 exact-current baseline diagnostics，current gates 和 delivery owner 另行证明
+  root/read-only/Writer、verifier、accounting/reopen 与 whole-release rollback。
+  ADR-0007 接受该 V15 successor，但不改写旧 candidate 质量结论，也不免除任何未来
+  model-visible prompt treatment 的 A/B。M8-N 无 material model-visible delta，
+  live 准入为 `inadmissible_no_material_treatment`，Key 未读取、official requests 0。
+  失去消费者的 M8-D candidate-only test/fixture 已删除；通用 override consistency
+  保留。current matrix 为 16 pass / 0 blocked，结论为 `V1 可发布`（release-ready，
+  未 push、未发布）。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -1720,8 +1733,30 @@ transport failure；RunStore sealed/reopen 后仍保留 `started=1`、
 因此 current architecture 仍只有 `crates/context` 一个 production prompt owner；没有
 candidate selector、模式、fallback、第二 model loop、Provider 或 transport。M8-M
 candidate-only Python runner/test 已删除，frozen manifest、summary 和 ignored `0600`
-raw 只作为停止证据。V15 仍 blocked。完整事实见
+raw 只作为停止证据；该 candidate 仍为 hold。完整事实见
 [M8-M billing-provable 中文 Agent prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
+
+M8-N 没有再造 prompt candidate。它冻结 current constitution SHA-256
+`39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409`，证明该
+constitution 与 M5-A 12/12 合格 official DeepSeek arms、M6-A Writer canary、M8-M
+immutable binary 及 current source byte-identical，并以 exact-current gates 和现有
+delivery owner 补齐 production retention、版本和 whole-release rollback：
+
+```text
+fixed-Chinese immutable prompt identity
+  + qualified official DeepSeek coding/false-success evidence
+  + exact-current root/read-only/Writer/verifier/reopen conformance
+  + immutable release identity and rollback
+  = V15 release-scope successor
+```
+
+ADR-0007 只关闭 fixed baseline 的 release evidence，不把 rejected/hold treatment
+重写为收益，也不允许未来候选绕过 current same-revision 同任务 A/B。M8-N 没有
+model-visible treatment，live 准入为 `inadmissible_no_material_treatment`，credential
+和 official API 均未使用。M8-D candidate-only app test/current-tree fixture 已删除；
+app-server/exec/TUI 共用 override loader 和进程级一致性测试保留。current V1 matrix 为
+**16 pass / 0 blocked**，发布状态为 **V1 可发布**（只表示 release-ready）。完整事实见
+[M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
 
 ## 7. 明确非结论
 
@@ -1734,11 +1769,11 @@ raw 只作为停止证据。V15 仍 blocked。完整事实见
   仍只由 CI matrix 拥有而非本机观察；
 - M8-D candidate 已通过完整、计费可证明的正式 A/B；final v5 在首 arm 因 unknown billing
   停止，v1-v4 的不完整 evaluator attempts 不得拼接为产品指标，production prompt 未切换；
-- M8-M successor 已关闭 V15 或证明 candidate 更好/更差；formal 只完成 5 个
+- M8-M successor 已证明 candidate 更好/更差或等价；formal 只完成 5 个
   measurement-valid arms，第 6 arm 因无 response/usage 的 unknown billing 停止，旧/新
   samples 均不得补 mate、续跑或拼接；
-- M8-E 的 offline conformance 和双 binary artifact 已使 V1 可发布；其 frozen matrix
-  保持 8 blocked，M8-G/J/K successor 已把 current matrix 收敛为 3 blocked，但仍不可发布；
+- M8-E 的 offline conformance 和双 binary artifact 单独已经使 V1 可发布；其 frozen
+  matrix 保持 8 blocked，只有后续 M8-G/J/K/L/N successor 才逐项关闭 current blockers；
 - 旧模型 alias 退役等于 ChatCompletions surface 退役；官方文档与当前 production
   contract 都证明这是两个不同层次；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，

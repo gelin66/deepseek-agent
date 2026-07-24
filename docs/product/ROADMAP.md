@@ -183,6 +183,16 @@
   `hold_prompt_candidate / keep_bundled_prompt / do_not_resume_or_splice`；candidate-only
   evaluator path 删除，production prompt 不变。V15 仍 blocked，current matrix 保持
   15 pass / 1 blocked，V1 仍不可发布。
+  M8-N 最后审计 `PRODUCT_PLAN` 6.1 与旧 V15 的边界：候选接管必须 A/B 的规则继续
+  保留，但从未接管的 M8-D/M8-M treatment 不应成为固定中文基线的永久发布依赖。
+  ADR-0007 接受 immutable constitution identity、M5-A 12/12 合格 official DeepSeek
+  coding/false-success evidence、同 constitution 的 Writer canary、M8-M 三个
+  exact-current baseline diagnostics、current production conformance 和 whole-release
+  rollback 组成的 V15 successor。M8-N 没有 material model-visible treatment，live
+  准入为 `inadmissible_no_material_treatment`，Key 未读取、official requests 0。
+  失去消费者的 M8-D candidate-only Rust test/current-tree fixture 已删除，通用
+  app-server/exec/TUI override consistency 保留。V15 关闭后 current matrix 为
+  16 pass / 0 blocked，决策为 `V1 可发布`（release-ready，不代表已经 push 或发布）。
   当前 Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
@@ -297,7 +307,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M5 | ContextBroker、跨文件检索和 canonical 证据链 | 已完成（M5-A 完成；M5-B shrink；RepoGraph 按 ADR-0005 转为 post-V1 证据准入） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；现有跨文件检索可验证，结构索引不按名称堆功能 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
-| M8 | V1 本地产品化 | 进行中（M8-M formal 因 active-arm unknown billing 停止；仍为 15/16 pass，仅 V15 blocked，V1 不可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
+| M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
 
 ## 4. M0：仓库基线与整理
 
@@ -2656,6 +2666,39 @@ V1 仍不可发布。
 完整结论见
 [M8-M billing-provable 中文 Agent prompt successor](../../eval/summaries/m8-m-billing-provable-zh-prompt-successor-2026-07-24.md)。
 
+### M8-N：V15 fixed-Chinese baseline release-scope successor
+
+M8-N 从 clean `21200ccf` 与 15 pass / 1 blocked matrix 开始。审计确认
+`PRODUCT_PLAN` 6.1 正确要求任何改变 prompt 语义的未来候选在接管前完成 current
+same-revision 同任务 A/B；旧 V15 却把这条 candidate admission rule 扩张成了固定中文
+baseline 必须持续发明新 treatment 的发布条件。M8-D/M8-M 两个候选从未接管，且都因
+unknown billing 正确 fail closed；它们继续 hold，不续跑、不补 mate、不拼样。
+
+冻结的 V15 successor 连接以下不可变事实：
+
+- bundled constitution 的 SHA-256 为
+  `39f2eeb30519e143eed2d4c627fcb97d323c6b95ad9060816a93b72ea994d409`，在
+  M5-A baseline/candidate、M6-A Writer canary、M8-M binary 与 current source 中
+  byte-identical；
+- M5-A 12/12 official DeepSeek arms 全部 product-metric eligible，覆盖 coding 与
+  forced-false-claim，40 次请求、144,903 tokens、`$0.004110153` accounting 完整；
+- M8-M 的 t1/t3/t5 current baseline observations 均 measurement-valid、verified、
+  false-success=0；它们是 exact-current diagnostic，不是 candidate benefit claim；
+- current root/read-only child/Writer、prompt provenance、verifier rejection/recovery、
+  accounting/RequestPlan SQLite reopen 和 locked/offline release lifecycle 负责
+  exact-source retention 与 whole-release rollback。
+
+ADR-0007 因而关闭 V15，但不把旧 full-Chinese treatment 重写为能力提升，也不免除任何
+未来语义候选的 A/B。M8-N 没有新的 model-visible delta，live API admission 为
+`inadmissible_no_material_treatment`；credential read=false、official API requests=0、
+external network=false。cutover 只删除失去消费者的 M8-D candidate-only app test 和
+current-tree fixture，保留真实 caller 仍使用的 override loader consistency、冻结 Git
+history/manifests/summaries/`0600` raw、唯一 DeepSeek ChatCompletions/Runtime/Store。
+
+V15 关闭后 current matrix 为 **16 pass / 0 blocked**，V1 结论为 **V1 可发布**。该状态
+只表示 release-ready；本切片不 push、不发布、不改远端。完整结论见
+[M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production
@@ -2668,8 +2711,9 @@ V1 仍不可发布。
 - stable prefix/cache；
 - 并行只读工具（M7-G product metric 不准入，explicit-only）；
 - Agent 数量和预算；
-- 开发中文原生 Agent 提示词组合，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
-  以当前生产提示和归档基线做同任务 A/B，候选按版本评测并可回滚；
+- 新的中文 Agent prompt 组合属于 post-V1 优化；只有出现 material model-visible
+  treatment 时，才以 current same-revision immutable control/treatment 做同任务 A/B，
+  候选按版本评测并通过 whole-release rollback；
 - 首个合并候选 `b088fd13` 及后续 v2/v3 收敛 canary 均因 multi 可靠性或计量门槛被拒绝；
   v3 已证明 fixed checklist 影响 root 收敛，也证明 child 最终结果轮不能靠提示词保证；
   后续先改 Runtime 机制，不恢复已经删除的模式、人格、Provider 或兼容提示层；
@@ -2700,7 +2744,8 @@ GitHub release discovery 及其专用依赖已删除；本地升级和回滚只�
 - DeepSeek-only 配置向导；
 - 固定 `zh-Hans` 的 CLI/TUI/Headless 文本界面与中文帮助、Doctor、错误恢复和多 Agent 状态；
 - 保持 NDJSON/API 字段、命令参数、工具名、模型 ID、路径、代码和原始输出稳定；
-- 中文原生 Agent 提示词包通过同任务 A/B 后默认启用，提示词版本可追溯并可回滚；
+- 固定中文 Agent prompt 具有 immutable 源码身份、合格 live evidence、exact-current
+  retention 和 whole-release rollback；未来语义候选仍须同任务 A/B 后才能接管；
 - 本地开发、安装、卸载和数据迁移；
 - 精确 Rust toolchain；
 - 自己的 CI、版本、changelog 和发布流程；

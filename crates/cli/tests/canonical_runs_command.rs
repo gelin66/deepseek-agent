@@ -185,7 +185,7 @@ fn help_has_command(help: &str, command: &str) -> bool {
 
 #[tokio::test]
 async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec() {
-    const OVERRIDE_MARKER: &str = "m8d-app-server-process-override-marker";
+    const OVERRIDE_MARKER: &str = "app-server-process-override-marker";
 
     let home = tempfile::tempdir().expect("temporary app-server CODEWHALE_HOME");
     let workspace = tempfile::tempdir().expect("temporary app-server workspace");
@@ -215,7 +215,7 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
 
     let envelope = RunCommandEnvelope {
         schema_version: RUN_API_SCHEMA_VERSION,
-        request_id: "m8d-app-server-prompt-probe".to_owned(),
+        request_id: "app-server-prompt-override-probe".to_owned(),
         command: RunCommand::Start(StartRunCommand {
             task: TaskDefinition::host("只建立 prompt 进程级证据"),
             workspace: workspace.path().display().to_string(),
