@@ -234,12 +234,9 @@ Environment override:
 CODEWHALE_MCP_CONFIG
 ```
 
-## Context and subagents
+## Subagents
 
 ```toml
-[context]
-project_pack = true
-
 [subagents]
 enabled = true
 max_concurrent = 4

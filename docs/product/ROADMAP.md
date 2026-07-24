@@ -2887,7 +2887,7 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 - cutover：pack-off 通过则删除配置开关、默认追加和失去消费者的 pack renderer/tests；
   scoped rules 通过则删除 eager rules block。任一阶段失败只删除该 treatment。
 
-当前第一阶段 checkpoint：
+第一阶段正式结果：
 
 - `92c8c0db` 在 canonical prompt composer 内建立只读 fragment ledger，记录
   source/scope/sha256/bytes/estimated tokens/stability；正常 production prompt 路径不做
@@ -2897,9 +2897,26 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 - `d048146a` 让 app-server 与 exec/TUI 一样读取现有 typed
   `context.project_pack`，从而同一个 immutable binary 可显式构造 control/treatment；
   这不是新模式或 evaluation-only flag；
-- `eval/manifests/m10-a-scoped-context-pack-v1.json` 冻结 6 tasks × 2 variants ×
-  3 runs = 36 arms，唯一 corrected Harness 以 `--context-pack-ab` 选择该 campaign。
-  当前只完成 offline self-test；Key 未读取、official API 请求为 0、pack-off 尚未准入。
+- `eval/manifests/m10-a-scoped-context-pack-v1.json` 与单独 live admission 冻结
+  6 tasks × 2 variants × 3 runs = 36 arms；正式 campaign 从 position 1 开始，
+  `maximum_reruns=0`；
+- 21 个 arm 形成完整 terminal/Store/reopen/verifier/result；第 22 个
+  `writer_migration / pack_off` 首个 root response 收到 headers 和一段 reasoning 后，
+  在 finish/`[DONE]`/usage 前发生 typed `deepseek_transport`。accounting 保存
+  `usage_incomplete=true`、`complete=false`，Harness 按契约停止；
+- frozen raw 的一个 control false-success label 经事件取证证明是 observer
+  false positive：canonical Host 已提交 `failed_write_pass` latest-revision receipt，
+  external verifier 也通过；旧 lane audit 错误地额外要求 model 自己执行 final pass。
+  raw 保持不变，current Harness 改为认 canonical Host final pass 并有正/负 self-test；
+- 决策为 `stop_incomplete_accounting / do not admit pack_off`。production 固定
+  pack-on；`context.project_pack` 用户/config/app/TUI/CLI 与 M10-A-only Harness branch
+  已物理删除，旧 key fail closed。prompt ledger 与 offline duplicate characterization
+  保留；
+- nested scoped-rules treatment 不启动，因为其 pack-off 前置门未满足。下一独立切片
+  进入 M10-B，不续跑、补 mate 或拼接 M10-A。
+
+完整身份、partial observations、typed stop 与删除边界见
+[M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)。
 
 #### M10-B：Budgeted Working-Set Selector
 

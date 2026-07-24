@@ -737,7 +737,6 @@ mod tests {
             )
             .with_prompt(ProductionPromptConfig {
                 skills_dir: Some(skills_dir.to_path_buf()),
-                project_context_pack_enabled: false,
                 ..ProductionPromptConfig::default()
             })
             .with_default_max_api_requests(NonZeroU32::new(2).expect("non-zero request limit"))

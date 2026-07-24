@@ -68,27 +68,15 @@ fn m8a_default_runtime_is_official_deepseek() {
     assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
     assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
     assert_eq!(resolved.api_key, None);
-    assert!(resolved.project_context_pack_enabled);
 }
 
 #[test]
-fn m10a_project_context_pack_setting_is_typed_and_defaults_on() {
-    assert!(
-        ConfigToml::default()
-            .project_context_pack_enabled()
-            .unwrap()
-    );
-
-    let disabled: ConfigToml =
-        toml::from_str("[context]\nproject_pack = false\n").expect("typed context setting");
-    assert!(!disabled.project_context_pack_enabled().unwrap());
-    disabled.validate().unwrap();
-
-    let invalid: ConfigToml = toml::from_str("[context]\nproject_pack = \"false\"\n")
-        .expect("raw invalid context setting");
-    let error = invalid
+fn retired_m10a_project_context_pack_setting_fails_closed() {
+    let retired: ConfigToml =
+        toml::from_str("[context]\nproject_pack = false\n").expect("retired context setting");
+    let error = retired
         .validate()
-        .expect_err("non-boolean treatment must fail closed");
+        .expect_err("retired pack-off treatment must fail closed");
     assert!(error.to_string().contains("context.project_pack"));
 }
 

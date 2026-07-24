@@ -2097,21 +2097,46 @@ all physical accounting complete
 pack-off 通过后才进入 scoped rules；未通过则删除 treatment、保持当前默认。B–F 不与
 M10-A 混入同一 candidate。
 
-M10-A offline checkpoint 已固定以下事实：
+M10-A offline checkpoint 固定以下事实：
 
 - `92c8c0db` 的 derived ledger 不持久化第二份 prompt truth，且 production fixture 的
   block/hash 身份未变化；
 - no-instructions fixture 中 bounded overview 与 project pack 的内部 JSON byte-identical，
   pack-on 重复同一 README payload，pack-off 保留唯一 overview；
-- `d048146a` 使 canonical app-server 读取与 exec/TUI 相同的既有 typed
-  `context.project_pack`；invalid type fail closed；
+- `d048146a` 曾使 canonical app-server 读取与 exec/TUI 相同的既有 typed
+  `context.project_pack`，供一个 immutable binary 构造明确 treatment；
 - frozen manifest `eval/manifests/m10-a-scoped-context-pack-v1.json` 复用 M9-B 的 task、
   tool、verifier 与 official surface contract，预注册 36 个平衡交错 arms。corrected
   Harness 的 default M9-C self-test 与 M10-A variant/journal/admission-rule self-test 均通过。
 
-这些只是 treatment identity、离线重复证据与 Harness 机制证据，不是产品收益。当前
-`live_api_admitted_at_freeze=false`，Key 未读取、official API 请求 0；只有完整 offline
-gate、immutable binary 和单独 live admission 封存后才可开始 position 1。
+这些 offline 事实随后通过单独 live admission 封存。正式 36-arm campaign 完成 21 个
+完整 observations；第 22 个 `writer_migration / pack_off` 在已收到 response headers
+与 reasoning、但未收到 finish/`[DONE]`/usage 时发生 typed transport failure。
+accounting 为 `billing_unknown=false`、`usage_incomplete=true`、`complete=false`，
+`retry_safe=false`；Harness 零重跑停止且没有 summary。
+
+因此 M10-A 为 `stop_incomplete_accounting`，不是 keep/reject 的完整产品比较：
+
+```text
+product_metric_eligible = false
+pack_off admitted = false
+default = fixed pack_on
+no rerun / no mate / no splice
+```
+
+frozen raw 的一个 control arm 被旧 lane observer 标为 false success，但 canonical events
+证明 Host 已提交 `failed_write_pass` latest-revision receipt 且 external verifier
+通过；误标来自 observer 额外要求 model 自行执行 final verifier，与 frozen objective
+“最终由 Host 验收”冲突。raw 不重写；current Harness 用
+`failure -> applied mutation -> committed Host pass` 判断 temporal lane，并有缺失
+Host pass 的负向 self-test。
+
+决策 cutover 删除 `context.project_pack` 用户/config/CLI/TUI/API 输入、内部 bool/
+pack-off branch、文档示例和 M10-A-only Harness variant/aggregate；旧 config fail closed。
+frozen manifest/admission/summary/ignored 0600 raw 与 derived prompt ledger 保留。
+pack-off 未准入，所以不进入 nested scoped-rules treatment；下一独立切片为 M10-B。
+完整证据见
+[M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)。
 
 ## 10. 结果与决策记录
 

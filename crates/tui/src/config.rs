@@ -106,12 +106,6 @@ pub struct TuiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct ContextConfig {
-    #[serde(default)]
-    pub project_pack: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentsConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -169,8 +163,6 @@ pub struct Config {
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
     pub search: Option<SearchConfig>,
-    #[serde(default)]
-    pub context: ContextConfig,
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
     #[serde(flatten)]
@@ -234,8 +226,14 @@ impl Config {
             "pathSuffix",
             "harness_profiles",
             "fleet",
+            "context",
         ] {
             if self.extra.contains_key(retired) {
+                if retired == "context" {
+                    anyhow::bail!(
+                        "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留。"
+                    );
+                }
                 anyhow::bail!(
                     "配置项 '{retired}' 已删除；CodeWhale 仅使用官方 DeepSeek 模型目录。"
                 );
@@ -399,11 +397,6 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(expand_path)
             .collect()
-    }
-
-    #[must_use]
-    pub fn project_context_pack_enabled(&self) -> bool {
-        self.context.project_pack.unwrap_or(true)
     }
 
     #[must_use]
@@ -650,9 +643,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
         tui: selected.tui.or(base.tui),
         skills: selected.skills.or(base.skills),
         search: selected.search.or(base.search),
-        context: ContextConfig {
-            project_pack: selected.context.project_pack.or(base.context.project_pack),
-        },
         subagents: selected.subagents.or(base.subagents),
         extra,
     }

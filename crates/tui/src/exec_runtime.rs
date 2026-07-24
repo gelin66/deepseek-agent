@@ -901,7 +901,6 @@ pub(crate) fn production_application_config(
         preferences: settings.prompt_preferences(),
         instructions,
         skills_dir: Some(config.skills_dir()),
-        project_context_pack_enabled: config.project_context_pack_enabled(),
         verbosity: config.verbosity.clone(),
         skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
         shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()

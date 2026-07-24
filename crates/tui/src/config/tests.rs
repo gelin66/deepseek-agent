@@ -49,6 +49,16 @@ fn auto_model_and_reasoning_are_rejected_at_the_config_boundary() {
 }
 
 #[test]
+fn retired_m10a_project_context_pack_setting_is_rejected() {
+    let parsed: ConfigFile = toml::from_str("[context]\nproject_pack = false\n").unwrap();
+    let config = apply_profile(parsed, None).unwrap();
+    let error = config
+        .validate()
+        .expect_err("retired pack-off treatment must fail closed");
+    assert!(error.to_string().contains("context.project_pack"));
+}
+
+#[test]
 fn m8a_retired_provider_key_is_rejected_even_when_named_deepseek() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("config.toml");

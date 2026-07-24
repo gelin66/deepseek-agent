@@ -210,7 +210,6 @@ fn production_application(
     };
     let prompt = ProductionPromptConfig {
         skills_dir: Some(skills_dir.to_path_buf()),
-        project_context_pack_enabled: false,
         ..ProductionPromptConfig::default()
     };
     let tools = ProductionToolConfig::new(workspace).with_shell_policy(ShellPolicy::None);

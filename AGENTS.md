@@ -137,6 +137,16 @@ Changing one of these constraints requires evidence and a new ADR.
   access as `infeasible_exact_pre-header_request_reconciliation_under_current_official_contract`.
   Keep `billing_unknown -> formal campaign stop`; changing that admission rule
   requires a separate ADR.
+- M10-A proved the default project context pack duplicates the generated
+  fallback overview offline, but its formal same-binary pack-on/off campaign
+  stopped after 21 complete arms when arm 22 received headers/reasoning without
+  finish or usage. The result is `stop_incomplete_accounting`, not a product
+  comparison. Pack-off was not admitted: `context.project_pack`, its prompt
+  bool/branch, and the M10-A-only Harness path are deleted; production stays
+  fixed pack-on. The derived prompt ledger and frozen evidence remain. A
+  frozen observer false-positive also showed that temporal recovery must accept
+  the canonical committed Host `failed_write_pass` receipt, not demand a
+  duplicate model-owned final verifier call.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

@@ -23,7 +23,6 @@ pub struct ProductionPromptRequest<'a> {
     pub preferences: &'a PromptPreferences,
     pub instructions: &'a [InstructionSource],
     pub skills_dir: Option<&'a Path>,
-    pub project_context_pack_enabled: bool,
     pub verbosity: Option<&'a str>,
     pub skills_scan_codewhale_only: bool,
     pub shell_binary: &'a str,
@@ -656,9 +655,7 @@ fn assemble_system_prompt(
         ));
     }
 
-    if request.project_context_pack_enabled
-        && let Some(pack) = crate::project_context::generate_project_context_pack(request.workspace)
-    {
+    if let Some(pack) = crate::project_context::generate_project_context_pack(request.workspace) {
         stable_layers.push((
             PromptContextLayer::ProjectContextPack,
             "generated:project_context_pack".to_owned(),
@@ -1018,7 +1015,6 @@ mod tests {
             preferences: &preferences,
             instructions: &instructions,
             skills_dir: Some(&workspace.join(".codewhale/skills")),
-            project_context_pack_enabled: true,
             verbosity: Some("concise"),
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
@@ -1141,7 +1137,6 @@ mod tests {
             preferences: &preferences,
             instructions: &instructions,
             skills_dir: Some(&workspace.join(".codewhale/skills")),
-            project_context_pack_enabled: true,
             verbosity: Some("concise"),
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
@@ -1169,36 +1164,25 @@ mod tests {
         )
         .expect("fallback source");
         let fallback_skills_dir = fallback_workspace.join(".codewhale/skills");
-        let fallback_request = |project_context_pack_enabled| ProductionPromptRequest {
+        let fallback_request = || ProductionPromptRequest {
             workspace: fallback_workspace.as_path(),
             model: "deepseek-v4-pro",
             preferences: &preferences,
             instructions: &[],
             skills_dir: Some(fallback_skills_dir.as_path()),
-            project_context_pack_enabled,
             verbosity: None,
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: true,
         };
-        let with_pack = production_system_prompt_with_ledger(fallback_request(true));
-        let without_pack = production_system_prompt_with_ledger(fallback_request(false));
+        let with_pack = production_system_prompt_with_ledger(fallback_request());
         let with_pack_text = system_prompt_flat_text(&with_pack.prompt);
-        let without_pack_text = system_prompt_flat_text(&without_pack.prompt);
 
         assert!(with_pack_text.contains("## 有界项目概览"));
         assert!(with_pack_text.contains("## 项目上下文包"));
         assert_eq!(
             with_pack_text.matches("OPAQUE_DUPLICATE_CONTEXT").count(),
             2
-        );
-        assert!(without_pack_text.contains("## 有界项目概览"));
-        assert!(!without_pack_text.contains("## 项目上下文包"));
-        assert_eq!(
-            without_pack_text
-                .matches("OPAQUE_DUPLICATE_CONTEXT")
-                .count(),
-            1
         );
 
         let generated_overview = with_pack
@@ -1222,26 +1206,6 @@ mod tests {
         assert_eq!(generated_pack.source, "generated:project_context_pack");
         assert_eq!(generated_pack.scope, PromptContextScope::Workspace);
         assert_eq!(generated_pack.stability, PromptContextStability::Stable);
-        assert!(
-            without_pack
-                .ledger
-                .entries
-                .iter()
-                .all(|entry| entry.layer != PromptContextLayer::ProjectContextPack)
-        );
-        let non_pack_entries = |build: &ProductionPromptBuild| {
-            build
-                .ledger
-                .entries
-                .iter()
-                .filter(|entry| entry.layer != PromptContextLayer::ProjectContextPack)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            non_pack_entries(&with_pack),
-            non_pack_entries(&without_pack)
-        );
         assert!(with_pack.ledger.entries.iter().all(|entry| {
             entry.sha256.starts_with("sha256:")
                 && entry.sha256.len() == "sha256:".len() + 64

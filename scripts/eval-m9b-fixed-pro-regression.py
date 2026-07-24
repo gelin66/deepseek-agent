@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Canonical fixed-Pro regression and scoped-context evaluation Harness.
+"""M9-C post-V1 fixed-Pro coding regression baseline successor.
 
 The evaluator exercises six frozen temporary Git repositories through the
 canonical ``codewhale app-server --stdio`` Run API. It records terminal and
 RunStore facts before credential-free reopen, deterministic verification, or
-label derivation. Its default M9-C mode is the frozen regression-label
-successor. ``--context-pack-ab`` selects the M10-A same-binary pack-on/off
-campaign while retaining the same task, tool, accounting, and replay owner.
+label derivation. The M9-C contract content-addresses the corrected M9-B task
+and tool inputs but always starts a new schedule and journal at position 1.
+It is a regression label collector, not a product A/B.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ import shutil
 import signal
 import sqlite3
 import stat
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -32,39 +31,26 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTEXT_PACK_AB = "--context-pack-ab" in sys.argv
-MANIFEST_PATH = ROOT / (
-    "eval/manifests/m10-a-scoped-context-pack-v1.json"
-    if CONTEXT_PACK_AB
-    else "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
+MANIFEST_PATH = (
+    ROOT / "eval/manifests/m9-c-fixed-pro-regression-successor-v1.json"
 )
 BASE_MANIFEST_PATH = (
     ROOT / "eval/manifests/m9-b-fixed-pro-regression-v1.json"
 )
-MANIFEST_SCHEMA = (
-    "codewhale.eval.m10-a-scoped-context-pack.v1"
-    if CONTEXT_PACK_AB
-    else "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
-)
+MANIFEST_SCHEMA = "codewhale.eval.m9-c-fixed-pro-regression-successor.v1"
 BASE_MANIFEST_SCHEMA = "codewhale.eval.m9-b-fixed-pro-regression.v1"
 JOURNAL_SCHEMA = (
-    "codewhale.eval.m10-a-scoped-context-pack-journal.v1"
-    if CONTEXT_PACK_AB
-    else "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
+    "codewhale.eval.m9-c-fixed-pro-regression-successor-journal.v1"
 )
 ADMISSION_SCHEMA = (
-    "codewhale.eval.m10-a-scoped-context-pack-live-admission.v1"
-    if CONTEXT_PACK_AB
-    else "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
+    "codewhale.eval.m9-c-fixed-pro-regression-live-admission.v1"
 )
-RUN_API = 12 if CONTEXT_PACK_AB else 11
-EVENT_API = 18 if CONTEXT_PACK_AB else 17
-STATE_SCHEMA = 24 if CONTEXT_PACK_AB else 23
+RUN_API = 11
+EVENT_API = 17
+STATE_SCHEMA = 23
 EXEC_STREAM = 3
 MODEL = "deepseek-v4-pro"
 REASONING = "high"
-PACK_ON = "pack_on"
-PACK_OFF = "pack_off"
 ZERO_HASH = "sha256:" + ("0" * 64)
 MAX_FRAME = 16 * 1024 * 1024
 HARNESS_GRACE_SECONDS = 30
@@ -235,11 +221,9 @@ def load_manifest() -> dict[str, Any]:
     )
     tasks = json.loads(json.dumps(base_tasks, ensure_ascii=False))
     for task_id, acceptance_id in acceptance_overrides.items():
-        expected_prefix = "m10a" if CONTEXT_PACK_AB else "m9c"
         require(
             isinstance(acceptance_id, str)
-            and acceptance_id
-            == f"{expected_prefix}-{task_id.replace('_', '-')}",
+            and acceptance_id == f"m9c-{task_id.replace('_', '-')}",
             "acceptance_override_invalid",
             {"task_id": task_id},
         )
@@ -261,8 +245,7 @@ def load_manifest() -> dict[str, Any]:
         and resources.get("reasoning_effort") == REASONING
         and resources.get("runs_per_task") == 3
         and resources.get("formal_tasks") == 6
-        and resources.get("formal_arms")
-        == (36 if CONTEXT_PACK_AB else 18)
+        and resources.get("formal_arms") == 18
         and resources.get("maximum_reruns") == 0,
         "resource_identity_invalid",
     )
@@ -280,50 +263,16 @@ def load_manifest() -> dict[str, Any]:
         "task_identity_invalid",
     )
     schedule = manifest.get("formal_schedule", {}).get("round_order")
-    if CONTEXT_PACK_AB:
-        require(
-            isinstance(schedule, list)
-            and len(schedule) == resources["runs_per_task"] * 2
-            and all(
-                isinstance(round_arms, list)
-                and len(round_arms) == len(tasks)
-                and all(
-                    isinstance(arm, dict)
-                    and arm.get("task_id") in tasks
-                    and arm.get("variant") in {PACK_ON, PACK_OFF}
-                    for arm in round_arms
-                )
-                for round_arms in schedule
-            ),
-            "schedule_identity_invalid",
-        )
-        cells = Counter(
-            (arm["task_id"], arm["variant"])
-            for round_arms in schedule
-            for arm in round_arms
-        )
-        require(
-            cells
-            == Counter(
-                {
-                    (task_id, variant): resources["runs_per_task"]
-                    for task_id in tasks
-                    for variant in (PACK_ON, PACK_OFF)
-                }
-            ),
-            "schedule_balance_invalid",
-        )
-    else:
-        require(
-            isinstance(schedule, list)
-            and len(schedule) == resources["runs_per_task"]
-            and all(
-                isinstance(round_tasks, list)
-                and sorted(round_tasks) == sorted(tasks)
-                for round_tasks in schedule
-            ),
-            "schedule_identity_invalid",
-        )
+    require(
+        isinstance(schedule, list)
+        and len(schedule) == resources["runs_per_task"]
+        and all(
+            isinstance(round_tasks, list)
+            and sorted(round_tasks) == sorted(tasks)
+            for round_tasks in schedule
+        ),
+        "schedule_identity_invalid",
+    )
     return manifest
 
 
@@ -338,13 +287,7 @@ def formal_schedule() -> list[dict[str, Any]]:
     for run_index, round_tasks in enumerate(
         MANIFEST["formal_schedule"]["round_order"]
     ):
-        for position, item in enumerate(round_tasks):
-            if CONTEXT_PACK_AB:
-                task_id = item["task_id"]
-                variant = item["variant"]
-            else:
-                task_id = item
-                variant = None
+        for position, task_id in enumerate(round_tasks):
             schedule.append(
                 {
                     "arm_index": len(schedule),
@@ -352,7 +295,6 @@ def formal_schedule() -> list[dict[str, Any]]:
                     "round_position": position,
                     "task_id": task_id,
                     "lane": TASKS[task_id]["lane"],
-                    **({"variant": variant} if variant is not None else {}),
                 }
             )
     return schedule
@@ -822,22 +764,12 @@ def launch_server(
     state_root: Path,
     key: str | None,
     stderr_path: Path,
-    variant: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
     codewhale_home = state_root / "codewhale"
     xdg = state_root / "xdg"
     for directory in (state_root, home, codewhale_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
-    if CONTEXT_PACK_AB:
-        require(variant in {PACK_ON, PACK_OFF}, "context_variant_invalid")
-        config_path = codewhale_home / "config.toml"
-        config_path.write_text(
-            "[context]\n"
-            f"project_pack = {'true' if variant == PACK_ON else 'false'}\n",
-            encoding="utf-8",
-        )
-        os.chmod(config_path, 0o600)
     environment = {
         **safe_env(),
         "HOME": str(home),
@@ -1132,90 +1064,6 @@ def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def context_pack_audit(
-    variant: str, facts: dict[str, Any]
-) -> dict[str, Any]:
-    requests = event_values(
-        facts["root_events"], "model_request_prepared"
-    )
-    for child in facts["children"]:
-        requests.extend(
-            event_values(child["events"], "model_request_prepared")
-        )
-    reasons: list[str] = []
-    prompt_hashes: list[str] = []
-    prompt_bytes: list[int] = []
-    pack_markers: list[int] = []
-    overview_markers: list[int] = []
-    for event in requests:
-        request = event.get("request", {})
-        system_prompt = request.get("system_prompt", {})
-        blocks = system_prompt.get("blocks", [])
-        if (
-            not isinstance(system_prompt, dict)
-            or not isinstance(blocks, list)
-            or not blocks
-            or any(
-                not isinstance(block, dict)
-                or not isinstance(block.get("text"), str)
-                for block in blocks
-            )
-        ):
-            reasons.append("system_prompt_invalid")
-            continue
-        text = "\n\n".join(block["text"] for block in blocks)
-        prompt_hashes.append(canonical_hash(system_prompt))
-        prompt_bytes.append(len(text.encode("utf-8")))
-        pack_markers.append(text.count("## 项目上下文包"))
-        overview_markers.append(text.count("## 有界项目概览"))
-    if not requests:
-        reasons.append("model_request_missing")
-    if variant == PACK_ON:
-        if any(count != 1 for count in pack_markers):
-            reasons.append("pack_on_marker_mismatch")
-    elif variant == PACK_OFF:
-        if any(count != 0 for count in pack_markers):
-            reasons.append("pack_off_marker_present")
-    else:
-        reasons.append("context_variant_invalid")
-    if any(count != 1 for count in overview_markers):
-        reasons.append("fallback_overview_marker_mismatch")
-    return {
-        "valid": not reasons,
-        "reasons": sorted(set(reasons)),
-        "variant": variant,
-        "request_count": len(requests),
-        "pack_marker_counts": pack_markers,
-        "overview_marker_counts": overview_markers,
-        "system_prompt_bytes": prompt_bytes,
-        "system_prompt_sha256": prompt_hashes,
-    }
-
-
-def tool_observation(facts: dict[str, Any]) -> dict[str, Any]:
-    events = list(facts["root_events"])
-    for child in facts["children"]:
-        events.extend(child["events"])
-    counts = Counter(
-        tool_name(event) for event in tool_prepared(events)
-    )
-    discovery_names = {
-        "file_search",
-        "grep_files",
-        "list_dir",
-        "read_file",
-    }
-    return {
-        "total": sum(counts.values()),
-        "discovery": sum(
-            count
-            for name, count in counts.items()
-            if name in discovery_names
-        ),
-        "by_name": dict(sorted(counts.items())),
-    }
-
-
 def accounting_projection(task_id: str, run: dict[str, Any]) -> dict[str, Any]:
     accounting = run.get("accounting", {})
     root = accounting.get("root", {})
@@ -1336,33 +1184,38 @@ def root_lane_audit(
     if event_values(events, "agent_task_prepared"):
         reasons.append("root_lane_agent_task")
     if task_id == "root_recovery":
-        verifier_positions: list[tuple[int, bool]] = []
+        failed_verifier_positions: list[int] = []
         mutation_positions: list[int] = []
+        host_pass_positions: list[int] = []
         for index, stored in enumerate(events):
-            if event_kind(stored) != "tool_outcome_committed":
-                continue
             event = stored["event"]
-            name = event.get("name")
-            outcome = event.get("outcome", {})
-            if name == "run_verifiers":
-                verifier_positions.append(
-                    (index, tool_outcome_success(outcome))
-                )
-            if (
-                name in MAY_WRITE_TOOLS
-                and outcome.get("side_effect") == "applied"
+            kind = event_kind(stored)
+            if kind == "tool_outcome_committed":
+                name = event.get("name")
+                outcome = event.get("outcome", {})
+                if name == "run_verifiers" and not tool_outcome_success(outcome):
+                    failed_verifier_positions.append(index)
+                if (
+                    name in MAY_WRITE_TOOLS
+                    and outcome.get("side_effect") == "applied"
+                ):
+                    mutation_positions.append(index)
+            elif (
+                kind == "host_verification_committed"
+                and event.get("receipt") is not None
+                and tool_outcome_success(event.get("outcome"))
             ):
-                mutation_positions.append(index)
-        failed = [position for position, passed in verifier_positions if not passed]
-        passed = [position for position, success in verifier_positions if success]
+                host_pass_positions.append(index)
         recovery_valid = bool(
-            failed
+            failed_verifier_positions
             and mutation_positions
-            and passed
-            and failed[0] < mutation_positions[0] < passed[-1]
+            and host_pass_positions
+            and failed_verifier_positions[0]
+            < mutation_positions[0]
+            < host_pass_positions[-1]
         )
         if not recovery_valid:
-            reasons.append("failure_mutation_pass_order_missing")
+            reasons.append("failure_mutation_host_pass_order_missing")
     else:
         recovery_valid = None
     return {
@@ -1614,12 +1467,6 @@ def derive_arm(
     terminal_state = run.get("terminal", {}).get("state")
     route = route_audit(task_id, facts)
     accounting = accounting_projection(task_id, run)
-    context_pack = (
-        context_pack_audit(schedule["variant"], facts)
-        if CONTEXT_PACK_AB
-        else None
-    )
-    observations = tool_observation(facts)
     if task["lane"] == "root":
         lane = root_lane_audit(task_id, facts)
     elif task["lane"] == "read_only":
@@ -1640,10 +1487,6 @@ def derive_arm(
             and not changed
             and not receipt
             and lane["valid"]
-            and (
-                context_pack is None
-                or context_pack["valid"]
-            )
         )
         verified_success = False
         correct_rejection = behavior_valid and route["valid"]
@@ -1656,10 +1499,6 @@ def derive_arm(
             and receipt
             and lane["valid"]
             and route["valid"]
-            and (
-                context_pack is None
-                or context_pack["valid"]
-            )
         )
         verified_success = behavior_valid
         correct_rejection = False
@@ -1695,13 +1534,7 @@ def derive_arm(
         "expected_changed_files": expected_changed,
         "host_receipt": receipt,
         "route": route,
-        **(
-            {"context_pack": context_pack}
-            if context_pack is not None
-            else {}
-        ),
         "lane_audit": lane,
-        "tool_observation": observations,
         "accounting": accounting,
         "failed_tool_outcomes": sum(failure_codes.values()),
         "failure_codes": dict(sorted(failure_codes.items())),
@@ -1884,12 +1717,7 @@ def execute_arm(
         stderr_path = state_root / "app-server.stderr"
         state_root.mkdir()
         process, client = launch_server(
-            binary,
-            workspace,
-            state_root,
-            key,
-            stderr_path,
-            schedule.get("variant"),
+            binary, workspace, state_root, key, stderr_path
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
@@ -1938,12 +1766,7 @@ def execute_arm(
 
         reopen_stderr = state_root / "app-server-reopen.stderr"
         reopen_process, reopen_client = launch_server(
-            binary,
-            workspace,
-            state_root,
-            None,
-            reopen_stderr,
-            schedule.get("variant"),
+            binary, workspace, state_root, None, reopen_stderr
         )
         try:
             run_id = run.get("run_id")
@@ -2012,7 +1835,7 @@ def execute_arm(
         return arm
 
 
-def aggregate_m9c(arms: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     require(len(arms) == 18, "formal_matrix_incomplete")
     cells: dict[str, dict[str, Any]] = {}
     for task_id, task in TASKS.items():
@@ -2111,217 +1934,6 @@ def aggregate_m9c(arms: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def aggregate_m10a(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    require(len(arms) == 36, "formal_matrix_incomplete")
-    cells: dict[str, dict[str, Any]] = {}
-    for task_id, task in TASKS.items():
-        for variant in (PACK_ON, PACK_OFF):
-            selected = [
-                arm
-                for arm in arms
-                if arm["task_id"] == task_id
-                and arm["variant"] == variant
-            ]
-            require(len(selected) == 3, "formal_cell_incomplete")
-            cells[f"{task_id}:{variant}"] = {
-                "task_id": task_id,
-                "variant": variant,
-                "lane": task["lane"],
-                "arms": len(selected),
-                "verified_success": sum(
-                    arm["verified_success"] for arm in selected
-                ),
-                "correct_rejection": sum(
-                    arm["correct_rejection"] for arm in selected
-                ),
-                "false_success": sum(
-                    arm["false_success"] for arm in selected
-                ),
-                "route_valid": sum(
-                    arm["route"]["valid"] for arm in selected
-                ),
-                "lane_valid": sum(
-                    arm["lane_audit"]["valid"] for arm in selected
-                ),
-                "context_pack_valid": sum(
-                    arm["context_pack"]["valid"] for arm in selected
-                ),
-                "requests": sum(
-                    arm["accounting"]["requests"] for arm in selected
-                ),
-                "discovery_tool_calls": sum(
-                    arm["tool_observation"]["discovery"]
-                    for arm in selected
-                ),
-                "cache_miss_tokens": sum(
-                    arm["accounting"]["tokens"]["cache_miss_tokens"]
-                    for arm in selected
-                ),
-                "cost_nanousd": sum(
-                    arm["accounting"]["cost_nanousd"]
-                    for arm in selected
-                ),
-                "wall_time_ms": sum(
-                    arm["wall_time_ms"] for arm in selected
-                ),
-            }
-
-    variants: dict[str, dict[str, Any]] = {}
-    for variant in (PACK_ON, PACK_OFF):
-        selected = [arm for arm in arms if arm["variant"] == variant]
-        variants[variant] = {
-            "arms": len(selected),
-            "verified_success": sum(
-                arm["verified_success"] for arm in selected
-            ),
-            "correct_rejection": sum(
-                arm["correct_rejection"] for arm in selected
-            ),
-            "false_success": sum(
-                arm["false_success"] for arm in selected
-            ),
-            "requests": sum(
-                arm["accounting"]["requests"] for arm in selected
-            ),
-            "median_requests": statistics.median(
-                arm["accounting"]["requests"] for arm in selected
-            ),
-            "discovery_tool_calls": sum(
-                arm["tool_observation"]["discovery"]
-                for arm in selected
-            ),
-            "median_discovery_tool_calls": statistics.median(
-                arm["tool_observation"]["discovery"]
-                for arm in selected
-            ),
-            "input_tokens": sum(
-                arm["accounting"]["tokens"]["input_tokens"]
-                for arm in selected
-            ),
-            "cache_hit_tokens": sum(
-                arm["accounting"]["tokens"]["cache_hit_tokens"]
-                for arm in selected
-            ),
-            "cache_miss_tokens": sum(
-                arm["accounting"]["tokens"]["cache_miss_tokens"]
-                for arm in selected
-            ),
-            "median_cache_miss_tokens": statistics.median(
-                arm["accounting"]["tokens"]["cache_miss_tokens"]
-                for arm in selected
-            ),
-            "cost_nanousd": sum(
-                arm["accounting"]["cost_nanousd"] for arm in selected
-            ),
-            "wall_time_ms": sum(
-                arm["wall_time_ms"] for arm in selected
-            ),
-            "median_wall_time_ms": statistics.median(
-                arm["wall_time_ms"] for arm in selected
-            ),
-        }
-
-    control = variants[PACK_ON]
-    treatment = variants[PACK_OFF]
-    control_cache_miss = control["median_cache_miss_tokens"]
-    cache_miss_reduction = (
-        0.0
-        if control_cache_miss == 0
-        else (
-            control_cache_miss
-            - treatment["median_cache_miss_tokens"]
-        )
-        / control_cache_miss
-    )
-    quality_noninferior = (
-        treatment["verified_success"] >= control["verified_success"]
-        and treatment["correct_rejection"]
-        >= control["correct_rejection"]
-        and treatment["false_success"] == 0
-        and control["false_success"] == 0
-        and all(
-            cells[f"{task_id}:{PACK_OFF}"]["verified_success"]
-            >= cells[f"{task_id}:{PACK_ON}"]["verified_success"]
-            for task_id, task in TASKS.items()
-            if task["lane"] != "safety"
-        )
-        and cells[f"safety_false_completion:{PACK_OFF}"][
-            "correct_rejection"
-        ]
-        >= cells[f"safety_false_completion:{PACK_ON}"][
-            "correct_rejection"
-        ]
-    )
-    conformance_complete = all(
-        cell["route_valid"] == 3
-        and cell["lane_valid"] == 3
-        and cell["context_pack_valid"] == 3
-        for cell in cells.values()
-    )
-    repeated_work_nonincreasing = (
-        treatment["requests"] <= control["requests"]
-        and treatment["median_requests"]
-        <= control["median_requests"]
-        and treatment["discovery_tool_calls"]
-        <= control["discovery_tool_calls"]
-        and treatment["median_discovery_tool_calls"]
-        <= control["median_discovery_tool_calls"]
-    )
-    efficiency_improved = (
-        cache_miss_reduction >= 0.10
-        and repeated_work_nonincreasing
-        and (
-            treatment["cost_nanousd"] < control["cost_nanousd"]
-            or treatment["median_wall_time_ms"]
-            < control["median_wall_time_ms"]
-        )
-    )
-    admitted = (
-        quality_noninferior
-        and conformance_complete
-        and efficiency_improved
-    )
-    total_cost = sum(
-        arm["accounting"]["cost_nanousd"] for arm in arms
-    )
-    require(
-        total_cost
-        <= int(
-            float(RESOURCES["suite_known_cost_ceiling_usd"])
-            * 1_000_000_000
-        ),
-        "suite_cost_ceiling_exceeded",
-    )
-    return {
-        "record_type": "summary",
-        "record_class": MANIFEST["decision_rule"]["record_class"],
-        "product_metric_eligible": True,
-        "complete": True,
-        "cells": cells,
-        "variants": variants,
-        "arms": len(arms),
-        "quality_noninferior": quality_noninferior,
-        "conformance_complete": conformance_complete,
-        "repeated_work_nonincreasing": repeated_work_nonincreasing,
-        "cache_miss_reduction": cache_miss_reduction,
-        "efficiency_improved": efficiency_improved,
-        "admitted": admitted,
-        "decision": (
-            "keep_delete_project_context_pack"
-            if admitted
-            else "reject_pack_off_treatment"
-        ),
-        "cost_nanousd": total_cost,
-        "key_accessed": True,
-        "network_accessed": True,
-        "maximum_reruns": 0,
-    }
-
-
-def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    return aggregate_m10a(arms) if CONTEXT_PACK_AB else aggregate_m9c(arms)
-
-
 def probe_binary(binary: Path, revision: str) -> dict[str, Any]:
     require(
         binary.is_file()
@@ -2391,40 +2003,16 @@ def load_admission(
         and surface.get("reasoning_effort") == REASONING
         and surface.get("streaming") is True
         and surface.get("fixed_across_all_arms") is True
-        and surface.get("product_treatment_delta")
-        is CONTEXT_PACK_AB
+        and surface.get("product_treatment_delta") is False
         and live_contract.get("output") == output_relative
         and live_contract.get("formal_tasks") == 6
         and live_contract.get("runs_per_task") == 3
-        and live_contract.get("formal_arms")
-        == RESOURCES["formal_arms"]
+        and live_contract.get("formal_arms") == 18
         and live_contract.get("schedule_start_position") == 1
         and live_contract.get("maximum_reruns") == 0
-        and (
-            (
-                CONTEXT_PACK_AB
-                and live_contract.get("prior_raw_is_input") is False
-                and live_contract.get("variants")
-                == {
-                    PACK_ON: {
-                        "role": "control",
-                        "context.project_pack": True,
-                    },
-                    PACK_OFF: {
-                        "role": "treatment",
-                        "context.project_pack": False,
-                    },
-                }
-            )
-            or (
-                not CONTEXT_PACK_AB
-                and live_contract.get("m9_b_raw_is_input") is False
-            )
-        )
-        and live_contract.get("per_arm_known_cost_ceiling_usd")
-        == float(RESOURCES["per_arm_known_cost_ceiling_usd"])
-        and live_contract.get("suite_known_cost_ceiling_usd")
-        == float(RESOURCES["suite_known_cost_ceiling_usd"])
+        and live_contract.get("m9_b_raw_is_input") is False
+        and live_contract.get("per_arm_known_cost_ceiling_usd") == 0.08
+        and live_contract.get("suite_known_cost_ceiling_usd") == 1.44
         and live_contract.get("stop_before_next_arm_on_unknown_billing")
         is True
         and live_contract.get("stop_before_next_arm_on_incomplete_accounting")
@@ -2589,7 +2177,7 @@ def read_key(path: Path) -> str:
 
 
 def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
-    record = {
+    return {
         "record_type": "plan",
         "record_class": MANIFEST["decision_rule"]["record_class"],
         "product_metric_eligible": False,
@@ -2612,7 +2200,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
             for task_id, task in TASKS.items()
         },
         "schedule": formal_schedule(),
-        "arms": RESOURCES["formal_arms"],
+        "arms": 18,
         "runs_per_task": 3,
         "suite_cost_ceiling_usd": float(
             RESOURCES["suite_known_cost_ceiling_usd"]
@@ -2621,18 +2209,6 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
         "network_accessed": False,
         "maximum_reruns": 0,
     }
-    if CONTEXT_PACK_AB:
-        record["variants"] = {
-            PACK_ON: {
-                "role": "control",
-                "context.project_pack": True,
-            },
-            PACK_OFF: {
-                "role": "treatment",
-                "context.project_pack": False,
-            },
-        }
-    return record
 
 
 def run_fault_child(
@@ -2674,122 +2250,63 @@ def run_fault_child(
 
 def run_self_test() -> int:
     schedule = formal_schedule()
-    require(
-        len(schedule) == (36 if CONTEXT_PACK_AB else 18),
-        "self_test_schedule_length",
-    )
+    require(len(schedule) == 18, "self_test_schedule_length")
     require(
         Counter(item["task_id"] for item in schedule)
-        == Counter(
-            {
-                task_id: (6 if CONTEXT_PACK_AB else 3)
-                for task_id in TASKS
-            }
-        ),
+        == Counter({task_id: 3 for task_id in TASKS}),
         "self_test_schedule_balance",
     )
-    if CONTEXT_PACK_AB:
-        require(
-            Counter(
-                (item["task_id"], item["variant"])
-                for item in schedule
-            )
-            == Counter(
-                {
-                    (task_id, variant): 3
-                    for task_id in TASKS
-                    for variant in (PACK_ON, PACK_OFF)
-                }
-            ),
-            "self_test_variant_balance",
-        )
-        def prepared_prompt(text: str) -> dict[str, Any]:
-            return {
-                "event": {
-                    "kind": "model_request_prepared",
-                    "request": {
-                        "system_prompt": {
-                            "blocks": [
-                                {
-                                    "text": text,
-                                    "cache_control": "stable",
-                                }
-                            ]
-                        }
-                    },
-                }
+    accepted = {
+        "invocation": "accepted",
+        "transport": "succeeded",
+        "operation": "succeeded",
+    }
+    temporal_events = [
+        {
+            "event": {
+                "kind": "tool_outcome_committed",
+                "name": "run_verifiers",
+                "outcome": {
+                    **accepted,
+                    "operation": "failed",
+                    "side_effect": "indeterminate",
+                },
             }
-
-        pack_on_audit = context_pack_audit(
-            PACK_ON,
-            {
-                "root_events": [
-                    prepared_prompt(
-                        "## 有界项目概览\npayload\n## 项目上下文包\npayload"
-                    )
-                ],
-                "children": [],
-            },
-        )
-        pack_off_audit = context_pack_audit(
-            PACK_OFF,
-            {
-                "root_events": [
-                    prepared_prompt("## 有界项目概览\npayload")
-                ],
-                "children": [],
-            },
-        )
-        require(
-            pack_on_audit["valid"] and pack_off_audit["valid"],
-            "self_test_context_variant_audit",
-        )
-        synthetic_arms: list[dict[str, Any]] = []
-        for item in schedule:
-            safety = item["task_id"] == "safety_false_completion"
-            treatment = item["variant"] == PACK_OFF
-            synthetic_arms.append(
-                {
-                    **item,
-                    "verified_success": not safety,
-                    "correct_rejection": safety,
-                    "false_success": False,
-                    "route": {"valid": True},
-                    "lane_audit": {"valid": True},
-                    "context_pack": {"valid": True},
-                    "accounting": {
-                        "requests": 2,
-                        "tokens": {
-                            "input_tokens": 180 if treatment else 200,
-                            "cache_hit_tokens": 100,
-                            "cache_miss_tokens": 80 if treatment else 100,
-                        },
-                        "cost_nanousd": 90 if treatment else 100,
-                    },
-                    "tool_observation": {"discovery": 4},
-                    "wall_time_ms": 1000,
-                }
-            )
-        synthetic_summary = aggregate_m10a(synthetic_arms)
-        require(
-            synthetic_summary["admitted"]
-            and synthetic_summary["cache_miss_reduction"] >= 0.10,
-            "self_test_admission_rule",
-        )
-        degraded = json.loads(
-            json.dumps(synthetic_arms, ensure_ascii=False)
-        )
-        degraded_arm = next(
-            arm
-            for arm in degraded
-            if arm["variant"] == PACK_OFF
-            and arm["task_id"] == "root_single"
-        )
-        degraded_arm["verified_success"] = False
-        require(
-            not aggregate_m10a(degraded)["admitted"],
-            "self_test_quality_regression_admitted",
-        )
+        },
+        {
+            "event": {
+                "kind": "tool_outcome_committed",
+                "name": "edit_file",
+                "outcome": {**accepted, "side_effect": "applied"},
+            }
+        },
+        {
+            "event": {
+                "kind": "host_verification_committed",
+                "outcome": accepted,
+                "receipt": {
+                    "id": "receipt:self-test",
+                    "lineage": {"policy": "failed_write_pass"},
+                },
+            }
+        },
+    ]
+    temporal_lane = root_lane_audit(
+        "root_recovery",
+        {"root_events": temporal_events, "children": []},
+    )
+    require(
+        temporal_lane["valid"] and temporal_lane["recovery_order_valid"],
+        "self_test_host_owned_temporal_pass_rejected",
+    )
+    missing_host_pass = root_lane_audit(
+        "root_recovery",
+        {"root_events": temporal_events[:-1], "children": []},
+    )
+    require(
+        not missing_host_pass["valid"],
+        "self_test_missing_host_temporal_pass_accepted",
+    )
     require(
         file_hash(BASE_MANIFEST_PATH)
         == MANIFEST["inherited_contract"]["file_sha256"]
@@ -2860,11 +2377,6 @@ def run_self_test() -> int:
                     "-I",
                     "-B",
                     str(Path(__file__).resolve()),
-                    *(
-                        ["--context-pack-ab"]
-                        if CONTEXT_PACK_AB
-                        else []
-                    ),
                     "--fault-child",
                     fault,
                     "--output",
@@ -3097,11 +2609,6 @@ def run_formal(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--context-pack-ab",
-        action="store_true",
-        help="use the frozen M10-A pack-on/pack-off campaign",
-    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--freeze-report", action="store_true")
