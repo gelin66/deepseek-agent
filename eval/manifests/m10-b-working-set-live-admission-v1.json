@@ -1,0 +1,115 @@
+{
+  "schema": "codewhale.eval.m10-b-working-set-live-admission.v1",
+  "admitted_at_utc": "2026-07-24T16:13:29Z",
+  "contract_manifest": "eval/manifests/m10-b-working-set-ab-v1.json",
+  "contract_manifest_sha256": "sha256:e2a5e8914452adcf82a616d52f054aa1332b63d76357364c608b4310c5c21190",
+  "inherited_contract_manifest": "eval/manifests/m9-b-fixed-pro-regression-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:00fc21663441dafc28370002305f19ed2a212c119fbe38140abbac6fad89f0c5",
+  "candidate_revision": "d79ebf43b0d9b86a46f33131b4c733a325507af0",
+  "candidate_tree": "55d9bb0c16efb29b3c0d74c3f6db9b66db4af986",
+  "candidate_binary": "/private/tmp/codewhale-m10b-target/debug/codewhale",
+  "candidate_binary_sha256": "sha256:f5e6afea1013dd5f89c9fecf95fb84cb906030b005a231270ef26eed9fdf3c8a",
+  "candidate_binary_size_bytes": 79842072,
+  "candidate_binary_version": "codewhale 0.8.68 (d79ebf43b0d9)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:6b4f07ddbd91881d2b6cf67760a1a991b72670049af63edb07b2c728a03f82ca",
+  "schedule_sha256": "sha256:474760a5d8325b31ab52cd2dd09588633f59a2dfa58588c094374b3af48412c4",
+  "task_contracts_sha256": "sha256:0aa456731701c3717ed534d9405e64e49986165bc91eda01da6b3f2ff83aed2b",
+  "harness_self_test_sha256": "sha256:f2d97454c4637b6ae6a7b436f0de1192f91209dab844021b922c9bd014fea29d",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": true,
+    "treatment_delta": "the isolated typed context.working_set value is false for working_set_off and true for working_set_on; project context pack and all source, binary, model, reasoning, task, tool, verifier, budget, and actor identities are fixed"
+  },
+  "offline_gates": [
+    {
+      "gate": "default M9-C and M10-B inherited-contract, fixture, balanced schedule, task-contract, hash-chain, decision, prompt-observer, tool-observer, and four-window SIGKILL Harness self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "eight-task deterministic localization v1/v2 baseline plus six exact end-task fixture trees and acceptance IDs",
+      "result": "pass"
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production-path root/read-only/Writer prompt composition, verifier recovery, exact RunStore reopen, SIGKILL Start and side-effect recovery, and CLI/TUI/API parity",
+      "result": "pass"
+    },
+    {
+      "gate": "explicit immutable candidate binary build and credential-free M10-B Harness dry-run",
+      "result": "pass"
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "root_single": "sha256:2ea8caed1e7f011dac3ceafb2c73c4fb9b59c0de2e41aa5071a4e7f8ba3dbe55",
+    "root_migration": "sha256:83d536db3897e0fa2192220b3f91c5c0e696a101c8b7cb35dc9682e5298a8fc0",
+    "root_recovery": "sha256:77ec1fc40fdd44f9f1da4a185bb349a27997345122e45bad7d20aa23fcce9cdc",
+    "readonly_investigation": "sha256:774d6c86919084105064142da8c4d8676cff5d950f94dae2865cb8d50d1506c0",
+    "writer_migration": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",
+    "safety_false_completion": "sha256:5c8c27a55bacaf9749ad86866928b3630f4acf070790b853e7d8a1aceda206db"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 3,
+    "formal_arms": 36,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "prior_raw_is_input": false,
+    "variants": {
+      "working_set_off": {
+        "role": "control",
+        "context.working_set": false
+      },
+      "working_set_on": {
+        "role": "treatment",
+        "context.working_set": true
+      }
+    },
+    "per_arm_known_cost_ceiling_usd": 0.08,
+    "suite_known_cost_ceiling_usd": 2.88,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "output": "eval/results/m10-b-working-set-d79ebf43b0d9-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-24",
+  "official_sources": [
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
