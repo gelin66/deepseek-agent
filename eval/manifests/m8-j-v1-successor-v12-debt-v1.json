@@ -1,0 +1,166 @@
+{
+  "schema": "codewhale.eval.m8-j-v1-successor-v12-debt.v1",
+  "suite_id": "m8-j-v1-successor-v12-debt-bce36a53-v1",
+  "frozen_at_utc": "2026-07-24T00:00:00Z",
+  "baseline_revision": "bce36a53ea570ab7149f01b93fbf8c5b5eb1d354",
+  "baseline_tree": "c374e2a237aabefa7f4f994ae7adf90647263a01",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "required_clean_baseline": true,
+    "run_api": 11,
+    "runtime_event": 17,
+    "state_schema": 22,
+    "exec_stream": 3,
+    "cargo_lock_sha256": "1d8b3e08412b2e0a5b2d7dd4e414dd5c86ee5a573559684b755b44d411dd9d77",
+    "rust_toolchain_sha256": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "required_rustc": "1.97.0",
+    "cli_sha256": "d2b140276d800d873c8fd90732405d9312d424a82774098e307a125ab789a5cc",
+    "state_sha256": "577cd330df2e3bb4d7d990b02cf48fbf133e56dba3c5565717e1194eb9a403f7",
+    "protocol_root_sha256": "6beac9b8f16a787e8582896f6cb494e7140e3b8bf7f3c72264e62c383278a83b",
+    "localization_sha256": "3c234cbc109fcb0d33f577bba62fc96568f2a44a2d160a4f2f72a2865015956e",
+    "zh_hans_sha256": "3eeee4e09b67ad28139d6ff36946a37376f7e06c378b3c98be6e7bf599a8eb4d",
+    "m8_e_manifest_sha256": "a18715a0350623d2e99eae6db777211d918ebd6ac125721628d6be3e75f668ff"
+  },
+  "current_v1_exit_audit": {
+    "authority": "M8-E frozen audit re-evaluated against M8-G, M8-H and M8-I current production truth",
+    "pass_count": 9,
+    "blocked_count": 7,
+    "items": {
+      "V01": "pass",
+      "V02": "pass",
+      "V03": "pass",
+      "V04": "pass",
+      "V05": "pass",
+      "V06": "pass_after_m8_g_single_taskgraph_cutover",
+      "V07": "pass",
+      "V08": "blocked",
+      "V09": "blocked_standard_strict_keep_fim_product_reentry_hold",
+      "V10": "blocked",
+      "V11": "pass",
+      "V12": "blocked_current_slice",
+      "V13": "blocked",
+      "V14": "pass",
+      "V15": "blocked",
+      "V16": "blocked"
+    },
+    "remaining_blockers_before_candidate": [
+      "V08",
+      "V09",
+      "V10",
+      "V12",
+      "V13",
+      "V15",
+      "V16"
+    ]
+  },
+  "slice_contract": {
+    "problem": "V12 仍被一条可见但与 canonical Run API/RunStore 断开的旧 conversation-thread 产品链阻塞：codewhale thread 暴露 8 个子命令，使用第二套 threads SQLite 表和 session_index.jsonl 名称索引；Resume/Fork 委托退休的 TUI thread 语义，列表投影 generic model_provider。协议 crate 根部还保留 Thread/App/Prompt/EventFrame DTO 岛，除网络策略的两个真实共享类型外没有 production consumer。",
+    "acceptance": [
+      "codewhale thread 从 Clap 产品目录物理删除，旧命令在打开 config/state、读取 credential 或发起模型请求前失败",
+      "canonical codewhale runs、codewhale resume、exec --resume/--continue 与 app-server Run API 保持唯一恢复/检查路径",
+      "State schema v23 在同一 IMMEDIATE migration transaction 中删除 legacy threads 表，同时保留 current canonical runs、events、snapshots、pending Start intents、route audit 与 accounting",
+      "fresh State v23 不创建 threads 表；SQLite reopen 和 process SIGKILL 恢复保持一致",
+      "StateStore 删除 ThreadMetadata、ThreadListFilters、SessionSource、thread CRUD/memory/rollout API 和 session_index.jsonl 第二真相",
+      "protocol 根部删除无 consumer 的 Thread/App/Prompt/EventFrame 及相关 approval/MCP/user-input DTO；保留 execpolicy 真实使用的 NetworkPolicyAmendment 与 NetworkPolicyRuleAction",
+      "删除 thread 专属简体中文 localization 和只验证退休协议/状态的测试，canonical Run API、RuntimeEvent 与 exec-stream 版本不变",
+      "focused、state/cli/protocol 定向、fmt、workspace clippy/test、process reopen、git diff --check 全部通过"
+    ],
+    "single_owners": {
+      "persistent_cutover": "crates/state",
+      "product_command_catalog": "crates/cli",
+      "wire_contract_deletion": "crates/protocol"
+    },
+    "real_caller_migration": {
+      "list_and_read": "codewhale runs and canonical RunCommand::{List,Read}",
+      "resume": "codewhale resume or codewhale exec --resume through RunCommand::Continue",
+      "continuation": "codewhale exec --continue through canonical latest-root resolution",
+      "fork": "no canonical product requirement; delete instead of inventing compatibility"
+    },
+    "replaces": [
+      "Commands::Thread and ThreadCommand::{List,Read,Resume,Fork,Archive,Unarchive,SetName,ClearName}",
+      "StateStore legacy thread metadata CRUD and session-index JSONL",
+      "SQLite threads table including model_provider",
+      "protocol root ThreadRequest/ThreadResponse/AppRequest/AppResponse/PromptRequest/PromptResponse/EventFrame island",
+      "thread-only localization and parity fixtures"
+    ],
+    "cutover_deletion": [
+      "visible thread CLI command and dispatch",
+      "ThreadMetadata, ThreadListFilters, SessionSource and ThreadStatus root protocol/state types",
+      "threads table initialization, indexes and current_leaf migration helper",
+      "session_index.jsonl reader/writer/compactor and StateStore field",
+      "thread CRUD, archive, memory and rollout lookup functions",
+      "legacy protocol parity test and thread state parity assertions",
+      "CliThread* localization entries"
+    ]
+  },
+  "frozen_baseline_facts": {
+    "visible_cli_commands": 18,
+    "legacy_thread_top_level_commands": 1,
+    "legacy_thread_subcommands": 8,
+    "legacy_thread_state_tables": [
+      "threads"
+    ],
+    "legacy_sidecar_state": [
+      "session_index.jsonl"
+    ],
+    "generic_provider_columns": [
+      "threads.model_provider"
+    ],
+    "production_thread_state_consumers": [
+      "crates/cli/src/lib.rs::run_thread_command"
+    ],
+    "production_thread_protocol_consumers": 0,
+    "retained_protocol_root_consumers": [
+      "crates/execpolicy uses NetworkPolicyAmendment and NetworkPolicyRuleAction"
+    ],
+    "canonical_provider_fact": "RunEnvironment.provider is fixed to deepseek and retained as replay-safety evidence",
+    "credential_read": false,
+    "official_api_requests": 0
+  },
+  "candidate_effect": {
+    "state_schema": "22 -> 23",
+    "run_api": "remains 11",
+    "runtime_event": "remains 17",
+    "exec_stream": "remains 3",
+    "visible_cli_commands": "18 -> 17",
+    "v1_item": "V12 blocked -> pass only if every acceptance gate succeeds",
+    "projected_pass_count": 10,
+    "projected_blocked_count": 6,
+    "projected_remaining_blockers": [
+      "V08",
+      "V09",
+      "V10",
+      "V13",
+      "V15",
+      "V16"
+    ]
+  },
+  "evaluation": {
+    "maximum_reruns": 0,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m8j-target",
+    "material_model_treatment": false,
+    "live_ab_admission": "not_applicable_deterministic_deletion",
+    "read_key": false,
+    "official_api_requests": 0,
+    "required_evidence": [
+      "static consumer and duplicate-truth audit",
+      "fresh v23 schema absence assertion",
+      "v22 to v23 migration preserving canonical RunStore truth",
+      "migration rollback injection",
+      "CLI old-command fail-closed process test",
+      "canonical runs/resume and app-server parity",
+      "root/read-only/explicit Writer conformance",
+      "process SIGKILL/reopen",
+      "focused, fmt, workspace clippy/test and git diff --check"
+    ]
+  },
+  "non_conclusions": [
+    "No coding-success, token, cache, wall-time or API-cost improvement is claimed.",
+    "The fixed DeepSeek provider replay fact is not generic provider product debt.",
+    "V08 imported-baseline accounting, V09 FIM product scope, V10 Chinese prompt billing, V13 config correctness, V15 benchmark closure and V16 workflow-step evidence remain separate.",
+    "M8-I Auto remains explicit/hold; this slice neither admits Auto nor changes model routing.",
+    "Frozen M8-E evidence is not rewritten; this successor records current truth."
+  ]
+}
