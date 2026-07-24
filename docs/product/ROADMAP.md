@@ -2699,6 +2699,33 @@ V15 关闭后 current matrix 为 **16 pass / 0 blocked**，V1 结论为 **V1 可
 只表示 release-ready；本切片不 push、不发布、不改远端。完整结论见
 [M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
 
+### M9-A：Host Auto post-V1 release admission
+
+M9-A 从 release-ready `3770feba` 冻结 fixed Pro、fixed Flash 与 Host Auto 的同 binary
+正式比较。审计确认 `crates/app::ProductionModelRoutePolicy` 仍是唯一 owner：Auto root
+与 explicit Writer 用 Pro，普通 read-only child 用 Flash，typed recheck/rework 用 Pro；
+旧 LLM classifier、prompt/parser、关键词/500 字 heuristic、Provider 与 mid-run switch
+均不存在。只有普通 read-only child 任务形成真实 paid delta；root-only/Writer 只做离线
+conformance。
+
+切片先以失败测试修复 TUI 在 `model=auto` 时丢弃显式 reasoning 的 caller parity 缺陷，
+再冻结 3 task × 3 variant × 3 repeat、maximum_reruns=0、同 TaskContract/tools/budget/
+verifier 的 27-arm suite。candidate `29c4980f` 的 focused、fmt、workspace strict
+Clippy/test、root/read-only/Writer route、SIGKILL/reopen、fail-before-loss journal 与
+immutable binary dry-run 全部通过。
+
+正式 suite 在第 18 arm 遇到没有 response headers/usage 的 typed transport failure。
+RunStore 精确记录 `billing_unknown=true`、`complete=false`；Harness 在下一 arm 前停止，
+没有重跑、补 mate 或拼接。停止前 17 个完整 arms 全部 verified、false success 0、
+route/lifecycle/reopen/accounting 有效，但 formal matrix 不完整，不能生成产品 aggregate。
+6 个已完成 Auto/Pro pair 的描述性费用 ratio 为 `0.8698`、wall ratio 为 `0.8922`，也未
+达到约 20% 门。
+
+决策是 **keep Host typed policy / hold Auto default / keep fixed Pro default**。显式
+Pro/Flash/reasoning 保留；M9-A-only 1,551 行 runner 删除，manifest/summary 与 ignored
+0600 raw 保留。任何 successor 必须从 position 1 重开，不能续跑本次 raw。完整事实见
+[M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

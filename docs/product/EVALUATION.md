@@ -1839,6 +1839,53 @@ manifest/result/summary：
 - ignored `eval/results/m8-n-v15-release-scope-21200ccf-v1.json`（`0600`）；
 - [M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
 
+### 9.30 M9-A Host Auto release admission（2026-07-24）
+
+M9-A 用同一 immutable candidate `29c4980f` 比较 fixed Pro、fixed Flash diagnostic 与
+Host Auto。三个任务都要求同 batch 启动恰好两个 read-only child；三臂的 TaskContract、
+fixture、agent catalog、权限、reasoning、request/turn/tool/wall budget、verifier 与
+maximum_reruns=0 相同。fixed Pro 是唯一质量基线；fixed Flash 不能 admission Auto。
+
+Key 前通过 TUI explicit reasoning parity、Host route matrix、Pro-root/Flash-child loopback、
+root/read-only/Writer accounting reopen、process SIGKILL、focused、fmt、workspace strict
+Clippy/test、Harness fault matrix 和 immutable binary dry-run。raw 先 durable terminal 与
+canonical store，再无凭据 reopen、external verifier，最后才派生 arm result。
+
+正式 suite 第 18 arm 的第一个 fixed Flash root request 在任何 response headers、content、
+finish reason 或 usage 之前发生 typed `deepseek_transport`：
+
+```text
+root started/completed/in_flight = 1/1/0
+surface responses = 0
+usage responses = 0
+billing_unknown = true
+accounting complete = false
+retry decision = stop(retry_limit_reached)
+```
+
+Harness 写入 terminal/store/reopen/verifier 后，以 `accounting_incomplete` abort；没有第 19
+arm、重跑、补 mate 或续跑。raw 为 110 个完整 hash-chained records、41,339,450 bytes、
+0600，SHA-256
+`0528f77ab6494209dd877a01a538acb6c8c187ed9c87a51680737c3eee7b748a`。
+
+17 个完整 arm results 是 6 Pro、6 Auto、5 Flash，17/17 verified、false success 0、
+route/lifecycle/reopen/accounting 有效。它们因 formal matrix 不完整而不具
+product-metric eligibility。6 个已完成 Auto/Pro pair 的描述性 cost ratio `0.8698`
+（4 胜 2 负）、wall ratio `0.8922`；也未达到约 20% 效率门。
+
+结论为 `hold_auto_default_admission`：默认继续 fixed `deepseek-v4-pro`，显式模型/
+reasoning 与 Host typed policy 保留，不恢复 classifier。M9-A-only runner 删除，冻结
+manifest/live-admission、summary 与 ignored raw 保留；新 successor 必须从 position 1
+开始。
+
+证据：
+
+- `eval/manifests/m9-a-host-auto-release-admission-v1.json`；
+- `eval/manifests/m9-a-host-auto-live-admission-v1.json`；
+- ignored `eval/results/m9-a-host-auto-release-admission-29c4980ff4f6-v1.jsonl`
+  （`0600`）；
+- [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

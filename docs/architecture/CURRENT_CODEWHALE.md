@@ -65,6 +65,8 @@
 - M8-M fixed-Pro live admission：`d60d5e52`
 - M8-N V15 release-scope successor contract：`1a656bee`
 - M8-N accepted release candidate：`498599dd`
+- M9-A Host Auto immutable campaign candidate：`29c4980f`
+- M9-A Host Auto live admission：`5032e4a4`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -1759,6 +1761,21 @@ app-server/exec/TUI 共用 override loader 和进程级一致性测试保留。c
 **16 pass / 0 blocked**，发布状态为 **V1 可发布**（只表示 release-ready）。完整事实见
 [M8-N V15 release-scope successor](../../eval/summaries/m8-n-v15-release-scope-successor-2026-07-24.md)。
 
+M9-A 没有增加 production route。它确认当前三个调用面由同一
+`ProductionModelRoutePolicy` 解析：显式 Pro/Flash 由 child 精确继承；Auto root 为 Pro，
+普通 read-only child 为 Flash，typed recheck 与 explicit Writer 为 Pro。TUI 现在与
+exec/app-server 一样独立保留显式 reasoning，不再因为 `model=auto` 把它改写为 Auto。
+`AgentTask`、child `RunRequest`、route audit、request ledger 与 accounting 继续由现有
+protocol/runtime/state 精确持久化和重开。
+
+正式 Auto admission 使用 candidate `29c4980f` 的唯一 official ChatCompletions backend。
+第 18 arm 在无 headers/usage 的 transport failure 后由 canonical ledger 标为
+`billing_unknown=true` 并停止；17 个完整 arms 不能构成 27-arm product metric。默认仍
+fixed `deepseek-v4-pro`，Auto 为 hold。实验专属 runner 已删除；没有 classifier、
+Provider、production variant、第二 Runtime/Store 或第二 transport 留在当前源码。完整
+事实见
+[M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1799,8 +1816,9 @@ app-server/exec/TUI 共用 override loader 和进程级一致性测试保留。c
 - M8-H 已证明 FIM 质量较差或永不应实现；它只证明旧 production 半分支无 caller、sender、
   parser/apply/reopen 闭环，当前没有可归因 treatment；
 - M8-I 已证明 read-only Flash child 相对 fixed Pro 质量非劣或成本/时间稳定改善约 20%；
-  当前只有 request-count、replay 和安全边界的 mechanism evidence，没有 live product
-  metric，Auto 不是默认；
+  M9-A 虽产生 17 个完整成功 arms，但第 18 arm 因 unknown billing 停止，27-arm matrix
+  不完整；6 个描述性 Auto/Pro pairs 的 cost/wall 改善也只有约 13.0%/10.8%，Auto 不是
+  默认；
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；
