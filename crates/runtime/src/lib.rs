@@ -13,7 +13,6 @@ pub use codewhale_protocol::agent_runtime::*;
 pub use codewhale_protocol::task::*;
 use tokio::sync::Notify;
 
-mod acceptance_progress;
 mod agent;
 mod orchestration;
 mod store;

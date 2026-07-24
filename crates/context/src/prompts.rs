@@ -27,9 +27,6 @@ pub struct ProductionPromptRequest<'a> {
     pub skills_scan_codewhale_only: bool,
     pub shell_binary: &'a str,
     pub tool_mode: bool,
-    /// M10-C same-binary treatment adapter. It is intentionally absent from
-    /// user documentation and must be deleted at keep/reject cutover.
-    pub acceptance_progress_enabled: bool,
 }
 
 /// Stable semantic identity of one system-prompt layer.
@@ -47,7 +44,6 @@ pub enum PromptContextLayer {
     ConfiguredInstructions,
     Route,
     ExecutionPosture,
-    AcceptanceProgressTreatment,
 }
 
 /// Scope that may invalidate one prompt layer.
@@ -107,7 +103,6 @@ pub fn production_system_prompt(request: ProductionPromptRequest<'_>) -> SystemP
         text: posture,
         cache_control: PromptCacheControl::Volatile,
     });
-    append_acceptance_progress_marker(&mut build.prompt, request.acceptance_progress_enabled);
     build.prompt
 }
 
@@ -129,41 +124,8 @@ pub fn production_system_prompt_with_ledger(
         text: posture,
         cache_control: PromptCacheControl::Volatile,
     });
-    if request.acceptance_progress_enabled {
-        build.ledger.entries.push(prompt_ledger_entry(
-            PromptContextLayer::AcceptanceProgressTreatment,
-            "eval:m10-c-acceptance-progress",
-            PromptContextScope::Run,
-            PromptContextStability::Volatile,
-            ACCEPTANCE_PROGRESS_MARKER,
-        ));
-    }
-    append_acceptance_progress_marker(&mut build.prompt, request.acceptance_progress_enabled);
     refresh_prompt_ledger_totals(&mut build.ledger, &build.prompt);
     build
-}
-
-const ACCEPTANCE_PROGRESS_MARKER: &str = "<!-- cw:ctx:acceptance_progress:v1 -->";
-
-fn append_acceptance_progress_marker(prompt: &mut SystemPrompt, enabled: bool) {
-    if enabled {
-        prompt.blocks.push(SystemBlock {
-            text: ACCEPTANCE_PROGRESS_MARKER.to_owned(),
-            cache_control: PromptCacheControl::Volatile,
-        });
-    }
-}
-
-/// Detect the exact immutable treatment marker from a persisted system prompt.
-///
-/// Runtime uses this only to reconstruct the same request-local projection
-/// after reopen. No configuration or mutable process state is consulted.
-#[must_use]
-pub fn system_prompt_uses_acceptance_progress(prompt: &SystemPrompt) -> bool {
-    prompt.blocks.iter().any(|block| {
-        block.cache_control == PromptCacheControl::Volatile
-            && block.text == ACCEPTANCE_PROGRESS_MARKER
-    })
 }
 
 fn execution_posture(tool_mode: bool) -> String {
@@ -1001,70 +963,6 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_progress_treatment_marker_is_exact_volatile_and_ledgered() {
-        let fixture = tempfile::tempdir().expect("prompt fixture");
-        let preferences = PromptPreferences::default();
-        let request = |enabled| ProductionPromptRequest {
-            workspace: fixture.path(),
-            model: "deepseek-v4-pro",
-            preferences: &preferences,
-            instructions: &[],
-            skills_dir: None,
-            verbosity: None,
-            skills_scan_codewhale_only: true,
-            shell_binary: "/fixture/bin/zsh",
-            tool_mode: true,
-            acceptance_progress_enabled: enabled,
-        };
-
-        let control = production_system_prompt_with_ledger(request(false));
-        let treatment = production_system_prompt_with_ledger(request(true));
-
-        assert!(!system_prompt_uses_acceptance_progress(&control.prompt));
-        assert!(system_prompt_uses_acceptance_progress(&treatment.prompt));
-        assert_eq!(
-            treatment.prompt.blocks.len(),
-            control.prompt.blocks.len() + 1
-        );
-        assert_eq!(
-            treatment.prompt.blocks.last(),
-            Some(&SystemBlock {
-                text: ACCEPTANCE_PROGRESS_MARKER.to_owned(),
-                cache_control: PromptCacheControl::Volatile,
-            })
-        );
-        assert_eq!(
-            treatment
-                .prompt
-                .blocks
-                .iter()
-                .filter(|block| block.text == ACCEPTANCE_PROGRESS_MARKER)
-                .count(),
-            1
-        );
-        assert!(
-            !control
-                .ledger
-                .entries
-                .iter()
-                .any(|entry| entry.layer == PromptContextLayer::AcceptanceProgressTreatment)
-        );
-        let marker = treatment
-            .ledger
-            .entries
-            .iter()
-            .find(|entry| entry.layer == PromptContextLayer::AcceptanceProgressTreatment)
-            .expect("treatment ledger entry");
-        assert_eq!(marker.source, "eval:m10-c-acceptance-progress");
-        assert_eq!(marker.scope, PromptContextScope::Run);
-        assert_eq!(marker.stability, PromptContextStability::Volatile);
-        assert_eq!(
-            marker.sha256,
-            format!("sha256:{}", sha256(ACCEPTANCE_PROGRESS_MARKER.as_bytes()))
-        );
-    }
-
-    #[test]
     fn production_prompt_fixture_enforces_structure_language_and_provenance() {
         let fixture = production_prompt_fixture_root();
         let _ = fs::remove_dir_all(&fixture);
@@ -1121,7 +1019,6 @@ mod tests {
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: true,
-            acceptance_progress_enabled: false,
         });
 
         assert_eq!(prompt.blocks.len(), 5);
@@ -1244,7 +1141,6 @@ mod tests {
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: false,
-            acceptance_progress_enabled: false,
         });
         let no_tool_posture = &no_tool_prompt
             .blocks
@@ -1278,7 +1174,6 @@ mod tests {
             skills_scan_codewhale_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: true,
-            acceptance_progress_enabled: false,
         };
         let with_pack = production_system_prompt_with_ledger(fallback_request());
         let with_pack_text = system_prompt_flat_text(&with_pack.prompt);

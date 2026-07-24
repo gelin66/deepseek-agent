@@ -158,6 +158,16 @@ Changing one of these constraints requires evidence and a new ADR.
   branch are deleted. Frozen manifests, ignored 0600 raw, Git history, and the
   decision summary remain audit evidence only. Production has no budgeted
   Working-Set map; do not restore it without a new independent slice.
+- M10-C's request-local Acceptance Progress candidate passed its offline
+  mechanism, replay, compaction, actor, and production-loopback tests, but
+  failed the credential-front viability gate. Every measured model-request-
+  visible state increased estimated context tokens (`235 -> 356` pending and
+  `538 -> 547` verifier rejection); the only reduction was terminal-only, while
+  the candidate added 1,501 net lines and current fixed-Pro already had two
+  verified accounting-complete recovery samples. The decision is
+  `reject_offline_viability_and_delete`: projection, prompt marker, config/user
+  wiring, and treatment tests are physically deleted; no Key or API was used.
+  Production has no acceptance-progress product branch or second plan truth.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

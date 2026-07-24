@@ -301,7 +301,6 @@ fn model_request_for_snapshot(
         projection: snapshot.context_projection.as_ref(),
         task_contract: snapshot.request.task_contract.as_ref(),
         workspace_state: &snapshot.workspace_state,
-        acceptance_progress: None,
         evidence_receipts: &snapshot.evidence_receipts,
         last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
         last_verifier_failure: snapshot

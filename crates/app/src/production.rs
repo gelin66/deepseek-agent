@@ -60,9 +60,6 @@ pub struct ProductionPromptConfig {
     pub verbosity: Option<String>,
     pub skills_scan_codewhale_only: bool,
     pub shell_binary: String,
-    /// Temporary M10-C same-binary treatment selector. The persisted system
-    /// prompt carries the exact marker used for replay.
-    pub acceptance_progress_enabled: bool,
 }
 
 impl Default for ProductionPromptConfig {
@@ -74,7 +71,6 @@ impl Default for ProductionPromptConfig {
             verbosity: None,
             skills_scan_codewhale_only: false,
             shell_binary: if cfg!(windows) { "powershell" } else { "sh" }.to_owned(),
-            acceptance_progress_enabled: false,
         }
     }
 }
@@ -373,7 +369,6 @@ impl ProductionFixedRoutePolicy {
             skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
             shell_binary: &self.prompt.shell_binary,
             tool_mode,
-            acceptance_progress_enabled: self.prompt.acceptance_progress_enabled,
         })
     }
 }
@@ -1016,7 +1011,6 @@ impl ProductionComposition {
             skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
             shell_binary: &self.prompt.shell_binary,
             tool_mode,
-            acceptance_progress_enabled: self.prompt.acceptance_progress_enabled,
         })
     }
 
@@ -1406,10 +1400,7 @@ mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::{Arc, Mutex as StdMutex};
 
-    use codewhale_context::{
-        compaction::{ContextInput, effective_context},
-        system_prompt_uses_acceptance_progress,
-    };
+    use codewhale_context::compaction::{ContextInput, effective_context};
     use codewhale_deepseek::{
         ApiSurface, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
         OFFICIAL_V4_MAX_OUTPUT_TOKENS, RuntimeChatPlanInput, StrictSchemaIssue, ToolSurfaceReason,
@@ -2063,7 +2054,6 @@ mod tests {
             projection: snapshot.context_projection.as_ref(),
             task_contract: snapshot.request.task_contract.as_ref(),
             workspace_state: &snapshot.workspace_state,
-            acceptance_progress: None,
             evidence_receipts: &snapshot.evidence_receipts,
             last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
             last_verifier_failure: snapshot
@@ -2728,7 +2718,6 @@ mod tests {
                 projection: snapshot.context_projection.as_ref(),
                 task_contract: snapshot.request.task_contract.as_ref(),
                 workspace_state: &snapshot.workspace_state,
-                acceptance_progress: None,
                 evidence_receipts: &snapshot.evidence_receipts,
                 last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
                 last_verifier_failure: snapshot
@@ -3264,7 +3253,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m10c_production_loopback_derives_acceptance_progress_and_reopens_exactly() {
+    async fn m7c_production_loopback_verifier_failure_recovers() {
         let server = MockDeepSeekServer::start(vec![
             tool_response(
                 "deepseek-v4-pro",
@@ -3309,14 +3298,11 @@ mod tests {
         command.task = caller_authored_verifier_task();
         command.limits.wall_time_ms = Some(30_000);
         let state_path = temp.path().join("state.db");
-        let app = AgentApplication::production(
-            config(&state_path, connection(&server.root, false), true).with_prompt(
-                ProductionPromptConfig {
-                    acceptance_progress_enabled: true,
-                    ..ProductionPromptConfig::default()
-                },
-            ),
-        )
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
         .expect("production app");
         let run = run_result(
             app.execute(envelope(
@@ -3335,27 +3321,6 @@ mod tests {
             requests.len(),
             replay.snapshot.terminal
         );
-        for request in &requests {
-            let rendered = serde_json::to_string(&request.body["messages"]).expect("wire messages");
-            assert_eq!(rendered.matches("验收进度（Host 派生）").count(), 1);
-            assert!(!rendered.contains("acceptance_ids"));
-            assert!(!rendered.contains("当前有效 EvidenceReceipt"));
-            assert!(!rendered.contains("未解决的完成拒绝"));
-        }
-        let failed = serde_json::to_string(&requests[3].body["messages"])
-            .expect("failed verifier request messages");
-        assert!(failed.contains(r#"\"status\":\"evidence_needed\""#));
-        assert!(failed.contains(r#"\"reason\":\"verifier_failed\""#));
-        assert!(failed.contains(r#"\"next_evidence\":\"effective_workspace_mutation\""#));
-        assert_eq!(failed.matches("最近一次 verifier 失败").count(), 1);
-        let corrected = serde_json::to_string(&requests[4].body["messages"])
-            .expect("corrected request messages");
-        assert!(
-            corrected.contains(r#"\"reason\":\"workspace_mutation_observed\""#),
-            "unexpected corrected projection: {corrected}"
-        );
-        assert!(corrected.contains(r#"\"next_evidence\":\"latest_host_verifier_pass\""#));
-        assert!(!corrected.contains("最近一次 verifier 失败"));
         assert!(matches!(
             replay
                 .snapshot
@@ -4223,42 +4188,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn acceptance_progress_treatment_is_shared_by_root_read_only_and_writer_prompts() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let treatment = ProductionFixedRoutePolicy::new(ProductionPromptConfig {
-            acceptance_progress_enabled: true,
-            ..ProductionPromptConfig::default()
-        });
-        let control = ProductionFixedRoutePolicy::new(ProductionPromptConfig::default());
-        let root_prompt = treatment.system_prompt(workspace.path(), DEEPSEEK_PRO_MODEL, true);
-        assert!(system_prompt_uses_acceptance_progress(&root_prompt));
-        assert!(!system_prompt_uses_acceptance_progress(
-            &control.system_prompt(workspace.path(), DEEPSEEK_PRO_MODEL, true)
-        ));
-
-        let root_id = RunId::from("m10c-actor-prompt-root");
-        let mut parent = test_run_request(root_id, "actor prompt parity", "placeholder");
-        parent.system_prompt = root_prompt;
-        parent.environment.workspace = stable_path(workspace.path());
-        let writer = writer_task(&parent);
-        let mut read_only = writer.clone();
-        read_only.model = DEEPSEEK_FLASH_MODEL.to_owned();
-        read_only.workspace.access = AgentWorkspaceAccess::ReadOnly;
-        read_only.workspace.worktree_path = None;
-        read_only.workspace.root_branch = None;
-        read_only.workspace.branch = None;
-        read_only.workspace.allowed_paths.clear();
-        read_only.workspace.owner_token = None;
-
-        for task in [&read_only, &writer] {
-            let prompt = treatment
-                .child_system_prompt(&parent, task, true)
-                .expect("child prompt");
-            assert!(system_prompt_uses_acceptance_progress(&prompt));
-        }
-    }
-
     #[tokio::test]
     async fn standard_and_strict_candidate_send_the_same_fallback_catalog() {
         let mut observed = Vec::new();
@@ -4568,7 +4497,6 @@ mod tests {
                 projection: created.replay.snapshot.context_projection.as_ref(),
                 task_contract: created.replay.snapshot.request.task_contract.as_ref(),
                 workspace_state: &created.replay.snapshot.workspace_state,
-                acceptance_progress: None,
                 evidence_receipts: &created.replay.snapshot.evidence_receipts,
                 last_completion_rejection: created
                     .replay
@@ -4639,7 +4567,6 @@ mod tests {
                 projection: replay.snapshot.context_projection.as_ref(),
                 task_contract: replay.snapshot.request.task_contract.as_ref(),
                 workspace_state: &replay.snapshot.workspace_state,
-                acceptance_progress: None,
                 evidence_receipts: &replay.snapshot.evidence_receipts,
                 last_completion_rejection: replay.snapshot.last_completion_rejection.as_ref(),
                 last_verifier_failure: None,

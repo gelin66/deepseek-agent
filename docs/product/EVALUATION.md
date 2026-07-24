@@ -2170,6 +2170,31 @@ M10-B 已形成正式 `reject_quality_veto_and_delete` 决定；acquisition 同�
 [M10-B budgeted working-set](../../eval/summaries/m10-b-budgeted-working-set-2026-07-24.md)。
 下一独立切片是 M10-C Acceptance Progress；不得使用 M10-B 不完整 raw 补样。
 
+M10-C 已在 credential 边界前形成
+`reject_offline_viability_and_delete`：
+
+- WIP candidate `9fd1ff8d` 在现有 Runtime/ContextBroker 内完成 request-local
+  acceptance projection、compaction/reopen、root/read-only/Writer 和 production
+  verifier recovery 的机制闭环；Run API v12、RuntimeEvent v18、State v24、
+  exec-stream v3 均未变化；
+- frozen same-fixture token estimator 的 request-visible states 为 pending
+  `235 -> 356`、verifier rejection `538 -> 547`；唯一 treatment 更小的 satisfied
+  state `492 -> 386` 在 Host terminal receipt sealed 后不会形成下一模型请求；
+- 候选净增加 1,501 行。M9-C frozen raw 的两个 current fixed-Pro `root_recovery`
+  arms 均 verified、false success 0、accounting complete，并执行相同最短
+  `run_verifiers -> edit_file -> run_verifiers` 恢复序列；
+- 因而候选没有可归因 request-level 效率收益、没有观察到的 baseline quality loss，
+  且代码复杂度为负。正式 live A/B 不准入，credential read=false，official API
+  requests=0；
+- cutover 删除所有 projection 类型/renderer、marker、配置/用户面和 treatment-only
+  tests，生产 `crates/` tree 恢复到 M10-C 起点。manifest、Git 历史与 summary 保留
+  审计，不是 current consumer。
+
+完整证据见
+[M10-C Acceptance Progress](../../eval/summaries/m10-c-acceptance-progress-2026-07-24.md)。
+下一独立切片是 M10-D Failure-Directed Recovery；不得把 M10-C 的离线 token estimate
+冒充 API usage 或 live 产品比较。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

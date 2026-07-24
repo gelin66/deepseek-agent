@@ -5,14 +5,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use codewhale_context::compaction::{
-    ContextCompactionPreparation, effective_context, prepare_compaction,
+    ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
 };
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::*;
-use crate::acceptance_progress::RuntimeContextInput;
 
 enum RunLaunch {
     Create(Box<RunRequest>),
@@ -891,9 +890,8 @@ impl AgentRuntime {
         state: &mut RunState,
         tools: &[ToolDefinition],
     ) -> Result<(), RuntimeFailure> {
-        let runtime_context = RuntimeContextInput::new(&state.snapshot, tools);
         match prepare_compaction(
-            runtime_context.as_context_input(),
+            context_input(&state.snapshot, tools),
             state.snapshot.request.context_policy,
         )
         .map_err(context_projection_failure)?
@@ -981,20 +979,14 @@ impl AgentRuntime {
                         state.snapshot.request.environment.interactive,
                     )
                 };
-                let mut context = {
-                    let runtime_context = RuntimeContextInput::new(&state.snapshot, &tools);
-                    effective_context(runtime_context.as_context_input())
-                        .map_err(context_projection_failure)?
-                };
+                let mut context = effective_context(context_input(&state.snapshot, &tools))
+                    .map_err(context_projection_failure)?;
                 let hard_input_tokens =
                     u64::from(state.snapshot.request.context_policy.hard_input_tokens);
                 if context.estimated_tokens > hard_input_tokens {
                     self.compact_context(state, &tools).await?;
-                    context = {
-                        let runtime_context = RuntimeContextInput::new(&state.snapshot, &tools);
-                        effective_context(runtime_context.as_context_input())
-                            .map_err(context_projection_failure)?
-                    };
+                    context = effective_context(context_input(&state.snapshot, &tools))
+                        .map_err(context_projection_failure)?;
                     if context.estimated_tokens > hard_input_tokens {
                         return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
                             failure: RuntimeFailure::ContextLimitExceeded {
@@ -5614,6 +5606,26 @@ fn model_port_error_from_failure(failure: &ModelAttemptFailure) -> ModelPortErro
         failure.retryable,
     )
     .with_response(failure.response)
+}
+
+fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> ContextInput<'a> {
+    ContextInput {
+        transcript: &snapshot.transcript,
+        projection: snapshot.context_projection.as_ref(),
+        task_contract: snapshot.request.task_contract.as_ref(),
+        workspace_state: &snapshot.workspace_state,
+        evidence_receipts: &snapshot.evidence_receipts,
+        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+        last_verifier_failure: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.outcome),
+        last_verifier_failure_workspace: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.workspace_state),
+        tools,
+    }
 }
 
 fn completion_candidate_id(model_response_sequence: u64) -> CompletionCandidateId {

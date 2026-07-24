@@ -824,13 +824,6 @@ fn verifier_request_with_policy(
     request
 }
 
-fn enable_acceptance_progress_treatment(request: &mut RunRequest) {
-    request.system_prompt.blocks.push(SystemPromptBlock {
-        text: "<!-- cw:ctx:acceptance_progress:v1 -->".to_owned(),
-        cache_control: PromptCacheControl::Volatile,
-    });
-}
-
 fn passed_verifier_outcome(spec: VerifierSpec, revision: &str) -> ToolOutcome {
     let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
         summary: "deterministic verifier passed".to_owned(),
@@ -917,7 +910,6 @@ fn request_context(
         projection: snapshot.context_projection.as_ref(),
         task_contract: snapshot.request.task_contract.as_ref(),
         workspace_state: &snapshot.workspace_state,
-        acceptance_progress: None,
         evidence_receipts: &snapshot.evidence_receipts,
         last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
         last_verifier_failure: snapshot
@@ -4325,94 +4317,6 @@ async fn verifier_failure_is_projected_once_then_a_write_allows_verified_correct
             && mutation.workspace_state_after.revision
                 == WorkspaceRevision::Known { sha256: "sha256:fixed".to_owned() }
     ));
-}
-
-#[tokio::test]
-async fn acceptance_progress_tracks_failure_mutation_and_latest_evidence_without_duplicate_prose() {
-    let model_calls = Arc::new(AtomicUsize::new(0));
-    let observed_calls = model_calls.clone();
-    let model = Arc::new(MockModel::new(move |request| {
-        let rendered = serde_json::to_string(&request.messages).expect("model request messages");
-        assert_eq!(rendered.matches("验收进度（Host 派生）").count(), 1);
-        assert!(!rendered.contains("acceptance_ids"));
-        assert!(!rendered.contains("当前有效 EvidenceReceipt"));
-        assert!(!rendered.contains("未解决的完成拒绝"));
-        match observed_calls.fetch_add(1, Ordering::AcqRel) {
-            0 => {
-                assert!(rendered.contains(r#"\"status\":\"pending\""#));
-                assert!(rendered.contains(r#"\"reason\":\"verifier_pending\""#));
-                assert!(rendered.contains(r#"\"next_evidence\":\"failed_verifier_observation\""#));
-                ScriptResponse::Events(vec![completed(
-                    "先提出完成",
-                    None,
-                    Vec::new(),
-                    ModelFinishReason::Stop,
-                )])
-            }
-            1 => {
-                assert!(rendered.contains(r#"\"status\":\"evidence_needed\""#));
-                assert!(rendered.contains(r#"\"reason\":\"verifier_failed\""#));
-                assert!(rendered.contains(r#"\"next_evidence\":\"effective_workspace_mutation\""#));
-                assert_eq!(rendered.matches("最近一次 verifier 失败").count(), 1);
-                assert_eq!(rendered.matches("EXPECTED_SENTINEL").count(), 1);
-                ScriptResponse::Events(vec![completed(
-                    "",
-                    Some("根据 Host verifier 的确定性失败修复工作区"),
-                    vec![call("write-fix-progress", "write", "{}")],
-                    ModelFinishReason::ToolCalls,
-                )])
-            }
-            2 => {
-                assert!(rendered.contains(r#"\"status\":\"evidence_needed\""#));
-                assert!(rendered.contains(r#"\"reason\":\"temporal_mutation_observed\""#));
-                assert!(rendered.contains(r#"\"next_evidence\":\"latest_host_verifier_pass\""#));
-                assert!(!rendered.contains("最近一次 verifier 失败"));
-                ScriptResponse::Events(vec![completed(
-                    "已根据验证证据完成修复",
-                    None,
-                    Vec::new(),
-                    ModelFinishReason::Stop,
-                )])
-            }
-            _ => panic!("unexpected extra model request"),
-        }
-    }));
-    let tools = Arc::new(CorrectableVerifierTools {
-        spec: exact_run_tests_spec(),
-        revision: Mutex::new("sha256:broken".to_owned()),
-        fixed: AtomicBool::new(false),
-        write_changes_revision: true,
-        calls: Mutex::new(Vec::new()),
-    });
-    let store = Arc::new(InMemoryRunStore::default());
-    let runtime = Arc::new(AgentRuntime::new(
-        model,
-        tools.clone(),
-        Arc::new(CollectSink::default()),
-        store.clone(),
-    ));
-    let mut run_request =
-        verifier_request_with_policy("修复边界错误", VerifierEvidencePolicy::FailedWritePass);
-    enable_acceptance_progress_treatment(&mut run_request);
-
-    let outcome = runtime.start(run_request).wait().await.unwrap();
-
-    assert!(matches!(
-        outcome.terminal,
-        TerminalState::Completed { ref message, .. }
-            if message == "已根据验证证据完成修复"
-    ));
-    assert_eq!(model_calls.load(Ordering::Acquire), 3);
-    assert_eq!(
-        *tools.calls.lock().expect("tool call lock"),
-        ["run_tests", "write", "run_tests"]
-    );
-    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
-    assert_eq!(replay.snapshot.evidence_receipts.len(), 1);
-    assert_eq!(
-        replay.snapshot.evidence_receipts[0].workspace_state,
-        replay.snapshot.workspace_state
-    );
 }
 
 #[tokio::test]
@@ -8297,58 +8201,4 @@ async fn limit_compaction_is_durable_and_the_agent_consumes_only_the_projection(
         replay.snapshot.context_projection.as_ref(),
         Some(projection.as_ref())
     );
-}
-
-#[tokio::test]
-async fn acceptance_progress_is_rederived_once_after_durable_local_compaction() {
-    let model = Arc::new(MockModel::new(|request| {
-        assert!(request.system_prompt.blocks.iter().any(|block| {
-            block.text == "<!-- cw:ctx:acceptance_progress:v1 -->"
-                && block.cache_control == PromptCacheControl::Volatile
-        }));
-        let rendered =
-            serde_json::to_string(&request.messages).expect("compacted treatment messages");
-        assert_eq!(rendered.matches("验收进度（Host 派生）").count(), 1);
-        assert!(rendered.contains(r#"\"status\":\"pending\""#));
-        assert!(rendered.contains(r#"\"reason\":\"host_review_pending\""#));
-        assert!(!rendered.contains("acceptance_ids"));
-        assert!(!rendered.contains("current_evidence_receipt"));
-        assert!(!request.messages.iter().any(|message| matches!(
-            message,
-            ModelMessage::User { content } if content.contains("历史用户约束 0")
-        )));
-        ScriptResponse::Events(vec![completed(
-            "压缩后仍按派生验收进度完成",
-            None,
-            Vec::new(),
-            ModelFinishReason::Stop,
-        )])
-    }));
-    let (runtime, _, _, store) = fixture(model);
-    let mut run_request = request("压缩后保持验收投影");
-    enable_acceptance_progress_treatment(&mut run_request);
-    let mut transcript = long_transcript(8);
-    transcript.entries[0] = TranscriptEntry::System {
-        prompt: run_request.system_prompt.clone(),
-    };
-    run_request.transcript = transcript;
-    run_request.context_policy = compaction_policy();
-
-    let outcome = runtime.start(run_request).wait().await.unwrap();
-
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
-    assert!(replay.snapshot.context_projection.is_some());
-    let prepared = replay
-        .events
-        .iter()
-        .find_map(|event| match &event.event {
-            RuntimeEventKind::ModelRequestPrepared { request, .. } => Some(request.as_ref()),
-            _ => None,
-        })
-        .expect("prepared treatment request");
-    let rendered =
-        serde_json::to_string(&prepared.messages).expect("persisted compacted treatment messages");
-    assert_eq!(rendered.matches("验收进度（Host 派生）").count(), 1);
-    assert_eq!(reduce_events(&replay.events).unwrap(), replay.snapshot);
 }

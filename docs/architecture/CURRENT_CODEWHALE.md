@@ -1910,6 +1910,29 @@ M10-B 当前事实：
 完整事实见
 [M10-B budgeted working-set](../../eval/summaries/m10-b-budgeted-working-set-2026-07-24.md)。
 
+M10-C 当前事实：
+
+- production 没有 Acceptance Progress 类型、renderer、prompt marker、配置/CLI/TUI/API
+  入口、plan store、Goal/Hunt 或第二完成权威；
+- frozen WIP candidate 曾证明可以从 canonical TaskContract、receipt/rejection、
+  verifier observation 与 workspace revision request-locally 派生 progress，并在
+  Runtime/Store/compaction/reopen/root/read-only/Writer 上保持一致；
+- offline viability 显示 request-visible pending `235 -> 356`、verifier rejection
+  `538 -> 547`，均增加 ContextBroker estimated tokens；唯一 `492 -> 386` 的下降属于
+  Host 已终止、无下一模型请求的 satisfied state；
+- current fixed-Pro 已有两个 accounting-complete、verified、false success 0 的
+  deterministic root recovery 样本。候选在无观察到的 failure headroom 下净增加
+  1,501 行，因此在 credential 前被否决；
+- cutover 后整个 `crates/` tree 与 M10-C 起点 `11528a99` 字节级一致。Runtime 与
+  Store 继续从同一个原有 `ContextInput` 构造 canonical Host facts；TaskContract、
+  EvidenceReceipt、latest-revision completion gate、fixed actor routes 和 exact replay
+  均未变化；
+- frozen offline manifest、Git 历史与 summary 只解释删除决定。Key 未读取、API 请求
+  为 0，没有 live product comparison。
+
+完整事实见
+[M10-C Acceptance Progress](../../eval/summaries/m10-c-acceptance-progress-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

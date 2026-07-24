@@ -59,15 +59,6 @@ fn retired_m10a_project_context_pack_setting_is_rejected() {
 }
 
 #[test]
-fn m10c_acceptance_progress_treatment_is_typed_and_defaults_off() {
-    assert!(!Config::default().acceptance_progress_enabled());
-    let parsed: ConfigFile = toml::from_str("[context]\nacceptance_progress = true\n").unwrap();
-    let config = apply_profile(parsed, None).unwrap();
-    config.validate().unwrap();
-    assert!(config.acceptance_progress_enabled());
-}
-
-#[test]
 fn m8a_retired_provider_key_is_rejected_even_when_named_deepseek() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("config.toml");

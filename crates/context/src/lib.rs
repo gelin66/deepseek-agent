@@ -16,5 +16,4 @@ pub use prompts::{
     InstructionSource, ProductionPromptBuild, ProductionPromptRequest, PromptContextLayer,
     PromptContextLedger, PromptContextLedgerEntry, PromptContextScope, PromptContextStability,
     production_system_prompt, production_system_prompt_with_ledger,
-    system_prompt_uses_acceptance_progress,
 };

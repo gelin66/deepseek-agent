@@ -2959,17 +2959,31 @@ arms；质量门失败或无归因净收益时完整删除 treatment。
 
 #### M10-C：Acceptance Progress Projection
 
-- 真实问题：Runtime 已在 completion 时逐项构造 `AcceptanceSatisfaction`，ContextBroker
-  也会投影 acceptance IDs、latest receipt 与 rejection，但执行中没有统一派生的
-  `satisfied/pending/invalidated/evidence_needed` 视图。
-- 验收：投影只从 TaskContract、ToolOutcome、workspace revision、verifier observation
-  和 EvidenceReceipt 派生；revision 变化自动失效旧证据；compaction/reopen 后逐项一致，
-  跨文件/恢复任务重复工具轮次和漏验收下降、false success 0。
-- owner：`crates/runtime`；ContextBroker 只消费派生结果。
-- 替代旧路：重复 Host-facts prose 和模型自行回忆剩余验收。
-- 证据：负向 revision/old receipt/reopen fixtures 与 fixed-Pro task A/B。
-- cutover：机械投影覆盖后删重复 prose；无收益删除 projection，不建第二 plan truth、
-  update-plan 工具或 Goal/Hunt store。
+正式决定为 `reject_offline_viability_and_delete`：
+
+- WIP candidate `9fd1ff8d` 证明 Runtime 可只从 TaskContract、receipt/rejection、
+  Host verifier observation、workspace revision 与 temporal evidence 派生
+  `satisfied/pending/invalidated/evidence_needed`，并使 live Runtime、Store reopen、
+  compaction、root/read-only/Writer 与 production loopback 使用同一 request-local
+  projection；没有新增 RuntimeEvent、State schema、store、plan 或完成 owner；
+- credential 前的同 fixture ContextBroker token gate 显示所有 model-request-visible
+  状态均不改善：pending `235 -> 356`，verifier rejection `538 -> 547`；唯一
+  satisfied `492 -> 386` 的下降发生在 Host 已 sealed terminal receipt、不会再有下一
+  model request 的状态；
+- 候选为 20 files、`+1,587/-86`、净增加 1,501 行；current fixed-Pro frozen baseline
+  已有两个 verified、false success 0、accounting-complete 的
+  `run_verifiers -> edit_file -> run_verifiers` root recovery arms，没有观察到候选要
+  修复的 acceptance-progress loss；
+- 候选因此在 offline viability gate 被否决。Key 未读取、官方 API 请求为 0、没有
+  live A/B 或产品指标；
+- cutover 物理删除 projection、prompt marker、config/CLI/TUI/app 接线和 treatment-only
+  tests。删除后整个 `crates/` tree 与 M10-C 起点 `11528a99` 字节级一致；production
+  继续使用唯一 legacy Host-facts、TaskContract/EvidenceReceipt/latest-revision gate，
+  不保留 compatibility reader、dual path 或第二真相。
+
+冻结 manifest 与完整决定见
+[M10-C Acceptance Progress](../../eval/summaries/m10-c-acceptance-progress-2026-07-24.md)。
+下一独立切片为 M10-D；不得用 M10-C 未发生的 live treatment 推断 success/cost。
 
 #### M10-D：Failure-Directed Recovery Controller
 
