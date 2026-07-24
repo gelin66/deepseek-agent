@@ -2726,6 +2726,42 @@ Pro/Flash/reasoning 保留；M9-A-only 1,551 行 runner 删除，manifest/summar
 0600 raw 保留。任何 successor 必须从 position 1 重开，不能续跑本次 raw。完整事实见
 [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
 
+### M9-B：post-V1 fixed-Pro coding regression baseline
+
+M9-B 从 M9-A 的 `hold Auto / keep fixed Pro default` 决策开始，冻结一个不含 product
+treatment 的 post-V1 regression label collector。六个独立临时 Git repo 覆盖 root
+单文件、root 多文件迁移、verifier failure recovery、一个 read-only child、一个
+explicit isolated Writer 和 tools-disabled false-completion；每个 task 原定 3 次，共
+18 arms。所有请求固定 official `deepseek-v4-pro`、reasoning `high`、streaming
+ChatCompletions `POST /chat/completions`、同一 immutable candidate `983fa9ce`、同
+TaskContract/tools/budget/verifier、零 transport/runtime retry 和
+`maximum_reruns=0`。
+
+Key 前，六个 fixture tree/base、18-arm schedule、hash-chain/SIGKILL Harness、
+focused、fmt、workspace strict Clippy/test、root/read-only/Writer/recovery/reopen/
+CLI/TUI/API production loopback、release binary 与 credential-free dry-run 全部通过。
+正式 v1 的 `root_single` 完整 verified；`readonly_investigation` 的 terminal、Store、
+无凭据 reopen、external verifier、route、Host receipt 与 handoff 后 root mutation 也
+全部有效，但 Harness 错把 read-only 共用的 `agent_result_collected` 当成 Writer-only
+event，产生错误的 `lane_valid=false`。这是预注册的 observer failure，不是模型失败。
+
+第 3 arm 运行中立即中止；没有继续、重跑、补样、续跑或拼接。raw 为 15 个完整
+hash-chained records、无 partial tail、0600，SHA-256
+`67df6a7056edefbf680113536e9e85b42df46bdd86ce08541865d8962f798fcc`。
+两个已结算 arm 合计 12 requests、known cost `$0.021395127`；第 3 arm 没有
+terminal/accounting snapshot，可能存在未证明计费的 attempt，因此不估价或加入合计。
+
+observer fix `9342fb03` 把 shared read-only lifecycle 与 Writer-only
+workspace/seal/integration/cleanup 事件明确分开并加入 Harness self-test。原 live
+admission 绑定 pre-fix Harness hash，修复后自动 fail closed。决策为
+**hold incomplete baseline / keep corrected Harness / keep fixed Pro default / do not
+resume or splice v1**。
+
+原 contract 规定只有新 runner 实际证明全部六类 lane 后，才删除被替代的 current-tree
+M6/M7 one-off runner。v1 未满足 cutover，相关脚本暂时保留；fresh successor 必须用新
+manifest/admission/raw 从 position 1 开始。完整事实见
+[M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

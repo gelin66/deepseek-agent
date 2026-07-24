@@ -67,6 +67,9 @@
 - M8-N accepted release candidate：`498599dd`
 - M9-A Host Auto immutable campaign candidate：`29c4980f`
 - M9-A Host Auto live admission：`5032e4a4`
+- M9-B fixed-Pro regression candidate：`983fa9ce`
+- M9-B fixed-Pro live admission：`37c4cc96`
+- M9-B read-only observer correction：`9342fb03`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -205,6 +208,12 @@
   失去消费者的 M8-D candidate-only test/fixture 已删除；通用 override consistency
   保留。current matrix 为 16 pass / 0 blocked，结论为 `V1 可发布`（release-ready，
   未 push、未发布）。
+  M9-A 随后以同 immutable binary 比较 fixed Pro、fixed Flash diagnostic 与 Host Auto；
+  27-arm suite 在第 18 arm 因 unknown billing fail closed，默认继续 fixed Pro。
+  M9-B 又尝试建立六类 post-V1 fixed-Pro regression baseline；offline gates 全通过，
+  但正式 v1 在第 2 个完整 arm 暴露 read-only/Writer observer 分类缺陷并在第 3 arm
+  中止。observer 已修复并自测，旧 admission 因 Harness hash 改变自动失效；18-arm
+  baseline 仍为 hold，不能续跑或拼接。
 - 当前协议：Run API v11、RuntimeEvent v17、State schema v23、exec-stream v3。产品默认
   仍为固定 `deepseek-v4-pro`；Auto 未经正式质量/效率 A/B 不会成为默认。
 
@@ -1776,6 +1785,23 @@ Provider、production variant、第二 Runtime/Store 或第二 transport 留在�
 事实见
 [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
 
+M9-B 没有增加 production surface。它以 candidate `983fa9ce` 的同一
+`codewhale app-server --stdio`、Run API v11、RuntimeEvent v17、State v23、一个
+AgentApplication/AgentRuntime/RunStore 与 official DeepSeek Standard Chat backend
+执行六类 fixed-Pro regression task。root、read-only child 与 explicit Writer 的
+model 都是 `deepseek-v4-pro`、reasoning `high`；route audit、shared request ledger、
+usage/cost、Host receipt 与 SQLite reopen 继续来自 canonical Store。
+
+正式 v1 在第 2 个完整 arm 暴露 evaluator-only observer defect：read-only child 的
+`agent_result_collected` 是 root/read-only/Writer 共用事件，却被 Harness 当成
+Writer-only lifecycle。Runtime 与 Store facts 本身正确；修正后对同一 durable snapshot
+重放得到 child completed、零 child writes、handoff 后 root mutation 与 lane valid。
+campaign 按 observer-failure gate 在第 3 arm 中止，没有 rerun/splice。当前生产默认仍
+fixed `deepseek-v4-pro`，Auto 仍 hold；没有 classifier、Provider、FIM、Anthropic、
+第二 Runtime/Store 或第二工具目录。原 admission 绑定 pre-fix Harness hash，corrected
+runner 会 fail closed，不会复用旧 campaign。完整事实见
+[M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -1819,6 +1845,10 @@ Provider、production variant、第二 Runtime/Store 或第二 transport 留在�
   M9-A 虽产生 17 个完整成功 arms，但第 18 arm 因 unknown billing 停止，27-arm matrix
   不完整；6 个描述性 Auto/Pro pairs 的 cost/wall 改善也只有约 13.0%/10.8%，Auto 不是
   默认；
+- M9-B 已建立可用于 release regression 的完整 fixed-Pro 18-arm baseline；v1 只产生
+  2 个完整 arm results，第 2 个又因 read-only/Writer observer 分类错误而
+  measurement-ineligible，第 3 arm 没有 terminal/accounting snapshot。修正重放只能
+  证明 observer defect，不能补算、续跑或拼接为 baseline；
 - M7-E 已证明 reasoning-off 提高或保持完整任务集的 verified success，或稳定降低 Token、
   请求、wall time 和费用；v1-v4 的 18 个已完成 arms 因 evaluator/fairness 失效而不可作为
   产品指标，v4 active arm 的最终 billing 也未知；

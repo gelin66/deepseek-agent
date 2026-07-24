@@ -1886,6 +1886,52 @@ manifest/live-admission、summary 与 ignored raw 保留；新 successor 必须�
   （`0600`）；
 - [M9-A Host Auto release admission](../../eval/summaries/m9-a-host-auto-release-admission-2026-07-24.md)。
 
+### 9.31 M9-B fixed-Pro coding regression baseline（2026-07-24）
+
+M9-B 不是产品 treatment A/B。它冻结 current fixed `deepseek-v4-pro` 的 post-V1
+regression label set，覆盖 root single、root migration、failed-verifier recovery、
+read-only investigation、explicit isolated Writer 与 false-completion safety。六个
+task × 3 fresh runs、同 immutable binary/TaskContract/tool authority/budget/verifier、
+reasoning `high`、streaming Standard Chat、`maximum_reruns=0`；raw 顺序为 terminal、
+canonical Store、无凭据 SQLite reopen、external verifier、arm derivation。
+
+candidate `983fa9ce` 在 Key 前通过 fixture/base identity、Harness hash-chain 与四个
+SIGKILL window、focused、fmt、workspace strict Clippy/test、production loopback、
+process crash/reopen、release build 与 credential-free dry-run。正式 campaign 只产生
+2 个完整 arm result：
+
+1. `root_single`：verified、false success 0、route/lane/reopen/accounting 有效；
+2. `readonly_investigation`：真实 terminal/verifier/path/receipt/route/child handoff 均
+   有效，但 pre-fix Harness 把 shared `agent_result_collected` 错当 Writer-only event，
+   错误派生 `lane_valid=false`。
+
+第二项是 observer failure。第 3 个 `writer_migration` arm 运行中立即中止；没有后续
+arm、重跑、补 mate、续跑或拼接。raw 为 15 个完整 hash-chain records、无 partial tail、
+4,058,364 bytes、0600，SHA-256
+`67df6a7056edefbf680113536e9e85b42df46bdd86ce08541865d8962f798fcc`。
+两个已结算 arm 的 12 requests、62,606 input、6,834 output 与
+`$0.021395127` known cost 只能作为停止证据。第 3 arm 没有 terminal/accounting
+snapshot，可能有未证明计费的 attempt，不能记为 0 或加入合计。
+
+修正后的 observer 对同一 durable read-only Store snapshot 重放，得到 child completed、
+child writes empty、agent arguments valid、root mutation after handoff、lane valid；
+这证明 evaluator defect，但不把 v1 改写为正式 baseline。fix `9342fb03` 另以自测冻结
+shared read-only event 与 Writer-only workspace/seal/integration/cleanup 边界。由于
+live admission 绑定 pre-fix Harness SHA，当前 runner 不会复用旧 admission。
+
+结论为 **hold incomplete baseline / keep corrected Harness / keep fixed Pro default /
+do not resume or splice**。18-arm matrix 不完整，`baseline_label_eligible=false`，没有
+Auto/Flash/FIM/prompt/reasoning/routing 或 production capability 结论。旧 M6/M7 runner
+的 cutover 删除条件也未满足；fresh successor 必须从新 position 1 开始，完整证明全部
+六类 lane 后才能删除。
+
+证据：
+
+- `eval/manifests/m9-b-fixed-pro-regression-v1.json`；
+- `eval/manifests/m9-b-fixed-pro-live-admission-v1.json`；
+- ignored `eval/results/m9-b-fixed-pro-regression-983fa9cee711-v1.jsonl`（`0600`）；
+- [M9-B fixed-Pro coding regression baseline](../../eval/summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

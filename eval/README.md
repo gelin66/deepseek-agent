@@ -12,6 +12,23 @@ M4-A 的 canonical `ToolOutcome`、SQLite RunStore、进程中断恢复、生产
 单次 live resume canary 明确不属于产品指标。长期恢复判定以
 [EVALUATION.md](../docs/product/EVALUATION.md#53-持久化进程中断与恢复证据契约)为准。
 
+M9-B 当前保留的 post-V1 regression 入口是
+[`eval-m9b-fixed-pro-regression.py`](../scripts/eval-m9b-fixed-pro-regression.py)。
+它通过 canonical app-server Run API 覆盖 fixed-Pro root、read-only child、explicit
+Writer、failure recovery 与 false-completion，不复制工具或模型循环。离线自检不会读取
+Key 或联网：
+
+```bash
+python3 scripts/eval-m9b-fixed-pro-regression.py --self-test
+python3 scripts/eval-m9b-fixed-pro-regression.py --freeze-report
+```
+
+M9-B v1 在正式第 2 个完整 arm 暴露 read-only/Writer observer 分类错误，并按冻结规则在
+第 3 arm 中止。observer 已修复，但 v1 live admission 绑定修复前 Harness hash，当前入口
+会 fail closed，不能用它续跑、补样或拼接旧 raw。fresh paid successor 必须先冻结新的
+manifest、candidate/admission 和 raw path，从 position 1 开始。停止证据与删除边界见
+[M9-B fixed-Pro coding regression baseline](summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
+
 M5-A 的 canonical TaskContract/EvidenceReceipt 不能由普通 Host-only exec A/B 验收。
 专用评测器通过 app-server Run API v4/v5 给 baseline/candidate 提供相同 model-visible
 任务，并让 candidate 真正执行冻结的 exact Host verifier：
