@@ -2265,8 +2265,29 @@ M10-F 已形成 `keep_read_only_analyzer`，同时决定
 
 完整证据见
 [M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
-下一步只允许最终 read-only parallel evidence audit；不得把高 read_file 频率或多 Agent
-数量本身包装成能力。
+
+M10-G 已形成
+`close_no_admissible_readonly_fanout_benefit_evidence`：
+
+- current Host 不自动 fan-out；同批并行只在一个 DeepSeek response 显式产生多个
+  canonical `agent` calls 时发生，仍由同一个 Runtime/Store 启动、汇合和持久化；
+- M7-G 的 9-pair/18-arm formal 在首个联网 control 后停止，`completed_arms=0` 且
+  billing unknown；M7-G2 的 11/11 fault matrix 只证明 observer durability，没有新的
+  production treatment；
+- M9-C/M10-A/M10-B/M10-F 的 7 个 current read-only trajectories 全部 completed，
+  但都只覆盖一个 child，fan-out comparable pairs=0。它们证明 single-child
+  correctness，不证明 multi-child quality/time；
+- 现有 overlap、fixed route、typed handoff、accounting、reopen、SIGKILL/no-relaunch、
+  cancel/partial failure 与 UI projection 都有真实 consumer。没有 unconsumed production
+  treatment branch 可删；
+- verified success 非劣、false success=0、accounting complete 与 wall time 稳定改善
+  20% 的准入门没有证据满足，因此关闭 active candidate，不做 paid successor；
+- production/config/protocol/schema delta=0，credential/API/network/new raw=0。
+
+M7-G/M7-G2 self-test 和 M10-F canonical report 在本切片重算通过；frozen raw
+mode/hash/bytes 不变。完整结论见
+[M10-G read-only fan-out 最终准入审计](../../eval/summaries/m10-g-readonly-fanout-final-audit-2026-07-24.md)。
+M10-A–G 已全部形成 keep/reject/close 决定；不得把它们继续当作无证据的 active backlog。
 
 ## 10. 结果与决策记录
 

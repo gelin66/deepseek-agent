@@ -3061,8 +3061,33 @@ stratum，且能冻结 typed runtime contract，才允许窄切片重开。
 
 完整证据见
 [M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
-下一步只做最终 read-only fan-out evidence audit；无新的 current quality/time 证据则保持
-现有 explicit/conditional 范围。
+
+#### M10-G：read-only fan-out 最终准入审计
+
+正式决定为 `close_no_admissible_readonly_fanout_benefit_evidence`：
+
+- current canonical mechanism 仍只由一个 `agent` tool、同一 `AgentRuntime`、RunStore
+  lifecycle/accounting 和 fixed actor route 组成；Host 没有自动 fan-out policy。多个
+  child 只来自同一 DeepSeek response 的显式多个 `agent` calls；
+- M7-G 唯一 single-root / two-read-only-child 正式矩阵为 0 个可用 arm，首个联网
+  control 的 billing unknown；M7-G2 只证明 11 个 observer fault window，不产生新的
+  production delta；
+- M9-C/M10-A/M10-B 与 M10-F 共提供 7 个 completed current read-only trajectories，
+  但都只覆盖单 child，没有 fan-out control/treatment pair，不能证明质量非劣或 wall
+  time 至少下降 20%；
+- existing overlap、typed handoff、fixed Flash/high child、Pro/max recheck、SQLite
+  reopen、SIGKILL/no-relaunch、partial failure/cancel 与 TUI projection 继续有真实
+  consumer，不能作为“无用 fan-out treatment”删除；
+- historical M7-G runner 仍由 M9-C 未满足的 baseline cutover 明确保留，M7-G2 runner
+  复算 fail-before-loss contract；frozen manifest/summary/raw 保持 immutable；
+- active admission 候选关闭。没有 production code/schema/config/raw、Key、network 或
+  API；不新增 scheduler、swarm、multi-Writer、投票完成或第二 Runtime/Store。
+
+完整结论见
+[M10-G read-only fan-out 最终准入审计](../../eval/summaries/m10-g-readonly-fanout-final-audit-2026-07-24.md)。
+M10 fixed-Pro 原生优化闭环至此关闭；后续只能由新的 canonical trajectory 先证明一个
+重复、current、可冻结的 production loss，再作为新 Goal 提出，不能把 M10-A–G 继续
+保留为机械 backlog。
 
 ### 调优
 

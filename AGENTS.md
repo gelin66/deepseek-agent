@@ -201,6 +201,13 @@ Changing one of these constraints requires evidence and a new ADR.
   reads/tools in current controls. The result is
   `insufficient_current_loss_evidence_for_a_new_product_candidate`; do not
   restore M10-A–E treatments from raw tool frequency alone.
+- M10-G closed active read-only fan-out admission because M7-G produced no
+  measurement-valid arm and current M9-C/M10-A/M10-B evidence contains only
+  single-child trajectories. Keep the consumed canonical same-batch child
+  mechanism, fixed Flash/high read-only route, Pro/max recheck, exact
+  reopen/crash behavior, and historical reproducibility runners; do not add an
+  automatic Host fan-out policy, swarm, multi-Writer, or paid successor without
+  a new current production delta.
 - M8-J closed V12 at candidate `bcbc1616` by deleting the visible
   `codewhale thread` path, the SQLite `threads` table,
   `session_index.jsonl`, and the no-consumer Thread/App/Prompt/EventFrame

@@ -1999,6 +1999,27 @@ M10-F 当前事实：
 完整事实见
 [M10-F Trajectory Loss Analyzer](../../eval/summaries/m10-f-trajectory-loss-analyzer-2026-07-24.md)。
 
+M10-G 当前事实：
+
+- Host 没有自动 fan-out policy；多个 read-only child 只来自同一 DeepSeek response
+  显式返回的多个 canonical `agent` calls；
+- `AgentRuntime` 先启动同批 child 再 join，ordinary read-only child 固定 Flash/high，
+  typed failed-child recheck 固定 Pro/max，root 固定 Pro/high；
+- root/child route、request、usage、cost、terminal 在 SQLite reopen 后 exact；durable
+  `ChildStarted` SIGKILL 不重发、不重启，partial failure/cancel settle 全部 child；
+- M7-G formal 没有可用 arm且 billing unknown；M7-G2 只有 observer durability；
+  M9-C/M10-A/M10-B/M10-F 的 7 个 current read-only trajectories 都是 single-child，
+  没有 fan-out comparable pair；
+- concurrency/depth limits、child lifecycle、TUI/app-server projection、M7-G/M7-G2
+  reproducibility runners 都有真实 consumer；production 不存在待删除的独立 fan-out
+  treatment branch；
+- active fan-out admission 已按
+  `close_no_admissible_readonly_fanout_benefit_evidence` 关闭。production/schema/config
+  delta、Key、API、network、new raw 均为 0。
+
+完整事实见
+[M10-G read-only fan-out 最终准入审计](../../eval/summaries/m10-g-readonly-fanout-final-audit-2026-07-24.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

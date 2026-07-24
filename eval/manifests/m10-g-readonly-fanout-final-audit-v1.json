@@ -1,0 +1,106 @@
+{
+  "schema": "codewhale.eval.m10-g-readonly-fanout-final-audit.v1",
+  "frozen_at": "2026-07-24",
+  "status": "closed_no_admissible_benefit_evidence",
+  "source_identity": {
+    "commit": "8c576c2696be0b5dfd1f317bfb68a5a38837034e",
+    "tree": "d7f850abcb85f2d80a8ce6d7afdaf10c1f095cc7",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "The canonical Runtime can overlap multiple explicit read-only child calls, but CodeWhale has no measurement-valid current control/treatment evidence that this fan-out preserves quality and reduces wall time by at least twenty percent.",
+    "acceptance": [
+      "distinguish the existing canonical child mechanism and resource ceilings from an automatic Host fan-out policy",
+      "prove current root, ordinary read-only child, typed recheck and Writer fixed routes remain exact after SQLite reopen",
+      "revalidate same-batch overlap, typed handoff, cancellation, partial failure and SIGKILL fail-closed behavior",
+      "audit every current paid or frozen task source for a comparable single-root versus multiple-read-only-child product delta",
+      "require verified success non-inferiority, false success zero, complete accounting and stable wall-time improvement of at least twenty percent before any broader admission",
+      "make no credential read, network request, model call or new production branch when no attributable delta exists"
+    ],
+    "owner": "crates/runtime canonical child lifecycle; crates/app fixed actor route policy",
+    "old_path_replaced": "the active roadmap assumption that read-only fan-out still has a pending admission slice",
+    "cutover_if_admitted": "not applicable because no current attributable product treatment or complete comparison exists",
+    "cutover_if_closed": "retain the consumed canonical child mechanism and historical evidence, remove fan-out from the active optimization queue, and create no treatment branch"
+  },
+  "consumer_audit": {
+    "canonical_mechanism": [
+      "one model-visible agent tool",
+      "AgentRuntime same-batch child launch and join",
+      "RunStore child lifecycle, accounting and reopen",
+      "fixed read-only child Flash/high route and typed Pro/max recheck",
+      "TUI and app-server canonical child projections",
+      "resource ceilings for child count and depth"
+    ],
+    "automatic_host_fanout_policy_present": false,
+    "second_runtime_or_store_present": false,
+    "multi_writer_present": false,
+    "historical_runner_retention": {
+      "scripts/eval-m7g-readonly-fanout.py": "reproduces the frozen M7-G task, schedule and observer contract; M9-C explicitly retains it until a complete baseline cutover",
+      "scripts/eval-m7g2-observer-durability.py": "reproduces the fail-before-loss hash-chain and eleven fault windows",
+      "frozen_manifests_summaries_and_raw": "immutable audit evidence"
+    },
+    "unconsumed_production_treatment_branch": false
+  },
+  "evidence": {
+    "m7_g": {
+      "manifest_sha256": "sha256:86c9958231146aca747726d8b68854ad232d68f297aea3092f8da15b2bd70eaa",
+      "harness_sha256": "sha256:9591bcb0f70178572845fc60461a30bc6b2f18265db94f3fd70bab3da334790e",
+      "raw_path": "eval/results/m7-g-readonly-fanout-062623e6.jsonl",
+      "raw_sha256": "sha256:177bb20aa9b1d5d91b75a60ce3fde7c783c0e927567f9c2c79e2ad971fa546eb",
+      "raw_mode": "0600",
+      "completed_arms": 0,
+      "billing": "unknown",
+      "product_metric_eligible": false
+    },
+    "m7_g2": {
+      "manifest_sha256": "sha256:faa9e7d2c8fc1120dfd814379d884ad0badb45d3ac4385f42454f09c017f1b79",
+      "harness_sha256": "sha256:e0df9086636b1c811dac5c9f1973135f9ff1cc2391dfc079e6ee59ad93922ab0",
+      "raw_path": "eval/results/m7-g2-observer-durability-3382bbc4-v1.jsonl",
+      "raw_sha256": "sha256:c733d7a4714f49477c1ce43a01963209c37179dbea509ce0e709c743f3c94009",
+      "raw_mode": "0600",
+      "fault_windows_passed": 11,
+      "production_delta": false,
+      "product_metric_eligible": false
+    },
+    "current_trajectory": {
+      "manifest_sha256": "sha256:12a5a3d890d4b79f6306bda2244074460b2d9d540358cdac303715125687974a",
+      "harness_sha256": "sha256:2c61b54abed036c20578a4e945e24cfd2f85ebda869aee697f7f95e15cd59a0f",
+      "report_sha256": "sha256:765629c3a889bc44aabd9d6b34c42bb93ea32ed5aa2b909bf90a15b36203483e",
+      "read_only_trajectories": 7,
+      "read_only_terminal_completed": 7,
+      "fanout_control_treatment_pairs": 0,
+      "result_class": "insufficient_current_loss_evidence"
+    },
+    "current_correctness": [
+      "two ordinary read-only children start before either is joined",
+      "root Pro/high, ordinary read-only child Flash/high, typed recheck Pro/max",
+      "both typed handoffs commit before one root integration request",
+      "root and child route, request, usage, cost and terminal facts reopen exactly",
+      "read-only ChildStarted SIGKILL does not relaunch or resend",
+      "same-batch cancellation and partial failure settle every child"
+    ]
+  },
+  "decision": {
+    "class": "close_no_admissible_readonly_fanout_benefit_evidence",
+    "keep": [
+      "canonical explicit agent calls and same-batch read-only overlap",
+      "fixed actor routing and typed recheck",
+      "resource bounds, cancellation, crash/reopen and UI projections",
+      "frozen M7-G/M7-G2 evidence and currently consumed reproducibility runners"
+    ],
+    "do_not_build": [
+      "automatic Host fan-out policy",
+      "swarm, voting completion or multi-Writer",
+      "second scheduler, Runtime, Store, tool directory or accounting owner",
+      "a paid successor without a new current product delta"
+    ],
+    "active_roadmap_candidate": false,
+    "credential_read": false,
+    "network_accessed": false,
+    "official_api_requests": 0,
+    "new_raw": false
+  }
+}
