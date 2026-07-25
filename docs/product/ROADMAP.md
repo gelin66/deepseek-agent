@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A 完成；M17-B next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B 完成；M17-C next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3439,6 +3439,17 @@ namespace 明确保留给 M17-B，不在本切片制造隐式协议迁移。完�
 状态，保留原目录备份；DSE release candidate 前删除迁移器和旧 reader，不向公共 V1
 发布永久兼容层。不能无损迁移的旧 materialized state 必须先形成只读备份和明确 disposition，
 不得伪造 hash-chain 或静默丢失。
+
+M17-B 已在 `2b6dd276d` 完成硬切换：活动路径/env 只认 `~/.dse`、`DSE_HOME`、
+`DSE_CONFIG_PATH` 和 `DSE_*`，prompt wrapper、Secret service、verification media type、
+runtime handoff 与 exec stream 只发出 DSE identity。RuntimeEvent 升到 v19、State 升到
+v25、exec-stream 升到 v4；Run API 保持 v12，因为 command envelope 没有变化。State v25
+在同一事务中保留 replay-safe pending Start，删除无法在不改写 exact transcript 的旧
+materialized v18 runs，不增加 compatibility reader 或 dual write。当前开发机只把六项
+可无损本地事实 exact-copy 到 `~/.dse` 并逐项 `cmp`：config、settings、setup state、
+permissions、onboarded marker 和 file Secret；原 `~/.codewhale` 完整保留为备份，历史
+sessions、tool outputs 与日志未冒充 canonical DSE state。完整证据见
+[M17-B DSE config/state/protocol identity](../../eval/summaries/m17-b-dse-config-protocol-identity-2026-07-25.md)。
 
 #### M17-C：DSE delivery 与 CI
 

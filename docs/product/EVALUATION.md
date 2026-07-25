@@ -2573,6 +2573,21 @@ M17 总 gate 尚未完成。本切片没有 Key、官方 API、网络或产品�
 hash、allowlist 与非结论见
 [M17-A DSE product identity](../../eval/summaries/m17-a-dse-product-identity-2026-07-25.md)。
 
+M17-B identity gate 已在 `2b6dd276d` 通过：活动 config/path/env、Secret service、
+project metadata、prompt wrapper、verification media type、runtime handoff 与
+exec-stream 不再产生 CodeWhale namespace；Run API v12、RuntimeEvent v19、State v25、
+exec-stream v4 的 root/read-only/Writer、pending Start、SQLite reopen、SIGKILL 和
+CLI/TUI/app-server machine parity 均通过。v25 只保留可逐字节重放的 pending Start，
+旧 materialized exact transcript 按 schema cutover 明确 retire；不存在 compatibility
+reader、dual write 或第二 Store。一次性开发机迁移只 exact-copy 六项可保留本地事实并
+保留原目录备份，未复制旧 sessions/logs/tool outputs。本切片没有 Key、官方 API、网络、
+发布或质量收益结论。完整证据见
+[M17-B DSE config/state/protocol identity](../../eval/summaries/m17-b-dse-config-protocol-identity-2026-07-25.md)。
+
+历史 `M7-A/M7-A2 DeepSeek Agent` 标题、`codewhale.eval.*`/canonical JSON fixture、
+frozen manifest、hash、summary/raw 与真实源码路径属于审计 allowlist，必须保持原事实；
+它们不是当前产品入口，也不得机械改写成 `DeepSeek Engineer`。
+
 #### bilingual UI gate
 
 - `en.json` 与 `zh-Hans.json` exact key/placeholder parity；

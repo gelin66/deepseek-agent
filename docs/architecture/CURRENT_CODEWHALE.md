@@ -75,6 +75,7 @@
 - M9-C fixed-Pro successor live admission：`84e20cd9`
 - M14 typed observer conformance / M13 live path cutover：`7a9e2278`
 - M17-A DSE product/Cargo identity cutover：`89f1bb9f`
+- M17-B DSE config/state/protocol identity cutover：`2b6dd276d`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2200,6 +2201,29 @@ M17-A 已把当前活动产品、binary 和 Cargo/import 身份硬切为 DSE：
 
 完整证据见
 [M17-A DSE product identity](../../eval/summaries/m17-a-dse-product-identity-2026-07-25.md)。
+
+M17-B 已把当前活动 config/state/protocol identity 硬切为 DSE：
+
+- home/config/env 只认 `~/.dse`、`DSE_HOME`、`DSE_CONFIG_PATH` 与活动 `DSE_*`；
+  `.dse` 是 project metadata、worktree、skills、logs、tool artifacts 和 local state 的
+  唯一新写入 namespace；
+- Secret file owner 与 keychain service 使用 DSE，prompt wrapper/constitution tag、
+  `application/vnd.dse.verification+json`、`<dse:runtime_event>` 和
+  `dse.exec-stream` 是唯一活动协议身份；
+- 当前版本为 Run API v12、RuntimeEvent v19、State v25、exec-stream v4。v25 原子保留
+  replay-safe pending Start，retire 不能在不改写 transcript 的 v18 materialized runs；
+  没有 compatibility reader、dual write、第二 Store 或第二协议真相；
+- 当前开发机 exact-copy config、settings、setup state、permissions、onboarded marker
+  和 file Secret 到 `~/.dse`，逐项 `cmp` 成功且权限保持；`~/.codewhale` 原目录仍是
+  完整只读备份，旧 sessions/logs/tool outputs 没有进入 DSE state；
+- frozen `DeepSeek Agent` 评测标题、历史 `codewhale.eval.*`/canonical JSON fixture、
+  manifest、hash、summary/raw 与真实仓库路径仍保持原事实。它们是明确 allowlist，不是
+  当前可调用产品面；
+- delivery/dev/CI 脚本仍使用旧活动文件名和 release path，由 M17-C 接管；因此整个
+  DSE release identity cutover 尚未完成。
+
+完整证据见
+[M17-B DSE config/state/protocol identity](../../eval/summaries/m17-b-dse-config-protocol-identity-2026-07-25.md)。
 
 ## 7. 明确非结论
 
