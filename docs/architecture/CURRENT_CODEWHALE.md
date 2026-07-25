@@ -79,6 +79,7 @@
 - M17-C DSE locked/offline delivery and CI cutover：`fd23400ca`
 - M17-D DSE bilingual localization owner：`68f3aa739`
 - M17-E DSE bilingual human projection cutover：`6464fe155`
+- M17-F DSE bilingual prompt formal candidate / cutover：`73d02d05e` / `c1856fa4b`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2266,11 +2267,19 @@ M17-E 当前 localization / human projection 事实：
   official DeepSeek Chat sender、fixed actor route、request/accounting 与 RunStore facts
   均未改变；首次双语 picker 和模型用 prompt/template 是明确稳定 allowlist；
 - 双语真实 approval、English 80-column、CJK layout、root/read-only/Writer/recovery、
-  process crash/reopen 和 workspace 全量门禁已通过。M17-F 尚需用 fixed-Pro/high 的
-  2x2 正式评测只保留一个 model-visible production prompt。
+  process crash/reopen 和 workspace 全量门禁已通过；
+- M17-F 已用 fixed-Pro/high 完成 block-1 2x2 正式评测：32/32 measurement-valid，
+  26 个正向 verified、4 个正确安全拒绝、false success 0。English prompt 在
+  `rust_scoped_rules:en` 出现 treatment-only loss，因此未通过非劣门；block 2 未执行；
+- production 只保留中文表达的 system prompt，normalized SHA-256 为
+  `a91799031d8f430945e98871f19d3cefd0496834304b4af0ff04197944ab1bdb`，并按用户当前任务
+  语言回答。不存在 prompt selector、双 production branch、语言分类请求或翻译模型；
+  English candidate、临时翻译 scaffolding、eval assets 与 M17-F-only runner 已删除。
 
 完整证据见
 [M17-E DSE bilingual human projection](../../eval/summaries/m17-e-dse-bilingual-human-projection-2026-07-25.md)。
+M17-F 的正式身份、指标、质量否决与删除证据见
+[M17-F DSE bilingual prompt 2x2](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)。
 
 ## 7. 明确非结论
 

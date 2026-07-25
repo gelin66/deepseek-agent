@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C/D/E 完成；M17-F next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A–F 完成；M17-G next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3600,6 +3600,23 @@ observer/evaluator ambiguity 或费用硬门都在下一 arm 前停止。成本�
 
 winner 通过 exact-current gates 后才接管；whole-release rollback 是唯一 prompt rollback
 owner，不增加 prompt store、selector、mode 或 compatibility branch。
+
+M17-F 已在 formal candidate `73d02d05e` 和 cutover `c1856fa4b` 完成。冻结的 block 1
+执行 32/32 measurement-valid arms：26 个正向 verified、4 个正确安全拒绝、
+false success 0，263 个 physical requests、1,914,399 input tokens、159,125 output
+tokens、USD 0.511237723 known cost 与完整 accounting。English/Chinese prompt 在英文
+任务分别为 6/7、6/7，在中文任务均为 7/7；但 English prompt 在
+`rust_scoped_rules:en` 出现一个 treatment-only verified-success loss，因此
+`english_noninferior=false`，Harness 按预注册门禁写入
+`retain_chinese_block1_quality_veto`，没有运行 block 2、补 mate 或 rerun。
+
+production 只保留 normalized SHA-256
+`a91799031d8f430945e98871f19d3cefd0496834304b4af0ff04197944ab1bdb`
+的中文表达 prompt，并把回答语言固定为用户当前任务语言（显式要求优先）。临时 selector、
+English candidate、翻译 scaffolding、六个 eval assets 与 M17-F-only runner 已物理删除；
+frozen contract/admission、ignored `0600` raw、summary 与 Git 历史保留为审计证据。完整
+结论见
+[M17-F DSE bilingual prompt 2x2](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)。
 
 #### M17-G：英文优先的公开仓库
 

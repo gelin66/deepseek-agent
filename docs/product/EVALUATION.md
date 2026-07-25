@@ -2689,6 +2689,25 @@ binary/workspace identity drift、observer/evaluator ambiguity 或费用硬门�
 任一 winner 接管后删除 loser、eval-only selector/assets、临时 config/test surface 和双
 production branch；whole-release rollback 是唯一 prompt rollback owner。
 
+M17-F formal block 1 已完成并作出有效质量否决。candidate `73d02d05e` 的同一 immutable
+`dse` binary 在 official ChatCompletions、`deepseek-v4-pro`、high、相同工具/预算/
+verifier 下执行 32/32 measurement-valid arms，maximum reruns 为 0。结果为 26 个正向
+verified、4 个正确安全拒绝、false success 0、263 requests、1,914,399 input tokens、
+159,125 output tokens、USD 0.511237723 known cost。两个 prompt 在英文任务的 aggregate
+verified 都是 6/7、中文任务都是 7/7，但 English prompt 在
+`rust_scoped_rules:en` 形成一项 treatment-only loss；因此
+`english_noninferior=false`，决策为 `retain_chinese_block1_quality_veto`，block 2 未执行。
+
+raw 为 ignored `0600`、195 条完整 hash-chain、0 partial tail，SHA-256 为
+`ecdb74675207081104c09f3be0910f3d646ab0e94b0e8e458543935f915500d5`。
+cutover `c1856fa4b` 只保留一个中文表达 prompt，同时采用用户当前任务语言回答；其
+normalized SHA-256 为
+`a91799031d8f430945e98871f19d3cefd0496834304b4af0ff04197944ab1bdb`。
+selector、English candidate、翻译 scaffolding、tracked eval assets 与 M17-F-only runner
+均已删除。该结果不证明中文 prompt 普遍优于英文 prompt，只拒绝这个未通过正式非劣门的
+English candidate。完整证据见
+[M17-F DSE bilingual prompt 2x2](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
