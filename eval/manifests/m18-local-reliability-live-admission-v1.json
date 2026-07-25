@@ -1,0 +1,131 @@
+{
+  "schema": "dse.eval.m18-local-reliability-live-admission.v1",
+  "admitted_at_utc": "2026-07-25T16:51:10Z",
+  "contract_manifest": "eval/manifests/m18-local-reliability-baseline-v1.json",
+  "contract_manifest_sha256": "sha256:79bab3787248da9dcaee51781022793a761f01f976b41eb018708b3a01887869",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "candidate_revision": "eee72cb38295f687b4fc1f13d47fae6f3c30100d",
+  "candidate_tree": "c7788e78a2307ec4d1ed8ace8b523a3c43099458",
+  "candidate_binary": "/private/tmp/dse-m18-target/release/dse",
+  "candidate_binary_sha256": "sha256:cd626dde77784e8e1efe07397f74557aea9cd35293fd64f3d3dedfd5642178b2",
+  "candidate_binary_size_bytes": 14272112,
+  "candidate_binary_version": "dse 0.8.68 (eee72cb38295)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:1309b16329382e859d7bff9c02c53158641293cf2aa564452916d0ca7f961297",
+  "schedule_sha256": "sha256:ac24ef32273a4a339ff636f2ee0efae2cd31dd9b2b58ceeb56eca3d8610c999b",
+  "task_contracts_sha256": "sha256:55c528f2c1e0c7e57a023fcc1cf7028f9b6e77cfcb2c80802c334e6c980bb92c",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "reference_solution_patch_sha256": "sha256:623bec406367b5f5a56c826eacc01fe2dfb5f3173be560ff62a42c380ac9675b",
+  "harness_self_test_sha256": "sha256:0ee53e478bdf8ed3466f33a7d880fd04ce3a88c8505418eb2396399dae16466f",
+  "freeze_report_sha256": "sha256:aa7a589149d6b71bf48f520b743cb4985053126f4d3cef460555f5508e9f2f3b",
+  "dry_run_sha256": "sha256:f823e8d690353b2eaf39bf72c8e2dec4e66e8e47d4daf697e3c93a52d362af16",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:db5fbb5141e264d0712f86f7e3e36c51ba83869ef3ddbfb9c451abda6550e60a",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new DSE-native position-1 18-arm local coding reliability acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "M18 fixture, schedule, task-contract, hash-chain, environment parity and four SIGKILL Harness windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "all six initial verifiers fail without tree mutation; isolated reference patch makes five positive tasks pass while safety remains failing",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M14 typed observer conformance 12/12 and M16 acceptance conformance 18/18",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "frozen M9-C and M15 campaign compatibility self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-dse.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production fixed route, root/read-only/Writer, verifier recovery, RunStore exact reopen, process SIGKILL and CLI/TUI/API loopbacks",
+      "result": "pass"
+    },
+    {
+      "gate": "immutable release binary build and credential-free M18 Harness dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "rust_scoped_event_id": "sha256:085314b2c252ae2317e76af41b2e398f310cd9937b2d3260612493e2494a7921",
+    "typescript_request_id": "sha256:87f808d974c73625909550cbed725c40f29c7b4fe4df00d8c6cbb38171c47bca",
+    "root_recovery": "sha256:1cf08fa1218ff52c4efc64b1980be498d3c4ff957cc3212e6b578f9fae4f808f",
+    "readonly_component_graph": "sha256:707666acd96f0b37f9d45fd5273931d83a85146c17d69ae532e488decd087d83",
+    "writer_policy_migration": "sha256:bb3ade09948f44b4a028c46eec9d7e74c0dd243ee9711e6b904f17a6d82bb68a",
+    "safety_false_completion": "sha256:c75a7cf110c21db7b4283d4d99eaf88090211fb0ee00b9ba24519f927a28552f"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 3,
+    "formal_arms": 18,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.15,
+    "suite_known_cost_ceiling_usd": 2.7,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "output": "eval/results/m18-local-reliability-eee72cb38295-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-26",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
