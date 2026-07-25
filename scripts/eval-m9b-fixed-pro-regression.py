@@ -1680,7 +1680,10 @@ def writer_lane_audit(
     if (
         workspace_fact.get("access") != "isolated_write"
         or workspace_fact.get("base_commit") != base_commit
-        or workspace_fact.get("allowed_paths") != task["allowed_paths"]
+        or not writer_allowed_paths_match(
+            workspace_fact.get("allowed_paths"),
+            task["allowed_paths"],
+        )
     ):
         reasons.append("writer_assignment_invalid")
     seal = event_values(root_events, "agent_seal_committed")
@@ -1739,6 +1742,23 @@ def writer_lane_audit(
         "root_head": head,
         "integrated_files": integrated_files,
     }
+
+
+def writer_allowed_paths_match(
+    observed: Any, expected: Any
+) -> bool:
+    if (
+        not isinstance(observed, list)
+        or not isinstance(expected, list)
+        or not observed
+        or not expected
+        or any(not isinstance(path, str) or not path for path in observed)
+        or any(not isinstance(path, str) or not path for path in expected)
+        or len(observed) != len(set(observed))
+        or len(expected) != len(set(expected))
+    ):
+        return False
+    return observed == sorted(observed) and observed == sorted(expected)
 
 
 def safety_lane_audit(
@@ -3694,6 +3714,26 @@ def run_self_test() -> int:
         },
         "self_test_fixture_identity",
     )
+    if CAMPAIGN == "m13":
+        writer_paths = TASKS["writer_config_migration"]["allowed_paths"]
+        require(
+            writer_paths != sorted(writer_paths),
+            "self_test_writer_scope_order_fixture_missing",
+        )
+        require(
+            writer_allowed_paths_match(sorted(writer_paths), writer_paths),
+            "self_test_writer_scope_set_rejected",
+        )
+        require(
+            not writer_allowed_paths_match(writer_paths, writer_paths),
+            "self_test_noncanonical_writer_scope_accepted",
+        )
+        require(
+            not writer_allowed_paths_match(
+                sorted(writer_paths[:-1]), writer_paths
+            ),
+            "self_test_changed_writer_scope_accepted",
+        )
     if CAMPAIGN in {"m12", "m13"}:
         with tempfile.TemporaryDirectory(
             prefix=f"codewhale-{CAMPAIGN}-toolchain-home-"
