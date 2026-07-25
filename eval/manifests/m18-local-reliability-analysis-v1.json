@@ -1,0 +1,96 @@
+{
+  "schema": "dse.eval.m18-local-reliability-analysis.v1",
+  "frozen_at": "2026-07-26",
+  "source_identity": {
+    "candidate_revision": "eee72cb38295f687b4fc1f13d47fae6f3c30100d",
+    "candidate_tree": "c7788e78a2307ec4d1ed8ace8b523a3c43099458",
+    "live_admission_revision": "5b3c943bb",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:1309b16329382e859d7bff9c02c53158641293cf2aa564452916d0ca7f961297",
+    "analysis_harness_sha256": "sha256:3d689310035c681ec19ad5a4d0eb92485372dece046c0f96300f4e00c12ceeb8",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M18 stopped before the sixteenth terminal snapshot when the third Writer arm reached the frozen run deadline. The 15 complete trajectories must be classified without treating the interrupted Writer, the unexecuted final two arms, or one TypeScript verifier failure as repeated product evidence.",
+    "acceptance": [
+      "validate one exact 0600 regular non-symlink 94-record hash-chained journal with no partial tail",
+      "derive exactly 15 canonical Store trajectories and 15 arm labels while preserving one started-without-snapshot run_deadline interruption",
+      "keep the interrupted Writer outside product-loss labels and do not infer its physical request accounting",
+      "require one identical stable loss code across at least two distinct task IDs before returning an owner audit",
+      "expose only canonical counts, stable loss codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual journal inspection, deadline arm extrapolation and single-task treatment selection",
+    "cutover": "retain immutable raw identity and one read-only report; choose no treatment unless a stable loss repeats across independent tasks"
+  },
+  "inputs": [
+    {
+      "campaign": "m18-local-reliability-baseline",
+      "path": "eval/results/m18-local-reliability-eee72cb38295-v1.jsonl",
+      "journal_schema": "dse.eval.m18-local-reliability-journal.v1",
+      "file_sha256": "sha256:5ace3b0b2222428991eec205f1ac9dc6a3f81dbc09beef88873bcb95343ef9c5",
+      "size_bytes": 29326862,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 15,
+    "completed_arm_results": 15,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "run_deadline",
+    "started_without_snapshot": 1,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only, preserved separately from canonical evidence",
+    "acquisition_stop": "the sixteenth arm_started has no terminal or Store snapshot and is followed by exactly one run_deadline abort with maximum_reruns=0",
+    "product_loss": [
+      "positive task not verified after a complete canonical trajectory",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt"
+    ],
+    "non_loss": [
+      "verified positive task",
+      "correct safety rejection",
+      "started arm without a canonical Store snapshot",
+      "unexecuted schedule arm",
+      "measurement or evaluation environment interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable product loss_code across at least two distinct task IDs",
+    "owner_attribution_gate": "a repeated deterministic_verifier_failed label authorizes canonical trajectory audit only; it does not identify a production owner by itself"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "started arm without canonical snapshot",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

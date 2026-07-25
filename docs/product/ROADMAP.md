@@ -3718,7 +3718,48 @@ GitHub CI、仓库改名、protection、visibility、tag 与 release 是延期�
 `.../codewhale`，不得为了品牌外观移动活动 workspace；若未来用户单独要求宿主目录改名，
 必须先确认没有共享任务、shell 或 worktree。
 
-## 14. 当前源码迁移表
+## 14. M18：纯本地首日生命周期与 fixed-Pro 可靠性基线
+
+M18 不增加产品能力，先验证 M17 的本地发布物能否真实使用，再只从 current production
+轨迹选择重复损失。
+
+### 14.1 本地首日生命周期
+
+- **真实问题**：源码门禁不能替代 fresh `DSE_HOME` 下已安装二进制的首次启动、双语 TUI、
+  exec/resume、升级/回滚/卸载事实；
+- **唯一 owner**：现有 locked/offline delivery owner 与真实 CLI/TUI acceptance；
+- **替代旧路**：只运行源码 binary 或把远端 CI 当成本地完成前置；
+- **验收**：exact-source package、安装、英文/中文首次启动、same-Run resume、upgrade、
+  rollback、data-preserving uninstall 全部本地通过；
+- **cutover**：不增加第二 installer。测试 harness 只修正 installed `dse-tui` binary
+  解析，production 无变化。
+
+该 gate 已通过。配置在 upgrade/rollback/uninstall 前后保持 byte-identical，SHA-256 为
+`fef533b039d61301aaf88c19010312a549bbd29902649da09eeeb6f8ebfd30d6`。
+GitHub、远端 CI、push、rename、visibility、tag 和 release 不属于 M18 完成条件。
+
+### 14.2 current reliability acquisition
+
+冻结 candidate `eee72cb38295`、同一 immutable `dse` binary、official
+ChatCompletions `deepseek-v4-pro`/high、六个独立任务、三个 position-1 repetition、
+deterministic verifier 和 `maximum_reruns=0`。任务覆盖 Rust scoped rule、TypeScript
+production-chain localization、verifier recovery、read-only child、explicit isolated
+Writer 和正确安全拒绝。
+
+正式 acquisition 在第 16 arm 的第三个 Writer repetition 达到 frozen `run_deadline`
+后停止；没有 rerun、补 mate 或继续最后两 arm。前 15 条完整 Store 轨迹产生 11 个正向
+verified success、3 个正确安全拒绝、false success 0 与 1 个正确 blocked 的 TypeScript
+verifier failure。该 loss 只属于一个独立 task ID，同任务另外两次通过；deadline Writer
+没有 terminal snapshot，只是 measurement interruption，不能推断 product outcome 或
+physical request accounting。
+
+预注册门要求同一 stable loss 跨至少两个独立任务重复。结论为
+`insufficient_repeated_current_loss`：不开发、不修改 production、不重跑 M18，fixed
+actor routes、唯一 Runtime/Store 与 canonical tools 保持不变。ignored `0600` raw 和
+只读 canonical projection 保留审计；临时 target/package/workspace 精确删除。完整证据见
+[M18 DSE local first-day and reliability baseline](../../eval/summaries/m18-local-first-day-and-reliability-2026-07-26.md)。
+
+## 15. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
@@ -3732,7 +3773,7 @@ GitHub CI、仓库改名、protection、visibility、tag 与 release 是延期�
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
-## 15. 调整机制
+## 16. 调整机制
 
 里程碑结束时只允许三种结论：
 

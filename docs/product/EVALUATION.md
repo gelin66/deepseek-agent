@@ -2747,6 +2747,39 @@ visibility、tag 与 release 保持未执行的独立外部工作，不作为本
 V1 收口。见
 [M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
 
+### M18 local first-day and current reliability baseline
+
+M18 先对 fresh `DSE_HOME` 和 installed artifacts 执行纯本地 lifecycle gate。exact-source
+package/install/verify、English/`zh-Hans` 首次 PTY、`dse exec`、same-Run resume、
+upgrade、rollback 与 data-preserving uninstall 全部通过。该 gate 不依赖 GitHub 或
+远端 CI。
+
+正式 loss acquisition 冻结六个独立 task family、每个三次 position 1、同一 immutable
+`eee72cb38295` binary、official ChatCompletions `deepseek-v4-pro`/high、相同工具/预算/
+外部 verifier，且 `maximum_reruns=0`。fixture 初态 6/6 fail，reference patch 的五个
+正向任务 5/5 pass，安全反例保持 fail；credential 前的 identity、Harness/self-test、
+observer/acceptance conformance 和全 workspace 本地门禁通过。
+
+campaign 在第 16 arm 的第三个 Writer repetition 达到 frozen `run_deadline` 后停止。
+94-record ignored `0600` journal 无 partial tail，SHA-256 为
+`5ace3b0b2222428991eec205f1ac9dc6a3f81dbc09beef88873bcb95343ef9c5`。
+canonical read-only projection 对 15 条完整 Store trajectory 两次生成 byte-identical
+report，SHA-256 为
+`b031670020531b40ec5109184556dcc567295b83c3f4105b2d9ed0703839534f`。
+
+有效 observation 为 11 个正向 verified、3 个正确安全拒绝、false success 0，以及一个
+TypeScript external-verifier failure；Host 正确 blocked，未产生 false completion。同一
+TypeScript task 的另外两次通过，因此 `deterministic_verifier_failed` 只覆盖一个独立
+task ID。started-without-snapshot Writer 被单独投影为 measurement interruption，不计为
+产品 loss，也不推断其 physical request accounting。
+
+预注册选择门是同一 stable loss 跨至少两个独立 task ID 重复。M18 结果为
+`insufficient_repeated_current_loss`，没有 production candidate、重跑、补 mate、工具/
+prompt/recovery 改动或效率结论。fixed root/Writer Pro-high、read-only Flash-high、
+typed Pro-max recheck、唯一 Runtime/Store 与 canonical tools 保持不变。完整身份、结果、
+删除和非结论见
+[M18 DSE local first-day and reliability baseline](../../eval/summaries/m18-local-first-day-and-reliability-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

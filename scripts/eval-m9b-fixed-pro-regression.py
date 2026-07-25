@@ -3460,6 +3460,11 @@ def aggregate_trajectory_loss(
 
     for campaign in campaigns:
         acquisition_aborts += campaign["accounting_aborts"]
+        if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
+            sum_counter_values(
+                measurement_interruptions,
+                campaign.get("started_without_snapshot", {}),
+            )
         for trajectory in campaign["trajectories"]:
             trajectories += 1
             lane = trajectory["lane"]
@@ -3760,9 +3765,21 @@ def build_trajectory_report() -> dict[str, Any]:
         require(
             set(snapshots).issubset(starts)
             and set(results).issubset(snapshots)
-            and len(starts) == len(snapshots),
+            and len(starts) - len(snapshots)
+            == expected_shape.get("started_without_snapshot", 0),
             "trajectory_join_invalid",
             {"campaign": item["campaign"]},
+        )
+        started_without_snapshot = Counter(
+            starts[evaluation_id].get("task_id")
+            for evaluation_id in set(starts) - set(snapshots)
+        )
+        require(
+            all(
+                isinstance(task_id, str) and task_id
+                for task_id in started_without_snapshot
+            ),
+            "trajectory_stratum_invalid",
         )
         trajectories = []
         control_variant = item.get("current_control_variant")
@@ -3808,6 +3825,9 @@ def build_trajectory_report() -> dict[str, Any]:
             {
                 "campaign": item["campaign"],
                 "accounting_aborts": len(aborts),
+                "started_without_snapshot": dict(
+                    sorted(started_without_snapshot.items())
+                ),
                 "trajectories": trajectories,
             }
         )

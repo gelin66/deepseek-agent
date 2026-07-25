@@ -2313,10 +2313,28 @@ byte-identical。
 完整事实与下一授权边界见
 [M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
 
+M18 又以 installed artifacts 完成纯本地首日生命周期：fresh `DSE_HOME` 下的
+English/`zh-Hans` 首次 TUI、`dse exec`、same-Run resume、exact-source upgrade、
+rollback 与 data-preserving uninstall 全部通过。installed TUI acceptance 现在优先使用
+Cargo 提供的 runtime `CARGO_BIN_EXE_dse-tui`，production binary、Runtime、Store、
+protocol 与 model path 未改变。
+
+同一 current fixed-Pro/high binary 的 M18 reliability acquisition 留下 15 条完整
+canonical Store trajectory：11 个正向 verified、3 个正确安全拒绝、false success 0，
+以及一个由 Host 正确 blocked 的 TypeScript verifier failure。第 16 arm 在 terminal
+snapshot 前达到 frozen `run_deadline`，因此只计为 measurement interruption；没有 rerun、
+补 mate 或 physical request accounting 推断。stable loss 只覆盖一个独立 task family，
+结论为 `insufficient_repeated_current_loss`，没有 production candidate 或 caller 迁移。
+当前 fixed actor routes、唯一 AgentRuntime/RunStore、canonical tools 和 official
+DeepSeek ChatCompletions 保持不变。GitHub 与远端 CI 不属于 M18 gate。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
+- M18 已建立完整 18-arm current reliability aggregate，或一个 TypeScript verifier loss
+  已跨独立 task 重复；15 条完整轨迹之外的 Writer deadline arm 只是测量中断，不能被
+  补算为 product outcome、verified failure 或计费事实；
 - hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
   可靠性保留，不支持这些效率结论；
 - 中文 Agent prompt A/B 已获得收益；M8-C 只完成 fixed `zh-Hans` Host 产品界面和
