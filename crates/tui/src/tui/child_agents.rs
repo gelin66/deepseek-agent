@@ -3,7 +3,7 @@
 //! Rows are rebuilt from canonical runtime events and transcript entries. They
 //! are never persisted and cannot drive execution or lifecycle decisions.
 
-use codewhale_protocol::agent_runtime::{AgentOutcome, RunId, TerminalState};
+use dse_protocol::agent_runtime::{AgentOutcome, RunId, TerminalState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildAgentRow {

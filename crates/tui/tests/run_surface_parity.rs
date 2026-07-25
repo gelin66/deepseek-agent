@@ -19,13 +19,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header::ACCEPT, header::CONTENT_TYPE};
-use codewhale_app::{
+use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
     ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
 };
-use codewhale_app_server::{AppServerOptions, router, serve_stdio};
-use codewhale_config::PromptPreferences;
-use codewhale_protocol::agent_runtime::{
+use dse_app_server::{AppServerOptions, router, serve_stdio};
+use dse_config::PromptPreferences;
+use dse_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AgentResultDetails,
     AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy,
     ModelAccounting, ModelRouteAudit, ModelRouteProfile, OperationId, ReasoningEffort, RunId,
@@ -34,18 +34,18 @@ use codewhale_protocol::agent_runtime::{
     WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
     WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState, writer_path_set_sha256,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
     RunProductControls, RunView, StartRunCommand,
 };
-use codewhale_protocol::task::{
+use dse_protocol::task::{
     AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
     EvidenceLineage, EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract,
     TaskDefinition, TaskGenerationId, VerificationId, VerifierEvidencePolicy, VerifierPlan,
     VerifierSpec, VerifierStep, WorkspaceRevision, WorkspaceState,
 };
-use codewhale_runtime::{RunReplay, RunStore};
-use codewhale_state::StateStore;
+use dse_runtime::{RunReplay, RunStore};
+use dse_state::StateStore;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -407,7 +407,7 @@ fn production_application(
         skills_dir: Some(skills_dir.to_path_buf()),
         verbosity: None,
         skills_scan_codewhale_only: false,
-        shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+        shell_binary: dse_tools::shell_dispatcher::global_dispatcher()
             .kind()
             .binary()
             .to_owned(),
@@ -839,7 +839,7 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
         base_commit: WRITER_BASE_COMMIT.to_owned(),
         worktree_path: Some("/workspace/worktrees/writer-task".to_owned()),
         root_branch: Some("deepseek-agent".to_owned()),
-        branch: Some("codewhale/writer-task".to_owned()),
+        branch: Some("dse/writer-task".to_owned()),
         allowed_paths: vec!["src/lib.rs".to_owned()],
         owner_token: Some("writer-owner-token".to_owned()),
     };
@@ -1384,10 +1384,10 @@ fn preserve_host_env(command: &mut Command) {
 }
 
 fn codewhale_tui_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale-tui") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
     let mut path = std::env::current_exe().expect("current test executable");
@@ -1395,6 +1395,6 @@ fn codewhale_tui_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
     path
 }

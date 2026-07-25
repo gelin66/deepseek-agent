@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result as AnyResult, anyhow};
-use codewhale_protocol::agent_runtime::{ToolRetryDisposition, ToolSideEffectStatus};
+use dse_protocol::agent_runtime::{ToolRetryDisposition, ToolSideEffectStatus};
 use serde_json::{Value, json};
 
 use super::cargo_failure_summary::summarize_cargo_failure;
@@ -807,7 +807,7 @@ pub(crate) async fn execute_exec_shell(
 mod tests {
     use std::fs;
 
-    use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
+    use dse_protocol::agent_runtime::ToolSideEffectStatus;
     use serde_json::{Value, json};
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;

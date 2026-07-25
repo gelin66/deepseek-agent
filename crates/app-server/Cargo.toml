@@ -1,17 +1,17 @@
 [package]
-name = "codewhale-app-server"
+name = "dse-app-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "App-server transport for CodeWhale runtime integrations"
-# `codewhale app-server` is owned by codewhale-cli; this crate is library-only.
+description = "App-server transport for DSE runtime integrations"
+# `dse app-server` is owned by dse-cli; this crate is library-only.
 autobins = false
 
 [dependencies]
 axum.workspace = true
-codewhale-app = { path = "../app", version = "0.8.68" }
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+dse-app = { path = "../app", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
 futures-util = "0.3"
 serde.workspace = true
 serde_json.workspace = true

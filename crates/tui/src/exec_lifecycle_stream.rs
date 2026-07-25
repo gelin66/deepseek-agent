@@ -4,7 +4,7 @@
 //! is carried as the original stored event so identity, outcome, accounting,
 //! and handoff fields cannot drift from the RunStore truth.
 
-use codewhale_protocol::agent_runtime::{RuntimeEventKind, StoredRuntimeEvent};
+use dse_protocol::agent_runtime::{RuntimeEventKind, StoredRuntimeEvent};
 use serde::Serialize;
 
 pub(crate) const EXEC_STREAM_SCHEMA: &str = "codewhale.exec-stream";

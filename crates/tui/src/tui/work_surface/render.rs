@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::App;
 use crate::tui::ui_text::truncate_line_to_width;
-use codewhale_localization::MessageId;
+use dse_localization::MessageId;
 
 use super::model::{WorkRow, WorkSurfacePlacement, WorkTone, project};
 

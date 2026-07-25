@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
     ReasoningEffort as CanonicalReasoningEffort, RuntimeEventKind, TerminalState, ToolArguments,
@@ -14,7 +14,7 @@ use codewhale_protocol::agent_runtime::{
     WriterCleanupResult, WriterIntegrationStatus,
 };
 #[cfg(test)]
-use codewhale_protocol::agent_runtime::{ModelResponseEvidence, WriterCleanupMetadataState};
+use dse_protocol::agent_runtime::{ModelResponseEvidence, WriterCleanupMetadataState};
 use serde_json::Value;
 
 use super::app::{App, ReasoningEffort};
@@ -75,7 +75,7 @@ fn present_reasoning_effort(effort: CanonicalReasoningEffort) -> ReasoningEffort
 #[allow(clippy::too_many_lines)]
 fn present_canonical_event(
     app: &mut App,
-    source_run_id: &codewhale_protocol::agent_runtime::RunId,
+    source_run_id: &dse_protocol::agent_runtime::RunId,
     event: RuntimeEventKind,
 ) -> Option<PresenterAction> {
     match event {
@@ -371,10 +371,8 @@ fn short_git_commit(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
 }
 
-fn cleanup_phase_label(
-    phase: codewhale_protocol::agent_runtime::WriterCleanupPhase,
-) -> &'static str {
-    use codewhale_protocol::agent_runtime::WriterCleanupPhase;
+fn cleanup_phase_label(phase: dse_protocol::agent_runtime::WriterCleanupPhase) -> &'static str {
+    use dse_protocol::agent_runtime::WriterCleanupPhase;
     match phase {
         WriterCleanupPhase::Binding => "绑定",
         WriterCleanupPhase::Child => "子 Agent 执行",
@@ -427,7 +425,7 @@ fn reset_run_display(app: &mut App) {
 
 fn rebuild_transcript(
     app: &mut App,
-    source_run_id: &codewhale_protocol::agent_runtime::RunId,
+    source_run_id: &dse_protocol::agent_runtime::RunId,
     entries: &[TranscriptEntry],
 ) {
     for entry in entries {
@@ -749,7 +747,7 @@ fn control_action_label(action: DurableControlAction) -> &'static str {
 mod tests {
     use std::path::PathBuf;
 
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentOutcome, AgentTaskId,
         AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, CommandId, DurableControlAction,
         ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
@@ -758,7 +756,7 @@ mod tests {
         TerminalState, ToolFailureCode, ToolInvocation, ToolRetryDisposition, ToolSideEffectStatus,
         TranscriptEntry, Usage, WorkspaceAccess, WriterIntegrationStatus, WriterResourceState,
     };
-    use codewhale_protocol::task::{
+    use dse_protocol::task::{
         AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
         TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
     };
@@ -1844,7 +1842,7 @@ mod tests {
                             &root,
                             &child_a,
                             TerminalState::Failed {
-                                failure: codewhale_protocol::agent_runtime::RuntimeFailure::Join {
+                                failure: dse_protocol::agent_runtime::RuntimeFailure::Join {
                                     message: "A 失败".to_owned(),
                                 },
                             },

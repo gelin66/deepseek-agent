@@ -6,35 +6,33 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use codewhale_config::PromptPreferences;
-use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
-use codewhale_deepseek::{
+use dse_config::PromptPreferences;
+use dse_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
+use dse_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
     DeepSeekTransport, SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
     official_model_capabilities, resume_api_request_budget,
 };
-use codewhale_orchestrator::ProductionAgentOrchestrator;
-use codewhale_protocol::agent_runtime::{
+use dse_orchestrator::ProductionAgentOrchestrator;
+use dse_protocol::agent_runtime::{
     ActorRequestAccounting, AgentActor, AgentActorKind, AgentTask, AgentWorkspaceAccess,
     CanonicalTranscript, ContextPolicy, InheritedRunFacts, ModelAccounting, ModelRouteAudit,
     ModelRouteProfile, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
     SystemPrompt, TranscriptEntry, Usage,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunApiErrorReason, RunProductControls, StartRunCommand,
 };
-use codewhale_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
-use codewhale_runtime::{
+use dse_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
+use dse_runtime::{
     AgentRuntime, ChildRouteContext, ChildRunRoutePolicy, ChildRunRouteSelection, ModelPort,
     ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun, ToolExecutor,
     canonical_tool_catalog_sha256,
 };
-use codewhale_state::StateStore;
-use codewhale_tools::sandbox::SandboxPolicy;
-use codewhale_tools::shell::ShellPolicy;
-use codewhale_tools::{
-    ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor,
-};
+use dse_state::StateStore;
+use dse_tools::sandbox::SandboxPolicy;
+use dse_tools::shell::ShellPolicy;
+use dse_tools::{ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -102,7 +100,7 @@ impl ProductionApplicationConfig {
             http_client: None,
             tools,
             prompt: ProductionPromptConfig::default(),
-            composition_build_revision: env!("CODEWHALE_BUILD_VERSION").to_owned(),
+            composition_build_revision: env!("DSE_BUILD_VERSION").to_owned(),
             default_max_api_requests: NonZeroU32::new(DEFAULT_MAX_API_REQUESTS)
                 .expect("production request budget default is non-zero"),
         }
@@ -1000,7 +998,7 @@ impl ProductionComposition {
         workspace: &Path,
         model: &str,
         tool_mode: bool,
-    ) -> codewhale_protocol::agent_runtime::SystemPrompt {
+    ) -> dse_protocol::agent_runtime::SystemPrompt {
         production_system_prompt(ProductionPromptRequest {
             workspace,
             model,
@@ -1233,7 +1231,7 @@ fn controls_from_environment(environment: &RunEnvironment) -> RunProductControls
 fn resolve_task_verifiers(
     mut task: TaskDefinition,
     tools: &ProductionToolExecutor,
-) -> Result<TaskDefinition, codewhale_tools::ToolError> {
+) -> Result<TaskDefinition, dse_tools::ToolError> {
     for acceptance in &mut task.acceptance {
         let TaskAcceptance::Verifier { verifier, .. } = acceptance else {
             continue;
@@ -1247,12 +1245,12 @@ fn resolve_task_verifiers(
 fn ensure_task_verifiers_exact(
     task: &TaskDefinition,
     tools: &ProductionToolExecutor,
-) -> Result<(), codewhale_tools::ToolError> {
+) -> Result<(), dse_tools::ToolError> {
     let resolved = resolve_task_verifiers(task.clone(), tools)?;
     if resolved == *task {
         Ok(())
     } else {
-        Err(codewhale_tools::ToolError::invalid_input(
+        Err(dse_tools::ToolError::invalid_input(
             "persisted verifier specification differs from the production resolver",
         ))
     }
@@ -1334,7 +1332,7 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 fn production_context_policy(
-    capability: codewhale_deepseek::OfficialModelCapabilities,
+    capability: dse_deepseek::OfficialModelCapabilities,
     max_output_tokens: u32,
 ) -> ContextPolicy {
     let hard_input_tokens = capability
@@ -1400,13 +1398,13 @@ mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::{Arc, Mutex as StdMutex};
 
-    use codewhale_context::compaction::{ContextInput, effective_context};
-    use codewhale_deepseek::{
+    use dse_context::compaction::{ContextInput, effective_context};
+    use dse_deepseek::{
         ApiSurface, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
         OFFICIAL_V4_MAX_OUTPUT_TOKENS, RuntimeChatPlanInput, StrictSchemaIssue, ToolSurfaceReason,
         plan_runtime_chat,
     };
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
         AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, ModelAccounting,
         ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
@@ -1414,18 +1412,18 @@ mod tests {
         RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
         ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
     };
-    use codewhale_protocol::run_api::{
+    use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
         RunCommandResult, RunView,
     };
-    use codewhale_protocol::task::{
+    use dse_protocol::task::{
         CompletionCandidateId, CompletionDecision, WorkspaceRevision, WorkspaceState,
     };
-    use codewhale_runtime::{
+    use dse_runtime::{
         AgentChildFinishedFact, CancellationToken, InMemoryRunStore, ModelPortError, ModelStream,
         NullEventSink, RunLease, ToolExecutionError,
     };
-    use codewhale_tools::PRODUCTION_TOOL_NAMES;
+    use dse_tools::PRODUCTION_TOOL_NAMES;
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1986,7 +1984,7 @@ mod tests {
                         .to_string(),
                 ),
                 root_branch: Some("main".to_owned()),
-                branch: Some(format!("codewhale/writer/{}", child_run_id.0)),
+                branch: Some(format!("dse/writer/{}", child_run_id.0)),
                 allowed_paths: vec!["src/lib.rs".to_owned()],
                 owner_token: Some(format!("owner-{}", child_run_id.0)),
             },
@@ -2607,7 +2605,7 @@ mod tests {
             Arc::new(ReplayOnlyModelPort),
             Arc::new(ProductionToolExecutor::new(tool_config)),
             Arc::new(NullEventSink),
-            Arc::new(codewhale_runtime::InMemoryRunStore::default()),
+            Arc::new(dse_runtime::InMemoryRunStore::default()),
         );
         let catalog = runtime.tool_definitions(
             &ToolPolicy::default(),
@@ -2854,7 +2852,7 @@ mod tests {
                 parent_run_id: None,
                 actor: AgentActor::default(),
                 model: "deepseek-v4-pro".to_owned(),
-                system_prompt: codewhale_protocol::agent_runtime::SystemPrompt::from_text(
+                system_prompt: dse_protocol::agent_runtime::SystemPrompt::from_text(
                     "冻结实际工具目录",
                 ),
                 messages: Vec::new(),
@@ -3045,9 +3043,9 @@ mod tests {
             let output = ProcessCommand::new("git")
                 .args(arguments)
                 .current_dir(workspace)
-                .env("GIT_AUTHOR_NAME", "CodeWhale M7-C")
+                .env("GIT_AUTHOR_NAME", "DSE M7-C")
                 .env("GIT_AUTHOR_EMAIL", "m7c@example.invalid")
-                .env("GIT_COMMITTER_NAME", "CodeWhale M7-C")
+                .env("GIT_COMMITTER_NAME", "DSE M7-C")
                 .env("GIT_COMMITTER_EMAIL", "m7c@example.invalid")
                 .env("GIT_AUTHOR_DATE", "2026-07-23T00:00:00Z")
                 .env("GIT_COMMITTER_DATE", "2026-07-23T00:00:00Z")
@@ -3781,8 +3779,8 @@ mod tests {
         std::fs::create_dir(&state_dir).expect("state directory");
         for args in [
             vec!["init", "-b", "main"],
-            vec!["config", "user.name", "CodeWhale Test"],
-            vec!["config", "user.email", "test@codewhale.local"],
+            vec!["config", "user.name", "DSE Test"],
+            vec!["config", "user.email", "test@dse.local"],
         ] {
             let output = ProcessCommand::new("git")
                 .current_dir(&workspace)
@@ -3848,8 +3846,8 @@ mod tests {
             .expect("verifier fixture");
         for args in [
             &["init", "-b", "main"][..],
-            &["config", "user.name", "CodeWhale Test"][..],
-            &["config", "user.email", "test@codewhale.local"][..],
+            &["config", "user.name", "DSE Test"][..],
+            &["config", "user.email", "test@dse.local"][..],
             &["add", "verify.py"][..],
             &["commit", "-m", "fixture"][..],
         ] {
@@ -3983,7 +3981,7 @@ mod tests {
         let mut command = start_command(temp.path(), None);
         command.tool_policy.allowed = Some(vec!["read_file".to_owned()]);
         command.controls.write_execution_mode =
-            codewhale_protocol::agent_runtime::WriteExecutionMode::IsolatedWriter;
+            dse_protocol::agent_runtime::WriteExecutionMode::IsolatedWriter;
         command.controls.trust_mode = true;
         command.controls.sandbox = Some("workspace-write".to_owned());
         command.limits.wall_time_ms = Some(60_000);
@@ -4425,7 +4423,7 @@ mod tests {
                     root_branch: (access == AgentWorkspaceAccess::IsolatedWrite)
                         .then(|| "main".to_owned()),
                     branch: (access == AgentWorkspaceAccess::IsolatedWrite)
-                        .then(|| format!("codewhale/writer/{lane}")),
+                        .then(|| format!("dse/writer/{lane}")),
                     allowed_paths: if access == AgentWorkspaceAccess::IsolatedWrite {
                         vec!["fixture.txt".to_owned()]
                     } else {

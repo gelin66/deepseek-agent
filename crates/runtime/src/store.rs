@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use codewhale_context::compaction::{
+use dse_context::compaction::{
     ContextCompactionPreparation, ContextInput, effective_context, estimate_projection_tokens,
     prepare_compaction,
 };
-use codewhale_protocol::run_api::{PendingCreationKind, RunCommand};
+use dse_protocol::run_api::{PendingCreationKind, RunCommand};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -3867,7 +3867,7 @@ mod tests {
                 root_branch: Some("deepseek-agent".to_owned()),
                 base_commit: BASE.to_owned(),
                 worktree_path: Some("/tmp/codewhale-writer".to_owned()),
-                branch: Some("codewhale/writer/task-1".to_owned()),
+                branch: Some("dse/writer/task-1".to_owned()),
                 allowed_paths: vec!["src/lib.rs".to_owned()],
                 owner_token: Some("owner-1".to_owned()),
             },
@@ -5189,7 +5189,7 @@ mod tests {
         second.task_contract.generation_id = TaskGenerationId::from("child-2");
         second.workspace.base_commit = FINAL.to_owned();
         second.workspace.worktree_path = Some("/tmp/codewhale-writer-2".to_owned());
-        second.workspace.branch = Some("codewhale/writer/task-2".to_owned());
+        second.workspace.branch = Some("dse/writer/task-2".to_owned());
         second.workspace.owner_token = Some("owner-2".to_owned());
         kinds.extend([
             RuntimeEventKind::ToolPrepared {

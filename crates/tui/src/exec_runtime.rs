@@ -1,9 +1,9 @@
-//! Thin `codewhale exec` client for the production Agent application.
+//! Thin `dse exec` client for the production Agent application.
 //!
 //! This module projects CLI/config inputs into canonical Run commands, forwards
 //! control commands, and renders canonical stored events. Production route,
 //! prompt, model, tool, Store, resume, and runtime composition stay in
-//! `codewhale-app`.
+//! `dse-app`.
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -13,17 +13,17 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
-use codewhale_app::{
+use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
     ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
 };
-use codewhale_context::InstructionSource;
-use codewhale_protocol::run_api::{
+use dse_context::InstructionSource;
+use dse_protocol::run_api::{
     ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunApiErrorReason,
     RunCommand, RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
 };
-use codewhale_protocol::task::TaskDefinition;
-use codewhale_runtime::{
+use dse_protocol::task::TaskDefinition;
+use dse_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, RuntimeFailure, RuntimeTimeoutPhase,
     StoredRuntimeEvent, TerminalState, ToolOutcome, ToolPolicy, TranscriptEntry,
@@ -34,7 +34,7 @@ use serde_json::Value;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::exec_lifecycle_stream::{agent_lifecycle_stream_line, is_agent_lifecycle_event};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
-use codewhale_localization::{MessageId, tr};
+use dse_localization::{MessageId, tr};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
@@ -258,7 +258,7 @@ pub(crate) async fn run_exec_runtime(
                 if !latest.terminal {
                     stop_exec_signal_controller(&mut signal_task).await;
                     bail!(
-                        "最新 Agent 运行 {} 尚未终态；请使用 `codewhale exec --resume {}` 恢复同一运行",
+                        "最新 Agent 运行 {} 尚未终态；请使用 `dse exec --resume {}` 恢复同一运行",
                         latest.run_id,
                         latest.run_id
                     );
@@ -772,7 +772,7 @@ async fn emit_exec_stream_failure(
         visible_final_answer_chars: 0,
         run_id: run_id.map(ToString::to_string).unwrap_or_default(),
         resume_command: run_id
-            .map(|run_id| format!("codewhale exec --resume {run_id}"))
+            .map(|run_id| format!("dse exec --resume {run_id}"))
             .unwrap_or_default(),
         workspace: workspace.display().to_string(),
         message_count: 0,
@@ -903,7 +903,7 @@ pub(crate) fn production_application_config(
         skills_dir: Some(config.skills_dir()),
         verbosity: config.verbosity.clone(),
         skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
-        shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+        shell_binary: dse_tools::shell_dispatcher::global_dispatcher()
             .kind()
             .binary()
             .to_owned(),
@@ -952,7 +952,7 @@ pub(crate) fn production_application_config(
 
 pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConnectionConfig> {
     let base_url = config.deepseek_base_url();
-    let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
+    let endpoint = if dse_deepseek::official_root(&base_url).is_some() {
         DeepSeekEndpoint::Official
     } else {
         DeepSeekEndpoint::loopback_fixture(&base_url)?
@@ -1748,7 +1748,7 @@ async fn emit_terminal_output(
             input_analysis: runtime_input_analysis(transcript),
             visible_final_answer_chars: summary.output.chars().count(),
             run_id: metadata.run_id.to_string(),
-            resume_command: format!("codewhale exec --resume {}", metadata.run_id),
+            resume_command: format!("dse exec --resume {}", metadata.run_id),
             workspace: metadata.workspace.display().to_string(),
             message_count: transcript
                 .entries
@@ -1933,7 +1933,7 @@ fn unix_ms_now() -> u64 {
 mod tests {
     use super::*;
     use crate::config::SubagentsConfig;
-    use codewhale_runtime::{ToolFailureCode, ToolRetryDisposition, ToolSideEffectStatus};
+    use dse_runtime::{ToolFailureCode, ToolRetryDisposition, ToolSideEffectStatus};
 
     #[test]
     fn production_tool_projection_preserves_transcript_and_exact_model_feedback_size() {

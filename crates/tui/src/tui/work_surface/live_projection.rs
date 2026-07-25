@@ -1,7 +1,7 @@
 //! Read-only canonical child-Agent projection for the Ocean work surface.
 
 use crate::tui::app::App;
-use codewhale_protocol::agent_runtime::TerminalState;
+use dse_protocol::agent_runtime::TerminalState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LiveWorkState {

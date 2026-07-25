@@ -1,12 +1,12 @@
 [package]
-name = "codewhale-execpolicy"
+name = "dse-execpolicy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Execution policy and approval model for CodeWhale"
+description = "Execution policy and approval model for DSE"
 
 [dependencies]
 anyhow.workspace = true
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
 serde.workspace = true

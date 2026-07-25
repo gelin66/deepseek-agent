@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentActor, AgentActorKind,
     AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId, AgentWorkspaceAccess,
     AgentWorkspaceAssignment, AttemptId, ContextProjection, ModelAccounting, ModelAttemptFailure,
@@ -9,7 +9,7 @@ use codewhale_protocol::agent_runtime::{
     RunRequest, RuntimeEventId, RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
     SystemPromptBlock, TerminalState, ToolDefinition,
 };
-use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 
 fn stable_prefix(prompt: &SystemPrompt) -> Vec<&str> {
     prompt
@@ -35,7 +35,7 @@ fn request(
         SystemPrompt {
             blocks: vec![
                 SystemPromptBlock {
-                    text: "你是 CodeWhale 编码 Agent。".to_owned(),
+                    text: "你是 DSE 编码 Agent。".to_owned(),
                     cache_control: PromptCacheControl::Stable,
                 },
                 SystemPromptBlock {
@@ -280,7 +280,7 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     run_id: root_id.clone(),
                     parent_run_id: None,
                     terminal: TerminalState::Failed {
-                        failure: codewhale_protocol::agent_runtime::RuntimeFailure::Model {
+                        failure: dse_protocol::agent_runtime::RuntimeFailure::Model {
                             code: "timeout".to_owned(),
                             category: ModelErrorCategory::Timeout,
                             message: "模型重试耗尽。".to_owned(),

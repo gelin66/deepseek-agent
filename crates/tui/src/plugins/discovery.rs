@@ -8,7 +8,7 @@ const PLUGIN_MANIFEST: &str = "plugin.toml";
 const OVERRIDES_FILE: &str = "overrides.json";
 
 pub fn default_user_plugins_dir() -> PathBuf {
-    codewhale_config::codewhale_home()
+    dse_config::codewhale_home()
         .map(|p| p.join("plugins"))
         .unwrap_or_else(|_| PathBuf::from("/tmp/codewhale/plugins"))
 }

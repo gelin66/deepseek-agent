@@ -24,19 +24,19 @@ use axum::Json;
 use axum::Router;
 use axum::extract::State;
 use axum::routing::post;
-use codewhale_app::{
+use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
     TransportRetryPolicy,
 };
-use codewhale_app_server::run_stdio;
-use codewhale_protocol::agent_runtime::{
+use dse_app_server::run_stdio;
+use dse_protocol::agent_runtime::{
     ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent, TerminalState, ToolPolicy,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
     RunCommandResult, RunProductControls, RunView, StartRunCommand,
 };
-use codewhale_protocol::task::TaskDefinition;
+use dse_protocol::task::TaskDefinition;
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

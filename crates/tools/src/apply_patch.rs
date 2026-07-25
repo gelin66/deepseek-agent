@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
+use dse_protocol::agent_runtime::ToolSideEffectStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;

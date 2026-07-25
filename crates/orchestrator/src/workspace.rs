@@ -15,7 +15,7 @@ use fs2::FileExt as _;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const WRITER_BRANCH_PREFIX: &str = "refs/heads/codewhale/writer/";
+const WRITER_BRANCH_PREFIX: &str = "refs/heads/dse/writer/";
 const MAX_GIT_POINTER_BYTES: u64 = 16 * 1024;
 const MAX_CLEANUP_PATH_BYTES_PER_ENTRY: usize = 16 * 1024;
 const MAX_CLEANUP_PATH_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
@@ -28,9 +28,9 @@ const HOST_MAX_DIFF_BYTES: usize = 16 * 1024 * 1024;
 const HOST_MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const BOUNDED_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const BOUNDED_GIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const INTEGRATION_LEASE_FILE: &str = "codewhale-integration.lease";
-const INTEGRATION_HEAD_LOCK_VERSION: &str = "codewhale-integration-head-lock-v1";
-const CLEANUP_HEAD_LOCK_VERSION: &str = "codewhale-cleanup-head-lock-v1";
+const INTEGRATION_LEASE_FILE: &str = "dse-integration.lease";
+const INTEGRATION_HEAD_LOCK_VERSION: &str = "dse-integration-head-lock-v1";
+const CLEANUP_HEAD_LOCK_VERSION: &str = "dse-cleanup-head-lock-v1";
 const MAX_INTEGRATION_LOCK_BYTES: u64 = 4 * 1024;
 static NEXT_INTEGRATION_LOCK_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -1063,7 +1063,7 @@ impl GitWorkspaceOwner {
     /// Remove a previously inspected exact Writer. Dirty removal is permitted
     /// only for the explicit failed-writer discard mode and only after all
     /// owner, registry, backpointer, common-dir, branch, and commit checks pass.
-    /// CodeWhale serializes its own mutations through the repository lease;
+    /// DSE serializes its own mutations through the repository lease;
     /// an already-running external Git plumbing command is not transactionally
     /// controlled, so any foreign Writer-branch checkout that becomes visible
     /// is retained and its branch is restored instead of being deleted.
@@ -1419,7 +1419,7 @@ impl GitWorkspaceOwner {
                 OsString::from("-p"),
                 allocation.base_commit.clone().into(),
                 OsString::from("-m"),
-                format!("CodeWhale writer {}", allocation.owner_id).into(),
+                format!("DSE writer {}", allocation.owner_id).into(),
             ],
         )?;
         git_checked(
@@ -1629,11 +1629,11 @@ impl GitWorkspaceOwner {
         if let Err(source) = lease.try_lock_exclusive() {
             if source.kind() == fs2::lock_contended_error().kind() {
                 return Err(GitWorkspaceError::Conflict(
-                    "another CodeWhale root integration is active".to_string(),
+                    "another DSE root integration is active".to_string(),
                 ));
             }
             return Err(GitWorkspaceError::Io {
-                operation: "lock CodeWhale integration lease",
+                operation: "lock DSE integration lease",
                 path: lease_path,
                 source,
             });
@@ -2599,7 +2599,7 @@ fn verify_host_seal_identity_for_owner(
         ],
     )?;
     let expected = format!(
-        "CodeWhale Host\0host@codewhale.local\0CodeWhale Host\0host@codewhale.local\0CodeWhale writer {}\n",
+        "DSE Host\0host@dse.local\0DSE Host\0host@dse.local\0DSE writer {}\n",
         owner_id
     );
     if identity != expected.as_bytes() {
@@ -2939,7 +2939,7 @@ fn cleanup_tombstone_ref(facts: &OwnedWorktreeFacts, expected: &str) -> Result<S
 }
 
 fn cleanup_worktree_lock_reason(facts: &OwnedWorktreeFacts, expected: &str) -> String {
-    format!("codewhale-cleanup-v1:{}:{expected}", facts.owner_id)
+    format!("dse-cleanup-v1:{}:{expected}", facts.owner_id)
 }
 
 fn create_exact_ref_cas(
@@ -3910,10 +3910,10 @@ fn isolated_git_command(repo: &Path, with_identity: bool) -> Command {
         .env("GIT_NO_REPLACE_OBJECTS", "1");
     if with_identity {
         command
-            .env("GIT_AUTHOR_NAME", "CodeWhale Host")
-            .env("GIT_AUTHOR_EMAIL", "host@codewhale.local")
-            .env("GIT_COMMITTER_NAME", "CodeWhale Host")
-            .env("GIT_COMMITTER_EMAIL", "host@codewhale.local");
+            .env("GIT_AUTHOR_NAME", "DSE Host")
+            .env("GIT_AUTHOR_EMAIL", "host@dse.local")
+            .env("GIT_COMMITTER_NAME", "DSE Host")
+            .env("GIT_COMMITTER_EMAIL", "host@dse.local");
     }
     command
 }
@@ -4031,7 +4031,7 @@ fn open_integration_lease(path: &Path) -> Result<File> {
         Ok(file) => Ok(file),
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
             let metadata = fs::symlink_metadata(path).map_err(|source| GitWorkspaceError::Io {
-                operation: "inspect existing CodeWhale integration lease",
+                operation: "inspect existing DSE integration lease",
                 path: path.to_path_buf(),
                 source,
             })?;
@@ -4046,13 +4046,13 @@ fn open_integration_lease(path: &Path) -> Result<File> {
                 .write(true)
                 .open(path)
                 .map_err(|source| GitWorkspaceError::Io {
-                    operation: "open existing CodeWhale integration lease",
+                    operation: "open existing DSE integration lease",
                     path: path.to_path_buf(),
                     source,
                 })
         }
         Err(source) => Err(GitWorkspaceError::Io {
-            operation: "create CodeWhale integration lease",
+            operation: "create DSE integration lease",
             path: path.to_path_buf(),
             source,
         }),
@@ -4291,7 +4291,7 @@ mod tests {
                 [
                     OsString::from("config"),
                     OsString::from("user.name"),
-                    OsString::from("CodeWhale Test"),
+                    OsString::from("DSE Test"),
                 ],
             );
             git_ok(
@@ -4299,7 +4299,7 @@ mod tests {
                 [
                     OsString::from("config"),
                     OsString::from("user.email"),
-                    OsString::from("test@codewhale.local"),
+                    OsString::from("test@dse.local"),
                 ],
             );
             fs::write(root.join("README.md"), "base\n").expect("write readme");
@@ -4357,7 +4357,7 @@ mod tests {
 
         assert_eq!(facts.base_commit, repo.head);
         assert_eq!(facts.root_branch_ref, "refs/heads/main");
-        assert_eq!(facts.branch_ref, "refs/heads/codewhale/writer/writer_plan");
+        assert_eq!(facts.branch_ref, "refs/heads/dse/writer/writer_plan");
         assert_eq!(
             facts.worktree_path,
             repo.managed
@@ -4631,7 +4631,7 @@ mod tests {
                     switch_was_blocked.set(!switch.status.success());
                     if switch.status.success() {
                         return Err(GitWorkspaceError::OwnershipMismatch(
-                            "Git switched branches while CodeWhale held HEAD.lock".to_string(),
+                            "Git switched branches while DSE held HEAD.lock".to_string(),
                         ));
                     }
                     assert!(
@@ -4740,7 +4740,7 @@ mod tests {
         assert_eq!(
             fs::read(&foreign_head_lock).expect("foreign lock remains"),
             foreign_bytes,
-            "CodeWhale must never delete a foreign Git lock"
+            "DSE must never delete a foreign Git lock"
         );
         assert_eq!(
             resolve_ref_optional(&foreign_repo.root, "refs/heads/main")

@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolFailureCode, ToolOperationStatus,
     ToolRetryDisposition, ToolSideEffectStatus, WorkspaceAccess,
 };
-use codewhale_protocol::task::VerifierSpec;
-use codewhale_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
+use dse_protocol::task::VerifierSpec;
+use dse_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1021,7 +1021,7 @@ fn run_verifiers_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         RunId, ToolArguments, ToolInvocationStatus, ToolTransportStatus,
     };
 

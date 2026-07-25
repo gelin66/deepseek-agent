@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+use dse_secrets::{InMemoryKeyringStore, KeyringStore};
 use tempfile::tempdir;
 
 use super::*;

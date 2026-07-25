@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use codewhale_context::compaction::{ContextInput, effective_context};
-use codewhale_runtime::*;
+use dse_context::compaction::{ContextInput, effective_context};
+use dse_runtime::*;
 use serde_json::json;
 
 const BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -866,7 +866,7 @@ fn writer_assignment() -> AgentWorkspaceAssignment {
         base_commit: BASE_COMMIT.to_owned(),
         worktree_path: Some(WRITER_WORKSPACE.to_owned()),
         root_branch: Some("deepseek-agent".to_owned()),
-        branch: Some("codewhale/writer/task".to_owned()),
+        branch: Some("dse/writer/task".to_owned()),
         allowed_paths: vec!["src/lib.rs".to_owned()],
         owner_token: Some("owner-task".to_owned()),
     }

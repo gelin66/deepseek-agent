@@ -57,7 +57,7 @@ pub fn find_file_mention_completions(
 ) -> Vec<String> {
     let entries = workspace.completions(partial, limit);
     tracing::debug!(
-        target: "codewhale_tui::file_mention",
+        target: "dse_tui::file_mention",
         partial = %partial,
         workspace = %workspace.root.display(),
         cwd = ?std::env::current_dir().ok(),
@@ -75,7 +75,7 @@ pub fn find_file_mention_browser_completions(
 ) -> Vec<String> {
     let entries = workspace.browser_completions(partial, limit);
     tracing::debug!(
-        target: "codewhale_tui::file_mention",
+        target: "dse_tui::file_mention",
         partial = %partial,
         workspace = %workspace.root.display(),
         cwd = ?std::env::current_dir().ok(),

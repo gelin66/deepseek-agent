@@ -5,8 +5,8 @@
 //! the execution posture is the final request-specific block.
 
 use crate::project_context::load_project_context_with_parents;
-use codewhale_config::PromptPreferences;
-use codewhale_protocol::agent_runtime::{
+use dse_config::PromptPreferences;
+use dse_protocol::agent_runtime::{
     PromptCacheControl, SystemPrompt, SystemPromptBlock as SystemBlock,
 };
 use serde::Serialize;
@@ -279,7 +279,7 @@ fn load_user_constitution_block() -> Option<String> {
         return None;
     }
 
-    let path = match codewhale_config::UserConstitution::path() {
+    let path = match dse_config::UserConstitution::path() {
         Ok(path) => path,
         Err(err) => {
             tracing::warn!(
@@ -290,13 +290,10 @@ fn load_user_constitution_block() -> Option<String> {
         }
     };
 
-    match codewhale_config::UserConstitution::load_from(&path) {
-        codewhale_config::UserConstitutionLoad::Loaded(constitution) => {
-            constitution.render_block(None)
-        }
-        codewhale_config::UserConstitutionLoad::Missing
-        | codewhale_config::UserConstitutionLoad::Empty => None,
-        codewhale_config::UserConstitutionLoad::Invalid(err) => {
+    match dse_config::UserConstitution::load_from(&path) {
+        dse_config::UserConstitutionLoad::Loaded(constitution) => constitution.render_block(None),
+        dse_config::UserConstitutionLoad::Missing | dse_config::UserConstitutionLoad::Empty => None,
+        dse_config::UserConstitutionLoad::Invalid(err) => {
             tracing::warn!(
                 target: "prompts",
                 "skipping invalid user-global constitution {}: {err}",
@@ -304,7 +301,7 @@ fn load_user_constitution_block() -> Option<String> {
             );
             None
         }
-        codewhale_config::UserConstitutionLoad::Unreadable(err) => {
+        dse_config::UserConstitutionLoad::Unreadable(err) => {
             tracing::warn!(
                 target: "prompts",
                 "skipping unreadable user-global constitution {}: {err}",
@@ -316,12 +313,12 @@ fn load_user_constitution_block() -> Option<String> {
 }
 
 fn user_constitution_disabled_by_setup_state() -> bool {
-    match codewhale_config::SetupState::load() {
+    match dse_config::SetupState::load() {
         Ok(Some(state)) => matches!(
             state.constitution_choice,
-            codewhale_config::ConstitutionChoice::Bundled
-                | codewhale_config::ConstitutionChoice::Deferred
-                | codewhale_config::ConstitutionChoice::ExpertOverride
+            dse_config::ConstitutionChoice::Bundled
+                | dse_config::ConstitutionChoice::Deferred
+                | dse_config::ConstitutionChoice::ExpertOverride
         ),
         Ok(None) => false,
         Err(err) => {
@@ -366,7 +363,7 @@ pub struct StaticPromptCtx<'a> {
     pub default_layers: &'a str,
 }
 
-/// Embedder hook for replacing CodeWhale's byte-stable base/output segment.
+/// Embedder hook for replacing DSE's byte-stable base/output segment.
 pub type StaticPromptComposer = dyn Fn(&StaticPromptCtx<'_>) -> String + Send + Sync + 'static;
 
 /// Replace `BASE_PROMPT` for all subsequent prompt composition. First call
@@ -387,7 +384,7 @@ pub fn set_static_prompt_composer_override(
 
 // ── Config-directory prompt overrides (issue #3638) ──
 // Bridge the embedder override hooks above to a user-facing source: an
-// optional file in the CodeWhale config directory. This lets users repurpose
+// optional file in the DSE config directory. This lets users repurpose
 // the TUI for non-software use cases (e.g. long-form writing) by swapping the
 // constitutional base prompt, without editing in-tree files or shipping a
 // custom embedder build.
@@ -493,12 +490,12 @@ pub fn load_config_dir_prompt_overrides(config_dir: &Path) -> Vec<&'static str> 
     applied
 }
 
-/// Resolve the CodeWhale config directory and load any prompt overrides found
+/// Resolve the DSE config directory and load any prompt overrides found
 /// there. Convenience wrapper around [`load_config_dir_prompt_overrides`] for
 /// startup wiring; silently does nothing when the config home cannot be
 /// resolved.
 pub fn load_prompt_overrides_from_config_home() {
-    let Ok(home) = codewhale_config::codewhale_home() else {
+    let Ok(home) = dse_config::codewhale_home() else {
         return;
     };
     let applied = load_config_dir_prompt_overrides(&home);
@@ -675,7 +672,7 @@ fn assemble_system_prompt(
 
     // 3. Skills block. #432: default discovery walks every compatible
     // workspace/global skill directory so skills installed for other AI-tool
-    // conventions show up in the catalogue. Users can opt into a CodeWhale-only
+    // conventions show up in the catalogue. Users can opt into a DSE-only
     // scan with `[skills] scan_codewhale_only = true`. When an explicit
     // `skills_dir` is configured, union it with the workspace view instead of
     // treating it as a fallback; the workspace view often returns Some and
@@ -946,7 +943,7 @@ mod tests {
 
     fn production_prompt_fixture_root() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "codewhale-context-production-prompt-fixture-{}",
+            "dse-context-production-prompt-fixture-{}",
             std::process::id()
         ))
     }
@@ -1032,6 +1029,9 @@ mod tests {
         );
         assert!(prompt.blocks[0].text.contains("# OPAQUE_AGENTS"));
         assert!(prompt.blocks[0].text.contains("OPAQUE_SKILL"));
+        assert!(prompt.blocks[0].text.contains("## DSE"));
+        assert!(prompt.blocks[0].text.contains("你是 DSE"));
+        assert!(!prompt.blocks[0].text.contains("CodeWhale"));
         assert!(prompt.blocks[0].text.contains("## 项目上下文包"));
         assert!(prompt.blocks[0].text.contains("## 简洁输出"));
         assert!(prompt.blocks[0].text.contains("## 技能"));
@@ -1107,7 +1107,7 @@ mod tests {
         assert_eq!(
             block_hashes,
             [
-                "f46e6dcb87fb0113fe9ee4458b8ad9222de36f9ce791b89763d13482d3a13c6b",
+                "4bc8bafe6fa99d5da2753c8362142f460d78582c5219543e4ba925590fc2580b",
                 "2caa65b9283dccb613c68ab9e334dee8999d36519d393cd45d42eccd9b25d3ca",
                 "70e9297a2ae78cb815d9a24c18d93f57eb8fe05cc12b005a9826e778ffd1c4fe",
                 "50f497cd9e457dacbe0e0b8ce8166bcaa7da57a705a5b3b781b2623a5a21dd00",
@@ -1128,7 +1128,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "fc28648a7606324e2c297847191523d143911183405a3d74948620bc968b1063"
+            "7a10883783669fcb86676de79f86f871f0d6135a8c31c3e4c3600a0096ae1c5f"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {

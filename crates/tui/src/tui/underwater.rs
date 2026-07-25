@@ -18,7 +18,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::{app::App, approval::ApprovalMode, views::ModalKind};
-use codewhale_localization::{MessageId, tr};
+use dse_localization::{MessageId, tr};
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.
@@ -264,7 +264,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             right.push(Span::raw("  "));
         }
         right.push(Span::styled(
-            format!("v{}", env!("CODEWHALE_BUILD_VERSION")),
+            format!("v{}", env!("DSE_BUILD_VERSION")),
             Style::default().fg(app.ui_theme.text_hint),
         ));
     }
@@ -360,10 +360,10 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let workspace = crate::utils::display_path(&app.workspace);
     let workspace = format!("{}：{workspace}", tr(MessageId::FooterWorkspacePrefix));
     let context = if tier == ShellTier::Compact {
-        format!("codewhale · {workspace}")
+        format!("dse · {workspace}")
     } else {
         format!(
-            "codewhale · {workspace} · {} {}",
+            "dse · {workspace} · {} {}",
             tr(MessageId::EmptyStateMcpLabel),
             app.mcp_configured_count
         )

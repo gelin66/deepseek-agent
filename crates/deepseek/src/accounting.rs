@@ -2,7 +2,7 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use codewhale_runtime::Usage;
+use dse_runtime::Usage;
 use serde_json::Value;
 
 use crate::ApiSurface;

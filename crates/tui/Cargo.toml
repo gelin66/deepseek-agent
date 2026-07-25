@@ -1,11 +1,11 @@
 [package]
-name = "codewhale-tui"
+name = "dse-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Terminal UI for the CodeWhale DeepSeek coding agent"
-default-run = "codewhale-tui"
+description = "Terminal UI for the DSE DeepSeek coding agent"
+default-run = "dse-tui"
 
 [features]
 default = ["tui", "json", "toml", "pdf"]
@@ -14,24 +14,24 @@ web = ["dep:schemaui", "schemaui/web", "json", "toml"]
 json = ["schemaui/json"]
 toml = ["schemaui/toml"]
 long-running-tests = []
-pdf = ["dep:pdf-extract", "codewhale-tools/pdf"]
+pdf = ["dep:pdf-extract", "dse-tools/pdf"]
 
 [[bin]]
-name = "codewhale-tui"
+name = "dse-tui"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-codewhale-app = { path = "../app", version = "0.8.68" }
-codewhale-config = { path = "../config", version = "0.8.68" }
-codewhale-context = { path = "../context", version = "0.8.68" }
-codewhale-deepseek = { path = "../deepseek", version = "0.8.68" }
-codewhale-localization = { path = "../localization", version = "0.8.68" }
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
-codewhale-runtime = { path = "../runtime", version = "0.8.68" }
-codewhale-state = { path = "../state", version = "0.8.68" }
-codewhale-secrets = { path = "../secrets", version = "0.8.68" }
-codewhale-tools = { path = "../tools", version = "0.8.68" }
+dse-app = { path = "../app", version = "0.8.68" }
+dse-config = { path = "../config", version = "0.8.68" }
+dse-context = { path = "../context", version = "0.8.68" }
+dse-deepseek = { path = "../deepseek", version = "0.8.68" }
+dse-localization = { path = "../localization", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
+dse-runtime = { path = "../runtime", version = "0.8.68" }
+dse-state = { path = "../state", version = "0.8.68" }
+dse-secrets = { path = "../secrets", version = "0.8.68" }
+dse-tools = { path = "../tools", version = "0.8.68" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-trait.workspace = true
 base64 = "0.22.1"
@@ -80,11 +80,11 @@ shell-words = "1.1.1"
 mimalloc.workspace = true
 
 [build-dependencies]
-codewhale-build-support = { path = "../build-support", version = "0.8.68" }
+dse-build-support = { path = "../build-support", version = "0.8.68" }
 
 [dev-dependencies]
-codewhale-app-server = { path = "../app-server", version = "0.8.68" }
-codewhale-context = { path = "../context", features = ["test-support"] }
+dse-app-server = { path = "../app-server", version = "0.8.68" }
+dse-context = { path = "../context", features = ["test-support"] }
 cucumber = "0.23.0"
 wiremock = "0.6"
 pretty_assertions = "1.4"

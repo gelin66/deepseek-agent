@@ -582,10 +582,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "codewhale-state-{name}-{}-{suffix}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("dse-state-{name}-{}-{suffix}", std::process::id()));
         fs::create_dir_all(&dir).expect("create temp state dir");
         StateStore::open(Some(dir.join("state.db"))).expect("open state store")
     }

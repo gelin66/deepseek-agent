@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use codewhale_context::compaction::{ContextInput, effective_context};
-use codewhale_runtime::*;
+use dse_context::compaction::{ContextInput, effective_context};
+use dse_runtime::*;
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -729,7 +729,7 @@ fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunReq
             base_commit: "a".repeat(40),
             worktree_path: Some("/workspace/.codewhale-writer/actor-failure".to_owned()),
             root_branch: Some("deepseek-agent".to_owned()),
-            branch: Some("codewhale/writer/actor-failure".to_owned()),
+            branch: Some("dse/writer/actor-failure".to_owned()),
             allowed_paths: vec!["src/lib.rs".to_owned()],
             owner_token: Some("actor-failure-owner".to_owned()),
         },
@@ -904,7 +904,7 @@ fn persisted_model_request(created: &CreatedRun, request_number: u32) -> ModelRe
 fn request_context(
     snapshot: &RunSnapshot,
     tools: &[ToolDefinition],
-) -> codewhale_context::compaction::EffectiveContext {
+) -> dse_context::compaction::EffectiveContext {
     effective_context(ContextInput {
         transcript: &snapshot.transcript,
         projection: snapshot.context_projection.as_ref(),

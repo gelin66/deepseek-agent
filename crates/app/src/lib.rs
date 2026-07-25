@@ -9,18 +9,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     AGENT_TOOL_NAME, AgentTask, AgentWorkspaceAccess, CommandId, DurableControlAction,
     InteractionId, RunId, StoredRuntimeEvent, TerminalState, UserInteractionResponse,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT, PendingCreationKind,
     PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunApiErrorCode,
     RunApiErrorReason, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
     RunView, StartRunCommand,
 };
-use codewhale_protocol::task::TaskDefinition;
-use codewhale_runtime::{
+use dse_protocol::task::TaskDefinition;
+use dse_runtime::{
     AgentControl, ContinuationError, ControlError, CreationIntent, CreationReservation,
     DurableActionState, DurableCommand, ModelAccounting, ModelErrorCategory, ModelPort,
     ModelPortError, ModelRequest, ModelStream, RootRunRecord, RunReadyError, RunReplay, RunStore,
@@ -39,14 +39,14 @@ pub use production::{
 // Production compositions may retain these credential-free settings while
 // serving read-only get/events/terminal replay. A credential and per-run
 // budget are bound only inside a live start/resume path.
-pub use codewhale_deepseek::{
+pub use dse_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
     OfficialModelCapabilities, OfficialModelCapabilityError, TransportRetryPolicy,
     official_model_capabilities,
 };
-pub use codewhale_tools::sandbox::SandboxPolicy;
-pub use codewhale_tools::shell::ShellPolicy;
-pub use codewhale_tools::{
+pub use dse_tools::sandbox::SandboxPolicy;
+pub use dse_tools::shell::ShellPolicy;
+pub use dse_tools::{
     ProductionExecPolicyRuleSet, ProductionExecPolicySnapshot, ProductionToolConfig,
     ProductionToolExecutionIdentity, ProductionToolExecutor,
 };
@@ -676,7 +676,7 @@ impl AgentApplication {
         command_id: &CommandId,
         command_sha256: &str,
         intent: CreationIntent,
-    ) -> Result<codewhale_runtime::ReservedCreation, RunApiError> {
+    ) -> Result<dse_runtime::ReservedCreation, RunApiError> {
         self.store
             .reserve_creation(command_id, command_sha256, RunId::new(), intent)
             .await
@@ -1413,21 +1413,21 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         ContextPolicy, InheritedRunFacts, ModelAccounting, ModelFinishReason, ModelOutput,
         ModelRequest, ModelStreamEvent, ReasoningEffort, RunEnvironment, RunLimits, RunRequest,
         RuntimeEventKind, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry,
         Usage,
     };
-    use codewhale_protocol::run_api::RunProductControls;
-    use codewhale_protocol::task::{
+    use dse_protocol::run_api::RunProductControls;
+    use dse_protocol::task::{
         CompletionCandidate, CompletionCandidateId, TaskContract, TaskGenerationId,
     };
-    use codewhale_runtime::{
+    use dse_runtime::{
         AgentRuntime, CancellationToken, InMemoryRunStore, ModelPort, ModelPortError, ModelStream,
         ToolExecutionError, ToolExecutor,
     };
-    use codewhale_state::StateStore;
+    use dse_state::StateStore;
 
     use super::*;
 
@@ -1694,7 +1694,7 @@ mod tests {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
                 definition: command.task,
             },
-            "你是 CodeWhale 编码 Agent",
+            "你是 DSE 编码 Agent",
         );
         request.run_id = Some(run_id);
         request.model = command
@@ -2625,7 +2625,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let database = directory.path().join("state.db");
         let first_store = Arc::new(
-            codewhale_state::StateStore::open(Some(database.clone())).expect("open first store"),
+            dse_state::StateStore::open(Some(database.clone())).expect("open first store"),
         );
         let first_composition = Arc::new(FixtureComposition::new(ModelMode::Complete));
         let first_app = AgentApplication::new(first_store.clone(), first_composition.clone());
@@ -2653,9 +2653,8 @@ mod tests {
         drop(first_app);
         drop(first_store);
 
-        let reopened_store = Arc::new(
-            codewhale_state::StateStore::open(Some(database)).expect("reopen canonical store"),
-        );
+        let reopened_store =
+            Arc::new(dse_state::StateStore::open(Some(database)).expect("reopen canonical store"));
         let replay_only_composition = Arc::new(FixtureComposition::new(ModelMode::Pending));
         let rebuilt_app =
             AgentApplication::new(reopened_store.clone(), replay_only_composition.clone());

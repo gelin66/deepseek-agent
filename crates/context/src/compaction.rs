@@ -7,11 +7,11 @@
 
 use std::collections::BTreeSet;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     CanonicalTranscript, ContextPolicy, ContextProjection, ModelMessage, ToolDefinition,
     ToolSideEffectStatus, TranscriptEntry,
 };
-use codewhale_protocol::task::{
+use dse_protocol::task::{
     CompletionRejection, EvidenceReceipt, TaskAcceptance, TaskContract, WorkspaceRevision,
     WorkspaceState,
 };
@@ -35,14 +35,14 @@ pub struct ContextInput<'a> {
     pub workspace_state: &'a WorkspaceState,
     pub evidence_receipts: &'a [EvidenceReceipt],
     pub last_completion_rejection: Option<&'a CompletionRejection>,
-    pub last_verifier_failure: Option<&'a codewhale_protocol::agent_runtime::ToolOutcome>,
+    pub last_verifier_failure: Option<&'a dse_protocol::agent_runtime::ToolOutcome>,
     pub last_verifier_failure_workspace: Option<&'a WorkspaceState>,
     pub tools: &'a [ToolDefinition],
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveContext {
-    pub system_prompt: codewhale_protocol::agent_runtime::SystemPrompt,
+    pub system_prompt: dse_protocol::agent_runtime::SystemPrompt,
     pub messages: Vec<ModelMessage>,
     /// Canonical transcript indices represented by the history portion of
     /// `messages`. The deterministic Host-facts tail has no transcript index.
@@ -610,7 +610,7 @@ fn validate_policy(policy: ContextPolicy) -> Result<(), ContextProjectionError> 
 }
 
 fn projection_digest(
-    system_prompt: &codewhale_protocol::agent_runtime::SystemPrompt,
+    system_prompt: &dse_protocol::agent_runtime::SystemPrompt,
     messages: &[ModelMessage],
     source_entry_indices: &[u64],
     source_entry_count: u64,
@@ -628,7 +628,7 @@ fn projection_digest(
 }
 
 fn estimate_context_tokens(
-    system_prompt: &codewhale_protocol::agent_runtime::SystemPrompt,
+    system_prompt: &dse_protocol::agent_runtime::SystemPrompt,
     messages: &[ModelMessage],
     tools: &[ToolDefinition],
 ) -> u64 {
@@ -780,11 +780,11 @@ fn take_tail_chars(value: &str, count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AgentOutcome, ModelAccounting, ModelToolCall, RunId, SystemPrompt, ToolArguments,
         ToolArtifact, ToolArtifactStatus, ToolOutcome, TranscriptEntry,
     };
-    use codewhale_protocol::task::{
+    use dse_protocol::task::{
         AcceptanceId, CompletionCandidateId, CompletionRequiredTransition, EvidenceLineage,
         EvidenceReceiptId, EvidenceSealRejection, TaskDefinition, TaskGenerationId, VerificationId,
         VerifierEvidencePolicy, VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
@@ -1067,7 +1067,7 @@ mod tests {
             outcome: Box::new(AgentOutcome {
                 run_id: RunId::from("child-1"),
                 parent_run_id: Some(RunId::from("run-1")),
-                terminal: codewhale_protocol::agent_runtime::TerminalState::Blocked {
+                terminal: dse_protocol::agent_runtime::TerminalState::Blocked {
                     reason: "done".to_owned(),
                 },
                 accounting: ModelAccounting::default(),

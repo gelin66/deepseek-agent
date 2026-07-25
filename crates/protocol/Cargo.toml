@@ -1,10 +1,10 @@
 [package]
-name = "codewhale-protocol"
+name = "dse-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "App-server protocol frames for CodeWhale runtime integrations"
+description = "App-server protocol frames for DSE runtime integrations"
 
 [dependencies]
 chrono.workspace = true

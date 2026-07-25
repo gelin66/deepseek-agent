@@ -58,15 +58,15 @@ pub enum RequestPayloadMode {
 pub fn deepseek_capability(resolved_model: &str) -> DeepSeekCapability {
     let normalized =
         normalize_model_name(resolved_model).unwrap_or_else(|| resolved_model.trim().to_string());
-    let capability = codewhale_deepseek::official_model_capabilities(&normalized).ok();
+    let capability = dse_deepseek::official_model_capabilities(&normalized).ok();
     DeepSeekCapability {
         resolved_model: normalized,
         context_window: capability
             .map(|value| value.context_window_tokens)
-            .unwrap_or(codewhale_deepseek::OFFICIAL_V4_CONTEXT_WINDOW_TOKENS),
+            .unwrap_or(dse_deepseek::OFFICIAL_V4_CONTEXT_WINDOW_TOKENS),
         max_output: capability
             .map(|value| value.max_output_tokens)
-            .unwrap_or(codewhale_deepseek::OFFICIAL_V4_MAX_OUTPUT_TOKENS),
+            .unwrap_or(dse_deepseek::OFFICIAL_V4_MAX_OUTPUT_TOKENS),
         thinking_supported: capability.is_some(),
         cache_telemetry_supported: true,
         request_payload_mode: RequestPayloadMode::ChatCompletions,
@@ -75,7 +75,7 @@ pub fn deepseek_capability(resolved_model: &str) -> DeepSeekCapability {
 
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
-    codewhale_config::canonical_deepseek_model(model).ok()
+    dse_config::canonical_deepseek_model(model).ok()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,9 +193,7 @@ impl Config {
         };
         for name in ["CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER"] {
             if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
-                anyhow::bail!(
-                    "环境变量 {name} 已删除；CodeWhale 固定使用官方 DeepSeek，请移除该变量。"
-                );
+                anyhow::bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量。");
             }
         }
         apply_env_overrides(&mut config);
@@ -234,9 +232,7 @@ impl Config {
                         "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留。"
                     );
                 }
-                anyhow::bail!(
-                    "配置项 '{retired}' 已删除；CodeWhale 仅使用官方 DeepSeek 模型目录。"
-                );
+                anyhow::bail!("配置项 '{retired}' 已删除；DSE 仅使用官方 DeepSeek 模型目录。");
             }
         }
         if let Some(key) = self.api_key.as_deref()
@@ -260,7 +256,7 @@ impl Config {
             );
         }
         if let Some(base_url) = self.base_url.as_deref() {
-            codewhale_config::validate_deepseek_base_url(base_url)?;
+            dse_config::validate_deepseek_base_url(base_url)?;
         }
         if let Some(features) = &self.features {
             for key in features.entries.keys() {
@@ -363,7 +359,7 @@ impl Config {
         anyhow::bail!(
             "未找到 DeepSeek API Key。\n\
              1. 获取 Key：https://platform.deepseek.com/api_keys\n\
-             2. 保存：codewhale auth set\n\
+             2. 保存：dse auth set\n\
              也可在当前 shell 设置 DEEPSEEK_API_KEY。"
         )
     }
@@ -855,9 +851,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
     }
     ensure_parent_dir(&path)?;
     let content = format!(
-        r#"# CodeWhale 配置
+        r#"# DSE 配置
 # 获取 DeepSeek API Key：https://platform.deepseek.com/api_keys
-# 保存 Key：codewhale auth set
+# 保存 Key：dse auth set
 
 # 官方 DeepSeek API 根地址
 # base_url = "https://api.deepseek.com"
@@ -883,7 +879,7 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
                 permissions.set_mode(mode & !0o077);
                 if let Err(error) = fs::set_permissions(parent, permissions) {
                     tracing::warn!(
-                        target: "codewhale::config",
+                        target: "dse::config",
                         path = %parent.display(),
                         %error,
                         "无法收紧配置目录权限"
@@ -907,7 +903,7 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
         file.write_all(content.as_bytes())?;
         if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
             tracing::warn!(
-                target: "codewhale::config",
+                target: "dse::config",
                 path = %path.display(),
                 %error,
                 "无法强制配置文件权限为 0600"
@@ -946,7 +942,7 @@ pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     let path = save_api_key_to_config_file(key)?;
     #[cfg(not(test))]
     {
-        let secrets = codewhale_secrets::Secrets::auto_detect();
+        let secrets = dse_secrets::Secrets::auto_detect();
         match secrets.set("deepseek", key) {
             Ok(()) => {
                 let backend = secrets.backend_name().to_string();
@@ -976,7 +972,7 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
         .with_context(|| format!("写入配置失败：{}", path.display()))?;
     } else {
         let content = format!(
-            r#"# CodeWhale 配置
+            r#"# DSE 配置
 api_key = "{api_key}"
 default_text_model = "{DEFAULT_TEXT_MODEL}"
 reasoning_effort = "max"

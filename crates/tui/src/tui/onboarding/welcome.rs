@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 
 use crate::palette;
 use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use dse_localization::MessageId;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
     let steps = welcome_step_labels(app).join(" -> ");
@@ -18,7 +18,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
 
     vec![
         Line::from(Span::styled(
-            "codewhale",
+            "dse",
             Style::default()
                 .fg(palette::WHALE_ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),

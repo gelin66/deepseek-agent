@@ -2,23 +2,23 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
-use codewhale_context::compaction::{ContextInput, effective_context};
-use codewhale_protocol::agent_runtime::{
+use dse_context::compaction::{ContextInput, effective_context};
+use dse_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentActorKind, AgentTask, AgentTaskId,
     AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy, InheritedRunFacts,
     ModelRouteAudit, ModelRouteProfile, ReasoningEffort, RunLimits, ToolPolicy,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     ContinueRunCommand, PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
-use codewhale_protocol::task::{
+use dse_protocol::task::{
     AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
     CompletionDecision, EvidenceLineage, EvidenceReceipt, EvidenceReceiptId, TaskAcceptance,
     TaskContract, TaskDefinition, TaskGenerationId, VerificationId, VerifierEvidencePolicy,
     VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
     WorkspaceRevision, WorkspaceState,
 };
-use codewhale_runtime::{
+use dse_runtime::{
     ActorRequestAccounting, AgentOutcome, AgentResultDetails, ApiSurface, AttemptId, CommandId,
     CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting, ModelAttemptFailure,
     ModelErrorCategory, ModelFinishReason, ModelOutput, ModelRequest, ModelResponseEvidence,
@@ -34,7 +34,7 @@ use codewhale_runtime::{
     WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState, WriterResourceState,
     reduce_events, writer_path_set_sha256,
 };
-use codewhale_state::StateStore;
+use dse_state::StateStore;
 use rusqlite::{Connection, params};
 
 fn temp_state_path(label: &str) -> PathBuf {
@@ -156,7 +156,7 @@ fn writer_parity_task() -> AgentTask {
             base_commit: "a".repeat(40),
             worktree_path: Some("/tmp/writer-parity-worktree".to_owned()),
             root_branch: Some("deepseek-agent".to_owned()),
-            branch: Some("codewhale/writer/writer-parity-task".to_owned()),
+            branch: Some("dse/writer/writer-parity-task".to_owned()),
             allowed_paths: vec!["src/lib.rs".to_owned()],
             owner_token: Some("writer-parity-owner".to_owned()),
         },
@@ -233,7 +233,7 @@ fn writer_parity_outcome(integrated: bool) -> AgentOutcome {
     }
 }
 
-fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
+fn creation_intent(workspace: &str) -> dse_runtime::CreationIntent {
     let command = StartRunCommand {
         task: TaskDefinition::host("实现功能"),
         workspace: workspace.to_owned(),
@@ -246,7 +246,7 @@ fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
         limits: RunLimits::default(),
         controls: RunProductControls::default(),
     };
-    codewhale_runtime::CreationIntent {
+    dse_runtime::CreationIntent {
         kind: PendingCreationKind::Start,
         workspace: workspace.to_owned(),
         source_run_id: None,
@@ -257,8 +257,8 @@ fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
 fn continuation_creation_intent(
     workspace: &str,
     source_run_id: RunId,
-) -> codewhale_runtime::CreationIntent {
-    codewhale_runtime::CreationIntent {
+) -> dse_runtime::CreationIntent {
+    dse_runtime::CreationIntent {
         kind: PendingCreationKind::Continue,
         workspace: workspace.to_owned(),
         source_run_id: Some(source_run_id.clone()),
@@ -917,7 +917,7 @@ async fn typed_incomplete_response_failure_and_accounting_survive_store_reopen_e
     assert!(replay.snapshot.pending_model.is_none());
     assert_eq!(
         replay.snapshot.last_model_failure,
-        Some(codewhale_runtime::StoppedModelFailure {
+        Some(dse_runtime::StoppedModelFailure {
             failure: failure.clone(),
             reason: ModelRetryStopReason::ActionableOutput,
         })
@@ -1055,7 +1055,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
             event: RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
                 invocation,
-                workspace_access: codewhale_runtime::WorkspaceAccess::MayWrite,
+                workspace_access: dse_runtime::WorkspaceAccess::MayWrite,
             },
         },
     )
@@ -1110,9 +1110,9 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
                 call_id: tool_call.id,
                 name: tool_call.name,
                 outcome: Box::new(tool_outcome.clone()),
-                workspace_state: Some(codewhale_runtime::WorkspaceState {
+                workspace_state: Some(dse_runtime::WorkspaceState {
                     generation: 1,
-                    revision: codewhale_runtime::WorkspaceRevision::Known {
+                    revision: dse_runtime::WorkspaceRevision::Known {
                         sha256: "workspace-revision-after-patch".to_owned(),
                     },
                 }),
@@ -1164,7 +1164,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
     assert!(sqlite_replay.snapshot.pending_tool.is_none());
     assert_eq!(
         sqlite_replay.snapshot.transcript.entries.last(),
-        Some(&codewhale_runtime::TranscriptEntry::Tool {
+        Some(&dse_runtime::TranscriptEntry::Tool {
             call_id: "call-apply-patch".to_owned(),
             name: "apply_patch".to_owned(),
             outcome: Box::new(tool_outcome),
@@ -2307,7 +2307,7 @@ async fn continuation_create_is_atomic_and_matches_memory_store() {
     );
     assert!(matches!(
         sqlite_continued.replay.snapshot.transcript.entries.last(),
-        Some(codewhale_runtime::TranscriptEntry::User { content })
+        Some(dse_runtime::TranscriptEntry::User { content })
             if content == concat!(
                 "任务目标：\n继续完成验收",
                 "\n\n约束：\n- 只修改 canonical 路径",
@@ -2353,7 +2353,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
     assert!(matches!(
         store.create(from_active).await,
         Err(RunStoreError::InvalidContinuation {
-            reason: codewhale_runtime::ContinuationError::SourceNotTerminal,
+            reason: dse_runtime::ContinuationError::SourceNotTerminal,
             ..
         })
     ));
@@ -2390,7 +2390,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
     assert!(matches!(
         store.create(from_child).await,
         Err(RunStoreError::InvalidContinuation {
-            reason: codewhale_runtime::ContinuationError::SourceIsChild,
+            reason: dse_runtime::ContinuationError::SourceIsChild,
             ..
         })
     ));
@@ -2403,8 +2403,8 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
         run_id: recovery.lease.run_id.clone(),
         parent_run_id: None,
         terminal: TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
-                phase: codewhale_runtime::RecoveryAmbiguityPhase::ModelRequest,
+            ambiguity: dse_runtime::RecoveryAmbiguity {
+                phase: dse_runtime::RecoveryAmbiguityPhase::ModelRequest,
                 action_id: "attempt-1".to_owned(),
                 message: "billing unknown".to_owned(),
             },
@@ -2433,7 +2433,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
     assert!(matches!(
         store.create(from_recovery).await,
         Err(RunStoreError::InvalidContinuation {
-            reason: codewhale_runtime::ContinuationError::RecoveryRequired,
+            reason: dse_runtime::ContinuationError::RecoveryRequired,
             ..
         })
     ));
@@ -2457,7 +2457,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
     assert!(matches!(
         store.create(wrong_workspace).await,
         Err(RunStoreError::InvalidContinuation {
-            reason: codewhale_runtime::ContinuationError::WorkspaceMismatch,
+            reason: dse_runtime::ContinuationError::WorkspaceMismatch,
             ..
         })
     ));
@@ -4132,7 +4132,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     });
     let failed_artifact_id = failed_artifact.id.clone();
     let mut failed_outcome = ToolOutcome::error("deterministic verifier failed")
-        .with_failure_code(codewhale_runtime::ToolFailureCode::VerifierFailed);
+        .with_failure_code(dse_runtime::ToolFailureCode::VerifierFailed);
     failed_outcome.side_effect = ToolSideEffectStatus::NotApplied;
     failed_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
     failed_outcome.evidence = ToolEvidence {
@@ -4385,7 +4385,7 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
     });
     let artifact_id = artifact.id.clone();
     let mut outcome = ToolOutcome::error("deterministic verifier failed")
-        .with_failure_code(codewhale_runtime::ToolFailureCode::VerifierFailed);
+        .with_failure_code(dse_runtime::ToolFailureCode::VerifierFailed);
     outcome.side_effect = ToolSideEffectStatus::NotApplied;
     outcome.workspace_revision = Some("sha256:broken".to_owned());
     outcome.evidence = ToolEvidence {
@@ -4477,7 +4477,7 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         &event.event,
         RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
             if outcome.failure_code
-                == Some(codewhale_runtime::ToolFailureCode::VerifierFailed)
+                == Some(dse_runtime::ToolFailureCode::VerifierFailed)
     )));
     drop(sqlite);
     let reopened = StateStore::open(Some(path)).expect("reopen temporal SQLite store");

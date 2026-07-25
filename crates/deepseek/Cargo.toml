@@ -1,16 +1,16 @@
 [package]
-name = "codewhale-deepseek"
+name = "dse-deepseek"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Official DeepSeek request planning for CodeWhale"
+description = "Official DeepSeek request planning for DSE"
 
 [dependencies]
 async-stream = "0.3.6"
 async-trait.workspace = true
-codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+dse-runtime = { path = "../runtime", version = "0.8.68" }
 futures-util = "0.3.31"
 reqwest = { workspace = true, features = ["stream", "http2", "gzip"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -18,5 +18,5 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-codewhale-context = { path = "../context", version = "0.8.68" }
+dse-context = { path = "../context", version = "0.8.68" }
 rustls.workspace = true

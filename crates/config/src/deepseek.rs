@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
-use codewhale_secrets::SecretSource;
+use dse_secrets::SecretSource;
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -286,9 +286,8 @@ impl ConfigToml {
         &self,
         cli: &CliRuntimeOverrides,
     ) -> Result<ResolvedRuntimeOptions> {
-        let no_keyring = Secrets::new(std::sync::Arc::new(
-            codewhale_secrets::InMemoryKeyringStore::new(),
-        ));
+        let no_keyring =
+            Secrets::new(std::sync::Arc::new(dse_secrets::InMemoryKeyringStore::new()));
         self.resolve_runtime_options_with_secrets(cli, &no_keyring)
     }
 
@@ -658,7 +657,7 @@ fn reject_retired_table_keys(
     for key in RETIRED_ROOT_KEYS {
         if table.contains_key(*key) {
             bail!(
-                "配置项 '{path}.{key}' 已删除；CodeWhale 固定使用官方 DeepSeek，不再读取 Provider 兼容配置"
+                "配置项 '{path}.{key}' 已删除；DSE 固定使用官方 DeepSeek，不再读取 Provider 兼容配置"
             );
         }
     }
@@ -915,9 +914,7 @@ pub fn default_secrets() -> &'static Secrets {
     SECRETS.get_or_init(|| {
         #[cfg(test)]
         {
-            Secrets::new(std::sync::Arc::new(
-                codewhale_secrets::InMemoryKeyringStore::new(),
-            ))
+            Secrets::new(std::sync::Arc::new(dse_secrets::InMemoryKeyringStore::new()))
         }
         #[cfg(not(test))]
         {
@@ -945,7 +942,7 @@ impl EnvRuntimeOverrides {
             if let Ok(value) = std::env::var(name)
                 && !value.trim().is_empty()
             {
-                bail!("环境变量 {name} 已删除；CodeWhale 固定使用官方 DeepSeek，请移除该变量");
+                bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量");
             }
         }
         let model = first_env(&[

@@ -447,7 +447,7 @@ mod tests {
     // workspace tables must survive every supported mutation.
     // ------------------------------------------------------------------
 
-    const GOLDEN_CONFIG: &str = r#"# CodeWhale golden config fixture, top note.
+    const GOLDEN_CONFIG: &str = r#"# DSE golden config fixture, top note.
 # api_key = "sk-placeholder" (uncomment to set the key by hand)
 default_text_model = "deepseek-v4-pro" # pinned for release QA
 
@@ -503,7 +503,7 @@ trust_level = "untrusted" # keep in sync with docs
         .unwrap();
         let body = fs::read_to_string(&path).unwrap();
         for comment in [
-            "# CodeWhale golden config fixture, top note.",
+            "# DSE golden config fixture, top note.",
             "# api_key = \"sk-placeholder\" (uncomment to set the key by hand)",
             "# pinned for release QA",
             "# workspace trust note",

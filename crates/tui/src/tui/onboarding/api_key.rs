@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 
 use crate::palette;
 use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use dse_localization::MessageId;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![

@@ -728,7 +728,7 @@ mod tests {
             HKEY_CURRENT_USER, REG_SZ, RegCreateKeyW, RegDeleteTreeW, RegSetValueExW,
         };
 
-        let subkey = format!(r"Software\CodeWhaleTest\child_env_{}", std::process::id());
+        let subkey = format!(r"Software\DSETest\child_env_{}", std::process::id());
         let subkey_wide = windows_wide_null(OsStr::new(&subkey));
         let mut key = HKEY::default();
         let created =

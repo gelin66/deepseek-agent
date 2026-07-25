@@ -6,8 +6,8 @@ pub mod prompt_preferences;
 pub mod setup_state;
 pub mod user_constitution;
 
-pub use codewhale_secrets::Secrets;
 pub use deepseek::*;
+pub use dse_secrets::Secrets;
 pub use paths::*;
 pub use prompt_preferences::{
     PromptPreferences, SettingsSource, load_prompt_preferences, load_settings_source, settings_path,

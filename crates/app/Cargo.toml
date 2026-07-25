@@ -1,5 +1,5 @@
 [package]
-name = "codewhale-app"
+name = "dse-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,14 +8,14 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-codewhale-config = { path = "../config" }
-codewhale-context = { path = "../context" }
-codewhale-protocol = { path = "../protocol" }
-codewhale-deepseek = { path = "../deepseek" }
-codewhale-orchestrator = { path = "../orchestrator" }
-codewhale-runtime = { path = "../runtime" }
-codewhale-state = { path = "../state" }
-codewhale-tools = { path = "../tools" }
+dse-config = { path = "../config" }
+dse-context = { path = "../context" }
+dse-protocol = { path = "../protocol" }
+dse-deepseek = { path = "../deepseek" }
+dse-orchestrator = { path = "../orchestrator" }
+dse-runtime = { path = "../runtime" }
+dse-state = { path = "../state" }
+dse-tools = { path = "../tools" }
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
@@ -25,7 +25,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
-codewhale-build-support = { path = "../build-support" }
+dse-build-support = { path = "../build-support" }
 
 [dev-dependencies]
 tempfile.workspace = true

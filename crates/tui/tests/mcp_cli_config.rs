@@ -4,10 +4,10 @@ use std::process::{Command, Output};
 use serde_json::{Value, json};
 
 fn tui_binary() -> PathBuf {
-    option_env!("CARGO_BIN_EXE_codewhale-tui")
+    option_env!("CARGO_BIN_EXE_dse-tui")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("CARGO_BIN_EXE_codewhale-tui").map(PathBuf::from))
-        .expect("Cargo must expose the codewhale-tui test binary")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_dse-tui").map(PathBuf::from))
+        .expect("Cargo must expose the dse-tui test binary")
 }
 
 fn run_cli(home: &Path, workspace: &Path, mcp_config: &Path, args: &[&str]) -> Output {
@@ -29,7 +29,7 @@ fn run_cli(home: &Path, workspace: &Path, mcp_config: &Path, args: &[&str]) -> O
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
     }
-    command.output().expect("run codewhale-tui CLI")
+    command.output().expect("run dse-tui CLI")
 }
 
 fn assert_success(output: &Output, operation: &str) {
@@ -56,7 +56,7 @@ fn real_cli_mcp_config_lifecycle_writes_only_the_global_owner() {
     let global_config = codewhale_home.join("mcp.json");
     let project_config = workspace.join(".codewhale").join("mcp.json");
     std::fs::create_dir_all(project_config.parent().unwrap()).expect("project MCP directory");
-    std::fs::create_dir_all(&codewhale_home).expect("CodeWhale home");
+    std::fs::create_dir_all(&codewhale_home).expect("DSE home");
     std::fs::write(
         &project_config,
         serde_json::to_vec_pretty(&json!({

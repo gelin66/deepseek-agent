@@ -36,7 +36,7 @@ spin up a PTY just to assert a function returns the right value.
    belongs in a unit test (or a `wiremock`-driven turn test) instead.
 
 2. Build a sealed workspace so the scenario doesn't see the developer's real
-   CodeWhale state or API keys:
+   DSE state or API keys:
 
    ```rust
    let ws = qa_harness::harness::make_sealed_workspace()?;
@@ -46,7 +46,7 @@ spin up a PTY just to assert a function returns the right value.
 3. Spawn:
 
    ```rust
-   let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+   let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
        .cwd(ws.workspace())
        .seal_home(ws.home())
        .env("DEEPSEEK_API_KEY", "ci-test-key")

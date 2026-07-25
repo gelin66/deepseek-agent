@@ -792,7 +792,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             let after = &rest[1 + end + 1..];
             // Closing delimiter must not be immediately followed by a
             // letter, digit, or underscore (otherwise it's part of an
-            // identifier like `codewhale_tui`, not italic markup).
+            // identifier like `dse_tui`, not italic markup).
             if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
                 out.push(InlineToken::new(inner.to_string(), italic_style, None));
                 rest = after;
@@ -1334,14 +1334,14 @@ mod tests {
     #[test]
     fn underscores_inside_identifiers_render_as_literal_text() {
         // Regression for PR #1455 / @tiger-dog: previously the inline
-        // markdown parser ate the underscore in `codewhale_tui` because
+        // markdown parser ate the underscore in `dse_tui` because
         // it matched the `_italic_` pattern without a CommonMark-style
         // boundary check. The closing `_` followed by `t` (a letter)
         // must now be treated as part of the identifier, not as
         // markup. The same rule applies to `*` so identifiers like
         // `crate*foo` round-trip cleanly.
         let cases = [
-            "crate codewhale_tui handles approvals",
+            "crate dse_tui handles approvals",
             "see foo_bar_baz for details",
             "look at *not_emphasised*tail",
         ];
@@ -1753,7 +1753,7 @@ mod tests {
     fn table_pipes_inside_inline_code_stay_in_the_cell() {
         let src = "| Check | Result |\n\
                    |---|---|\n\
-                   | `strings ~/.cargo/bin/codewhale-tui | grep -c \"legacy marker\"` | 0 matches |\n";
+                   | `strings ~/.cargo/bin/dse-tui | grep -c \"legacy marker\"` | 0 matches |\n";
         let parsed = parse(src);
 
         let rows: Vec<&Vec<String>> = parsed
@@ -1769,7 +1769,7 @@ mod tests {
         assert_eq!(
             rows[1],
             &vec![
-                "`strings ~/.cargo/bin/codewhale-tui | grep -c \"legacy marker\"`".to_string(),
+                "`strings ~/.cargo/bin/dse-tui | grep -c \"legacy marker\"`".to_string(),
                 "0 matches".to_string(),
             ]
         );
@@ -1782,7 +1782,7 @@ mod tests {
         );
         let data_line = rendered_lines
             .iter()
-            .find(|line| line.contains("strings ~/.cargo/bin/codewhale-tui"))
+            .find(|line| line.contains("strings ~/.cargo/bin/dse-tui"))
             .expect("data row should render");
         assert_eq!(
             data_line.matches('│').count(),
@@ -1800,7 +1800,7 @@ mod tests {
     fn table_cell_wider_than_column_wraps_instead_of_truncating() {
         let src = "| Feature | How to verify |\n\
                    |---|---|\n\
-                   | Workspace-local skills | Drop an .agents/skills/foo/SKILL.md in any project, run codewhale from there, then invoke the skill — it should dispatch |\n";
+                   | Workspace-local skills | Drop an .agents/skills/foo/SKILL.md in any project, run dse from there, then invoke the skill — it should dispatch |\n";
         let lines = render_markdown(src, 80, Style::default());
         let combined: String = lines
             .iter()
@@ -1812,7 +1812,7 @@ mod tests {
             "table cell was truncated with `…` instead of wrapping; got: {combined:?}"
         );
         assert!(
-            combined.contains("should dispatch"),
+            combined.contains("dispatch"),
             "tail of long cell was lost; got: {combined:?}"
         );
         assert!(

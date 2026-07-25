@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codewhale_runtime::{
+use dse_runtime::{
     AgentOrchestrationError, AgentOrchestrationErrorKind, AgentOrchestrator, AgentTask,
     AgentWorkspaceAccess, AgentWorkspaceAssignment, ToolExecutor, WorkspaceRevision,
     WorkspaceState, WriterArtifactState, WriterBinding, WriterCleanupMetadataState,
@@ -10,7 +10,7 @@ use codewhale_runtime::{
     WriterCleanupResult, WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation,
     WriterRemovalState, WriterResourceState, WriterSeal, writer_path_set_sha256,
 };
-use codewhale_tools::{ProductionToolConfig, ProductionToolExecutor};
+use dse_tools::{ProductionToolConfig, ProductionToolExecutor};
 
 use crate::workspace::{
     CleanupComponentDisposition, CleanupResourceFacts, CleanupResourcePresence,
@@ -943,11 +943,11 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use codewhale_runtime::{
+    use dse_runtime::{
         AgentTaskId, ContextPolicy, ModelRouteAudit, ModelRouteProfile, ReasoningEffort, RunId,
         RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
     };
-    use codewhale_tools::shell::ShellPolicy;
+    use dse_tools::shell::ShellPolicy;
     use tempfile::TempDir;
 
     use super::*;
@@ -1831,7 +1831,7 @@ mod tests {
                 &[
                     OsString::from("config"),
                     OsString::from("user.name"),
-                    OsString::from("CodeWhale Test"),
+                    OsString::from("DSE Test"),
                 ],
             );
             git_ok(
@@ -1839,7 +1839,7 @@ mod tests {
                 &[
                     OsString::from("config"),
                     OsString::from("user.email"),
-                    OsString::from("test@codewhale.local"),
+                    OsString::from("test@dse.local"),
                 ],
             );
             fs::write(root.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")

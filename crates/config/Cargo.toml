@@ -1,14 +1,14 @@
 [package]
-name = "codewhale-config"
+name = "dse-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Config schema and precedence model for CodeWhale"
+description = "Config schema and precedence model for DSE"
 
 [dependencies]
 anyhow.workspace = true
-codewhale-secrets = { path = "../secrets", version = "0.8.68" }
+dse-secrets = { path = "../secrets", version = "0.8.68" }
 dirs.workspace = true
 libc = "0.2"
 serde.workspace = true

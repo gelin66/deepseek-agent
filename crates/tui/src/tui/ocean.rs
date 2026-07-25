@@ -1,4 +1,4 @@
-//! Terminal-native underwater field for the CodeWhale transcript.
+//! Terminal-native underwater field for the DSE transcript.
 //!
 //! The field is atmosphere, never content: ordinary shell cells share its
 //! water column while semantic surfaces such as selections, errors, and code

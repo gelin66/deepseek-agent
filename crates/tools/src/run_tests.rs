@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     ToolFailureCode, ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
-use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
+use dse_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -126,9 +126,9 @@ pub(crate) async fn execute_run_tests(
     if verification_usable && (outcome.is_success() || exited_with_failure) {
         let revision_after = capture_workspace_revision(context.workspace()).await;
         let verdict = if outcome.is_success() {
-            codewhale_protocol::task::VerifierVerdict::Passed
+            dse_protocol::task::VerifierVerdict::Passed
         } else {
-            codewhale_protocol::task::VerifierVerdict::Failed
+            dse_protocol::task::VerifierVerdict::Failed
         };
         attach_verifier_observation(
             &mut outcome,
@@ -310,7 +310,7 @@ fn char_boundary_index(text: &str, max_chars: usize) -> usize {
 mod tests {
     use super::*;
     use crate::shell::{ShellPolicy, new_shared_shell_manager};
-    use codewhale_protocol::agent_runtime::ToolEvidenceStatus;
+    use dse_protocol::agent_runtime::ToolEvidenceStatus;
 
     fn rust_workspace(with_test: bool) -> tempfile::TempDir {
         let workspace = tempfile::tempdir().unwrap();
@@ -450,7 +450,7 @@ mod tests {
                 .verifier_observation
                 .as_ref()
                 .map(|value| value.verdict),
-            Some(codewhale_protocol::task::VerifierVerdict::Failed)
+            Some(dse_protocol::task::VerifierVerdict::Failed)
         );
         assert_eq!(outcome.side_effect, ToolSideEffectStatus::Indeterminate);
     }

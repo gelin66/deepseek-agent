@@ -38,7 +38,7 @@ pub enum SandboxPolicy {
 
     /// Indicates the process is already running in an external sandbox.
     ///
-    /// Use this when CodeWhale is itself running inside a container,
+    /// Use this when DSE is itself running inside a container,
     /// VM, or other sandboxed environment. This avoids double-sandboxing
     /// which can cause issues.
     #[serde(rename = "external-sandbox")]

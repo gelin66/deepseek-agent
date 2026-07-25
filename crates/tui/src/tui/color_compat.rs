@@ -254,7 +254,7 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
     )
 }
 
-/// Narrow every CodeWhale-authored decorative glyph to a semantic ASCII
+/// Narrow every DSE-authored decorative glyph to a semantic ASCII
 /// alternative. Scope is deliberate: box drawing, block elements (whale
 /// mark, meters, rails), braille state markers, geometric role/state marks,
 /// arrows, and typographic chrome. Language text — CJK labels, accented

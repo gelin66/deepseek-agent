@@ -104,7 +104,7 @@ fn m8a_first_start_template_has_no_secret_or_provider_mode() -> Result<()> {
         Some(path.clone())
     );
     let raw = fs::read_to_string(path)?;
-    assert!(raw.contains("codewhale auth set"));
+    assert!(raw.contains("dse auth set"));
     assert!(raw.contains("deepseek-v4-pro"));
     assert!(!raw.contains("api_key ="));
     assert!(!raw.contains("--provider"));

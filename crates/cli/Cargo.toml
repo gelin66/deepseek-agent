@@ -1,28 +1,28 @@
 [package]
-name = "codewhale-cli"
+name = "dse-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CodeWhale CLI for the official DeepSeek coding agent"
+description = "DSE CLI for the official DeepSeek coding agent"
 
 [[bin]]
-name = "codewhale"
+name = "dse"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-codewhale-app = { path = "../app", version = "0.8.68" }
-codewhale-app-server = { path = "../app-server", version = "0.8.68" }
-codewhale-config = { path = "../config", version = "0.8.68" }
-codewhale-context = { path = "../context", version = "0.8.68" }
-codewhale-localization = { path = "../localization", version = "0.8.68" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
-codewhale-secrets = { path = "../secrets", version = "0.8.68" }
-codewhale-state = { path = "../state", version = "0.8.68" }
+dse-app = { path = "../app", version = "0.8.68" }
+dse-app-server = { path = "../app-server", version = "0.8.68" }
+dse-config = { path = "../config", version = "0.8.68" }
+dse-context = { path = "../context", version = "0.8.68" }
+dse-localization = { path = "../localization", version = "0.8.68" }
+dse-execpolicy = { path = "../execpolicy", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
+dse-secrets = { path = "../secrets", version = "0.8.68" }
+dse-state = { path = "../state", version = "0.8.68" }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,12 +32,12 @@ mimalloc.workspace = true
 tracing.workspace = true
 
 [build-dependencies]
-codewhale-build-support = { path = "../build-support", version = "0.8.68" }
+dse-build-support = { path = "../build-support", version = "0.8.68" }
 
 # Used in main.rs to reset SIGPIPE to SIG_DFL on Unix (#4030).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+dse-runtime = { path = "../runtime", version = "0.8.68" }
 tempfile.workspace = true

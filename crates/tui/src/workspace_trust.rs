@@ -5,11 +5,11 @@
 //! mapping each workspace's canonical path to a sorted list of canonical
 //! paths the user has explicitly trusted from that workspace. Trust granted
 //! in workspace A does not apply when running from workspace B.
-//! CodeWhale no longer exposes a command that mutates this historical file.
+//! DSE no longer exposes a command that mutates this historical file.
 //!
 //! Threat model: this is a deliberate user opt-in to a path the workspace
 //! sandbox would otherwise refuse. The only access the trust list grants is
-//! through CodeWhale's own file tools (`read_file`, `write_file`, etc.) —
+//! through DSE's own file tools (`read_file`, `write_file`, etc.) —
 //! it does not loosen the OS sandbox profile (Seatbelt/Landlock) used for
 //! shell commands. Sandbox-profile expansion is tracked separately so a
 //! shell tool can opt into the same paths in a future release.
@@ -85,7 +85,7 @@ fn canonicalize_or_keep(path: &Path) -> PathBuf {
 }
 
 fn trust_file_path() -> Option<PathBuf> {
-    codewhale_config::ensure_state_dir(".")
+    dse_config::ensure_state_dir(".")
         .ok()
         .map(|dir| dir.join(TRUST_FILE_NAME))
 }

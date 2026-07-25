@@ -1,5 +1,5 @@
 [package]
-name = "codewhale-context"
+name = "dse-context"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ repository.workspace = true
 test-support = []
 
 [dependencies]
-codewhale-config = { path = "../config" }
-codewhale-protocol = { path = "../protocol" }
+dse-config = { path = "../config" }
+dse-protocol = { path = "../protocol" }
 dirs.workspace = true
 regex = "1.11"
 serde.workspace = true

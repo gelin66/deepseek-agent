@@ -5,8 +5,8 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
-use codewhale_localization::{MessageId, tr};
-use codewhale_protocol::agent_runtime::{
+use dse_localization::{MessageId, tr};
+use dse_protocol::agent_runtime::{
     UserInputAnswer, UserInputQuestion, UserInputRequest,
     UserInteractionResponse as UserInputResponse,
 };
@@ -558,7 +558,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_protocol::agent_runtime::UserInputOption;
+    use dse_protocol::agent_runtime::UserInputOption;
     use unicode_width::UnicodeWidthStr;
 
     fn render_view(view: &UserInputView, width: u16, height: u16) -> String {

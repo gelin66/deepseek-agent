@@ -13,7 +13,7 @@ use crate::tui::app::{App, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::underwater::ShellPhase;
-use codewhale_localization::{MessageId, tr};
+use dse_localization::{MessageId, tr};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -2951,7 +2951,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 2"));
+        assert!(rendered.contains("dse · 工作区：/tmp/codewhale-test-workspace · mcp 2"));
         assert!(!rendered.contains("/fleet"));
         assert!(!rendered.contains("Model  /model"));
         assert!(!rendered.contains("Rules  /constitution"));
@@ -2972,7 +2972,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let context = "codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 0";
+        let context = "dse · 工作区：/tmp/codewhale-test-workspace · mcp 0";
         let context_line = text_lines
             .iter()
             .find(|line| line.trim_start() == context)
@@ -3002,10 +3002,10 @@ mod tests {
             "wide idle water should contain three fish:\n{rendered}"
         );
 
-        let context = "codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 0";
+        let context = "dse · 工作区：/tmp/codewhale-test-workspace · mcp 0";
         let context_x = ((100usize - UnicodeWidthStr::width(context)) / 2) as u16;
         let context_cell = (0..area.height)
-            .find_map(|y| (buf[(context_x, y)].symbol() == "c").then_some((context_x, y)))
+            .find_map(|y| (buf[(context_x, y)].symbol() == "d").then_some((context_x, y)))
             .expect("context line");
         assert_eq!(
             buf[context_cell].bg,
@@ -3041,7 +3041,7 @@ mod tests {
             ChatWidget::new(&mut app, area).render(area, &mut buf);
             let rendered = buffer_text(&buf, area);
 
-            assert!(rendered.contains("codewhale"));
+            assert!(rendered.contains("dse"));
             assert!(!rendered.contains("/fleet"));
             if height < 14 {
                 assert!(
@@ -3094,7 +3094,7 @@ mod tests {
         );
     }
 
-    /// #4208: `CODEWHALE_ASCII_SAFE=1` must narrow every CodeWhale-authored
+    /// #4208: `CODEWHALE_ASCII_SAFE=1` must narrow every DSE-authored
     /// decorative glyph — whale mark, fish, bubble, context meter, borders,
     /// braille state markers — across real rendered surfaces, not a
     /// hand-picked symbol list.
@@ -3852,7 +3852,7 @@ mod tests {
             "approval-1",
             "exec_shell",
             &serde_json::json!({
-                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p codewhale-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
+                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p dse-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
                 "cwd": "/Volumes/VIXinSSD/codewhale",
             }),
             ApprovalStakes::Elevated,

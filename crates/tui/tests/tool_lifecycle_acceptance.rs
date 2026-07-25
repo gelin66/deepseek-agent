@@ -37,7 +37,7 @@ struct ToolLifecycleWorld {
     requests: Vec<Value>,
 }
 
-#[given("an offline CodeWhale workspace containing:")]
+#[given("an offline DSE workspace containing:")]
 fn offline_codewhale_workspace_containing(world: &mut ToolLifecycleWorld, step: &Step) {
     let workspace = TempDir::new().expect("workspace tempdir");
     let home = TempDir::new().expect("home tempdir");
@@ -106,7 +106,7 @@ async fn user_asks(world: &mut ToolLifecycleWorld, prompt: String) {
     world.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
-        "codewhale-tui exec failed\nstdout:\n{}\nstderr:\n{}",
+        "dse-tui exec failed\nstdout:\n{}\nstderr:\n{}",
         world.stdout,
         world.stderr
     );
@@ -127,7 +127,7 @@ async fn user_asks(world: &mut ToolLifecycleWorld, prompt: String) {
     world.llm_server = Some(server);
 }
 
-#[then("CodeWhale should send the user request to the mocked LLM")]
+#[then("DSE should send the user request to the mocked LLM")]
 fn codewhale_should_send_user_request_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let first_request = world
         .requests
@@ -186,7 +186,7 @@ fn public_tool_result_should_return_directory_entries(world: &mut ToolLifecycleW
     }
 }
 
-#[then("CodeWhale should send the tool result back to the mocked LLM")]
+#[then("DSE should send the tool result back to the mocked LLM")]
 fn codewhale_should_send_tool_result_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let request = world
         .requests
@@ -262,7 +262,7 @@ fn public_tool_result_should_report_malformed_arguments_for(
     );
 }
 
-#[then("CodeWhale should send the malformed argument error back to the mocked LLM")]
+#[then("DSE should send the malformed argument error back to the mocked LLM")]
 fn codewhale_should_send_malformed_argument_error_back_to_mocked_llm(
     world: &mut ToolLifecycleWorld,
 ) {
@@ -442,16 +442,16 @@ fn run_codewhale_exec(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    std::fs::create_dir_all(home.join(".codewhale")).expect("create codewhale home config dir");
+    std::fs::create_dir_all(home.join(".codewhale")).expect("create dse home config dir");
     run_with_timeout(command, Duration::from_secs(45))
 }
 
 fn run_with_timeout(mut command: Command, timeout: Duration) -> std::process::Output {
-    let mut child = command.spawn().expect("spawn codewhale-tui exec");
+    let mut child = command.spawn().expect("spawn dse-tui exec");
     let stdout_reader = read_pipe_in_background(child.stdout.take().expect("stdout pipe"));
     let stderr_reader = read_pipe_in_background(child.stderr.take().expect("stderr pipe"));
 
-    let status = match child.wait_timeout(timeout).expect("wait for codewhale-tui") {
+    let status = match child.wait_timeout(timeout).expect("wait for dse-tui") {
         Some(status) => status,
         None => {
             let _ = child.kill();
@@ -459,7 +459,7 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> std::process::Ou
             let stdout = join_pipe_reader(stdout_reader, "stdout");
             let stderr = join_pipe_reader(stderr_reader, "stderr");
             panic!(
-                "codewhale-tui exec timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
+                "dse-tui exec timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
                 String::from_utf8_lossy(&stdout),
                 String::from_utf8_lossy(&stderr)
             );
@@ -758,10 +758,10 @@ fn row_value(row: &[(String, String)], header: &str) -> String {
 }
 
 fn codewhale_tui_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale-tui") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
 
@@ -770,6 +770,6 @@ fn codewhale_tui_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
     path
 }

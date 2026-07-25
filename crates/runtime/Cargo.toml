@@ -1,15 +1,15 @@
 [package]
-name = "codewhale-runtime"
+name = "dse-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "UI-independent single Agent runtime for CodeWhale"
+description = "UI-independent single Agent runtime for DSE"
 
 [dependencies]
 async-trait.workspace = true
-codewhale-context = { path = "../context", version = "0.8.68" }
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+dse-context = { path = "../context", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

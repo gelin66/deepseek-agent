@@ -86,12 +86,10 @@ mod tests {
     #[test]
     fn log_value_parser_accepts_common_rust_log_directives() {
         assert!(log_value_enables_verbose("debug"));
-        assert!(log_value_enables_verbose("codewhale_cli=debug"));
-        assert!(log_value_enables_verbose(
-            "warn,codewhale_tui::client=trace"
-        ));
+        assert!(log_value_enables_verbose("dse_cli=debug"));
+        assert!(log_value_enables_verbose("warn,dse_tui::client=trace"));
         assert!(!log_value_enables_verbose("warn"));
-        assert!(!log_value_enables_verbose("codewhale_tui=off"));
+        assert!(!log_value_enables_verbose("dse_tui=off"));
     }
 
     #[test]

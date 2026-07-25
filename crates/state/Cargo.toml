@@ -1,16 +1,16 @@
 [package]
-name = "codewhale-state"
+name = "dse-state"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Canonical Agent run persistence and recovery for CodeWhale"
+description = "Canonical Agent run persistence and recovery for DSE"
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
-codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
+dse-runtime = { path = "../runtime", version = "0.8.68" }
 dirs.workspace = true
 libc = "0.2"
 rusqlite.workspace = true
@@ -22,6 +22,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 chrono.workspace = true
-codewhale-context = { path = "../context", version = "0.8.68" }
+dse-context = { path = "../context", version = "0.8.68" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

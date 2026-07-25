@@ -1,6 +1,6 @@
 //! Real-PTY acceptance for the canonical interactive TUI foreground.
 //!
-//! The scenario launches the built `codewhale-tui` binary in a real
+//! The scenario launches the built `dse-tui` binary in a real
 //! pseudo-terminal, sends a Chinese multi-line prompt to a loopback DeepSeek
 //! endpoint, waits for the canonical terminal projection, exits normally, and
 //! then verifies the durable SQLite RunStore rather than trusting screen text
@@ -20,15 +20,13 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     CommandId, ReasoningEffort, RunId, RunLimits, RuntimeEventKind, TerminalState, ToolPolicy,
 };
-use codewhale_protocol::run_api::{
-    PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
-};
-use codewhale_protocol::task::TaskDefinition;
-use codewhale_runtime::{CreationIntent, RunStore};
-use codewhale_state::StateStore;
+use dse_protocol::run_api::{PendingCreationKind, RunCommand, RunProductControls, StartRunCommand};
+use dse_protocol::task::TaskDefinition;
+use dse_runtime::{CreationIntent, RunStore};
+use dse_state::StateStore;
 use qa_harness::harness::{Harness, make_sealed_workspace};
 use qa_harness::keys;
 use serde_json::{Value, json};
@@ -62,7 +60,7 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
         ),
     )?;
 
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -107,7 +105,7 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         .display()
         .to_string();
 
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -175,7 +173,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .display()
         .to_string();
 
-    let mut onboarding = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut onboarding = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -244,7 +242,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
     );
 
     let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -308,7 +306,7 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
         Some("deepseek-v4-pro"),
     )?;
 
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -376,7 +374,7 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
         .display()
         .to_string();
 
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
@@ -457,7 +455,7 @@ fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow:
     let isolated = make_sealed_workspace()?;
     let codewhale_home = isolated.home().join(".codewhale");
 
-    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())

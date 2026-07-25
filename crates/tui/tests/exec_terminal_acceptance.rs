@@ -15,12 +15,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
-use codewhale_runtime::{
+use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+use dse_runtime::{
     ModelRouteProfile, RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind,
     StoredRuntimeEvent, TerminalState,
 };
-use codewhale_state::StateStore;
+use dse_state::StateStore;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
@@ -2265,7 +2265,7 @@ fn prepare_exec_with_options(
 
 fn run_with_timeout(mut command: Command, timeout: Duration) -> ExecOutput {
     let started = Instant::now();
-    let mut child = command.spawn().expect("spawn codewhale-tui exec");
+    let mut child = command.spawn().expect("spawn dse-tui exec");
     let stdout_reader = read_pipe(child.stdout.take().expect("stdout pipe"));
     let stderr_reader = read_pipe(child.stderr.take().expect("stderr pipe"));
 
@@ -3190,10 +3190,10 @@ fn preserve_host_env(command: &mut Command) {
 }
 
 fn codewhale_tui_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale-tui") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
 
@@ -3202,6 +3202,6 @@ fn codewhale_tui_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
     path
 }

@@ -1617,7 +1617,7 @@ async fn connect_all_includes_underlying_spawn_error_in_chain() {
         r#"{
             "mcpServers": {
                 "broken": {
-                    "command": "codewhale-tui-test-this-binary-does-not-exist-9f8e7d6c5b4a",
+                    "command": "dse-tui-test-this-binary-does-not-exist-9f8e7d6c5b4a",
                     "args": []
                 }
             }
@@ -1962,11 +1962,11 @@ async fn stdio_transport_shutdown_terminates_child() {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    codewhale_tools::shell::configure_process_tree(cmd.as_std_mut());
+    dse_tools::shell::configure_process_tree(cmd.as_std_mut());
     let mut child = cmd.spawn().expect("spawn cat");
     let pid = child.id().expect("child pid");
     let process_tree =
-        codewhale_tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP shutdown test")
+        dse_tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP shutdown test")
             .expect("own MCP test process tree");
     let stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");
@@ -2101,12 +2101,11 @@ async fn stdio_transport_recv_error_includes_stderr_tail() {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    codewhale_tools::shell::configure_process_tree(cmd.as_std_mut());
+    dse_tools::shell::configure_process_tree(cmd.as_std_mut());
 
     let mut child = cmd.spawn().expect("spawn sh");
-    let process_tree =
-        codewhale_tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP stderr test")
-            .expect("own MCP stderr process tree");
+    let process_tree = dse_tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP stderr test")
+        .expect("own MCP stderr process tree");
     let stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let stderr = child.stderr.take().expect("stderr");

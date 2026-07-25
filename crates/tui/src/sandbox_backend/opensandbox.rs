@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
 
-use codewhale_tools::sandbox::backend::{SandboxBackend, SandboxBackendIdentity, SandboxOutput};
+use dse_tools::sandbox::backend::{SandboxBackend, SandboxBackendIdentity, SandboxOutput};
 
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Serialize)]

@@ -11,12 +11,10 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     ToolArtifact, ToolEvidence, ToolEvidenceStatus, ToolFailureCode, VerificationArtifactPayload,
 };
-use codewhale_protocol::task::{
-    VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision,
-};
+use dse_protocol::task::{VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
@@ -435,7 +433,7 @@ fn read_capped(mut reader: impl Read, cap: usize) -> Result<Vec<u8>, String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use codewhale_protocol::task::{VerifierPlan, VerifierStep};
+    use dse_protocol::task::{VerifierPlan, VerifierStep};
 
     use super::*;
 

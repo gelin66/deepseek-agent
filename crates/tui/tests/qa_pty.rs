@@ -49,7 +49,7 @@ fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWo
 fn spawn_minimal(
     ws: qa_harness::harness::SealedWorkspace,
 ) -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())
@@ -221,7 +221,7 @@ subagents = true
 "#,
     )?;
 
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())
@@ -306,7 +306,7 @@ fn printable_v_stays_in_composer_and_help_command_works() -> anyhow::Result<()> 
 fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let ws = make_sealed_workspace()?;
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())
@@ -351,7 +351,7 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
     let (base_url, server) = spawn_approval_fixture_server()?;
     let ws = make_sealed_workspace()?;
     let denied_path = ws.workspace().join("approval-proof.txt");
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())

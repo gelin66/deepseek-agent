@@ -3,7 +3,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::time::Duration;
 
-use codewhale_runtime::{
+use dse_runtime::{
     ModelFinishReason, ModelOutput, ModelResponseEvidence, ModelStreamEvent, ModelToolCall,
     ToolArguments, Usage,
 };
@@ -16,7 +16,7 @@ use crate::{
     ResponseMode, SharedApiRequestBudget,
 };
 
-const CODEWHALE_USER_AGENT: &str = concat!("CodeWhale/", env!("CARGO_PKG_VERSION"));
+const DSE_USER_AGENT: &str = concat!("DSE/", env!("CARGO_PKG_VERSION"));
 
 const OFFICIAL_ROOT: &str = "https://api.deepseek.com";
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
@@ -498,7 +498,7 @@ impl DeepSeekTransport {
             let request = self
                 .client
                 .post(&plan.url)
-                .header(reqwest::header::USER_AGENT, CODEWHALE_USER_AGENT)
+                .header(reqwest::header::USER_AGENT, DSE_USER_AGENT)
                 .bearer_auth(self.config.credential.expose())
                 .json(&plan.body);
             let response =
@@ -1651,10 +1651,10 @@ mod tests {
             }
             let request_headers = String::from_utf8_lossy(&request);
             assert!(
-                request_headers.to_ascii_lowercase().contains(
-                    &format!("user-agent: {}", CODEWHALE_USER_AGENT).to_ascii_lowercase()
-                ),
-                "canonical CodeWhale User-Agent missing from request:\n{request_headers}"
+                request_headers
+                    .to_ascii_lowercase()
+                    .contains(&format!("user-agent: {}", DSE_USER_AGENT).to_ascii_lowercase()),
+                "canonical DSE User-Agent missing from request:\n{request_headers}"
             );
             write!(
                 stream,

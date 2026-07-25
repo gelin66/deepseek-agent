@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use codewhale_protocol::agent_runtime::{PromptCacheControl, SystemPromptBlock};
+use dse_protocol::agent_runtime::{PromptCacheControl, SystemPromptBlock};
 
 use super::fragment::{FragmentId, FragmentRole, ModelContextFragment};
 

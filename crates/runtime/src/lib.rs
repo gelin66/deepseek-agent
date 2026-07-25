@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-pub use codewhale_protocol::agent_runtime::*;
-pub use codewhale_protocol::task::*;
+pub use dse_protocol::agent_runtime::*;
+pub use dse_protocol::task::*;
 use tokio::sync::Notify;
 
 mod agent;

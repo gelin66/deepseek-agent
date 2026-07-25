@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     ToolFailureCode, ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
-use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
+use dse_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -283,7 +283,7 @@ pub(crate) async fn execute_run_verifiers(
             attach_verifier_observation(
                 &mut outcome,
                 verifier.expect("non-empty gate plan has a verifier spec"),
-                codewhale_protocol::task::VerifierVerdict::Passed,
+                dse_protocol::task::VerifierVerdict::Passed,
                 output.summary.clone(),
                 revision_before,
                 revision_after,
@@ -294,7 +294,7 @@ pub(crate) async fn execute_run_verifiers(
             attach_verifier_observation(
                 &mut outcome,
                 verifier.expect("non-empty gate plan has a verifier spec"),
-                codewhale_protocol::task::VerifierVerdict::Failed,
+                dse_protocol::task::VerifierVerdict::Failed,
                 output.summary.clone(),
                 revision_before,
                 revision_after,
@@ -1093,7 +1093,7 @@ fn char_boundary_index(text: &str, max_chars: usize) -> usize {
 mod tests {
     use super::*;
     use crate::shell::{ShellPolicy, new_shared_shell_manager};
-    use codewhale_protocol::agent_runtime::ToolEvidenceStatus;
+    use dse_protocol::agent_runtime::ToolEvidenceStatus;
 
     fn initialized_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().unwrap();
@@ -1122,7 +1122,7 @@ mod tests {
             Command::new("git")
                 .args([
                     "-c",
-                    "user.name=CodeWhale Test",
+                    "user.name=DSE Test",
                     "-c",
                     "user.email=test.invalid",
                     "commit",
@@ -1389,7 +1389,7 @@ mod tests {
                 .verifier_observation
                 .as_ref()
                 .map(|value| value.verdict),
-            Some(codewhale_protocol::task::VerifierVerdict::Failed)
+            Some(dse_protocol::task::VerifierVerdict::Failed)
         );
         outcome.validate().unwrap();
     }

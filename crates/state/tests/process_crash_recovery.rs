@@ -16,18 +16,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use codewhale_context::compaction::{ContextInput, effective_context};
-use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
-use codewhale_protocol::run_api::{
-    PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
-};
-use codewhale_protocol::task::{
+use dse_context::compaction::{ContextInput, effective_context};
+use dse_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
+use dse_protocol::run_api::{PendingCreationKind, RunCommand, RunProductControls, StartRunCommand};
+use dse_protocol::task::{
     AcceptanceId, CompletionRequiredTransition, EvidenceLineage, EvidenceSealRejection,
     TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId, VerifierEvidencePolicy,
     VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
     WorkspaceRevision,
 };
-use codewhale_runtime::{
+use dse_runtime::{
     AGENT_TOOL_NAME, ActorRequestAccounting, AgentActorKind, AgentControl, AgentOrchestrationError,
     AgentOrchestrationErrorKind, AgentOrchestrator, AgentRuntime, AgentTask, AgentWorkspaceAccess,
     AgentWorkspaceAssignment, ApiSurface, ApprovalRisk, CancellationToken, CommandId,
@@ -43,7 +41,7 @@ use codewhale_runtime::{
     WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState,
     WriterSeal, reduce_events, writer_path_set_sha256,
 };
-use codewhale_state::StateStore;
+use dse_state::StateStore;
 use rusqlite::{Connection, params};
 use serde_json::json;
 use tempfile::TempDir;
@@ -72,12 +70,12 @@ const WRITER_SEALED_SCOPE_REVISION: &str =
 const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const WRITER_ROOT_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-root";
 const WRITER_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-owned";
-const WRITER_BRANCH: &str = "codewhale/writer/process-crash";
+const WRITER_BRANCH: &str = "dse/writer/process-crash";
 const WRITER_OWNER: &str = "process-crash-writer-owner";
 const WRITER_WRITE_TOOL: &str = "writer_write";
 const WRITER_VERIFY_TOOL: &str = "run_tests";
 
-fn creation_intent() -> codewhale_runtime::CreationIntent {
+fn creation_intent() -> dse_runtime::CreationIntent {
     let command = StartRunCommand {
         task: TaskDefinition::host("执行进程恢复测试"),
         workspace: "/tmp/codewhale-process-crash-test".to_owned(),
@@ -90,7 +88,7 @@ fn creation_intent() -> codewhale_runtime::CreationIntent {
         limits: RunLimits::default(),
         controls: RunProductControls::default(),
     };
-    codewhale_runtime::CreationIntent {
+    dse_runtime::CreationIntent {
         kind: PendingCreationKind::Start,
         workspace: command.workspace.clone(),
         source_run_id: None,
@@ -895,22 +893,22 @@ impl ToolExecutor for ProcessWriterTools {
         definitions
     }
 
-    fn definition_workspace_access(&self, name: &str) -> codewhale_runtime::WorkspaceAccess {
+    fn definition_workspace_access(&self, name: &str) -> dse_runtime::WorkspaceAccess {
         if matches!(name, WRITER_WRITE_TOOL | WRITER_VERIFY_TOOL) {
-            codewhale_runtime::WorkspaceAccess::MayWrite
+            dse_runtime::WorkspaceAccess::MayWrite
         } else {
-            codewhale_runtime::WorkspaceAccess::ReadOnly
+            dse_runtime::WorkspaceAccess::ReadOnly
         }
     }
 
-    fn workspace_access(&self, invocation: &ToolInvocation) -> codewhale_runtime::WorkspaceAccess {
+    fn workspace_access(&self, invocation: &ToolInvocation) -> dse_runtime::WorkspaceAccess {
         if matches!(
             invocation.name.as_str(),
             WRITER_WRITE_TOOL | WRITER_VERIFY_TOOL
         ) {
-            codewhale_runtime::WorkspaceAccess::MayWrite
+            dse_runtime::WorkspaceAccess::MayWrite
         } else {
-            codewhale_runtime::WorkspaceAccess::ReadOnly
+            dse_runtime::WorkspaceAccess::ReadOnly
         }
     }
 
@@ -941,7 +939,7 @@ impl ToolExecutor for ProcessWriterTools {
                     wait_for_parent_kill().await;
                 }
                 Ok(ToolOutcome::success("writer fixture modified")
-                    .with_side_effect(codewhale_runtime::ToolSideEffectStatus::Applied))
+                    .with_side_effect(dse_runtime::ToolSideEffectStatus::Applied))
             }
             WRITER_VERIFY_TOOL => {
                 append_marker(
@@ -993,7 +991,7 @@ impl ToolExecutor for ProcessWriterTools {
                 } else {
                     ToolOutcome::success("exact writer verifier passed")
                 };
-                outcome.side_effect = codewhale_runtime::ToolSideEffectStatus::NotApplied;
+                outcome.side_effect = dse_runtime::ToolSideEffectStatus::NotApplied;
                 outcome.workspace_revision = Some(revision.clone());
                 outcome.evidence = ToolEvidence {
                     status: ToolEvidenceStatus::Produced,
@@ -1299,11 +1297,11 @@ impl ToolExecutor for MarkerTools {
         definitions
     }
 
-    fn workspace_access(&self, invocation: &ToolInvocation) -> codewhale_runtime::WorkspaceAccess {
+    fn workspace_access(&self, invocation: &ToolInvocation) -> dse_runtime::WorkspaceAccess {
         if invocation.name == TEMPORAL_WRITE_TOOL {
-            codewhale_runtime::WorkspaceAccess::MayWrite
+            dse_runtime::WorkspaceAccess::MayWrite
         } else {
-            codewhale_runtime::WorkspaceAccess::ReadOnly
+            dse_runtime::WorkspaceAccess::ReadOnly
         }
     }
 
@@ -1392,7 +1390,7 @@ impl ToolExecutor for MarkerTools {
             } else {
                 ToolOutcome::success("deterministic Host verifier passed")
             };
-            outcome.side_effect = codewhale_runtime::ToolSideEffectStatus::NotApplied;
+            outcome.side_effect = dse_runtime::ToolSideEffectStatus::NotApplied;
             outcome.workspace_revision = Some(self.revision().to_owned());
             outcome.evidence = ToolEvidence {
                 status: ToolEvidenceStatus::Produced,
@@ -1413,7 +1411,7 @@ impl ToolExecutor for MarkerTools {
         {
             append_marker(&self.marker, "temporal-write");
             return Ok(ToolOutcome::success("temporal repair applied")
-                .with_side_effect(codewhale_runtime::ToolSideEffectStatus::Applied));
+                .with_side_effect(dse_runtime::ToolSideEffectStatus::Applied));
         }
 
         append_marker(&self.marker, "side-effect");
@@ -1662,7 +1660,7 @@ fn runtime_request() -> RunRequest {
     request.limits.max_turns = 4;
     request.limits.max_model_requests = 4;
     request.limits.max_tool_calls = 4;
-    request.context_policy = codewhale_runtime::ContextPolicy {
+    request.context_policy = dse_runtime::ContextPolicy {
         hard_input_tokens: 90_000,
     };
     request
@@ -1713,26 +1711,26 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
         request
             .transcript
             .entries
-            .push(codewhale_runtime::TranscriptEntry::System {
+            .push(dse_runtime::TranscriptEntry::System {
                 prompt: request.system_prompt.clone(),
             });
         for turn in 0..6 {
             request
                 .transcript
                 .entries
-                .push(codewhale_runtime::TranscriptEntry::User {
+                .push(dse_runtime::TranscriptEntry::User {
                     content: format!("历史用户约束 {turn} {}", "甲".repeat(600)),
                 });
             request
                 .transcript
                 .entries
-                .push(codewhale_runtime::TranscriptEntry::Assistant {
+                .push(dse_runtime::TranscriptEntry::Assistant {
                     content: Some(format!("历史处理结果 {turn}")),
                     reasoning_content: None,
                     tool_calls: Vec::new(),
                 });
         }
-        request.context_policy = codewhale_runtime::ContextPolicy {
+        request.context_policy = dse_runtime::ContextPolicy {
             hard_input_tokens: 2_000,
         };
     }
@@ -1770,7 +1768,7 @@ fn writer_request(scenario: CrashScenario) -> RunRequest {
     request.limits.max_model_requests = 16;
     request.limits.max_tool_calls = 16;
     request.limits.max_concurrent_children = 1;
-    request.context_policy = codewhale_runtime::ContextPolicy {
+    request.context_policy = dse_runtime::ContextPolicy {
         hard_input_tokens: 90_000,
     };
     request
@@ -1829,7 +1827,7 @@ fn known_workspace(generation: u64, sha256: &str) -> WorkspaceState {
 }
 
 fn event_count(
-    replay: &codewhale_runtime::RunReplay,
+    replay: &dse_runtime::RunReplay,
     predicate: impl Fn(&RuntimeEventKind) -> bool,
 ) -> usize {
     replay
@@ -1840,7 +1838,7 @@ fn event_count(
 }
 
 fn assert_tool_lifecycle_counts(
-    replay: &codewhale_runtime::RunReplay,
+    replay: &dse_runtime::RunReplay,
     prepared: usize,
     started: usize,
     committed: usize,
@@ -1870,10 +1868,7 @@ fn assert_tool_lifecycle_counts(
     assert_eq!(event_count(replay, RuntimeEventKind::is_terminal), terminal);
 }
 
-fn assert_replay_prefix_preserved(
-    before: &codewhale_runtime::RunReplay,
-    after: &codewhale_runtime::RunReplay,
-) {
+fn assert_replay_prefix_preserved(before: &dse_runtime::RunReplay, after: &dse_runtime::RunReplay) {
     assert!(
         after.events.starts_with(&before.events),
         "resume must preserve every committed event byte-for-byte"
@@ -1902,8 +1897,8 @@ fn assert_replay_prefix_preserved(
 
 fn assert_projection_request(
     request: &ModelRequest,
-    projection: &codewhale_runtime::ContextProjection,
-    base_prompt: &codewhale_runtime::SystemPrompt,
+    projection: &dse_runtime::ContextProjection,
+    base_prompt: &dse_runtime::SystemPrompt,
 ) {
     assert!(request.streaming);
     assert!(!request.tools.is_empty());
@@ -1928,7 +1923,7 @@ async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, ab
         .await
         .expect("create steer-applied crash run");
     let snapshot = &created.replay.snapshot;
-    let attempt_id = codewhale_runtime::AttemptId("steer-applied-attempt".to_owned());
+    let attempt_id = dse_runtime::AttemptId("steer-applied-attempt".to_owned());
     let tools = Vec::new();
     let context = effective_context(ContextInput {
         transcript: &snapshot.transcript,
@@ -2159,7 +2154,7 @@ async fn model_request_in_flight_crash_is_not_reissued_after_reopen() {
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ModelRequest,
                 ..
             }
@@ -2247,7 +2242,7 @@ async fn read_only_child_started_sigkill_fails_closed_without_relaunch() {
         matches!(
         &outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ToolExecution,
                 action_id,
                 ..
@@ -2345,7 +2340,7 @@ async fn tool_side_effect_crash_is_not_executed_twice_after_reopen() {
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ToolExecution,
                 ..
             }
@@ -2429,7 +2424,7 @@ async fn control_requested_crash_does_not_hide_in_flight_tool_side_effect_ambigu
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ToolExecution,
                 ..
             }
@@ -2489,7 +2484,7 @@ async fn committed_model_response_resumes_without_duplicate_request_usage_or_ass
             .transcript
             .entries
             .iter()
-            .filter(|entry| matches!(entry, codewhale_runtime::TranscriptEntry::Assistant { .. }))
+            .filter(|entry| matches!(entry, dse_runtime::TranscriptEntry::Assistant { .. }))
             .count(),
         1
     );
@@ -2661,7 +2656,7 @@ async fn interaction_resolved_crash_starts_the_approved_tool_exactly_once_after_
     );
     assert!(matches!(
         &receipt.command,
-        codewhale_runtime::DurableCommand::ResolveInteraction {
+        dse_runtime::DurableCommand::ResolveInteraction {
             interaction_id,
             response: UserInteractionResponse::Approved,
         } if interaction_id == &expected_interaction_id
@@ -2755,7 +2750,7 @@ async fn steer_queued_crash_never_applies_or_reissues_an_ambiguous_model_request
     assert_eq!(receipt.command_id, CommandId::from("process-crash-steer"));
     assert!(matches!(
         &receipt.command,
-        codewhale_runtime::DurableCommand::Steer { content } if content == "改做新任务"
+        dse_runtime::DurableCommand::Steer { content } if content == "改做新任务"
     ));
     let outcome = runtime
         .resume(RunId::from(RUN_ID))
@@ -2765,7 +2760,7 @@ async fn steer_queued_crash_never_applies_or_reissues_an_ambiguous_model_request
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ModelRequest,
                 ..
             }
@@ -2877,10 +2872,7 @@ async fn committed_terminal_is_returned_after_reopen_without_second_terminal() {
     assert_eq!(replay.snapshot.accounting.usage, one_usage());
 }
 
-fn assert_writer_lifecycle_is_single(
-    replay: &codewhale_runtime::RunReplay,
-    fixture: &CrashFixture,
-) {
+fn assert_writer_lifecycle_is_single(replay: &dse_runtime::RunReplay, fixture: &CrashFixture) {
     assert_eq!(
         replay.snapshot.agent_tasks.len(),
         1,
@@ -2962,7 +2954,7 @@ fn assert_writer_lifecycle_is_single(
     }
 }
 
-fn assert_failed_writer_never_sealed_or_integrated(replay: &codewhale_runtime::RunReplay) {
+fn assert_failed_writer_never_sealed_or_integrated(replay: &dse_runtime::RunReplay) {
     for (label, count) in [
         (
             "AgentSealPrepared",
@@ -4255,7 +4247,7 @@ async fn host_verification_in_flight_sigkill_requires_recovery_without_rerun() {
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+            ambiguity: dse_runtime::RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::HostVerification,
                 ref action_id,
                 ..
@@ -4762,7 +4754,7 @@ async fn local_context_compaction_commit_survives_sigkill_without_model_or_trans
     let mut source_transcript = source_request.transcript;
     source_transcript
         .entries
-        .push(codewhale_runtime::TranscriptEntry::User {
+        .push(dse_runtime::TranscriptEntry::User {
             content: source_request
                 .task_contract
                 .expect("Agent task contract")
@@ -4946,7 +4938,7 @@ async fn local_context_compaction_commit_survives_sigkill_without_model_or_trans
             .transcript
             .entries
             .iter()
-            .filter(|entry| matches!(entry, codewhale_runtime::TranscriptEntry::Assistant { .. }))
+            .filter(|entry| matches!(entry, dse_runtime::TranscriptEntry::Assistant { .. }))
             .count(),
         7,
         "six source assistants plus one resumed Agent response"

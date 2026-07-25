@@ -4,7 +4,7 @@
 //! deliberately recognizes only model ids accepted by the official DeepSeek
 //! route; foreign hosts and provider catalogs must not inherit these rates.
 
-use codewhale_runtime::Usage;
+use dse_runtime::Usage;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CostEstimate {

@@ -757,19 +757,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
-name = "codewhale-app"
+name = "dse-app"
 version = "0.8.68"
 dependencies = [
  "async-trait",
- "codewhale-build-support",
- "codewhale-config",
- "codewhale-context",
- "codewhale-deepseek",
- "codewhale-orchestrator",
- "codewhale-protocol",
- "codewhale-runtime",
- "codewhale-state",
- "codewhale-tools",
+ "dse-build-support",
+ "dse-config",
+ "dse-context",
+ "dse-deepseek",
+ "dse-orchestrator",
+ "dse-protocol",
+ "dse-runtime",
+ "dse-state",
+ "dse-tools",
  "reqwest 0.13.4",
  "rustls",
  "serde",
@@ -781,12 +781,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-app-server"
+name = "dse-app-server"
 version = "0.8.68"
 dependencies = [
  "axum",
- "codewhale-app",
- "codewhale-protocol",
+ "dse-app",
+ "dse-protocol",
  "futures-util",
  "libc",
  "rusqlite",
@@ -800,28 +800,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-build-support"
+name = "dse-build-support"
 version = "0.8.68"
 
 [[package]]
-name = "codewhale-cli"
+name = "dse-cli"
 version = "0.8.68"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "clap_complete",
- "codewhale-app",
- "codewhale-app-server",
- "codewhale-build-support",
- "codewhale-config",
- "codewhale-context",
- "codewhale-execpolicy",
- "codewhale-localization",
- "codewhale-protocol",
- "codewhale-runtime",
- "codewhale-secrets",
- "codewhale-state",
+ "dse-app",
+ "dse-app-server",
+ "dse-build-support",
+ "dse-config",
+ "dse-context",
+ "dse-execpolicy",
+ "dse-localization",
+ "dse-protocol",
+ "dse-runtime",
+ "dse-secrets",
+ "dse-state",
  "libc",
  "mimalloc",
  "rustls",
@@ -833,11 +833,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-config"
+name = "dse-config"
 version = "0.8.68"
 dependencies = [
  "anyhow",
- "codewhale-secrets",
+ "dse-secrets",
  "dirs",
  "libc",
  "serde",
@@ -849,11 +849,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-context"
+name = "dse-context"
 version = "0.8.68"
 dependencies = [
- "codewhale-config",
- "codewhale-protocol",
+ "dse-config",
+ "dse-protocol",
  "dirs",
  "libc",
  "regex",
@@ -866,13 +866,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-deepseek"
+name = "dse-deepseek"
 version = "0.8.68"
 dependencies = [
  "async-stream",
  "async-trait",
- "codewhale-context",
- "codewhale-runtime",
+ "dse-context",
+ "dse-runtime",
  "futures-util",
  "reqwest 0.13.4",
  "rustls",
@@ -882,16 +882,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-execpolicy"
+name = "dse-execpolicy"
 version = "0.8.68"
 dependencies = [
  "anyhow",
- "codewhale-protocol",
+ "dse-protocol",
  "serde",
 ]
 
 [[package]]
-name = "codewhale-localization"
+name = "dse-localization"
 version = "0.8.68"
 dependencies = [
  "rust-i18n",
@@ -899,12 +899,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-orchestrator"
+name = "dse-orchestrator"
 version = "0.8.68"
 dependencies = [
  "async-trait",
- "codewhale-runtime",
- "codewhale-tools",
+ "dse-runtime",
+ "dse-tools",
  "fs2",
  "libc",
  "sha2 0.11.0",
@@ -914,7 +914,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-protocol"
+name = "dse-protocol"
 version = "0.8.68"
 dependencies = [
  "chrono",
@@ -925,12 +925,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-runtime"
+name = "dse-runtime"
 version = "0.8.68"
 dependencies = [
  "async-trait",
- "codewhale-context",
- "codewhale-protocol",
+ "dse-context",
+ "dse-protocol",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -939,7 +939,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-secrets"
+name = "dse-secrets"
 version = "0.8.68"
 dependencies = [
  "dirs",
@@ -952,15 +952,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-state"
+name = "dse-state"
 version = "0.8.68"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "codewhale-context",
- "codewhale-protocol",
- "codewhale-runtime",
+ "dse-context",
+ "dse-protocol",
+ "dse-runtime",
  "dirs",
  "libc",
  "rusqlite",
@@ -971,14 +971,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-tools"
+name = "dse-tools"
 version = "0.8.68"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "codewhale-protocol",
- "codewhale-runtime",
+ "dse-protocol",
+ "dse-runtime",
  "futures-util",
  "ignore",
  "libc",
@@ -1002,7 +1002,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-tui"
+name = "dse-tui"
 version = "0.8.68"
 dependencies = [
  "anyhow",
@@ -1013,18 +1013,18 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
- "codewhale-app",
- "codewhale-app-server",
- "codewhale-build-support",
- "codewhale-config",
- "codewhale-context",
- "codewhale-deepseek",
- "codewhale-localization",
- "codewhale-protocol",
- "codewhale-runtime",
- "codewhale-secrets",
- "codewhale-state",
- "codewhale-tools",
+ "dse-app",
+ "dse-app-server",
+ "dse-build-support",
+ "dse-config",
+ "dse-context",
+ "dse-deepseek",
+ "dse-localization",
+ "dse-protocol",
+ "dse-runtime",
+ "dse-secrets",
+ "dse-state",
+ "dse-tools",
  "colored",
  "crossterm",
  "cucumber",

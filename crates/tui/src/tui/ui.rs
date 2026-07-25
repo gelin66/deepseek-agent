@@ -9,13 +9,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use codewhale_app::AgentApplication;
-use codewhale_protocol::agent_runtime::{
+use dse_app::AgentApplication;
+use dse_protocol::agent_runtime::{
     ApprovalRisk, ReasoningEffort as RuntimeReasoningEffort, RunId, RunLimits, ToolPolicy,
     UserInteractionPrompt, UserInteractionResponse,
 };
-use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
-use codewhale_protocol::task::TaskDefinition;
+use dse_protocol::run_api::{RunProductControls, StartRunCommand};
+use dse_protocol::task::TaskDefinition;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -55,7 +55,7 @@ use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::user_input::UserInputView;
-use codewhale_localization::{MessageId, tr};
+use dse_localization::{MessageId, tr};
 
 use super::app::{App, OnboardingState, ReasoningEffort, StatusToastLevel, TuiOptions};
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
@@ -344,7 +344,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     };
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
-        // Windows also suppresses CodeWhale's own verbose CLI logger while
+        // Windows also suppresses DSE's own verbose CLI logger while
         // the alt-screen is active. The stderr redirect above catches raw
         // writes; this prevents the known verbose source at the origin.
         #[cfg(windows)]
@@ -724,9 +724,7 @@ async fn run_canonical_event_loop(
     app: &mut App,
     config: &Config,
     run_client: &TuiRunClient,
-    run_events: &mut tokio::sync::mpsc::Receiver<
-        codewhale_protocol::agent_runtime::StoredRuntimeEvent,
-    >,
+    run_events: &mut tokio::sync::mpsc::Receiver<dse_protocol::agent_runtime::StoredRuntimeEvent>,
     input: &TerminalInputPump,
 ) -> Result<()> {
     let mut projection = CanonicalRunProjection::new();
@@ -1074,7 +1072,7 @@ async fn handle_canonical_view_events(
                 ReviewDecision::Approved => {
                     run_client
                         .resolve_interaction(
-                            codewhale_protocol::agent_runtime::InteractionId::from(interaction_id),
+                            dse_protocol::agent_runtime::InteractionId::from(interaction_id),
                             UserInteractionResponse::Approved,
                         )
                         .await?;
@@ -1082,7 +1080,7 @@ async fn handle_canonical_view_events(
                 ReviewDecision::Denied => {
                     run_client
                         .resolve_interaction(
-                            codewhale_protocol::agent_runtime::InteractionId::from(interaction_id),
+                            dse_protocol::agent_runtime::InteractionId::from(interaction_id),
                             UserInteractionResponse::Denied { reason: None },
                         )
                         .await?;
@@ -1095,7 +1093,7 @@ async fn handle_canonical_view_events(
             ViewEvent::UserInputSubmitted { tool_id, response } => {
                 run_client
                     .resolve_interaction(
-                        codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                        dse_protocol::agent_runtime::InteractionId::from(tool_id),
                         response,
                     )
                     .await?;
@@ -1103,7 +1101,7 @@ async fn handle_canonical_view_events(
             ViewEvent::UserInputCancelled { tool_id } => {
                 run_client
                     .resolve_interaction(
-                        codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                        dse_protocol::agent_runtime::InteractionId::from(tool_id),
                         UserInteractionResponse::Cancelled,
                     )
                     .await?;
@@ -1149,7 +1147,7 @@ fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<
 fn apply_presenter_action(
     app: &mut App,
     action: PresenterAction,
-    presented_interaction_id: &mut Option<codewhale_protocol::agent_runtime::InteractionId>,
+    presented_interaction_id: &mut Option<dse_protocol::agent_runtime::InteractionId>,
 ) {
     match action {
         PresenterAction::ShowInteraction(request) => {

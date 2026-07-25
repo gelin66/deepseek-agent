@@ -2,26 +2,24 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     AgentActor, AgentActorKind, AgentTask, AgentTaskId, AgentWorkspaceAccess,
     AgentWorkspaceAssignment, ReasoningEffort, RunId, RunLimits, RunRequest, ToolPolicy,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
     RunProductControls, StartRunCommand,
 };
-use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
-use codewhale_runtime::{
-    AgentOutcome, ModelAccounting, PendingRuntimeEvent, RunStore, TerminalState,
-};
-use codewhale_state::StateStore;
+use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+use dse_runtime::{AgentOutcome, ModelAccounting, PendingRuntimeEvent, RunStore, TerminalState};
+use dse_state::StateStore;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-fn codewhale_binary() -> PathBuf {
-    option_env!("CARGO_BIN_EXE_codewhale")
+fn dse_binary() -> PathBuf {
+    option_env!("CARGO_BIN_EXE_dse")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("CARGO_BIN_EXE_codewhale").map(PathBuf::from))
-        .expect("Cargo must provide the codewhale dispatcher binary")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_dse").map(PathBuf::from))
+        .expect("Cargo must provide the dse dispatcher binary")
 }
 
 async fn seed_root(store: &StateStore, run_id: &str, workspace: &Path) {
@@ -116,19 +114,19 @@ async fn complete_root(store: &StateStore, run_id: &str) {
 }
 
 fn run_dispatcher(home: &Path, workspace: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(codewhale_binary());
+    let mut command = Command::new(dse_binary());
     command
         .current_dir(workspace)
         .env("CODEWHALE_HOME", home)
         .env_remove("DEEPSEEK_API_KEY")
         .env_remove("CODEWHALE_CLI_API_KEY")
         .args(args);
-    command.output().expect("run codewhale dispatcher")
+    command.output().expect("run dse dispatcher")
 }
 
 fn install_tui_probe(home: &Path) -> (PathBuf, PathBuf) {
     let marker = home.join("tui-launched");
-    let fake_tui = home.join("fake-codewhale-tui");
+    let fake_tui = home.join("fake-dse-tui");
     std::fs::write(
         &fake_tui,
         "#!/bin/sh\nprintf launched > \"$CODEWHALE_TUI_MARKER\"\n",
@@ -153,16 +151,16 @@ fn run_dispatcher_with_tui_probe(
     marker: &Path,
     args: &[&str],
 ) -> Output {
-    Command::new(codewhale_binary())
+    Command::new(dse_binary())
         .current_dir(workspace)
         .env("CODEWHALE_HOME", home)
-        .env("CODEWHALE_TUI_BIN", fake_tui)
+        .env("DSE_TUI_BIN", fake_tui)
         .env("CODEWHALE_TUI_MARKER", marker)
         .env_remove("DEEPSEEK_API_KEY")
         .env_remove("CODEWHALE_CLI_API_KEY")
         .args(args)
         .output()
-        .expect("run codewhale dispatcher with TUI probe")
+        .expect("run dse dispatcher with TUI probe")
 }
 
 fn parse_response(output: &Output) -> RunCommandResponse {
@@ -195,7 +193,7 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
     std::fs::write(&prompt_path, format!("# 系统契约\n\n{OVERRIDE_MARKER}\n"))
         .expect("write prompt override");
 
-    let mut child = tokio::process::Command::new(codewhale_binary())
+    let mut child = tokio::process::Command::new(dse_binary())
         .current_dir(workspace.path())
         .env("CODEWHALE_HOME", home.path())
         .env("CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE", "1")
@@ -398,7 +396,7 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
 
 #[test]
 fn dispatcher_help_exposes_runs_and_removes_retired_top_level_commands() {
-    let output = Command::new(codewhale_binary())
+    let output = Command::new(dse_binary())
         .arg("--help")
         .output()
         .expect("render dispatcher help");
@@ -437,7 +435,7 @@ fn completion_bypasses_malformed_config_without_opening_store_or_tui() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("_codewhale"),
+        String::from_utf8_lossy(&output.stdout).contains("_dse"),
         "completion output did not contain the generated bash function"
     );
     assert!(!marker.exists(), "completion started the TUI");

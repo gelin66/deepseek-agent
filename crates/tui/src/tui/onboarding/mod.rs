@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
-use codewhale_localization::{MessageId, tr};
+use dse_localization::{MessageId, tr};
 
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
@@ -272,7 +272,7 @@ mod tests {
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::canonical_commands::matching_command_infos;
-    use codewhale_localization::tr;
+    use dse_localization::tr;
     use std::collections::HashSet;
     use std::path::PathBuf;
 

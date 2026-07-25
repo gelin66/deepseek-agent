@@ -1,16 +1,16 @@
 [package]
-name = "codewhale-orchestrator"
+name = "dse-orchestrator"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Canonical orchestration and owned Git workspace lifecycle for CodeWhale"
+description = "Canonical orchestration and owned Git workspace lifecycle for DSE"
 
 [dependencies]
 async-trait.workspace = true
-codewhale-runtime = { path = "../runtime" }
-codewhale-tools = { path = "../tools" }
+dse-runtime = { path = "../runtime" }
+dse-tools = { path = "../tools" }
 fs2 = "0.4.3"
 libc = "0.2"
 sha2.workspace = true

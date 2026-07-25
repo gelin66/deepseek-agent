@@ -1,4 +1,4 @@
-//! Fixed Simplified Chinese message registry for CodeWhale product strings.
+//! Fixed Simplified Chinese message registry for DSE product strings.
 //!
 //! Machine-facing identifiers, protocol values, paths, and raw tool output do
 //! not pass through this registry.

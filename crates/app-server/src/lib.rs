@@ -20,9 +20,9 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, extract::Request};
-use codewhale_app::AgentApplication;
-use codewhale_protocol::agent_runtime::{RunId, StoredRuntimeEvent};
-use codewhale_protocol::run_api::{
+use dse_app::AgentApplication;
+use dse_protocol::agent_runtime::{RunId, StoredRuntimeEvent};
+use dse_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand,
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
 };
@@ -831,20 +831,20 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request as HttpRequest, Uri, header};
-    use codewhale_app::{
+    use dse_app::{
         DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
         TransportRetryPolicy,
     };
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, CommandId, InteractionId,
         ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId, RuntimeEventKind,
         TerminalState, ToolPolicy, UserInteractionResponse,
     };
-    use codewhale_protocol::run_api::{
+    use dse_protocol::run_api::{
         ContinueRunCommand, PendingCreationKind, RunApiErrorReason, RunProductControls, RunView,
         StartRunCommand,
     };
-    use codewhale_protocol::task::TaskDefinition;
+    use dse_protocol::task::TaskDefinition;
     use serde_json::json;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::sync::{Notify, Semaphore};
@@ -2245,7 +2245,7 @@ mod tests {
         let manifest = include_str!("../Cargo.toml");
         for forbidden in [
             "codewhale-core",
-            "codewhale-tui",
+            "dse-tui",
             "codewhale-state",
             "codewhale-tools",
             "codewhale-agent",

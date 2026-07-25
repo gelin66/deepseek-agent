@@ -8,11 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use codewhale_app::AgentApplication;
-use codewhale_protocol::agent_runtime::{
+use dse_app::AgentApplication;
+use dse_protocol::agent_runtime::{
     InteractionId, RunId, StoredRuntimeEvent, UserInteractionResponse,
 };
-use codewhale_protocol::run_api::{
+use dse_protocol::run_api::{
     ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary, RUN_API_SCHEMA_VERSION,
     RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope, RunCommandResult, RunView,
     StartRunCommand,
@@ -560,18 +560,18 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use codewhale_app::{
+    use dse_app::{
         DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
         ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
     };
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AgentOutcome, CommandId, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
         RuntimeEventKind, TerminalState, ToolPolicy,
     };
-    use codewhale_protocol::run_api::{PendingCreationKind, RunProductControls};
-    use codewhale_protocol::task::TaskDefinition;
-    use codewhale_runtime::{CreationIntent, RunStore};
-    use codewhale_state::StateStore;
+    use dse_protocol::run_api::{PendingCreationKind, RunProductControls};
+    use dse_protocol::task::TaskDefinition;
+    use dse_runtime::{CreationIntent, RunStore};
+    use dse_state::StateStore;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
     use wiremock::MockServer;
@@ -614,7 +614,7 @@ mod tests {
 
     fn terminal_event(run_id: &RunId, sequence: u64) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
-            schema_version: codewhale_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: run_id.clone(),
             parent_run_id: None,
             event_id: RuntimeEventId::terminal(),
@@ -957,7 +957,7 @@ mod tests {
         assert_eq!(replay.snapshot.request.model, "deepseek-v4-pro");
         assert_eq!(
             replay.snapshot.request.route.profile,
-            codewhale_runtime::ModelRouteProfile::FixedActor
+            dse_runtime::ModelRouteProfile::FixedActor
         );
         assert_eq!(
             replay.snapshot.request.route.reason_code,

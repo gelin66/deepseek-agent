@@ -312,7 +312,7 @@ impl ProductionToolContext {
     ///
     /// Ordinary root runs preserve the historical `resolve_path` behavior.
     /// Isolated writers may mutate only ordinary files in their own worktree;
-    /// Git control paths and CodeWhale/DeepSeek local state remain protected.
+    /// Git control paths and DSE/DeepSeek local state remain protected.
     pub fn resolve_write_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
         let resolved = self.resolve_path(raw).map_err(|error| {
             if matches!(

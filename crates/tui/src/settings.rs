@@ -68,7 +68,7 @@ pub struct Settings {
     pub reasoning_effort: Option<String>,
     /// Header status indicator next to the effort chip. Cycles through a
     /// per-turn animation keyed off `App::turn_started_at`:
-    /// - `"cw"` (default): static typographic CodeWhale mark.
+    /// - `"cw"` (default): static typographic DSE mark.
     /// - `"whale"`: historical `🐳 → 🐋` 12-frame sequence
     ///   originally shipped in v0.3.5, removed in v0.8.x's "smoother TUI
     ///   streaming" pass, restored in v0.8.30. Idle frame is a steady `🐳`.
@@ -171,8 +171,8 @@ fn normalize_work_surface_placement(value: &str) -> &'static str {
 impl Settings {
     /// Prompt-only projection consumed by the transport-neutral context owner.
     #[must_use]
-    pub fn prompt_preferences(&self) -> codewhale_config::PromptPreferences {
-        codewhale_config::PromptPreferences {
+    pub fn prompt_preferences(&self) -> dse_config::PromptPreferences {
+        dse_config::PromptPreferences {
             show_thinking: self.show_thinking,
         }
     }
@@ -182,7 +182,7 @@ impl Settings {
     /// New writes should target `~/.codewhale/settings.toml`. Legacy
     /// DeepSeek-branded paths remain readable as fallbacks during load.
     pub fn path() -> Result<PathBuf> {
-        codewhale_config::settings_path()
+        dse_config::settings_path()
     }
 
     /// Load settings from disk, or return defaults if not found
@@ -196,7 +196,7 @@ impl Settings {
     /// overlays. Configuration editors use this path so a value labelled
     /// "saved" never silently reports a tmux, SSH, or accessibility override.
     pub(crate) fn load_persisted() -> Result<Self> {
-        let source = codewhale_config::load_settings_source()?;
+        let source = dse_config::load_settings_source()?;
         let settings = match source.deserialize::<Settings>() {
             Ok(None) => Self::default(),
             Ok(Some(mut s)) => {

@@ -1,5 +1,5 @@
-use codewhale_protocol::agent_runtime::{ToolArtifact, VerificationArtifactPayload};
-use codewhale_protocol::task::{EvidenceReceipt, canonical_json};
+use dse_protocol::agent_runtime::{ToolArtifact, VerificationArtifactPayload};
+use dse_protocol::task::{EvidenceReceipt, canonical_json};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 

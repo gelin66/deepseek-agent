@@ -25,7 +25,7 @@ if command -v rustup >/dev/null 2>&1; then
 fi
 
 mode="${1:-focused}"
-test_args=(-p codewhale-tui --bin codewhale-tui --locked)
+test_args=(-p dse-tui --bin dse-tui --locked)
 
 run_focused_tests() {
   local filters=(
@@ -50,21 +50,21 @@ run_focused_tests() {
     cargo test "${test_args[@]}" "$filter"
   done
 
-  cargo test -p codewhale-tools --locked
-  cargo test -p codewhale-deepseek --locked
-  cargo test -p codewhale-runtime --test conformance --locked
-  cargo test -p codewhale-app --locked
-  cargo test -p codewhale-app-server --lib --locked
-  cargo test -p codewhale-tui --test exec_terminal_acceptance --locked
-  cargo test -p codewhale-tui --test canonical_tui_run_acceptance --locked
-  cargo test -p codewhale-tui --test canonical_tui_pty_acceptance --locked -- --test-threads=1
+  cargo test -p dse-tools --locked
+  cargo test -p dse-deepseek --locked
+  cargo test -p dse-runtime --test conformance --locked
+  cargo test -p dse-app --locked
+  cargo test -p dse-app-server --lib --locked
+  cargo test -p dse-tui --test exec_terminal_acceptance --locked
+  cargo test -p dse-tui --test canonical_tui_run_acceptance --locked
+  cargo test -p dse-tui --test canonical_tui_pty_acceptance --locked -- --test-threads=1
 }
 
 case "$mode" in
   focused)
     cargo fmt --all -- --check
     run_focused_tests
-    cargo check -p codewhale-tui --bin codewhale-tui --locked
+    cargo check -p dse-tui --bin dse-tui --locked
     ;;
   crate)
     cargo fmt --all -- --check

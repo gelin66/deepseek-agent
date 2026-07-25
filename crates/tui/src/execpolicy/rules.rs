@@ -21,15 +21,15 @@ pub struct RuleSet {
 }
 
 impl ExecPolicyConfig {
-    pub fn production_snapshot(&self) -> codewhale_tools::ProductionExecPolicySnapshot {
-        codewhale_tools::ProductionExecPolicySnapshot {
+    pub fn production_snapshot(&self) -> dse_tools::ProductionExecPolicySnapshot {
+        dse_tools::ProductionExecPolicySnapshot {
             rules: self
                 .rules
                 .iter()
                 .map(|(name, rules)| {
                     (
                         name.clone(),
-                        codewhale_tools::ProductionExecPolicyRuleSet {
+                        dse_tools::ProductionExecPolicyRuleSet {
                             allow: rules.allow.clone(),
                             deny: rules.deny.clone(),
                         },
@@ -51,7 +51,7 @@ impl ExecPolicyConfig {
 }
 
 pub fn default_execpolicy_path() -> Option<PathBuf> {
-    codewhale_config::codewhale_home()
+    dse_config::codewhale_home()
         .ok()
         .map(|home| home.join("execpolicy.toml"))
 }

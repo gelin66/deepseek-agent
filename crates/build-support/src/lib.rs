@@ -1,6 +1,6 @@
-//! Shared build-script helpers for the `codewhale-cli` and `codewhale-tui`
+//! Shared build-script helpers for the `dse-cli` and `dse-tui`
 //! build scripts: rerun-condition declarations and the embedded
-//! `CODEWHALE_BUILD_VERSION` metadata. Only call these functions from a build
+//! `DSE_BUILD_VERSION` metadata. Only call these functions from a build
 //! script — they emit `cargo:` directives on stdout.
 
 use std::{
@@ -13,12 +13,12 @@ use std::{
 ///
 /// `manifest_dir` is the calling build script's `CARGO_MANIFEST_DIR`.
 pub fn declare_rerun_conditions(manifest_dir: &Path) {
-    println!("cargo:rerun-if-env-changed=CODEWHALE_BUILD_SHA");
+    println!("cargo:rerun-if-env-changed=DSE_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     declare_git_head_rerun(manifest_dir);
 }
 
-/// Emit `cargo:rustc-env=CODEWHALE_BUILD_VERSION=...` — the package version,
+/// Emit `cargo:rustc-env=DSE_BUILD_VERSION=...` — the package version,
 /// suffixed with the short build SHA when one can be determined.
 ///
 /// `manifest_dir` and `package_version` are the calling build script's
@@ -28,7 +28,7 @@ pub fn emit_build_version(manifest_dir: &Path, package_version: &str) {
         .map(|sha| format!("{package_version} ({sha})"))
         .unwrap_or_else(|| package_version.to_string());
 
-    println!("cargo:rustc-env=CODEWHALE_BUILD_VERSION={build_version}");
+    println!("cargo:rustc-env=DSE_BUILD_VERSION={build_version}");
 }
 
 /// Tell Cargo to invalidate the cached build script output when `HEAD`
@@ -92,7 +92,7 @@ fn parse_symbolic_ref(head_contents: &str) -> Option<&str> {
 }
 
 fn build_sha(manifest_dir: &Path) -> Option<String> {
-    env_sha("CODEWHALE_BUILD_SHA")
+    env_sha("DSE_BUILD_SHA")
         .or_else(|| env_sha("GITHUB_SHA"))
         .or_else(|| git_sha(manifest_dir))
 }

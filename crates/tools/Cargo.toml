@@ -1,10 +1,10 @@
 [package]
-name = "codewhale-tools"
+name = "dse-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tool invocation lifecycle, schema validation, and scheduler parallelism for CodeWhale"
+description = "Tool invocation lifecycle, schema validation, and scheduler parallelism for DSE"
 
 [features]
 default = []
@@ -14,8 +14,8 @@ pdf = ["dep:pdf-extract"]
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codewhale-protocol = { path = "../protocol", version = "0.8.68" }
-codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+dse-protocol = { path = "../protocol", version = "0.8.68" }
+dse-runtime = { path = "../runtime", version = "0.8.68" }
 futures-util = "0.3.31"
 ignore = "0.4"
 pdf-extract = { version = "0.12", optional = true }

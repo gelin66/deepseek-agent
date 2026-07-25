@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use codewhale_state::StateStore;
+use dse_state::StateStore;
 use rusqlite::Connection;
 
 const RETIRED_TABLES: [&str; 11] = [

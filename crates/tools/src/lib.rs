@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub use codewhale_protocol::agent_runtime::ToolOutcome;
+pub use dse_protocol::agent_runtime::ToolOutcome;
 use serde_json::Value;
 
 mod apply_patch;

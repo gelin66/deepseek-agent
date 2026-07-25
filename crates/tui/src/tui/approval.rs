@@ -23,8 +23,8 @@
 
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
-use codewhale_localization::{MessageId, tr};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use dse_localization::{MessageId, tr};
 use ratatui::layout::Rect;
 use serde_json::Value;
 use std::borrow::Cow;

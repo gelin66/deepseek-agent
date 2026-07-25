@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use async_trait::async_trait;
-use codewhale_runtime::{
+use dse_runtime::{
     ActorRequestAccounting, AgentActorKind, ApiSurface as RuntimeApiSurface, ModelAccounting,
     ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelResponseEvidence,
     ModelStream, ModelStreamEvent, SurfaceUsage,
@@ -16,7 +16,7 @@ use crate::{
 /// Product default for one official DeepSeek V4 Agent turn.
 ///
 /// The provider fixture advertises a 384K hard output limit. The lower 256K
-/// default is the existing CodeWhale Agent cost/latency policy; callers may
+/// default is the existing DSE Agent cost/latency policy; callers may
 /// request less or explicitly raise it up to the provider ceiling.
 pub const OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS: u32 = 262_144;
 pub const OFFICIAL_V4_MAX_OUTPUT_TOKENS: u32 = 384_000;
@@ -182,7 +182,7 @@ impl ModelStream for TransportModelStream {
 }
 
 struct CompletedModelStream {
-    output: Option<codewhale_runtime::ModelOutput>,
+    output: Option<dse_runtime::ModelOutput>,
 }
 
 #[async_trait]
@@ -409,7 +409,7 @@ fn to_nano_units(value: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_runtime::{AgentActor, ReasoningEffort, RunId, SystemPrompt};
+    use dse_runtime::{AgentActor, ReasoningEffort, RunId, SystemPrompt};
 
     #[test]
     fn official_capabilities_are_exact_and_aliases_fail_closed() {

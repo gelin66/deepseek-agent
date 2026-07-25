@@ -599,12 +599,12 @@ fn cached_skills_respect_codewhale_only_scan_config() {
         .join(".codewhale")
         .join("skills")
         .join("codewhale-skill");
-    std::fs::create_dir_all(&codewhale_dir).expect("codewhale skill dir");
+    std::fs::create_dir_all(&codewhale_dir).expect("dse skill dir");
     std::fs::write(
         codewhale_dir.join("SKILL.md"),
-        "---\nname: codewhale-skill\ndescription: CodeWhale skill\n---\nbody\n",
+        "---\nname: codewhale-skill\ndescription: DSE skill\n---\nbody\n",
     )
-    .expect("write codewhale skill");
+    .expect("write dse skill");
 
     let mut options = test_options(false);
     options.workspace = workspace.clone();
@@ -626,7 +626,7 @@ fn cached_skills_respect_codewhale_only_scan_config() {
         app.cached_skills
             .iter()
             .any(|(name, _)| name == "codewhale-skill"),
-        "CodeWhale skill should be cached: {:?}",
+        "DSE skill should be cached: {:?}",
         app.cached_skills
     );
     assert!(
@@ -642,7 +642,7 @@ fn cached_skills_respect_codewhale_only_scan_config() {
 fn resolve_skills_dir_requires_codewhale_skills_to_be_directory() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
-    std::fs::create_dir_all(workspace.join(".codewhale")).expect("codewhale dir");
+    std::fs::create_dir_all(workspace.join(".codewhale")).expect("dse dir");
     std::fs::write(
         workspace.join(".codewhale").join("skills"),
         "not a directory",
@@ -704,12 +704,12 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
         .join(".codewhale")
         .join("skills")
         .join("workspace-codewhale");
-    std::fs::create_dir_all(&codewhale_skill_dir).expect("workspace codewhale skill dir");
+    std::fs::create_dir_all(&codewhale_skill_dir).expect("workspace dse skill dir");
     std::fs::write(
         codewhale_skill_dir.join("SKILL.md"),
-        "---\nname: workspace-codewhale\ndescription: Workspace CodeWhale skill\n---\nbody\n",
+        "---\nname: workspace-codewhale\ndescription: Workspace DSE skill\n---\nbody\n",
     )
-    .expect("write workspace codewhale skill");
+    .expect("write workspace dse skill");
 
     let configured_dir = tmp.path().join("configured-skills");
     let configured_skill_dir = configured_dir.join("configured-skill");
@@ -740,7 +740,7 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
         app.cached_skills
             .iter()
             .any(|(name, _)| name == "workspace-codewhale"),
-        "workspace CodeWhale skill should still be cached: {:?}",
+        "workspace DSE skill should still be cached: {:?}",
         app.cached_skills
     );
     assert!(
@@ -758,7 +758,7 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
     let workspace = tmp.path().join("workspace");
     let escape_target = tmp.path().join("escape-target");
     let escaped_skill_dir = escape_target.join("escaped-skill");
-    std::fs::create_dir_all(workspace.join(".codewhale")).expect("codewhale dir");
+    std::fs::create_dir_all(workspace.join(".codewhale")).expect("dse dir");
     std::fs::create_dir_all(&escaped_skill_dir).expect("escaped skill dir");
     std::fs::write(
         escaped_skill_dir.join("SKILL.md"),
@@ -791,7 +791,7 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
         !app.cached_skills
             .iter()
             .any(|(name, _)| name == "escaped-skill"),
-        "strict app cache must not follow escaped workspace CodeWhale symlinks: {:?}",
+        "strict app cache must not follow escaped workspace DSE symlinks: {:?}",
         app.cached_skills
     );
 }

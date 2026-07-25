@@ -1,4 +1,4 @@
-//! Secret storage for CodeWhale API keys.
+//! Secret storage for DSE API keys.
 //!
 //! Provides a small abstraction (`KeyringStore`) plus a default
 //! file-based implementation (`FileKeyringStore`), an opt-in OS keyring
@@ -563,7 +563,7 @@ fn configured_secret_backend() -> Option<String> {
 /// # Examples
 ///
 /// ```no_run
-/// use codewhale_secrets::Secrets;
+/// use dse_secrets::Secrets;
 ///
 /// let secrets = Secrets::auto_detect();
 /// if let Some(key) = secrets.resolve("deepseek") {

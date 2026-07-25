@@ -107,7 +107,7 @@ pub(crate) fn suppress_tokio_console_window(_cmd: &mut tokio::process::Command) 
 
 // M4-C deletes this re-export after the remaining TUI-owned writers move to
 // their production owners. The implementation lives in the tools crate.
-pub use codewhale_tools::write_atomic;
+pub use dse_tools::write_atomic;
 
 /// Open or create a file for appending at `path`, optionally syncing after
 /// every write. Use this for append-only logs like `audit.log`.

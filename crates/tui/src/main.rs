@@ -1,4 +1,4 @@
-//! CLI entry point for CodeWhale.
+//! CLI entry point for DSE.
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -20,8 +20,8 @@ use dotenvy::dotenv;
 use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
-use codewhale_context::{project_context, prompts, skills as skill_context};
-use codewhale_localization::{MessageId, tr};
+use dse_context::{project_context, prompts, skills as skill_context};
+use dse_localization::{MessageId, tr};
 
 mod audit;
 mod config;
@@ -83,12 +83,12 @@ fn install_rustls_crypto_provider() {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "codewhale-tui",
-    bin_name = "codewhale-tui",
+    name = "dse-tui",
+    bin_name = "dse-tui",
     author,
-    version = env!("CODEWHALE_BUILD_VERSION"),
-    about = "CodeWhale terminal coding agent",
-    long_about = "DeepSeek-only terminal coding agent.\n\nRun 'codewhale' to start."
+    version = env!("DSE_BUILD_VERSION"),
+    about = "DSE terminal coding agent",
+    long_about = "DeepSeek-only terminal coding agent.\n\nRun 'dse' to start."
 )]
 struct Cli {
     /// Subcommand to run
@@ -225,11 +225,11 @@ enum Commands {
 #[derive(Args, Debug, Clone)]
 #[command(after_help = "\
 Examples:
-  codewhale exec \"explain this function\"
-  codewhale exec --auto \"list crates/ with ls\"
-  codewhale exec --auto --output-format stream-json \"fix the failing test\"
+  dse exec \"explain this function\"
+  dse exec --auto \"list crates/ with ls\"
+  dse exec --auto --output-format stream-json \"fix the failing test\"
 
-Plain `codewhale exec` is a one-shot model response. Use `--auto` for
+Plain `dse exec` is a one-shot model response. Use `--auto` for
 non-interactive agent-with-tools execution. `--auto` does not change the
 sandbox posture, grant access outside the workspace, or elevate a denied tool.
 Use `--sandbox danger-full-access` or `--allow-sandbox-elevation` to explicitly
@@ -304,7 +304,7 @@ struct ExecArgs {
 }
 
 fn reject_retired_provider_argument(_value: &str) -> Result<String, String> {
-    Err("`--provider` 已删除；CodeWhale 仅使用官方 DeepSeek Provider".to_string())
+    Err("`--provider` 已删除；DSE 仅使用官方 DeepSeek Provider".to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -654,7 +654,7 @@ fn resolve_exec_run_launch(args: &ExecArgs) -> Result<exec_runtime::ExecRunLaunc
         return Ok(exec_runtime::ExecRunLaunch::Fresh);
     }
     if args.prompt.is_empty() {
-        bail!("`codewhale exec --continue` 需要新的任务输入");
+        bail!("`dse exec --continue` 需要新的任务输入");
     }
     Ok(exec_runtime::ExecRunLaunch::ContinueLatest)
 }
@@ -922,7 +922,7 @@ fn localize_tui_command(command: &mut clap::Command) {
                 .help(tr(MessageId::CliArgVersion).into_owned()),
         );
     }
-    if command.get_name() == "codewhale-tui" {
+    if command.get_name() == "dse-tui" {
         localized = localized.about(tr(MessageId::CliAbout).into_owned());
     } else if let Some(message) = tui_command_message(command.get_name()) {
         localized = localized.about(tr(message).into_owned());
@@ -1027,7 +1027,7 @@ fn main() -> std::process::ExitCode {
 
 fn run_main() -> Result<()> {
     // Match the dispatcher entrypoint: Unix shells and supervisors may inherit
-    // SIGPIPE ignored, which turns short pipelines such as `codewhale doctor |
+    // SIGPIPE ignored, which turns short pipelines such as `dse doctor |
     // head` into BrokenPipe panics once this delegated TUI binary prints.
     #[cfg(unix)]
     unsafe {
@@ -1041,10 +1041,10 @@ fn run_main() -> Result<()> {
     // ── Process hardening (#2183) ─────────────────────────────────────────
     // MUST run before Tokio is booted and before any threads are spawned.
     // See crates/tui/src/sandbox/process_hardening.rs for ordering rationale.
-    codewhale_tools::sandbox::process_hardening::apply_process_hardening();
+    dse_tools::sandbox::process_hardening::apply_process_hardening();
 
     // Set up process panic hook before anything else — writes crash dumps
-    // to the canonical CodeWhale crash directory before tokio is up,
+    // to the canonical DSE crash directory before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
     // shell stuck in alt-screen mode.
     let orig_hook = std::panic::take_hook();
@@ -1069,7 +1069,7 @@ fn run_main() -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
         // Write crash dump best-effort
-        if let Ok(home) = codewhale_config::codewhale_home() {
+        if let Ok(home) = dse_config::codewhale_home() {
             let crash_dir = home.join("crashes");
             let _ = std::fs::create_dir_all(&crash_dir);
             use chrono::Utc;
@@ -1200,7 +1200,7 @@ async fn run_async_main() -> Result<()> {
                 let model = resolve_exec_model(&config, args.model.as_deref());
                 let prompt = join_prompt_parts(&args.prompt);
                 let run_launch = resolve_exec_run_launch(&args)?;
-                // The CodeWhale dispatcher forwards `--yolo` to this binary via
+                // The DSE dispatcher forwards `--yolo` to this binary via
                 // the CODEWHALE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
@@ -1281,7 +1281,7 @@ async fn run_async_main() -> Result<()> {
                     "latest".to_owned()
                 } else {
                     session_id.ok_or_else(|| {
-                        anyhow!("请提供 canonical Run ID，或使用 `codewhale resume --last`")
+                        anyhow!("请提供 canonical Run ID，或使用 `dse resume --last`")
                     })?
                 };
                 run_interactive(&cli, &config, Some(resume_id), None).await
@@ -1290,7 +1290,7 @@ async fn run_async_main() -> Result<()> {
     }
 
     // Top-level prompt mode: submit the initial prompt, then keep the TUI alive
-    // for follow-up messages. Use `codewhale exec` for explicit non-interactive
+    // for follow-up messages. Use `dse exec` for explicit non-interactive
     // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
     crate::plugins::init_registry(&[]);
@@ -1298,7 +1298,7 @@ async fn run_async_main() -> Result<()> {
         return run_interactive(&cli, &config, None, Some(initial_input)).await;
     }
 
-    // Handle session resume. Plain `codewhale` starts fresh: interrupted
+    // Handle session resume. Plain `dse` starts fresh: interrupted
     // snapshots are preserved for explicit resume, but never auto-attached.
     let resume_session_id = if cli.continue_session {
         Some("latest".to_owned())
@@ -1428,7 +1428,7 @@ fn init_plugins_dir(
 }
 
 fn deepseek_home_dir() -> PathBuf {
-    codewhale_config::codewhale_home().unwrap_or_else(|_| {
+    dse_config::codewhale_home().unwrap_or_else(|_| {
         dirs::home_dir().map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"))
     })
 }
@@ -1454,10 +1454,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     let run_skills = args.skills || args.all || !any_explicit;
     let run_plugins = args.plugins || args.all;
 
-    println!(
-        "{}",
-        "CodeWhale Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
-    );
+    println!("{}", "DSE Setup".truecolor(aqua_r, aqua_g, aqua_b).bold());
     println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
     println!("Workspace: {}", crate::utils::display_path(workspace));
 
@@ -1475,9 +1472,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
                 println!("  · MCP config already exists at {}", mcp_path.display());
             }
         }
-        println!(
-            "    Next: edit the file, then run `codewhale mcp list` or `codewhale mcp tools`."
-        );
+        println!("    Next: edit the file, then run `dse mcp list` or `dse mcp tools`.");
     }
 
     if run_skills {
@@ -1528,7 +1523,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
     }
 
-    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
+    let sandbox = dse_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!("  ✓ Sandbox available: {kind}");
     } else {
@@ -1615,10 +1610,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
     let (red_r, red_g, red_b) = palette::WHALE_ERROR_RGB;
 
-    println!(
-        "{}",
-        "CodeWhale Status".truecolor(aqua_r, aqua_g, aqua_b).bold()
-    );
+    println!("{}", "DSE Status".truecolor(aqua_r, aqua_g, aqua_b).bold());
     println!("{}", "===============".truecolor(sky_r, sky_g, sky_b));
     println!("workspace: {}", workspace.display());
 
@@ -1640,7 +1632,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         ),
         ApiKeySource::Missing => {
             println!(
-                "  {} api_key: missing  (set {} or `api_key` in ~/.codewhale/config.toml; or run `codewhale auth set --api-key \"...\"`)",
+                "  {} api_key: missing  (set {} or `api_key` in ~/.codewhale/config.toml; or run `dse auth set --api-key \"...\"`)",
                 "✗".truecolor(red_r, red_g, red_b),
                 crate::config::DEEPSEEK_API_KEY_ENV,
             );
@@ -1697,7 +1689,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         crate::utils::display_path(&plugins_dir)
     );
 
-    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
+    let sandbox = dse_tools::sandbox::get_platform_sandbox();
     match sandbox {
         Some(kind) => println!(
             "  {} sandbox: {kind}",
@@ -1712,7 +1704,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     println!("  {} {}", "·".dimmed(), dotenv_status_line(workspace));
 
     println!();
-    println!("Run `codewhale doctor --json` for a machine-readable check.");
+    println!("Run `dse doctor --json` for a machine-readable check.");
     Ok(())
 }
 
@@ -1769,14 +1761,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Version info
     println!("{}", tr(MessageId::DoctorSectionVersion).bold());
-    println!("  codewhale-tui: {}", env!("CODEWHALE_BUILD_VERSION"));
+    println!("  dse-tui: {}", env!("DSE_BUILD_VERSION"));
     println!("  rust: {}", rustc_version());
     println!();
 
     println!("{}", tr(MessageId::DoctorSectionDelivery).bold());
     println!(
         "  · {}",
-        tr(MessageId::DoctorInstalledBuild).replace("{version}", env!("CODEWHALE_BUILD_VERSION"))
+        tr(MessageId::DoctorInstalledBuild).replace("{version}", env!("DSE_BUILD_VERSION"))
     );
     println!("  · {}", tr(MessageId::DoctorUpdateDiscoveryDisabled));
     println!();
@@ -1785,9 +1777,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("{}", tr(MessageId::DoctorSectionConfiguration).bold());
     let config_path = config_path_override
         .map(PathBuf::from)
-        .or_else(|| codewhale_config::resolve_config_path(None).ok())
+        .or_else(|| dse_config::resolve_config_path(None).ok())
         .unwrap_or_else(|| {
-            codewhale_config::codewhale_home()
+            dse_config::codewhale_home()
                 .unwrap_or_else(|_| PathBuf::from(".codewhale"))
                 .join("config.toml")
         });
@@ -1816,8 +1808,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // Canonical product state root
     println!();
     println!("{}", tr(MessageId::DoctorSectionStateRoot).bold());
-    let code_home =
-        codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    let code_home = dse_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
     println!(
         "  {}",
         tr(MessageId::DoctorStateActive).replace("{path}", &crate::utils::display_path(&code_home))
@@ -2323,7 +2314,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         }
     }
 
-    match codewhale_tools::resolve_tesseract() {
+    match dse_tools::resolve_tesseract() {
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(
@@ -2487,7 +2478,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         tr(MessageId::DoctorArch).replace("{arch}", std::env::consts::ARCH)
     );
 
-    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
+    let sandbox = dse_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!(
             "  {} {}",
@@ -2515,18 +2506,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 // context loader. The retired TUI setup wizard no longer owns this value.
 const LEGACY_SETUP_CHECKPOINT_VERSION: &str = "0.8.67";
 
-fn doctor_setup_state(
-    config: &Config,
-    workspace: &Path,
-) -> (codewhale_config::SetupState, &'static str) {
-    if let Ok(Some(state)) = codewhale_config::SetupState::load() {
+fn doctor_setup_state(config: &Config, workspace: &Path) -> (dse_config::SetupState, &'static str) {
+    if let Ok(Some(state)) = dse_config::SetupState::load() {
         return (state, "persisted");
     }
 
     (
-        codewhale_config::SetupState::derive_inherited(&doctor_inherited_setup_facts(
-            config, workspace,
-        )),
+        dse_config::SetupState::derive_inherited(&doctor_inherited_setup_facts(config, workspace)),
         "derived",
     )
 }
@@ -2534,21 +2520,21 @@ fn doctor_setup_state(
 fn doctor_inherited_setup_facts(
     config: &Config,
     workspace: &Path,
-) -> codewhale_config::InheritedConfigFacts {
-    let user_constitution = codewhale_config::UserConstitution::load().ok();
+) -> dse_config::InheritedConfigFacts {
+    let user_constitution = dse_config::UserConstitution::load().ok();
     let user_constitution_validity = user_constitution.as_ref().map_or(
-        codewhale_config::ConstitutionValidity::Unknown,
-        codewhale_config::UserConstitutionLoad::validity,
+        dse_config::ConstitutionValidity::Unknown,
+        dse_config::UserConstitutionLoad::validity,
     );
     let has_user_constitution = user_constitution
         .as_ref()
-        .is_some_and(|loaded| !matches!(loaded, codewhale_config::UserConstitutionLoad::Missing));
-    let has_expert_override = codewhale_config::codewhale_home()
+        .is_some_and(|loaded| !matches!(loaded, dse_config::UserConstitutionLoad::Missing));
+    let has_expert_override = dse_config::codewhale_home()
         .ok()
         .map(|home| home.join(Path::new(crate::prompts::CONSTITUTION_OVERRIDE_FILE)))
         .is_some_and(|path| path.exists());
 
-    codewhale_config::InheritedConfigFacts {
+    dse_config::InheritedConfigFacts {
         has_provider_route: !config.default_model().trim().is_empty(),
         has_credentials_or_local_runtime: doctor_has_credentials_or_local_runtime(config),
         trust_chosen: !crate::tui::onboarding::needs_trust(workspace),
@@ -2565,7 +2551,7 @@ fn doctor_has_credentials_or_local_runtime(config: &Config) -> bool {
 fn print_doctor_setup_report(
     config: &Config,
     workspace: &Path,
-    state: &codewhale_config::SetupState,
+    state: &dse_config::SetupState,
     source: &str,
     ok_rgb: (u8, u8, u8),
     warn_rgb: (u8, u8, u8),
@@ -2643,7 +2629,7 @@ fn print_doctor_setup_report(
         );
     }
     println!("  · {}", tr(MessageId::DoctorNextActions));
-    for step in codewhale_config::SetupStep::ALL {
+    for step in dse_config::SetupStep::ALL {
         let entry = state.steps.get(&step);
         let required = entry.is_some_and(|entry| entry.required);
         let version = entry.and_then(|entry| entry.version.as_deref());
@@ -2682,10 +2668,7 @@ fn doctor_ready_label(ready: bool) -> Cow<'static, str> {
 /// which is missing or unusable on disk means a write was interrupted or a
 /// file was removed out-of-band. Stale `.tmp*` files in `$CODEWHALE_HOME`
 /// are the other fingerprint of an interrupted atomic write.
-fn doctor_setup_consistency(
-    state: &codewhale_config::SetupState,
-    source: &str,
-) -> serde_json::Value {
+fn doctor_setup_consistency(state: &dse_config::SetupState, source: &str) -> serde_json::Value {
     use serde_json::json;
 
     let mut issues: Vec<&'static str> = Vec::new();
@@ -2693,23 +2676,23 @@ fn doctor_setup_consistency(
     if source == "persisted"
         && matches!(
             state.constitution_source,
-            codewhale_config::ConstitutionSource::UserGlobal
+            dse_config::ConstitutionSource::UserGlobal
         )
     {
-        match codewhale_config::UserConstitution::load() {
-            Ok(codewhale_config::UserConstitutionLoad::Missing) => {
+        match dse_config::UserConstitution::load() {
+            Ok(dse_config::UserConstitutionLoad::Missing) => {
                 issues.push("setup_state_points_at_missing_user_constitution");
             }
-            Ok(codewhale_config::UserConstitutionLoad::Empty) => {
+            Ok(dse_config::UserConstitutionLoad::Empty) => {
                 issues.push("user_constitution_empty");
             }
-            Ok(codewhale_config::UserConstitutionLoad::Invalid(_)) => {
+            Ok(dse_config::UserConstitutionLoad::Invalid(_)) => {
                 issues.push("user_constitution_invalid");
             }
-            Ok(codewhale_config::UserConstitutionLoad::Unreadable(_)) | Err(_) => {
+            Ok(dse_config::UserConstitutionLoad::Unreadable(_)) | Err(_) => {
                 issues.push("user_constitution_unreadable");
             }
-            Ok(codewhale_config::UserConstitutionLoad::Loaded(_)) => {}
+            Ok(dse_config::UserConstitutionLoad::Loaded(_)) => {}
         }
     }
 
@@ -2725,7 +2708,7 @@ fn doctor_setup_consistency(
 }
 
 fn doctor_home_has_stale_setup_temp_files() -> bool {
-    let Ok(home) = codewhale_config::codewhale_home() else {
+    let Ok(home) = dse_config::codewhale_home() else {
         return false;
     };
     let Ok(entries) = std::fs::read_dir(&home) else {
@@ -2737,39 +2720,35 @@ fn doctor_home_has_stale_setup_temp_files() -> bool {
     })
 }
 
-fn doctor_constitution_autonomy_preference() -> codewhale_config::AutonomyPreference {
-    codewhale_config::UserConstitution::load()
+fn doctor_constitution_autonomy_preference() -> dse_config::AutonomyPreference {
+    dse_config::UserConstitution::load()
         .ok()
         .and_then(|load| {
             load.constitution()
                 .map(|constitution| constitution.autonomy_preference)
         })
-        .unwrap_or(codewhale_config::AutonomyPreference::Unspecified)
+        .unwrap_or(dse_config::AutonomyPreference::Unspecified)
 }
 
 fn doctor_constitution_autonomy_preference_id() -> &'static str {
     autonomy_preference_id(doctor_constitution_autonomy_preference())
 }
 
-fn autonomy_preference_id(preference: codewhale_config::AutonomyPreference) -> &'static str {
+fn autonomy_preference_id(preference: dse_config::AutonomyPreference) -> &'static str {
     match preference {
-        codewhale_config::AutonomyPreference::Unspecified => "unspecified",
-        codewhale_config::AutonomyPreference::Cautious => "cautious",
-        codewhale_config::AutonomyPreference::Balanced => "balanced",
-        codewhale_config::AutonomyPreference::Autonomous => "autonomous",
+        dse_config::AutonomyPreference::Unspecified => "unspecified",
+        dse_config::AutonomyPreference::Cautious => "cautious",
+        dse_config::AutonomyPreference::Balanced => "balanced",
+        dse_config::AutonomyPreference::Autonomous => "autonomous",
     }
 }
 
-fn localized_autonomy_preference(
-    preference: codewhale_config::AutonomyPreference,
-) -> Cow<'static, str> {
+fn localized_autonomy_preference(preference: dse_config::AutonomyPreference) -> Cow<'static, str> {
     match preference {
-        codewhale_config::AutonomyPreference::Unspecified => {
-            tr(MessageId::DoctorAutonomyUnspecified)
-        }
-        codewhale_config::AutonomyPreference::Cautious => tr(MessageId::DoctorAutonomyCautious),
-        codewhale_config::AutonomyPreference::Balanced => tr(MessageId::DoctorAutonomyBalanced),
-        codewhale_config::AutonomyPreference::Autonomous => tr(MessageId::DoctorAutonomyAutonomous),
+        dse_config::AutonomyPreference::Unspecified => tr(MessageId::DoctorAutonomyUnspecified),
+        dse_config::AutonomyPreference::Cautious => tr(MessageId::DoctorAutonomyCautious),
+        dse_config::AutonomyPreference::Balanced => tr(MessageId::DoctorAutonomyBalanced),
+        dse_config::AutonomyPreference::Autonomous => tr(MessageId::DoctorAutonomyAutonomous),
     }
 }
 
@@ -2872,7 +2851,7 @@ fn doctor_provider_model_report_json(config: &Config) -> serde_json::Value {
             "next_action": if auth_present_or_local {
                 "/model"
             } else {
-                "codewhale auth set"
+                "dse auth set"
             },
         },
     })
@@ -2901,7 +2880,7 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "default"
     };
     let workspace_trusted = !crate::tui::onboarding::needs_trust(workspace);
-    let steps: Vec<_> = codewhale_config::SetupStep::ALL
+    let steps: Vec<_> = dse_config::SetupStep::ALL
         .into_iter()
         .map(|step| {
             let entry = state.steps.get(&step);
@@ -2957,9 +2936,9 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "next_actions": {
             "constitution": "/constitution",
             "setup_report": "/setup report",
-            "provider_model": "codewhale auth status/set, or /model",
+            "provider_model": "dse auth status/set, or /model",
             "runtime_posture": "~/.codewhale/config.toml",
-            "task_graph": "使用 canonical agent 能力；通过 codewhale runs/resume 查看或恢复运行",
+            "task_graph": "使用 canonical agent 能力；通过 dse runs/resume 查看或恢复运行",
             "tools_mcp": "/setup tools",
             "persistence": "/setup persistence",
         },
@@ -2967,64 +2946,64 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
     })
 }
 
-fn setup_step_id(step: codewhale_config::SetupStep) -> &'static str {
+fn setup_step_id(step: dse_config::SetupStep) -> &'static str {
     match step {
-        codewhale_config::SetupStep::ProviderModel => "provider_model",
-        codewhale_config::SetupStep::TrustSandbox => "trust_sandbox",
-        codewhale_config::SetupStep::ToolsMcp => "tools_mcp",
-        codewhale_config::SetupStep::Persistence => "persistence",
-        codewhale_config::SetupStep::Constitution => "constitution",
-        codewhale_config::SetupStep::Verification => "verification",
+        dse_config::SetupStep::ProviderModel => "provider_model",
+        dse_config::SetupStep::TrustSandbox => "trust_sandbox",
+        dse_config::SetupStep::ToolsMcp => "tools_mcp",
+        dse_config::SetupStep::Persistence => "persistence",
+        dse_config::SetupStep::Constitution => "constitution",
+        dse_config::SetupStep::Verification => "verification",
     }
 }
 
-fn setup_status_id(status: codewhale_config::StepStatus) -> &'static str {
+fn setup_status_id(status: dse_config::StepStatus) -> &'static str {
     match status {
-        codewhale_config::StepStatus::NotStarted => "not_started",
-        codewhale_config::StepStatus::Recommended => "recommended",
-        codewhale_config::StepStatus::Optional => "optional",
-        codewhale_config::StepStatus::Deferred => "deferred",
-        codewhale_config::StepStatus::InProgress => "in_progress",
-        codewhale_config::StepStatus::Verified => "verified",
-        codewhale_config::StepStatus::NeedsAction => "needs_action",
-        codewhale_config::StepStatus::Failed => "failed",
-        codewhale_config::StepStatus::Skipped => "skipped",
+        dse_config::StepStatus::NotStarted => "not_started",
+        dse_config::StepStatus::Recommended => "recommended",
+        dse_config::StepStatus::Optional => "optional",
+        dse_config::StepStatus::Deferred => "deferred",
+        dse_config::StepStatus::InProgress => "in_progress",
+        dse_config::StepStatus::Verified => "verified",
+        dse_config::StepStatus::NeedsAction => "needs_action",
+        dse_config::StepStatus::Failed => "failed",
+        dse_config::StepStatus::Skipped => "skipped",
     }
 }
 
-fn constitution_choice_id(choice: codewhale_config::ConstitutionChoice) -> &'static str {
+fn constitution_choice_id(choice: dse_config::ConstitutionChoice) -> &'static str {
     match choice {
-        codewhale_config::ConstitutionChoice::Unset => "unset",
-        codewhale_config::ConstitutionChoice::Bundled => "bundled",
-        codewhale_config::ConstitutionChoice::GuidedCustom => "guided_custom",
-        codewhale_config::ConstitutionChoice::ExpertOverride => "expert_override",
-        codewhale_config::ConstitutionChoice::Deferred => "deferred",
+        dse_config::ConstitutionChoice::Unset => "unset",
+        dse_config::ConstitutionChoice::Bundled => "bundled",
+        dse_config::ConstitutionChoice::GuidedCustom => "guided_custom",
+        dse_config::ConstitutionChoice::ExpertOverride => "expert_override",
+        dse_config::ConstitutionChoice::Deferred => "deferred",
     }
 }
 
-fn constitution_source_id(source: codewhale_config::ConstitutionSource) -> &'static str {
+fn constitution_source_id(source: dse_config::ConstitutionSource) -> &'static str {
     match source {
-        codewhale_config::ConstitutionSource::Bundled => "bundled",
-        codewhale_config::ConstitutionSource::UserGlobal => "user_global",
-        codewhale_config::ConstitutionSource::ExpertOverride => "expert_override",
+        dse_config::ConstitutionSource::Bundled => "bundled",
+        dse_config::ConstitutionSource::UserGlobal => "user_global",
+        dse_config::ConstitutionSource::ExpertOverride => "expert_override",
     }
 }
 
-fn constitution_validity_id(validity: codewhale_config::ConstitutionValidity) -> &'static str {
+fn constitution_validity_id(validity: dse_config::ConstitutionValidity) -> &'static str {
     match validity {
-        codewhale_config::ConstitutionValidity::Unknown => "unknown",
-        codewhale_config::ConstitutionValidity::Valid => "valid",
-        codewhale_config::ConstitutionValidity::Invalid => "invalid",
-        codewhale_config::ConstitutionValidity::Empty => "empty",
-        codewhale_config::ConstitutionValidity::Unreadable => "unreadable",
+        dse_config::ConstitutionValidity::Unknown => "unknown",
+        dse_config::ConstitutionValidity::Valid => "valid",
+        dse_config::ConstitutionValidity::Invalid => "invalid",
+        dse_config::ConstitutionValidity::Empty => "empty",
+        dse_config::ConstitutionValidity::Unreadable => "unreadable",
     }
 }
 
-fn runtime_posture_source_id(source: codewhale_config::RuntimePostureSource) -> &'static str {
+fn runtime_posture_source_id(source: dse_config::RuntimePostureSource) -> &'static str {
     match source {
-        codewhale_config::RuntimePostureSource::Unset => "unset",
-        codewhale_config::RuntimePostureSource::Inherited => "inherited",
-        codewhale_config::RuntimePostureSource::Confirmed => "confirmed",
+        dse_config::RuntimePostureSource::Unset => "unset",
+        dse_config::RuntimePostureSource::Inherited => "inherited",
+        dse_config::RuntimePostureSource::Confirmed => "confirmed",
     }
 }
 
@@ -3039,9 +3018,9 @@ fn run_doctor_json(
 
     let config_path = config_path_override
         .map(PathBuf::from)
-        .or_else(|| codewhale_config::resolve_config_path(None).ok())
+        .or_else(|| dse_config::resolve_config_path(None).ok())
         .unwrap_or_else(|| {
-            codewhale_config::codewhale_home()
+            dse_config::codewhale_home()
                 .unwrap_or_else(|_| PathBuf::from(".codewhale"))
                 .join("config.toml")
         });
@@ -3138,8 +3117,7 @@ fn run_doctor_json(
 
     let api_target = doctor_api_target(config);
     let tls_status = doctor_tls_status(config);
-    let code_home =
-        codewhale_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    let code_home = dse_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -3196,7 +3174,7 @@ fn run_doctor_json(
             "present": plugins_dir.exists(),
             "count": if plugins_dir.exists() { count_dir_entries(&plugins_dir) } else { 0 },
         },
-        "sandbox": match codewhale_tools::sandbox::get_platform_sandbox() {
+        "sandbox": match dse_tools::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
             None => json!({"available": false, "kind": null}),
         },
@@ -3206,7 +3184,7 @@ fn run_doctor_json(
         },
         "api_connectivity": {
             "checked": false,
-            "note": "Skipped in --json mode; run `codewhale doctor` for a live check.",
+            "note": "Skipped in --json mode; run `dse doctor` for a live check.",
         },
         "capability": deepseek_capability_report(config),
     });
@@ -3399,7 +3377,7 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
 
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
-    use codewhale_deepseek::{
+    use dse_deepseek::{
         ChatPlanInput, DeepSeekCredential, ReasoningMode, ResponseMode, SharedApiRequestBudget,
         official_model_capabilities, plan_chat,
     };
@@ -3545,7 +3523,7 @@ fn run_logout() -> Result<()> {
     Ok(())
 }
 
-/// `codewhale pr <N>` (#451) — fetch a GitHub PR via `gh`, format
+/// `dse pr <N>` (#451) — fetch a GitHub PR via `gh`, format
 /// title + body + diff as the composer's first message, and launch
 /// the interactive TUI. Falls back gracefully if `gh` is missing.
 async fn run_pr(
@@ -3559,7 +3537,7 @@ async fn run_pr(
         bail!(
             "`gh` CLI not found on PATH. Install GitHub CLI \
              (https://cli.github.com) and authenticate (`gh auth login`) \
-             so `codewhale pr <N>` can fetch PR metadata and the diff."
+             so `dse pr <N>` can fetch PR metadata and the diff."
         );
     }
 
@@ -3780,7 +3758,7 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                     );
                 }
             }
-            println!("Edit the file, then run `codewhale mcp list` or `codewhale mcp tools`.");
+            println!("Edit the file, then run `dse mcp list` or `dse mcp tools`.");
             Ok(())
         }
         McpCommand::List => {
@@ -3961,7 +3939,7 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                     .is_ok_and(|support| support.is_some())
             {
                 println!(
-                    "OAuth is available for '{name}'. Run `codewhale mcp login {name}` to authenticate."
+                    "OAuth is available for '{name}'. Run `dse mcp login {name}` to authenticate."
                 );
             }
             Ok(())
@@ -4107,7 +4085,7 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
 }
 
 fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
-    use codewhale_tools::sandbox::{CommandSpec, SandboxManager};
+    use dse_tools::sandbox::{CommandSpec, SandboxManager};
 
     let SandboxCommand::Run {
         policy,
@@ -4143,9 +4121,9 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         .current_dir(&exec_env.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    codewhale_tools::child_env::apply_to_command(
+    dse_tools::child_env::apply_to_command(
         &mut cmd,
-        codewhale_tools::child_env::string_map_env(&exec_env.env),
+        dse_tools::child_env::string_map_env(&exec_env.env),
     );
 
     let mut child = cmd
@@ -4212,8 +4190,8 @@ fn parse_sandbox_policy(
     writable_root: Vec<PathBuf>,
     exclude_tmpdir: bool,
     exclude_slash_tmp: bool,
-) -> Result<codewhale_tools::sandbox::SandboxPolicy> {
-    use codewhale_tools::sandbox::SandboxPolicy;
+) -> Result<dse_tools::sandbox::SandboxPolicy> {
+    use dse_tools::sandbox::SandboxPolicy;
 
     match policy {
         "danger-full-access" => Ok(SandboxPolicy::DangerFullAccess),
@@ -4316,7 +4294,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
     }
 
     let path = workspace
-        .join(codewhale_config::CODEWHALE_APP_DIR)
+        .join(dse_config::CODEWHALE_APP_DIR)
         .join("config.toml");
     let raw = match read_project_config_file(&path) {
         Ok(Some(r)) => r,
@@ -4387,7 +4365,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
         && !v.is_empty()
     {
         let approval_baseline = config.approval_policy.as_deref();
-        if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
+        if dse_config::project_approval_policy_is_allowed(approval_baseline, v) {
             config.approval_policy = Some(v.to_string());
         } else {
             eprintln!(
@@ -4401,7 +4379,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
     if let Some(v) = table.get("sandbox_mode").and_then(toml::Value::as_str)
         && !v.is_empty()
     {
-        if codewhale_config::project_sandbox_mode_is_allowed(config.sandbox_mode.as_deref(), v) {
+        if dse_config::project_sandbox_mode_is_allowed(config.sandbox_mode.as_deref(), v) {
             config.sandbox_mode = Some(v.to_string());
         } else {
             eprintln!(
@@ -4902,9 +4880,8 @@ mod m8a_deepseek_only_entry_tests {
 
     #[test]
     fn exec_rejects_retired_provider_flag_at_parse_boundary() {
-        let error =
-            Cli::try_parse_from(["codewhale-tui", "exec", "--provider", "openrouter", "hello"])
-                .expect_err("retired --provider must not parse");
+        let error = Cli::try_parse_from(["dse-tui", "exec", "--provider", "openrouter", "hello"])
+            .expect_err("retired --provider must not parse");
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
         assert!(error.to_string().contains("仅使用官方 DeepSeek"));
     }
@@ -4912,7 +4889,7 @@ mod m8a_deepseek_only_entry_tests {
     #[test]
     fn exec_accepts_only_model_and_reasoning_overrides() {
         let cli = Cli::try_parse_from([
-            "codewhale-tui",
+            "dse-tui",
             "exec",
             "--model",
             "deepseek-v4-flash",
@@ -4972,7 +4949,7 @@ mod m8c_fixed_zh_hans_help_tests {
 
     #[test]
     fn direct_tui_help_uses_the_shared_fixed_catalog() {
-        let help = help_for(&["codewhale-tui", "--help"]);
+        let help = help_for(&["dse-tui", "--help"]);
         assert!(help.contains("面向官方 DeepSeek API 的本地终端编码 Agent"));
         assert!(help.contains("用法："));
         assert!(help.contains("检查本地配置、凭据、运行环境与恢复建议"));
@@ -4980,7 +4957,7 @@ mod m8c_fixed_zh_hans_help_tests {
             assert!(help.contains(stable), "stable identity missing: {stable}");
         }
         for leak in [
-            "CodeWhale terminal coding agent",
+            "DSE terminal coding agent",
             "Run system diagnostics",
             "Run a non-interactive prompt",
             "Resume a canonical Agent run",
@@ -4989,15 +4966,15 @@ mod m8c_fixed_zh_hans_help_tests {
             assert!(!help.contains(leak), "English product text leaked: {leak}");
         }
 
-        let exec = help_for(&["codewhale-tui", "exec", "--help"]);
+        let exec = help_for(&["dse-tui", "exec", "--help"]);
         assert!(exec.contains("本次运行的 thinking 强度"));
         assert!(exec.contains("Headless Agent 的最大运行秒数"));
-        assert!(exec.contains("普通 `codewhale exec` 是一次性模型响应"));
+        assert!(exec.contains("普通 `dse exec` 是一次性模型响应"));
         for leak in [
             "Override model for this run",
             "Enable agent-with-tools mode",
             "Maximum number of model steps",
-            "Plain `codewhale exec` is a one-shot model response",
+            "Plain `dse exec` is a one-shot model response",
         ] {
             assert!(!exec.contains(leak), "English exec help leaked: {leak}");
         }
@@ -5056,8 +5033,8 @@ mod m8c_fixed_zh_hans_help_tests {
 
         for width in [80usize, 120] {
             for args in [
-                ["codewhale-tui", "--help"].as_slice(),
-                ["codewhale-tui", "exec", "--help"].as_slice(),
+                ["dse-tui", "--help"].as_slice(),
+                ["dse-tui", "exec", "--help"].as_slice(),
             ] {
                 let help = localized_tui_command()
                     .term_width(width)

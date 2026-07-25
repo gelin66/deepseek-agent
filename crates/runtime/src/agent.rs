@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use codewhale_context::compaction::{
+use dse_context::compaction::{
     ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
 };
 use serde_json::{Value, json};
@@ -5633,7 +5633,7 @@ fn completion_candidate_id(model_response_sequence: u64) -> CompletionCandidateI
 }
 
 fn context_projection_failure(
-    error: codewhale_context::compaction::ContextProjectionError,
+    error: dse_context::compaction::ContextProjectionError,
 ) -> RuntimeFailure {
     RuntimeFailure::Store {
         message: error.to_string(),

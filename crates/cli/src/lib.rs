@@ -9,29 +9,29 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
-use codewhale_app_server::{
+use dse_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
+use dse_app_server::{
     AppServerOptions, DEFAULT_MAX_BODY_BYTES, run as run_app_server,
     run_stdio as run_app_server_stdio,
 };
-use codewhale_config::{
+use dse_config::{
     CliRuntimeOverrides, ConfigStore, ResolvedRuntimeOptions, RuntimeApiKeySource,
     canonical_deepseek_model, is_official_deepseek_base_url, load_prompt_preferences,
 };
-use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use codewhale_localization::{MessageId, tr};
-use codewhale_protocol::run_api::{
+use dse_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use dse_localization::{MessageId, tr};
+use dse_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
 };
-use codewhale_secrets::Secrets;
+use dse_secrets::Secrets;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codewhale",
-    version = env!("CODEWHALE_BUILD_VERSION"),
-    bin_name = "codewhale",
-    override_usage = "codewhale [OPTIONS] [PROMPT]\n       codewhale [OPTIONS] <COMMAND> [ARGS]"
+    name = "dse",
+    version = env!("DSE_BUILD_VERSION"),
+    bin_name = "dse",
+    override_usage = "dse [OPTIONS] [PROMPT]\n       dse [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct Cli {
     #[arg(long)]
@@ -87,7 +87,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Run CodeWhale diagnostics.
+    /// Run DSE diagnostics.
     Doctor(TuiPassthroughArgs),
     /// 列出当前工作区的 canonical Agent 运行。
     Runs(RunsArgs),
@@ -100,9 +100,9 @@ enum Commands {
     /// Run a non-interactive prompt through the TUI runtime.
     #[command(after_help = "\
 Examples:
-  codewhale exec \"explain this function\"
-  codewhale exec --auto \"list crates/ with ls\"
-  codewhale exec --auto --output-format stream-json \"fix the failing test\"
+  dse exec \"explain this function\"
+  dse exec --auto \"list crates/ with ls\"
+  dse exec --auto --output-format stream-json \"fix the failing test\"
 
 Common forwarded flags:
   --auto                           Enable tool-backed agent mode with auto-approvals
@@ -113,7 +113,7 @@ Common forwarded flags:
   --max-api-requests <COUNT>       Hard cap on real DeepSeek HTTP requests
   --max-runtime-secs <SECONDS>     Hard wall-clock cap for the Headless Agent
 
-Plain `codewhale exec` is a one-shot model response. Use `--auto` for
+Plain `dse exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use, matching the supported automation
 path used by stream-json wrappers.
 ")]
@@ -139,8 +139,8 @@ path used by stream-json wrappers.
     /// Run the canonical local Run API over HTTP/SSE or stdio.
     #[command(after_help = "\
 Transports:
-  codewhale app-server                     HTTP/SSE Run API on 127.0.0.1:7878
-  codewhale app-server --stdio             Canonical newline Run API on stdio
+  dse app-server                     HTTP/SSE Run API on 127.0.0.1:7878
+  dse app-server --stdio             Canonical newline Run API on stdio
 
 HTTP requires --auth-token (or CODEWHALE_APP_SERVER_TOKEN) unless the user
 explicitly selects --insecure-no-auth on a loopback address.")]
@@ -148,26 +148,26 @@ explicitly selects --insecure-no-auth on a loopback address.")]
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
   Bash (current shell only):
-    source <(codewhale completion bash)
+    source <(dse completion bash)
 
   Bash (persistent, Linux/bash-completion):
     mkdir -p ~/.local/share/bash-completion/completions
-    codewhale completion bash > ~/.local/share/bash-completion/completions/codewhale
+    dse completion bash > ~/.local/share/bash-completion/completions/dse
     # Requires bash-completion to be installed and loaded by your shell.
 
   Zsh:
     mkdir -p ~/.zfunc
-    codewhale completion zsh > ~/.zfunc/_codewhale
+    dse completion zsh > ~/.zfunc/_dse
     # Add to ~/.zshrc if needed:
     #   fpath=(~/.zfunc $fpath)
     #   autoload -Uz compinit && compinit
 
   Fish:
     mkdir -p ~/.config/fish/completions
-    codewhale completion fish > ~/.config/fish/completions/codewhale.fish
+    dse completion fish > ~/.config/fish/completions/dse.fish
 
   PowerShell (current shell only):
-    codewhale completion powershell | Out-String | Invoke-Expression
+    dse completion powershell | Out-String | Invoke-Expression
 
 The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
@@ -378,40 +378,40 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
     if cli.prompt_flag.is_none() && cli.command.is_none() {
         match cli.prompt.first().map(String::as_str) {
             Some("thread") => bail!(
-                "命令 `codewhale thread` 已删除；请使用 `codewhale runs` 查看 canonical Agent 运行，或使用 `codewhale resume <RUN_ID>` 继续运行"
+                "命令 `dse thread` 已删除；请使用 `dse runs` 查看 canonical Agent 运行，或使用 `dse resume <RUN_ID>` 继续运行"
             ),
             Some("sessions") => bail!(
-                "命令 `codewhale sessions` 已删除；请使用 `codewhale runs` 查看当前工作区的 canonical Agent 运行"
+                "命令 `dse sessions` 已删除；请使用 `dse runs` 查看当前工作区的 canonical Agent 运行"
             ),
             Some("fork") => bail!(
-                "命令 `codewhale fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `codewhale resume <RUN_ID>` 继续 canonical Agent 运行"
+                "命令 `dse fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `dse resume <RUN_ID>` 继续 canonical Agent 运行"
             ),
             Some("run") => bail!(
-                "命令 `codewhale run` 已删除；请直接运行 `codewhale` 启动交互界面，或使用 `codewhale exec <PROMPT>` 执行非交互任务"
+                "命令 `dse run` 已删除；请直接运行 `dse` 启动交互界面，或使用 `dse exec <PROMPT>` 执行非交互任务"
             ),
             Some("mcp-server") => bail!(
-                "命令 `codewhale mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `codewhale app-server --stdio`"
+                "命令 `dse mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `dse app-server --stdio`"
             ),
             Some("update") => bail!(
-                "命令 `codewhale update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
+                "命令 `dse update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
             ),
-            Some("metrics") => bail!(
-                "命令 `codewhale metrics` 已删除；旧日志/会话扫描不是 canonical RunStore 指标来源"
-            ),
+            Some("metrics") => {
+                bail!("命令 `dse metrics` 已删除；旧日志/会话扫描不是 canonical RunStore 指标来源")
+            }
             Some("workflow") => bail!(
-                "命令 `codewhale workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 由唯一 Orchestrator 管理"
+                "命令 `dse workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 由唯一 Orchestrator 管理"
             ),
             Some("workflow-tool") => {
-                bail!("命令 `codewhale workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
+                bail!("命令 `dse workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
             }
             Some("fleet") | Some("lane") => bail!(
-                "命令 `codewhale fleet` / `codewhale lane` 已删除；多 Agent 任务统一由 canonical AgentRuntime、RunStore 与 Writer Orchestrator 执行"
+                "命令 `dse fleet` / `dse lane` 已删除；多 Agent 任务统一由 canonical AgentRuntime、RunStore 与 Writer Orchestrator 执行"
             ),
             Some("review") => {
-                bail!("命令 `codewhale review` 已删除；请使用 canonical Agent 审查当前 git diff")
+                bail!("命令 `dse review` 已删除；请使用 canonical Agent 审查当前 git diff")
             }
             Some("speech") | Some("tts") => {
-                bail!("命令 `codewhale speech` / `codewhale tts` 已删除")
+                bail!("命令 `dse speech` / `dse tts` 已删除")
             }
             _ => {}
         }
@@ -420,7 +420,7 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
     if let Some(Commands::Mcp(args)) = cli.command.as_ref()
         && args.args.first().is_some_and(|arg| arg == "add-self")
     {
-        bail!("命令 `codewhale mcp add-self` 已删除；CodeWhale 不再把自身注册为 MCP 服务端");
+        bail!("命令 `dse mcp add-self` 已删除；DSE 不再把自身注册为 MCP 服务端");
     }
 
     Ok(())
@@ -481,7 +481,7 @@ fn localize_cli_command(command: &mut clap::Command) {
                 .help(tr(MessageId::CliArgVersion).into_owned()),
         );
     }
-    if command.get_name() == "codewhale" {
+    if command.get_name() == "dse" {
         localized = localized.about(tr(MessageId::CliAbout).into_owned());
     } else if let Some(message) = cli_command_message(command.get_name()) {
         localized = localized.about(tr(message).into_owned());
@@ -575,7 +575,7 @@ fn run() -> Result<()> {
     let command = match cli.command.take() {
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "codewhale", &mut io::stdout());
+            generate(shell, &mut cmd, "dse", &mut io::stdout());
             return Ok(());
         }
         Some(Commands::Runs(args)) => return run_runs_command(&cli, args),
@@ -788,9 +788,7 @@ fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -
 
 #[cfg(test)]
 fn no_keyring_secrets() -> Secrets {
-    Secrets::new(std::sync::Arc::new(
-        codewhale_secrets::InMemoryKeyringStore::new(),
-    ))
+    Secrets::new(std::sync::Arc::new(dse_secrets::InMemoryKeyringStore::new()))
 }
 
 fn write_deepseek_api_key_to_config(store: &mut ConfigStore, api_key: &str) {
@@ -1153,7 +1151,7 @@ fn run_app_server_command(
 ) -> Result<()> {
     // Match exec and the interactive TUI: install the single context-owned
     // config-home override before AgentApplication composes any system prompt.
-    codewhale_context::prompts::load_prompt_overrides_from_config_home();
+    dse_context::prompts::load_prompt_overrides_from_config_home();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1401,32 +1399,32 @@ fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
     format!(
         "failed to spawn companion TUI binary at {}: {err}\n\
 \n\
-The `codewhale` dispatcher found a `codewhale-tui` file, but the OS refused \
+The `dse` dispatcher found a `dse-tui` file, but the OS refused \
 to execute it. Common fixes:\n\
   - Reinstall both binaries through the same installation channel.\n\
-  - On Windows, run `where codewhale` and `where codewhale-tui`; both should \
+  - On Windows, run `where dse` and `where dse-tui`; both should \
 come from the same install directory.\n\
-  - If you downloaded release assets manually, keep both `codewhale` and \
-`codewhale-tui` binaries together and make sure the TUI binary is executable.\n\
-  - Set CODEWHALE_TUI_BIN to the absolute path of a working `codewhale-tui` \
+  - If you downloaded release assets manually, keep both `dse` and \
+`dse-tui` binaries together and make sure the TUI binary is executable.\n\
+  - Set DSE_TUI_BIN to the absolute path of a working `dse-tui` \
 binary.",
         tui.display()
     )
 }
 
-/// Resolve the sibling `codewhale-tui` executable next to the running
+/// Resolve the sibling `dse-tui` executable next to the running
 /// dispatcher. Honours the platform executable suffix (`.exe` on Windows).
 ///
-/// `CODEWHALE_TUI_BIN` is consulted first as an explicit override for custom
+/// `DSE_TUI_BIN` is consulted first as an explicit override for custom
 /// installs and CI test layouts.
 fn locate_sibling_tui_binary() -> Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("CODEWHALE_TUI_BIN") {
+    if let Ok(override_path) = std::env::var("DSE_TUI_BIN") {
         let candidate = PathBuf::from(override_path);
         if candidate.is_file() {
             return Ok(candidate);
         }
         bail!(
-            "CODEWHALE_TUI_BIN points at {}, which is not a regular file.",
+            "DSE_TUI_BIN points at {}, which is not a regular file.",
             candidate.display()
         );
     }
@@ -1438,35 +1436,34 @@ fn locate_sibling_tui_binary() -> Result<PathBuf> {
     }
 
     // Build a stable error path so the user sees the platform-correct
-    // expected name, not "codewhale-tui" on Windows.
-    let expected = current.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    // expected name, not "dse-tui" on Windows.
+    let expected = current.with_file_name(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
     bail!(
-        "Companion `codewhale-tui` binary not found at {}.\n\
+        "Companion `dse-tui` binary not found at {}.\n\
 \n\
-The `codewhale` dispatcher delegates interactive sessions to a sibling \
-`codewhale-tui` binary. Reinstall the checksum-verified CodeWhale package so \
+The `dse` dispatcher delegates interactive sessions to a sibling \
+`dse-tui` binary. Reinstall the checksum-verified DSE package so \
 both binaries are activated from the same release directory.\n\
 \n\
-Or set CODEWHALE_TUI_BIN to the absolute path of an existing `codewhale-tui` binary.",
+Or set DSE_TUI_BIN to the absolute path of an existing `dse-tui` binary.",
         expected.display()
     );
 }
 
 /// Return the first existing sibling-binary path under any of the names
-/// `codewhale-tui` might use on this platform. Pure function to keep
+/// `dse-tui` might use on this platform. Pure function to keep
 /// `locate_sibling_tui_binary` testable.
 fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
     // Primary: platform-correct name. EXE_SUFFIX is "" on Unix and ".exe"
     // on Windows.
-    let primary =
-        dispatcher.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    let primary = dispatcher.with_file_name(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
     if primary.is_file() {
         return Some(primary);
     }
     // Windows fallback: a user who manually renamed `.exe` away (per the
     // workaround in #247) still launches successfully under the new code.
     if cfg!(windows) {
-        let suffixless = dispatcher.with_file_name("codewhale-tui");
+        let suffixless = dispatcher.with_file_name("dse-tui");
         if suffixless.is_file() {
             return Some(suffixless);
         }
@@ -1548,7 +1545,7 @@ mod tests {
 
     #[test]
     fn m8a_cli_help_is_deepseek_only() {
-        let help = help_for(&["codewhale", "--help"]);
+        let help = help_for(&["dse", "--help"]);
         for retained in ["doctor", "exec", "app-server", "login", "auth", "model"] {
             assert!(help.contains(retained), "{retained}");
         }
@@ -1556,13 +1553,31 @@ mod tests {
         assert!(!help.contains("List live provider API models"));
         assert!(!help.contains("xai-device"));
 
-        let auth = help_for(&["codewhale", "auth", "--help"]);
+        let auth = help_for(&["dse", "auth", "--help"]);
         assert!(auth.contains("status"));
         assert!(auth.contains("set"));
         assert!(auth.contains("get"));
         assert!(auth.contains("clear"));
         assert!(!auth.contains("--provider"));
         assert!(!auth.contains("list"));
+    }
+
+    #[test]
+    fn m17_cli_identity_is_dse_only() {
+        let command = Cli::command();
+        assert_eq!(command.get_name(), "dse");
+        assert_eq!(env!("CARGO_PKG_NAME"), "dse-cli");
+
+        let root_help = help_for(&["dse", "--help"]);
+        let exec_help = help_for(&["dse", "exec", "--help"]);
+        let app_server_help = help_for(&["dse", "app-server", "--help"]);
+        for help in [&root_help, &exec_help, &app_server_help] {
+            assert!(!help.contains("CodeWhale"), "{help}");
+            assert!(!help.contains("codewhale exec"), "{help}");
+            assert!(!help.contains("codewhale app-server"), "{help}");
+        }
+        assert!(exec_help.contains("dse exec"));
+        assert!(app_server_help.contains("dse app-server"));
     }
 
     #[test]
@@ -1578,7 +1593,7 @@ mod tests {
         assert!(!commands.iter().any(|command| command == "thread"));
 
         for retired in ["fleet", "lane", "thread"] {
-            let cli = parse_ok(&["codewhale", retired]);
+            let cli = parse_ok(&["dse", retired]);
             let error = reject_retired_command(&cli).expect_err("retired shell must fail closed");
             assert!(error.to_string().contains("已删除"));
         }
@@ -1586,7 +1601,7 @@ mod tests {
 
     #[test]
     fn m8c_cli_help_uses_fixed_zh_hans_without_changing_command_ids() {
-        let help = help_for(&["codewhale", "--help"]);
+        let help = help_for(&["dse", "--help"]);
         assert!(help.contains("面向官方 DeepSeek API 的本地终端编码 Agent"));
         assert!(help.contains("用法："));
         assert!(help.contains("检查本地配置、凭据、运行环境与恢复建议"));
@@ -1597,7 +1612,7 @@ mod tests {
             );
         }
         for leak in [
-            "Run CodeWhale diagnostics",
+            "Run DSE diagnostics",
             "Run a non-interactive prompt",
             "Run the canonical local Run API",
             "Controls transcript and output verbosity",
@@ -1607,7 +1622,7 @@ mod tests {
         }
         assert!(help.contains("是否启用本地遥测：true 或 false"));
 
-        let app_server = help_for(&["codewhale", "app-server", "--help"]);
+        let app_server = help_for(&["dse", "app-server", "--help"]);
         assert!(app_server.contains("HTTP 监听地址"));
         assert!(app_server.contains("通过标准输入/输出运行同一个"));
         assert!(app_server.contains("HTTP 默认要求 --auth-token"));
@@ -1625,7 +1640,7 @@ mod tests {
 
     #[test]
     fn m8a_foreign_provider_flag_fails_during_parsing() {
-        let error = Cli::try_parse_from(["codewhale", "--provider", "openai", "exec", "hi"])
+        let error = Cli::try_parse_from(["dse", "--provider", "openai", "exec", "hi"])
             .expect_err("generic provider flag must be absent");
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
@@ -1633,14 +1648,14 @@ mod tests {
     #[test]
     fn m8a_auth_and_model_commands_have_no_provider_selector() {
         assert!(matches!(
-            parse_ok(&["codewhale", "auth", "status"]).command,
+            parse_ok(&["dse", "auth", "status"]).command,
             Some(Commands::Auth(AuthArgs {
                 command: AuthCommand::Status
             }))
         ));
         assert!(
             Cli::try_parse_from([
-                "codewhale",
+                "dse",
                 "auth",
                 "set",
                 "--provider",
@@ -1651,7 +1666,7 @@ mod tests {
             .is_err()
         );
         assert!(matches!(
-            parse_ok(&["codewhale", "model", "resolve", "flash"]).command,
+            parse_ok(&["dse", "model", "resolve", "flash"]).command,
             Some(Commands::Model(ModelArgs {
                 command: ModelCommand::Resolve { model: Some(_) }
             }))
@@ -1708,12 +1723,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let tui = directory
             .path()
-            .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("dse-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&tui, b"").unwrap();
-        let _binary = ScopedEnv::set("CODEWHALE_TUI_BIN", &tui);
+        let _binary = ScopedEnv::set("DSE_TUI_BIN", &tui);
 
         let cli = parse_ok(&[
-            "codewhale",
+            "dse",
             "--api-key",
             "explicit-secret",
             "--model",

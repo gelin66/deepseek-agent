@@ -3,7 +3,7 @@
 mod opensandbox;
 
 use anyhow::Result;
-use codewhale_tools::sandbox::backend::{SandboxBackend, SandboxKind};
+use dse_tools::sandbox::backend::{SandboxBackend, SandboxKind};
 
 use crate::config::Config;
 

@@ -53,7 +53,7 @@ mod tests {
     }
 
     fn start_child(app: &mut App, child: &str) {
-        use codewhale_protocol::agent_runtime::RunId;
+        use dse_protocol::agent_runtime::RunId;
 
         app.child_agents.begin_root(RunId("root-run".to_string()));
         app.child_agents.record_started(

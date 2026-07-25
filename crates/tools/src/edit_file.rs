@@ -3,7 +3,7 @@
 #[cfg(test)]
 use std::fs;
 
-use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
+use dse_protocol::agent_runtime::ToolSideEffectStatus;
 use serde_json::Value;
 
 use crate::atomic_write::{AtomicWriteError, write_atomic_if_unchanged};

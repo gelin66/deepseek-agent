@@ -2,12 +2,12 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use codewhale_protocol::run_api::PendingCreationKind;
-use codewhale_runtime::{
+use dse_protocol::run_api::PendingCreationKind;
+use dse_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunRequest, RuntimeEventId,
     RuntimeEventKind, StoredRuntimeEvent,
 };
-use codewhale_runtime::{
+use dse_runtime::{
     AcquiredRun, CreatedRun, CreationIntent, CreationReservation, DurableActionState,
     ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot, RunStore, RunStoreError,
     apply_event, reduce_events, validate_continuation_request,
@@ -33,7 +33,7 @@ struct RunProjection {
 impl StateStore {
     fn reserve_creation_sync(
         &self,
-        command_id: codewhale_runtime::CommandId,
+        command_id: dse_runtime::CommandId,
         command_sha256: String,
         proposed_run_id: RunId,
         intent: CreationIntent,
@@ -140,7 +140,7 @@ impl StateStore {
 
     fn creation_sync(
         &self,
-        command_id: codewhale_runtime::CommandId,
+        command_id: dse_runtime::CommandId,
     ) -> Result<Option<CreationReservation>, RunStoreError> {
         let conn = self.conn().map_err(backend)?;
         read_creation(&conn, &command_id)
@@ -186,7 +186,7 @@ impl StateStore {
             event_id: RuntimeEventId::run_created(),
             sequence: 1,
             occurred_at_unix_ms: now,
-            event: codewhale_runtime::RuntimeEventKind::RunCreated {
+            event: dse_runtime::RuntimeEventKind::RunCreated {
                 request: Box::new(request.clone()),
             },
         };
@@ -590,7 +590,7 @@ impl StateStore {
 
 fn read_creation(
     conn: &Connection,
-    command_id: &codewhale_runtime::CommandId,
+    command_id: &dse_runtime::CommandId,
 ) -> Result<Option<CreationReservation>, RunStoreError> {
     conn.query_row(
         r#"
@@ -650,7 +650,7 @@ fn decode_creation_columns(
 ) -> Result<CreationReservation, RunStoreError> {
     let run_id = RunId(run_id);
     Ok(CreationReservation {
-        command_id: codewhale_runtime::CommandId::from(command_id),
+        command_id: dse_runtime::CommandId::from(command_id),
         command_sha256,
         created_at_unix_ms: from_store_u64(created_at, &run_id, "creation timestamp")?,
         intent: decode_creation_intent(
@@ -694,13 +694,10 @@ fn decode_creation_intent(
         )
     })?;
     let metadata_matches = match (&kind, &command) {
-        (PendingCreationKind::Start, codewhale_protocol::run_api::RunCommand::Start(command)) => {
+        (PendingCreationKind::Start, dse_protocol::run_api::RunCommand::Start(command)) => {
             source_run_id.is_none() && command.workspace == workspace
         }
-        (
-            PendingCreationKind::Continue,
-            codewhale_protocol::run_api::RunCommand::Continue(command),
-        ) => {
+        (PendingCreationKind::Continue, dse_protocol::run_api::RunCommand::Continue(command)) => {
             source_run_id.as_ref() == Some(&command.run_id)
                 && command
                     .expected_workspace
@@ -761,7 +758,7 @@ pub(super) fn retain_recoverable_start_creation_intents(
             matches!(intent.kind, PendingCreationKind::Start)
                 && matches!(
                     intent.command,
-                    codewhale_protocol::run_api::RunCommand::Start(command)
+                    dse_protocol::run_api::RunCommand::Start(command)
                         if !command.workspace.trim().is_empty()
                             && command.task.validate().is_ok()
                 )
@@ -834,7 +831,7 @@ fn validate_continuation_lineage(
     let source_run_id = source.request.run_id.clone().unwrap_or_default();
     let invalid = || RunStoreError::InvalidContinuation {
         source_run_id: source_run_id.clone(),
-        reason: codewhale_runtime::ContinuationError::LineageCorrupt,
+        reason: dse_runtime::ContinuationError::LineageCorrupt,
     };
     let mut visited = HashSet::from([source_run_id.clone()]);
     let mut cursor = source.request.continued_from_run_id.clone();
@@ -846,7 +843,7 @@ fn validate_continuation_lineage(
         let replay = replay_from_conn(conn, &run_id, &projection)?;
         let snapshot = replay.snapshot;
         if snapshot.request.parent_run_id.is_some()
-            || snapshot.request.actor.kind != codewhale_runtime::AgentActorKind::Root
+            || snapshot.request.actor.kind != dse_runtime::AgentActorKind::Root
             || snapshot.request.actor.depth != 0
             || snapshot.request.environment.workspace != workspace
             || snapshot.terminal.is_none()
@@ -1071,7 +1068,7 @@ pub(super) fn backfill_v15_terminal_accounting_snapshots(
 impl RunStore for StateStore {
     async fn reserve_creation(
         &self,
-        command_id: &codewhale_runtime::CommandId,
+        command_id: &dse_runtime::CommandId,
         command_sha256: &str,
         proposed_run_id: RunId,
         intent: CreationIntent,
@@ -1086,7 +1083,7 @@ impl RunStore for StateStore {
 
     async fn creation(
         &self,
-        command_id: &codewhale_runtime::CommandId,
+        command_id: &dse_runtime::CommandId,
     ) -> Result<Option<CreationReservation>, RunStoreError> {
         let store = self.clone();
         let command_id = command_id.clone();

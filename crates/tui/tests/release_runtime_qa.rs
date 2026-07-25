@@ -186,7 +186,7 @@ async fn mount_text_model(server: &MockServer, model: &str, answer: &str) {
 }
 
 fn common_tui_builder(ws: &SealedWorkspace) -> qa_harness::harness::HarnessBuilder {
-    Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())
@@ -628,7 +628,7 @@ fn rss_kib(pid: u32) -> Option<u64> {
 
 /// #4014 acceptance benchmark: 32 concurrent loopback workers must keep the
 /// TUI live. Ignored by default (heavy storm); run explicitly with
-/// `cargo test -p codewhale-tui --test release_runtime_qa --locked -- \
+/// `cargo test -p dse-tui --test release_runtime_qa --locked -- \
 ///  --ignored bench_thirty_two --nocapture --test-threads=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "heavy 32-worker storm; run explicitly for #4014 evidence"]

@@ -1,4 +1,4 @@
-//! Project context loading for CodeWhale's canonical prompt owner.
+//! Project context loading for DSE's canonical prompt owner.
 //!
 //! This module handles loading project-specific context files that provide
 //! instructions and context to the AI agent. These include:
@@ -8,7 +8,7 @@
 //! - `CLAUDE.md` - Claude-style instructions (compat)
 //! - `.codewhale/instructions.md` - Hidden instructions file (compat)
 //!
-//! CodeWhale-specific repo authority/prioritization policy lives separately in
+//! DSE-specific repo authority/prioritization policy lives separately in
 //! `.codewhale/constitution.json` and is rendered as its own higher-authority
 //! block. The loaded content is injected into the system prompt to give the
 //! agent context about the project's conventions, structure, and requirements.
@@ -24,11 +24,11 @@ use thiserror::Error;
 /// Names of project context files to look for, in priority order.
 ///
 /// `AGENTS.md` is the canonical cross-agent project-instructions file.
-/// `WHALE.md` is no longer an active context surface; when present, CodeWhale
-/// reports a migration warning but ignores it. CodeWhale-specific repo
+/// `WHALE.md` is no longer an active context surface; when present, DSE
+/// reports a migration warning but ignores it. DSE-specific repo
 /// authority now lives in `.codewhale/constitution.json`, not a bespoke
 /// markdown file. `CLAUDE.md` and the `*/instructions.md` variants are
-/// read-only compatibility fallbacks; CodeWhale never creates or recommends
+/// read-only compatibility fallbacks; DSE never creates or recommends
 /// them.
 const PROJECT_CONTEXT_FILES: &[&str] = &[
     "AGENTS.md",
@@ -38,20 +38,20 @@ const PROJECT_CONTEXT_FILES: &[&str] = &[
 ];
 
 /// Rules directories auto-discovered at workspace level, in priority order.
-/// `.codewhale/rules/` is CodeWhale-native; `.claude/rules/` is Claude compatibility.
+/// `.codewhale/rules/` is DSE-native; `.claude/rules/` is Claude compatibility.
 /// All `.md` files in these directories are loaded as project rules in filename order.
 /// Security model: same trust class as AGENTS.md — workspace-contained content only,
 /// no absolute-path escape. Does not require #417 project-config relaxation.
 const RULES_DIRS: &[&str] = &[".codewhale/rules", ".claude/rules"];
 
-/// File name of the deprecated CodeWhale-native instructions file.
+/// File name of the deprecated DSE-native instructions file.
 const DEPRECATED_WHALE_FILENAME: &str = "WHALE.md";
 
 /// Warning surfaced when an ignored `WHALE.md` is present.
-const WHALE_IGNORED_WARNING: &str = "WHALE.md is ignored; move project instructions to AGENTS.md, or CodeWhale-specific authority policy to .codewhale/constitution.json.";
+const WHALE_IGNORED_WARNING: &str = "WHALE.md is ignored; move project instructions to AGENTS.md, or DSE-specific authority policy to .codewhale/constitution.json.";
 
 /// Relative path (within a workspace or one of its parents) to the
-/// CodeWhale-specific repo authority/prioritization policy.
+/// DSE-specific repo authority/prioritization policy.
 const REPO_CONSTITUTION_RELATIVE_PATH: &[&str] = &[".codewhale", "constitution.json"];
 
 /// `schema_version` understood by this build of the constitution loader.
@@ -154,7 +154,7 @@ pub struct ProjectContext {
     /// Any warnings during loading
     pub warnings: Vec<String>,
     /// Rendered `.codewhale/constitution.json` authority block, if present.
-    /// CodeWhale-specific repo authority/prioritization policy — distinct from
+    /// DSE-specific repo authority/prioritization policy — distinct from
     /// the cross-agent prose in `instructions`.
     pub constitution_block: Option<String>,
     /// Path to the repo constitution file that produced `constitution_block`.
@@ -188,7 +188,7 @@ impl ProjectContext {
 
     /// Get the instructions as a formatted block for system prompt.
     ///
-    /// The CodeWhale repo constitution (`.codewhale/constitution.json`), when
+    /// The DSE repo constitution (`.codewhale/constitution.json`), when
     /// present, is emitted first as a higher-authority block, followed by the
     /// cross-agent `<project_instructions>` prose. Either may be absent.
     pub fn as_system_block(&self) -> Option<String> {
@@ -232,7 +232,7 @@ impl ProjectContext {
     }
 }
 
-/// CodeWhale-specific repo authority/prioritization policy, loaded from
+/// DSE-specific repo authority/prioritization policy, loaded from
 /// `.codewhale/constitution.json`. All fields are optional so a minimal file
 /// (or a future schema) still parses; unknown fields are ignored.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -897,7 +897,7 @@ fn load_project_context_with_parents_and_home(
 
     // Generate a bounded in-memory fallback when no context file exists
     // anywhere. This keeps prompt shape stable without creating project-local
-    // `.codewhale/` files merely because CodeWhale was opened in a directory.
+    // `.codewhale/` files merely because DSE was opened in a directory.
     if !ctx.has_instructions()
         && let Some(generated) = generate_ephemeral_context(workspace)
     {
@@ -905,7 +905,7 @@ fn load_project_context_with_parents_and_home(
         ctx.source_path = None;
     }
 
-    // Load the CodeWhale-specific repo authority policy
+    // Load the DSE-specific repo authority policy
     // (.codewhale/constitution.json) independently of the prose instructions —
     // it is a distinct, higher-authority artifact and may exist with or without
     // an AGENTS.md. Legacy WHALE.md files are ignored and reported as
@@ -1131,7 +1131,7 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
 
     Some(format!(
         "# 项目上下文（自动生成，仅当前运行有效）\n\n\
-         > 此上下文由 CodeWhale 在内存中生成。\n\
+         > 此上下文由 DSE 在内存中生成。\n\
          > 未写入 `.codewhale/instructions.md`。\n\n\
          {overview}"
     ))
@@ -1303,7 +1303,7 @@ pub fn create_default_agents_md(workspace: &Path) -> std::io::Result<PathBuf> {
 
     let default_content = r#"# Project Agent Instructions
 
-This file provides guidance to AI agents (CodeWhale, Claude Code, etc.) when working with code in this repository.
+This file provides guidance to AI agents (DSE, Claude Code, etc.) when working with code in this repository.
 
 ## File Location
 

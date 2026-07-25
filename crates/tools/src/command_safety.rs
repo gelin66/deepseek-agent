@@ -261,7 +261,7 @@ pub static COMMAND_ARITY: &[(&str, u8)] = &[
 /// # Examples
 ///
 /// ```
-/// # use codewhale_tools::command_safety::classify_command;
+/// # use dse_tools::command_safety::classify_command;
 /// assert_eq!(classify_command(&["git", "status", "-s"]),            "git status");
 /// assert_eq!(classify_command(&["git", "push", "origin"]),          "git push");
 /// assert_eq!(classify_command(&["cargo", "check", "--workspace"]),  "cargo check");
@@ -321,7 +321,7 @@ pub fn classify_command(tokens: &[&str]) -> String {
 /// # Examples
 ///
 /// ```
-/// # use codewhale_tools::command_safety::prefix_allow_matches;
+/// # use dse_tools::command_safety::prefix_allow_matches;
 /// assert!( prefix_allow_matches("git status",    "git status --porcelain"));
 /// assert!(!prefix_allow_matches("git status",    "git push origin main"));
 /// assert!( prefix_allow_matches("cargo check",   "cargo check --workspace"));
@@ -412,7 +412,7 @@ pub fn is_parallel_readonly_command(command: &str) -> bool {
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    if is_codewhale_readonly_invocation(&command_refs) {
+    if is_dse_readonly_invocation(&command_refs) {
         return true;
     }
     let canonical = classify_command(&command_refs);
@@ -432,11 +432,11 @@ pub fn is_parallel_readonly_command(command: &str) -> bool {
         .any(|prefix| *prefix == canonical)
 }
 
-fn is_codewhale_readonly_invocation(tokens: &[&str]) -> bool {
+fn is_dse_readonly_invocation(tokens: &[&str]) -> bool {
     let Some((command, args)) = tokens.split_first() else {
         return false;
     };
-    if *command != "codewhale" {
+    if *command != "dse" {
         return false;
     }
     matches!(args, ["--version"] | ["-V"] | ["-v"] | ["--help"] | ["-h"])
@@ -1132,7 +1132,7 @@ fn is_safe_command(command: &str) -> bool {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        if is_codewhale_readonly_invocation(&refs) {
+        if is_dse_readonly_invocation(&refs) {
             return true;
         }
     }
@@ -1223,11 +1223,8 @@ mod tests {
         assert_eq!(analyze_command("ls -la").level, SafetyLevel::Safe);
         assert_eq!(analyze_command("cat file.txt").level, SafetyLevel::Safe);
         assert_eq!(analyze_command("git status").level, SafetyLevel::Safe);
-        assert_eq!(
-            analyze_command("codewhale --version").level,
-            SafetyLevel::Safe
-        );
-        assert_eq!(analyze_command("codewhale --help").level, SafetyLevel::Safe);
+        assert_eq!(analyze_command("dse --version").level, SafetyLevel::Safe);
+        assert_eq!(analyze_command("dse --help").level, SafetyLevel::Safe);
         assert_eq!(
             analyze_command("grep pattern file").level,
             SafetyLevel::Safe
@@ -1352,7 +1349,7 @@ mod tests {
             SafetyLevel::Dangerous
         );
         assert_ne!(
-            analyze_command("cargo run --bin codewhale -- eval").level,
+            analyze_command("cargo run --bin dse -- eval").level,
             SafetyLevel::Dangerous
         );
     }
@@ -1376,7 +1373,7 @@ mod tests {
         // contain the substring "eval" but are not eval invocations.
         // Guard against the naive `command.contains("eval")` regression
         // — these should stay safe / workspace-safe, never Dangerous.
-        let evaluate_safe = analyze_command("cargo run --bin codewhale -- eval").level;
+        let evaluate_safe = analyze_command("cargo run --bin dse -- eval").level;
         assert_ne!(
             evaluate_safe,
             SafetyLevel::Dangerous,

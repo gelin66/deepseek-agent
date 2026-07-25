@@ -1,10 +1,10 @@
 [package]
-name = "codewhale-localization"
+name = "dse-localization"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Fixed Simplified Chinese product messages for CodeWhale"
+description = "Fixed Simplified Chinese product messages for DSE"
 
 [dependencies]
 rust-i18n = "4.1.0"

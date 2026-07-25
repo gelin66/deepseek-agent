@@ -25,7 +25,7 @@
 //! percent-encodes terminal control characters as defense in depth.
 //!
 //! Opening is terminal-owned: supporting terminals conventionally use
-//! Cmd-click on macOS or Ctrl-click on Linux/Windows. CodeWhale does not
+//! Cmd-click on macOS or Ctrl-click on Linux/Windows. DSE does not
 //! intercept those gestures or launch URLs itself, so mouse selection remains
 //! independent of browser-opening policy.
 //!

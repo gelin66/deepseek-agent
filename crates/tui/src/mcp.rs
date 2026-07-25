@@ -316,11 +316,11 @@ pub struct McpServerConfig {
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub env_headers: HashMap<String, String>,
     /// Environment variable containing a bearer token. When present and set,
-    /// CodeWhale sends `Authorization: Bearer <value>` for URL-based servers.
+    /// DSE sends `Authorization: Bearer <value>` for URL-based servers.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearer_token_env_var: Option<String>,
-    /// OAuth scopes requested during `codewhale mcp login`.
+    /// OAuth scopes requested during `dse mcp login`.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
@@ -924,7 +924,7 @@ impl McpConnection {
             "params": {
                 "protocolVersion": "2024-11-05",
                 "clientInfo": {
-                    "name": "codewhale-tui",
+                    "name": "dse-tui",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {

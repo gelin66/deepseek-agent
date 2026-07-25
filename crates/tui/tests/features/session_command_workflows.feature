@@ -1,6 +1,6 @@
 @long-running
 # [LONG RUNNING] Opt-in acceptance workflows. Run with:
-# cargo test -p codewhale-tui --bin codewhale-tui --features long-running-tests commands::groups::session::acceptance -- --test-threads=1
+# cargo test -p dse-tui --bin dse-tui --features long-running-tests commands::groups::session::acceptance -- --test-threads=1
 Feature: Session command workflows
 
   Scenario: Save, export, and load preserve the active session

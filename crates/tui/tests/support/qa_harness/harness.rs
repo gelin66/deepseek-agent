@@ -93,7 +93,7 @@ impl HarnessBuilder {
         }
         if let Some(home) = self.seal_home.as_deref() {
             std::fs::create_dir_all(home).context("create sealed HOME")?;
-            let codewhale_config = home.join(".codewhale").join("config.toml");
+            let dse_config = home.join(".codewhale").join("config.toml");
             builder = builder
                 .env("HOME", home.to_string_lossy())
                 .env("XDG_CONFIG_HOME", home.join(".config").to_string_lossy())
@@ -104,7 +104,7 @@ impl HarnessBuilder {
                 // fixed to Simplified Chinese and does not derive from locale.
                 .env("LANG", "en_US.UTF-8")
                 .env("LC_ALL", "en_US.UTF-8")
-                .env("CODEWHALE_CONFIG_PATH", codewhale_config.to_string_lossy());
+                .env("CODEWHALE_CONFIG_PATH", dse_config.to_string_lossy());
         }
         for (k, v) in &self.env {
             builder = builder.env(k, v);
@@ -222,8 +222,8 @@ impl Harness {
         if let Some(path) = std::env::var_os(&key) {
             return PathBuf::from(path);
         }
-        if name == "codewhale-tui"
-            && let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui")
+        if name == "dse-tui"
+            && let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui")
         {
             return PathBuf::from(path);
         }

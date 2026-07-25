@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     CommandId, InteractionId, RunId, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
 };
 
@@ -350,14 +350,14 @@ impl Error for ProjectionError {}
 
 #[cfg(test)]
 mod tests {
-    use codewhale_protocol::agent_runtime::{
+    use dse_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, ApprovalRisk, AttemptId,
         DurableControlAction, ModelAccounting, ModelFinishReason, ModelOutput, OperationId,
         RunRequest, TerminalState, ToolApprovalPrompt, ToolArguments, ToolInvocation, ToolOutcome,
         Usage, UserInteractionPrompt, UserInteractionRequest, UserInteractionResponse,
         WorkspaceAccess,
     };
-    use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+    use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 
     use super::*;
 

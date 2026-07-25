@@ -11,17 +11,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use codewhale_app::{
+use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
     ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
 };
-use codewhale_protocol::agent_runtime::{
+use dse_protocol::agent_runtime::{
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, StoredRuntimeEvent, ToolPolicy,
 };
-use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
-use codewhale_protocol::task::TaskDefinition;
-use codewhale_runtime::{RunReplay, RunStore};
-use codewhale_state::StateStore;
+use dse_protocol::run_api::{RunProductControls, StartRunCommand};
+use dse_protocol::task::TaskDefinition;
+use dse_runtime::{RunReplay, RunStore};
+use dse_state::StateStore;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -79,7 +79,7 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     let codewhale_home = isolated.path().join("home/.codewhale");
     let skills_dir = codewhale_home.join("skills");
     std::fs::create_dir_all(&workspace).expect("create workspace");
-    std::fs::create_dir_all(&skills_dir).expect("create isolated CodeWhale home");
+    std::fs::create_dir_all(&skills_dir).expect("create isolated DSE home");
     let state_path = codewhale_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(&workspace)
         .expect("canonical workspace")

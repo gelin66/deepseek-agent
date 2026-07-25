@@ -1,13 +1,13 @@
 ---
 name: skill-creator
-description: Create or improve codewhale skills. Use when the user wants a new skill, wants to update an existing skill, or needs guidance on when a skill should be a skill versus MCP, tools, or a plugin scaffold.
+description: Create or improve dse skills. Use when the user wants a new skill, wants to update an existing skill, or needs guidance on when a skill should be a skill versus MCP, tools, or a plugin scaffold.
 metadata:
   short-description: Create DeepSeek skills
 ---
 
 # Skill Creator
 
-Use this skill to create small, useful codewhale skills that match the
+Use this skill to create small, useful dse skills that match the
 runtime this repository actually ships.
 
 ## What A Skill Is

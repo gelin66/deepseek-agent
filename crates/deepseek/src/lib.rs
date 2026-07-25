@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt};
+use dse_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt};
 use serde_json::{Map, Value, json};
 
 mod accounting;
@@ -949,10 +949,10 @@ fn strict_enum_values_match(
 
 #[cfg(test)]
 mod tests {
-    use codewhale_context::compaction::{
+    use dse_context::compaction::{
         ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
     };
-    use codewhale_runtime::{
+    use dse_runtime::{
         AgentActor, CanonicalTranscript, ContextPolicy, ModelToolCall, PromptCacheControl, RunId,
         SystemPromptBlock, TaskContract, TaskDefinition, TaskGenerationId, ToolArguments,
         ToolDefinition, ToolOutcome, TranscriptEntry, WorkspaceRevision, WorkspaceState,

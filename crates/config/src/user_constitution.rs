@@ -296,7 +296,7 @@ impl UserConstitution {
     /// Parse an untrusted draft (e.g. model output) into a bounded, sanitized
     /// constitution.
     ///
-    /// This is the single ingestion gate for text CodeWhale did not author:
+    /// This is the single ingestion gate for text DSE did not author:
     ///
     /// - Extracts the first JSON object, so fenced or prose-wrapped output
     ///   still parses; anything without one is [`Invalid`].
@@ -523,7 +523,7 @@ mod tests {
 
     fn sample() -> UserConstitution {
         UserConstitution {
-            about: Some("Maintainer of CodeWhale.".to_string()),
+            about: Some("Maintainer of DSE.".to_string()),
             working_style: vec!["Be concise.".to_string(), "Show diffs.".to_string()],
             priorities: vec!["Correctness over speed.".to_string()],
             autonomy_preference: AutonomyPreference::Balanced,

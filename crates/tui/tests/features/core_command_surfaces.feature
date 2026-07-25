@@ -1,6 +1,6 @@
 @long-running
 # [LONG RUNNING] Opt-in core command acceptance workflows. Run with:
-# cargo test -p codewhale-tui --bin codewhale-tui --features long-running-tests commands::groups::core::acceptance -- --test-threads=1
+# cargo test -p dse-tui --bin dse-tui --features long-running-tests commands::groups::core::acceptance -- --test-threads=1
 Feature: Core command visible surfaces
 
   Scenario: Core informational commands write visible transcript messages

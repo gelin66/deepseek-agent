@@ -1,4 +1,4 @@
-use codewhale_protocol::task::canonical_json;
+use dse_protocol::task::canonical_json;
 use serde_json::Value;
 
 const FIXTURE: &str = include_str!("../../protocol/tests/fixtures/canonical-json-v1.json");
