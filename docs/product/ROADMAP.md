@@ -3207,6 +3207,35 @@ failure 错误要求为 `not_applied/after_correction`，而 canonical outcome �
 独立任务成立。当前 production/schema/config delta=0；完整证据见
 [M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
 
+#### M14：typed observer conformance 与 M13 live path 退役
+
+M14 以实现 checkpoint `7a9e2278` 收敛 evaluator contract，不重开 M13：
+
+- 唯一 corrected Harness 新增纯离线 `--observer-conformance`；12 个冻结 case 覆盖
+  semantic-set canonicalization、`patch_parse` 与 `workspace_precondition` 边界、
+  verifier `indeterminate/unsafe`、Writer worktree assignment 及 exact reopen；
+- 所有 label 只投影 canonical event kind、`ToolOutcome` 六个稳定 axis、
+  `AgentWorkspaceAssignment` 与 byte-equivalent reopened facts，不持久化第二状态真相；
+- 12/12 case 通过，含 6 positive / 6 negative；连续两次 report byte-identical，
+  result SHA-256 为
+  `09b840b8af0ee136d291a7ebf2203ebb05467fd24bc5adfa670dbacb093dd450`；
+- `--campaign m13`、M13 successor loader、错误的 generic failure disposition 断言、
+  不可达 trajectory branch 与 M13-only acquisition/self-test 路径已物理删除；
+  M9-C/M11/M12 现有消费者保持通过；
+- M13 manifest、fixture、summary 与 ignored raw 仍是不可变历史证据，不读取、不续跑、
+  不拼接。Key、API、network、新 raw 和 production behavior delta 均为 0；
+- focused、fmt、workspace strict clippy/test、root/read-only/Writer、ToolOutcome exact
+  replay、SQLite reopen、process SIGKILL 与 CLI/TUI/API parity 全部通过。Run API v12、
+  RuntimeEvent v18、State v24、exec-stream v3 不变。
+
+决定为 `keep_offline_observer_conformance / retire_m13_live_acquisition`。这只恢复未来
+采集的观察可信性，不产生成功率、恢复率或成本结论。新的 product-effect acquisition
+必须另立冻结 manifest，从新 identity/position 1 开始；observer、accounting 或 evidence
+任一歧义仍在下一 arm 前 fail closed。
+
+完整事实见
+[M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

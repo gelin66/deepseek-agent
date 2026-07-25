@@ -2453,6 +2453,43 @@ ambiguity 即关闭”，不做第四次付费纠正，不生成产品 trajector
 production treatment。冻结事实与 exact raw identity 见
 [M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
 
+### M14 typed observer conformance
+
+M14 不采集模型样本，而是在任何新付费 acquisition 前冻结 observer contract。实现
+checkpoint 为 `7a9e2278`；Run API v12、RuntimeEvent v18、State v24 与 exec-stream v3
+保持不变。
+
+`eval/fixtures/m14-observer-conformance-v1.json` 固定 12 个 case：
+
+- 3 个 semantic Writer scope case，证明集合语义必须 canonicalize，重复或非 canonical
+  observation 必须拒绝；
+- 3 个 patch failure case，区分 rejected preflight `patch_parse` 与执行后
+  `workspace_precondition`；
+- 2 个 verifier case，保留已执行外部命令后的
+  `side_effect=indeterminate/retry=unsafe`；
+- 2 个 Writer assignment case，校验 isolated worktree、base revision 与 allowed path；
+- 2 个 reopen case，要求 committed ToolOutcome 与 Writer lifecycle byte-equivalent，
+  crash-window drift 必须拒绝。
+
+Harness 只从 event kind、`ToolOutcome.failure_code/invocation/transport/operation/
+side_effect/retry`、Writer assignment 和 exact reopened facts 派生结果。12/12 通过，
+6 positive / 6 negative；连续两次输出 byte-identical，result SHA-256 为
+`09b840b8af0ee136d291a7ebf2203ebb05467fd24bc5adfa670dbacb093dd450`。
+protocol owner 还逐项反序列化并执行 `ToolOutcome::validate()`；tools、runtime、state 与
+process SIGKILL/reopen 测试证明 corpus 对应真实 owner 语义。
+
+Cutover 删除 closed `--campaign m13` live path、M13-only loader/profile/branch/self-test
+和把所有 required failure 统一写成 `not_applied/after_correction` 的错误断言。
+M9-C/M11/M12 self-test 继续通过；M13 frozen manifest/fixture/summary/raw 不改写、不读取、
+不续跑、不拼接。Key、API、network、新 raw 与 production delta 均为 0。
+
+决定为 `keep_offline_observer_conformance / retire_m13_live_acquisition`。这不是产品效果
+证据，也不能补算 M13。下一次 acquisition 只能使用新的 immutable identity 和 position
+1，并在 observer/accounting/evidence 歧义时停止。
+
+完整证据见
+[M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

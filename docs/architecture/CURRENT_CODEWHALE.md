@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-24
+- 快照日期：2026-07-25
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -73,6 +73,7 @@
 - M9-C fixed-Pro successor contract：`d79b2a36`
 - M9-C corrected Harness / immutable candidate：`7a91bbaa`
 - M9-C fixed-Pro successor live admission：`84e20cd9`
+- M14 typed observer conformance / M13 live path cutover：`7a9e2278`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2100,6 +2101,26 @@ M13 只增加 eval acquisition 与关闭证据，没有改变 production：
 
 完整冻结契约见
 [M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
+
+M14 只改变 eval observer 与已关闭 campaign 的消费者边界，不改变 production：
+
+- `scripts/eval-m9b-fixed-pro-regression.py --observer-conformance` 是唯一新增入口；它只
+  读取提交的 12-case corpus，不接收 Key、binary、admission、raw 或 output path；
+- observer label 只来自 canonical event kind、`ToolOutcome` 六个稳定 axis、
+  `AgentWorkspaceAssignment` 与 exact reopened facts；没有第二 Runtime、Store、event、
+  tool outcome 或 recovery truth；
+- protocol test 通过 `ToolOutcome::validate()` 校验所有 corpus outcome；tools tests
+  冻结 parse-valid stale patch 的 `workspace_precondition` 与 verifier failure 的
+  `indeterminate/unsafe`；runtime/state/process tests 冻结 canonical Writer scope、
+  SQLite reopen 和 SIGKILL exactly-once；
+- `--campaign m13`、错误 generic disposition classifier、M13-only loader/profile/
+  self-test 与不可达 trajectory branch 已删除。默认 M9-C 及 M11/M12 campaign 保留；
+- M13 frozen manifest/fixture/summary/raw 保持不可变且不是输入。12/12 offline cases
+  通过，report byte-identical；production schema/config/model sender/accounting 均未变。
+
+M14 决定为 `keep_offline_observer_conformance / retire_m13_live_acquisition`。实现
+checkpoint 为 `7a9e2278`；完整证据见
+[M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
 
 ## 7. 明确非结论
 
