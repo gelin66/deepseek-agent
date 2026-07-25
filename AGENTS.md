@@ -46,7 +46,7 @@ Changing one of these constraints requires evidence and a new ADR.
 ## Current repository truth
 
 - Imported CodeWhale baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`.
-- `codewhale exec`, `codewhale app-server`, and the retained interactive TUI
+- `dse exec`, `dse app-server`, and the retained interactive TUI
   foreground now share `crates/app::AgentApplication`,
   `crates/runtime::AgentRuntime`, the fixed `crates/tools` catalog,
   `crates/deepseek::DeepSeekModelPort`, and the SQLite `RunStore` implemented
@@ -65,14 +65,16 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v12, State schema is v24, RuntimeEvent is v18, and the
-  compact exec stream is v3. State v21 introduced exact advertised tool
+- Current Run API is v12, State schema is v25, RuntimeEvent is v19, and the
+  compact exec stream is v4. State v21 introduced exact advertised tool
   catalogs and typed tool-failure/retry truth; v22 added immutable Host route
   audit and retired materialized runs that could not reconstruct it. State v23
   deleted only the legacy `threads` metadata table. State v24 retires
   pre-v18 materialized runs whose Auto/omitted-reasoning wire plan cannot be
   mapped losslessly and preserves only v18-safe pending Start intents. No
-  compatibility reader or dual write exists.
+  compatibility reader or dual write exists. State v25 keeps replay-safe
+  pending Start intents while retiring exact transcripts whose active identity
+  cannot be rewritten losslessly for DSE.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
@@ -346,7 +348,7 @@ git diff --check
 Focused current WIP gate:
 
 ```bash
-./scripts/dev-codewhale.sh focused
+./scripts/dev-dse.sh focused
 ```
 
 Targeted Rust work:

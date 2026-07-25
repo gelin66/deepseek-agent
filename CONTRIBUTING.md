@@ -1,7 +1,7 @@
 # Contributing
 
-This repository is currently a local product-development line based on
-CodeWhale. Read [AGENTS.md](AGENTS.md), the
+This repository is currently the DSE (DeepSeek Engineer) product-development
+line, based on the imported CodeWhale source. Read [AGENTS.md](AGENTS.md), the
 [product plan](docs/product/PRODUCT_PLAN.md), and the
 [roadmap](docs/product/ROADMAP.md) before changing code.
 
@@ -14,13 +14,13 @@ CodeWhale. Read [AGENTS.md](AGENTS.md), the
 ## Setup
 
 ```bash
-cargo build -p codewhale-cli -p codewhale-tui --locked
+cargo build -p dse-cli -p dse-tui --locked
 ```
 
 Current focused gate:
 
 ```bash
-./scripts/dev-codewhale.sh focused
+./scripts/dev-dse.sh focused
 ```
 
 ## Change requirements

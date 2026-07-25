@@ -36,11 +36,11 @@
 
 ## 3. 当前开发说明
 
-- `codewhale exec`、`codewhale app-server` 与交互 TUI 已共用
+- `dse exec`、`dse app-server` 与交互 TUI 已共用
   `crates/app::AgentApplication`、`AgentRuntime` 和 SQLite `RunStore`。
 - M4 已关闭：旧 TUI engine/Classic shell、私有状态路径和第二模型循环均已删除；
-  Underwater 是唯一交互外壳。当前 Run API v11、RuntimeEvent v17、State schema v23、
-  exec-stream v3。
+  Underwater 是唯一交互外壳。当前 Run API v12、RuntimeEvent v19、State schema v25、
+  exec-stream v4。
 - M5-A 已在 canonical protocol/runtime/state 中建立唯一 TaskContract、EvidenceReceipt
   与 Host completion owner；代码、本地门禁和正式 DeepSeek 显式 verifier A/B 已完成。
   M5-B evidence-aware ContextBroker 也已完成正式 A/B 并 shrink 为仅 hard-limit safety；
@@ -50,11 +50,11 @@
   M8-H 已删除不可达 FIM production 半分支并保持 FIM re-entry 为 hold；M8-J 又删除旧
   `codewhale thread`、SQLite `threads`/session index 第二真相和无消费者 protocol DTO，
   V12 关闭。current V1 matrix 为 10 pass / 6 blocked。
-- 本地 focused 检查脚本：`../scripts/dev-codewhale.sh`。
+- 本地 focused 检查脚本：`../scripts/dev-dse.sh`。
 - M1 离线能力基线：`../eval/README.md`。
 - 当前配置样例：`../config.example.toml`。
-- 本地包与安装生命周期：`../scripts/codewhale-delivery.sh`；
-  macOS/Linux 自测：`../scripts/test-codewhale-delivery.sh`。
+- 本地包与安装生命周期：`../scripts/dse-delivery.sh`；
+  macOS/Linux 自测：`../scripts/test-dse-delivery.sh`。
 
 ## 4. 历史和待清理资料
 

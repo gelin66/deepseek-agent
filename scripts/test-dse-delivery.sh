@@ -2,8 +2,8 @@
 set -euo pipefail
 
 readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly delivery="$repo_root/scripts/codewhale-delivery.sh"
-readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/codewhale-delivery-test.XXXXXX")"
+readonly delivery="$repo_root/scripts/dse-delivery.sh"
+readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/dse-delivery-test.XXXXXX")"
 
 cleanup() {
   chmod -R u+w "$test_root" 2>/dev/null || true
@@ -28,7 +28,7 @@ make_fixture_binaries() {
   local directory="$1"
   local version="$2"
   mkdir -p "$directory"
-  for binary in codewhale codewhale-tui; do
+  for binary in dse dse-tui; do
     {
       printf '#!/bin/sh\n'
       printf 'if [ "${1:-}" = "--version" ]; then\n'
@@ -56,7 +56,7 @@ home="$test_root/home"
 mkdir -p "$artifacts" "$home"
 printf 'preserve-me\n' >"$home/config.toml"
 home_before="$(sha256_file "$home/config.toml")"
-export CODEWHALE_HOME="$home"
+export DSE_HOME="$home"
 
 rev1="1111111111111111111111111111111111111111"
 tree1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -97,8 +97,12 @@ artifact_v2="$(
 
 "$delivery" install --artifact "$artifact_v1" --prefix "$prefix"
 "$delivery" verify --prefix "$prefix"
-[ "$("$prefix/bin/codewhale" --version)" = "codewhale 1.0.0" ] ||
+[ "$("$prefix/bin/dse" --version)" = "dse 1.0.0" ] ||
   fail "fresh install did not activate v1"
+[ ! -e "$prefix/bin/codewhale" ] && [ ! -L "$prefix/bin/codewhale" ] ||
+  fail "fresh DSE install created the retired codewhale program link"
+[ ! -e "$prefix/lib/codewhale" ] ||
+  fail "fresh DSE install created the retired codewhale delivery root"
 
 corrupt_archive="$test_root/corrupt-archive.tar.gz"
 cp "$artifact_v2" "$corrupt_archive"
@@ -107,7 +111,7 @@ printf '%s  %s\n' "$(sha256_file "$artifact_v2")" "${corrupt_archive##*/}" \
   >"$corrupt_archive.sha256"
 assert_rejected "changed archive" \
   "$delivery" install --artifact "$corrupt_archive" --prefix "$prefix"
-[ "$("$prefix/bin/codewhale" --version)" = "codewhale 1.0.0" ] ||
+[ "$("$prefix/bin/dse" --version)" = "dse 1.0.0" ] ||
   fail "archive checksum failure changed the active release"
 
 tamper_dir="$test_root/tamper"
@@ -115,7 +119,7 @@ mkdir -p "$tamper_dir"
 tar -xzf "$artifact_v2" -C "$tamper_dir"
 tamper_root="$(find "$tamper_dir" -mindepth 1 -maxdepth 1 -type d -print)"
 [ -n "$tamper_root" ] || fail "could not locate extracted fixture root"
-printf 'changed\n' >>"$tamper_root/bin/codewhale"
+printf 'changed\n' >>"$tamper_root/bin/dse"
 tampered_archive="$test_root/tampered-binary.tar.gz"
 (
   cd "$tamper_dir"
@@ -124,15 +128,15 @@ tampered_archive="$test_root/tampered-binary.tar.gz"
     "$tamper_name/manifest.tsv" \
     "$tamper_name/LICENSE" \
     "$tamper_name/SHA256SUMS" \
-    "$tamper_name/bin/codewhale" \
-    "$tamper_name/bin/codewhale-tui" \
+    "$tamper_name/bin/dse" \
+    "$tamper_name/bin/dse-tui" \
     | gzip -n >"$tampered_archive"
 )
 printf '%s  %s\n' "$(sha256_file "$tampered_archive")" "${tampered_archive##*/}" \
   >"$tampered_archive.sha256"
 assert_rejected "changed binary with recomputed archive checksum" \
   "$delivery" install --artifact "$tampered_archive" --prefix "$prefix"
-[ "$("$prefix/bin/codewhale" --version)" = "codewhale 1.0.0" ] ||
+[ "$("$prefix/bin/dse" --version)" = "dse 1.0.0" ] ||
   fail "internal checksum failure changed the active release"
 
 wrong_target="x86_64-unknown-netbsd"
@@ -150,25 +154,25 @@ assert_rejected "mismatched platform" \
 
 "$delivery" install --artifact "$artifact_v2" --prefix "$prefix"
 "$delivery" verify --prefix "$prefix"
-[ "$("$prefix/bin/codewhale" --version)" = "codewhale 2.0.0" ] ||
+[ "$("$prefix/bin/dse" --version)" = "dse 2.0.0" ] ||
   fail "upgrade did not activate v2"
-[ -L "$prefix/lib/codewhale/previous" ] ||
+[ -L "$prefix/lib/dse/previous" ] ||
   fail "upgrade did not retain one previous release"
 
 "$delivery" rollback --prefix "$prefix"
 "$delivery" verify --prefix "$prefix"
-[ "$("$prefix/bin/codewhale" --version)" = "codewhale 1.0.0" ] ||
+[ "$("$prefix/bin/dse" --version)" = "dse 1.0.0" ] ||
   fail "rollback did not reactivate v1"
 
 "$delivery" uninstall --prefix "$prefix"
-[ ! -e "$prefix/bin/codewhale" ] && [ ! -L "$prefix/bin/codewhale" ] ||
-  fail "uninstall left the codewhale program link"
-[ ! -e "$prefix/bin/codewhale-tui" ] && [ ! -L "$prefix/bin/codewhale-tui" ] ||
-  fail "uninstall left the codewhale-tui program link"
-[ ! -e "$prefix/lib/codewhale" ] ||
+[ ! -e "$prefix/bin/dse" ] && [ ! -L "$prefix/bin/dse" ] ||
+  fail "uninstall left the dse program link"
+[ ! -e "$prefix/bin/dse-tui" ] && [ ! -L "$prefix/bin/dse-tui" ] ||
+  fail "uninstall left the dse-tui program link"
+[ ! -e "$prefix/lib/dse" ] ||
   fail "uninstall left delivery metadata"
 [ "$(sha256_file "$home/config.toml")" = "$home_before" ] ||
-  fail "uninstall changed CODEWHALE_HOME data"
+  fail "uninstall changed DSE_HOME data"
 
 if grep -En 'curl|wget|git[[:space:]]+(fetch|pull)|gh[[:space:]]+release' "$delivery" >/dev/null; then
   fail "delivery owner contains a network/release-discovery command"

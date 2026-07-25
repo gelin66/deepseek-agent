@@ -64,26 +64,26 @@ jobs:
       - name: Fetch locked dependencies
         run: cargo fetch --locked
       - name: Run local delivery lifecycle
-        run: ./scripts/test-codewhale-delivery.sh
+        run: ./scripts/test-dse-delivery.sh
       - name: Build checksum-bound package
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/codewhale-delivery-target
-        run: ./scripts/codewhale-delivery.sh package --output-dir dist
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dse-delivery-target
+        run: ./scripts/dse-delivery.sh package --output-dir dist
       - name: Verify packaged install without release discovery
         run: |
           artifact="$(find dist -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
-          ./scripts/codewhale-delivery.sh install \
+          ./scripts/dse-delivery.sh install \
             --artifact "$artifact" \
-            --prefix "${{ runner.temp }}/codewhale-prefix"
-          "${{ runner.temp }}/codewhale-prefix/bin/codewhale" --version
-          "${{ runner.temp }}/codewhale-prefix/bin/codewhale-tui" --version
-          ./scripts/codewhale-delivery.sh verify \
-            --prefix "${{ runner.temp }}/codewhale-prefix"
-          ./scripts/codewhale-delivery.sh uninstall \
-            --prefix "${{ runner.temp }}/codewhale-prefix"
+            --prefix "${{ runner.temp }}/dse-prefix"
+          "${{ runner.temp }}/dse-prefix/bin/dse" --version
+          "${{ runner.temp }}/dse-prefix/bin/dse-tui" --version
+          ./scripts/dse-delivery.sh verify \
+            --prefix "${{ runner.temp }}/dse-prefix"
+          ./scripts/dse-delivery.sh uninstall \
+            --prefix "${{ runner.temp }}/dse-prefix"
       - uses: actions/upload-artifact@v4
         with:
-          name: codewhale-${{ runner.os }}-${{ runner.arch }}
+          name: dse-${{ runner.os }}-${{ runner.arch }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256

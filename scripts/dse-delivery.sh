@@ -2,9 +2,9 @@
 set -euo pipefail
 
 readonly PROGRAM_NAME="${0##*/}"
-readonly DELIVERY_SCHEMA="codewhale.delivery.v1"
-readonly PRODUCT_NAME="CodeWhale"
-readonly BINARIES="codewhale,codewhale-tui"
+readonly DELIVERY_SCHEMA="dse.delivery.v1"
+readonly PRODUCT_NAME="DSE"
+readonly BINARIES="dse,dse-tui"
 
 die() {
   printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
@@ -13,15 +13,15 @@ die() {
 
 usage() {
   cat <<'EOF'
-CodeWhale local delivery owner
+DSE local delivery owner
 
 Usage:
-  scripts/codewhale-delivery.sh package [options]
-  scripts/codewhale-delivery.sh install --artifact FILE [--checksum FILE] [--prefix DIR]
-  scripts/codewhale-delivery.sh verify [--prefix DIR]
-  scripts/codewhale-delivery.sh rollback [--prefix DIR]
-  scripts/codewhale-delivery.sh uninstall [--prefix DIR]
-  scripts/codewhale-delivery.sh host-target
+  scripts/dse-delivery.sh package [options]
+  scripts/dse-delivery.sh install --artifact FILE [--checksum FILE] [--prefix DIR]
+  scripts/dse-delivery.sh verify [--prefix DIR]
+  scripts/dse-delivery.sh rollback [--prefix DIR]
+  scripts/dse-delivery.sh uninstall [--prefix DIR]
+  scripts/dse-delivery.sh host-target
 
 Package options:
   --output-dir DIR    Artifact destination (default: dist)
@@ -226,8 +226,8 @@ write_internal_checksums() {
     cd "$root"
     printf '%s  %s\n' "$(sha256_file manifest.tsv)" "manifest.tsv"
     printf '%s  %s\n' "$(sha256_file LICENSE)" "LICENSE"
-    printf '%s  %s\n' "$(sha256_file bin/codewhale)" "bin/codewhale"
-    printf '%s  %s\n' "$(sha256_file bin/codewhale-tui)" "bin/codewhale-tui"
+    printf '%s  %s\n' "$(sha256_file bin/dse)" "bin/dse"
+    printf '%s  %s\n' "$(sha256_file bin/dse-tui)" "bin/dse-tui"
   ) >"$root/SHA256SUMS"
 }
 
@@ -240,7 +240,7 @@ verify_internal_checksums() {
   while IFS='  ' read -r expected_hash expected_path extra; do
     [ -z "${extra:-}" ] || die "malformed SHA256SUMS record"
     case "$expected_path" in
-      manifest.tsv | LICENSE | bin/codewhale | bin/codewhale-tui) ;;
+      manifest.tsv | LICENSE | bin/dse | bin/dse-tui) ;;
       *) die "unexpected checksum path: $expected_path" ;;
     esac
     validate_identity_value checksum "$expected_hash" '^[0-9a-f]{64}$'
@@ -311,7 +311,7 @@ package_command() {
   require_command tar
   repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
   cd "$repo_root"
-  [ -f Cargo.lock ] && [ -f LICENSE ] || die "package must run from a CodeWhale source tree"
+  [ -f Cargo.lock ] && [ -f LICENSE ] || die "package must run from a DSE source tree"
   cargo_lock_sha="$(sha256_file Cargo.lock)"
 
   if [ -n "$binary_dir" ]; then
@@ -345,10 +345,10 @@ package_command() {
     rustc_line="$(rustc --version | tr '\t\r\n' '   ')"
     export CARGO_INCREMENTAL=0
     export CARGO_NET_OFFLINE=true
-    export CODEWHALE_BUILD_SHA="$revision"
-    : "${CARGO_TARGET_DIR:=${TMPDIR:-/tmp}/codewhale-delivery-target}"
+    export DSE_BUILD_SHA="$revision"
+    : "${CARGO_TARGET_DIR:=${TMPDIR:-/tmp}/dse-delivery-target}"
     export CARGO_TARGET_DIR
-    cargo build --release --locked --offline -p codewhale-cli -p codewhale-tui
+    cargo build --release --locked --offline -p dse-cli -p dse-tui
     binary_dir="$CARGO_TARGET_DIR/release"
   fi
 
@@ -356,22 +356,22 @@ package_command() {
   validate_identity_value target "$target" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
   validate_identity_value source_revision "$revision" '^[0-9a-f]{40}$'
   validate_identity_value source_tree "$source_tree" '^[0-9a-f]{40}$'
-  for binary in codewhale codewhale-tui; do
+  for binary in dse dse-tui; do
     [ -f "$binary_dir/$binary" ] && [ ! -L "$binary_dir/$binary" ] ||
       die "canonical binary missing from $binary_dir: $binary"
     [ -x "$binary_dir/$binary" ] || die "canonical binary is not executable: $binary"
   done
 
   output_dir="$(absolute_directory "$output_dir")"
-  stage_root="$(mktemp -d "${TMPDIR:-/tmp}/codewhale-package.XXXXXX")"
+  stage_root="$(mktemp -d "${TMPDIR:-/tmp}/dse-package.XXXXXX")"
   trap "rm -rf '$stage_root'" EXIT
-  package_name="codewhale-${version}-${target}-${revision:0:12}"
+  package_name="dse-${version}-${target}-${revision:0:12}"
   package_root="$stage_root/$package_name"
   mkdir -p "$package_root/bin"
-  cp "$binary_dir/codewhale" "$package_root/bin/codewhale"
-  cp "$binary_dir/codewhale-tui" "$package_root/bin/codewhale-tui"
+  cp "$binary_dir/dse" "$package_root/bin/dse"
+  cp "$binary_dir/dse-tui" "$package_root/bin/dse-tui"
   cp LICENSE "$package_root/LICENSE"
-  chmod 0755 "$package_root/bin/codewhale" "$package_root/bin/codewhale-tui"
+  chmod 0755 "$package_root/bin/dse" "$package_root/bin/dse-tui"
   chmod 0644 "$package_root/LICENSE"
   {
     printf 'schema\t%s\n' "$DELIVERY_SCHEMA"
@@ -395,8 +395,8 @@ package_command() {
   touch -t 198001010000 \
     "$package_root" \
     "$package_root/bin" \
-    "$package_root/bin/codewhale" \
-    "$package_root/bin/codewhale-tui" \
+    "$package_root/bin/dse" \
+    "$package_root/bin/dse-tui" \
     "$package_root/LICENSE" \
     "$package_root/manifest.tsv" \
     "$package_root/SHA256SUMS"
@@ -411,8 +411,8 @@ package_command() {
       "$package_name/manifest.tsv" \
       "$package_name/LICENSE" \
       "$package_name/SHA256SUMS" \
-      "$package_name/bin/codewhale" \
-      "$package_name/bin/codewhale-tui" \
+      "$package_name/bin/dse" \
+      "$package_name/bin/dse-tui" \
       | gzip -n >"$archive_tmp"
   )
   mv "$archive_tmp" "$archive"
@@ -452,11 +452,11 @@ archive_root_name() {
     esac
     if [ -z "$root" ]; then
       root="${entry%%/*}"
-      validate_identity_value archive_root "$root" '^codewhale-[A-Za-z0-9.+_-]+-[A-Za-z0-9._-]+-[0-9a-f]{12}$'
+      validate_identity_value archive_root "$root" '^dse-[A-Za-z0-9.+_-]+-[A-Za-z0-9._-]+-[0-9a-f]{12}$'
     fi
     case "$entry" in
       "$root/" | "$root/bin/" | "$root/manifest.tsv" | "$root/LICENSE" | \
-        "$root/SHA256SUMS" | "$root/bin/codewhale" | "$root/bin/codewhale-tui")
+        "$root/SHA256SUMS" | "$root/bin/dse" | "$root/bin/dse-tui")
         ;;
       *)
         die "archive contains a non-canonical entry: $entry"
@@ -508,7 +508,7 @@ verify_release_root() {
   [ "$(manifest_value "$manifest" target)" = "$expected_target" ] ||
     die "installed release target does not match this host"
   verify_internal_checksums "$root"
-  [ -x "$root/bin/codewhale" ] && [ -x "$root/bin/codewhale-tui" ] ||
+  [ -x "$root/bin/dse" ] && [ -x "$root/bin/dse-tui" ] ||
     die "installed release binaries are not executable"
 }
 
@@ -563,12 +563,12 @@ install_command() {
   verify_archive_checksum "$artifact" "$checksum"
   root_name="$(archive_root_name "$artifact")"
 
-  delivery_root="$prefix/lib/codewhale"
+  delivery_root="$prefix/lib/dse"
   releases_root="$delivery_root/releases"
   validate_delivery_link_slot "$delivery_root/current"
   validate_delivery_link_slot "$delivery_root/previous"
-  validate_bin_slot "$prefix/bin/codewhale" "../lib/codewhale/current/bin/codewhale"
-  validate_bin_slot "$prefix/bin/codewhale-tui" "../lib/codewhale/current/bin/codewhale-tui"
+  validate_bin_slot "$prefix/bin/dse" "../lib/dse/current/bin/dse"
+  validate_bin_slot "$prefix/bin/dse-tui" "../lib/dse/current/bin/dse-tui"
   mkdir -p "$releases_root" "$prefix/bin"
   stage="$(mktemp -d "$delivery_root/.install.XXXXXX")"
   trap "rm -rf '$stage'" EXIT
@@ -580,7 +580,7 @@ install_command() {
   [ "$(manifest_value "$manifest" target)" = "$target" ] ||
     die "artifact target $(manifest_value "$manifest" target) does not match host $target"
   verify_internal_checksums "$extracted"
-  [ -x "$extracted/bin/codewhale" ] && [ -x "$extracted/bin/codewhale-tui" ] ||
+  [ -x "$extracted/bin/dse" ] && [ -x "$extracted/bin/dse-tui" ] ||
     die "artifact binaries are not executable"
   version="$(manifest_value "$manifest" version)"
   revision="$(manifest_value "$manifest" source_revision)"
@@ -609,8 +609,8 @@ install_command() {
     atomic_symlink "$current_target" "$delivery_root/previous"
   fi
   atomic_symlink "releases/$release_id" "$delivery_root/current"
-  atomic_symlink "../lib/codewhale/current/bin/codewhale" "$prefix/bin/codewhale"
-  atomic_symlink "../lib/codewhale/current/bin/codewhale-tui" "$prefix/bin/codewhale-tui"
+  atomic_symlink "../lib/dse/current/bin/dse" "$prefix/bin/dse"
+  atomic_symlink "../lib/dse/current/bin/dse-tui" "$prefix/bin/dse-tui"
   verify_release_root "$destination" "$target"
   printf 'installed %s %s (%s)\n' "$PRODUCT_NAME" "$version" "${revision:0:12}"
 }
@@ -619,8 +619,8 @@ verify_command() {
   parse_prefix_and_artifact verify "$@"
   local prefix="$PARSED_PREFIX"
   local delivery_root current_target root target
-  delivery_root="$prefix/lib/codewhale"
-  [ -L "$delivery_root/current" ] || die "CodeWhale is not installed at $prefix"
+  delivery_root="$prefix/lib/dse"
+  [ -L "$delivery_root/current" ] || die "DSE is not installed at $prefix"
   current_target="$(readlink "$delivery_root/current")"
   case "$current_target" in
     releases/*) ;;
@@ -629,12 +629,12 @@ verify_command() {
   root="$delivery_root/$current_target"
   target="$(host_target)"
   verify_release_root "$root" "$target"
-  [ -L "$prefix/bin/codewhale" ] &&
-    [ "$(readlink "$prefix/bin/codewhale")" = "../lib/codewhale/current/bin/codewhale" ] ||
-    die "codewhale program link is missing or foreign"
-  [ -L "$prefix/bin/codewhale-tui" ] &&
-    [ "$(readlink "$prefix/bin/codewhale-tui")" = "../lib/codewhale/current/bin/codewhale-tui" ] ||
-    die "codewhale-tui program link is missing or foreign"
+  [ -L "$prefix/bin/dse" ] &&
+    [ "$(readlink "$prefix/bin/dse")" = "../lib/dse/current/bin/dse" ] ||
+    die "dse program link is missing or foreign"
+  [ -L "$prefix/bin/dse-tui" ] &&
+    [ "$(readlink "$prefix/bin/dse-tui")" = "../lib/dse/current/bin/dse-tui" ] ||
+    die "dse-tui program link is missing or foreign"
   printf 'verified %s\n' "$(manifest_value "$root/manifest.tsv" version)"
 }
 
@@ -642,9 +642,9 @@ rollback_command() {
   parse_prefix_and_artifact rollback "$@"
   local prefix="$PARSED_PREFIX"
   local delivery_root current_target previous_target target
-  delivery_root="$prefix/lib/codewhale"
-  [ -L "$delivery_root/current" ] || die "CodeWhale is not installed at $prefix"
-  [ -L "$delivery_root/previous" ] || die "no previous CodeWhale release is available"
+  delivery_root="$prefix/lib/dse"
+  [ -L "$delivery_root/current" ] || die "DSE is not installed at $prefix"
+  [ -L "$delivery_root/previous" ] || die "no previous DSE release is available"
   current_target="$(readlink "$delivery_root/current")"
   previous_target="$(readlink "$delivery_root/previous")"
   case "$current_target:$previous_target" in
@@ -665,19 +665,19 @@ uninstall_command() {
   parse_prefix_and_artifact uninstall "$@"
   local prefix="$PARSED_PREFIX"
   local delivery_root
-  delivery_root="$prefix/lib/codewhale"
-  validate_bin_slot "$prefix/bin/codewhale" "../lib/codewhale/current/bin/codewhale"
-  validate_bin_slot "$prefix/bin/codewhale-tui" "../lib/codewhale/current/bin/codewhale-tui"
-  if [ -L "$prefix/bin/codewhale" ]; then
-    rm -f "$prefix/bin/codewhale"
+  delivery_root="$prefix/lib/dse"
+  validate_bin_slot "$prefix/bin/dse" "../lib/dse/current/bin/dse"
+  validate_bin_slot "$prefix/bin/dse-tui" "../lib/dse/current/bin/dse-tui"
+  if [ -L "$prefix/bin/dse" ]; then
+    rm -f "$prefix/bin/dse"
   fi
-  if [ -L "$prefix/bin/codewhale-tui" ]; then
-    rm -f "$prefix/bin/codewhale-tui"
+  if [ -L "$prefix/bin/dse-tui" ]; then
+    rm -f "$prefix/bin/dse-tui"
   fi
   if [ -e "$delivery_root" ] || [ -L "$delivery_root" ]; then
     [ -d "$delivery_root" ] && [ ! -L "$delivery_root" ] ||
       die "refusing to remove non-directory delivery root: $delivery_root"
-    [ "$delivery_root" = "$prefix/lib/codewhale" ] ||
+    [ "$delivery_root" = "$prefix/lib/dse" ] ||
       die "resolved delivery root escaped the install prefix"
     [ -L "$delivery_root/current" ] ||
       die "refusing to remove an unowned delivery root without a current link"

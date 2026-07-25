@@ -1,14 +1,15 @@
-# CodeWhale
+# DSE
 
-一个面向官方 DeepSeek API 的 Rust-native、本地优先编码 Agent。
+DeepSeek Engineer（DSE）是一个面向官方 DeepSeek API 的 Rust-native、本地优先编码
+Agent。
 
 目标不是继续扩展通用模型兼容，也不是把多个 Agent 项目拼接在一起；目标是形成一套
 统一、可恢复、可验证、支持单 Agent 与多 Agent 的 Rust 运行时，并让 CLI、TUI 和
 Headless API 共用它。
 
 exec、app-server 与交互 TUI 已统一到
-`AgentApplication -> AgentRuntime -> RunStore`。产品二进制固定为 `codewhale` 与
-`codewhale-tui`，产品状态只写入 `~/.codewhale`（或显式 `CODEWHALE_HOME`）。
+`AgentApplication -> AgentRuntime -> RunStore`。产品二进制固定为 `dse` 与
+`dse-tui`，产品状态只写入 `~/.dse`（或显式 `DSE_HOME`）。
 
 ## 从这里开始
 
@@ -68,7 +69,7 @@ DeepSeek Beta Strict planner 仍保留，但 M7-B 证明六个默认可执行 ac
 仓库使用 `rust-toolchain.toml` 固定 Rust 1.97.0。源码构建：
 
 ```bash
-cargo build -p codewhale-cli -p codewhale-tui --locked
+cargo build -p dse-cli -p dse-tui --locked
 ```
 
 API Key 只放在环境或系统凭据存储中：
@@ -86,38 +87,38 @@ config.example.toml
 运行当前本地入口：
 
 ```bash
-cargo run -p codewhale-cli --locked --
-cargo run -p codewhale-cli --locked -- exec --auto "inspect this repository"
+cargo run -p dse-cli --locked --
+cargo run -p dse-cli --locked -- exec "inspect this repository"
 ```
 
 Focused 检查：
 
 ```bash
-./scripts/dev-codewhale.sh focused
+./scripts/dev-dse.sh focused
 ```
 
 生成 checksum-bound 本地包（命令只使用已锁定、已缓存依赖，不访问网络）：
 
 ```bash
-CARGO_TARGET_DIR=/private/tmp/codewhale-delivery-target \
-  ./scripts/codewhale-delivery.sh package --output-dir dist
+CARGO_TARGET_DIR=/private/tmp/dse-delivery-target \
+  ./scripts/dse-delivery.sh package --output-dir dist
 ```
 
 安装、验证、回滚与卸载：
 
 ```bash
 artifact="$(find dist -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
-./scripts/codewhale-delivery.sh install --artifact "$artifact" --prefix "$HOME/.local"
-./scripts/codewhale-delivery.sh verify --prefix "$HOME/.local"
-./scripts/codewhale-delivery.sh rollback --prefix "$HOME/.local"
-./scripts/codewhale-delivery.sh uninstall --prefix "$HOME/.local"
+./scripts/dse-delivery.sh install --artifact "$artifact" --prefix "$HOME/.local"
+./scripts/dse-delivery.sh verify --prefix "$HOME/.local"
+./scripts/dse-delivery.sh rollback --prefix "$HOME/.local"
+./scripts/dse-delivery.sh uninstall --prefix "$HOME/.local"
 ```
 
 安装器只管理指定 prefix 下的两个程序和 immutable release 目录；卸载不会读取或删除
-`CODEWHALE_HOME`。完整离线生命周期自测：
+`DSE_HOME`。完整离线生命周期自测：
 
 ```bash
-./scripts/test-codewhale-delivery.sh
+./scripts/test-dse-delivery.sh
 ```
 
 每项 DeepSeek 能力按 [Roadmap](docs/product/ROADMAP.md) 独立冻结、评测和取舍；协议 canary
