@@ -322,11 +322,21 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
     seed_root(&store, "yy-agent-new", &workspace).await;
     drop(store);
 
-    let all = parse_response(&run_dispatcher(
+    let all_en_output = run_dispatcher(
         home.path(),
         &workspace,
-        &["runs", "--json"],
-    ));
+        &["--language", "en", "runs", "--json"],
+    );
+    let all_zh_output = run_dispatcher(
+        home.path(),
+        &workspace,
+        &["--language", "zh-Hans", "runs", "--json"],
+    );
+    assert_eq!(
+        all_en_output.stdout, all_zh_output.stdout,
+        "human language must not change canonical Run API JSON"
+    );
+    let all = parse_response(&all_en_output);
     assert_eq!(all.schema_version, RUN_API_SCHEMA_VERSION);
     let RunCommandResult::Runs {
         workspace: listed_workspace,
@@ -354,17 +364,37 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].run_id, RunId::from("yy-agent-new"));
 
-    let human = run_dispatcher(home.path(), &workspace, &["runs", "--limit", "1"]);
-    assert!(
-        human.status.success(),
-        "human runs command failed: {}",
-        String::from_utf8_lossy(&human.stderr)
+    let human_en = run_dispatcher(
+        home.path(),
+        &workspace,
+        &["--language", "en", "runs", "--limit", "1"],
     );
-    let human = String::from_utf8(human.stdout).expect("UTF-8 human output");
-    assert!(human.contains("当前工作区 Agent 运行："));
-    assert!(human.contains("yy-agent-new"));
-    assert!(human.contains("进行中"));
-    assert!(!human.contains("zz-internal-compaction"));
+    assert!(
+        human_en.status.success(),
+        "English human runs command failed: {}",
+        String::from_utf8_lossy(&human_en.stderr)
+    );
+    let human_en = String::from_utf8(human_en.stdout).expect("UTF-8 English human output");
+    assert!(human_en.contains("Agent runs in current workspace:"));
+    assert!(human_en.contains("yy-agent-new"));
+    assert!(human_en.contains("active"));
+    assert!(!human_en.contains("zz-internal-compaction"));
+
+    let human_zh = run_dispatcher(
+        home.path(),
+        &workspace,
+        &["--language", "zh-Hans", "runs", "--limit", "1"],
+    );
+    assert!(
+        human_zh.status.success(),
+        "Chinese human runs command failed: {}",
+        String::from_utf8_lossy(&human_zh.stderr)
+    );
+    let human_zh = String::from_utf8(human_zh.stdout).expect("UTF-8 Chinese human output");
+    assert!(human_zh.contains("当前工作区 Agent 运行："));
+    assert!(human_zh.contains("yy-agent-new"));
+    assert!(human_zh.contains("进行中"));
+    assert!(!human_zh.contains("zz-internal-compaction"));
 
     let scoped = parse_response(&run_dispatcher(
         home.path(),
@@ -382,7 +412,11 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].run_id, RunId::from("other-agent"));
 
-    let empty = run_dispatcher(home.path(), &empty_workspace, &["runs"]);
+    let empty = run_dispatcher(
+        home.path(),
+        &empty_workspace,
+        &["--language", "zh-Hans", "runs"],
+    );
     assert!(
         empty.status.success(),
         "empty runs command failed: {}",

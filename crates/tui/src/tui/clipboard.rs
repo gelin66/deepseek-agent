@@ -13,6 +13,7 @@ use anyhow::{Result, bail};
 ))]
 use arboard::Clipboard;
 use base64::Engine as _;
+use dse_localization::{MessageId, tr};
 #[cfg(not(test))]
 use std::io::{self, IsTerminal, Write};
 #[cfg(any(
@@ -150,8 +151,12 @@ impl ClipboardHandler {
                 return Ok(());
             }
 
-            write_text_with_osc52(text)
-                .map_err(|err| anyhow::anyhow!("Clipboard unavailable: {err}"))
+            write_text_with_osc52(text).map_err(|error| {
+                anyhow::anyhow!(
+                    "{}",
+                    tr(MessageId::ClipboardUnavailable).replace("{error}", &error.to_string())
+                )
+            })
         }
     }
 
@@ -189,11 +194,23 @@ fn write_text_with_stdin_command(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to run {label}: {e}"))?;
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                tr(MessageId::ClipboardRunFailed)
+                    .replace("{program}", label)
+                    .replace("{error}", &error.to_string())
+            )
+        })?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {label}: {e}"))?;
+        stdin.write_all(text.as_bytes()).map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                tr(MessageId::ClipboardWriteFailed)
+                    .replace("{program}", label)
+                    .replace("{error}", &error.to_string())
+            )
+        })?;
     }
     let _ = std::thread::Builder::new()
         .name("clipboard-wait".to_string())
@@ -215,18 +232,40 @@ fn write_text_with_wlcopy_using_argv(program: &str, text: &str) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to run {program}: {e}"))?;
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                tr(MessageId::ClipboardRunFailed)
+                    .replace("{program}", program)
+                    .replace("{error}", &error.to_string())
+            )
+        })?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {program}: {e}"))?;
+        stdin.write_all(text.as_bytes()).map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                tr(MessageId::ClipboardWriteFailed)
+                    .replace("{program}", program)
+                    .replace("{error}", &error.to_string())
+            )
+        })?;
     }
     // stdin is dropped here, closing the pipe so wl-copy flushes.
-    let status = child
-        .wait()
-        .map_err(|e| anyhow::anyhow!("Failed to wait on {program}: {e}"))?;
+    let status = child.wait().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::ClipboardWaitFailed)
+                .replace("{program}", program)
+                .replace("{error}", &error.to_string())
+        )
+    })?;
     if !status.success() {
-        bail!("{program} exited with {status}");
+        bail!(
+            "{}",
+            tr(MessageId::ClipboardProgramExited)
+                .replace("{program}", program)
+                .replace("{status}", &status.to_string())
+        );
     }
     Ok(())
 }
@@ -235,20 +274,22 @@ fn write_text_with_wlcopy_using_argv(program: &str, text: &str) -> Result<()> {
 fn write_text_with_osc52(text: &str) -> Result<()> {
     let mut stdout = io::stdout();
     if !stdout.is_terminal() {
-        bail!("OSC 52 clipboard fallback requires a terminal");
+        bail!("{}", tr(MessageId::ClipboardTerminalRequired));
     }
 
     let in_tmux = std::env::var_os("TMUX").is_some();
     let sequence = osc52_sequence(text, in_tmux)?;
     stdout
         .write_all(sequence.as_bytes())
-        .context("write OSC 52 clipboard sequence")?;
-    stdout.flush().context("flush OSC 52 clipboard sequence")
+        .context(tr(MessageId::ClipboardWriteOsc52Failed).into_owned())?;
+    stdout
+        .flush()
+        .context(tr(MessageId::ClipboardFlushOsc52Failed).into_owned())
 }
 
 fn osc52_sequence(text: &str, in_tmux: bool) -> Result<String> {
     if text.len() > OSC52_MAX_BYTES {
-        bail!("selection is too large for OSC 52 clipboard fallback");
+        bail!("{}", tr(MessageId::ClipboardSelectionTooLarge));
     }
 
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
@@ -279,9 +320,9 @@ mod tests {
     fn osc52_sequence_rejects_oversized_selection() {
         let text = "x".repeat(OSC52_MAX_BYTES + 1);
         let err = osc52_sequence(&text, false).expect_err("oversized should fail");
-        assert!(
-            err.to_string().contains("too large"),
-            "unexpected error: {err}"
+        assert_eq!(
+            err.to_string(),
+            tr(MessageId::ClipboardSelectionTooLarge).as_ref()
         );
     }
 }

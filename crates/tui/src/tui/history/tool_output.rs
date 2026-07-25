@@ -6,6 +6,7 @@ use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
+use dse_localization::{MessageId, tr};
 
 use super::constants::{TOOL_OUTPUT_HEAD_LINES, TOOL_OUTPUT_TAIL_LINES, TOOL_TEXT_LIMIT};
 use super::{
@@ -293,7 +294,7 @@ fn render_preserved_output_mode(
             let omitted = idx.saturating_sub(prev + 1);
             if omitted > 0 {
                 lines.push(summary_notice_line(
-                    &format!("已省略 {omitted} 行"),
+                    &tr(MessageId::HistoryOmittedLines).replace("{count}", &omitted.to_string()),
                     Style::default().fg(palette::TEXT_MUTED),
                 ));
             }

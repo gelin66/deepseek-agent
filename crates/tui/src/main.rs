@@ -311,7 +311,7 @@ struct ExecArgs {
 }
 
 fn reject_retired_provider_argument(_value: &str) -> Result<String, String> {
-    Err("`--provider` 已删除；DSE 仅使用官方 DeepSeek Provider".to_string())
+    Err(tr(MessageId::MainProviderRemoved).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -634,7 +634,10 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
     };
     let configured_model = configured_model.trim();
     crate::config::normalize_model_name(configured_model).ok_or_else(|| {
-        anyhow!("交互式 Agent 只接受官方 DeepSeek 模型 ID；当前模型为 {configured_model}。")
+        anyhow!(
+            "{}",
+            tr(MessageId::MainInvalidInteractiveModel).replace("{model}", configured_model)
+        )
     })
 }
 
@@ -659,7 +662,7 @@ fn resolve_exec_run_launch(args: &ExecArgs) -> Result<exec_runtime::ExecRunLaunc
         return Ok(exec_runtime::ExecRunLaunch::Fresh);
     }
     if args.prompt.is_empty() {
-        bail!("`dse exec --continue` 需要新的任务输入");
+        bail!("{}", tr(MessageId::MainContinueNeedsInput));
     }
     Ok(exec_runtime::ExecRunLaunch::ContinueLatest)
 }
@@ -1116,18 +1119,21 @@ fn initialize_first_run_language(cli: &Cli) -> Result<()> {
         );
         io::stdout()
             .flush()
-            .context("failed to display language choice")?;
+            .context("Failed to display language choice / 无法显示语言选择")?;
         let mut answer = String::new();
         io::stdin()
             .read_line(&mut answer)
-            .context("failed to read language choice")?;
+            .context("Failed to read language choice / 无法读取语言选择")?;
         parse_first_run_language_choice(&answer)?
     } else {
         ProductLanguage::English
     };
 
     set_process_language(language).map_err(|existing| {
-        anyhow!("product language was already frozen as {existing}; cannot select {language}")
+        anyhow!(
+            "Product language is already frozen as {existing}; cannot select {language} / \
+             产品语言已固定为 {existing}，不能再选择 {language}"
+        )
     })?;
     if can_ask {
         let mut store = dse_config::ConfigStore::load(cli.config.clone())?;
@@ -1141,7 +1147,10 @@ fn parse_first_run_language_choice(value: &str) -> Result<ProductLanguage> {
     match value.trim() {
         "" | "1" | "en" | "English" | "english" => Ok(ProductLanguage::English),
         "2" | "zh-Hans" | "简体中文" => Ok(ProductLanguage::SimplifiedChinese),
-        other => bail!("invalid language choice {other:?}; enter 1 for English or 2 for 简体中文"),
+        other => bail!(
+            "Invalid language choice {other:?}; enter 1 for English or 2 for 简体中文 / \
+             无效语言选择 {other:?}；请输入 1 选择 English 或 2 选择简体中文"
+        ),
     }
 }
 
@@ -1235,7 +1244,7 @@ fn run_main() -> Result<()> {
         .name("dse-main".to_string())
         .stack_size(DSE_MAIN_STACK_BYTES)
         .spawn(run_async_main)
-        .context("Failed to start the DSE runtime thread")?;
+        .context(tr(MessageId::MainRuntimeThreadStartFailed).into_owned())?;
     match runtime_thread.join() {
         Ok(result) => result,
         Err(payload) => {
@@ -1243,8 +1252,11 @@ fn run_main() -> Result<()> {
                 .downcast_ref::<&str>()
                 .map(|value| (*value).to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown panic payload".to_string());
-            Err(anyhow!("DSE runtime thread panicked: {message}"))
+                .unwrap_or_else(|| tr(MessageId::MainUnknownPanicPayload).into_owned());
+            Err(anyhow!(
+                "{}",
+                tr(MessageId::MainRuntimeThreadPanicked).replace("{message}", &message)
+            ))
         }
     }
 }
@@ -1313,10 +1325,8 @@ async fn run_async_main() -> Result<()> {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
                 let workspace = std::fs::canonicalize(&workspace).with_context(|| {
-                    format!(
-                        "无法解析 exec 工作区的规范绝对路径：{}",
-                        workspace.display()
-                    )
+                    tr(MessageId::MainExecWorkspaceCanonicalizeFailed)
+                        .replace("{path}", &workspace.display().to_string())
                 })?;
                 let mut config = config.clone();
                 merge_user_workspace_config(&mut config, cli.config.clone(), &workspace);
@@ -1406,9 +1416,7 @@ async fn run_async_main() -> Result<()> {
             Commands::Execpolicy(command) => {
                 let config = load_config_from_cli(&cli)?;
                 if !config.features().enabled(Feature::ExecPolicy) {
-                    bail!(
-                        "The `exec_policy` feature is disabled. Enable it in [features] or via profile."
-                    );
+                    bail!("{}", tr(MessageId::MainExecPolicyDisabled));
                 }
                 run_execpolicy_command(command)
             }
@@ -1422,9 +1430,7 @@ async fn run_async_main() -> Result<()> {
                 let resume_id = if last {
                     "latest".to_owned()
                 } else {
-                    session_id.ok_or_else(|| {
-                        anyhow!("请提供 canonical Run ID，或使用 `dse resume --last`")
-                    })?
+                    session_id.ok_or_else(|| anyhow!("{}", tr(MessageId::MainResumeIdRequired)))?
                 };
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
@@ -1471,8 +1477,10 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory for {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            tr(MessageId::MainDirectoryCreateFailed)
+                .replace("{path}", &parent.display().to_string())
+        })?;
     }
     Ok(())
 }
@@ -1490,8 +1498,9 @@ fn write_template_file(path: &Path, contents: &str, force: bool) -> Result<Write
         WriteStatus::Created
     };
 
-    std::fs::write(path, contents)
-        .with_context(|| format!("Failed to write template at {}", path.display()))?;
+    std::fs::write(path, contents).with_context(|| {
+        tr(MessageId::MainTemplateWriteFailed).replace("{path}", &path.display().to_string())
+    })?;
 
     Ok(status)
 }
@@ -1513,8 +1522,10 @@ When this skill is active:\n\
 }
 
 fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus)> {
-    std::fs::create_dir_all(skills_dir)
-        .with_context(|| format!("Failed to create skills dir {}", skills_dir.display()))?;
+    std::fs::create_dir_all(skills_dir).with_context(|| {
+        tr(MessageId::MainSkillsDirCreateFailed)
+            .replace("{path}", &skills_dir.display().to_string())
+    })?;
 
     let skill_name = "getting-started";
     let skill_path = skills_dir.join(skill_name).join("SKILL.md");
@@ -1556,8 +1567,10 @@ fn init_plugins_dir(
     plugins_dir: &Path,
     force: bool,
 ) -> Result<(PathBuf, PathBuf, WriteStatus, WriteStatus)> {
-    std::fs::create_dir_all(plugins_dir)
-        .with_context(|| format!("Failed to create plugins dir {}", plugins_dir.display()))?;
+    std::fs::create_dir_all(plugins_dir).with_context(|| {
+        tr(MessageId::MainPluginsDirCreateFailed)
+            .replace("{path}", &plugins_dir.display().to_string())
+    })?;
 
     let readme_path = plugins_dir.join("README.md");
     let readme_status = write_template_file(&readme_path, plugins_readme_template(), force)?;
@@ -1596,25 +1609,48 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     let run_skills = args.skills || args.all || !any_explicit;
     let run_plugins = args.plugins || args.all;
 
-    println!("{}", "DSE Setup".truecolor(aqua_r, aqua_g, aqua_b).bold());
+    println!(
+        "{}",
+        tr(MessageId::MainSetupTitle)
+            .truecolor(aqua_r, aqua_g, aqua_b)
+            .bold()
+    );
     println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
-    println!("Workspace: {}", crate::utils::display_path(workspace));
+    println!(
+        "{}",
+        tr(MessageId::MainWorkspace).replace("{path}", &crate::utils::display_path(workspace))
+    );
 
     if run_mcp {
         let mcp_path = config.mcp_config_path();
         let status = crate::mcp::init_config(&mcp_path, args.force)?;
         match status {
             McpWriteStatus::Created => {
-                println!("  ✓ Created MCP config at {}", mcp_path.display());
+                println!(
+                    "{}",
+                    tr(MessageId::MainCreated)
+                        .replace("{label}", tr(MessageId::MainMcpConfigLabel).as_ref())
+                        .replace("{path}", &mcp_path.display().to_string())
+                );
             }
             McpWriteStatus::Overwritten => {
-                println!("  ✓ Overwrote MCP config at {}", mcp_path.display());
+                println!(
+                    "{}",
+                    tr(MessageId::MainOverwritten)
+                        .replace("{label}", tr(MessageId::MainMcpConfigLabel).as_ref())
+                        .replace("{path}", &mcp_path.display().to_string())
+                );
             }
             McpWriteStatus::SkippedExists => {
-                println!("  · MCP config already exists at {}", mcp_path.display());
+                println!(
+                    "{}",
+                    tr(MessageId::MainAlreadyExists)
+                        .replace("{label}", tr(MessageId::MainMcpConfigLabel).as_ref())
+                        .replace("{path}", &mcp_path.display().to_string())
+                );
             }
         }
-        println!("    Next: edit the file, then run `dse mcp list` or `dse mcp tools`.");
+        println!("{}", tr(MessageId::MainSetupNextMcp));
     }
 
     if run_skills {
@@ -1624,52 +1660,57 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
             config.skills_dir()
         };
         let (skill_path, status) = init_skills_dir(&skills_dir, args.force)?;
-        match status {
-            WriteStatus::Created => {
-                println!("  ✓ Created example skill at {}", skill_path.display());
-            }
-            WriteStatus::Overwritten => {
-                println!("  ✓ Overwrote example skill at {}", skill_path.display());
-            }
-            WriteStatus::SkippedExists => {
-                println!(
-                    "  · Example skill already exists at {}",
-                    skill_path.display()
-                );
-            }
-        }
+        report_write_status(
+            tr(MessageId::MainExampleSkillLabel).as_ref(),
+            &skill_path,
+            status,
+        );
         if args.local {
             println!(
-                "    Local skills dir enabled for this workspace: {}",
-                crate::utils::display_path(&skills_dir)
+                "{}",
+                tr(MessageId::MainLocalSkillsDir)
+                    .replace("{path}", &crate::utils::display_path(&skills_dir))
             );
         } else {
             println!(
-                "    Skills dir: {}",
-                crate::utils::display_path(&skills_dir)
+                "{}",
+                tr(MessageId::MainSkillsDir)
+                    .replace("{path}", &crate::utils::display_path(&skills_dir))
             );
         }
-        println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
+        println!("{}", tr(MessageId::MainSetupNextSkills));
     }
 
     if run_plugins {
         let plugins_dir = default_plugins_dir();
         let (readme_path, example_path, readme_status, example_status) =
             init_plugins_dir(&plugins_dir, args.force)?;
-        report_write_status("Plugins README", &readme_path, readme_status);
-        report_write_status("Example plugin", &example_path, example_status);
-        println!(
-            "    Plugins dir: {}",
-            crate::utils::display_path(&plugins_dir)
+        report_write_status(
+            tr(MessageId::MainPluginsReadmeLabel).as_ref(),
+            &readme_path,
+            readme_status,
         );
-        println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
+        report_write_status(
+            tr(MessageId::MainExamplePluginLabel).as_ref(),
+            &example_path,
+            example_status,
+        );
+        println!(
+            "{}",
+            tr(MessageId::MainPluginsDir)
+                .replace("{path}", &crate::utils::display_path(&plugins_dir))
+        );
+        println!("{}", tr(MessageId::MainSetupNextPlugins));
     }
 
     let sandbox = dse_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
-        println!("  ✓ Sandbox available: {kind}");
+        println!(
+            "{}",
+            tr(MessageId::MainSandboxAvailable).replace("{kind}", &kind.to_string())
+        );
     } else {
-        println!("  · Sandbox not available on this platform (best-effort only).");
+        println!("{}", tr(MessageId::MainSandboxUnavailable));
     }
 
     Ok(())
@@ -1678,13 +1719,28 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
 fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
     match status {
         WriteStatus::Created => {
-            println!("  ✓ Created {label} at {}", path.display());
+            println!(
+                "{}",
+                tr(MessageId::MainCreated)
+                    .replace("{label}", label)
+                    .replace("{path}", &path.display().to_string())
+            );
         }
         WriteStatus::Overwritten => {
-            println!("  ✓ Overwrote {label} at {}", path.display());
+            println!(
+                "{}",
+                tr(MessageId::MainOverwritten)
+                    .replace("{label}", label)
+                    .replace("{path}", &path.display().to_string())
+            );
         }
         WriteStatus::SkippedExists => {
-            println!("  · {label} already exists at {}", path.display());
+            println!(
+                "{}",
+                tr(MessageId::MainAlreadyExists)
+                    .replace("{label}", label)
+                    .replace("{path}", &path.display().to_string())
+            );
         }
     }
 }
@@ -1752,43 +1808,61 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
     let (red_r, red_g, red_b) = palette::WHALE_ERROR_RGB;
 
-    println!("{}", "DSE Status".truecolor(aqua_r, aqua_g, aqua_b).bold());
+    println!(
+        "{}",
+        tr(MessageId::MainStatusTitle)
+            .truecolor(aqua_r, aqua_g, aqua_b)
+            .bold()
+    );
     println!("{}", "===============".truecolor(sky_r, sky_g, sky_b));
-    println!("workspace: {}", workspace.display());
+    println!(
+        "{}",
+        tr(MessageId::MainWorkspace).replace("{path}", &workspace.display().to_string())
+    );
 
     match resolve_api_key_source(config) {
         ApiKeySource::Env => {
             println!(
-                "  {} api_key: set via {}",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::config::DEEPSEEK_API_KEY_ENV,
+                "{}",
+                tr(MessageId::MainStatusApiKeyEnv)
+                    .replace("{icon}", &"✓".truecolor(aqua_r, aqua_g, aqua_b).to_string())
+                    .replace("{env}", crate::config::DEEPSEEK_API_KEY_ENV)
             );
         }
         ApiKeySource::Keyring => println!(
-            "  {} api_key: set via OS keyring",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+            "{}",
+            tr(MessageId::MainStatusApiKeyKeyring)
+                .replace("{icon}", &"✓".truecolor(aqua_r, aqua_g, aqua_b).to_string())
         ),
         ApiKeySource::Config => println!(
-            "  {} api_key: set via config",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+            "{}",
+            tr(MessageId::MainStatusApiKeyConfig)
+                .replace("{icon}", &"✓".truecolor(aqua_r, aqua_g, aqua_b).to_string())
         ),
         ApiKeySource::Missing => {
             println!(
-                "  {} api_key: missing  (set {} or `api_key` in ~/.dse/config.toml; or run `dse auth set --api-key \"...\"`)",
-                "✗".truecolor(red_r, red_g, red_b),
-                crate::config::DEEPSEEK_API_KEY_ENV,
+                "{}",
+                tr(MessageId::MainStatusApiKeyMissing)
+                    .replace("{icon}", &"✗".truecolor(red_r, red_g, red_b).to_string())
+                    .replace("{env}", crate::config::DEEPSEEK_API_KEY_ENV)
             );
         }
     }
     println!(
-        "  · base_url: {}",
-        crate::utils::redact_url_for_display(&config.deepseek_base_url())
+        "{}",
+        tr(MessageId::MainStatusBaseUrl).replace(
+            "{url}",
+            &crate::utils::redact_url_for_display(&config.deepseek_base_url())
+        )
     );
     let model = config
         .default_text_model
         .clone()
         .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
-    println!("  · default_text_model: {model}");
+    println!(
+        "{}",
+        tr(MessageId::MainStatusModel).replace("{model}", &model)
+    );
 
     let mcp_path = config.mcp_config_path();
     let project_mcp_path = crate::mcp::workspace_mcp_config_path(workspace);
@@ -1796,71 +1870,89 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         Ok(cfg) => cfg.servers.len(),
         Err(_) => 0,
     };
-    let mcp_present = if mcp_path.exists() { "" } else { "  (missing)" };
-    let project_mcp_present = if project_mcp_path.exists() {
-        ""
+    let mcp_present = if mcp_path.exists() {
+        Cow::Borrowed("")
     } else {
-        "  (missing)"
+        tr(MessageId::MainStatusMissing)
+    };
+    let project_mcp_present = if project_mcp_path.exists() {
+        Cow::Borrowed("")
+    } else {
+        tr(MessageId::MainStatusMissing)
     };
     println!(
-        "  · mcp servers: {mcp_count} from {}{mcp_present} + {}{project_mcp_present}",
-        mcp_path.display(),
-        project_mcp_path.display()
+        "{}",
+        tr(MessageId::MainStatusMcpServers)
+            .replace("{count}", &mcp_count.to_string())
+            .replace("{global}", &mcp_path.display().to_string())
+            .replace("{global_missing}", mcp_present.as_ref())
+            .replace("{project}", &project_mcp_path.display().to_string())
+            .replace("{project_missing}", project_mcp_present.as_ref())
     );
 
     let skills_dir = config.skills_dir();
     println!(
-        "  · skills: {} at {}",
-        skills_count_for(&skills_dir),
-        crate::utils::display_path(&skills_dir)
+        "{}",
+        tr(MessageId::MainStatusSkills)
+            .replace("{count}", &skills_count_for(&skills_dir).to_string())
+            .replace("{path}", &crate::utils::display_path(&skills_dir))
     );
 
     let plugins_dir = default_plugins_dir();
     let plugins_present = if plugins_dir.exists() {
-        ""
+        Cow::Borrowed("")
     } else {
-        "  (missing — run `setup --plugins`)"
+        tr(MessageId::MainStatusPluginsMissing)
     };
     println!(
-        "  · plugins: {} entries at {}{plugins_present}",
-        if plugins_dir.exists() {
-            count_dir_entries(&plugins_dir)
-        } else {
-            0
-        },
-        crate::utils::display_path(&plugins_dir)
+        "{}",
+        tr(MessageId::MainStatusPlugins)
+            .replace(
+                "{count}",
+                &if plugins_dir.exists() {
+                    count_dir_entries(&plugins_dir)
+                } else {
+                    0
+                }
+                .to_string()
+            )
+            .replace("{path}", &crate::utils::display_path(&plugins_dir))
+            .replace("{missing}", plugins_present.as_ref())
     );
 
     let sandbox = dse_tools::sandbox::get_platform_sandbox();
     match sandbox {
         Some(kind) => println!(
-            "  {} sandbox: {kind}",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+            "{}",
+            tr(MessageId::MainStatusSandbox)
+                .replace("{icon}", &"✓".truecolor(aqua_r, aqua_g, aqua_b).to_string())
+                .replace("{kind}", &kind.to_string())
         ),
         None => println!(
-            "  {} sandbox: unavailable (commands run best-effort)",
-            "!".truecolor(sky_r, sky_g, sky_b)
+            "{}",
+            tr(MessageId::MainStatusSandboxUnavailable)
+                .replace("{icon}", &"!".truecolor(sky_r, sky_g, sky_b).to_string())
         ),
     }
 
     println!("  {} {}", "·".dimmed(), dotenv_status_line(workspace));
 
     println!();
-    println!("Run `dse doctor --json` for a machine-readable check.");
+    println!("{}", tr(MessageId::MainDoctorJsonHint));
     Ok(())
 }
 
 fn dotenv_status_line(workspace: &Path) -> String {
     let dotenv = workspace.join(".env");
     if dotenv.exists() {
-        return format!(".env present at {}", dotenv.display());
+        return tr(MessageId::MainDotenvPresent).replace("{path}", &dotenv.display().to_string());
     }
 
     if workspace.join(".env.example").exists() {
-        return ".env not present in workspace (run `cp .env.example .env` and edit)".to_string();
+        return tr(MessageId::MainDotenvExample).into_owned();
     }
 
-    ".env not present in workspace".to_string()
+    tr(MessageId::MainDotenvMissing).replace("{path}", &dotenv.display().to_string())
 }
 
 fn run_session_diagnostics(args: SessionDiagnosticsArgs) -> Result<()> {
@@ -1988,23 +2080,39 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         "  {} {}",
         icon,
         tr(MessageId::DoctorDeepseekKeyState)
-            .replace("{env}", if in_env { "是" } else { "否" })
-            .replace("{config}", if in_config { "是" } else { "否" })
+            .replace(
+                "{env}",
+                if in_env {
+                    tr(MessageId::MainDoctorYes)
+                } else {
+                    tr(MessageId::MainDoctorNo)
+                }
+                .as_ref(),
+            )
+            .replace(
+                "{config}",
+                if in_config {
+                    tr(MessageId::MainDoctorYes)
+                } else {
+                    tr(MessageId::MainDoctorNo)
+                }
+                .as_ref(),
+            )
     );
     println!("  · {}", tr(MessageId::DoctorCredentialPrecedence));
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
-        let source_label = match api_key_source {
-            ApiKeySource::Config => "config.toml",
-            ApiKeySource::Keyring => "OS keyring",
-            ApiKeySource::Env => "DEEPSEEK_API_KEY",
-            ApiKeySource::Missing => "未知来源",
+        let source_label: Cow<'static, str> = match api_key_source {
+            ApiKeySource::Config => "config.toml".into(),
+            ApiKeySource::Keyring => "OS keyring".into(),
+            ApiKeySource::Env => "DEEPSEEK_API_KEY".into(),
+            ApiKeySource::Missing => tr(MessageId::MainDoctorUnknownSource),
         };
         println!(
             "  {} {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            tr(MessageId::DoctorActiveKeySource).replace("{source}", source_label)
+            tr(MessageId::DoctorActiveKeySource).replace("{source}", source_label.as_ref())
         );
         true
     } else {
@@ -2188,7 +2296,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 };
                 println!("{icon}");
                 if !server.enabled {
-                    println!("      （{}）", tr(MessageId::DoctorMcpServerDisabled));
+                    println!("      ({})", tr(MessageId::DoctorMcpServerDisabled));
                 }
             }
         }
@@ -3558,7 +3666,7 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
     match tokio::time::timeout(timeout_duration, transport.complete(plan)).await {
         Ok(Ok(_response)) => Ok(()),
         Ok(Err(error)) => Err(error.into()),
-        Err(_) => anyhow::bail!("DeepSeek 连通性探针在 15 秒后超时"),
+        Err(_) => anyhow::bail!("{}", tr(MessageId::MainDoctorProbeTimeout)),
     }
 }
 
@@ -3589,9 +3697,10 @@ fn init_project() -> Result<()> {
 
     if agents_path.exists() {
         println!(
-            "{} AGENTS.md already exists at {}",
-            "!".truecolor(sky_r, sky_g, sky_b),
-            agents_path.display()
+            "{}",
+            tr(MessageId::MainAgentsExists)
+                .replace("{icon}", &"!".truecolor(sky_r, sky_g, sky_b).to_string())
+                .replace("{path}", &agents_path.display().to_string())
         );
         return Ok(());
     }
@@ -3599,19 +3708,21 @@ fn init_project() -> Result<()> {
     match create_default_agents_md(&workspace) {
         Ok(path) => {
             println!(
-                "{} Created {}",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                path.display()
+                "{}",
+                tr(MessageId::MainAgentsCreated)
+                    .replace("{icon}", &"✓".truecolor(aqua_r, aqua_g, aqua_b).to_string())
+                    .replace("{path}", &path.display().to_string())
             );
             println!();
-            println!("Edit this file to customize how the AI agent works with your project.");
-            println!("The instructions will be loaded automatically when you run dse.");
+            println!("{}", tr(MessageId::MainAgentsEdit));
+            println!("{}", tr(MessageId::MainAgentsLoaded));
         }
         Err(e) => {
             println!(
-                "{} Failed to create AGENTS.md: {}",
-                "✗".truecolor(red_r, red_g, red_b),
-                e
+                "{}",
+                tr(MessageId::MainAgentsCreateFailed)
+                    .replace("{icon}", &"✗".truecolor(red_r, red_g, red_b).to_string())
+                    .replace("{error}", &e.to_string())
             );
         }
     }
@@ -3638,13 +3749,13 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
 fn read_api_key_from_stdin() -> Result<String> {
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
-        bail!("No API key provided. Pass --api-key or pipe one via stdin.");
+        bail!("{}", tr(MessageId::MainApiKeyInputRequired));
     }
     let mut buffer = String::new();
     stdin.read_to_string(&mut buffer)?;
     let api_key = buffer.trim().to_string();
     if api_key.is_empty() {
-        bail!("No API key provided via stdin.");
+        bail!("{}", tr(MessageId::MainApiKeyStdinRequired));
     }
     Ok(api_key)
 }
@@ -3655,13 +3766,16 @@ fn run_login(api_key: Option<String>) -> Result<()> {
         None => read_api_key_from_stdin()?,
     };
     let saved = config::save_api_key(&api_key)?;
-    println!("Saved API key to {}", saved.describe());
+    println!(
+        "{}",
+        tr(MessageId::MainApiKeySaved).replace("{destination}", &saved.describe())
+    );
     Ok(())
 }
 
 fn run_logout() -> Result<()> {
     config::clear_api_key()?;
-    println!("Cleared saved API key.");
+    println!("{}", tr(MessageId::MainApiKeyCleared));
     Ok(())
 }
 
@@ -3676,11 +3790,7 @@ async fn run_pr(
     checkout: bool,
 ) -> Result<()> {
     if !is_command_available("gh") {
-        bail!(
-            "`gh` CLI not found on PATH. Install GitHub CLI \
-             (https://cli.github.com) and authenticate (`gh auth login`) \
-             so `dse pr <N>` can fetch PR metadata and the diff."
-        );
+        bail!("{}", tr(MessageId::MainGhMissing));
     }
 
     let view = run_gh_pr_view(number, repo)?;
@@ -3688,9 +3798,15 @@ async fn run_pr(
 
     if checkout {
         match run_gh_pr_checkout(number, repo) {
-            Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
+            Ok(()) => eprintln!(
+                "{}",
+                tr(MessageId::MainPrCheckedOut).replace("{number}", &number.to_string())
+            ),
             Err(err) => eprintln!(
-                "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
+                "{}",
+                tr(MessageId::MainPrCheckoutFailed)
+                    .replace("{number}", &number.to_string())
+                    .replace("{error}", &err.to_string())
             ),
         }
     }
@@ -3756,23 +3872,38 @@ struct GhPullRequest {
 
 fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
     let mut cmd = crate::dependencies::Gh::command()
-        .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainGhMissing)))?;
     cmd.arg("pr").arg("view").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
     }
     cmd.arg("--json")
         .arg("title,body,baseRefName,headRefName,url");
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr view`: {e}"))?;
+    let output = cmd.output().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::MainGhRunFailed)
+                .replace("{command}", "gh pr view")
+                .replace("{error}", &error.to_string())
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!("gh pr view #{number} failed: {stderr}");
+        bail!(
+            "{}",
+            tr(MessageId::MainGhCommandFailed)
+                .replace("{command}", "gh pr view")
+                .replace("{number}", &number.to_string())
+                .replace("{stderr}", &stderr)
+        );
     }
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| anyhow::anyhow!("gh pr view returned non-JSON output: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::MainGhJsonFailed).replace("{error}", &error.to_string())
+        )
+    })?;
     let pick = |key: &str| {
         value
             .get(key)
@@ -3791,34 +3922,56 @@ fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
 
 fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
     let mut cmd = crate::dependencies::Gh::command()
-        .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainGhMissing)))?;
     cmd.arg("pr").arg("diff").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr diff`: {e}"))?;
+    let output = cmd.output().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::MainGhRunFailed)
+                .replace("{command}", "gh pr diff")
+                .replace("{error}", &error.to_string())
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!("gh pr diff #{number} failed: {stderr}");
+        bail!(
+            "{}",
+            tr(MessageId::MainGhCommandFailed)
+                .replace("{command}", "gh pr diff")
+                .replace("{number}", &number.to_string())
+                .replace("{stderr}", &stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
     let mut cmd = crate::dependencies::Gh::command()
-        .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainGhMissing)))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr checkout`: {e}"))?;
+    let output = cmd.output().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::MainGhRunFailed)
+                .replace("{command}", "gh pr checkout")
+                .replace("{error}", &error.to_string())
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!("gh pr checkout #{number} failed: {stderr}");
+        bail!(
+            "{}",
+            tr(MessageId::MainGhCommandFailed)
+                .replace("{command}", "gh pr checkout")
+                .replace("{number}", &number.to_string())
+                .replace("{stderr}", &stderr)
+        );
     }
     Ok(())
 }
@@ -3888,49 +4041,74 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
             let status = crate::mcp::init_config(&config_path, force)?;
             match status {
                 McpWriteStatus::Created => {
-                    println!("Created MCP config at {}", config_path.display());
+                    println!(
+                        "{}",
+                        tr(MessageId::MainCreated)
+                            .replace("{label}", tr(MessageId::MainMcpConfigLabel).as_ref())
+                            .replace("{path}", &config_path.display().to_string())
+                    );
                 }
                 McpWriteStatus::Overwritten => {
-                    println!("Overwrote MCP config at {}", config_path.display());
+                    println!(
+                        "{}",
+                        tr(MessageId::MainOverwritten)
+                            .replace("{label}", tr(MessageId::MainMcpConfigLabel).as_ref())
+                            .replace("{path}", &config_path.display().to_string())
+                    );
                 }
                 McpWriteStatus::SkippedExists => {
                     println!(
-                        "MCP config already exists at {} (use --force to overwrite)",
-                        config_path.display()
+                        "{}",
+                        tr(MessageId::MainMcpConfigExistsForce)
+                            .replace("{path}", &config_path.display().to_string())
                     );
                 }
             }
-            println!("Edit the file, then run `dse mcp list` or `dse mcp tools`.");
+            println!("{}", tr(MessageId::MainSetupNextMcp));
             Ok(())
         }
         McpCommand::List => {
             let cfg = crate::mcp::load_config_with_workspace(&config_path, workspace)?;
             if cfg.servers.is_empty() {
                 println!(
-                    "No MCP servers configured in {} or {}",
-                    config_path.display(),
-                    crate::mcp::workspace_mcp_config_path(workspace).display()
+                    "{}",
+                    tr(MessageId::MainMcpNoServers)
+                        .replace("{global}", &config_path.display().to_string())
+                        .replace(
+                            "{project}",
+                            &crate::mcp::workspace_mcp_config_path(workspace)
+                                .display()
+                                .to_string()
+                        )
                 );
                 return Ok(());
             }
-            println!("MCP servers ({}):", cfg.servers.len());
+            println!(
+                "{}",
+                tr(MessageId::MainMcpServersTitle)
+                    .replace("{count}", &cfg.servers.len().to_string())
+            );
             for (name, server) in cfg.servers {
                 let status = if server.enabled && !server.disabled {
-                    "enabled"
+                    tr(MessageId::MainMcpEnabled)
                 } else {
-                    "disabled"
+                    tr(MessageId::MainMcpDisabled)
                 };
                 let auth_status = crate::mcp::oauth::auth_status_for_server(&name, &server).await;
                 let auth = if auth_status == crate::mcp::oauth::McpAuthStatus::Unsupported {
                     String::new()
                 } else {
-                    format!(
-                        " auth={}",
-                        auth_status
-                            .to_string()
-                            .to_ascii_lowercase()
-                            .replace(' ', "-")
-                    )
+                    let label = match auth_status {
+                        crate::mcp::oauth::McpAuthStatus::Unsupported => unreachable!(),
+                        crate::mcp::oauth::McpAuthStatus::NotLoggedIn => {
+                            tr(MessageId::MainMcpAuthNotLoggedIn)
+                        }
+                        crate::mcp::oauth::McpAuthStatus::BearerToken => {
+                            tr(MessageId::MainMcpAuthBearerToken)
+                        }
+                        crate::mcp::oauth::McpAuthStatus::OAuth => tr(MessageId::MainMcpAuthOauth),
+                    };
+                    format!(" auth={label}")
                 };
                 let args = if server.args.is_empty() {
                     "".to_string()
@@ -3942,9 +4120,13 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                 } else if let Some(url) = server.url {
                     url
                 } else {
-                    "unknown".to_string()
+                    tr(MessageId::MainMcpUnknown).into_owned()
                 };
-                let required = if server.required { " required" } else { "" };
+                let required = if server.required {
+                    tr(MessageId::MainMcpRequired)
+                } else {
+                    Cow::Borrowed("")
+                };
                 println!("  - {name} [{status}{required}{auth}] {cmd_str}");
             }
             Ok(())
@@ -3959,14 +4141,22 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                     }
                     return Err(err);
                 }
-                println!("Connected to MCP server: {name}");
+                println!(
+                    "{}",
+                    tr(MessageId::MainMcpConnected).replace("{name}", &name)
+                );
             } else {
                 let errors = pool.connect_all().await;
                 if errors.is_empty() {
-                    println!("Connected to all configured MCP servers.");
+                    println!("{}", tr(MessageId::MainMcpAllConnected));
                 } else {
                     for (name, err) in errors {
-                        eprintln!("Failed to connect {name}: {err:#}");
+                        eprintln!(
+                            "{}",
+                            tr(MessageId::MainMcpConnectFailed)
+                                .replace("{name}", &name)
+                                .replace("{error}", &format!("{err:#}"))
+                        );
                         if crate::mcp::oauth::error_looks_auth_required(&err) {
                             eprintln!("  {}", crate::mcp::oauth::auth_required_login_hint(&name));
                         }
@@ -3989,9 +4179,15 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                     }
                 };
                 if conn.tools().is_empty() {
-                    println!("No tools found for MCP server: {name}");
+                    println!(
+                        "{}",
+                        tr(MessageId::MainMcpNoToolsServer).replace("{name}", &name)
+                    );
                 } else {
-                    println!("Tools for {name}:");
+                    println!(
+                        "{}",
+                        tr(MessageId::MainMcpToolsFor).replace("{name}", &name)
+                    );
                     for tool in conn.tools() {
                         println!(
                             "  - {}{}",
@@ -4005,16 +4201,21 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
             } else {
                 let errors = pool.connect_all().await;
                 for (name, err) in errors {
-                    eprintln!("Failed to connect {name}: {err:#}");
+                    eprintln!(
+                        "{}",
+                        tr(MessageId::MainMcpConnectFailed)
+                            .replace("{name}", &name)
+                            .replace("{error}", &format!("{err:#}"))
+                    );
                     if crate::mcp::oauth::error_looks_auth_required(&err) {
                         eprintln!("  {}", crate::mcp::oauth::auth_required_login_hint(&name));
                     }
                 }
                 let tools = pool.all_tools();
                 if tools.is_empty() {
-                    println!("No MCP tools discovered.");
+                    println!("{}", tr(MessageId::MainMcpNoTools));
                 } else {
-                    println!("MCP tools:");
+                    println!("{}", tr(MessageId::MainMcpToolsTitle));
                     for (name, tool) in tools {
                         println!(
                             "  - {}{}",
@@ -4074,24 +4275,32 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                     .keys()
                     .all(|key| !key.trim().eq_ignore_ascii_case("authorization"));
             crate::mcp::add_server_config(&config_path, name.clone(), added_server.clone())?;
-            println!("Added MCP server '{name}' in {}", config_path.display());
+            println!(
+                "{}",
+                tr(MessageId::MainMcpAdded)
+                    .replace("{name}", &name)
+                    .replace("{path}", &config_path.display().to_string())
+            );
             if can_suggest_oauth
                 && crate::mcp::oauth::oauth_login_support(&added_server)
                     .await
                     .is_ok_and(|support| support.is_some())
             {
                 println!(
-                    "OAuth is available for '{name}'. Run `dse mcp login {name}` to authenticate."
+                    "{}",
+                    tr(MessageId::MainMcpOauthAvailable).replace("{name}", &name)
                 );
             }
             Ok(())
         }
         McpCommand::Login { name, scopes } => {
             let cfg = crate::mcp::load_config_with_workspace(&config_path, workspace)?;
-            let server = cfg
-                .servers
-                .get(&name)
-                .ok_or_else(|| anyhow!("MCP server '{name}' not found"))?;
+            let server = cfg.servers.get(&name).ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    tr(MessageId::MainMcpServerNotFound).replace("{name}", &name)
+                )
+            })?;
             let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
             crate::mcp::oauth::perform_oauth_login_for_server(
                 &name,
@@ -4101,49 +4310,66 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
                 config.mcp_oauth_callback_url.as_deref(),
             )
             .await?;
-            println!("Stored OAuth credentials for MCP server '{name}'.");
+            println!(
+                "{}",
+                tr(MessageId::MainMcpOauthStored).replace("{name}", &name)
+            );
             Ok(())
         }
         McpCommand::Logout { name } => {
             let cfg = crate::mcp::load_config_with_workspace(&config_path, workspace)?;
-            let server = cfg
-                .servers
-                .get(&name)
-                .ok_or_else(|| anyhow!("MCP server '{name}' not found"))?;
+            let server = cfg.servers.get(&name).ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    tr(MessageId::MainMcpServerNotFound).replace("{name}", &name)
+                )
+            })?;
             if crate::mcp::oauth::delete_oauth_tokens_for_server(&name, server)? {
-                println!("Deleted stored OAuth credentials for MCP server '{name}'.");
+                println!(
+                    "{}",
+                    tr(MessageId::MainMcpOauthDeleted).replace("{name}", &name)
+                );
             } else {
-                println!("No stored OAuth credentials found for MCP server '{name}'.");
+                println!(
+                    "{}",
+                    tr(MessageId::MainMcpOauthMissing).replace("{name}", &name)
+                );
             }
             Ok(())
         }
         McpCommand::Remove { name } => {
             crate::mcp::remove_server_config(&config_path, &name)?;
-            println!("Removed MCP server '{name}'");
+            println!("{}", tr(MessageId::MainMcpRemoved).replace("{name}", &name));
             Ok(())
         }
         McpCommand::Enable { name } => {
             crate::mcp::set_server_enabled(&config_path, &name, true)?;
-            println!("Enabled MCP server '{name}'");
+            println!(
+                "{}",
+                tr(MessageId::MainMcpEnabledNotice).replace("{name}", &name)
+            );
             Ok(())
         }
         McpCommand::Disable { name } => {
             crate::mcp::set_server_enabled(&config_path, &name, false)?;
-            println!("Disabled MCP server '{name}'");
+            println!(
+                "{}",
+                tr(MessageId::MainMcpDisabledNotice).replace("{name}", &name)
+            );
             Ok(())
         }
         McpCommand::Validate => {
             let mut pool = McpPool::from_config_path_with_workspace(&config_path, workspace)?;
             let errors = pool.connect_all().await;
             if errors.is_empty() {
-                println!("MCP config is valid. All enabled servers connected.");
+                println!("{}", tr(MessageId::MainMcpValid));
                 return Ok(());
             }
-            eprintln!("MCP validation failed:");
+            eprintln!("{}", tr(MessageId::MainMcpValidationFailed));
             for (name, err) in errors {
                 eprintln!("  - {name}: {err:#}");
             }
-            bail!("one or more MCP servers failed validation");
+            bail!("{}", tr(MessageId::MainMcpValidationError));
         }
     }
 }
@@ -4252,7 +4478,7 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
 
     let (program, args) = command
         .split_first()
-        .ok_or_else(|| anyhow::anyhow!("Command is required"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxCommandRequired)))?;
     let spec =
         CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let manager = SandboxManager::new();
@@ -4268,17 +4494,20 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         dse_tools::child_env::string_map_env(&exec_env.env),
     );
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to run command: {e}"))?;
+    let mut child = cmd.spawn().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            tr(MessageId::MainSandboxRunFailed).replace("{error}", &error.to_string())
+        )
+    })?;
     let stdout_handle = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow::anyhow!("stdout unavailable"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxStdoutUnavailable)))?;
     let stderr_handle = child
         .stderr
         .take()
-        .ok_or_else(|| anyhow::anyhow!("stderr unavailable"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxStderrUnavailable)))?;
 
     let timeout = exec_env.timeout;
     let stdout_thread = std::thread::spawn(move || {
@@ -4316,12 +4545,19 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         }
 
         if !status.success() {
-            bail!("Command failed with exit code {exit_code}");
+            bail!(
+                "{}",
+                tr(MessageId::MainSandboxExitFailed).replace("{exit_code}", &exit_code.to_string())
+            );
         }
     } else {
         let _ = child.kill();
         let _ = child.wait();
-        bail!("Command timed out after {}ms", timeout.as_millis());
+        bail!(
+            "{}",
+            tr(MessageId::MainSandboxTimedOut)
+                .replace("{timeout_ms}", &timeout.as_millis().to_string())
+        );
     }
     Ok(())
 }
@@ -4347,7 +4583,10 @@ fn parse_sandbox_policy(
             exclude_tmpdir,
             exclude_slash_tmp,
         }),
-        other => bail!("Unknown sandbox policy: {other}"),
+        other => bail!(
+            "{}",
+            tr(MessageId::MainSandboxUnknownPolicy).replace("{policy}", other)
+        ),
     }
 }
 

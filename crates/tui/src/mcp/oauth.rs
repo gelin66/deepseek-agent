@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use dse_localization::{MessageId, tr};
 use oauth2::TokenResponse;
 use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -31,18 +32,6 @@ pub enum McpAuthStatus {
     OAuth,
 }
 
-impl std::fmt::Display for McpAuthStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let text = match self {
-            Self::Unsupported => "Unsupported",
-            Self::NotLoggedIn => "Not logged in",
-            Self::BearerToken => "Bearer token",
-            Self::OAuth => "OAuth",
-        };
-        f.write_str(text)
-    }
-}
-
 pub fn error_looks_auth_required(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}").to_ascii_lowercase();
     text.contains("401")
@@ -53,9 +42,7 @@ pub fn error_looks_auth_required(error: &anyhow::Error) -> bool {
 }
 
 pub fn auth_required_login_hint(server_name: &str) -> String {
-    format!(
-        "MCP server '{server_name}' requires OAuth authentication. Run `dse mcp login {server_name}` to authenticate."
-    )
+    tr(MessageId::MainMcpAuthRequiredHint).replace("{name}", server_name)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -404,10 +391,13 @@ pub async fn perform_oauth_login_for_server(
     callback_url: Option<&str>,
 ) -> Result<()> {
     let Some(url) = server.url.as_deref() else {
-        bail!("OAuth login is only supported for URL-based MCP servers");
+        bail!("{}", tr(MessageId::MainMcpOauthUrlLoginOnly));
     };
     if server_has_manual_authorization(server) {
-        bail!("MCP server '{name}' already has bearer/static Authorization configured");
+        bail!(
+            "{}",
+            tr(MessageId::MainMcpOauthStaticConfigured).replace("{name}", name)
+        );
     }
 
     let discovery = if explicit_scopes.is_none() && server.scopes.is_empty() {
@@ -439,7 +429,7 @@ pub async fn perform_oauth_login_for_server(
             if resolved_scopes.source == McpOAuthScopesSource::Discovered
                 && err.downcast_ref::<OAuthProviderError>().is_some() =>
         {
-            println!("OAuth provider rejected discovered scopes. Retrying without scopes...");
+            println!("{}", tr(MessageId::MainMcpOauthRetryWithoutScopes));
             perform_oauth_login(
                 name,
                 url,
@@ -487,7 +477,7 @@ async fn perform_oauth_login(
 
 pub fn delete_oauth_tokens_for_server(name: &str, server: &McpServerConfig) -> Result<bool> {
     let Some(url) = server.url.as_deref() else {
-        bail!("OAuth logout is only supported for URL-based MCP servers");
+        bail!("{}", tr(MessageId::MainMcpOauthUrlLogoutOnly));
     };
     delete_oauth_tokens(name, url)
 }
@@ -749,25 +739,24 @@ impl OauthLoginFlow {
 
     async fn finish(mut self) -> Result<()> {
         println!(
-            "Authorize `{}` by opening this URL in your browser:\n{}\n",
-            self.server_name, self.auth_url
+            "{}",
+            tr(MessageId::MainMcpOauthAuthorize)
+                .replace("{name}", &self.server_name)
+                .replace("{url}", &self.auth_url)
         );
         if webbrowser::open(&self.auth_url).is_err() {
-            eprintln!("Browser launch failed; copy the URL above manually.");
+            eprintln!("{}", tr(MessageId::MainMcpOauthBrowserLaunchFailed));
         }
         println!(
-            "Waiting for browser authorization for MCP server '{}'...",
-            self.server_name
+            "{}",
+            tr(MessageId::MainMcpOauthWaiting).replace("{name}", &self.server_name)
         );
 
         let result = async {
             let callback = timeout(Duration::from_secs(300), &mut self.rx)
                 .await
                 .with_context(|| {
-                    format!(
-                        "timed out waiting for OAuth callback for MCP server '{}'. Retry from a terminal, or use task_shell_start/background shell if an agent is running the login flow.",
-                        self.server_name
-                    )
+                    tr(MessageId::MainMcpOauthCallbackTimeout).replace("{name}", &self.server_name)
                 })?
                 .context("OAuth callback was cancelled")?;
             let OauthCallbackResult { code, state } = match callback {

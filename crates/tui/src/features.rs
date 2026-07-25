@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use dse_localization::{MessageId, tr};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Unique features toggled via configuration.
@@ -72,7 +73,7 @@ pub fn feature_from_key(key: &str) -> Option<Feature> {
 }
 
 pub fn render_feature_table(features: &Features) -> String {
-    let mut output = String::from("功能\t启用\n");
+    let mut output = tr(MessageId::FeaturesHeader).into_owned();
     for spec in FEATURES {
         let _ = writeln!(output, "{}\t{}", spec.key, features.enabled(spec.id));
     }

@@ -11,6 +11,7 @@
 use super::app::App;
 use super::canonical_commands::{self, looks_like_command_input};
 use super::widgets::SlashMenuEntry;
+use dse_localization::MessageId;
 
 /// Return the slash-menu entries the composer should display, honouring
 /// `slash_menu_hidden` (set when the user dismisses the popup with Esc).
@@ -66,14 +67,20 @@ pub fn apply_slash_menu_selection(app: &mut App, entries: &[SlashMenuEntry]) -> 
         let trigger = app.input[byte_start..].chars().next().unwrap_or('/');
         replace_inline_skill_mention(app, byte_start, trigger, &partial, &skill_name);
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Skill selected: {trigger}{skill_name}"));
+        app.status_message = Some(
+            app.tr(MessageId::SlashSkillSelected)
+                .replace("{skill}", &format!("{trigger}{skill_name}")),
+        );
         return true;
     }
 
     app.input = selected.name.clone();
     app.cursor_position = app.input.chars().count();
     app.slash_menu_hidden = false;
-    app.status_message = Some(format!("Command selected: {}", app.input.trim_end()));
+    app.status_message = Some(
+        app.tr(MessageId::SlashCommandSelected)
+            .replace("{command}", app.input.trim_end()),
+    );
     true
 }
 
@@ -234,7 +241,10 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         app.input = format!("/{shared}");
         app.cursor_position = app.input.chars().count();
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Autocomplete: /{shared}"));
+        app.status_message = Some(
+            app.tr(MessageId::SlashAutocomplete)
+                .replace("{prefix}", shared),
+        );
         return true;
     }
 
@@ -243,7 +253,10 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Command completed: {}", completed.trim_end()));
+        app.status_message = Some(
+            app.tr(MessageId::SlashCommandCompleted)
+                .replace("{command}", completed.trim_end()),
+        );
         return true;
     }
 
@@ -253,6 +266,9 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    app.status_message = Some(format!("Suggestions: {preview}"));
+    app.status_message = Some(
+        app.tr(MessageId::SlashSuggestions)
+            .replace("{suggestions}", &preview),
+    );
     true
 }

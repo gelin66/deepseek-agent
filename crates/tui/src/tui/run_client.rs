@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dse_app::AgentApplication;
+use dse_localization::{MessageId, tr};
 use dse_protocol::agent_runtime::{
     InteractionId, RunId, StoredRuntimeEvent, UserInteractionResponse,
 };
@@ -22,29 +23,55 @@ use uuid::Uuid;
 
 const RUN_EVENT_BUFFER_CAPACITY: usize = 256;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum TuiRunClientError {
-    #[error("已有活动中的根运行：{run_id}")]
-    ActiveRun { run_id: RunId },
-    #[error("另一个运行启动、恢复或附加操作仍在进行")]
+    ActiveRun {
+        run_id: RunId,
+    },
     LaunchInFlight,
-    #[error("当前没有可控制的活动根运行")]
     NoActiveRun,
-    #[error(
-        "工作区 {workspace:?} 存在多个待恢复创建请求，无法安全地自动选择：{creation_request_ids:?}"
-    )]
     AmbiguousPendingCreations {
         workspace: String,
         creation_request_ids: Vec<String>,
     },
-    #[error("Run API 返回错误：{0:?}")]
     Application(RunApiError),
-    #[error("Run API 对 {operation} 返回了意外结果：{result:?}")]
     UnexpectedResult {
         operation: &'static str,
         result: Box<RunCommandResult>,
     },
 }
+
+impl std::fmt::Display for TuiRunClientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::ActiveRun { run_id } => {
+                tr(MessageId::RunClientActive).replace("{run_id}", &run_id.to_string())
+            }
+            Self::LaunchInFlight => tr(MessageId::RunClientLaunchInFlight).into_owned(),
+            Self::NoActiveRun => tr(MessageId::RunClientNoActive).into_owned(),
+            Self::AmbiguousPendingCreations {
+                workspace,
+                creation_request_ids,
+            } => tr(MessageId::RunClientAmbiguousPending)
+                .replace("{workspace}", &format!("{workspace:?}"))
+                .replace(
+                    "{creation_request_ids}",
+                    &format!("{creation_request_ids:?}"),
+                ),
+            Self::Application(error) => {
+                tr(MessageId::RunClientApplicationError).replace("{error}", &format!("{error:?}"))
+            }
+            Self::UnexpectedResult { operation, result } => {
+                tr(MessageId::RunClientUnexpectedResult)
+                    .replace("{operation}", operation)
+                    .replace("{result}", &format!("{result:?}"))
+            }
+        };
+        formatter.write_str(&message)
+    }
+}
+
+impl std::error::Error for TuiRunClientError {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TuiRunClientSnapshot {

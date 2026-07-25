@@ -382,42 +382,18 @@ pub fn run_cli() -> std::process::ExitCode {
 fn reject_retired_command(cli: &Cli) -> Result<()> {
     if cli.prompt_flag.is_none() && cli.command.is_none() {
         match cli.prompt.first().map(String::as_str) {
-            Some("thread") => bail!(
-                "命令 `dse thread` 已删除；请使用 `dse runs` 查看 canonical Agent 运行，或使用 `dse resume <RUN_ID>` 继续运行"
-            ),
-            Some("sessions") => bail!(
-                "命令 `dse sessions` 已删除；请使用 `dse runs` 查看当前工作区的 canonical Agent 运行"
-            ),
-            Some("fork") => bail!(
-                "命令 `dse fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `dse resume <RUN_ID>` 继续 canonical Agent 运行"
-            ),
-            Some("run") => bail!(
-                "命令 `dse run` 已删除；请直接运行 `dse` 启动交互界面，或使用 `dse exec <PROMPT>` 执行非交互任务"
-            ),
-            Some("mcp-server") => bail!(
-                "命令 `dse mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `dse app-server --stdio`"
-            ),
-            Some("update") => bail!(
-                "命令 `dse update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
-            ),
-            Some("metrics") => {
-                bail!("命令 `dse metrics` 已删除；旧日志/会话扫描不是 canonical RunStore 指标来源")
-            }
-            Some("workflow") => bail!(
-                "命令 `dse workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 由唯一 Orchestrator 管理"
-            ),
-            Some("workflow-tool") => {
-                bail!("命令 `dse workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
-            }
-            Some("fleet") | Some("lane") => bail!(
-                "命令 `dse fleet` / `dse lane` 已删除；多 Agent 任务统一由 canonical AgentRuntime、RunStore 与 Writer Orchestrator 执行"
-            ),
-            Some("review") => {
-                bail!("命令 `dse review` 已删除；请使用 canonical Agent 审查当前 git diff")
-            }
-            Some("speech") | Some("tts") => {
-                bail!("命令 `dse speech` / `dse tts` 已删除")
-            }
+            Some("thread") => bail!("{}", tr(MessageId::CliRemovedThread)),
+            Some("sessions") => bail!("{}", tr(MessageId::CliRemovedSessions)),
+            Some("fork") => bail!("{}", tr(MessageId::CliRemovedFork)),
+            Some("run") => bail!("{}", tr(MessageId::CliRemovedRun)),
+            Some("mcp-server") => bail!("{}", tr(MessageId::CliRemovedMcpServer)),
+            Some("update") => bail!("{}", tr(MessageId::CliRemovedUpdate)),
+            Some("metrics") => bail!("{}", tr(MessageId::CliRemovedMetrics)),
+            Some("workflow") => bail!("{}", tr(MessageId::CliRemovedWorkflow)),
+            Some("workflow-tool") => bail!("{}", tr(MessageId::CliRemovedWorkflowTool)),
+            Some("fleet") | Some("lane") => bail!("{}", tr(MessageId::CliRemovedFleetLane)),
+            Some("review") => bail!("{}", tr(MessageId::CliRemovedReview)),
+            Some("speech") | Some("tts") => bail!("{}", tr(MessageId::CliRemovedSpeech)),
             _ => {}
         }
     }
@@ -425,7 +401,7 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
     if let Some(Commands::Mcp(args)) = cli.command.as_ref()
         && args.args.first().is_some_and(|arg| arg == "add-self")
     {
-        bail!("命令 `dse mcp add-self` 已删除；DSE 不再把自身注册为 MCP 服务端");
+        bail!("{}", tr(MessageId::CliRemovedMcpAddSelf));
     }
 
     Ok(())
@@ -765,15 +741,18 @@ fn resolve_runtime_for_dispatch_with_secrets(
         match store.save() {
             Ok(()) => {
                 eprintln!(
-                    "信息：已从系统凭据存储恢复 DeepSeek API Key，并保存到 {}",
-                    store.path().display()
+                    "{}",
+                    tr(MessageId::CliRecoveredKeySaved)
+                        .replace("{path}", &store.path().display().to_string())
                 );
                 resolved.api_key_source = Some(RuntimeApiKeySource::ConfigFile);
             }
             Err(err) => {
                 eprintln!(
-                    "警告：已从系统凭据存储恢复 DeepSeek API Key，但无法保存到 {}：{err}",
-                    store.path().display()
+                    "{}",
+                    tr(MessageId::CliRecoveredKeySaveFailed)
+                        .replace("{path}", &store.path().display().to_string())
+                        .replace("{error}", &err.to_string())
                 );
             }
         }
@@ -829,7 +808,10 @@ fn run_login_command_with_secrets(
     } else {
         store.path().display().to_string()
     };
-    println!("已保存 DeepSeek API Key：{destination}");
+    println!(
+        "{}",
+        tr(MessageId::CliKeySaved).replace("{destination}", &destination)
+    );
     Ok(())
 }
 
@@ -841,7 +823,7 @@ fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -
     clear_deepseek_api_key_from_config(store);
     let _ = secrets.delete("deepseek");
     store.save()?;
-    println!("已删除 DeepSeek 凭据");
+    println!("{}", tr(MessageId::CliCredentialsDeleted));
     Ok(())
 }
 
@@ -883,16 +865,25 @@ fn deepseek_env_api_key() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn deepseek_active_source(store: &ConfigStore, secrets: &Secrets) -> &'static str {
+fn deepseek_active_source(
+    store: &ConfigStore,
+    secrets: &Secrets,
+) -> std::borrow::Cow<'static, str> {
     if deepseek_config_api_key(store).is_some() {
-        "配置文件"
+        tr(MessageId::CliCredentialSourceConfig)
     } else if deepseek_keyring_api_key(secrets).is_some() {
-        "系统凭据存储"
+        tr(MessageId::CliCredentialSourceKeyring)
     } else if deepseek_env_api_key().is_some() {
-        "环境变量 DEEPSEEK_API_KEY"
+        tr(MessageId::CliCredentialSourceEnvironment)
     } else {
-        "未配置"
+        tr(MessageId::CliCredentialSourceMissing)
     }
+}
+
+fn deepseek_credentials_configured(store: &ConfigStore, secrets: &Secrets) -> bool {
+    deepseek_config_api_key(store).is_some()
+        || deepseek_keyring_api_key(secrets).is_some()
+        || deepseek_env_api_key().is_some()
 }
 
 fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
@@ -906,10 +897,18 @@ fn run_auth_command_with_secrets(
 ) -> Result<()> {
     match command {
         AuthCommand::Status => {
-            println!("Provider：deepseek");
-            println!("凭据来源：{}", deepseek_active_source(store, secrets));
-            println!("配置文件：{}", store.path().display());
-            println!("查找顺序：命令行 -> 配置文件 -> 系统凭据存储 -> DEEPSEEK_API_KEY");
+            println!("{}", tr(MessageId::CliAuthProvider));
+            println!(
+                "{}",
+                tr(MessageId::CliAuthSource)
+                    .replace("{source}", deepseek_active_source(store, secrets).as_ref())
+            );
+            println!(
+                "{}",
+                tr(MessageId::CliAuthConfigPath)
+                    .replace("{path}", &store.path().display().to_string())
+            );
+            println!("{}", tr(MessageId::CliAuthLookupOrder));
             Ok(())
         }
         AuthCommand::Set {
@@ -926,24 +925,34 @@ fn run_auth_command_with_secrets(
             store.save()?;
             if keyring_saved {
                 println!(
-                    "已将 DeepSeek API Key 保存到 {} 和 {}",
-                    store.path().display(),
-                    secrets.backend_name()
+                    "{}",
+                    tr(MessageId::CliAuthSavedBoth)
+                        .replace("{config}", &store.path().display().to_string())
+                        .replace("{keyring}", secrets.backend_name())
                 );
             } else {
-                println!("已将 DeepSeek API Key 保存到 {}", store.path().display());
+                println!(
+                    "{}",
+                    tr(MessageId::CliAuthSavedConfig)
+                        .replace("{path}", &store.path().display().to_string())
+                );
             }
             Ok(())
         }
         AuthCommand::Get => {
             println!(
-                "deepseek：{}（来源：{}）",
-                if deepseek_active_source(store, secrets) == "未配置" {
-                    "未配置"
-                } else {
-                    "已配置"
-                },
-                deepseek_active_source(store, secrets)
+                "{}",
+                tr(MessageId::CliAuthStatus)
+                    .replace(
+                        "{configured}",
+                        if deepseek_credentials_configured(store, secrets) {
+                            tr(MessageId::CliAuthConfigured)
+                        } else {
+                            tr(MessageId::CliAuthMissing)
+                        }
+                        .as_ref()
+                    )
+                    .replace("{source}", deepseek_active_source(store, secrets).as_ref())
             );
             Ok(())
         }
@@ -951,7 +960,7 @@ fn run_auth_command_with_secrets(
             clear_deepseek_api_key_from_config(store);
             let _ = secrets.delete("deepseek");
             store.save()?;
-            println!("已从配置文件和系统凭据存储中删除 DeepSeek API Key");
+            println!("{}", tr(MessageId::CliAuthRemoved));
             Ok(())
         }
         AuthCommand::Migrate { dry_run } => run_auth_migrate(store, secrets, dry_run),
@@ -960,7 +969,7 @@ fn run_auth_command_with_secrets(
 
 fn prompt_api_key() -> Result<String> {
     use std::io::{IsTerminal, Write};
-    eprint!("请输入 DeepSeek API Key：");
+    eprint!("{}", tr(MessageId::CliApiKeyPrompt));
     io::stderr().flush().ok();
     if !io::stdin().is_terminal() {
         // Non-interactive: read directly without prompting twice.
@@ -972,27 +981,32 @@ fn prompt_api_key() -> Result<String> {
         .context(tr(MessageId::CliReadApiKeyFailed).into_owned())?;
     let key = buf.trim().to_string();
     if key.is_empty() {
-        bail!("DeepSeek API Key 不能为空");
+        bail!("{}", tr(MessageId::CliEmptyApiKey));
     }
     Ok(key)
 }
 
 fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
     let Some(value) = deepseek_config_api_key(store).map(str::to_owned) else {
-        println!("配置文件中没有可迁移的 DeepSeek API Key");
+        println!("{}", tr(MessageId::CliMigrationNoKey));
         return Ok(());
     };
-    println!("系统凭据存储：{}", secrets.backend_name());
+    println!(
+        "{}",
+        tr(MessageId::CliCredentialBackend).replace("{backend}", secrets.backend_name())
+    );
     if dry_run {
-        println!("将迁移 DeepSeek API Key，并从配置文件中删除明文");
+        println!("{}", tr(MessageId::CliMigrationIntent));
         return Ok(());
     }
     secrets
         .set("deepseek", &value)
-        .context("无法写入系统凭据存储；配置文件未修改")?;
+        .context(tr(MessageId::CliMigrationStoreFailed).into_owned())?;
     clear_deepseek_api_key_from_config(store);
-    store.save().context("无法更新配置文件")?;
-    println!("已迁移 DeepSeek API Key，并从配置文件中删除明文");
+    store
+        .save()
+        .context(tr(MessageId::CliMigrationConfigFailed).into_owned())?;
+    println!("{}", tr(MessageId::CliMigrationDone));
     Ok(())
 }
 
@@ -1046,16 +1060,25 @@ fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<(
                 .or(store.config.default_text_model.as_deref())
                 .unwrap_or("deepseek-v4-pro");
             let resolved = canonical_deepseek_model(requested)?;
-            println!("请求模型：{requested}");
-            println!("实际模型：{resolved}");
-            println!("Provider：deepseek");
+            println!(
+                "{}",
+                tr(MessageId::CliModelRequested).replace("{model}", requested)
+            );
+            println!(
+                "{}",
+                tr(MessageId::CliModelResolved).replace("{model}", &resolved)
+            );
+            println!("{}", tr(MessageId::CliAuthProvider));
             Ok(())
         }
         ModelCommand::Set { model } => {
             let canonical = canonical_deepseek_model(&model)?;
             store.config.default_text_model = Some(canonical.clone());
             store.save()?;
-            println!("已将默认 DeepSeek 模型设为 `{canonical}`");
+            println!(
+                "{}",
+                tr(MessageId::CliModelSet).replace("{model}", &canonical)
+            );
             Ok(())
         }
     }
@@ -1081,13 +1104,11 @@ fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
 }
 
 fn parse_run_list_limit(raw: &str) -> std::result::Result<u32, String> {
-    let limit = raw
-        .parse::<u32>()
-        .map_err(|_| format!("`--limit` 必须是 1 到 {MAX_RUN_LIST_LIMIT} 之间的整数"))?;
+    let range_error =
+        || tr(MessageId::CliLimitRange).replace("{max}", &MAX_RUN_LIST_LIMIT.to_string());
+    let limit = raw.parse::<u32>().map_err(|_| range_error())?;
     if !(1..=MAX_RUN_LIST_LIMIT).contains(&limit) {
-        return Err(format!(
-            "`--limit` 必须是 1 到 {MAX_RUN_LIST_LIMIT} 之间的整数"
-        ));
+        return Err(range_error());
     }
     Ok(limit)
 }
@@ -1097,9 +1118,9 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .context("无法创建 canonical Run 查询运行时")?;
+        .context(tr(MessageId::CliRunRuntimeCreateFailed).into_owned())?;
     let application = AgentApplication::production(ProductionApplicationConfig::official())
-        .context("无法打开 canonical RunStore")?;
+        .context(tr(MessageId::CliRunStoreOpenFailed).into_owned())?;
     let response = runtime.block_on(application.execute(RunCommandEnvelope {
         schema_version: RUN_API_SCHEMA_VERSION,
         request_id: "cli-runs".to_owned(),
@@ -1118,12 +1139,16 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
         RunCommandResult::Runs { workspace, runs } => (workspace, runs),
         RunCommandResult::Error { error } => {
             bail!(
-                "无法列出当前工作区的 Agent 运行（{:?}）：{}",
-                error.code,
-                error.message
+                "{}",
+                tr(MessageId::CliRunListFailed)
+                    .replace("{kind}", &format!("{:?}", error.code))
+                    .replace("{message}", &error.message)
             );
         }
-        other => bail!("canonical Run API 返回了意外结果：{other:?}"),
+        other => bail!(
+            "{}",
+            tr(MessageId::CliRunUnexpectedResult).replace("{result}", &format!("{other:?}"))
+        ),
     };
     let runs = runs
         .into_iter()
@@ -1141,7 +1166,7 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
             },
         };
         serde_json::to_writer_pretty(&mut output, &response)
-            .context("无法编码 canonical Run API JSON")?;
+            .context(tr(MessageId::CliRunJsonEncodeFailed).into_owned())?;
         writeln!(output)?;
     } else {
         write_runs_human(&mut output, &response_workspace, &runs)?;
@@ -1152,15 +1177,17 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
 fn canonical_runs_workspace(configured: Option<&Path>) -> Result<String> {
     let workspace = match configured {
         Some(path) => path.to_path_buf(),
-        None => std::env::current_dir().context("无法读取当前工作区")?,
+        None => std::env::current_dir()
+            .context(tr(MessageId::CliRunCurrentWorkspaceFailed).into_owned())?,
     };
-    let canonical = workspace
-        .canonicalize()
-        .with_context(|| format!("无法解析工作区路径 {}", workspace.display()))?;
+    let canonical = workspace.canonicalize().with_context(|| {
+        tr(MessageId::CliRunWorkspaceResolveFailed)
+            .replace("{path}", &workspace.display().to_string())
+    })?;
     canonical
         .into_os_string()
         .into_string()
-        .map_err(|_| anyhow!("canonical Run API 要求工作区路径是有效 UTF-8"))
+        .map_err(|_| anyhow!("{}", tr(MessageId::CliRunWorkspaceUtf8)))
 }
 
 fn write_runs_human(
@@ -1169,27 +1196,39 @@ fn write_runs_human(
     runs: &[RootRunSummary],
 ) -> io::Result<()> {
     if runs.is_empty() {
-        writeln!(output, "当前工作区还没有 Agent 运行。")?;
+        writeln!(output, "{}", tr(MessageId::CliRunListEmpty))?;
         return Ok(());
     }
 
-    writeln!(output, "当前工作区 Agent 运行：{workspace}")?;
+    writeln!(
+        output,
+        "{}",
+        tr(MessageId::CliRunListTitle).replace("{workspace}", workspace)
+    )?;
     for run in runs {
         let state = if run.terminal {
-            "已结束"
+            tr(MessageId::CliRunTerminal)
         } else {
-            "进行中"
+            tr(MessageId::CliRunActive)
         };
         write!(
             output,
-            "- {} ｜ {} ｜ 更新时间 {} ｜ 事件序号 {}",
-            run.run_id,
-            state,
-            format_run_timestamp(run.updated_at_unix_ms),
-            run.last_sequence
+            "{}",
+            tr(MessageId::CliRunListItem)
+                .replace("{run_id}", &run.run_id.to_string())
+                .replace("{status}", state.as_ref())
+                .replace(
+                    "{updated_at}",
+                    &format_run_timestamp(run.updated_at_unix_ms)
+                )
+                .replace("{sequence}", &run.last_sequence.to_string())
         )?;
         if let Some(source) = run.continued_from_run_id.as_ref() {
-            write!(output, " ｜ 延续自 {source}")?;
+            write!(
+                output,
+                "{}",
+                tr(MessageId::CliRunContinuation).replace("{source}", &source.to_string())
+            )?;
         }
         writeln!(output)?;
     }

@@ -34,7 +34,7 @@ use serde_json::Value;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::exec_lifecycle_stream::{agent_lifecycle_stream_line, is_agent_lifecycle_event};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
-use dse_localization::{MessageId, tr};
+use dse_localization::{MessageId, ProductLanguage, process_language, tr, tr_in};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
@@ -166,8 +166,9 @@ pub(crate) async fn run_exec_runtime(
         }
         if max_runtime_secs > super::MAX_EXEC_MAX_RUNTIME_SECS {
             bail!(
-                "--max-runtime-secs 不能超过 {} 秒",
-                super::MAX_EXEC_MAX_RUNTIME_SECS
+                "{}",
+                tr(MessageId::ExecMaxRuntimeSecs)
+                    .replace("{max}", &super::MAX_EXEC_MAX_RUNTIME_SECS.to_string())
             );
         }
         let deadline = deadline_origin + Duration::from_secs(max_runtime_secs.max(1));
@@ -186,7 +187,7 @@ pub(crate) async fn run_exec_runtime(
         )?;
         startup_failure = ExecStartupFailure::RunStore;
         let application = AgentApplication::production(application_config)
-            .context("无法创建 production AgentApplication")?;
+            .context(tr(MessageId::ExecApplicationCreateFailed).into_owned())?;
 
         let is_resume = matches!(launch, ExecRunLaunch::Resume(_));
         let is_continue = matches!(
@@ -204,7 +205,7 @@ pub(crate) async fn run_exec_runtime(
         if remaining_runtime_ms == 0 {
             startup_failure = ExecStartupFailure::StartupTimeout;
             stop_exec_signal_controller(&mut signal_task).await;
-            bail!("exec_watchdog_timeout: AgentApplication 启动前已耗尽全局运行时间");
+            bail!("{}", tr(MessageId::ExecWatchdogBeforeStart));
         }
         let launch = match launch {
             ExecRunLaunch::ContinueLatest => {
@@ -215,7 +216,7 @@ pub(crate) async fn run_exec_runtime(
                         if let Some(exit_code) = signal {
                             std::process::exit(exit_code);
                         }
-                        bail!("Headless 信号控制器在查询最近运行时意外退出");
+                        bail!("{}", tr(MessageId::ExecSignalRecentRun));
                     }
                     response = tokio::time::timeout_at(
                         deadline,
@@ -231,7 +232,7 @@ pub(crate) async fn run_exec_runtime(
                         Err(_) => {
                             startup_failure = ExecStartupFailure::StartupTimeout;
                             stop_exec_signal_controller(&mut signal_task).await;
-                            bail!("exec_watchdog_timeout: 查询最近 Agent 运行超过最大运行时间");
+                            bail!("{}", tr(MessageId::ExecWatchdogRecentRun));
                         }
                     }
                 };
@@ -240,8 +241,9 @@ pub(crate) async fn run_exec_runtime(
                         let Some(latest) = runs.into_iter().next() else {
                             stop_exec_signal_controller(&mut signal_task).await;
                             bail!(
-                                "工作区 {} 没有可继续的 Agent 会话",
-                                workspace.display()
+                                "{}",
+                                tr(MessageId::ExecNoContinuation)
+                                    .replace("{workspace}", &workspace.display().to_string())
                             );
                         };
                         latest
@@ -252,15 +254,19 @@ pub(crate) async fn run_exec_runtime(
                     }
                     other => {
                         stop_exec_signal_controller(&mut signal_task).await;
-                        bail!("查询最近 Agent 运行返回了非 Runs 结果: {other:?}");
+                        bail!(
+                            "{}",
+                            tr(MessageId::ExecUnexpectedRunsResult)
+                                .replace("{result}", &format!("{other:?}"))
+                        );
                     }
                 };
                 if !latest.terminal {
                     stop_exec_signal_controller(&mut signal_task).await;
                     bail!(
-                        "最新 Agent 运行 {} 尚未终态；请使用 `dse exec --resume {}` 恢复同一运行",
-                        latest.run_id,
-                        latest.run_id
+                        "{}",
+                        tr(MessageId::ExecLatestNotTerminal)
+                            .replace("{run_id}", &latest.run_id.to_string())
                     );
                 }
                 ExecRunLaunch::Continue(latest.run_id.to_string())
@@ -333,7 +339,7 @@ pub(crate) async fn run_exec_runtime(
                 if let Some(exit_code) = signal {
                     std::process::exit(exit_code);
                 }
-                bail!("Headless 信号控制器在 AgentApplication 启动阶段意外退出");
+                bail!("{}", tr(MessageId::ExecSignalStartup));
             }
             response = tokio::time::timeout_at(
                 deadline,
@@ -343,7 +349,7 @@ pub(crate) async fn run_exec_runtime(
                 Err(_) => {
                     startup_failure = ExecStartupFailure::StartupTimeout;
                     stop_exec_signal_controller(&mut signal_task).await;
-                    bail!("exec_watchdog_timeout: AgentApplication 启动超过最大运行时间");
+                    bail!("{}", tr(MessageId::ExecWatchdogStartup));
                 }
             }
         };
@@ -381,7 +387,11 @@ pub(crate) async fn run_exec_runtime(
             }
             other => {
                 stop_exec_signal_controller(&mut signal_task).await;
-                bail!("AgentApplication 启动返回了非 Run 结果: {other:?}");
+                bail!(
+                    "{}",
+                    tr(MessageId::ExecUnexpectedStartResult)
+                        .replace("{result}", &format!("{other:?}"))
+                );
             }
         };
         runtime_started = true;
@@ -471,9 +481,8 @@ pub(crate) async fn run_exec_runtime(
                     continue;
                 }
                 Next::Signal(None) => {
-                    output_failure.get_or_insert_with(|| {
-                        "Headless 信号控制器在运行期间意外退出".to_owned()
-                    });
+                    output_failure
+                        .get_or_insert_with(|| tr(MessageId::ExecSignalRuntime).into_owned());
                     let response = application
                         .execute(run_envelope(
                             "exec-controller-cancel",
@@ -497,7 +506,8 @@ pub(crate) async fn run_exec_runtime(
                 }
                 Next::Events(other) => {
                     output_failure.get_or_insert_with(|| {
-                        format!("AgentApplication events 返回了意外结果: {other:?}")
+                        tr(MessageId::ExecUnexpectedEventsResult)
+                            .replace("{result}", &format!("{other:?}"))
                     });
                     break;
                 }
@@ -566,9 +576,8 @@ pub(crate) async fn run_exec_runtime(
                             }
                         }
                         ExecOutputWait::Signal(None) => {
-                            output_failure.get_or_insert_with(|| {
-                                "Headless 信号控制器在输出期间意外退出".to_owned()
-                            });
+                            output_failure
+                                .get_or_insert_with(|| tr(MessageId::ExecSignalOutput).into_owned());
                             let response = application
                                 .execute(run_envelope(
                                     "exec-output-controller-cancel",
@@ -697,7 +706,7 @@ pub(crate) async fn run_exec_runtime(
                 tr(MessageId::ExecOutputFailed).replace("{error}", &error.to_string())
             );
         }
-        if let Some(error) = terminal_projection.error {
+        if let Some(error) = project_terminal_in(&outcome.terminal, process_language()).error {
             bail!(
                 "{}",
                 tr(MessageId::ExecRuntimeFailed).replace("{error}", &error.to_string())
@@ -1407,6 +1416,13 @@ struct TerminalProjection {
 }
 
 fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
+    // The compact JSON/stream projection predates localization and is machine
+    // protocol. Keep its existing zh-Hans messages byte-stable; the text
+    // terminal projection below resolves the selected process language.
+    project_terminal_in(terminal, ProductLanguage::SimplifiedChinese)
+}
+
+fn project_terminal_in(terminal: &TerminalState, language: ProductLanguage) -> TerminalProjection {
     let (reason, error, code, category, recoverable) = match terminal {
         TerminalState::Completed { .. } => (RunTerminationReason::Resolved, None, "", "", false),
         TerminalState::Blocked { reason } => (
@@ -1425,12 +1441,12 @@ fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
         ),
         TerminalState::Cancelled | TerminalState::Interrupted => (
             RunTerminationReason::Canceled,
-            Some("Headless 执行已取消".to_owned()),
+            Some(tr_in(language, MessageId::ExecCancelled).into_owned()),
             "exec_cancelled",
             "state",
             false,
         ),
-        TerminalState::Failed { failure } => project_failure(failure),
+        TerminalState::Failed { failure } => project_failure_in(failure, language),
     };
     TerminalProjection {
         receipt: ExecTerminalReceipt::from_reason(reason),
@@ -1441,8 +1457,22 @@ fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
     }
 }
 
+#[cfg(test)]
 fn project_failure(
     failure: &RuntimeFailure,
+) -> (
+    RunTerminationReason,
+    Option<String>,
+    &'static str,
+    &'static str,
+    bool,
+) {
+    project_failure_in(failure, ProductLanguage::SimplifiedChinese)
+}
+
+fn project_failure_in(
+    failure: &RuntimeFailure,
+    language: ProductLanguage,
 ) -> (
     RunTerminationReason,
     Option<String>,
@@ -1454,7 +1484,7 @@ fn project_failure(
         RuntimeFailure::ModelRequestBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
             Some(
-                tr(MessageId::ExecModelRequestBudgetExhausted)
+                tr_in(language, MessageId::ExecModelRequestBudgetExhausted)
                     .replace("{limit}", &limit.to_string()),
             ),
             "runtime_model_request_budget_exhausted",
@@ -1464,7 +1494,8 @@ fn project_failure(
         RuntimeFailure::ApiRequestBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
             Some(
-                tr(MessageId::ExecApiRequestBudgetExhausted).replace("{limit}", &limit.to_string()),
+                tr_in(language, MessageId::ExecApiRequestBudgetExhausted)
+                    .replace("{limit}", &limit.to_string()),
             ),
             "llm_api_request_budget_exhausted",
             "state",
@@ -1472,35 +1503,44 @@ fn project_failure(
         ),
         RuntimeFailure::TurnBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(tr(MessageId::ExecTurnBudgetExhausted).replace("{limit}", &limit.to_string())),
+            Some(
+                tr_in(language, MessageId::ExecTurnBudgetExhausted)
+                    .replace("{limit}", &limit.to_string()),
+            ),
             "runtime_turn_budget_exhausted",
             "state",
             false,
         ),
         RuntimeFailure::ToolBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(tr(MessageId::ExecToolBudgetExhausted).replace("{limit}", &limit.to_string())),
+            Some(
+                tr_in(language, MessageId::ExecToolBudgetExhausted)
+                    .replace("{limit}", &limit.to_string()),
+            ),
             "runtime_tool_budget_exhausted",
             "state",
             false,
         ),
         RuntimeFailure::DepthLimit { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(tr(MessageId::ExecDepthLimitExceeded).replace("{limit}", &limit.to_string())),
+            Some(
+                tr_in(language, MessageId::ExecDepthLimitExceeded)
+                    .replace("{limit}", &limit.to_string()),
+            ),
             "runtime_depth_limit",
             "state",
             false,
         ),
         RuntimeFailure::Timeout { phase, .. } => (
             RunTerminationReason::Timeout,
-            Some(tr(MessageId::ExecTimeout).replace("{phase}", timeout_phase(*phase))),
+            Some(tr_in(language, MessageId::ExecTimeout).replace("{phase}", timeout_phase(*phase))),
             "exec_watchdog_timeout",
             "timeout",
             false,
         ),
         RuntimeFailure::IncompleteModelStream => (
             RunTerminationReason::ModelError,
-            Some(tr(MessageId::ExecIncompleteModelStream).into_owned()),
+            Some(tr_in(language, MessageId::ExecIncompleteModelStream).into_owned()),
             "llm_stream_incomplete",
             "parse",
             false,
@@ -1536,7 +1576,7 @@ fn project_failure(
         } => (
             RunTerminationReason::BudgetExhausted,
             Some(
-                tr(MessageId::ExecContextLimitExceeded)
+                tr_in(language, MessageId::ExecContextLimitExceeded)
                     .replace("{estimated_tokens}", &estimated_tokens.to_string())
                     .replace("{hard_input_tokens}", &hard_input_tokens.to_string()),
             ),
@@ -1560,28 +1600,28 @@ fn project_failure(
         ),
         RuntimeFailure::EmptyModelOutput => (
             RunTerminationReason::Unresolved,
-            Some(tr(MessageId::ExecEmptyModelOutput).into_owned()),
+            Some(tr_in(language, MessageId::ExecEmptyModelOutput).into_owned()),
             "llm_empty_output",
             "state",
             false,
         ),
         RuntimeFailure::OutputLimit => (
             RunTerminationReason::Unresolved,
-            Some(tr(MessageId::ExecOutputLimit).into_owned()),
+            Some(tr_in(language, MessageId::ExecOutputLimit).into_owned()),
             "llm_output_limit",
             "state",
             false,
         ),
         RuntimeFailure::ContentFiltered => (
             RunTerminationReason::ModelError,
-            Some(tr(MessageId::ExecContentFiltered).into_owned()),
+            Some(tr_in(language, MessageId::ExecContentFiltered).into_owned()),
             "llm_content_filtered",
             "state",
             false,
         ),
         RuntimeFailure::InsufficientSystemResource => (
             RunTerminationReason::ModelError,
-            Some(tr(MessageId::ExecInsufficientSystemResource).into_owned()),
+            Some(tr_in(language, MessageId::ExecInsufficientSystemResource).into_owned()),
             "llm_insufficient_system_resource",
             "network",
             true,
@@ -1782,30 +1822,40 @@ async fn emit_terminal_output(
     } else if !json_output {
         let accounting = &outcome.accounting;
         let request_line = if let Some(limit) = accounting.hard_request_limit {
-            format!(
-                "DeepSeek API 请求：{}/{limit}\n",
-                accounting.total_started()
-            )
+            tr(MessageId::ExecRequestCountLimited)
+                .replace("{used}", &accounting.total_started().to_string())
+                .replace("{limit}", &limit.to_string())
         } else {
-            format!("DeepSeek API 请求：{}\n", accounting.total_started())
+            tr(MessageId::ExecRequestCount)
+                .replace("{used}", &accounting.total_started().to_string())
         };
         wait_terminal_output(output.enqueue_stderr(request_line.into_bytes())).await?;
         wait_terminal_output(
             output.enqueue_stderr(
-                format!(
-                    "DeepSeek 用量：输入 {}，输出 {}；估算费用 ${:.6} / ¥{:.6}\n",
-                    accounting.usage.input_tokens,
-                    accounting.usage.output_tokens,
-                    nano_to_unit(accounting.cost_nanousd),
-                    nano_to_unit(accounting.cost_nanocny),
-                )
-                .into_bytes(),
+                tr(MessageId::ExecUsageCost)
+                    .replace("{input}", &accounting.usage.input_tokens.to_string())
+                    .replace("{output}", &accounting.usage.output_tokens.to_string())
+                    .replace(
+                        "{usd}",
+                        &format!("{:.6}", nano_to_unit(accounting.cost_nanousd)),
+                    )
+                    .replace(
+                        "{cny}",
+                        &format!("{:.6}", nano_to_unit(accounting.cost_nanocny)),
+                    )
+                    .into_bytes(),
             ),
         )
         .await?;
-        if let Some(error) = terminal.error.as_ref() {
-            wait_terminal_output(output.enqueue_stderr(format!("错误：{error}\n").into_bytes()))
-                .await?;
+        if let Some(error) = project_terminal_in(&outcome.terminal, process_language()).error {
+            wait_terminal_output(
+                output.enqueue_stderr(
+                    tr(MessageId::ExecErrorLine)
+                        .replace("{error}", &error)
+                        .into_bytes(),
+                ),
+            )
+            .await?;
         }
     }
     Ok(())

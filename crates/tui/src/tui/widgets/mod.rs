@@ -1340,7 +1340,8 @@ impl<'a> ApprovalWidget<'a> {
         } else {
             let mut rendered_detail = false;
             for detail in details.iter().take(4) {
-                let is_change_preview = matches!(detail.label.as_str(), "Preview" | "预览");
+                let is_change_preview =
+                    detail.label == tr(MessageId::ApprovalLabelPreview).as_ref();
                 if let Some(shell_lines) = detail.shell_lines.as_deref() {
                     let command_width = area.width.saturating_sub(10) as usize;
                     // Bound every multi-line preview so one huge command cannot
@@ -1728,12 +1729,12 @@ fn build_approval_controls(
     controls
 }
 
-fn approval_proceed_question() -> &'static str {
-    "是否继续？"
+fn approval_proceed_question() -> Cow<'static, str> {
+    tr(MessageId::ApprovalProceedQuestion)
 }
 
-fn approval_truncation_hint() -> &'static str {
-    "  … 已截断 · 按 [v] 查看完整内容"
+fn approval_truncation_hint() -> Cow<'static, str> {
+    tr(MessageId::ApprovalTruncationHint)
 }
 
 /// Approval palette per risk variant.
@@ -1927,17 +1928,23 @@ fn push_destructive_approval_semantics(lines: &mut Vec<Line<'static>>, compact: 
     }
 }
 
-fn destructive_approval_compact_semantics() -> (&'static str, &'static str) {
-    ("规则: ", "批准策略要求确认；拒绝跳过本次，Esc 中止整轮。")
+fn destructive_approval_compact_semantics() -> (Cow<'static, str>, Cow<'static, str>) {
+    (
+        tr(MessageId::ApprovalRuleLabel),
+        tr(MessageId::ApprovalDestructiveCompact),
+    )
 }
 
-fn destructive_approval_semantics() -> [(&'static str, &'static str); 2] {
+fn destructive_approval_semantics() -> [(Cow<'static, str>, Cow<'static, str>); 2] {
     [
         (
-            "规则: ",
-            "当前批准策略、审查规则或显式询问规则要求用户确认。",
+            tr(MessageId::ApprovalRuleLabel),
+            tr(MessageId::ApprovalRuleSemantics),
         ),
-        ("取消: ", "拒绝只跳过本次工具调用；Esc 会中止整轮。"),
+        (
+            tr(MessageId::ApprovalCancelLabel),
+            tr(MessageId::ApprovalCancelSemantics),
+        ),
     ]
 }
 

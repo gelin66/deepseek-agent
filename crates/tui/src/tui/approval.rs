@@ -239,14 +239,14 @@ fn build_localized_impact_summary(
         ToolCategory::Safe => {
             let mut impacts = vec![tr(MessageId::ApprovalImpactSafe).to_string()];
             if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
-                impacts.push(format!("读取：{path}"));
+                impacts.push(tr(MessageId::ApprovalImpactReadTarget).replace("{target}", &path));
             }
             impacts
         }
         ToolCategory::FileWrite => {
             let mut impacts = vec![tr(MessageId::ApprovalImpactFileWrite).to_string()];
             if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
-                impacts.push(format!("写入：{path}"));
+                impacts.push(tr(MessageId::ApprovalImpactWriteTarget).replace("{target}", &path));
             }
             impacts
         }
@@ -258,28 +258,29 @@ fn build_localized_impact_summary(
             if let Some(target) =
                 param_preview(params, &["url", "q", "query", "location", "repo"], 96)
             {
-                impacts.push(format!("目标：{target}"));
+                impacts
+                    .push(tr(MessageId::ApprovalImpactNetworkTarget).replace("{target}", &target));
             }
             impacts
         }
         ToolCategory::McpRead => {
             let mut impacts = vec![tr(MessageId::ApprovalImpactMcpRead).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("MCP 目标：{target}"));
+                impacts.push(tr(MessageId::ApprovalImpactMcpTarget).replace("{target}", &target));
             }
             impacts
         }
         ToolCategory::McpAction => {
             let mut impacts = vec![tr(MessageId::ApprovalImpactMcpAction).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("MCP 目标：{target}"));
+                impacts.push(tr(MessageId::ApprovalImpactMcpTarget).replace("{target}", &target));
             }
             impacts
         }
         ToolCategory::Agent => {
             let mut impacts = vec![tr(MessageId::ApprovalImpactAgent).to_string()];
             if let Some(kind) = param_preview(params, &["type"], 40) {
-                impacts.push(format!("子代理类型：{kind}"));
+                impacts.push(tr(MessageId::ApprovalImpactAgentType).replace("{type}", &kind));
             }
             impacts
         }
@@ -290,7 +291,7 @@ fn build_localized_impact_summary(
                 &["path", "cmd", "command", "url", "q", "query", "ref_id"],
                 96,
             ) {
-                impacts.push(format!("主要输入：{target}"));
+                impacts.push(tr(MessageId::ApprovalImpactPrimaryInput).replace("{input}", &target));
             }
             impacts
         }
@@ -596,12 +597,12 @@ fn localize_detail_label(label: &str) -> Cow<'static, str> {
         "Action" => tr(MessageId::ApprovalLabelAction),
         "Type" => tr(MessageId::ApprovalLabelType),
         "Prompt" => tr(MessageId::ApprovalLabelPrompt),
-        "Goal" => "目标".into(),
-        "Children" => "子任务".into(),
-        "Writes" => "写入".into(),
-        "Shell" => "Shell".into(),
-        "Network" => "网络".into(),
-        "Budget" => "预算".into(),
+        "Goal" => tr(MessageId::ApprovalLabelGoal),
+        "Children" => tr(MessageId::ApprovalLabelChildren),
+        "Writes" => tr(MessageId::ApprovalLabelWrites),
+        "Shell" => tr(MessageId::ApprovalLabelShell),
+        "Network" => tr(MessageId::ApprovalLabelNetwork),
+        "Budget" => tr(MessageId::ApprovalLabelBudget),
         _ => label.to_string().into(),
     }
 }

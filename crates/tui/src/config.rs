@@ -14,6 +14,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use dse_localization::{MessageId, tr};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -187,19 +188,25 @@ impl Config {
         let path = resolve_load_config_path(path);
         let mut config = match path.as_ref() {
             Some(path) if path.exists() => {
-                let contents = fs::read_to_string(path)
-                    .with_context(|| format!("读取配置失败：{}", path.display()))?;
-                reject_foreign_provider_declarations(&contents)
-                    .with_context(|| format!("解析配置失败：{}", path.display()))?;
-                let parsed: ConfigFile = toml::from_str(&contents)
-                    .with_context(|| format!("解析配置失败：{}", path.display()))?;
+                let contents = fs::read_to_string(path).with_context(|| {
+                    tr(MessageId::ConfigReadFailed).replace("{path}", &path.display().to_string())
+                })?;
+                reject_foreign_provider_declarations(&contents).with_context(|| {
+                    tr(MessageId::ConfigParseFailed).replace("{path}", &path.display().to_string())
+                })?;
+                let parsed: ConfigFile = toml::from_str(&contents).with_context(|| {
+                    tr(MessageId::ConfigParseFailed).replace("{path}", &path.display().to_string())
+                })?;
                 apply_profile(parsed, profile)?
             }
             _ => Config::default(),
         };
         for name in ["DSE_PROVIDER", "DEEPSEEK_PROVIDER"] {
             if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
-                anyhow::bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量。");
+                anyhow::bail!(
+                    "{}",
+                    tr(MessageId::ConfigRetiredProviderEnv).replace("{name}", name)
+                );
             }
         }
         apply_env_overrides(&mut config);
@@ -234,22 +241,26 @@ impl Config {
         ] {
             if self.extra.contains_key(retired) {
                 if retired == "context" {
-                    anyhow::bail!(
-                        "配置项 'context.project_pack' 已删除；未准入的 M10-A pack-off treatment 不再保留。"
-                    );
+                    anyhow::bail!("{}", tr(MessageId::ConfigRetiredProjectPack));
                 }
-                anyhow::bail!("配置项 '{retired}' 已删除；DSE 仅使用官方 DeepSeek 模型目录。");
+                anyhow::bail!(
+                    "{}",
+                    tr(MessageId::ConfigRetiredKey).replace("{key}", retired)
+                );
             }
         }
         if let Some(key) = self.api_key.as_deref()
             && key.trim().is_empty()
         {
-            anyhow::bail!("api_key 不能为空字符串");
+            anyhow::bail!("{}", tr(MessageId::ConfigEmptyApiKey));
         }
         if let Some(model) = self.default_text_model.as_deref()
             && normalize_model_name(model).is_none()
         {
-            anyhow::bail!("不支持模型 '{model}'；仅支持 deepseek-v4-pro 或 deepseek-v4-flash。");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigUnsupportedModel).replace("{model}", model)
+            );
         }
         if let Some(effort) = self.reasoning_effort.as_deref()
             && !matches!(
@@ -258,7 +269,8 @@ impl Config {
             )
         {
             anyhow::bail!(
-                "reasoning_effort 无效：'{effort}'；应为 off、low、medium、high 或 max。"
+                "{}",
+                tr(MessageId::ConfigInvalidReasoning).replace("{value}", effort)
             );
         }
         if let Some(base_url) = self.base_url.as_deref() {
@@ -267,7 +279,10 @@ impl Config {
         if let Some(features) = &self.features {
             for key in features.entries.keys() {
                 if !is_known_feature_key(key) {
-                    anyhow::bail!("未知 feature flag：{key}");
+                    anyhow::bail!(
+                        "{}",
+                        tr(MessageId::ConfigUnknownFeature).replace("{key}", key)
+                    );
                 }
             }
         }
@@ -277,7 +292,10 @@ impl Config {
                 "on-request" | "auto"
             )
         {
-            anyhow::bail!("approval_policy 无效：'{policy}'；应为 on-request 或 auto。");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigInvalidApproval).replace("{value}", policy)
+            );
         }
         if let Some(verbosity) = self.verbosity.as_deref()
             && !matches!(
@@ -285,7 +303,10 @@ impl Config {
                 "normal" | "concise"
             )
         {
-            anyhow::bail!("verbosity 无效：'{verbosity}'；应为 normal 或 concise。");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigInvalidVerbosity).replace("{value}", verbosity)
+            );
         }
         if let Some(mode) = self.sandbox_mode.as_deref()
             && !matches!(
@@ -293,7 +314,10 @@ impl Config {
                 "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox"
             )
         {
-            anyhow::bail!("sandbox_mode 无效：'{mode}'。");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigInvalidSandbox).replace("{value}", mode)
+            );
         }
         if let Some(tui) = &self.tui
             && let Some(mode) = tui.alternate_screen.as_deref()
@@ -302,7 +326,10 @@ impl Config {
                 "auto" | "always" | "never"
             )
         {
-            anyhow::bail!("tui.alternate_screen 无效：'{mode}'。");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigInvalidAlternateScreen).replace("{value}", mode)
+            );
         }
         if let Some(language) = self.ui.as_ref().and_then(|ui| ui.language.as_deref()) {
             let _ = language.parse::<dse_localization::ProductLanguage>()?;
@@ -374,12 +401,7 @@ impl Config {
         if base_url_uses_local_host(&self.deepseek_base_url()) {
             return Ok(String::new());
         }
-        anyhow::bail!(
-            "未找到 DeepSeek API Key。\n\
-             1. 获取 Key：https://platform.deepseek.com/api_keys\n\
-             2. 保存：dse auth set\n\
-             也可在当前 shell 设置 DEEPSEEK_API_KEY。"
-        )
+        anyhow::bail!("{}", tr(MessageId::ConfigApiKeyMissing))
     }
 
     #[must_use]
@@ -505,7 +527,10 @@ impl Config {
 
     pub fn set_feature(&mut self, key: &str, enabled: bool) -> Result<()> {
         if !is_known_feature_key(key) {
-            anyhow::bail!("未知 feature flag：{key}");
+            anyhow::bail!(
+                "{}",
+                tr(MessageId::ConfigUnknownFeature).replace("{key}", key)
+            );
         }
         self.features
             .get_or_insert_with(FeaturesToml::default)
@@ -577,7 +602,8 @@ fn reject_foreign_provider_declarations(contents: &str) -> Result<()> {
             ] {
                 if profile.contains_key(key) {
                     anyhow::bail!(
-                        "profile 不能设置 '{key}'；DeepSeek credential、endpoint 和 model 只允许根级配置。"
+                        "{}",
+                        tr(MessageId::ConfigProfileForbidden).replace("{key}", key)
                     );
                 }
             }
@@ -588,12 +614,10 @@ fn reject_foreign_provider_declarations(contents: &str) -> Result<()> {
 
 fn reject_foreign_provider_table(table: &toml::Table) -> Result<()> {
     if table.contains_key("provider") {
-        anyhow::bail!("只支持官方 DeepSeek Provider；配置项 'provider' 已删除，请移除该配置。");
+        anyhow::bail!("{}", tr(MessageId::ConfigProviderRemoved));
     }
     if table.contains_key("providers") {
-        anyhow::bail!(
-            "配置表 [providers.*] 已删除；请改用根级 api_key、base_url 和 default_text_model。"
-        );
+        anyhow::bail!("{}", tr(MessageId::ConfigProvidersRemoved));
     }
     Ok(())
 }
@@ -614,12 +638,18 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
             .unwrap_or_default();
         available.sort();
         anyhow::bail!(
-            "找不到 profile '{profile_name}'；可用 profile：{}",
-            if available.is_empty() {
-                "无".to_string()
-            } else {
-                available.join(", ")
-            }
+            "{}",
+            tr(MessageId::ConfigProfileMissing)
+                .replace("{profile}", profile_name)
+                .replace(
+                    "{available}",
+                    if available.is_empty() {
+                        tr(MessageId::ConfigAvailableNone)
+                    } else {
+                        available.join(", ").into()
+                    }
+                    .as_ref()
+                )
         );
     };
     Ok(merge_config(config.base, override_config.clone()))
@@ -814,8 +844,8 @@ pub(crate) fn save_workspace_trust_at(
     config_path: Option<&Path>,
     workspace: &Path,
 ) -> Result<PathBuf> {
-    let path =
-        crate::config_persistence::config_toml_path(config_path).context("无法解析当前配置路径")?;
+    let path = crate::config_persistence::config_toml_path(config_path)
+        .context(tr(MessageId::ConfigPathResolveFailed).into_owned())?;
     ensure_parent_dir(&path)?;
     let key = workspace_config_key(workspace);
     crate::config_persistence::mutate_config_document(&path, |doc| {
@@ -825,7 +855,9 @@ pub(crate) fn save_workspace_trust_at(
             "trusted",
         )
     })
-    .with_context(|| format!("写入配置失败：{}", path.display()))?;
+    .with_context(|| {
+        tr(MessageId::ConfigWriteFailed).replace("{path}", &path.display().to_string())
+    })?;
     Ok(path)
 }
 
@@ -862,32 +894,23 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
     let path = path
         .map(expand_pathbuf)
         .or_else(default_config_path)
-        .context("无法解析配置路径：未找到 home 目录")?;
+        .context(tr(MessageId::ConfigPathResolveFailed).into_owned())?;
     if path.exists() {
         return Ok(None);
     }
     ensure_parent_dir(&path)?;
-    let content = format!(
-        r#"# DSE 配置
-# 获取 DeepSeek API Key：https://platform.deepseek.com/api_keys
-# 保存 Key：dse auth set
-
-# 官方 DeepSeek API 根地址
-# base_url = "https://api.deepseek.com"
-
-default_text_model = "{DEFAULT_TEXT_MODEL}"
-reasoning_effort = "high"
-"#
-    );
-    write_config_file_secure(&path, &content)
-        .with_context(|| format!("写入配置失败：{}", path.display()))?;
+    let content = tr(MessageId::ConfigTemplateDefault).replace("{model}", DEFAULT_TEXT_MODEL);
+    write_config_file_secure(&path, &content).with_context(|| {
+        tr(MessageId::ConfigWriteFailed).replace("{path}", &path.display().to_string())
+    })?;
     Ok(Some(path))
 }
 
 pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            tr(MessageId::ConfigParentCreateFailed).replace("{path}", &parent.display().to_string())
+        })?;
         #[cfg(unix)]
         if let Ok(meta) = fs::metadata(parent) {
             let mode = meta.permissions().mode();
@@ -943,9 +966,9 @@ impl SavedCredential {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
-            Self::KeyringAndConfigFile { backend, path } => {
-                format!("系统凭据库（{backend}）和 {}", path.display())
-            }
+            Self::KeyringAndConfigFile { backend, path } => tr(MessageId::ConfigCredentialBoth)
+                .replace("{backend}", backend)
+                .replace("{path}", &path.display().to_string()),
             Self::ConfigFile(path) => path.display().to_string(),
         }
     }
@@ -954,7 +977,7 @@ impl SavedCredential {
 pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     let key = api_key.trim();
     if key.is_empty() {
-        anyhow::bail!("拒绝保存空 API Key");
+        anyhow::bail!("{}", tr(MessageId::ConfigRefuseEmptyKey));
     }
     let path = save_api_key_to_config_file(key)?;
     #[cfg(not(test))]
@@ -980,23 +1003,23 @@ pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
 }
 
 fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
-    let path = default_config_path().context("无法解析配置路径：未找到 home 目录")?;
+    let path =
+        default_config_path().context(tr(MessageId::ConfigPathResolveFailed).into_owned())?;
     ensure_parent_dir(&path)?;
     if path.exists() {
         crate::config_persistence::mutate_config_document(&path, |doc| {
             crate::config_persistence::set_document_value(doc, &["api_key"], api_key)
         })
-        .with_context(|| format!("写入配置失败：{}", path.display()))?;
+        .with_context(|| {
+            tr(MessageId::ConfigWriteFailed).replace("{path}", &path.display().to_string())
+        })?;
     } else {
-        let content = format!(
-            r#"# DSE 配置
-api_key = "{api_key}"
-default_text_model = "{DEFAULT_TEXT_MODEL}"
-reasoning_effort = "max"
-"#
-        );
-        crate::config_persistence::write_config_toml_atomic(&path, &content)
-            .with_context(|| format!("写入配置失败：{}", path.display()))?;
+        let content = tr(MessageId::ConfigTemplateWithKey)
+            .replace("{api_key}", api_key)
+            .replace("{model}", DEFAULT_TEXT_MODEL);
+        crate::config_persistence::write_config_toml_atomic(&path, &content).with_context(
+            || tr(MessageId::ConfigWriteFailed).replace("{path}", &path.display().to_string()),
+        )?;
     }
     log_sensitive_event(
         "credential.save",
@@ -1049,14 +1072,17 @@ pub(crate) fn explicit_cli_api_key_override() -> Option<String> {
 }
 
 pub fn clear_api_key() -> Result<()> {
-    let path = default_config_path().context("无法解析配置路径：未找到 home 目录")?;
+    let path =
+        default_config_path().context(tr(MessageId::ConfigPathResolveFailed).into_owned())?;
     if !path.exists() {
         return Ok(());
     }
     crate::config_persistence::mutate_config_document(&path, |doc| {
         crate::config_persistence::remove_document_key(doc, &["api_key"])
     })
-    .with_context(|| format!("写入配置失败：{}", path.display()))?;
+    .with_context(|| {
+        tr(MessageId::ConfigWriteFailed).replace("{path}", &path.display().to_string())
+    })?;
     log_sensitive_event(
         "credential.clear",
         json!({

@@ -1,6 +1,7 @@
 //! Read-only canonical child-Agent projection for the Ocean work surface.
 
 use crate::tui::app::App;
+use dse_localization::MessageId;
 use dse_protocol::agent_runtime::TerminalState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +39,10 @@ impl LiveWorkProjection {
                 } else {
                     LiveWorkState::Settled
                 },
-                status: child_status(child.terminal.as_ref()).to_string(),
-                label: format!("子 Agent {}", index + 1),
+                status: child_status(app, child.terminal.as_ref()),
+                label: app
+                    .tr(MessageId::WorkChildAgentLabel)
+                    .replace("{index}", &(index + 1).to_string()),
             })
             .collect::<Vec<_>>();
         rows.sort_by(|left, right| {
@@ -55,14 +58,15 @@ impl LiveWorkProjection {
     }
 }
 
-fn child_status(terminal: Option<&TerminalState>) -> &'static str {
-    match terminal {
-        None => "running",
-        Some(TerminalState::Completed { .. }) => "done",
-        Some(TerminalState::Blocked { .. }) => "blocked",
-        Some(TerminalState::Failed { .. }) => "failed",
-        Some(TerminalState::Cancelled) => "canceled",
-        Some(TerminalState::Interrupted) => "interrupted",
-        Some(TerminalState::RecoveryRequired { .. }) => "recovery",
-    }
+fn child_status(app: &App, terminal: Option<&TerminalState>) -> String {
+    app.tr(match terminal {
+        None => MessageId::WorkChildRunning,
+        Some(TerminalState::Completed { .. }) => MessageId::WorkChildDone,
+        Some(TerminalState::Blocked { .. }) => MessageId::WorkChildBlocked,
+        Some(TerminalState::Failed { .. }) => MessageId::WorkChildFailed,
+        Some(TerminalState::Cancelled) => MessageId::WorkChildCanceled,
+        Some(TerminalState::Interrupted) => MessageId::WorkChildInterrupted,
+        Some(TerminalState::RecoveryRequired { .. }) => MessageId::WorkChildRecovery,
+    })
+    .into_owned()
 }

@@ -173,7 +173,7 @@ impl TerminalInputPump {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "终端输入线程已断开",
+                tr(MessageId::TuiTerminalInputDisconnected).into_owned(),
             )),
         }
     }
@@ -226,7 +226,7 @@ fn surface_prompt_override_notices(app: &mut App) {
 }
 
 fn prompt_override_warning(notice: &str) -> String {
-    format!("警告：{notice}")
+    tr(MessageId::TuiWarning).replace("{notice}", notice)
 }
 
 /// Run the interactive TUI event loop.
@@ -245,8 +245,10 @@ fn validate_interactive_tui_entry(config: &Config, options: &TuiOptions) -> Resu
     let configured_model = crate::resolve_interactive_deepseek_model(config)?;
     if options.model != configured_model {
         bail!(
-            "交互式 Agent 模型配置不一致：配置解析为 {configured_model}，TUI 收到 {}。",
-            options.model
+            "{}",
+            tr(MessageId::TuiModelMismatch)
+                .replace("{configured}", &configured_model)
+                .replace("{received}", &options.model)
         );
     }
     Ok(())
@@ -1135,8 +1137,13 @@ fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<
         }
         ViewEvent::CopyToClipboard { text, label } => {
             app.status_message = Some(match app.clipboard.write_text(&text) {
-                Ok(()) => format!("{label}已复制到剪贴板"),
-                Err(error) => format!("{label}复制失败：{error}"),
+                Ok(()) => app
+                    .tr(MessageId::TuiClipboardCopied)
+                    .replace("{label}", &label),
+                Err(error) => app
+                    .tr(MessageId::TuiClipboardFailed)
+                    .replace("{label}", &label)
+                    .replace("{error}", &error.to_string()),
             });
             None
         }
@@ -1212,15 +1219,24 @@ fn raw_mode_probe_handshake(publish: &AtomicBool, check: &AtomicBool) -> bool {
 }
 
 fn raw_mode_enable_error(error: io::Error) -> anyhow::Error {
-    anyhow::anyhow!("启用终端 raw mode 失败：{error}")
+    anyhow::anyhow!(
+        "{}",
+        tr(MessageId::TuiRawModeFailed).replace("{error}", &error.to_string())
+    )
 }
 
 fn terminal_probe_timeout_error(timeout: Duration) -> anyhow::Error {
-    anyhow::anyhow!("终端探测在 {}ms 后超时", timeout.as_millis())
+    anyhow::anyhow!(
+        "{}",
+        tr(MessageId::TuiProbeTimeout).replace("{timeout_ms}", &timeout.as_millis().to_string())
+    )
 }
 
 fn canonical_projection_error(error: impl std::fmt::Display) -> anyhow::Error {
-    anyhow::anyhow!("canonical TUI 事件投影失败：{error}")
+    anyhow::anyhow!(
+        "{}",
+        tr(MessageId::TuiProjectionFailed).replace("{error}", &error.to_string())
+    )
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {

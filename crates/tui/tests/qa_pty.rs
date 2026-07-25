@@ -24,6 +24,7 @@ use qa_harness::keys;
 const BOOT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEY_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
+const ENGLISH_COMPOSER_READY_TEXT: &str = "Write a task or use /.";
 static QA_PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn qa_pty_test_lock() -> MutexGuard<'static, ()> {
@@ -353,6 +354,25 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
 
 #[test]
 fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow::Result<()> {
+    run_canonical_approval_denial("zh-Hans", COMPOSER_READY_TEXT, "仅本次批准", "拒绝本次调用")
+}
+
+#[test]
+fn english_canonical_approval_survives_narrow_resize_and_denial() -> anyhow::Result<()> {
+    run_canonical_approval_denial(
+        "en",
+        ENGLISH_COMPOSER_READY_TEXT,
+        "Approve once",
+        "Deny this call",
+    )
+}
+
+fn run_canonical_approval_denial(
+    language: &str,
+    composer_ready: &str,
+    approve_once: &str,
+    deny_once: &str,
+) -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (base_url, server) = spawn_approval_fixture_server()?;
     let ws = make_sealed_workspace()?;
@@ -369,27 +389,27 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
             "--language",
-            "zh-Hans",
+            language,
             "--no-project-config",
             "--skip-onboarding",
         ])
         .size(32, 100)
         .spawn()?;
-    wait_for_composer(&mut h)?;
+    h.wait_for_text(composer_ready, BOOT_TIMEOUT)?;
 
     h.send(keys::key::text(
         "Request the fixture apply_patch call; do not change its arguments.",
     ))?;
     h.send(keys::key::enter())?;
-    h.wait_for_text("仅本次批准", Duration::from_secs(10))?;
-    h.wait_for_text("拒绝本次调用", KEY_TIMEOUT)?;
+    h.wait_for_text(approve_once, Duration::from_secs(10))?;
+    h.wait_for_text(deny_once, KEY_TIMEOUT)?;
 
     h.resize(24, 80)?;
     h.wait_for(
         |frame| {
             frame.rows() == 24
                 && frame.cols() == 80
-                && frame.contains("拒绝本次调用")
+                && frame.contains(deny_once)
                 && frame.contains("[2 / d / n]")
         },
         KEY_TIMEOUT,

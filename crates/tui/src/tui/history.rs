@@ -173,7 +173,7 @@ impl HistoryCell {
                 if lines.len() > 2 {
                     lines.truncate(2);
                     lines.push(summary_notice_line(
-                        "更多输出已折叠",
+                        &tr(MessageId::HistoryMoreOutputCollapsed),
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -184,7 +184,7 @@ impl HistoryCell {
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
                     lines.truncate(TOOL_CARD_SUMMARY_LINES);
                     lines.push(summary_notice_line(
-                        "更多输出已折叠",
+                        &tr(MessageId::HistoryMoreOutputCollapsed),
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }

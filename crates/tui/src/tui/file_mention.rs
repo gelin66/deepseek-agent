@@ -6,6 +6,7 @@
 
 use crate::tui::app::{App, MentionCompletionCache};
 use crate::working_set::Workspace;
+use dse_localization::MessageId;
 
 /// If the cursor sits inside a `@<partial>` token in the input, return the
 /// byte offset where the `@` starts (so we can splice in a completion) and
@@ -234,7 +235,10 @@ pub fn apply_mention_menu_selection(app: &mut App, entries: &[String]) -> bool {
     // the next Enter accept it again instead of sending the request.
     app.mention_menu_hidden = true;
     app.mention_menu_selected = 0;
-    app.status_message = Some(format!("已补全 @{replacement}"));
+    app.status_message = Some(
+        app.tr(MessageId::FileMentionCompleted)
+            .replace("{path}", replacement),
+    );
     true
 }
 

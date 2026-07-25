@@ -1155,7 +1155,9 @@ async fn non_deepseek_startup_fails_before_runtime_and_network() {
 
     assert!(output.stdout.trim().is_empty(), "runtime must not start");
     assert!(
-        output.stderr.contains("仅使用官方 DeepSeek"),
+        output
+            .stderr
+            .contains("uses only the official DeepSeek provider"),
         "unexpected stderr: {}",
         output.stderr
     );

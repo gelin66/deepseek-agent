@@ -4,8 +4,9 @@
 //! consumes the exact canonical event carried by [`ProjectionEffect`] and
 //! mutates only render state on [`App`].
 
-use std::time::Instant;
+use std::{borrow::Cow, time::Instant};
 
+use dse_localization::{MessageId, ProductLanguage, tr_in};
 use dse_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
@@ -78,6 +79,7 @@ fn present_canonical_event(
     source_run_id: &dse_protocol::agent_runtime::RunId,
     event: RuntimeEventKind,
 ) -> Option<PresenterAction> {
+    let language = app.language;
     match event {
         RuntimeEventKind::RunCreated { request } => {
             app.is_loading = true;
@@ -89,10 +91,12 @@ fn present_canonical_event(
                 app.model = request.model.clone();
                 app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
                 app.runtime_turn_status = Some("in_progress".to_owned());
-                app.status_message = Some("DeepSeek 正在处理…".to_owned());
+                app.status_message =
+                    Some(tr_in(language, MessageId::RunDeepSeekProcessing).into_owned());
             } else {
                 app.runtime_turn_status = Some("child_in_progress".to_owned());
-                app.status_message = Some("子 Agent 正在处理…".to_owned());
+                app.status_message =
+                    Some(tr_in(language, MessageId::RunChildProcessing).into_owned());
             }
             None
         }
@@ -101,30 +105,34 @@ fn present_canonical_event(
             after_tokens,
             ..
         } => {
-            app.status_message = Some(format!(
-                "上下文压缩完成：{before_tokens} → {after_tokens} tokens"
-            ));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunContextCompacted)
+                    .replace("{before_tokens}", &before_tokens.to_string())
+                    .replace("{after_tokens}", &after_tokens.to_string()),
+            );
             None
         }
         RuntimeEventKind::ModelRequestPrepared { .. } => {
             discard_uncommitted_streams(app);
             app.is_loading = true;
             app.runtime_turn_status = Some("in_progress".to_owned());
-            app.status_message = Some("正在准备 DeepSeek 请求…".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunModelRequestPreparing).into_owned());
             None
         }
         RuntimeEventKind::ModelRequestInFlight { .. } => {
             app.is_loading = true;
-            app.status_message = Some("等待 DeepSeek 响应…".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunModelResponseWaiting).into_owned());
             None
         }
         RuntimeEventKind::ModelRequestFailed { failure, retry, .. } => {
             discard_uncommitted_streams(app);
-            app.status_message = Some(format!(
-                "DeepSeek 请求失败：{}；{}",
-                model_failure_label(&failure),
-                model_retry_label(&retry)
-            ));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunModelRequestFailed)
+                    .replace("{failure}", &model_failure_label(language, &failure))
+                    .replace("{retry}", &model_retry_label(language, &retry)),
+            );
             None
         }
         RuntimeEventKind::ModelResponseCommitted {
@@ -133,7 +141,8 @@ fn present_canonical_event(
             app.session.last_prompt_tokens = Some(narrow_u64(output.usage.input_tokens));
             project_accounting(app, &accounting);
             reconcile_model_output(app, &output);
-            app.status_message = Some("DeepSeek 响应已确认".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunModelResponseCommitted).into_owned());
             None
         }
         RuntimeEventKind::ContentDelta { delta, .. } => {
@@ -151,15 +160,21 @@ fn present_canonical_event(
                 &invocation.name,
                 &invocation.arguments,
             );
-            app.status_message = Some(format!("工具已准备：{}", invocation.name));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunToolPrepared).replace("{name}", &invocation.name),
+            );
             None
         }
         RuntimeEventKind::ToolExecutionStarted { operation_id } => {
-            app.status_message = Some(format!("工具正在执行：{}", operation_id.0));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunToolExecuting)
+                    .replace("{operation_id}", &operation_id.0),
+            );
             None
         }
         RuntimeEventKind::InteractionRequested { request } => {
-            app.status_message = Some("需要你的确认或输入".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunInteractionRequired).into_owned());
             Some(PresenterAction::ShowInteraction(request))
         }
         RuntimeEventKind::InteractionResolved {
@@ -167,7 +182,8 @@ fn present_canonical_event(
             response,
             ..
         } => {
-            app.status_message = Some("交互已处理".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunInteractionResolved).into_owned());
             Some(PresenterAction::InteractionResolved {
                 interaction_id,
                 response,
@@ -181,41 +197,53 @@ fn present_canonical_event(
         } => {
             present_tool_outcome(app, &call_id, &name, &outcome);
             app.status_message = Some(if outcome.is_success() {
-                format!("工具已完成：{name}")
+                tr_in(language, MessageId::RunToolCompleted).replace("{name}", &name)
             } else {
-                format!("工具未成功：{name}")
+                tr_in(language, MessageId::RunToolFailed).replace("{name}", &name)
             });
             None
         }
         RuntimeEventKind::WorkspaceObserved { .. } => None,
         RuntimeEventKind::CompletionProposed { .. } => {
-            app.status_message = Some("DeepSeek 已提交完成候选，等待 Host 验收…".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunCompletionProposed).into_owned());
             None
         }
         RuntimeEventKind::HostVerificationPrepared { verifier, .. } => {
-            app.status_message = Some(format!("Host 正在准备验收：{}", verifier.verifier_id));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunHostVerificationPreparing)
+                    .replace("{verifier_id}", &verifier.verifier_id),
+            );
             None
         }
         RuntimeEventKind::HostVerificationStarted { .. } => {
-            app.status_message = Some("Host 正在执行确定性验收…".to_owned());
+            app.status_message =
+                Some(tr_in(language, MessageId::RunHostVerificationRunning).into_owned());
             None
         }
         RuntimeEventKind::HostVerificationCommitted {
             receipt, outcome, ..
         } => {
             app.status_message = Some(if receipt.is_some() {
-                "Host 验收通过，证据回执已提交".to_owned()
+                tr_in(language, MessageId::RunHostVerificationPassed).into_owned()
             } else {
-                format!("Host 验收未通过：{}", outcome.content)
+                tr_in(language, MessageId::RunHostVerificationFailed)
+                    .replace("{content}", &outcome.content)
             });
             None
         }
         RuntimeEventKind::CompletionRejected { rejection } => {
-            app.status_message = Some(format!("完成候选被拒绝：{}", rejection.reason));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunCompletionRejected)
+                    .replace("{reason}", &rejection.reason),
+            );
             None
         }
         RuntimeEventKind::AgentTaskPrepared { task } => {
-            app.status_message = Some(format!("写入 Agent 任务已准备：{}", task.task_id));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterTaskPrepared)
+                    .replace("{task_id}", &task.task_id.to_string()),
+            );
             None
         }
         RuntimeEventKind::AgentWorkspaceCreated {
@@ -223,16 +251,17 @@ fn present_canonical_event(
             assignment,
             ..
         } => {
-            let content = format!(
-                "写入工作树已创建：{}（任务 {}）",
-                assignment.execution_workspace(),
-                task_id
-            );
+            let content = tr_in(language, MessageId::RunWriterWorktreeCreated)
+                .replace("{path}", assignment.execution_workspace())
+                .replace("{task_id}", &task_id.to_string());
             present_agent_progress(app, content);
             None
         }
         RuntimeEventKind::AgentSealPrepared { task_id, .. } => {
-            app.status_message = Some(format!("正在封存写入 Agent 变更：{task_id}"));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterSealing)
+                    .replace("{task_id}", &task_id.to_string()),
+            );
             None
         }
         RuntimeEventKind::AgentSealCommitted {
@@ -241,31 +270,39 @@ fn present_canonical_event(
             changed_files,
             ..
         } => {
-            let content = format!(
-                "写入 Agent 变更已封存：{} 个文件，提交 {}（任务 {}）",
-                changed_files.len(),
-                short_git_commit(&final_commit),
-                task_id
-            );
+            let content = tr_in(language, MessageId::RunWriterSealed)
+                .replace("{file_count}", &changed_files.len().to_string())
+                .replace("{commit}", short_git_commit(&final_commit))
+                .replace("{task_id}", &task_id.to_string());
             present_agent_progress(app, content);
             None
         }
         RuntimeEventKind::AgentResultCollected { task_id, .. } => {
-            app.status_message = Some(format!("写入 Agent 结果已收集：{task_id}"));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterResultCollected)
+                    .replace("{task_id}", &task_id.to_string()),
+            );
             None
         }
         RuntimeEventKind::AgentIntegrationPrepared { task_id, .. } => {
-            app.status_message = Some(format!("正在准备集成写入结果：{task_id}"));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterIntegrationPreparing)
+                    .replace("{task_id}", &task_id.to_string()),
+            );
             None
         }
         RuntimeEventKind::AgentIntegrationStarted { task_id, .. } => {
-            app.status_message = Some(format!("正在集成写入结果：{task_id}"));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterIntegrating)
+                    .replace("{task_id}", &task_id.to_string()),
+            );
             None
         }
         RuntimeEventKind::AgentIntegrationFailed {
             task_id, status, ..
         } => {
-            let content = writer_integration_status_message(&task_id.to_string(), &status);
+            let content =
+                writer_integration_status_message(language, &task_id.to_string(), &status);
             present_agent_progress(app, content);
             None
         }
@@ -274,31 +311,33 @@ fn present_canonical_event(
             root_head_commit,
             ..
         } => {
-            let content = format!(
-                "写入结果已集成：提交 {}（任务 {}）",
-                short_git_commit(&root_head_commit),
-                task_id
-            );
+            let content = tr_in(language, MessageId::RunWriterIntegrated)
+                .replace("{commit}", short_git_commit(&root_head_commit))
+                .replace("{task_id}", &task_id.to_string());
             present_agent_progress(app, content);
             None
         }
         RuntimeEventKind::AgentCleanupPrepared { task_id, plan } => {
-            app.status_message = Some(format!(
-                "正在清理写入工作树（任务 {task_id}；阶段 {}）",
-                cleanup_phase_label(plan.phase)
-            ));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunWriterCleaning)
+                    .replace("{task_id}", &task_id.to_string())
+                    .replace("{phase}", &cleanup_phase_label(language, plan.phase)),
+            );
             None
         }
         RuntimeEventKind::AgentCleanupCommitted { task_id, result } => {
             let content = match result {
                 WriterCleanupResult::Retained {
                     uncertainty_code, ..
-                } => format!(
-                    "写入工作树已保留（任务 {task_id}；{}）",
-                    cleanup_uncertainty_label(&uncertainty_code)
-                ),
+                } => tr_in(language, MessageId::RunWriterRetained)
+                    .replace("{task_id}", &task_id.to_string())
+                    .replace(
+                        "{reason}",
+                        &cleanup_uncertainty_label(language, &uncertainty_code),
+                    ),
                 WriterCleanupResult::Removed { .. } | WriterCleanupResult::AlreadyAbsent => {
-                    format!("写入工作树已清理（任务 {task_id}）")
+                    tr_in(language, MessageId::RunWriterCleaned)
+                        .replace("{task_id}", &task_id.to_string())
                 }
             };
             present_agent_progress(app, content);
@@ -317,7 +356,9 @@ fn present_canonical_event(
                 depth,
             );
             app.add_message(HistoryCell::System {
-                content: format!("子 Agent 已启动：{}（深度 {depth}）", child_run_id.0),
+                content: tr_in(language, MessageId::RunChildStarted)
+                    .replace("{child_id}", &child_run_id.0)
+                    .replace("{depth}", &depth.to_string()),
             });
             None
         }
@@ -333,26 +374,31 @@ fn present_canonical_event(
                 &outcome,
                 &handoff_content,
             );
-            let status = terminal_label(&outcome.terminal);
+            let status = terminal_label(language, &outcome.terminal);
             let content = if handoff_content.trim().is_empty() {
-                format!("子 Agent 已结束：{status}")
+                tr_in(language, MessageId::RunChildEnded).replace("{status}", &status)
             } else {
-                format!("子 Agent 已结束：{status}\n{handoff_content}")
+                tr_in(language, MessageId::RunChildEndedHandoff)
+                    .replace("{status}", &status)
+                    .replace("{handoff}", &handoff_content)
             };
             app.add_message(HistoryCell::System { content });
             None
         }
         RuntimeEventKind::SteerQueued { .. } => {
-            app.status_message = Some("追加指令已排队".to_owned());
+            app.status_message = Some(tr_in(language, MessageId::RunSteerQueued).into_owned());
             None
         }
         RuntimeEventKind::SteerApplied { .. } => {
             // The paired UserTranscript effect is the sole transcript write.
-            app.status_message = Some("追加指令已应用".to_owned());
+            app.status_message = Some(tr_in(language, MessageId::RunSteerApplied).into_owned());
             None
         }
         RuntimeEventKind::ControlRequested { action, .. } => {
-            app.status_message = Some(format!("控制请求已受理：{}", control_action_label(action)));
+            app.status_message = Some(
+                tr_in(language, MessageId::RunControlAccepted)
+                    .replace("{action}", &control_action_label(language, action)),
+            );
             None
         }
         RuntimeEventKind::Terminal { outcome } => {
@@ -371,48 +417,64 @@ fn short_git_commit(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
 }
 
-fn cleanup_phase_label(phase: dse_protocol::agent_runtime::WriterCleanupPhase) -> &'static str {
+fn cleanup_phase_label(
+    language: ProductLanguage,
+    phase: dse_protocol::agent_runtime::WriterCleanupPhase,
+) -> Cow<'static, str> {
     use dse_protocol::agent_runtime::WriterCleanupPhase;
     match phase {
-        WriterCleanupPhase::Binding => "绑定",
-        WriterCleanupPhase::Child => "子 Agent 执行",
-        WriterCleanupPhase::Seal => "封存",
-        WriterCleanupPhase::Integration => "集成",
-        WriterCleanupPhase::PostIntegration => "集成后",
-    }
-}
-
-fn cleanup_uncertainty_label(code: &str) -> &'static str {
-    match code {
-        "writer_cleanup_scope_changed" => "清理范围已经变化，需要人工确认",
-        "writer_cleanup_owner_changed" => "Git 所有者身份已经变化，需要人工确认",
-        "writer_cleanup_ownership_unknown" | "writer_cleanup_owner_unprovable" => {
-            "无法证明 Git 所有者身份，需要人工确认"
+        WriterCleanupPhase::Binding => tr_in(language, MessageId::RunCleanupPhaseBinding),
+        WriterCleanupPhase::Child => tr_in(language, MessageId::RunCleanupPhaseChild),
+        WriterCleanupPhase::Seal => tr_in(language, MessageId::RunCleanupPhaseSeal),
+        WriterCleanupPhase::Integration => tr_in(language, MessageId::RunCleanupPhaseIntegration),
+        WriterCleanupPhase::PostIntegration => {
+            tr_in(language, MessageId::RunCleanupPhasePostIntegration)
         }
-        _ => "清理结果不确定，需要人工确认",
     }
 }
 
-fn writer_integration_status_message(task_id: &str, status: &WriterIntegrationStatus) -> String {
+fn cleanup_uncertainty_label(language: ProductLanguage, code: &str) -> Cow<'static, str> {
+    match code {
+        "writer_cleanup_scope_changed" => tr_in(language, MessageId::RunCleanupScopeChanged),
+        "writer_cleanup_owner_changed" => tr_in(language, MessageId::RunCleanupOwnerChanged),
+        "writer_cleanup_ownership_unknown" | "writer_cleanup_owner_unprovable" => {
+            tr_in(language, MessageId::RunCleanupOwnerUnprovable)
+        }
+        _ => tr_in(language, MessageId::RunCleanupUncertain),
+    }
+}
+
+fn writer_integration_status_message(
+    language: ProductLanguage,
+    task_id: &str,
+    status: &WriterIntegrationStatus,
+) -> String {
     match status {
         WriterIntegrationStatus::Rejected { reason } => {
-            format!("写入结果未集成：{reason}（任务 {task_id}）")
+            tr_in(language, MessageId::RunIntegrationRejected)
+                .replace("{reason}", reason)
+                .replace("{task_id}", task_id)
         }
         WriterIntegrationStatus::Conflict { reason } => {
-            format!("写入结果集成冲突：{reason}（任务 {task_id}）")
+            tr_in(language, MessageId::RunIntegrationConflict)
+                .replace("{reason}", reason)
+                .replace("{task_id}", task_id)
         }
         WriterIntegrationStatus::RecoveryRequired { reason } => {
-            format!("写入结果集成需要恢复：{reason}（任务 {task_id}）")
+            tr_in(language, MessageId::RunIntegrationRecovery)
+                .replace("{reason}", reason)
+                .replace("{task_id}", task_id)
         }
-        WriterIntegrationStatus::Integrated { writer_commit, .. } => format!(
-            "写入结果已集成：提交 {}（任务 {task_id}）",
-            short_git_commit(writer_commit)
-        ),
+        WriterIntegrationStatus::Integrated { writer_commit, .. } => {
+            tr_in(language, MessageId::RunWriterIntegrated)
+                .replace("{commit}", short_git_commit(writer_commit))
+                .replace("{task_id}", task_id)
+        }
         WriterIntegrationStatus::AwaitingHost => {
-            format!("写入结果等待 Host 集成（任务 {task_id}）")
+            tr_in(language, MessageId::RunIntegrationAwaitingHost).replace("{task_id}", task_id)
         }
         WriterIntegrationStatus::NotApplicable => {
-            format!("写入结果无需集成（任务 {task_id}）")
+            tr_in(language, MessageId::RunIntegrationNotApplicable).replace("{task_id}", task_id)
         }
     }
 }
@@ -479,11 +541,16 @@ fn rebuild_transcript(
                     outcome,
                     handoff_content,
                 );
-                let status = terminal_label(&outcome.terminal);
+                let status = terminal_label(app.language, &outcome.terminal);
                 let content = if handoff_content.trim().is_empty() {
-                    format!("子 Agent {}：{status}", child_run_id.0)
+                    tr_in(app.language, MessageId::RunChildSummary)
+                        .replace("{child_id}", &child_run_id.0)
+                        .replace("{status}", &status)
                 } else {
-                    format!("子 Agent {}：{status}\n{handoff_content}", child_run_id.0)
+                    tr_in(app.language, MessageId::RunChildSummaryHandoff)
+                        .replace("{child_id}", &child_run_id.0)
+                        .replace("{status}", &status)
+                        .replace("{handoff}", handoff_content)
                 };
                 app.add_message(HistoryCell::System { content });
             }
@@ -635,7 +702,10 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
     app.is_loading = false;
     app.turn_started_at = None;
     app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
-    app.status_message = Some(format!("运行已结束：{}", terminal_label(terminal)));
+    app.status_message = Some(
+        tr_in(app.language, MessageId::RunTerminal)
+            .replace("{terminal}", &terminal_label(app.language, terminal)),
+    );
 }
 
 fn finalize_streaming_cells(app: &mut App) {
@@ -680,66 +750,84 @@ fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
     }
 }
 
-fn terminal_label(terminal: &TerminalState) -> &'static str {
+fn terminal_label(language: ProductLanguage, terminal: &TerminalState) -> Cow<'static, str> {
     match terminal {
-        TerminalState::Completed { .. } => "已完成",
-        TerminalState::Blocked { .. } => "已阻塞",
-        TerminalState::Failed { .. } => "失败",
-        TerminalState::Cancelled => "已取消",
-        TerminalState::Interrupted => "已中断",
-        TerminalState::RecoveryRequired { .. } => "需要恢复",
+        TerminalState::Completed { .. } => tr_in(language, MessageId::RunTerminalCompleted),
+        TerminalState::Blocked { .. } => tr_in(language, MessageId::RunTerminalBlocked),
+        TerminalState::Failed { .. } => tr_in(language, MessageId::RunTerminalFailed),
+        TerminalState::Cancelled => tr_in(language, MessageId::RunTerminalCancelled),
+        TerminalState::Interrupted => tr_in(language, MessageId::RunTerminalInterrupted),
+        TerminalState::RecoveryRequired { .. } => {
+            tr_in(language, MessageId::RunTerminalRecoveryRequired)
+        }
     }
 }
 
-fn model_failure_label(failure: &ModelAttemptFailure) -> String {
-    format!(
-        "{}（代码：{}；类别：{}）",
-        failure.message,
-        failure.code,
-        model_error_category_label(failure.category)
-    )
+fn model_failure_label(language: ProductLanguage, failure: &ModelAttemptFailure) -> String {
+    tr_in(language, MessageId::RunModelFailureDetail)
+        .replace("{message}", &failure.message)
+        .replace("{code}", &failure.code)
+        .replace(
+            "{category}",
+            &model_error_category_label(language, failure.category),
+        )
 }
 
-fn model_error_category_label(category: ModelErrorCategory) -> &'static str {
+fn model_error_category_label(
+    language: ProductLanguage,
+    category: ModelErrorCategory,
+) -> Cow<'static, str> {
     match category {
-        ModelErrorCategory::Transport => "传输错误",
-        ModelErrorCategory::Timeout => "请求超时",
-        ModelErrorCategory::StreamStall => "流式响应停滞",
-        ModelErrorCategory::RateLimit => "请求限流",
-        ModelErrorCategory::Authentication => "身份验证失败",
-        ModelErrorCategory::Protocol => "协议错误",
-        ModelErrorCategory::Service => "服务错误",
-        ModelErrorCategory::Cancelled => "请求已取消",
-        ModelErrorCategory::Unknown => "未知错误",
+        ModelErrorCategory::Transport => tr_in(language, MessageId::RunModelCategoryTransport),
+        ModelErrorCategory::Timeout => tr_in(language, MessageId::RunModelCategoryTimeout),
+        ModelErrorCategory::StreamStall => tr_in(language, MessageId::RunModelCategoryStreamStall),
+        ModelErrorCategory::RateLimit => tr_in(language, MessageId::RunModelCategoryRateLimit),
+        ModelErrorCategory::Authentication => {
+            tr_in(language, MessageId::RunModelCategoryAuthentication)
+        }
+        ModelErrorCategory::Protocol => tr_in(language, MessageId::RunModelCategoryProtocol),
+        ModelErrorCategory::Service => tr_in(language, MessageId::RunModelCategoryService),
+        ModelErrorCategory::Cancelled => tr_in(language, MessageId::RunModelCategoryCancelled),
+        ModelErrorCategory::Unknown => tr_in(language, MessageId::RunModelCategoryUnknown),
     }
 }
 
-fn model_retry_label(retry: &ModelRetryDecision) -> String {
+fn model_retry_label(language: ProductLanguage, retry: &ModelRetryDecision) -> String {
     match retry {
-        ModelRetryDecision::Stop { reason } => {
-            format!("停止重试：{}", model_retry_stop_reason_label(*reason))
-        }
-        ModelRetryDecision::Retry { prepared } => {
-            format!("将重试（尝试 ID：{}）", prepared.attempt_id.0)
-        }
+        ModelRetryDecision::Stop { reason } => tr_in(language, MessageId::RunRetryStopped).replace(
+            "{reason}",
+            &model_retry_stop_reason_label(language, *reason),
+        ),
+        ModelRetryDecision::Retry { prepared } => tr_in(language, MessageId::RunRetryPrepared)
+            .replace("{attempt_id}", &prepared.attempt_id.0),
     }
 }
 
-fn model_retry_stop_reason_label(reason: ModelRetryStopReason) -> &'static str {
+fn model_retry_stop_reason_label(
+    language: ProductLanguage,
+    reason: ModelRetryStopReason,
+) -> Cow<'static, str> {
     match reason {
-        ModelRetryStopReason::ActionableOutput => "已收到可执行输出",
-        ModelRetryStopReason::UnsafeReplay => "响应状态不允许安全重放",
-        ModelRetryStopReason::NotRetryable => "错误不可重试",
-        ModelRetryStopReason::FailureChanged => "失败类型已变化",
-        ModelRetryStopReason::RetryLimitReached => "已达到重试上限",
-        ModelRetryStopReason::ModelRequestBudgetExceeded => "已超出模型请求预算",
+        ModelRetryStopReason::ActionableOutput => {
+            tr_in(language, MessageId::RunRetryActionableOutput)
+        }
+        ModelRetryStopReason::UnsafeReplay => tr_in(language, MessageId::RunRetryUnsafeReplay),
+        ModelRetryStopReason::NotRetryable => tr_in(language, MessageId::RunRetryNotRetryable),
+        ModelRetryStopReason::FailureChanged => tr_in(language, MessageId::RunRetryFailureChanged),
+        ModelRetryStopReason::RetryLimitReached => tr_in(language, MessageId::RunRetryLimitReached),
+        ModelRetryStopReason::ModelRequestBudgetExceeded => {
+            tr_in(language, MessageId::RunRetryBudgetExceeded)
+        }
     }
 }
 
-fn control_action_label(action: DurableControlAction) -> &'static str {
+fn control_action_label(
+    language: ProductLanguage,
+    action: DurableControlAction,
+) -> Cow<'static, str> {
     match action {
-        DurableControlAction::Interrupt => "中断",
-        DurableControlAction::Cancel => "取消",
+        DurableControlAction::Interrupt => tr_in(language, MessageId::RunControlInterrupt),
+        DurableControlAction::Cancel => tr_in(language, MessageId::RunControlCancel),
     }
 }
 
@@ -766,11 +854,11 @@ mod tests {
     use crate::tui::app::TuiOptions;
     use crate::tui::run_projection::CanonicalRunProjection;
 
-    fn app() -> App {
+    fn app_in(language: ProductLanguage) -> App {
         App::new(
             TuiOptions {
                 model: "deepseek-v4-pro".to_owned(),
-                language: dse_localization::ProductLanguage::SimplifiedChinese,
+                language,
                 workspace: PathBuf::from("."),
                 config_path: None,
                 allow_shell: false,
@@ -787,6 +875,10 @@ mod tests {
             },
             &Config::default(),
         )
+    }
+
+    fn app() -> App {
+        app_in(ProductLanguage::SimplifiedChinese)
     }
 
     fn stored(run_id: &RunId, sequence: u64, event: RuntimeEventKind) -> StoredRuntimeEvent {
@@ -1550,7 +1642,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_and_control_actions_have_explicit_chinese_labels() {
+    fn retry_and_control_actions_follow_the_product_language() {
         let retry = ModelRetryDecision::Retry {
             prepared: PreparedModelRetry {
                 attempt_id: AttemptId("attempt-retry-2".to_owned()),
@@ -1571,14 +1663,31 @@ mod tests {
             },
         };
         assert_eq!(
-            model_retry_label(&retry),
+            model_retry_label(ProductLanguage::SimplifiedChinese, &retry),
             "将重试（尝试 ID：attempt-retry-2）"
         );
         assert_eq!(
-            control_action_label(DurableControlAction::Interrupt),
+            control_action_label(
+                ProductLanguage::SimplifiedChinese,
+                DurableControlAction::Interrupt
+            ),
             "中断"
         );
-        assert_eq!(control_action_label(DurableControlAction::Cancel), "取消");
+        assert_eq!(
+            control_action_label(
+                ProductLanguage::SimplifiedChinese,
+                DurableControlAction::Cancel
+            ),
+            "取消"
+        );
+        assert_eq!(
+            model_retry_label(ProductLanguage::English, &retry),
+            "Will retry (attempt ID: attempt-retry-2)"
+        );
+        assert_eq!(
+            control_action_label(ProductLanguage::English, DurableControlAction::Cancel),
+            "cancel"
+        );
     }
 
     #[test]
@@ -1784,6 +1893,61 @@ mod tests {
                     if content == app.status_message.as_deref().unwrap_or_default()
             ),
             "关键进度必须由 canonical 事件即时呈现，不能依赖私有状态"
+        );
+    }
+
+    #[test]
+    fn writer_lifecycle_and_recovery_render_from_the_english_catalog() {
+        let root = RunId::from("root");
+        let task_id = AgentTaskId::from("writer-task");
+        let mut app = app_in(ProductLanguage::English);
+        let workspace_state = WorkspaceState {
+            generation: 2,
+            revision: WorkspaceRevision::Unknown {
+                reason: "presentation fixture".to_owned(),
+            },
+        };
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentWorkspaceCreated {
+                task_id: task_id.clone(),
+                assignment: AgentWorkspaceAssignment {
+                    access: AgentWorkspaceAccess::IsolatedWrite,
+                    root_workspace: "/workspace/root".to_owned(),
+                    base_commit: "a".repeat(40),
+                    worktree_path: Some("/workspace/worktrees/writer-task".to_owned()),
+                    root_branch: Some("deepseek-agent".to_owned()),
+                    branch: Some("codex/writer-task".to_owned()),
+                    allowed_paths: vec!["crates/tui".to_owned()],
+                    owner_token: Some("owner-token".to_owned()),
+                },
+                writer_workspace_state: workspace_state.clone(),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Writer worktree created: /workspace/worktrees/writer-task (task writer-task)")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentIntegrationFailed {
+                task_id,
+                integration_id: OperationId::from("integration"),
+                status: WriterIntegrationStatus::RecoveryRequired {
+                    reason: "integration result uncertain".to_owned(),
+                },
+                root_workspace_state: workspace_state,
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(
+                "Writer-result integration requires recovery: integration result uncertain (task writer-task)"
+            )
         );
     }
 

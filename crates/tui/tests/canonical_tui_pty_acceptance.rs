@@ -37,6 +37,9 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
 const PROMPT: &str = "请审计真实 PTY 路径。\n第二行：确认 canonical RunStore。";
+const ENGLISH_COMPOSER_READY_TEXT: &str = "Write a task or use /.";
+const ENGLISH_PROMPT: &str =
+    "Audit the real PTY path.\nSecond line: confirm the canonical RunStore.";
 const COMPLETION_MARKER: &str = "CANONICAL-PTY-DONE";
 const ONBOARDING_KEY: &str = "sk-offline-canonical-onboarding-key";
 const RECOVERY_CREATION_ID: &str = "pty-recover-explicit-creation";
@@ -162,6 +165,71 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         state_path.display()
     );
     assert_canonical_sqlite_truth(&state_path, &canonical_workspace, PROMPT)?;
+    assert_no_legacy_execution_json(isolated.home());
+    assert_no_legacy_execution_json(isolated.workspace());
+    Ok(())
+}
+
+#[test]
+fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::Result<()> {
+    let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
+    let isolated = make_sealed_workspace()?;
+    let dse_home = isolated.home().join(".dse");
+    let state_path = dse_home.join("state.db");
+    let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
+        .display()
+        .to_string();
+
+    let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("DSE_HOME", dse_home.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "offline-canonical-pty-key")
+        .env("DEEPSEEK_BASE_URL", &base_url)
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--language",
+            "en",
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(28, 80)
+        .spawn()?;
+
+    tui.wait_for_text(ENGLISH_COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+    tui.paste(ENGLISH_PROMPT)?;
+    tui.wait_for_text("Second line", Duration::from_secs(5))?;
+    tui.send(keys::key::enter())?;
+    tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
+    tui.wait_for(|frame| frame.contains("✓ done"), RUN_TIMEOUT)?;
+
+    tui.send(b"\x04")?;
+    assert_eq!(
+        tui.wait_for_exit(EXIT_TIMEOUT),
+        Some(0),
+        "English narrow TUI did not exit cleanly after canonical Terminal:\n{}",
+        tui.debug_dump()
+    );
+
+    let request_body = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("loopback fixture did not receive the English DeepSeek request");
+    assert!(
+        json_strings_contain(&request_body, ENGLISH_PROMPT),
+        "DeepSeek request lost or rewrote the English multi-line input: {request_body:#}"
+    );
+    server
+        .join()
+        .expect("loopback DeepSeek fixture thread panicked")?;
+
+    assert_canonical_sqlite_truth(&state_path, &canonical_workspace, ENGLISH_PROMPT)?;
     assert_no_legacy_execution_json(isolated.home());
     assert_no_legacy_execution_json(isolated.workspace());
     Ok(())
