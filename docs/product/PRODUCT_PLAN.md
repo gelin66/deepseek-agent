@@ -1,10 +1,10 @@
-# DSA 产品总纲
+# DSE 产品总纲
 
 > 文档类别：产品权威。仅定义范围、原则与目标架构。
 
 - 状态：已接受（V1 方向）
 - 生效日期：2026-07-15
-- 正式品牌：DSA（DeepSeek Agent）
+- 正式品牌：DSE（DeepSeek Engineer）
 - 导入源码基线：CodeWhale `352e86a611fdf3cd8bd27c36d24d482c06a71117`
 
 本文件是产品范围和目标架构的唯一总纲。开发顺序以
@@ -24,7 +24,7 @@
 > Rust 原生、DeepSeek 专用、本地优先、支持单 Agent 与多 Agent、可恢复且可验证的编码 Agent 产品。
 
 它不是继续维护上游 CodeWhale 的通用多模型发行版，也不是把 Cline、Codex、
-Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参考；DSA 在导入的 Rust
+Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参考；DSE 在导入的 Rust
 源码树上形成一套统一逻辑，CodeWhale 只保留为 MIT 上游来源和历史基线。
 
 产品保留三个入口：
@@ -63,7 +63,7 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 
 以下是产品架构边界。除非真实评测和新的 ADR 证明必须改变，否则开发中不得漂移：
 
-1. DSA/Rust 是唯一当前源码和运行时底座；CodeWhale 只作为导入基线与来源事实保留。
+1. DSE/Rust 是唯一当前源码和运行时底座；CodeWhale 只作为导入基线与来源事实保留。
 2. DeepSeek 是唯一模型后端。
 3. 只有一个 `AgentRuntime`。
 4. 根 Agent 与子 Agent 运行同一个内核。
@@ -202,7 +202,7 @@ reasoning/tool replay、usage/retry/accounting 与 RunStore 已形成唯一 prod
 
 ### 6.1 中英文产品界面与 Agent 提示词
 
-DSA 双语产品分为两个解耦层次：
+DSE 双语产品分为两个解耦层次：
 
 1. **人类界面消息目录**：`en` 与 `zh-Hans` 目录覆盖 CLI/TUI、帮助、配置向导、Doctor、
    错误与恢复提示、上下文状态、多 Agent 进度以及公共产品文档。语言按显式进程参数、
@@ -388,7 +388,7 @@ V1 必须同时满足：
 - release benchmark 同时保留合格的真实官方 DeepSeek coding evidence 与 exact current
   production retention；不要求对缺失完整 physical accounting 的旧 revision 伪造不可计量的
   imported superiority；
-- 当前产品与发布身份只使用 DSA；二进制为 `dsa`、`dsa-tui`，活动 package/path/env、
+- 当前产品与发布身份只使用 DSE；二进制为 `dse`、`dse-tui`，活动 package/path/env、
   协议和 release artifact 不再产生 CodeWhale 身份；
 - 保留的人类交互链路完整支持 `en` 与 `zh-Hans`，一个进程只有一个解析后的 locale；
   不存在其他语言包、模型语言分类或翻译请求；

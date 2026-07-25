@@ -1,4 +1,4 @@
-# DSA 开发路线图
+# DSE 开发路线图
 
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSA 双语开源身份硬切换 | 已接受、待执行 | DSA 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 已接受、待执行 | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3341,15 +3341,15 @@ GitHub release discovery 及其专用依赖已删除；本地升级和回滚只�
 M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、CJK 终端布局、英文泄漏和
 提示词 A/B 门禁；只增加翻译字符串但保留英文主流程，不计为完成。
 
-## 13. M17：DSA 双语开源身份硬切换
+## 13. M17：DSE 双语开源身份硬切换
 
 ### 13.1 Goal
 
 把 M8-N 的未发布 CodeWhale/fixed-Chinese release-ready checkpoint 收敛为可公开发布的
-DSA V1：
+DSE V1：
 
 ```text
-DSA-only current product identity
+DSE-only current product identity
   + English-first public repository
   + complete en / zh-Hans human interface
   + user-language Agent responses
@@ -3362,22 +3362,22 @@ Anthropic Messages、FIM、multi-Writer、第二 Runtime/Store、翻译模型或
 当前中文 release-ready revision 是整个 M17 的 rollback baseline，M17 未完成前不得公开、
 推送 release 或把部分双语界面宣称为正式完成。
 
-实施由 [ADR-0009](../decisions/0009-dsa-product-identity.md) 与
+实施由 [ADR-0009](../decisions/0009-dse-product-identity.md) 与
 [ADR-0010](../decisions/0010-bilingual-product-and-prompt-admission.md) 约束。
 
 ### 13.2 固定产品身份
 
 | 范围 | 唯一目标 |
 |---|---|
-| 产品 | `DSA` / `DeepSeek Agent` |
-| 主命令 | `dsa` |
-| TUI | `dsa-tui` |
-| Cargo/import | `dsa-*` / `dsa_*` |
-| 用户目录 | `~/.dsa` |
-| 产品环境变量 | `DSA_*` |
-| release artifact | `dsa-{version}-{target}-...` |
-| active protocol/eval | `dsa.*` |
-| vendor media type | `application/vnd.dsa.*` |
+| 产品 | `DSE` / `DeepSeek Engineer` |
+| 主命令 | `dse` |
+| TUI | `dse-tui` |
+| Cargo/import | `dse-*` / `dse_*` |
+| 用户目录 | `~/.dse` |
+| 产品环境变量 | `DSE_*` |
+| release artifact | `dse-{version}-{target}-...` |
+| active protocol/eval | `dse.*` |
+| vendor media type | `application/vnd.dse.*` |
 | UI locale | `en`, `zh-Hans` |
 | production prompt | A/B 后只保留一个 |
 
@@ -3400,45 +3400,45 @@ release 不得继续生成旧身份。
 
 ### 13.4 垂直切片
 
-#### M17-A：DSA 产品身份契约
+#### M17-A：DSE 产品身份契约
 
 - **真实问题**：当前活动身份仍由 CodeWhale binary/package/path/protocol/delivery/prompt
   共同拥有，只改展示名会留下双身份；
 - **唯一 owner**：`crates/cli` 的产品入口与 workspace manifest，其他模块只迁移消费方；
-- **实现**：产品显示为 DSA；binary 为 `dsa`、`dsa-tui`；Cargo package/import 使用
-  `dsa-*`/`dsa_*`；help/version/User-Agent 与 model-visible identity 使用 DSA；
+- **实现**：产品显示为 DSE；binary 为 `dse`、`dse-tui`；Cargo package/import 使用
+  `dse-*`/`dse_*`；help/version/User-Agent 与 model-visible identity 使用 DSE；
 - **旧路径**：`codewhale`、`codewhale-tui`、`codew` 和 active `codewhale-*`；
 - **验收**：focused build、all-target Cargo metadata/tree、CLI/TUI version/help、
   root/read-only/Writer prompt provenance 与 current conformance；
 - **cutover 删除**：旧 binary target、alias、active package/import、旧产品 title 和
   prompt identity；不改 frozen evidence。
 
-Prompt 的 `CodeWhale -> DSA` 只改身份，不重写执行、验证、工具或多 Agent 条款。通过
+Prompt 的 `CodeWhale -> DSE` 只改身份，不重写执行、验证、工具或多 Agent 条款。通过
 conformance 后冻结为 M17-F 两个语言 variant 的共同品牌基线。
 
-#### M17-B：DSA config/state/protocol identity
+#### M17-B：DSE config/state/protocol identity
 
-- **真实问题**：旧 home/env/schema/media type 会让新 DSA 继续依赖上游产品身份；
+- **真实问题**：旧 home/env/schema/media type 会让新 DSE 继续依赖上游产品身份；
 - **唯一 owner**：config/state/protocol 各自现有 canonical owner，不增加 migration
   manager 或第二 Store；
-- **实现**：`~/.dsa`、`DSA_HOME`/`DSA_CONFIG_PATH`、active `dsa.*` schema 和
-  `application/vnd.dsa.*`；受影响协议显式升版；
+- **实现**：`~/.dse`、`DSE_HOME`/`DSE_CONFIG_PATH`、active `dse.*` schema 和
+  `application/vnd.dse.*`；受影响协议显式升版；
 - **旧路径**：`.codewhale`、`CODEWHALE_*`、active `codewhale.*` namespace；
 - **验收**：isolated HOME、config/Secret、Start/Run/reopen/resume、canonical JSON/
   NDJSON/HTTP/SSE、schema migration 和 hash/replay；
 - **cutover 删除**：旧 path/env reader、schema 双写与 compatibility branch。
 
 由于旧身份尚未公开发布，一次性迁移只跨本切片：复制并校验本地 config、Secret 与可保留
-状态，保留原目录备份；DSA release candidate 前删除迁移器和旧 reader，不向公共 V1
+状态，保留原目录备份；DSE release candidate 前删除迁移器和旧 reader，不向公共 V1
 发布永久兼容层。不能无损迁移的旧 materialized state 必须先形成只读备份和明确 disposition，
 不得伪造 hash-chain 或静默丢失。
 
-#### M17-C：DSA delivery 与 CI
+#### M17-C：DSE delivery 与 CI
 
 - **真实问题**：M8-B release owner 仍绑定 `codewhale` binary、路径和 artifact；
 - **唯一 owner**：现有 delivery script；
-- **实现**：`scripts/dsa-delivery.sh`、`scripts/dev-dsa.sh`、DSA artifact/checksum/
-  manifest、`lib/dsa`、CI artifact `dsa-*`；
+- **实现**：`scripts/dse-delivery.sh`、`scripts/dev-dse.sh`、DSE artifact/checksum/
+  manifest、`lib/dse`、CI artifact `dse-*`；
 - **旧路径**：旧 delivery/dev scripts、`lib/codewhale`、旧 program links 和 artifact；
 - **验收**：Rust 1.97.0 locked/offline package/install/verify/upgrade/rollback/uninstall，
   source/Cargo.lock/toolchain/inner+outer checksum identity，macOS real lifecycle 与 Linux
@@ -3446,7 +3446,7 @@ conformance 后冻结为 M17-F 两个语言 variant 的共同品牌基线。
 - **cutover 删除**：旧 install link、artifact allowlist、CI command、temporary migration
   fixture 和旧 release reader。
 
-最终 shipped binary set 严格为 `dsa`、`dsa-tui`；release package 中出现第三个可执行文件
+最终 shipped binary set 严格为 `dse`、`dse-tui`；release package 中出现第三个可执行文件
 或旧名称即失败。
 
 #### M17-D：双语 localization owner
@@ -3464,7 +3464,7 @@ conformance 后冻结为 M17-F 两个语言 variant 的共同品牌基线。
   ```
 
 - **旧路径**：hard-coded `locale = "zh-Hans"`、sole-catalog assertions、中文泄漏白名单；
-- **验收**：catalog key/placeholder parity、unknown locale rejection、旧本地 DSA 迁移保持
+- **验收**：catalog key/placeholder parity、unknown locale rejection、旧本地 DSE 迁移保持
   `zh-Hans`、restart/resume 稳定、无额外模型请求；
 - **cutover 删除**：旧 sole-catalog test、散落 locale 分支和无消费者 message id。
 
@@ -3488,12 +3488,12 @@ locale 切换前后的 command/flag/tool/model/path/code/diff/stdout/stderr、st
 canonical JSON/NDJSON/HTTP/SSE、route/model/reasoning/catalog/budget/request count 与
 RunStore facts必须相同。
 
-#### M17-F：DSA 中英文 prompt 2×2 A/B
+#### M17-F：DSE 中英文 prompt 2×2 A/B
 
 - **真实问题**：旧 English-long vs Chinese-rewrite 实验混合了语言、内容、结构和长度，
-  不能决定国际开源 DSA 应保留哪一种内部 prompt；
+  不能决定国际开源 DSE 应保留哪一种内部 prompt；
 - **唯一 owner**：`crates/context` production prompt 与现有 corrected Harness；
-- **baseline**：逐条使用 DSA 身份的 current Chinese prompt；
+- **baseline**：逐条使用 DSE 身份的 current Chinese prompt；
 - **candidate**：条款、顺序、强度、权限、完成/验证和多 Agent 规则等价的 English prompt；
 - **共同固定**：tool catalog/schema、Runtime、Store、model/reasoning、预算、fixture 初态、
   external verifier、非语言 prompt blocks、schedule 与 accounting；
@@ -3544,14 +3544,14 @@ observer/evaluator ambiguity 或费用硬门都在下一 arm 前停止。成本�
 2. Chinese 在两个任务语言层都相同或更好：保留单一 Chinese prompt；
 3. 两者只在同语言层占优：不增加 Auto；最多再预注册一个 single compact bilingual
    candidate；
-4. 无效或证据不足：保留 current Chinese DSA prompt，不声明语言优劣。
+4. 无效或证据不足：保留 current Chinese DSE prompt，不声明语言优劣。
 
 winner 通过 exact-current gates 后才接管；whole-release rollback 是唯一 prompt rollback
 owner，不增加 prompt store、selector、mode 或 compatibility branch。
 
 #### M17-G：英文优先的公开仓库
 
-- **真实问题**：当前 README 陈旧且中文单入口，不能准确表达 DSA current architecture、
+- **真实问题**：当前 README 陈旧且中文单入口，不能准确表达 DSE current architecture、
   安装方式和贡献边界；
 - **唯一 owner**：根公共文档与 GitHub governance；
 - **实现**：
@@ -3582,9 +3582,9 @@ Roadmap、Evaluation 和架构事实仍只有一套权威文档；不复制整�
 2. active-source identity allowlist 审计证明旧 CodeWhale 名称只剩 provenance/frozen
    history；
 3. secret、ignored raw、生成文件、license、上游归属和 remote 审计通过；
-4. 先推送 DSA candidate 到私有远端并等待全部 CI；
+4. 先推送 DSE candidate 到私有远端并等待全部 CI；
 5. 配置 default branch protection、required checks、CODEOWNERS 与 PR review；
-6. 确认 GitHub slug 后改名；优先 `dsa`，不能使用时必须由用户选择唯一备用名；
+6. 确认 GitHub slug 后改名；优先 `dse`，不能使用时必须由用户选择唯一备用名；
 7. 用户显式确认后再把仓库设为 public、创建 tag/release；
 8. release 后从 fresh environment 复验英文/中文 install、first run、coding、resume、
    rollback 和 uninstall。
@@ -3594,20 +3594,20 @@ Roadmap、Evaluation 和架构事实仍只有一套权威文档；不复制整�
 
 ### 13.5 M17 退出门槛
 
-- 当前活动产品身份只使用 DSA；
-- binary set 严格为 `dsa`、`dsa-tui`；
+- 当前活动产品身份只使用 DSE；
+- binary set 严格为 `dse`、`dse-tui`；
 - package/import、path/env、protocol/eval/media type、delivery/CI 与 model identity 已切换；
 - `en`/`zh-Hans` catalog exact parity，所有保留人类入口真实双语；
 - 一个进程一个 locale，不存在模型语言分类、翻译请求或 per-Agent locale；
 - 中文任务默认中文回答、英文任务默认英文回答，显式语言要求被遵守；
 - prompt 2×2 campaign 得到有效结论或按 fail-closed 规则保持中文基线；
 - production 只剩一个 prompt，失败候选和 selector 已删除；
-- locked/offline DSA release lifecycle 与全量门禁通过；
+- locked/offline DSE release lifecycle 与全量门禁通过；
 - English README、中文入口、治理和来源说明准确；
 - private remote CI、branch protection 和最终 public release 各自有确认事实；
 - 没有临时 adapter、旧 binary alias、双写或无删除点历史债。
 
-本地 workspace 目录从 `.../codewhale` 改为 `.../dsa` 是最后的宿主操作；必须等所有共享
+本地 workspace 目录从 `.../codewhale` 改为 `.../dse` 是最后的宿主操作；必须等所有共享
 目录任务完成并确认没有运行中的 shell/worktree 后执行，不能在 M17-A 的源码 rename 中
 移动当前工作区。
 

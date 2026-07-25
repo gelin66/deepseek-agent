@@ -1,4 +1,4 @@
-# ADR-0010：DSA 双语产品与单一 prompt 语言准入
+# ADR-0010：DSE 双语产品与单一 prompt 语言准入
 
 - 状态：已接受
 - 日期：2026-07-25
@@ -6,7 +6,7 @@
 
 ## 决策
 
-DSA 面向人的产品界面正式支持且只支持：
+DSE 面向人的产品界面正式支持且只支持：
 
 ```text
 en
@@ -27,7 +27,7 @@ zh-Hans
   -> 非交互新环境默认 en
 ```
 
-旧本地身份迁移到 DSA 时默认保留 `zh-Hans`。不增加模型语言分类请求、关键词检测、
+旧本地身份迁移到 DSE 时默认保留 `zh-Hans`。不增加模型语言分类请求、关键词检测、
 按 Run/Agent 的自动路由、输出后处理翻译或在线翻译服务。
 
 命令、flags、工具名、JSON/API/schema 字段、稳定错误码、模型 ID、路径、代码、diff、
@@ -39,7 +39,7 @@ Agent 默认使用用户当前任务的语言回答，除非用户显式指定�
 技术标识保持原样。该行为由单一 production prompt 表达，不增加 Host classifier。
 
 当前中文 production prompt 保留为可回滚基线，但不再被视为未经比较的永久语言方向。
-品牌身份改为 DSA 后，建立语义、顺序、强度和工具/验证规则等价的中文与英文 system
+品牌身份改为 DSE 后，建立语义、顺序、强度和工具/验证规则等价的中文与英文 system
 prompt，执行 current fixed-Pro 的 2×2 配对实验：
 
 | production system prompt | 用户任务语言 |
@@ -58,7 +58,7 @@ prompt，执行 current fixed-Pro 的 2×2 配对实验：
 1. 英文在两个任务语言层都质量不回归且相同或更好时，保留单一英文 prompt；
 2. 中文在两个任务语言层都相同或更好时，保留单一中文 prompt；
 3. 两者只在同语言任务占优时，不增加 Auto 路由；最多再评测一个单一紧凑双语候选；
-4. 评测无效或证据不足时保持当前中文 DSA 基线，不声明语言优劣。
+4. 评测无效或证据不足时保持当前中文 DSE 基线，不声明语言优劣。
 
 失败候选、eval-only selector/asset 和临时产品开关在 cutover 时删除。生产不提供 prompt
 语言模式、per-run selector 或两套行为分支。
@@ -83,4 +83,4 @@ prompt，执行 current fixed-Pro 的 2×2 配对实验：
 - 不恢复 CodeWhale 的旧多语言包、locale 生态、`/translate`、模型翻译或第二消息 owner；
 - `README.md` 为英文权威入口，`README.zh-CN.md` 为完整中文入口；Roadmap、评测和架构
   真相仍只有一套，不创建双语平行路线图；
-- DSA 公开发布门槛新增双语 UI、回答语言、机器协议稳定和 prompt admission evidence。
+- DSE 公开发布门槛新增双语 UI、回答语言、机器协议稳定和 prompt admission evidence。

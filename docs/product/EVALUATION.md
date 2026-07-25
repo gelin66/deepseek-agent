@@ -1,4 +1,4 @@
-# DeepSeek Agent 评测规范
+# DSE 评测规范
 
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
@@ -116,7 +116,7 @@
 - hard-limit 本地 compaction 不调用模型，因此不得消耗最后的最终请求许可；
 - 单 Agent 与多 Agent 净收益对照。
 
-### G. DSA 中英文产品契约
+### G. DSE 中英文产品契约
 
 双语 UI 是产品验收，不作为 Agent 能力提升的 A/B treatment。候选至少验证：
 
@@ -2544,24 +2544,24 @@ success。raw label 不回写；read-only report 派生产品 false success 为 
 Progress、Typed Recovery 或 Environment treatment。完整证据见
 [M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
 
-### M17 DSA bilingual open-source cutover
+### M17 DSE bilingual open-source cutover
 
 M17 是已接受的产品身份和双语发布切换，不是继续搜索未归因 Agent treatment。它分开验证
-DSA branding、`en`/`zh-Hans` 人类界面和模型可见 prompt 语言，禁止用一个混合 diff
+DSE branding、`en`/`zh-Hans` 人类界面和模型可见 prompt 语言，禁止用一个混合 diff
 同时声称三个结论。
 
-#### DSA identity gate
+#### DSE identity gate
 
 - 当前产品显示、binary、Cargo package/import、config/path/env、active schema/media type、
-  delivery/CI、User-Agent 和 model-visible identity 使用 ADR-0009 的唯一 DSA 命名；
-- release binary set 严格为 `dsa`、`dsa-tui`，locked/offline package/install/verify/
+  delivery/CI、User-Agent 和 model-visible identity 使用 ADR-0009 的唯一 DSE 命名；
+- release binary set 严格为 `dse`、`dse-tui`，locked/offline package/install/verify/
   upgrade/rollback/uninstall 全生命周期通过；
 - 新运行和新评测不产生 CodeWhale namespace；旧名称只允许出现在 MIT provenance、Git
   历史与不可改写 frozen evidence allowlist；
 - 一次性本地迁移必须证明 config、Secret、可保留状态和原目录备份完整，随后从 release
   candidate 删除旧路径 reader、命令 alias、双写和迁移代码。
 
-Brand rename 本身不构成任务质量提升结论。`CodeWhale -> DSA` 的 model-visible identity
+Brand rename 本身不构成任务质量提升结论。`CodeWhale -> DSE` 的 model-visible identity
 替换必须保持其余 prompt 语义相同，并通过 root/read-only/Writer、recovery、prompt
 provenance、SQLite reopen 与 whole-release conformance，随后作为语言实验共同基线。
 
@@ -2579,8 +2579,8 @@ provenance、SQLite reopen 与 whole-release conformance，随后作为语言实
 
 #### prompt language A/B gate
 
-baseline 为 current Chinese DSA prompt，candidate 为逐条语义、顺序、强度和完成/工具规则
-等价的 English DSA prompt。两个 variant 的 tool catalog、schema、Runtime、Store、
+baseline 为 current Chinese DSE prompt，candidate 为逐条语义、顺序、强度和完成/工具规则
+等价的 English DSE prompt。两个 variant 的 tool catalog、schema、Runtime、Store、
 model/reasoning、预算、fixture 初态、deterministic external verifier 和非语言 prompt
 组成必须相同。旧 2026-07-18 English-long vs Chinese-rewrite 结果不是本实验输入。
 
@@ -2624,7 +2624,7 @@ binary/workspace identity drift、observer/evaluator ambiguity 或费用硬门�
 1. English 在两个任务语言层都不回归且相同或更好：保留单一 English prompt；
 2. Chinese 在两个任务语言层都相同或更好：保留单一 Chinese prompt；
 3. 各自在同语言层占优：不增加 Auto，最多预注册一个单一 compact bilingual candidate；
-4. 无效/证据不足：保留 current Chinese DSA baseline，不声明语言优劣。
+4. 无效/证据不足：保留 current Chinese DSE baseline，不声明语言优劣。
 
 任一 winner 接管后删除 loser、eval-only selector/assets、临时 config/test surface 和双
 production branch；whole-release rollback 是唯一 prompt rollback owner。
