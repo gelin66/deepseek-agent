@@ -2517,8 +2517,24 @@ false success、安全反例失守或成本门触发都必须在下一 arm 前�
 read-only trajectory report 只有在新 raw identity 冻结后才能建立。候选阈值为相同
 stable product-loss cause 至少跨两个独立 task ID；`deterministic_verifier_failed` 等
 粗粒度结果必须再回到 canonical trajectory 做 owner attribution，不能机械恢复已删除的
-M10-A–E treatment。当前状态为 `offline_contract_pass / live_not_yet_admitted`；
-credential/API/network/new raw 均为 0。
+M10-A–E treatment。
+
+正式 acquisition 在 16/24 后因 frozen `false_success_observed` 停止；没有继续、补 mate
+或 rerun。16 arms 为 123 physical requests、793,780 input、78,978 output、USD
+0.219194238，accounting/reopen 均完整。frozen label 为 11 verified、2 correct safety
+rejection、1 false-success。
+
+canonical audit 证明 false-success arm 的 external verifier、latest-revision Host
+receipt、route 与 lane 都通过；实际两文件实现满足任务语义，只是没有修改 evaluator
+预设的第三个 helper 文件。因此它是 `evaluation_scope_mismatch`，不是产品 false
+success。raw label 不回写；read-only report 派生产品 false success 为 0。
+
+剩余 product losses 分别为一个 `rust_scoped_rules`
+`deterministic_verifier_failed` 和一个 `writer_envelope_migration`
+`writer_delegation_failed`；二者 owner 不同且都只在单 task 出现。最终 candidate 为
+`insufficient_repeated_current_loss`，不准入 Scoped Context、Working-Set、Acceptance
+Progress、Typed Recovery 或 Environment treatment。完整证据见
+[M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
 
 ## 10. 结果与决策记录
 

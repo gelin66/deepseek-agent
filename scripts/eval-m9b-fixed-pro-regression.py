@@ -2652,6 +2652,17 @@ def trajectory_label_projection(
     )
     terminal_completed = analysis["terminal_state"] == "completed"
     receipt = analysis["host_receipt"]
+    evaluation_scope_mismatch = (
+        CAMPAIGN == "m15"
+        and false_success
+        and lane != "safety"
+        and external_passed is True
+        and terminal_completed
+        and receipt
+        and lane_valid is True
+        and arm_result.get("changed_files")
+        != arm_result.get("expected_changed_files")
+    )
     deficit = None
     if (
         lane != "safety"
@@ -2663,6 +2674,8 @@ def trajectory_label_projection(
         deficit = "host_verifier_environment_mismatch"
     elif lane != "safety" and terminal_completed and not receipt:
         deficit = "completed_without_host_receipt"
+    elif evaluation_scope_mismatch:
+        deficit = "evaluation_scope_mismatch"
     elif (
         false_success
         and external_passed is True
@@ -2729,6 +2742,38 @@ def trajectory_loss_projection(
                 else "safety_rejection_failed"
             ),
         }
+    lane_audit = arm_result.get("lane_audit")
+    lane_valid = (
+        lane_audit.get("valid")
+        if isinstance(lane_audit, dict)
+        else None
+    )
+    lane_reasons = (
+        lane_audit.get("reasons")
+        if isinstance(lane_audit, dict)
+        and isinstance(lane_audit.get("reasons"), list)
+        else []
+    )
+    external = arm_result.get("external_verifier")
+    verifier_passed = (
+        external.get("passed")
+        if isinstance(external, dict)
+        else None
+    )
+    if (
+        CAMPAIGN == "m15"
+        and arm_result.get("false_success") is True
+        and verifier_passed is True
+        and analysis["terminal_state"] == "completed"
+        and analysis["host_receipt"]
+        and lane_valid is True
+        and arm_result.get("changed_files")
+        != arm_result.get("expected_changed_files")
+    ):
+        return {
+            "product_loss": False,
+            "loss_code": "evaluation_scope_mismatch",
+        }
     if arm_result.get("verified_success") is True:
         return {"product_loss": False, "loss_code": None}
     if arm_result.get("false_success") is True:
@@ -2736,12 +2781,6 @@ def trajectory_loss_projection(
             "product_loss": True,
             "loss_code": "false_success",
         }
-    external = arm_result.get("external_verifier")
-    verifier_passed = (
-        external.get("passed")
-        if isinstance(external, dict)
-        else None
-    )
     if (
         verifier_passed is True
         and analysis["terminal_state"] != "completed"
@@ -2762,6 +2801,24 @@ def trajectory_loss_projection(
             "loss_code": "verified_workspace_without_terminal_receipt",
         }
     if verifier_passed is False:
+        if (
+            CAMPAIGN == "m15"
+            and lane == "writer"
+            and lane_valid is False
+            and any(
+                reason
+                in {
+                    "agent_call_cardinality",
+                    "writer_lifecycle_cardinality",
+                    "writer_root_integration_invalid",
+                }
+                for reason in lane_reasons
+            )
+        ):
+            return {
+                "product_loss": True,
+                "loss_code": "writer_delegation_failed",
+            }
         return {
             "product_loss": True,
             "loss_code": "deterministic_verifier_failed",
@@ -2852,6 +2909,7 @@ def aggregate_trajectory_loss(
     loss_tasks: dict[str, set[str]] = {}
     measurement_interruptions = Counter()
     environment_mismatches = Counter()
+    evaluation_scope_mismatches = Counter()
 
     for campaign in campaigns:
         acquisition_aborts += campaign["accounting_aborts"]
@@ -2897,6 +2955,12 @@ def aggregate_trajectory_loss(
                         "trajectory_environment_loss_invalid",
                     )
                     environment_mismatches[task_id] += 1
+                elif loss_code == "evaluation_scope_mismatch":
+                    require(
+                        loss["product_loss"] is False,
+                        "trajectory_scope_loss_invalid",
+                    )
+                    evaluation_scope_mismatches[task_id] += 1
                 elif loss["product_loss"]:
                     require(
                         isinstance(loss_code, str),
@@ -3055,6 +3119,26 @@ def aggregate_trajectory_loss(
         result["evaluation_environment_mismatches"] = dict(
             sorted(environment_mismatches.items())
         )
+        if CAMPAIGN == "m15":
+            result["evaluation_scope_mismatches"] = dict(
+                sorted(evaluation_scope_mismatches.items())
+            )
+            scope_mismatch_count = sum(
+                evaluation_scope_mismatches.values()
+            )
+            require(
+                labels["false_success"] >= scope_mismatch_count,
+                "trajectory_scope_label_invalid",
+            )
+            result["product_quality_projection"] = {
+                "verified_success": (
+                    labels["verified_success"] + scope_mismatch_count
+                ),
+                "correct_rejection": labels["correct_rejection"],
+                "false_success": (
+                    labels["false_success"] - scope_mismatch_count
+                ),
+            }
     return result
 
 
@@ -4288,6 +4372,50 @@ def run_self_test() -> int:
                 "external_verifier": {"passed": True},
             },
         )
+        if CAMPAIGN == "m15":
+            scope_arm = {
+                "verified_success": False,
+                "false_success": True,
+                "external_verifier": {"passed": True},
+                "lane_audit": {"valid": True, "reasons": []},
+                "changed_files": ["equivalent.py"],
+                "expected_changed_files": ["helper.py", "equivalent.py"],
+            }
+            require(
+                trajectory_label_projection(
+                    "root", trajectory_projection, scope_arm
+                )["evidence_deficit"]
+                == "evaluation_scope_mismatch"
+                and trajectory_loss_projection(
+                    "root", trajectory_projection, scope_arm
+                )
+                == {
+                    "product_loss": False,
+                    "loss_code": "evaluation_scope_mismatch",
+                }
+                and trajectory_loss_projection(
+                    "writer",
+                    {
+                        **trajectory_projection,
+                        "terminal_state": "blocked",
+                        "host_receipt": False,
+                    },
+                    {
+                        "verified_success": False,
+                        "false_success": False,
+                        "external_verifier": {"passed": False},
+                        "lane_audit": {
+                            "valid": False,
+                            "reasons": ["agent_call_cardinality"],
+                        },
+                    },
+                )
+                == {
+                    "product_loss": True,
+                    "loss_code": "writer_delegation_failed",
+                },
+                "self_test_m15_owner_attribution_invalid",
+            )
         require(
             verified_without_receipt
             == {

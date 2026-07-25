@@ -3268,9 +3268,23 @@ identity、安全或成本歧义都在下一 arm 前停止；不重跑、不补 
 
 只有同一 stable current product loss 跨至少两个独立 task ID 重复，才允许审计一个现有
 owner 与单变量可删除 treatment；粗粒度 failure label 只授权 owner audit，不自动授权实现。
-若没有重复损失，production 保持不变并关闭候选。当前只完成 credential-free contract、
-fixture satisfiability、M14 12/12 observer 与 M9-C/M11/M12 compatibility self-test；
-尚未生成 live admission、读取 Key 或调用 API。
+
+正式 candidate `8f887fe2`、admission `0c589f2b` 从 position 1 执行到 16/24 后按
+`false_success_observed` 停止，没有继续或补跑。16 arms 全部 accounting-complete、
+billing-known、State v24 reopen 一致；123 requests、793,780 input、78,978 output、
+known USD 0.219194238。frozen label 为 11 verified / 2 correct safety rejection / 1
+false-success。
+
+read-only canonical audit 证明该 false-success 是 evaluator scope mismatch：
+`typescript_stacktrace` external verifier、Host receipt、route 与 lane 全部通过，模型用
+两文件等价实现满足语义，但 evaluator 把参考实现的三文件 exact changed set 当成完成条件。
+raw 保持不可变；corrected report 把它记为非产品损失。其余只有单 task
+`deterministic_verifier_failed` 与另一个单 task `writer_delegation_failed`，没有跨 task
+同 owner 重复。M15 决定为
+`inadmissible_evaluator_scope_mismatch / insufficient_repeated_current_loss /
+keep_production_unchanged`；A–E treatment 均不准入，不恢复 M10 分支，也不重开 M15。
+完整证据见
+[M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
 
 ### 调优
 

@@ -2136,13 +2136,23 @@ M15 当前只增加 eval acquisition 输入，不改变 production：
   verifier 在仓库外参考修复副本通过，安全反例继续失败；
 - M14 observer 仍为 12/12，M9-C/M11/M12/M15 self-test、journal hash-chain 与四个
   SIGKILL window 通过；
-- 当前尚未生成 live admission、读取 credential、调用官方 API 或写入新 raw。后续只有
-  accounting-complete fresh position-1 acquisition 中同一 stable product loss 跨两个
-  independent tasks 重复，才允许审计一个现有 owner；否则 production 保持不变。
+- candidate `8f887fe2` 与 admission `0c589f2b` 已从 position 1 执行正式 acquisition；
+  16/24 arms 后由 `false_success_observed` 硬停，没有继续或补跑；
+- 16 arms 全部 accounting-complete、billing-known、SQLite reopen exact；frozen facts
+  为 11 verified、2 correct safety rejection、1 false-success label；
+- canonical audit 证明 false-success label 来自 evaluator exact changed-file 假设：
+  external verifier、latest Host receipt、route 与 lane 已通过，两文件等价实现未修改
+  参考方案预设的第三个 helper；raw 不回写，read-only report 记为
+  `evaluation_scope_mismatch`；
+- 其余只有一个 root `deterministic_verifier_failed` 与一个不同 owner 的
+  `writer_delegation_failed`，没有跨 task stable loss；决定为
+  `inadmissible_evaluator_scope_mismatch / insufficient_repeated_current_loss`，
+  production 保持不变。
 
 M15 没有 production crate/config/protocol/schema/model sender delta。Run API v12、
 RuntimeEvent v18、State v24 与 exec-stream v3 不变；M13 frozen raw 不读取、不续跑、
-不拼接。
+不拼接。完整证据见
+[M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
 
 ## 7. 明确非结论
 

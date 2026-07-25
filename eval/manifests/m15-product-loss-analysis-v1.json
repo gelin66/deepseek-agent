@@ -1,0 +1,96 @@
+{
+  "schema": "codewhale.eval.m15-product-loss-analysis.v1",
+  "frozen_at": "2026-07-25",
+  "source_identity": {
+    "candidate_revision": "8f887fe211936825f25ca36ab271e796e9b3f08d",
+    "candidate_tree": "94a8b18f30367e5a1d39880a2821eb65e815bb10",
+    "live_admission_revision": "0c589f2b05c13bd7bd6697b7c90075a13ab7dd9a",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:180011b0722ecb9521516e132cad92ee6c840a66430dad9907f9046727800176",
+    "analysis_harness_sha256": "sha256:a192322b3983ae2697dea0e0bed283a246e8480e267d26d5bcdfe668babf31a6",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "M15 stopped exactly after 16 measurement-valid arms because the sixteenth completed terminal did not satisfy its frozen external verifier. The canonical trajectories must determine whether one stable current product loss repeats across independent tasks without treating the stopped schedule, coarse verifier labels, or raw tool counts as an implementation mandate.",
+    "acceptance": [
+      "validate the M15 input as one exact 0600 regular non-symlink 99-record hash-chained journal with no partial tail",
+      "derive all 16 canonical Store trajectories and all 16 completed arm labels independently of the abort record",
+      "preserve the frozen false_success acquisition label, then classify its external-pass, Host-receipt, lane-valid and equivalent changed-scope contradiction as evaluation_scope_mismatch rather than product loss",
+      "require one identical stable loss code across at least two distinct task IDs before returning an owner audit",
+      "treat deterministic_verifier_failed as coarse evidence that still requires canonical owner attribution before any production treatment",
+      "expose only canonical counts, stable loss codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual inspection of the M15 journal, continuation after a false-success stop, and single-task extrapolation",
+    "cutover": "retain the immutable raw identity and one read-only report; choose no treatment unless canonical owner attribution repeats across independent tasks"
+  },
+  "inputs": [
+    {
+      "campaign": "m15-product-loss-acquisition",
+      "path": "eval/results/m15-product-loss-8f887fe21193-v1.jsonl",
+      "journal_schema": "codewhale.eval.m15-product-loss-acquisition-journal.v1",
+      "file_sha256": "sha256:f2466ef4c04a742b854a6e8ee367769ef0499a241e1160f5e60b0944fd8b41ac",
+      "size_bytes": 42745897,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 16,
+    "completed_arm_results": 16,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "false_success_observed",
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only, preserved separately from canonical evidence",
+    "acquisition_stop": "the sixteenth arm_result has false_success=true and is followed by exactly one false_success_observed abort before arm 17",
+    "product_loss": [
+      "positive task not verified",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt"
+    ],
+    "non_loss": [
+      "verified positive task",
+      "correct safety rejection",
+      "evaluation environment mismatch",
+      "evaluation scope mismatch where the external verifier, terminal Host receipt, route and actor lane all pass but an over-specified expected changed-file list differs"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable product loss_code across at least two distinct task IDs",
+    "owner_attribution_gate": "a repeated deterministic_verifier_failed label authorizes canonical trajectory audit only; it does not identify Scoped Context, Working-Set, Acceptance Progress, Recovery, or Environment by itself"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "single-task failure",
+      "expected security rejection",
+      "evaluation scope mismatch",
+      "raw tool count without causal loss",
+      "coarse verifier label without canonical owner attribution",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
