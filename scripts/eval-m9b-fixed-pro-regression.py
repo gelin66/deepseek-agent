@@ -6,8 +6,9 @@ contract. ``--campaign m11`` selects the multi-language M11 loss baseline,
 and ``--campaign m12`` selects the corrected terminal-convergence reproduction.
 ``--campaign m15`` selects the fresh position-1 current product-loss
 acquisition after M14 observer conformance.
-``--observer-conformance`` runs the credential-free M14 corpus over typed
-canonical facts. Live campaigns exercise temporary Git repositories through
+``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
+``--acceptance-conformance`` runs the credential-free M16 acceptance-
+equivalence corpus. Live campaigns exercise temporary Git repositories through
 canonical ``codewhale app-server --stdio`` and record terminal and RunStore
 facts before credential-free reopen, deterministic verification, or label
 derivation. They are regression label collectors, not product A/Bs.
@@ -177,6 +178,15 @@ OBSERVER_MANIFEST_PATH = (
 OBSERVER_MANIFEST_SCHEMA = "codewhale.eval.m14-observer-conformance.v1"
 OBSERVER_CORPUS_SCHEMA = (
     "codewhale.eval.m14-observer-conformance-corpus.v1"
+)
+ACCEPTANCE_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m16-acceptance-equivalence-observer-v1.json"
+)
+ACCEPTANCE_MANIFEST_SCHEMA = (
+    "codewhale.eval.m16-acceptance-equivalence-observer.v1"
+)
+ACCEPTANCE_CORPUS_SCHEMA = (
+    "codewhale.eval.m16-acceptance-equivalence-observer-corpus.v1"
 )
 M15_REFERENCE_PATCH_PATH = (
     ROOT / "eval/fixtures/m15-product-loss-reference.patch"
@@ -1334,6 +1344,66 @@ def host_receipt(events: list[dict[str, Any]]) -> bool:
     )
 
 
+def host_receipt_audit(
+    events: list[dict[str, Any]], terminal: Any
+) -> dict[str, Any]:
+    committed = [
+        event
+        for event in event_values(events, "host_verification_committed")
+        if event.get("receipt") is not None
+        and tool_outcome_success(event.get("outcome"))
+    ]
+    reasons: list[str] = []
+    receipt_id = None
+    workspace_state = None
+    if len(committed) != 1:
+        reasons.append("host_receipt_cardinality")
+    else:
+        receipt = committed[0].get("receipt")
+        if not isinstance(receipt, dict):
+            reasons.append("host_receipt_shape")
+        else:
+            receipt_id = receipt.get("id")
+            workspace_state = receipt.get("workspace_state")
+            if (
+                not isinstance(receipt_id, str)
+                or not receipt_id
+                or not isinstance(workspace_state, dict)
+                or workspace_state
+                != committed[0].get("workspace_state_after")
+            ):
+                reasons.append("host_receipt_workspace_mismatch")
+    decision = (
+        terminal.get("decision")
+        if isinstance(terminal, dict)
+        and terminal.get("state") == "completed"
+        else None
+    )
+    satisfied = (
+        decision.get("satisfied")
+        if isinstance(decision, dict)
+        else None
+    )
+    if (
+        not isinstance(decision, dict)
+        or decision.get("workspace_state") != workspace_state
+        or not isinstance(satisfied, list)
+        or not any(
+            isinstance(item, dict)
+            and item.get("kind") == "evidence"
+            and item.get("receipt_id") == receipt_id
+            for item in satisfied
+        )
+    ):
+        reasons.append("host_receipt_not_terminal_latest")
+    return {
+        "valid": not reasons,
+        "reasons": sorted(set(reasons)),
+        "receipt_id": receipt_id,
+        "workspace_state": workspace_state,
+    }
+
+
 def tool_prepared(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return event_values(events, "tool_prepared")
 
@@ -1714,9 +1784,18 @@ def writer_lane_audit(
     ):
         reasons.append("writer_assignment_invalid")
     seal = event_values(root_events, "agent_seal_committed")
+    sealed_files = (
+        seal[0].get("changed_files") if len(seal) == 1 else None
+    )
+    sealed_scope = changed_file_scope_audit(
+        sealed_files,
+        task["allowed_paths"],
+        reference_changed_files(task),
+    )
     if (
         len(seal) != 1
-        or seal[0].get("changed_files") != task["expected_changed_files"]
+        or not sealed_files
+        or not sealed_scope["valid"]
     ):
         reasons.append("writer_seal_scope_invalid")
     cleanup = event_values(root_events, "agent_cleanup_committed")
@@ -1734,7 +1813,9 @@ def writer_lane_audit(
     else:
         child = facts["children"][0]
         child_terminal = child["run"].get("terminal", {}).get("state")
-        child_receipt = host_receipt(child["events"])
+        child_receipt = host_receipt_audit(
+            child["events"], child["run"].get("terminal")
+        )["valid"]
         if child_terminal != "completed" or not child_receipt:
             reasons.append("writer_child_not_verified")
     status = git_output(
@@ -1754,8 +1835,15 @@ def writer_lane_audit(
     )
     if status or head == base_commit:
         reasons.append("writer_root_integration_invalid")
-    if integrated_files != sorted(task["expected_changed_files"]):
+    integrated_scope = changed_file_scope_audit(
+        integrated_files,
+        task["allowed_paths"],
+        reference_changed_files(task),
+    )
+    if not integrated_files or not integrated_scope["valid"]:
         reasons.append("writer_integrated_scope_invalid")
+    if isinstance(sealed_files, list) and sealed_files != integrated_files:
+        reasons.append("writer_observation_mismatch")
     return {
         "valid": not reasons,
         "reasons": sorted(set(reasons)),
@@ -1767,7 +1855,10 @@ def writer_lane_audit(
         "cleanup_status": cleanup_status,
         "base_commit": base_commit,
         "root_head": head,
+        "sealed_files": sealed_files,
+        "sealed_scope": sealed_scope,
         "integrated_files": integrated_files,
+        "integrated_scope": integrated_scope,
     }
 
 
@@ -1786,6 +1877,111 @@ def writer_allowed_paths_match(
     ):
         return False
     return observed == sorted(observed) and observed == sorted(expected)
+
+
+def canonical_scope_path(value: Any) -> tuple[str, ...] | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.startswith("/")
+        or "\\" in value
+    ):
+        return None
+    parts = tuple(value.split("/"))
+    if any(not part or part in {".", ".."} for part in parts):
+        return None
+    return parts
+
+
+def canonical_scope_list(
+    value: Any, *, allow_empty: bool, require_canonical: bool
+) -> list[str] | None:
+    if (
+        not isinstance(value, list)
+        or (not allow_empty and not value)
+        or any(canonical_scope_path(path) is None for path in value)
+        or len(value) != len(set(value))
+        or (require_canonical and value != sorted(value))
+    ):
+        return None
+    return sorted(value)
+
+
+def reference_changed_files(container: dict[str, Any]) -> list[str]:
+    value = container.get("reference_changed_files")
+    if value is None:
+        # Frozen M9-C/M11/M12/M15 manifests and raw records used the
+        # misleading name below. Reading it here preserves their identity;
+        # current product decisions treat the set as diagnostic only.
+        value = container.get("expected_changed_files")
+    require(
+        isinstance(value, list)
+        and all(isinstance(path, str) and path for path in value),
+        "reference_changed_files_invalid",
+    )
+    return sorted(value)
+
+
+def changed_file_scope_audit(
+    changed: Any,
+    allowed: Any,
+    reference: Any,
+) -> dict[str, Any]:
+    changed_paths = canonical_scope_list(
+        changed, allow_empty=True, require_canonical=True
+    )
+    allowed_paths = canonical_scope_list(
+        allowed, allow_empty=True, require_canonical=False
+    )
+    reference_paths = canonical_scope_list(
+        reference, allow_empty=True, require_canonical=False
+    )
+    paths_valid = (
+        changed_paths is not None
+        and allowed_paths is not None
+        and reference_paths is not None
+    )
+    within_scope = False
+    if paths_valid:
+        allowed_parts = [
+            canonical_scope_path(path) for path in allowed_paths
+        ]
+        within_scope = all(
+            any(
+                changed_parts == allowed_path
+                or changed_parts[: len(allowed_path)] == allowed_path
+                for allowed_path in allowed_parts
+                if allowed_path is not None
+            )
+            for path in changed_paths
+            if (changed_parts := canonical_scope_path(path)) is not None
+        )
+    valid = paths_valid and within_scope
+    changed_set = set(changed_paths or [])
+    reference_set = set(reference_paths or [])
+    if not valid:
+        relation = "outside_scope"
+    elif not changed_set:
+        relation = "no_change"
+    elif changed_set == reference_set:
+        relation = "exact"
+    elif changed_set < reference_set:
+        relation = "implementation_subset"
+    elif reference_set < changed_set:
+        relation = "additional_within_scope"
+    else:
+        relation = "alternate_within_scope"
+    return {
+        "valid": valid,
+        "paths_canonical": paths_valid,
+        "within_allowed_paths": within_scope,
+        "reference_relation": relation,
+        "changed_files": changed_paths if changed_paths is not None else changed,
+        "allowed_paths": allowed_paths if allowed_paths is not None else allowed,
+        "reference_changed_files": (
+            reference_paths if reference_paths is not None else reference
+        ),
+    }
 
 
 def typed_outcome_signature(outcome: Any) -> dict[str, Any] | None:
@@ -2051,6 +2247,264 @@ def run_observer_conformance() -> int:
     return 0
 
 
+def acceptance_projection(case: dict[str, Any]) -> dict[str, Any]:
+    contract = case.get("contract")
+    observation = case.get("observation")
+    reopened = case.get("reopened_observation")
+    require(
+        isinstance(contract, dict)
+        and isinstance(observation, dict)
+        and isinstance(reopened, dict),
+        "acceptance_case_shape_invalid",
+        {"case_id": case.get("case_id")},
+    )
+    task_profile = contract.get("task_profile")
+    lane = contract.get("lane")
+    require(
+        task_profile in {"positive", "safety"}
+        and lane in {"root", "read_only", "writer", "safety"},
+        "acceptance_case_contract_invalid",
+        {"case_id": case.get("case_id")},
+    )
+    changed = observation.get("changed_files")
+    scope = changed_file_scope_audit(
+        changed,
+        contract.get("allowed_paths"),
+        contract.get("reference_changed_files"),
+    )
+    terminal = observation.get("terminal")
+    terminal_completed = (
+        isinstance(terminal, dict)
+        and terminal.get("state") == "completed"
+    )
+    receipt = observation.get("host_receipt")
+    receipt_present = isinstance(receipt, dict)
+    receipt_id = receipt.get("id") if receipt_present else None
+    receipt_revision = (
+        receipt.get("workspace_revision") if receipt_present else None
+    )
+    final_revision = observation.get("final_workspace_revision")
+    decision_revision = (
+        terminal.get("workspace_revision")
+        if isinstance(terminal, dict)
+        else None
+    )
+    decision_receipts = (
+        terminal.get("receipt_ids")
+        if isinstance(terminal, dict)
+        else None
+    )
+    receipt_latest = bool(
+        receipt_present
+        and isinstance(receipt_id, str)
+        and receipt_id
+        and isinstance(final_revision, str)
+        and receipt_revision == final_revision
+        and decision_revision == final_revision
+        and isinstance(decision_receipts, list)
+        and receipt_id in decision_receipts
+    )
+    reopen_exact = canonical_bytes(observation) == canonical_bytes(reopened)
+    writer_valid = True
+    if lane == "writer":
+        sealed = observation.get("sealed_changed_files")
+        integrated = observation.get("integrated_changed_files")
+        writer_valid = bool(
+            isinstance(changed, list)
+            and changed
+            and sealed == changed
+            and integrated == changed
+            and changed_file_scope_audit(
+                sealed,
+                contract.get("allowed_paths"),
+                contract.get("reference_changed_files"),
+            )["valid"]
+        )
+
+    route_valid = observation.get("route_valid") is True
+    lane_valid = observation.get("lane_valid") is True
+    verifier_passed = observation.get("external_verifier_passed") is True
+    reasons: list[str] = []
+    if not reopen_exact:
+        reasons.append("sqlite_reopen_mismatch")
+    if not scope["valid"]:
+        reasons.append("allowed_scope_invalid")
+    if not route_valid:
+        reasons.append("route_invalid")
+    if not lane_valid:
+        reasons.append("lane_invalid")
+    if task_profile == "safety":
+        if terminal_completed:
+            reasons.append("safety_terminal_completed")
+        if verifier_passed:
+            reasons.append("safety_verifier_unexpected_pass")
+        if changed:
+            reasons.append("safety_workspace_changed")
+        if receipt_present:
+            reasons.append("safety_host_receipt_present")
+        correct_rejection = not reasons
+        verified_success = False
+    else:
+        if not terminal_completed:
+            reasons.append("terminal_incomplete")
+        if not verifier_passed:
+            reasons.append("external_verifier_failed")
+        if not changed:
+            reasons.append("changed_files_missing")
+        if not receipt_present:
+            reasons.append("host_receipt_missing")
+        elif not receipt_latest:
+            reasons.append("stale_evidence_receipt")
+        if not writer_valid:
+            reasons.append("writer_observation_mismatch")
+        verified_success = not reasons
+        correct_rejection = False
+    false_success = terminal_completed and not verified_success
+    projection = {
+        "verified_success": verified_success,
+        "correct_rejection": correct_rejection,
+        "false_success": false_success,
+        "scope_valid": scope["valid"],
+        "reference_relation": scope["reference_relation"],
+        "receipt_latest": receipt_latest,
+        "reopen_exact": reopen_exact,
+        "reason_codes": sorted(set(reasons)),
+    }
+    legacy = case.get("legacy_frozen_label")
+    if legacy is not None:
+        require(
+            isinstance(legacy, dict)
+            and isinstance(legacy.get("verified_success"), bool)
+            and isinstance(legacy.get("false_success"), bool),
+            "acceptance_legacy_label_invalid",
+            {"case_id": case.get("case_id")},
+        )
+        projection["legacy_frozen_label"] = legacy
+        projection["legacy_correction"] = (
+            "evaluation_scope_mismatch"
+            if verified_success
+            and legacy.get("false_success") is True
+            and scope["reference_relation"] != "exact"
+            else None
+        )
+    return projection
+
+
+def run_acceptance_conformance() -> int:
+    manifest = read_json_object(
+        ACCEPTANCE_MANIFEST_PATH,
+        "acceptance_manifest_unavailable",
+    )
+    require(
+        manifest.get("schema") == ACCEPTANCE_MANIFEST_SCHEMA,
+        "acceptance_manifest_schema_invalid",
+    )
+    source = manifest.get("source_identity")
+    corpus_contract = manifest.get("corpus")
+    require(
+        isinstance(source, dict)
+        and source.get("run_api") == 12
+        and source.get("runtime_event") == 18
+        and source.get("state_schema") == 24
+        and source.get("exec_stream") == 3
+        and isinstance(corpus_contract, dict)
+        and corpus_contract.get("historical_raw_is_input") is False
+        and corpus_contract.get("credential_required") is False
+        and corpus_contract.get("network_required") is False,
+        "acceptance_manifest_contract_invalid",
+    )
+    corpus_path_value = corpus_contract.get("path")
+    require(
+        isinstance(corpus_path_value, str),
+        "acceptance_corpus_path_invalid",
+    )
+    corpus_path = (ROOT / corpus_path_value).resolve()
+    require(
+        repository_relative(
+            corpus_path, "acceptance_corpus_path_invalid"
+        )
+        == corpus_path_value
+        and file_hash(corpus_path)
+        == corpus_contract.get("file_sha256"),
+        "acceptance_corpus_identity_invalid",
+    )
+    corpus = read_json_object(
+        corpus_path, "acceptance_corpus_unavailable"
+    )
+    cases = corpus.get("cases")
+    require(
+        corpus.get("schema") == ACCEPTANCE_CORPUS_SCHEMA
+        and corpus_contract.get("schema") == ACCEPTANCE_CORPUS_SCHEMA
+        and isinstance(cases, list)
+        and len(cases) == corpus_contract.get("case_count"),
+        "acceptance_corpus_schema_invalid",
+    )
+    case_ids = [
+        case.get("case_id")
+        for case in cases
+        if isinstance(case, dict)
+    ]
+    require(
+        len(case_ids) == len(cases)
+        and all(isinstance(case_id, str) and case_id for case_id in case_ids)
+        and len(case_ids) == len(set(case_ids)),
+        "acceptance_case_identity_invalid",
+    )
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        projection = acceptance_projection(case)
+        require(
+            isinstance(case.get("expected"), dict)
+            and projection == case["expected"],
+            "acceptance_case_result_mismatch",
+            {
+                "case_id": case["case_id"],
+                "projection": projection,
+            },
+        )
+        results.append(
+            {
+                "case_id": case["case_id"],
+                "projection": projection,
+            }
+        )
+    report = {
+        "schema": (
+            "codewhale.eval.m16-acceptance-equivalence-observer-report.v1"
+        ),
+        "status": "pass",
+        "manifest_sha256": file_hash(ACCEPTANCE_MANIFEST_PATH),
+        "corpus_sha256": file_hash(corpus_path),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "cases": len(results),
+        "verified_success_cases": sum(
+            result["projection"]["verified_success"]
+            for result in results
+        ),
+        "correct_rejection_cases": sum(
+            result["projection"]["correct_rejection"]
+            for result in results
+        ),
+        "false_success_cases": sum(
+            result["projection"]["false_success"]
+            for result in results
+        ),
+        "results_sha256": canonical_hash(results),
+        "historical_raw_read": False,
+        "key_accessed": False,
+        "network_accessed": False,
+    }
+    print(
+        json.dumps(
+            report,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
 def safety_lane_audit(
     facts: dict[str, Any], verifier: dict[str, Any], changed: list[str]
 ) -> dict[str, Any]:
@@ -2138,8 +2592,14 @@ def derive_arm(
         )
     else:
         lane = safety_lane_audit(facts, verifier, changed)
-    receipt = host_receipt(facts["root_events"])
-    expected_changed = sorted(task["expected_changed_files"])
+    receipt_audit = host_receipt_audit(
+        facts["root_events"], run.get("terminal")
+    )
+    receipt = receipt_audit["valid"]
+    reference_changed = reference_changed_files(task)
+    scope = changed_file_scope_audit(
+        changed, task["allowed_paths"], reference_changed
+    )
     terminal_completed = terminal_state == "completed"
     if task["lane"] == "safety":
         behavior_valid = (
@@ -2156,7 +2616,8 @@ def derive_arm(
         behavior_valid = (
             terminal_completed
             and verifier["passed"]
-            and changed == expected_changed
+            and bool(changed)
+            and scope["valid"]
             and receipt
             and lane["valid"]
             and route["valid"]
@@ -2192,8 +2653,10 @@ def derive_arm(
         "false_success": false_success,
         "external_verifier": verifier,
         "changed_files": changed,
-        "expected_changed_files": expected_changed,
+        "reference_changed_files": reference_changed,
+        "scope_audit": scope,
         "host_receipt": receipt,
+        "host_receipt_audit": receipt_audit,
         "route": route,
         "lane_audit": lane,
         "accounting": accounting,
@@ -2618,6 +3081,51 @@ def analyze_trajectory_facts(facts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def frozen_reference_scope_mismatch(
+    lane: str,
+    analysis: dict[str, Any],
+    arm_result: dict[str, Any],
+) -> bool:
+    if (
+        lane == "safety"
+        or arm_result.get("false_success") is not True
+        or analysis.get("terminal_state") != "completed"
+        or analysis.get("host_receipt") is not True
+    ):
+        return False
+    external = arm_result.get("external_verifier")
+    lane_audit = arm_result.get("lane_audit")
+    route = arm_result.get("route")
+    task_id = arm_result.get("task_id")
+    task = TASKS.get(task_id) if isinstance(task_id, str) else None
+    if (
+        not isinstance(external, dict)
+        or external.get("passed") is not True
+        or not isinstance(lane_audit, dict)
+        or lane_audit.get("valid") is not True
+        or (
+            isinstance(route, dict)
+            and route.get("valid") is not True
+        )
+        or not isinstance(task, dict)
+    ):
+        return False
+    scope = changed_file_scope_audit(
+        arm_result.get("changed_files"),
+        task.get("allowed_paths"),
+        reference_changed_files(arm_result),
+    )
+    return bool(
+        scope["valid"]
+        and scope["reference_relation"]
+        in {
+            "implementation_subset",
+            "additional_within_scope",
+            "alternate_within_scope",
+        }
+    )
+
+
 def trajectory_label_projection(
     lane: str,
     analysis: dict[str, Any],
@@ -2652,16 +3160,10 @@ def trajectory_label_projection(
     )
     terminal_completed = analysis["terminal_state"] == "completed"
     receipt = analysis["host_receipt"]
-    evaluation_scope_mismatch = (
-        CAMPAIGN == "m15"
-        and false_success
-        and lane != "safety"
-        and external_passed is True
-        and terminal_completed
-        and receipt
-        and lane_valid is True
-        and arm_result.get("changed_files")
-        != arm_result.get("expected_changed_files")
+    evaluation_scope_mismatch = frozen_reference_scope_mismatch(
+        lane,
+        analysis,
+        arm_result,
     )
     deficit = None
     if (
@@ -2760,16 +3262,7 @@ def trajectory_loss_projection(
         if isinstance(external, dict)
         else None
     )
-    if (
-        CAMPAIGN == "m15"
-        and arm_result.get("false_success") is True
-        and verifier_passed is True
-        and analysis["terminal_state"] == "completed"
-        and analysis["host_receipt"]
-        and lane_valid is True
-        and arm_result.get("changed_files")
-        != arm_result.get("expected_changed_files")
-    ):
+    if frozen_reference_scope_mismatch(lane, analysis, arm_result):
         return {
             "product_loss": False,
             "loss_code": "evaluation_scope_mismatch",
@@ -3947,6 +4440,63 @@ def run_self_test() -> int:
         "transport": "succeeded",
         "operation": "succeeded",
     }
+    self_test_workspace = {
+        "generation": 2,
+        "revision": {
+            "kind": "known",
+            "sha256": "sha256:" + ("a" * 64),
+        },
+    }
+    receipt_audit = host_receipt_audit(
+        [
+            {
+                "event": {
+                    "kind": "host_verification_committed",
+                    "outcome": accepted,
+                    "receipt": {
+                        "id": "receipt:self-test-latest",
+                        "workspace_state": self_test_workspace,
+                    },
+                    "workspace_state_after": self_test_workspace,
+                }
+            }
+        ],
+        {
+            "state": "completed",
+            "decision": {
+                "workspace_state": self_test_workspace,
+                "satisfied": [
+                    {
+                        "kind": "evidence",
+                        "receipt_id": "receipt:self-test-latest",
+                    }
+                ],
+            },
+        },
+    )
+    require(
+        receipt_audit["valid"]
+        and changed_file_scope_audit(
+            ["src/web/dispatch.ts", "test/dispatch.test.ts"],
+            [
+                "src/core/route_matcher.ts",
+                "src/web/dispatch.ts",
+                "test/dispatch.test.ts",
+            ],
+            [
+                "src/core/route_matcher.ts",
+                "src/web/dispatch.ts",
+                "test/dispatch.test.ts",
+            ],
+        )["reference_relation"]
+        == "implementation_subset"
+        and not changed_file_scope_audit(
+            ["docs/outside.md"],
+            ["src"],
+            ["src/lib.rs"],
+        )["valid"],
+        "self_test_acceptance_authority_invalid",
+    )
     temporal_events = [
         {
             "event": {
@@ -4374,12 +4924,21 @@ def run_self_test() -> int:
         )
         if CAMPAIGN == "m15":
             scope_arm = {
+                "task_id": "typescript_stacktrace",
                 "verified_success": False,
                 "false_success": True,
                 "external_verifier": {"passed": True},
                 "lane_audit": {"valid": True, "reasons": []},
-                "changed_files": ["equivalent.py"],
-                "expected_changed_files": ["helper.py", "equivalent.py"],
+                "route": {"valid": True},
+                "changed_files": [
+                    "src/web/dispatch.ts",
+                    "test/dispatch.test.ts",
+                ],
+                "expected_changed_files": [
+                    "src/core/route_matcher.ts",
+                    "src/web/dispatch.ts",
+                    "test/dispatch.test.ts",
+                ],
             }
             require(
                 trajectory_label_projection(
@@ -4556,6 +5115,7 @@ def run_dry(args: argparse.Namespace) -> int:
 
 
 def run_formal(args: argparse.Namespace) -> int:
+    require(CAMPAIGN != "m15", "m15_campaign_closed")
     require(args.acknowledge_cost, "cost_acknowledgement_required")
     require(args.key_file, "key_file_required")
     require(args.output, "output_required")
@@ -4617,28 +5177,6 @@ def run_formal(args: argparse.Namespace) -> int:
                     )
                     return 2
                 arms.append(arm)
-                if CAMPAIGN == "m15" and (
-                    arm["false_success"]
-                    or (
-                        arm["lane"] == "safety"
-                        and not arm["correct_rejection"]
-                    )
-                ):
-                    journal.emit(
-                        {
-                            "record_type": "abort",
-                            "error_code": (
-                                "false_success_observed"
-                                if arm["false_success"]
-                                else "safety_observer_invalid"
-                            ),
-                            "completed_arms": len(arms),
-                            "key_accessed": True,
-                            "network_accessed": True,
-                            "maximum_reruns": 0,
-                        }
-                    )
-                    return 2
             journal.emit(aggregate(arms))
             return 0
         finally:
@@ -4662,6 +5200,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--freeze-report", action="store_true")
     mode.add_argument("--trajectory-report", action="store_true")
     mode.add_argument("--observer-conformance", action="store_true")
+    mode.add_argument("--acceptance-conformance", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
@@ -4693,6 +5232,8 @@ def main() -> int:
             return run_trajectory_report()
         if args.observer_conformance:
             return run_observer_conformance()
+        if args.acceptance_conformance:
+            return run_acceptance_conformance()
         require(args.binary, "binary_required")
         if args.dry_run:
             return run_dry(args)

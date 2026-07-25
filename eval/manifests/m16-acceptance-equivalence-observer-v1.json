@@ -1,0 +1,66 @@
+{
+  "schema": "codewhale.eval.m16-acceptance-equivalence-observer.v1",
+  "suite_id": "m16-acceptance-equivalence-observer-v1",
+  "frozen_at_utc": "2026-07-25T00:00:00Z",
+  "source_identity": {
+    "baseline_revision": "682e06ef889deb46c8d7aa9b80181a5adc176dc6",
+    "baseline_tree": "e3b4b554efc259e5d103ed83d85e9cef1bb2822f",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "The corrected fixed-Pro Harness still treats one reference implementation's exact changed-file set as completion authority, contradicting a passing frozen external verifier, a latest-revision Host EvidenceReceipt, and canonical terminal truth for an equivalent M15 implementation.",
+    "acceptance": [
+      "allowed_paths remains the hard repository-relative safety boundary while reference changed files become diagnostic only",
+      "equivalent subsets, alternate in-scope implementations, and additional in-scope safety regressions may pass only with the frozen external verifier, valid route and lane, non-empty mutation, and a terminal latest-revision receipt",
+      "out-of-scope edits, missing or stale receipts, verifier failure, invalid route or lane, Writer seal/integration disagreement, safety mutation, and crash/reopen drift cannot become verified success",
+      "the frozen M15 raw journal, manifest, acquired labels, and identity remain byte-immutable while its known scope mismatch is reproducibly projected as evaluation_scope_mismatch",
+      "M9-C, M11, M12, M14, and M15 offline compatibility gates pass without credential or network access"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the sole corrected fixed-Pro Harness and typed observer owner",
+    "old_path_replaced": "derive_arm and writer_lane_audit exact equality against expected_changed_files plus the M15-only post-hoc changed-files special case",
+    "offline_evidence": [
+      "M16 acceptance-equivalence corpus",
+      "M14 observer corpus byte-compatible report",
+      "M9-C, M11, M12, and M15 Harness self-tests",
+      "M11, M12, and M15 trajectory report compatibility",
+      "production protocol, Runtime, State reopen, and process crash/reopen tests"
+    ],
+    "cutover_deletion": [
+      "exact reference changed-file equality from verified_success",
+      "exact reference changed-file equality from Writer seal and root integration",
+      "current arm_result expected_changed_files output",
+      "campaign-name-specific M15 evaluation_scope_mismatch classification"
+    ],
+    "failed_candidate_deletion": "delete the M16 mode, manifest, and corpus; restore no M15 acquisition and change no production Runtime, Store, verifier, or protocol path"
+  },
+  "corpus": {
+    "path": "eval/fixtures/m16-acceptance-equivalence-observer-v1.json",
+    "file_sha256": "sha256:4eaecd9628dde4310389a17574efc5714067f32d750e07a5be52c9df47906231",
+    "schema": "codewhale.eval.m16-acceptance-equivalence-observer-corpus.v1",
+    "case_count": 18,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "harness": {
+    "path": "scripts/eval-m9b-fixed-pro-regression.py",
+    "sole_corrected_evaluator": true
+  },
+  "authority_separation": {
+    "safety_boundary": "allowed_paths",
+    "behavior_truth": "frozen external verifier",
+    "latest_revision_truth": "EvidenceReceipt plus completed terminal decision",
+    "actual_mutation_observation": "changed_files plus Writer seal/integration facts",
+    "reference_implementation_diagnostic": "reference_changed_files",
+    "exact_replay": "canonical RunStore facts before and after credential-free reopen"
+  },
+  "frozen_history": {
+    "m15_raw_path": "eval/results/m15-product-loss-8f887fe21193-v1.jsonl",
+    "m15_raw_sha256": "sha256:f2466ef4c04a742b854a6e8ee367769ef0499a241e1160f5e60b0944fd8b41ac",
+    "m15_raw_is_modified": false,
+    "m15_schedule_is_reopened": false
+  }
+}

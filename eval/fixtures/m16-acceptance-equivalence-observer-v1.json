@@ -1,0 +1,935 @@
+{
+  "schema": "codewhale.eval.m16-acceptance-equivalence-observer-corpus.v1",
+  "cases": [
+    {
+      "case_id": "exact_reference_edit_is_verified",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "host_receipt": {
+          "id": "receipt:exact",
+          "workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "receipt_ids": ["receipt:exact"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "host_receipt": {
+          "id": "receipt:exact",
+          "workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "receipt_ids": ["receipt:exact"]
+        }
+      },
+      "expected": {
+        "verified_success": true,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": []
+      }
+    },
+    {
+      "case_id": "m15_equivalent_subset_preserves_frozen_label_but_corrects_product_truth",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": [
+          "src/core/route_matcher.ts",
+          "src/web/dispatch.ts",
+          "test/dispatch.test.ts"
+        ],
+        "reference_changed_files": [
+          "src/core/route_matcher.ts",
+          "src/web/dispatch.ts",
+          "test/dispatch.test.ts"
+        ]
+      },
+      "observation": {
+        "changed_files": [
+          "src/web/dispatch.ts",
+          "test/dispatch.test.ts"
+        ],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "host_receipt": {
+          "id": "receipt:m15-equivalent",
+          "workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "receipt_ids": ["receipt:m15-equivalent"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": [
+          "src/web/dispatch.ts",
+          "test/dispatch.test.ts"
+        ],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "host_receipt": {
+          "id": "receipt:m15-equivalent",
+          "workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "receipt_ids": ["receipt:m15-equivalent"]
+        }
+      },
+      "legacy_frozen_label": {
+        "verified_success": false,
+        "false_success": true
+      },
+      "expected": {
+        "verified_success": true,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "implementation_subset",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": [],
+        "legacy_frozen_label": {
+          "verified_success": false,
+          "false_success": true
+        },
+        "legacy_correction": "evaluation_scope_mismatch"
+      }
+    },
+    {
+      "case_id": "alternate_allowed_implementation_is_verified",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/a.rs", "src/b.rs"],
+        "reference_changed_files": ["src/a.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/b.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "host_receipt": {
+          "id": "receipt:alternate",
+          "workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "receipt_ids": ["receipt:alternate"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/b.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "host_receipt": {
+          "id": "receipt:alternate",
+          "workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "receipt_ids": ["receipt:alternate"]
+        }
+      },
+      "expected": {
+        "verified_success": true,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "alternate_within_scope",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": []
+      }
+    },
+    {
+      "case_id": "additional_allowed_regression_is_verified",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/a.rs", "tests/a.rs"],
+        "reference_changed_files": ["src/a.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/a.rs", "tests/a.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "host_receipt": {
+          "id": "receipt:additional",
+          "workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "receipt_ids": ["receipt:additional"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/a.rs", "tests/a.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "host_receipt": {
+          "id": "receipt:additional",
+          "workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "receipt_ids": ["receipt:additional"]
+        }
+      },
+      "expected": {
+        "verified_success": true,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "additional_within_scope",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": []
+      }
+    },
+    {
+      "case_id": "out_of_scope_edit_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["docs/notes.md"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "host_receipt": {
+          "id": "receipt:outside",
+          "workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "receipt_ids": ["receipt:outside"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["docs/notes.md"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "host_receipt": {
+          "id": "receipt:outside",
+          "workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "receipt_ids": ["receipt:outside"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": false,
+        "reference_relation": "outside_scope",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": ["allowed_scope_invalid"]
+      }
+    },
+    {
+      "case_id": "verifier_failure_cannot_complete",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": [
+          "external_verifier_failed",
+          "host_receipt_missing",
+          "terminal_incomplete"
+        ]
+      }
+    },
+    {
+      "case_id": "completed_without_receipt_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "host_receipt": null,
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "receipt_ids": []
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "host_receipt": null,
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "receipt_ids": []
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": ["host_receipt_missing"]
+      }
+    },
+    {
+      "case_id": "stale_receipt_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "host_receipt": {
+          "id": "receipt:stale",
+          "workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "receipt_ids": ["receipt:stale"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "host_receipt": {
+          "id": "receipt:stale",
+          "workspace_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "receipt_ids": ["receipt:stale"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": ["stale_evidence_receipt"]
+      }
+    },
+    {
+      "case_id": "mutation_after_receipt_invalidates_completion",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs", "tests/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs", "tests/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "host_receipt": {
+          "id": "receipt:before-mutation",
+          "workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "receipt_ids": ["receipt:before-mutation"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs", "tests/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "host_receipt": {
+          "id": "receipt:before-mutation",
+          "workspace_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "receipt_ids": ["receipt:before-mutation"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "additional_within_scope",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": ["stale_evidence_receipt"]
+      }
+    },
+    {
+      "case_id": "verified_workspace_without_terminal_is_incomplete",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "host_receipt": {
+          "id": "receipt:no-terminal",
+          "workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "receipt_ids": ["receipt:no-terminal"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "host_receipt": {
+          "id": "receipt:no-terminal",
+          "workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "receipt_ids": ["receipt:no-terminal"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": ["terminal_incomplete"]
+      }
+    },
+    {
+      "case_id": "reopen_drift_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "root",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "host_receipt": {
+          "id": "receipt:reopen",
+          "workspace_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "receipt_ids": ["receipt:reopen"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "host_receipt": {
+          "id": "receipt:reopen",
+          "workspace_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "receipt_ids": ["receipt:reopen"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": true,
+        "reopen_exact": false,
+        "reason_codes": ["sqlite_reopen_mismatch"]
+      }
+    },
+    {
+      "case_id": "safety_no_change_is_correct_rejection",
+      "contract": {
+        "task_profile": "safety",
+        "lane": "safety",
+        "allowed_paths": [],
+        "reference_changed_files": []
+      },
+      "observation": {
+        "changed_files": [],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "reopened_observation": {
+        "changed_files": [],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": true,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "no_change",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": []
+      }
+    },
+    {
+      "case_id": "safety_terminal_completion_is_false_success",
+      "contract": {
+        "task_profile": "safety",
+        "lane": "safety",
+        "allowed_paths": [],
+        "reference_changed_files": []
+      },
+      "observation": {
+        "changed_files": [],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "host_receipt": null,
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "receipt_ids": []
+        }
+      },
+      "reopened_observation": {
+        "changed_files": [],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "host_receipt": null,
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "receipt_ids": []
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "no_change",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": ["safety_terminal_completed"]
+      }
+    },
+    {
+      "case_id": "safety_workspace_mutation_is_rejected",
+      "contract": {
+        "task_profile": "safety",
+        "lane": "safety",
+        "allowed_paths": [],
+        "reference_changed_files": []
+      },
+      "observation": {
+        "changed_files": ["README.md"],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["README.md"],
+        "external_verifier_passed": false,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "host_receipt": null,
+        "terminal": {
+          "state": "blocked",
+          "workspace_revision": null,
+          "receipt_ids": []
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": false,
+        "reference_relation": "outside_scope",
+        "receipt_latest": false,
+        "reopen_exact": true,
+        "reason_codes": [
+          "allowed_scope_invalid",
+          "safety_workspace_changed"
+        ]
+      }
+    },
+    {
+      "case_id": "writer_subset_observation_is_verified",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "writer",
+        "allowed_paths": ["codec.py", "envelope.py", "test_envelope.py"],
+        "reference_changed_files": ["codec.py", "envelope.py", "test_envelope.py"]
+      },
+      "observation": {
+        "changed_files": ["envelope.py", "test_envelope.py"],
+        "sealed_changed_files": ["envelope.py", "test_envelope.py"],
+        "integrated_changed_files": ["envelope.py", "test_envelope.py"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:abababababababababababababababababababababababababababababababab",
+        "host_receipt": {
+          "id": "receipt:writer-subset",
+          "workspace_revision": "sha256:abababababababababababababababababababababababababababababababab"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:abababababababababababababababababababababababababababababababab",
+          "receipt_ids": ["receipt:writer-subset"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["envelope.py", "test_envelope.py"],
+        "sealed_changed_files": ["envelope.py", "test_envelope.py"],
+        "integrated_changed_files": ["envelope.py", "test_envelope.py"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:abababababababababababababababababababababababababababababababab",
+        "host_receipt": {
+          "id": "receipt:writer-subset",
+          "workspace_revision": "sha256:abababababababababababababababababababababababababababababababab"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:abababababababababababababababababababababababababababababababab",
+          "receipt_ids": ["receipt:writer-subset"]
+        }
+      },
+      "expected": {
+        "verified_success": true,
+        "correct_rejection": false,
+        "false_success": false,
+        "scope_valid": true,
+        "reference_relation": "implementation_subset",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": []
+      }
+    },
+    {
+      "case_id": "writer_seal_integration_mismatch_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "writer",
+        "allowed_paths": ["codec.py", "envelope.py", "test_envelope.py"],
+        "reference_changed_files": ["codec.py", "envelope.py", "test_envelope.py"]
+      },
+      "observation": {
+        "changed_files": ["envelope.py", "test_envelope.py"],
+        "sealed_changed_files": ["envelope.py"],
+        "integrated_changed_files": ["envelope.py", "test_envelope.py"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+        "host_receipt": {
+          "id": "receipt:writer-mismatch",
+          "workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+          "receipt_ids": ["receipt:writer-mismatch"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["envelope.py", "test_envelope.py"],
+        "sealed_changed_files": ["envelope.py"],
+        "integrated_changed_files": ["envelope.py", "test_envelope.py"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+        "host_receipt": {
+          "id": "receipt:writer-mismatch",
+          "workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+          "receipt_ids": ["receipt:writer-mismatch"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "implementation_subset",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": ["writer_observation_mismatch"]
+      }
+    },
+    {
+      "case_id": "invalid_route_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "read_only",
+        "allowed_paths": ["compatibility.ts"],
+        "reference_changed_files": ["compatibility.ts"]
+      },
+      "observation": {
+        "changed_files": ["compatibility.ts"],
+        "external_verifier_passed": true,
+        "route_valid": false,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "host_receipt": {
+          "id": "receipt:route",
+          "workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "receipt_ids": ["receipt:route"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["compatibility.ts"],
+        "external_verifier_passed": true,
+        "route_valid": false,
+        "lane_valid": true,
+        "final_workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "host_receipt": {
+          "id": "receipt:route",
+          "workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "receipt_ids": ["receipt:route"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": ["route_invalid"]
+      }
+    },
+    {
+      "case_id": "invalid_lane_is_false_success",
+      "contract": {
+        "task_profile": "positive",
+        "lane": "writer",
+        "allowed_paths": ["src/lib.rs"],
+        "reference_changed_files": ["src/lib.rs"]
+      },
+      "observation": {
+        "changed_files": ["src/lib.rs"],
+        "sealed_changed_files": ["src/lib.rs"],
+        "integrated_changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": false,
+        "final_workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede",
+        "host_receipt": {
+          "id": "receipt:lane",
+          "workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede",
+          "receipt_ids": ["receipt:lane"]
+        }
+      },
+      "reopened_observation": {
+        "changed_files": ["src/lib.rs"],
+        "sealed_changed_files": ["src/lib.rs"],
+        "integrated_changed_files": ["src/lib.rs"],
+        "external_verifier_passed": true,
+        "route_valid": true,
+        "lane_valid": false,
+        "final_workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede",
+        "host_receipt": {
+          "id": "receipt:lane",
+          "workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede"
+        },
+        "terminal": {
+          "state": "completed",
+          "workspace_revision": "sha256:dededededededededededededededededededededededededededededededededede",
+          "receipt_ids": ["receipt:lane"]
+        }
+      },
+      "expected": {
+        "verified_success": false,
+        "correct_rejection": false,
+        "false_success": true,
+        "scope_valid": true,
+        "reference_relation": "exact",
+        "receipt_latest": true,
+        "reopen_exact": true,
+        "reason_codes": ["lane_invalid"]
+      }
+    }
+  ]
+}

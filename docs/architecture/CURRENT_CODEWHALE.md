@@ -2154,6 +2154,34 @@ RuntimeEvent v18、State v24 与 exec-stream v3 不变；M13 frozen raw 不读�
 不拼接。完整证据见
 [M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
 
+M16 只改变 corrected Harness 的 completion observer，不改变 production：
+
+- `allowed_paths` 是唯一 changed-file 安全边界；实际 `changed_files`、Writer seal 与
+  integration 是 canonical observation，reference changed-file set 只保留为
+  `exact / implementation_subset / additional_within_scope / alternate_within_scope`
+  诊断；
+- current `verified_success` 要求非空且 scope-valid 的修改、冻结 external verifier、
+  valid route/lane、completed terminal，以及与 terminal decision 和
+  `workspace_state_after` 一致的 latest-revision `EvidenceReceipt`；任何一项缺失都不能
+  被参考实现文件集合补偿；
+- Writer seal 与 integrated root diff 必须互相一致并位于 allowed scope，但不再要求
+  等于某个参考 patch 的 exact file set；
+- `--acceptance-conformance` 的 18-case 离线 corpus 覆盖 M15 两文件等价实现、
+  implementation subset、alternate/additional in-scope 修改、越界、安全反例、
+  verifier/receipt/revision、route/lane、Writer 与 exact reopen；report 连续两次
+  byte-identical；
+- M15 frozen manifest/raw/labels 保持不可变；通用 legacy projection 仍得到冻结
+  11 verified / 2 correct rejection / 1 false-success label，以及 corrected
+  12 / 2 / 0 product projection；该一例继续归因
+  `evaluation_scope_mismatch`；
+- M15 formal entry 在 Key 或 network 前稳定拒绝为 `m15_campaign_closed`，不能续跑剩余
+  schedule；下一次 product-loss acquisition 必须使用全新 identity 和 position 1。
+
+M16 不改变 Run API v12、RuntimeEvent v18、State v24、exec-stream v3、DeepSeek
+ChatCompletions sender、fixed actor route、Runtime、Store、工具目录或 production
+verifier。完整证据见
+[M16 acceptance-equivalence observer](../../eval/summaries/m16-acceptance-equivalence-observer-2026-07-25.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
