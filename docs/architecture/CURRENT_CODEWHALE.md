@@ -2245,8 +2245,9 @@ M17-C 当前交付事实：
   建成 source package，安装后两项 binary 均报告同一 revision，verify/uninstall 通过；
 - Linux arm64 在已缓存 Bookworm image、network denied、source read-only 条件下通过
   deterministic package/upgrade/rollback/uninstall fixture；
-- GitHub Actions 已配置 Linux/macOS 同一 owner，但尚未 push，私有远端 CI 真实结果仍
-  属于 M17-H 发布门。当前没有 tag、release 或 public visibility 变化。
+- GitHub Actions 已配置 Linux/macOS 同一 owner。`8c57c4dba` 已由用户单独授权推送到
+  private origin，但对应 run 在任何 step 前因账户付款或 spending limit 被 GitHub
+  拒绝；这不是代码门禁结果。当前没有 tag、release 或 public visibility 变化。
 
 完整证据见
 [M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
@@ -2303,9 +2304,12 @@ M17-H local candidate `a8c4bafab` 又删除了最后一个 tracked
 byte-identical。
 
 同 revision macOS locked/offline source artifact 与 Linux arm64 无网络 fixture lifecycle
-通过，但 private origin 仍停在 `54fb7cb9`，当前 candidate 没有 remote CI。GitHub 当前
-套餐对 private branch protection/rulesets 返回 403，必须升级 Pro 或在明确授权下先 public。
-没有 push、remote rename、visibility、tag、release 或本地 workspace directory rename。
+通过。private origin 已与 `8c57c4dba` 对齐；GitHub Actions run `30164259559` 因账户
+付款或 spending limit 在 runner step 前被拒绝，private branch protection/rulesets 也因
+套餐限制不可用。用户随后明确当前只做本地、不再操作 GitHub，因此 M17 以本地 DSE V1
+完成收口；remote CI、rename、protection、visibility、tag 与 release 均为未执行且延期的
+独立外部工作，没有被冒充为通过。活动 workspace 宿主目录保持原路径，不影响 DSE 产品、
+协议、安装目录或发布物身份。
 完整事实与下一授权边界见
 [M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
 

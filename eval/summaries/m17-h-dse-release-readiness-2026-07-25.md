@@ -6,9 +6,10 @@
 - Source tree: `e6d6ffde673d01912155dfadc29694009aa2df92`
 - Product: `DSE` / `DeepSeek Engineer`
 - Decision:
-  `local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`
+  `local_v1_complete_external_github_release_deferred_by_user`
 - Credential/API use: none
-- Remote mutations: none
+- Authorized remote mutation: one non-force branch push to existing private
+  origin; no rename, protection, visibility, tag, or release mutation
 
 ## Problem and acceptance boundary
 
@@ -140,19 +141,26 @@ read-only-container-root run rejected fixture executables in its `/tmp`
 mount; that condition was not part of the frozen delivery contract and is not
 used as a product regression or success claim.
 
-## Private remote facts
+## Private remote facts and bounded push
 
 Read-only GitHub and Git inspection found:
 
 - origin: `https://github.com/gelin66/deepseek-agent.git`;
 - repository: private, default branch `deepseek-agent`;
-- remote/default SHA:
+- the pre-push remote/default SHA was
   `54fb7cb9bcd0fd613cf417b683b0b3bdbe190bd3`;
-- local candidate is a descendant and is 621 commits ahead;
+- after explicit user authorization, one exact non-force push advanced
+  `deepseek-agent` to
+  `8c57c4dba909d396f59c6a0a00d9e895e2801583`;
+- local `HEAD`, `origin/deepseek-agent`, and `git ls-remote` then matched that
+  SHA exactly;
 - the branch is not protected;
-- the only remote Actions run is the 2026-07-15 old-SHA `Rust CI`, which
-  failed at Clippy before workspace tests;
-- the current DSE candidate has never run in private CI;
+- GitHub created Rust CI run `30164259559` for exact SHA `8c57c4dba`, but all
+  three jobs had `steps=[]` and were rejected before runner execution with:
+  `recent account payments have failed or your spending limit needs to be
+  increased`;
+- this is neither a passing nor failing code/workflow result and no blind
+  rerun was made;
 - both classic branch-protection and repository-ruleset read APIs returned
   HTTP 403 with GitHub's explicit requirement to upgrade to Pro or make the
   repository public;
@@ -160,26 +168,19 @@ Read-only GitHub and Git inspection found:
   visible repository at that slug, not that a future rename is reserved or
   guaranteed.
 
-No push, repository rename, protection/ruleset change, visibility change, tag,
+No repository rename, protection/ruleset change, visibility change, tag,
 release, or workspace-directory rename occurred.
 
 ## Decision and next authorization boundary
 
 The local candidate is release-ready under the accepted DSE delivery contract.
-M17 itself is not complete because private CI and the external release sequence
-have not occurred.
+After observing the account-limited no-run, the user explicitly directed that
+the current work remain local and that GitHub not be used. M17 therefore closes
+its current product-development scope as local DSE V1 complete.
 
-The next safe order is:
-
-1. obtain explicit authorization to push the current `deepseek-agent` branch
-   to the existing private origin and wait for the complete current CI matrix;
-2. choose how to satisfy protection: upgrade the account/repository plan while
-   private, or explicitly accept a tightly bounded public-first window followed
-   immediately by protection/ruleset configuration;
-3. confirm `gelin66/dse` as the exact rename target;
-4. separately authorize visibility change, tag, and GitHub release;
-5. after release, install from the published artifact in a fresh environment
-   and verify English/Chinese first run, real coding, resume, rollback, and
-   uninstall.
-
-Until those choices are explicit, the remote stays private and unchanged.
+Private CI, repository rename, protection, public visibility, tag, release, and
+post-release fresh-install verification remain a separate deferred external
+release sequence. None is claimed as passed, none blocks the local V1 result,
+and no further GitHub action belongs to the current Goal. If the user later
+opens an external release Goal, it must start by revalidating the exact source
+identity and obtaining separate authorization for each mutation.

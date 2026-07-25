@@ -2735,12 +2735,16 @@ constitution，因为这会在正式 prompt 决策后增加未经评测的模型
 
 同一 revision 的 focused、strict Clippy、workspace test、macOS locked/offline exact-source
 package/install/verify/uninstall 和 Linux arm64 无网络 fixture lifecycle 均通过；269 个
-ignored raw 文件现在全部为 `0600`，LICENSE 与导入基线 byte-identical。private origin
-相对被测 `a8c4bafab` candidate 落后 621 commits，当前 candidate 没有 remote CI；
-classic protection/rulesets 在当前
-private 仓库上均返回需 Pro 或 public 的 403。因此 M17-H 当前结论为
-`local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`，
-不是公开发布完成。见
+ignored raw 文件现在全部为 `0600`，LICENSE 与导入基线 byte-identical。用户授权的
+精确 non-force push 已使 private origin 与 `8c57c4dba` 对齐；该 SHA 的 GitHub Actions
+run `30164259559` 因账户付款或 spending limit 在任何 job step 前被拒绝，因此不是代码
+门禁结果，不能提供 private CI 成败证据。classic protection/rulesets 仍因套餐限制不可用。
+
+用户随后把当前范围明确收敛为纯本地 DSE，不再操作 GitHub。M17-H 最终本地结论为
+`local_v1_complete_external_github_release_deferred_by_user`：M17-A–H 的本地身份、双语、
+prompt、locked/offline delivery、来源、秘密和清理门已完成；CI、protection、仓库改名、
+visibility、tag 与 release 保持未执行的独立外部工作，不作为本地准入事实，也不阻塞本地
+V1 收口。见
 [M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
 
 ## 10. 结果与决策记录

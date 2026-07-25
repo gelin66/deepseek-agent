@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A–F 完成；M17-G next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 本地 V1 已完成（M17-A–H）；GitHub 发布显式延期 | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与本地 locked/offline 发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3662,14 +3662,14 @@ M17-F 被测 hash `a9179903...`、中文 prompt winner 与 frozen evidence 保�
 push、tag、release 或 visibility 变化。完整证据见
 [M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
 
-#### M17-H：公开发布
+#### M17-H：本地发布就绪与外部发布边界
 
 1. 全 workspace fmt、clippy `-D warnings`、test、focused、crash/reopen 和 release
    lifecycle 通过；
 2. active-source identity allowlist 审计证明旧 CodeWhale 名称只剩 provenance/frozen
    history；
 3. secret、ignored raw、生成文件、license、上游归属和 remote 审计通过；
-4. 先推送 DSE candidate 到私有远端并等待全部 CI；
+4. 外部发布被授权时，先推送 DSE candidate 到私有远端并等待全部 CI；
 5. 配置 default branch protection、required checks、CODEOWNERS 与 PR review；
 6. 确认 GitHub slug 后改名；优先 `dse`，不能使用时必须由用户选择唯一备用名；
 7. 用户显式确认后再把仓库设为 public、创建 tag/release；
@@ -3687,13 +3687,15 @@ M17-H 本地 release-readiness 已在 `a8c4bafab` 闭合。活动 TUI palette、
 
 同 revision focused、strict Clippy、workspace test、macOS Rust 1.97.0 locked/offline
 source package/install/verify/uninstall、Linux arm64 `--pull never --network none` 完整
-fixture lifecycle、秘密/许可/来源与 raw `0600` 门禁均通过。private origin 仍停在
-`54fb7cb9`，相对被测 `a8c4bafab` candidate 落后 621 commits，唯一 CI 是旧 revision
-的 Clippy 失败；当前 private
-仓库的 classic protection 与 rulesets 均被 GitHub 以“升级 Pro 或先设 public”拒绝。
-因此结论是
-`local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`，
-没有 push、改名、visibility、tag 或 release。完整证据见
+fixture lifecycle、秘密/许可/来源与 raw `0600` 门禁均通过。随后用户单独授权的精确
+non-force push 已使 private origin 与 `8c57c4dba` 对齐；该 SHA 的 GitHub Actions run
+`30164259559` 因账户付款或 spending limit 在任何 job step 前被拒绝，不能提供 private
+CI 成败证据。classic protection 与 rulesets 也因当前套餐需要 Pro 或 public 而不可用。
+
+用户随后明确当前只做本地、不再操作 GitHub。M17 因此以
+`local_v1_complete_external_github_release_deferred_by_user` 收口：本地 DSE V1 已完成，
+GitHub CI、仓库改名、protection、visibility、tag 与 release 是延期的独立外部发布工作，
+不再作为本地 Goal 的退出门，也没有被冒充为已完成。完整证据见
 [M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
 
 ### 13.5 M17 退出门槛
@@ -3708,12 +3710,13 @@ fixture lifecycle、秘密/许可/来源与 raw `0600` 门禁均通过。private
 - production 只剩一个 prompt，失败候选和 selector 已删除；
 - locked/offline DSE release lifecycle 与全量门禁通过；
 - English README、中文入口、治理和来源说明准确；
-- private remote CI、branch protection 和最终 public release 各自有确认事实；
+- 外部 GitHub CI、branch protection、改名与 public release 保持显式延期，且文档不得
+  把未执行的远端门禁写成通过；
 - 没有临时 adapter、旧 binary alias、双写或无删除点历史债。
 
-本地 workspace 目录从 `.../codewhale` 改为 `.../dse` 是最后的宿主操作；必须等所有共享
-目录任务完成并确认没有运行中的 shell/worktree 后执行，不能在 M17-A 的源码 rename 中
-移动当前工作区。
+本地 workspace 的宿主目录名不属于产品协议、安装路径或发布物身份。当前共享目录保持
+`.../codewhale`，不得为了品牌外观移动活动 workspace；若未来用户单独要求宿主目录改名，
+必须先确认没有共享任务、shell 或 worktree。
 
 ## 14. 当前源码迁移表
 
