@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 已接受、待执行 | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A 完成；M17-B next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3415,6 +3415,13 @@ release 不得继续生成旧身份。
 
 Prompt 的 `CodeWhale -> DSE` 只改身份，不重写执行、验证、工具或多 Agent 条款。通过
 conformance 后冻结为 M17-F 两个语言 variant 的共同品牌基线。
+
+M17-A 已在 `89f1bb9f` 完成：16 个活动 package/import 全部切为 `dse-*`/`dse_*`，
+binary target 精确为 `dse`、`dse-tui`，CLI/TUI help/version、official DeepSeek
+User-Agent 和 production constitution 使用 DSE。Run API v12、RuntimeEvent v18、
+State v24 与 exec-stream v3 未改变；`.codewhale`、`CODEWHALE_*` 和 active machine
+namespace 明确保留给 M17-B，不在本切片制造隐式协议迁移。完整证据见
+[M17-A DSE product identity](../../eval/summaries/m17-a-dse-product-identity-2026-07-25.md)。
 
 #### M17-B：DSE config/state/protocol identity
 

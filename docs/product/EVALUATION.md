@@ -2565,6 +2565,14 @@ Brand rename 本身不构成任务质量提升结论。`CodeWhale -> DSE` 的 mo
 替换必须保持其余 prompt 语义相同，并通过 root/read-only/Writer、recovery、prompt
 provenance、SQLite reopen 与 whole-release conformance，随后作为语言实验共同基线。
 
+M17-A identity gate 已在 `89f1bb9f` 通过：Cargo metadata 只有 16 个 `dse-*` package，
+binary set 只有 `dse`、`dse-tui`，help/version、User-Agent 与模型可见名称均为 DSE；
+focused、严格 Clippy、全 workspace test、root/read-only/Writer、SIGKILL/reopen 与
+machine parity 通过。config/state/protocol 和 delivery 仍分别由 M17-B/C 接管，因此
+M17 总 gate 尚未完成。本切片没有 Key、官方 API、网络或产品质量/成本结论。完整身份、
+hash、allowlist 与非结论见
+[M17-A DSE product identity](../../eval/summaries/m17-a-dse-product-identity-2026-07-25.md)。
+
 #### bilingual UI gate
 
 - `en.json` 与 `zh-Hans.json` exact key/placeholder parity；

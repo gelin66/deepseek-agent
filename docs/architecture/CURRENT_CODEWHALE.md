@@ -1,4 +1,4 @@
-# Current CodeWhale Architecture
+# Current DSE Architecture
 
 > 文档类别：迁移事实。只描述当前源码，不替代
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
@@ -74,6 +74,7 @@
 - M9-C corrected Harness / immutable candidate：`7a91bbaa`
 - M9-C fixed-Pro successor live admission：`84e20cd9`
 - M14 typed observer conformance / M13 live path cutover：`7a9e2278`
+- M17-A DSE product/Cargo identity cutover：`89f1bb9f`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2181,6 +2182,24 @@ M16 不改变 Run API v12、RuntimeEvent v18、State v24、exec-stream v3、Deep
 ChatCompletions sender、fixed actor route、Runtime、Store、工具目录或 production
 verifier。完整证据见
 [M16 acceptance-equivalence observer](../../eval/summaries/m16-acceptance-equivalence-observer-2026-07-25.md)。
+
+M17-A 已把当前活动产品、binary 和 Cargo/import 身份硬切为 DSE：
+
+- workspace package set 精确为 16 个 `dse-*` crate，binary target 只有 `dse`、
+  `dse-tui`；
+- CLI/TUI help/version、official DeepSeek User-Agent 和 production constitution 使用
+  DSE；constitution 仅改变名称，执行/权限/验证/工具/多 Agent 条款不变；
+- root、read-only child、explicit Writer 继续共用同一
+  `AgentApplication -> AgentRuntime -> RunStore`；fixed route、DeepSeek Chat sender、
+  accounting 和 completion owner 不变；
+- 当前仍是 Run API v12、RuntimeEvent v18、State v24、exec-stream v3；
+- `.codewhale`、`CODEWHALE_*`、active protocol/media type 与 delivery script 仍是
+  M17-B/C 的待删除旧路径，不能把 M17-A 误报为整个 identity/release cutover 完成；
+- DSA 从未形成 production commit；`83d05775` 只保留为被 DSE 决策 supersede 的 Git
+  历史，frozen `DeepSeek Agent` 评测标题和 evidence 未改写。
+
+完整证据见
+[M17-A DSE product identity](../../eval/summaries/m17-a-dse-product-identity-2026-07-25.md)。
 
 ## 7. 明确非结论
 
