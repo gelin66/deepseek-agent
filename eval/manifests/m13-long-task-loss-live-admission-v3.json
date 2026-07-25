@@ -1,0 +1,164 @@
+{
+  "schema": "codewhale.eval.m13-long-task-loss-live-admission.v2",
+  "admitted_at_utc": "2026-07-25T04:30:03Z",
+  "contract_manifest": "eval/manifests/m13-long-task-loss-baseline-v2.json",
+  "contract_manifest_sha256": "sha256:e77ebbf880ab3d0a8d363ff2ea1ad2e23d01f35859bf6bdaf7a7721ef4a8872d",
+  "inherited_contract_manifest": "eval/manifests/m13-long-task-loss-baseline-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:e5f436b9cff3252d5682cc4f35055367f60943a42dbb21d4e57707de46801b74",
+  "candidate_revision": "fc0960d6102953d78d5611c433b2c6e5af87225d",
+  "candidate_tree": "a3450bdc8c8022cd5c981eed0adbf47821b25640",
+  "candidate_binary": "/private/tmp/codewhale-m13-target/release/codewhale",
+  "candidate_binary_sha256": "sha256:f537994251f3da9c916fe1fd174ff44b72db747b6d303e0c576721f7d3519f7d",
+  "candidate_binary_size_bytes": 15413536,
+  "candidate_binary_version": "codewhale 0.8.68 (fc0960d61029)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:ed3f651d6ecbce66ec76f50174508ff0170c256454c681b9971e14b1fc78fbd3",
+  "schedule_sha256": "sha256:f9f6378a71e9906448b4cc1dcc9436dcebc1e918c28e1b0ebb0d68ea2b87fba3",
+  "task_contracts_sha256": "sha256:8b559ad0129f4dd70f2308a00eddf38bb3cb397d9046c6c7ec21163b6c721d01",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:5fbf9e11a6cd4e2a7c032cb2d7d54264c62dee5398d2a37d9c36900ba62841a5",
+  "freeze_report_sha256": "sha256:24c3283bbefc6504620380d586193ba5e5eaaca20786e65587b90cdc3528b37d",
+  "dry_run_sha256": "sha256:cb2605a2b9af07b6e782f8b0874c94f6bb514ae173827c47f7ace69a78b80f79",
+  "supersedes_admission": "eval/manifests/m13-long-task-loss-live-admission-v2.json",
+  "excluded_prior_journals": [
+    {
+      "path": "eval/results/m13-long-task-loss-c819d90b9bf8-v1.jsonl",
+      "file_sha256": "sha256:dd43a30232181713f4df8a326c4fcabef48c4b3c37fd5a476132aa9f7ea6cef0",
+      "size_bytes": 10149617,
+      "records": 21,
+      "physical_requests": 35,
+      "known_cost_usd": 0.077142813,
+      "result": "inadmissible_evaluator_writer_scope_order_mismatch",
+      "used_as_input": false,
+      "continued": false
+    },
+    {
+      "path": "eval/results/m13-long-task-loss-4710d8e72ef0-v2.jsonl",
+      "file_sha256": "sha256:c5f85cc052126a35d89ec5e15a962f2bde1e6060e477ef3e314215952732eee9",
+      "size_bytes": 25435709,
+      "records": 39,
+      "physical_requests": 52,
+      "known_cost_usd": 0.12206883,
+      "result": "inadmissible_evaluator_malformed_stale_patch_contract",
+      "used_as_input": false,
+      "continued": false
+    }
+  ],
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new position-1 six-task acquisition after correcting only the malformed stale-patch task contract; both prior stopped journals remain excluded"
+  },
+  "offline_gates": [
+    {
+      "gate": "both prior journals stopped before the next arm and are excluded rather than resumed, completed, or spliced",
+      "result": "pass",
+      "key_accessed": true,
+      "network_accessed": true
+    },
+    {
+      "gate": "v2 overlay inherits the exact v1 manifest and changes only typescript_patch_conflict objective and required_failure hunk counts from three to two",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "crates/tools canonical owner rejects malformed hunk counts as patch_parse and maps parse-valid absent stale context to workspace_precondition without mutation",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M13 self-test preserves canonical Writer scope comparison and rejects missing, duplicate, noncanonical observed, or changed allowed_paths",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M9-C, M11, M12 and M13 campaign compatibility self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test -p codewhale-tools --locked apply_patch characterization and hunk count mismatch",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production fixed route, root/read-only/Writer, verifier recovery, RunStore exact reopen, process SIGKILL, CLI/TUI/API loopbacks",
+      "result": "pass"
+    },
+    {
+      "gate": "production release binary rebuild and credential-free M13 Harness dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "rust_crossfile_proxy": "sha256:c21661798d03cec5fb8034a352211af9abc7d46eee4a92f40e78724eda859c6e",
+    "typescript_crossfile_cursor": "sha256:b62d53d75070dd9ea38a3ee4bc286dd5ee7f278a109f975f7ef36204491c1c4a",
+    "python_verifier_recovery": "sha256:ac560e3069038b7230ac3d340789789f9c837edea6e56beb725b2d779d35f4fc",
+    "python_ambiguous_edit": "sha256:0a0c2df074bb1e0634f42eabdd50ec004e4e823186313eb43d65cc49c5a261cb",
+    "typescript_patch_conflict": "sha256:36ee63c31ff7c38a2f17a361d21af324d66d577c8803b6476324adc3829bea03",
+    "writer_config_migration": "sha256:0ce707b4096b34814a136a7eeb4005eff5b9225fab98736451b48f3ad532da15"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 3,
+    "formal_arms": 18,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.18,
+    "suite_known_cost_ceiling_usd": 3.24,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "third_observer_ambiguity_closes_m13": true,
+    "output": "eval/results/m13-long-task-loss-fc0960d61029-v3.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": true,
+    "official_api_requests_before_admission": 87
+  },
+  "official_protocol_revalidated_on": "2026-07-25",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
