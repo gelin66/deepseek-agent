@@ -430,11 +430,32 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
     })
 }
 
+fn nested_cli_command_message(parent: &str, name: &str) -> Option<MessageId> {
+    Some(match (parent, name) {
+        ("auth", "status") => MessageId::CliCommandAuthStatus,
+        ("auth", "set") => MessageId::CliCommandAuthSet,
+        ("auth", "get") => MessageId::CliCommandAuthGet,
+        ("auth", "clear") => MessageId::CliCommandAuthClear,
+        ("auth", "migrate") => MessageId::CliCommandAuthMigrate,
+        ("model", "set") => MessageId::CliCommandModelSet,
+        _ => return None,
+    })
+}
+
 fn localize_cli_command(command: &mut clap::Command) {
     localize_cli_command_in(command, process_language());
 }
 
 fn localize_cli_command_in(command: &mut clap::Command, language: ProductLanguage) {
+    localize_cli_command_with_parent(command, language, None);
+}
+
+fn localize_cli_command_with_parent(
+    command: &mut clap::Command,
+    language: ProductLanguage,
+    parent: Option<&str>,
+) {
+    let command_name = command.get_name().to_string();
     let mut localized = command
         .clone()
         .help_template(tr_in(language, MessageId::CliHelpTemplate).into_owned())
@@ -466,14 +487,17 @@ fn localize_cli_command_in(command: &mut clap::Command, language: ProductLanguag
                 .help(tr_in(language, MessageId::CliArgVersion).into_owned()),
         );
     }
-    if command.get_name() == "dse" {
+    if command_name == "dse" {
         localized = localized.about(tr_in(language, MessageId::CliAbout).into_owned());
-    } else if let Some(message) = cli_command_message(command.get_name()) {
+    } else if let Some(message) = parent
+        .and_then(|parent| nested_cli_command_message(parent, &command_name))
+        .or_else(|| cli_command_message(&command_name))
+    {
         localized = localized.about(tr_in(language, message).into_owned());
     }
-    if command.get_name() == "exec" {
+    if command_name == "exec" {
         localized = localized.after_help(tr_in(language, MessageId::CliExecAfterHelp).into_owned());
-    } else if command.get_name() == "app-server" {
+    } else if command_name == "app-server" {
         localized =
             localized.after_help(tr_in(language, MessageId::CliAppServerAfterHelp).into_owned());
     }
@@ -485,6 +509,8 @@ fn localize_cli_command_in(command: &mut clap::Command, language: ProductLanguag
         ("prompt", MessageId::CliArgPrompt),
         ("prompt_flag", MessageId::CliArgPrompt),
         ("api_key", MessageId::CliArgApiKey),
+        ("api_key_stdin", MessageId::CliArgApiKeyStdin),
+        ("dry_run", MessageId::CliArgDryRun),
         ("json", MessageId::CliArgJson),
         ("limit", MessageId::CliArgLimit),
         ("config", MessageId::CliArgConfig),
@@ -525,7 +551,7 @@ fn localize_cli_command_in(command: &mut clap::Command, language: ProductLanguag
 
     *command = localized;
     for child in command.get_subcommands_mut() {
-        localize_cli_command_in(child, language);
+        localize_cli_command_with_parent(child, language, Some(&command_name));
     }
 }
 
@@ -1753,6 +1779,39 @@ mod tests {
         assert!(english.contains("Check local configuration"));
         assert!(english.contains("--language"));
         assert!(!english.contains("面向官方"));
+
+        let english_auth = help_for_in(ProductLanguage::English, &["dse", "auth", "--help"]);
+        assert!(english_auth.contains("Show the DeepSeek credential source"));
+        assert!(english_auth.contains("Save a DeepSeek API key without echoing it"));
+        assert!(!english_auth.contains("显示 DeepSeek"));
+
+        let english_auth_set =
+            help_for_in(ProductLanguage::English, &["dse", "auth", "set", "--help"]);
+        assert!(english_auth_set.contains("Save a DeepSeek API key without echoing it"));
+        assert!(english_auth_set.contains("Read the key from standard input"));
+        assert!(!english_auth_set.contains("保存 DeepSeek"));
+
+        let chinese_auth_set = help_for_in(
+            ProductLanguage::SimplifiedChinese,
+            &["dse", "auth", "set", "--help"],
+        );
+        assert!(chinese_auth_set.contains("保存 DeepSeek API Key，且不回显内容"));
+        assert!(chinese_auth_set.contains("从标准输入读取 Key"));
+        assert!(!chinese_auth_set.contains("Save a DeepSeek API key"));
+
+        let english_auth_migrate = help_for_in(
+            ProductLanguage::English,
+            &["dse", "auth", "migrate", "--help"],
+        );
+        assert!(english_auth_migrate.contains("move a config-file key"));
+        assert!(english_auth_migrate.contains("Show the intended changes without writing them"));
+
+        let chinese_model_set = help_for_in(
+            ProductLanguage::SimplifiedChinese,
+            &["dse", "model", "set", "--help"],
+        );
+        assert!(chinese_model_set.contains("设置默认官方 DeepSeek 模型"));
+        assert!(!chinese_model_set.contains("Set the default model"));
     }
 
     #[test]
