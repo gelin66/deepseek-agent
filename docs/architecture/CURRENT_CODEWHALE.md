@@ -77,6 +77,7 @@
 - M17-A DSE product/Cargo identity cutover：`89f1bb9f`
 - M17-B DSE config/state/protocol identity cutover：`2b6dd276d`
 - M17-C DSE locked/offline delivery and CI cutover：`fd23400ca`
+- M17-D DSE bilingual localization owner：`68f3aa739`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2245,6 +2246,26 @@ M17-C 当前交付事实：
 
 完整证据见
 [M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
+
+M17-D 当前 localization 事实：
+
+- `crates/localization` 是唯一 product-language owner，活动语言精确为 `en` 和
+  `zh-Hans`；两个 JSON catalog 各有 417 个相同 key 和相同 named placeholders；
+- CLI/TUI process language 在启动时冻结，优先级为显式 `--language`、persisted
+  `[ui].language`、旧本地 DSE 迁移、fresh environment；没有 per-Run/per-Agent locale、
+  language classifier、翻译模型或额外 DeepSeek request；
+- fresh noninteractive process 使用 English；fresh interactive TUI 提供一次双语选择并
+  通过 canonical `dse_config::ConfigStore` 持久化；旧 `.onboarded` 安装在没有语言配置时
+  保持 `zh-Hans`；
+- language 只影响 human projection。Run API v12、RuntimeEvent v19、State v25、
+  exec-stream v4、official DeepSeek Chat sender、fixed actor route、request/accounting
+  与 RunStore facts 均未改变；
+- PTY/restart/process gates 已把 locale 作为显式输入并保持原 canonical runtime 断言。
+  M17-E 尚需把剩余 CLI/TUI/app-server hard-coded human text 迁入同一 catalog，因此当前
+  不能宣称所有产品投影已经完整双语。
+
+完整证据见
+[M17-D DSE bilingual localization owner](../../eval/summaries/m17-d-dse-bilingual-localization-owner-2026-07-25.md)。
 
 ## 7. 明确非结论
 

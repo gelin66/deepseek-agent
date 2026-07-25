@@ -2600,6 +2600,18 @@ reader 已从 current tree 删除；历史 M8-L manifest/summary/result 未改�
 没有 Key、官方 DeepSeek API、push、tag 或 release。完整证据见
 [M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
 
+M17-D localization-owner gate 已在 `68f3aa739` 通过：`en.json`/`zh-Hans.json`
+各有 417 个 exact-matching key 和 named-placeholder multiset，唯一 strict locale
+parser 只接受 `en`、`zh-Hans`。真实 CLI/TUI 进程证明 fresh noninteractive English、
+显式与 persisted `zh-Hans`、旧本地无语言配置迁移保持 `zh-Hans`、未知 locale fail
+closed；首次 TUI 双语选择经唯一 ConfigStore 持久化并在 restart 后稳定。PTY fixture
+不再隐式依赖旧 fresh-中文默认，而是把语言作为明确输入；canonical request、SQLite、
+route、recovery、multi-terminal、child 与 approval 断言保持不变。focused、fmt、strict
+Clippy、全 workspace test 均通过；没有 Key、官方 API、协议/State 版本、模型请求或
+计费变化。这只接受 localization owner 和解析契约；M17-E 的完整 human projection
+仍未完成。完整 evidence 和 catalog digest 见
+[M17-D DSE bilingual localization owner](../../eval/summaries/m17-d-dse-bilingual-localization-owner-2026-07-25.md)。
+
 #### bilingual UI gate
 
 - `en.json` 与 `zh-Hans.json` exact key/placeholder parity；

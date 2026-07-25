@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C 完成；M17-D next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C/D 完成；M17-E next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3500,6 +3500,17 @@ uninstall 通过，Linux arm64 以已缓存 Bookworm image、只读源码挂载�
 
 只支持 `en` 与 `zh-Hans`。不读取语言后调用模型，不恢复历史语言包，不增加语言插件、
 在线翻译、`/translate` 或 per-Run/per-Agent locale。
+
+M17-D 已在 `68f3aa739` 完成：`crates/localization` 现在是唯一语言 owner，两个 catalog
+各有 417 个完全相同的 key 和 named-placeholder multiset；CLI/TUI 只接受精确 `en`、
+`zh-Hans`，并按 explicit、persisted、旧本地迁移、first-run/fresh 环境的固定规则冻结
+process language。fresh noninteractive 为 English，旧 `.onboarded` DSE 且没有语言配置
+的安装保持 `zh-Hans`；fresh interactive TUI 的双语选择通过 canonical ConfigStore 写入
+`[ui].language`。真实进程、restart、PTY、focused、strict Clippy、workspace test、
+SIGKILL/reopen 和固定 actor route 门全部通过；没有 Key、官方 API、额外模型请求、协议
+或 Store 变化。M17-E 仍必须迁移剩余 hard-coded human projection，不能把本切片误报为
+全产品双语完成。完整证据见
+[M17-D DSE bilingual localization owner](../../eval/summaries/m17-d-dse-bilingual-localization-owner-2026-07-25.md)。
 
 #### M17-E：CLI/TUI/app-server 双语投影
 
