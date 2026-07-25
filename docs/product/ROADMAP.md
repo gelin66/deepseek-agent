@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B 完成；M17-C next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C 完成；M17-D next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3463,6 +3463,18 @@ sessions、tool outputs 与日志未冒充 canonical DSE state。完整证据见
   fixture lifecycle；
 - **cutover 删除**：旧 install link、artifact allowlist、CI command、temporary migration
   fixture 和旧 release reader。
+
+M17-C 已在 `fd23400ca` 完成：唯一 owner 为 `scripts/dse-delivery.sh`，manifest schema
+为 `dse.delivery.v1`，artifact/binary/install root 精确为 `dse-*`、`dse`/`dse-tui`
+和 `lib/dse`；`scripts/dev-dse.sh`、`scripts/test-dse-delivery.sh`、TUI hermetic
+runner、README/CONTRIBUTING/AGENTS 当前调用方和 GitHub Actions matrix 已全部迁移。
+旧 delivery/dev/test 文件名、旧 install link/root 生产能力与无消费者 M8-L release
+reader 已物理删除；frozen M8-L manifest/summary/result 仍作为历史事实保留并可从其被测
+revision 复算。macOS 同 revision locked/offline source package 的真实 install/verify/
+uninstall 通过，Linux arm64 以已缓存 Bookworm image、只读源码挂载和
+`--network none --pull never` 通过同一 upgrade/rollback fixture。私有远端 CI 的实际
+运行仍由 M17-H 发布门执行，不能由 workflow YAML 代替。完整证据见
+[M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
 
 最终 shipped binary set 严格为 `dse`、`dse-tui`；release package 中出现第三个可执行文件
 或旧名称即失败。

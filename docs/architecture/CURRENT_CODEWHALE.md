@@ -76,6 +76,7 @@
 - M14 typed observer conformance / M13 live path cutover：`7a9e2278`
 - M17-A DSE product/Cargo identity cutover：`89f1bb9f`
 - M17-B DSE config/state/protocol identity cutover：`2b6dd276d`
+- M17-C DSE locked/offline delivery and CI cutover：`fd23400ca`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2219,11 +2220,31 @@ M17-B 已把当前活动 config/state/protocol identity 硬切为 DSE：
 - frozen `DeepSeek Agent` 评测标题、历史 `codewhale.eval.*`/canonical JSON fixture、
   manifest、hash、summary/raw 与真实仓库路径仍保持原事实。它们是明确 allowlist，不是
   当前可调用产品面；
-- delivery/dev/CI 脚本仍使用旧活动文件名和 release path，由 M17-C 接管；因此整个
-  DSE release identity cutover 尚未完成。
+- M17-C 已把 delivery/dev/CI 当前 caller 切到 DSE；旧活动文件名、artifact/install
+  path 和 M8-L no-consumer release reader 已删除。
 
 完整证据见
 [M17-B DSE config/state/protocol identity](../../eval/summaries/m17-b-dse-config-protocol-identity-2026-07-25.md)。
+
+M17-C 当前交付事实：
+
+- 唯一 package/install/verify/rollback/uninstall owner 是
+  `scripts/dse-delivery.sh`；schema 是 `dse.delivery.v1`，binary set 是
+  `dse,dse-tui`，immutable install root 是 `lib/dse`；
+- `scripts/dev-dse.sh`、`scripts/test-dse-delivery.sh`、TUI hermetic runner、
+  current developer docs 和 `.github/workflows/ci.yml` 已迁移到 DSE；
+- old CodeWhale delivery/dev/test 文件名与 install root/link 不再有 current caller；
+  无消费者 M8-L release evaluator/test 已删除，frozen manifest/summary/result 仍保持
+  历史事实并可在旧 revision 获取其 runner；
+- current `fd23400ca` 在 macOS arm64 以 Rust 1.97.0、Cargo.lock 和 offline cache
+  建成 source package，安装后两项 binary 均报告同一 revision，verify/uninstall 通过；
+- Linux arm64 在已缓存 Bookworm image、network denied、source read-only 条件下通过
+  deterministic package/upgrade/rollback/uninstall fixture；
+- GitHub Actions 已配置 Linux/macOS 同一 owner，但尚未 push，私有远端 CI 真实结果仍
+  属于 M17-H 发布门。当前没有 tag、release 或 public visibility 变化。
+
+完整证据见
+[M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
 
 ## 7. 明确非结论
 

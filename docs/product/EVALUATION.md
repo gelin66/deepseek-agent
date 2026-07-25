@@ -2588,6 +2588,18 @@ reader、dual write 或第二 Store。一次性开发机迁移只 exact-copy 六
 frozen manifest、hash、summary/raw 与真实源码路径属于审计 allowlist，必须保持原事实；
 它们不是当前产品入口，也不得机械改写成 `DeepSeek Engineer`。
 
+M17-C delivery gate 已在 `fd23400ca` 通过：`dse.delivery.v1` 只允许
+`dse,dse-tui`，artifact、inner checksum、archive checksum、source revision/tree、
+Cargo.lock、Rust 1.97.0、target 与 immutable install root 全部绑定。macOS 对当前
+revision 完成真实 locked/offline package/install/binary/verify/uninstall；Linux arm64
+在已缓存 Bookworm image 中以 network denied、源码只读挂载运行同一 deterministic
+upgrade/rollback/uninstall fixture。tampered archive、tampered inner binary 与 wrong
+target 均 fail closed，卸载不修改 `DSE_HOME`。旧 script/link/root 和无消费者 M8-L
+reader 已从 current tree 删除；历史 M8-L manifest/summary/result 未改写。GitHub Actions
+已切到同一 DSE owner 和 Linux/macOS matrix，但私有远端执行证据仍属于 M17-H。本切片
+没有 Key、官方 DeepSeek API、push、tag 或 release。完整证据见
+[M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
+
 #### bilingual UI gate
 
 - `en.json` 与 `zh-Hans.json` exact key/placeholder parity；
