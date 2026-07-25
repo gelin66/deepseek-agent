@@ -1,0 +1,72 @@
+{
+  "schema": "codewhale.eval.m13-long-task-loss-baseline.v2",
+  "suite_id": "m13-long-task-loss-baseline-v2",
+  "frozen_at_utc": "2026-07-25T00:00:00Z",
+  "inherited_contract": {
+    "path": "eval/manifests/m13-long-task-loss-baseline-v1.json",
+    "file_sha256": "sha256:e5f436b9cff3252d5682cc4f35055367f60943a42dbb21d4e57707de46801b74",
+    "required_failure_sha256": "sha256:2be27b5c702c939499519ecb3dcf9c8b3bd49eb1e10489f60a3cc4e6babdd119",
+    "objective_sha256": "sha256:37d98d4c6cc0a7ba31351ec0c6fd75880a239d62d5af606a158c0ca0e5684d01"
+  },
+  "slice_contract": {
+    "real_problem": "The first two M13 acquisitions correctly stopped before the next arm but exposed two evaluator-contract mismatches: Writer allowed_paths were compared as ordered input rather than the Runtime-canonical set, and the frozen stale patch declared three old/new hunk lines while providing only two, so production correctly returned patch_parse before the intended workspace_precondition observation.",
+    "acceptance": [
+      "inherit every v1 source, authority, resource, tool, fixture and schedule fact by exact manifest hash",
+      "change only the typescript_patch_conflict objective and required_failure patch header from -1,3/+1,3 to the parse-valid -1,2/+1,2 form",
+      "prove through the crates/tools canonical owner that the corrected hunk body is structurally valid and its absent stale context maps to workspace_precondition without mutation",
+      "retain the canonical Writer allowed_paths set comparison while rejecting noncanonical, duplicate, missing or changed observed scope",
+      "exclude both stopped journals from product labels and start any successor acquisition from a new immutable candidate at position 1",
+      "stop before the next arm on unknown billing, incomplete accounting, false success, identity mismatch, observer ambiguity, or cost ceiling; never rerun, complete a mate, resume, resample, or splice"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the only corrected fixed-Pro acquisition and canonical trajectory Harness",
+    "production_delta": "none; v2 changes one frozen evaluator task argument and its exact observer contract",
+    "old_path_replaced_after_complete_cutover": [
+      "ordered equality for semantic Writer allowed_paths scope",
+      "the malformed -1,3/+1,3 stale patch task input"
+    ],
+    "failed_candidate_deletion": "if a fresh position-1 acquisition exposes another observer ambiguity, stop and close M13 as inadmissible rather than iteratively consuming paid samples",
+    "forbidden": [
+      "using either stopped journal as product evidence or an input to the successor report",
+      "continuation, mate completion, resampling, selective rerun, or historical raw splicing",
+      "production recovery implementation before one stable current loss repeats across at least two independent tasks"
+    ]
+  },
+  "correction": {
+    "observer_fix_revision": "4710d8e72ef091732dfedfc7e70abfba925b1651",
+    "excluded_journals": [
+      {
+        "path": "eval/results/m13-long-task-loss-c819d90b9bf8-v1.jsonl",
+        "file_sha256": "sha256:dd43a30232181713f4df8a326c4fcabef48c4b3c37fd5a476132aa9f7ea6cef0",
+        "size_bytes": 10149617,
+        "records": 21,
+        "stop_code": "false_success_observed",
+        "classification": "evaluator_writer_scope_order_mismatch"
+      },
+      {
+        "path": "eval/results/m13-long-task-loss-4710d8e72ef0-v2.jsonl",
+        "file_sha256": "sha256:c5f85cc052126a35d89ec5e15a962f2bde1e6060e477ef3e314215952732eee9",
+        "size_bytes": 25435709,
+        "records": 39,
+        "stop_code": "false_success_observed",
+        "classification": "evaluator_malformed_stale_patch_contract"
+      }
+    ],
+    "excluded_journals_are_inputs": false,
+    "successor_schedule_start_position": 1,
+    "maximum_reruns": 0
+  },
+  "task_overrides": {
+    "typescript_patch_conflict": {
+      "objective": "先读取 src/window.ts；第一次写调用必须精确使用 apply_patch 参数 {\"path\":\"src/window.ts\",\"fuzz\":0,\"patch\":\"@@ -1,2 +1,2 @@\\n-export function staleWindow(value: string): Window | null {\\n+export function parseWindow(value: string): Window | null {\\n   return null;\"}，观察 stale context 导致 typed workspace_precondition 且不得写盘；随后重读当前文件并修复 parseWindow（只接受 trim 后非负安全整数 start:end 且 start<=end）和 mergeWindows（排序并合并 overlap/adjacent，不修改输入），同时在 test/window.test.ts 新增 rejects malformed and reversed windows 与 merges overlap and adjacency without mutation，最后由冻结 verifier 验收。",
+      "required_failure": {
+        "tool": "apply_patch",
+        "failure_code": "workspace_precondition",
+        "parsed_arguments": {
+          "fuzz": 0,
+          "patch": "@@ -1,2 +1,2 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;",
+          "path": "src/window.ts"
+        }
+      }
+    }
+  }
+}

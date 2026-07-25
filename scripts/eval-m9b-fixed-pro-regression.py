@@ -62,12 +62,16 @@ def selected_campaign(arguments: list[str]) -> str:
 CAMPAIGN = selected_campaign(sys.argv[1:])
 CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m13"}
 if CAMPAIGN == "m13":
-    MANIFEST_PATH = ROOT / "eval/manifests/m13-long-task-loss-baseline-v1.json"
-    BASE_MANIFEST_PATH: Path | None = None
-    MANIFEST_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline.v1"
-    BASE_MANIFEST_SCHEMA: str | None = None
-    JOURNAL_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline-journal.v1"
-    ADMISSION_SCHEMA = "codewhale.eval.m13-long-task-loss-live-admission.v1"
+    MANIFEST_PATH = ROOT / "eval/manifests/m13-long-task-loss-baseline-v2.json"
+    BASE_MANIFEST_PATH: Path | None = (
+        ROOT / "eval/manifests/m13-long-task-loss-baseline-v1.json"
+    )
+    MANIFEST_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline.v2"
+    BASE_MANIFEST_SCHEMA: str | None = (
+        "codewhale.eval.m13-long-task-loss-baseline.v1"
+    )
+    JOURNAL_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline-journal.v2"
+    ADMISSION_SCHEMA = "codewhale.eval.m13-long-task-loss-live-admission.v2"
     RUN_API = 12
     EVENT_API = 18
     STATE_SCHEMA = 24
@@ -124,12 +128,12 @@ else:
     EXEC_STREAM = 3
 if CAMPAIGN == "m13":
     TRAJECTORY_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m13-long-task-loss-analysis-v1.json"
+        ROOT / "eval/manifests/m13-long-task-loss-analysis-v2.json"
     )
     TRAJECTORY_MANIFEST_SCHEMA = (
-        "codewhale.eval.m13-long-task-loss-analysis.v1"
+        "codewhale.eval.m13-long-task-loss-analysis.v2"
     )
-    TRAJECTORY_REPORT_SCHEMA = "codewhale.eval.m13-long-task-loss-report.v1"
+    TRAJECTORY_REPORT_SCHEMA = "codewhale.eval.m13-long-task-loss-report.v2"
 elif CAMPAIGN == "m12":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT
@@ -285,10 +289,105 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
     return value
 
 
+def load_m13_successor_manifest() -> dict[str, Any]:
+    require(
+        BASE_MANIFEST_PATH is not None
+        and BASE_MANIFEST_SCHEMA is not None,
+        "base_manifest_unavailable",
+    )
+    successor = read_json_object(MANIFEST_PATH, "manifest_unavailable")
+    require(
+        set(successor)
+        == {
+            "schema",
+            "suite_id",
+            "frozen_at_utc",
+            "inherited_contract",
+            "slice_contract",
+            "correction",
+            "task_overrides",
+        }
+        and successor.get("schema") == MANIFEST_SCHEMA,
+        "manifest_schema_invalid",
+    )
+    inherited = successor.get("inherited_contract")
+    require(
+        isinstance(inherited, dict)
+        and inherited.get("path")
+        == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
+        and inherited.get("file_sha256") == file_hash(BASE_MANIFEST_PATH),
+        "inherited_manifest_identity_invalid",
+    )
+    base = read_json_object(
+        BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
+    )
+    require(
+        base.get("schema") == BASE_MANIFEST_SCHEMA,
+        "inherited_manifest_schema_invalid",
+    )
+    tasks = base.get("tasks")
+    require(isinstance(tasks, dict), "inherited_task_identity_invalid")
+    base_task = tasks.get("typescript_patch_conflict")
+    require(
+        isinstance(base_task, dict)
+        and inherited.get("required_failure_sha256")
+        == canonical_hash(base_task.get("required_failure"))
+        and inherited.get("objective_sha256")
+        == canonical_hash(base_task.get("objective")),
+        "inherited_task_identity_invalid",
+    )
+    overrides = successor.get("task_overrides")
+    require(
+        isinstance(overrides, dict)
+        and set(overrides) == {"typescript_patch_conflict"}
+        and isinstance(overrides["typescript_patch_conflict"], dict)
+        and set(overrides["typescript_patch_conflict"])
+        == {"objective", "required_failure"},
+        "task_override_invalid",
+    )
+    override = overrides["typescript_patch_conflict"]
+    require(
+        override.get("required_failure")
+        == {
+            "tool": "apply_patch",
+            "failure_code": "workspace_precondition",
+            "parsed_arguments": {
+                "path": "src/window.ts",
+                "fuzz": 0,
+                "patch": (
+                    "@@ -1,2 +1,2 @@\n"
+                    "-export function staleWindow(value: string): "
+                    "Window | null {\n"
+                    "+export function parseWindow(value: string): "
+                    "Window | null {\n"
+                    "   return null;"
+                ),
+            },
+        }
+        and isinstance(override.get("objective"), str)
+        and "@@ -1,2 +1,2 @@" in override["objective"]
+        and "@@ -1,3 +1,3 @@" not in override["objective"],
+        "task_override_invalid",
+    )
+    materialized = json.loads(json.dumps(base, ensure_ascii=False))
+    materialized["schema"] = successor["schema"]
+    materialized["suite_id"] = successor["suite_id"]
+    materialized["frozen_at_utc"] = successor["frozen_at_utc"]
+    materialized["inherited_contract"] = inherited
+    materialized["slice_contract"] = successor["slice_contract"]
+    materialized["correction"] = successor["correction"]
+    materialized["tasks"]["typescript_patch_conflict"].update(override)
+    return materialized
+
+
 def load_manifest() -> dict[str, Any]:
     require(CAMPAIGN in {"m9c", "m11", "m12", "m13"}, "campaign_invalid")
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
-        manifest = read_json_object(MANIFEST_PATH, "manifest_unavailable")
+        manifest = (
+            load_m13_successor_manifest()
+            if CAMPAIGN == "m13"
+            else read_json_object(MANIFEST_PATH, "manifest_unavailable")
+        )
         require(
             manifest.get("schema") == MANIFEST_SCHEMA,
             "manifest_schema_invalid",
