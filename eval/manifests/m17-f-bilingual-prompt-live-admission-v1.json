@@ -1,0 +1,110 @@
+{
+  "schema": "dse.eval.m17-f-bilingual-prompt-live-admission.v1",
+  "admitted_at_utc": "2026-07-25T12:20:01Z",
+  "contract_manifest": "eval/manifests/m17-f-bilingual-prompt-ab-v1.json",
+  "contract_manifest_sha256": "sha256:4ae0006861aa960ebf4a558c4bd2c022f1ab5192dd92b8724d01822b2e86ebc2",
+  "inherited_contract_manifest": "eval/manifests/m15-product-loss-acquisition-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:60749ac1e3f73f3bfce87914a3f9890a1e3f06567d50b1093f25caab419549ce",
+  "candidate_revision": "a978fb8eef2b600493f2cfc927ecc65e2fe83198",
+  "candidate_tree": "ea764c1cf497db4e547b019897b9be59b9efed06",
+  "candidate_binary": "/private/tmp/dse-m17-target/debug/dse",
+  "candidate_binary_sha256": "sha256:fd1b606ce3bbef2d54eec9373f266b8c5bf0d24105831a362aef8f624fa91543",
+  "candidate_binary_size_bytes": 78690056,
+  "candidate_binary_version": "dse 0.8.68 (a978fb8eef2b)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:d67e8af011374212d6fb9fe451664655628baec8fd47ee13a675811ddd90d956",
+  "schedule_sha256": "sha256:869434cd0d78d12b103bff5f00806f53ed47a5de703278d23acccaa0d0f5d352",
+  "task_contracts_sha256": "sha256:03cd40da1653fb2e999885351c35baefa767eaf9436da0276b2bf9dc51a5b8cf",
+  "verifier_environment_contract_sha256": "sha256:e83d430fab48b1640101370ad8eb3e99a3517b0beb1e5101829d60c80704cc26",
+  "prompt_contract_sha256": "sha256:24649cd5795baf14be775de8b4964fec3772300a2cdda0598da13ea4d822a837",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": true,
+    "treatment": "DSE-owned system prompt expression language only"
+  },
+  "offline_gates": [
+    {
+      "gate": "M17-F fixture, bilingual task contract, prompt identity, balanced schedule, hash-chain and four SIGKILL Harness windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "all eight initial verifiers fail without tree mutation; the frozen reference patch makes seven positive families pass while the safety family remains failing",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "same immutable DSE binary exposes only the guarded en or zh-Hans prompt delta while model, reasoning, tools, budgets, actor profiles and verifier remain fixed",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-dse.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "immutable DSE binary and credential-free M17-F dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "live_contract": {
+    "formal_tasks": 16,
+    "runs_per_task": 4,
+    "formal_arms": 64,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.15,
+    "block_known_cost_ceiling_usd": 4.8,
+    "suite_known_cost_ceiling_usd": 9.6,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_quality_veto": true,
+    "output": "eval/raw/m17-f-bilingual-prompt-ab-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-25",
+  "official_sources": [
+    "https://api-docs.deepseek.com/",
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
