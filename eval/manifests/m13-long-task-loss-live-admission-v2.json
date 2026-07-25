@@ -1,0 +1,137 @@
+{
+  "schema": "codewhale.eval.m13-long-task-loss-live-admission.v1",
+  "admitted_at_utc": "2026-07-25T04:02:20Z",
+  "contract_manifest": "eval/manifests/m13-long-task-loss-baseline-v1.json",
+  "contract_manifest_sha256": "sha256:e5f436b9cff3252d5682cc4f35055367f60943a42dbb21d4e57707de46801b74",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "candidate_revision": "4710d8e72ef091732dfedfc7e70abfba925b1651",
+  "candidate_tree": "6837cbf2c446a886754695e3476f4123250825d0",
+  "candidate_binary": "/private/tmp/codewhale-m13-target/release/codewhale",
+  "candidate_binary_sha256": "sha256:821a65d3184de67de567429c43fe76cc35338628edbb7a6ed5a4d13ab9db47e7",
+  "candidate_binary_size_bytes": 15413536,
+  "candidate_binary_version": "codewhale 0.8.68 (4710d8e72ef0)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:e9f775f15909a73f7a80ec4903c6de60a016cb38a976ea3047091d37cf3f0bcd",
+  "schedule_sha256": "sha256:f9f6378a71e9906448b4cc1dcc9436dcebc1e918c28e1b0ebb0d68ea2b87fba3",
+  "task_contracts_sha256": "sha256:4c099b831a4b672a7040c0e84fe0a2324834a1d1b3182e31806f838261897fde",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:b25a330e149723ab06a8612927fb1cace1fd59aa85ecfcc87e27019a9f08e81b",
+  "freeze_report_sha256": "sha256:ccd87b4e662eb58de2454d4c6260ab16cbd7b4b087d6cb8bac1a4079553ca8ee",
+  "dry_run_sha256": "sha256:80b1a79b26e1067906152cbf01cb5e52f8fc72558fb15965f62005c37d814665",
+  "supersedes_admission": "eval/manifests/m13-long-task-loss-live-admission-v1.json",
+  "excluded_prior_journal": {
+    "path": "eval/results/m13-long-task-loss-c819d90b9bf8-v1.jsonl",
+    "file_sha256": "sha256:dd43a30232181713f4df8a326c4fcabef48c4b3c37fd5a476132aa9f7ea6cef0",
+    "size_bytes": 10149617,
+    "records": 21,
+    "result": "inadmissible_evaluator_writer_scope_order_mismatch",
+    "used_as_input": false,
+    "continued": false
+  },
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new position-1 six-task acquisition after correcting only the Harness writer allowed_paths canonical-order observer"
+  },
+  "offline_gates": [
+    {
+      "gate": "prior journal stopped before arm 4 and is excluded rather than resumed, completed, or spliced",
+      "result": "pass",
+      "key_accessed": true,
+      "network_accessed": true
+    },
+    {
+      "gate": "canonical Writer assignment proves identical allowed_paths set with production-sorted observation; v1 false-success label is an evaluator mismatch",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M13 self-test rejects missing, duplicate, noncanonical observed, and changed Writer scopes while accepting canonical set equality",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M9-C, M11, M12 and M13 campaign compatibility self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production fixed route, root/read-only/Writer, verifier recovery, RunStore exact reopen, process SIGKILL, CLI/TUI/API loopbacks",
+      "result": "pass"
+    },
+    {
+      "gate": "production release binary rebuild and credential-free M13 Harness dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "rust_crossfile_proxy": "sha256:c21661798d03cec5fb8034a352211af9abc7d46eee4a92f40e78724eda859c6e",
+    "typescript_crossfile_cursor": "sha256:b62d53d75070dd9ea38a3ee4bc286dd5ee7f278a109f975f7ef36204491c1c4a",
+    "python_verifier_recovery": "sha256:ac560e3069038b7230ac3d340789789f9c837edea6e56beb725b2d779d35f4fc",
+    "python_ambiguous_edit": "sha256:0a0c2df074bb1e0634f42eabdd50ec004e4e823186313eb43d65cc49c5a261cb",
+    "typescript_patch_conflict": "sha256:36ee63c31ff7c38a2f17a361d21af324d66d577c8803b6476324adc3829bea03",
+    "writer_config_migration": "sha256:0ce707b4096b34814a136a7eeb4005eff5b9225fab98736451b48f3ad532da15"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 3,
+    "formal_arms": 18,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.18,
+    "suite_known_cost_ceiling_usd": 3.24,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "output": "eval/results/m13-long-task-loss-4710d8e72ef0-v2.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": true,
+    "official_api_requests_before_admission": 35
+  },
+  "official_protocol_revalidated_on": "2026-07-25",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
