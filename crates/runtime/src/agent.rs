@@ -5486,7 +5486,7 @@ fn child_handoff(state: &RunState, outcome: &AgentOutcome) -> String {
         .to_string()
     });
     format!(
-        "<codewhale:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</codewhale:runtime_event>",
+        "<dse:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</dse:runtime_event>",
         outcome.run_id
     )
 }
@@ -5503,7 +5503,7 @@ fn readonly_child_handoff(state: &RunState, outcome: &AgentOutcome) -> String {
         "summary": outcome.details.summary,
     });
     format!(
-        "<codewhale:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</codewhale:runtime_event>",
+        "<dse:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</dse:runtime_event>",
         outcome.run_id
     )
 }

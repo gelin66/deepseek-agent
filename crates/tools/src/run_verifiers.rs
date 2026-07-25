@@ -1431,7 +1431,7 @@ mod tests {
         let workspace = initialized_workspace();
         let context = ProductionToolContext::new(workspace.path());
         let outcome = execute_run_verifiers(
-            json!({"commands": [{"name": "missing", "program": "codewhale-program-that-does-not-exist"}]}),
+            json!({"commands": [{"name": "missing", "program": "dse-program-that-does-not-exist"}]}),
             &context,
             &shell(workspace.path()),
         )

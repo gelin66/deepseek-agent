@@ -93,7 +93,7 @@ impl HarnessBuilder {
         }
         if let Some(home) = self.seal_home.as_deref() {
             std::fs::create_dir_all(home).context("create sealed HOME")?;
-            let dse_config = home.join(".codewhale").join("config.toml");
+            let dse_config = home.join(".dse").join("config.toml");
             builder = builder
                 .env("HOME", home.to_string_lossy())
                 .env("XDG_CONFIG_HOME", home.join(".config").to_string_lossy())
@@ -104,7 +104,7 @@ impl HarnessBuilder {
                 // fixed to Simplified Chinese and does not derive from locale.
                 .env("LANG", "en_US.UTF-8")
                 .env("LC_ALL", "en_US.UTF-8")
-                .env("CODEWHALE_CONFIG_PATH", dse_config.to_string_lossy());
+                .env("DSE_CONFIG_PATH", dse_config.to_string_lossy());
         }
         for (k, v) in &self.env {
             builder = builder.env(k, v);
@@ -253,7 +253,7 @@ pub fn make_sealed_workspace() -> Result<SealedWorkspace> {
     let workspace = tmp.path().join("workspace");
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&workspace).context("mkdir workspace")?;
-    std::fs::create_dir_all(home.join(".codewhale")).context("mkdir home/.codewhale")?;
+    std::fs::create_dir_all(home.join(".dse")).context("mkdir home/.dse")?;
     Ok(SealedWorkspace {
         _tmp: tmp,
         workspace,
@@ -275,6 +275,6 @@ impl SealedWorkspace {
         &self.home
     }
     pub fn user_skills_dir(&self) -> PathBuf {
-        self.home.join(".codewhale").join("skills")
+        self.home.join(".dse").join("skills")
     }
 }

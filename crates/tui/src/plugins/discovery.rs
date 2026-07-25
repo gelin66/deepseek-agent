@@ -8,9 +8,9 @@ const PLUGIN_MANIFEST: &str = "plugin.toml";
 const OVERRIDES_FILE: &str = "overrides.json";
 
 pub fn default_user_plugins_dir() -> PathBuf {
-    dse_config::codewhale_home()
+    dse_config::dse_home()
         .map(|p| p.join("plugins"))
-        .unwrap_or_else(|_| PathBuf::from("/tmp/codewhale/plugins"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/dse/plugins"))
 }
 
 /// Path of the JSON file that records `/plugin enable|disable` choices so they
@@ -109,11 +109,11 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn default_user_plugins_dir_uses_explicit_codewhale_home() {
+    fn default_user_plugins_dir_uses_explicit_dse_home() {
         let _env_lock = crate::test_support::lock_test_env();
         let tmp = TempDir::new().expect("tempdir");
-        let home = tmp.path().join("codewhale-home");
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let home = tmp.path().join("dse-home");
+        let _home = crate::test_support::EnvVarGuard::set("DSE_HOME", home.as_os_str());
 
         assert_eq!(default_user_plugins_dir(), home.join("plugins"));
         assert_eq!(

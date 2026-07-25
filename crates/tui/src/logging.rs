@@ -27,7 +27,7 @@ pub fn restore_verbose_state() {
     set_verbose(VERBOSE_SNAPSHOT.load(Ordering::SeqCst));
 }
 
-/// Return true when `CODEWHALE_LOG_LEVEL` requests verbose output.
+/// Return true when `DSE_LOG_LEVEL` requests verbose output.
 ///
 /// Note: `RUST_LOG` is intentionally NOT checked here — it controls the
 /// `tracing` subscriber filter in `runtime_log.rs` (file logging) and
@@ -36,7 +36,7 @@ pub fn restore_verbose_state() {
 /// messages to leak into the TUI alt-screen.
 #[must_use]
 pub fn env_requests_verbose_logging() -> bool {
-    std::env::var("CODEWHALE_LOG_LEVEL")
+    std::env::var("DSE_LOG_LEVEL")
         .ok()
         .is_some_and(|value| log_value_enables_verbose(&value))
 }

@@ -76,11 +76,11 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
 
     let isolated = TempDir::new().expect("isolated canonical TUI root");
     let workspace = isolated.path().join("workspace");
-    let codewhale_home = isolated.path().join("home/.codewhale");
-    let skills_dir = codewhale_home.join("skills");
+    let dse_home = isolated.path().join("home/.dse");
+    let skills_dir = dse_home.join("skills");
     std::fs::create_dir_all(&workspace).expect("create workspace");
     std::fs::create_dir_all(&skills_dir).expect("create isolated DSE home");
-    let state_path = codewhale_home.join("state.db");
+    let state_path = dse_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(&workspace)
         .expect("canonical workspace")
         .display()

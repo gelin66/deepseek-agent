@@ -1,6 +1,6 @@
 //! Settings system - Persistent user preferences
 //!
-//! Settings are stored at ~/.codewhale/settings.toml.
+//! Settings are stored at ~/.dse/settings.toml.
 
 use std::path::PathBuf;
 
@@ -179,7 +179,7 @@ impl Settings {
 
     /// Get the canonical settings file path.
     ///
-    /// New writes should target `~/.codewhale/settings.toml`. Legacy
+    /// New writes should target `~/.dse/settings.toml`. Legacy
     /// DeepSeek-branded paths remain readable as fallbacks during load.
     pub fn path() -> Result<PathBuf> {
         dse_config::settings_path()
@@ -1110,46 +1110,46 @@ mod tests {
     }
 
     #[test]
-    fn settings_path_defaults_to_codewhale_home_for_new_writes() {
+    fn settings_path_defaults_to_dse_home_for_new_writes() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let _config_override = EnvVarRestore::remove("CODEWHALE_CONFIG_PATH");
-        let _codewhale_home = EnvVarRestore::set("CODEWHALE_HOME", tmp.path().join(".codewhale"));
+        let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
+        let _dse_home = EnvVarRestore::set("DSE_HOME", tmp.path().join(".dse"));
         let _home = EnvVarRestore::set("HOME", tmp.path());
 
         let got = Settings::path().expect("settings path");
 
-        assert_eq!(got, tmp.path().join(".codewhale").join("settings.toml"));
+        assert_eq!(got, tmp.path().join(".dse").join("settings.toml"));
     }
 
     #[test]
-    fn settings_path_prefers_codewhale_home_even_when_legacy_exists() {
+    fn settings_path_prefers_dse_home_even_when_legacy_exists() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
         let legacy_dir = tmp.path().join(".deepseek");
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
         std::fs::write(legacy_dir.join("settings.toml"), "low_motion = true\n")
             .expect("legacy settings");
-        let _config_override = EnvVarRestore::remove("CODEWHALE_CONFIG_PATH");
-        let _codewhale_home = EnvVarRestore::set("CODEWHALE_HOME", tmp.path().join(".codewhale"));
+        let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
+        let _dse_home = EnvVarRestore::set("DSE_HOME", tmp.path().join(".dse"));
         let _home = EnvVarRestore::set("HOME", tmp.path());
 
         let got = Settings::path().expect("settings path");
 
-        assert_eq!(got, tmp.path().join(".codewhale").join("settings.toml"));
+        assert_eq!(got, tmp.path().join(".dse").join("settings.toml"));
     }
 
     #[test]
     fn settings_load_ignores_legacy_home_without_mutation() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let primary = tmp.path().join(".codewhale").join("settings.toml");
+        let primary = tmp.path().join(".dse").join("settings.toml");
         let legacy_dir = tmp.path().join(".deepseek");
         let legacy_home = legacy_dir.join("settings.toml");
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
         std::fs::write(&legacy_home, "low_motion = true\n").expect("legacy settings");
-        let _config_override = EnvVarRestore::remove("CODEWHALE_CONFIG_PATH");
-        let _codewhale_home = EnvVarRestore::remove("CODEWHALE_HOME");
+        let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
+        let _dse_home = EnvVarRestore::remove("DSE_HOME");
         let _home = EnvVarRestore::set("HOME", tmp.path());
 
         let loaded = Settings::load_persisted().expect("load persisted settings");
@@ -1163,10 +1163,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_ignores_legacy_files_when_codewhale_home_is_set() {
+    fn settings_load_ignores_legacy_files_when_dse_home_is_set() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let explicit_home = tmp.path().join("isolated-codewhale");
+        let explicit_home = tmp.path().join("isolated-dse");
         let legacy_dir = tmp.path().join(".deepseek");
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
         std::fs::write(
@@ -1174,23 +1174,23 @@ mod tests {
             "theme = \"dracula\"\ncomposer_density = \"spacious\"\n",
         )
         .expect("legacy settings");
-        let _config_override = EnvVarRestore::remove("CODEWHALE_CONFIG_PATH");
-        let _codewhale_home = EnvVarRestore::set("CODEWHALE_HOME", &explicit_home);
+        let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
+        let _dse_home = EnvVarRestore::set("DSE_HOME", &explicit_home);
         let _home = EnvVarRestore::set("HOME", tmp.path());
 
         let loaded = Settings::load().expect("load settings");
 
         assert_eq!(
             loaded.theme, "system",
-            "explicit CODEWHALE_HOME must not inherit ambient legacy settings"
+            "explicit DSE_HOME must not inherit ambient legacy settings"
         );
         assert_eq!(
             loaded.composer_density, "comfortable",
-            "explicit CODEWHALE_HOME must not inherit ambient legacy settings"
+            "explicit DSE_HOME must not inherit ambient legacy settings"
         );
         assert!(
             !explicit_home.join("settings.toml").exists(),
-            "ambient legacy settings must not be migrated into explicit CODEWHALE_HOME"
+            "ambient legacy settings must not be migrated into explicit DSE_HOME"
         );
     }
 }

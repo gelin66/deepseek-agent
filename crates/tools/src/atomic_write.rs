@@ -88,11 +88,10 @@ fn write_atomic_inner(
 
 #[cfg(test)]
 fn maybe_stop_for_crash_fixture(stage: &str) {
-    if std::env::var("CODEWHALE_M7C_ATOMIC_STOP_STAGE").as_deref() != Ok(stage) {
+    if std::env::var("DSE_M7C_ATOMIC_STOP_STAGE").as_deref() != Ok(stage) {
         return;
     }
-    let marker =
-        std::env::var_os("CODEWHALE_M7C_ATOMIC_MARKER").expect("M7-C atomic crash marker path");
+    let marker = std::env::var_os("DSE_M7C_ATOMIC_MARKER").expect("M7-C atomic crash marker path");
     std::fs::write(marker, stage).expect("publish M7-C atomic crash marker");
     loop {
         std::thread::park_timeout(std::time::Duration::from_secs(1));
@@ -181,11 +180,11 @@ mod tests {
     #[test]
     #[ignore = "external crash child"]
     fn m7c_atomic_write_crash_child() {
-        if std::env::var("CODEWHALE_M7C_ATOMIC_CHILD").as_deref() != Ok("1") {
+        if std::env::var("DSE_M7C_ATOMIC_CHILD").as_deref() != Ok("1") {
             return;
         }
         let path = std::path::PathBuf::from(
-            std::env::var_os("CODEWHALE_M7C_ATOMIC_TARGET").expect("atomic target"),
+            std::env::var_os("DSE_M7C_ATOMIC_TARGET").expect("atomic target"),
         );
         write_atomic(&path, b"new\n").expect("atomic child write");
     }
@@ -209,10 +208,10 @@ mod tests {
                     "atomic_write::tests::m7c_atomic_write_crash_child",
                     "--nocapture",
                 ])
-                .env("CODEWHALE_M7C_ATOMIC_CHILD", "1")
-                .env("CODEWHALE_M7C_ATOMIC_STOP_STAGE", stage)
-                .env("CODEWHALE_M7C_ATOMIC_MARKER", &marker)
-                .env("CODEWHALE_M7C_ATOMIC_TARGET", &target)
+                .env("DSE_M7C_ATOMIC_CHILD", "1")
+                .env("DSE_M7C_ATOMIC_STOP_STAGE", stage)
+                .env("DSE_M7C_ATOMIC_MARKER", &marker)
+                .env("DSE_M7C_ATOMIC_TARGET", &target)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()

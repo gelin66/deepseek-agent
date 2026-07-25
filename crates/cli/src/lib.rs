@@ -142,7 +142,7 @@ Transports:
   dse app-server                     HTTP/SSE Run API on 127.0.0.1:7878
   dse app-server --stdio             Canonical newline Run API on stdio
 
-HTTP requires --auth-token (or CODEWHALE_APP_SERVER_TOKEN) unless the user
+HTTP requires --auth-token (or DSE_APP_SERVER_TOKEN) unless the user
 explicitly selects --insecure-no-auth on a loopback address.")]
     AppServer(AppServerArgs),
     /// Generate shell completions.
@@ -1215,7 +1215,7 @@ fn production_application_config(
 }
 
 fn app_server_token_from_env() -> Option<String> {
-    std::env::var("CODEWHALE_APP_SERVER_TOKEN").ok()
+    std::env::var("DSE_APP_SERVER_TOKEN").ok()
 }
 
 fn delegate_to_tui(
@@ -1335,31 +1335,31 @@ fn build_tui_command_with_paths(
         cmd.env("DEEPSEEK_MODEL", model);
     }
     if let Some(output_mode) = cli.output_mode.as_ref() {
-        cmd.env("CODEWHALE_OUTPUT_MODE", output_mode);
+        cmd.env("DSE_OUTPUT_MODE", output_mode);
     }
     if let Some(v) = verbosity.as_ref() {
-        cmd.env("CODEWHALE_VERBOSITY", v);
-        cmd.env("CODEWHALE_VERBOSITY", v);
+        cmd.env("DSE_VERBOSITY", v);
+        cmd.env("DSE_VERBOSITY", v);
     }
     if let Some(log_level) = cli.log_level.as_ref() {
-        cmd.env("CODEWHALE_LOG_LEVEL", log_level);
+        cmd.env("DSE_LOG_LEVEL", log_level);
     }
     if let Some(telemetry) = cli.telemetry {
-        cmd.env("CODEWHALE_TELEMETRY", telemetry.to_string());
+        cmd.env("DSE_TELEMETRY", telemetry.to_string());
     }
     if let Some(policy) = cli.approval_policy.as_ref() {
-        cmd.env("CODEWHALE_APPROVAL_POLICY", policy);
+        cmd.env("DSE_APPROVAL_POLICY", policy);
     }
     if let Some(mode) = cli.sandbox_mode.as_ref() {
-        cmd.env("CODEWHALE_SANDBOX_MODE", mode);
+        cmd.env("DSE_SANDBOX_MODE", mode);
     }
     if cli.yolo {
-        cmd.env("CODEWHALE_YOLO", "true");
+        cmd.env("DSE_YOLO", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
         // Carry the explicit DeepSeek secret through the source-marked slot so
         // the TUI applies the same precedence without persisting it.
-        cmd.env("CODEWHALE_CLI_API_KEY", api_key);
+        cmd.env("DSE_CLI_API_KEY", api_key);
         cmd.env("DEEPSEEK_API_KEY", api_key);
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }

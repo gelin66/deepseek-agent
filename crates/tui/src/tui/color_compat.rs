@@ -18,8 +18,8 @@ use ratatui::{
 
 use crate::palette::{self, ColorDepth, PaletteMode, ThemeId, UiTheme};
 
-const RENDER_DEBUG_ENV: &str = "CODEWHALE_TUI_DEBUG";
-const ASCII_SAFE_ENV: &str = "CODEWHALE_ASCII_SAFE";
+const RENDER_DEBUG_ENV: &str = "DSE_TUI_DEBUG";
+const ASCII_SAFE_ENV: &str = "DSE_ASCII_SAFE";
 const RENDER_DEBUG_SAMPLE_LIMIT: usize = 24;
 
 #[derive(Debug)]
@@ -607,11 +607,7 @@ mod tests {
         cell.set_symbol("x");
         backend.draw(std::iter::once((3, 4, &cell))).unwrap();
 
-        let log_path = tmp
-            .path()
-            .join(".codewhale")
-            .join("logs")
-            .join("tui-render.log");
+        let log_path = tmp.path().join(".dse").join("logs").join("tui-render.log");
         let body = fs::read_to_string(log_path).expect("render debug log");
         assert!(body.contains("frame=1"), "{body}");
         assert!(body.contains("diff_cells=1"), "{body}");

@@ -71,8 +71,8 @@ Real-terminal QA gotchas (learned the hard way):
   *inside* whatever modal just opened. Send one key, wait, capture.
 - Judge motion from repeated captures diffed over time, never single
   screenshots. Layout gates: 40x12, 60x16, 80x24, 100x32, 140x40.
-- `CODEWHALE_TUI_DEBUG=1` writes per-frame diff sizes to
-  `~/.codewhale/logs/tui-render.log`. Streaming should be tens of cells per
+- `DSE_TUI_DEBUG=1` writes per-frame diff sizes to
+  `~/.dse/logs/tui-render.log`. Streaming should be tens of cells per
   frame; a multi-thousand-cell frame is only acceptable on a genuine
   layout transition.
 

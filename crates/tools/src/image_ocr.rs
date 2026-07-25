@@ -40,7 +40,7 @@ pub fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
     }
 
     Err(ToolError::execution_failed(
-        "image_ocr: no local OCR backend is available. On macOS, update to a version with the Vision framework; on Linux/Windows install tesseract and restart codewhale.",
+        "image_ocr: no local OCR backend is available. On macOS, update to a version with the Vision framework; on Linux/Windows install tesseract and restart dse.",
     ))
 }
 
@@ -288,7 +288,7 @@ mod tests {
         let image = workspace.path().join("image.png");
         std::fs::write(&image, b"not an image").expect("fixture");
         let error =
-            ocr_with_tesseract("codewhale-missing-tesseract", &image).expect_err("missing binary");
+            ocr_with_tesseract("dse-missing-tesseract", &image).expect_err("missing binary");
         assert!(error.to_string().contains("failed to launch tesseract"));
     }
 }

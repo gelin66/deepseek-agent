@@ -195,7 +195,7 @@ impl SandboxPolicy {
                 vec![WritableRoot {
                     read_only_subpaths: vec![
                         root.join(".git"),
-                        root.join(".codewhale"),
+                        root.join(".dse"),
                         root.join(".deepseek"),
                     ],
                     root,
@@ -245,10 +245,10 @@ impl SandboxPolicy {
                     .map(|root| {
                         let mut read_only_subpaths = Vec::new();
 
-                        // Protect .codewhale/ and .deepseek/ directories from modification
-                        let codewhale_dir = root.join(".codewhale");
-                        if codewhale_dir.is_dir() {
-                            read_only_subpaths.push(codewhale_dir);
+                        // Protect .dse/ and .deepseek/ directories from modification
+                        let dse_dir = root.join(".dse");
+                        if dse_dir.is_dir() {
+                            read_only_subpaths.push(dse_dir);
                         }
                         let deepseek_dir = root.join(".deepseek");
                         if deepseek_dir.is_dir() {
@@ -535,7 +535,7 @@ mod tests {
         assert!(root.is_path_writable(&canonical_worktree.join("src/lib.rs")));
         assert!(!root.is_path_writable(&canonical_worktree.join(".git")));
         assert!(!root.is_path_writable(&canonical_worktree.join(".git/index")));
-        assert!(!root.is_path_writable(&canonical_worktree.join(".codewhale/state")));
+        assert!(!root.is_path_writable(&canonical_worktree.join(".dse/state")));
         assert!(!root.is_path_writable(&canonical_worktree.join(".deepseek/config")));
 
         for forbidden in [

@@ -46,12 +46,12 @@ use rusqlite::{Connection, params};
 use serde_json::json;
 use tempfile::TempDir;
 
-const CHILD_SCENARIO: &str = "CODEWHALE_CRASH_TEST_SCENARIO";
-const CHILD_DB: &str = "CODEWHALE_CRASH_TEST_DB";
-const CHILD_MODEL_MARKER: &str = "CODEWHALE_CRASH_TEST_MODEL_MARKER";
-const CHILD_TOOL_MARKER: &str = "CODEWHALE_CRASH_TEST_TOOL_MARKER";
-const CHILD_ABORT_MARKER: &str = "CODEWHALE_CRASH_TEST_ABORT_MARKER";
-const CHILD_WRITER_MARKER: &str = "CODEWHALE_CRASH_TEST_WRITER_MARKER";
+const CHILD_SCENARIO: &str = "DSE_CRASH_TEST_SCENARIO";
+const CHILD_DB: &str = "DSE_CRASH_TEST_DB";
+const CHILD_MODEL_MARKER: &str = "DSE_CRASH_TEST_MODEL_MARKER";
+const CHILD_TOOL_MARKER: &str = "DSE_CRASH_TEST_TOOL_MARKER";
+const CHILD_ABORT_MARKER: &str = "DSE_CRASH_TEST_ABORT_MARKER";
+const CHILD_WRITER_MARKER: &str = "DSE_CRASH_TEST_WRITER_MARKER";
 const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
 const CREATE_COMMAND_SHA256: &str = "sha256:process-crash-create-payload";
@@ -68,8 +68,8 @@ const WRITER_DIRTY_REVISION: &str =
 const WRITER_SEALED_SCOPE_REVISION: &str =
     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-const WRITER_ROOT_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-root";
-const WRITER_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-owned";
+const WRITER_ROOT_WORKSPACE: &str = "/tmp/dse-process-crash-writer-root";
+const WRITER_WORKSPACE: &str = "/tmp/dse-process-crash-writer-owned";
 const WRITER_BRANCH: &str = "dse/writer/process-crash";
 const WRITER_OWNER: &str = "process-crash-writer-owner";
 const WRITER_WRITE_TOOL: &str = "writer_write";
@@ -78,7 +78,7 @@ const WRITER_VERIFY_TOOL: &str = "run_tests";
 fn creation_intent() -> dse_runtime::CreationIntent {
     let command = StartRunCommand {
         task: TaskDefinition::host("执行进程恢复测试"),
-        workspace: "/tmp/codewhale-process-crash-test".to_owned(),
+        workspace: "/tmp/dse-process-crash-test".to_owned(),
         model: Some("deepseek-v4-pro".to_owned()),
         reasoning_effort: ReasoningEffort::default(),
         max_output_tokens: None,
@@ -1656,7 +1656,7 @@ fn runtime_request() -> RunRequest {
     );
     request.run_id = Some(RunId::from(RUN_ID));
     request.model = "deepseek-test".to_owned();
-    request.environment.workspace = "/tmp/codewhale-process-crash-test".to_owned();
+    request.environment.workspace = "/tmp/dse-process-crash-test".to_owned();
     request.limits.max_turns = 4;
     request.limits.max_model_requests = 4;
     request.limits.max_tool_calls = 4;
@@ -4969,7 +4969,7 @@ async fn creation_reservation_sigkill_before_run_created_reuses_identity_and_cre
     assert!(retried.reservation.intent.is_some());
     assert_eq!(
         store
-            .list_pending_creations("/tmp/codewhale-process-crash-test", 10)
+            .list_pending_creations("/tmp/dse-process-crash-test", 10)
             .await
             .expect("list pending creation after SIGKILL"),
         vec![retried.reservation.clone()]

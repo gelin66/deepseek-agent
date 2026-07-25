@@ -56,7 +56,7 @@ pub struct ProductionPromptConfig {
     pub instructions: Vec<InstructionSource>,
     pub skills_dir: Option<PathBuf>,
     pub verbosity: Option<String>,
-    pub skills_scan_codewhale_only: bool,
+    pub skills_scan_dse_only: bool,
     pub shell_binary: String,
 }
 
@@ -67,7 +67,7 @@ impl Default for ProductionPromptConfig {
             instructions: Vec::new(),
             skills_dir: None,
             verbosity: None,
-            skills_scan_codewhale_only: false,
+            skills_scan_dse_only: false,
             shell_binary: if cfg!(windows) { "powershell" } else { "sh" }.to_owned(),
         }
     }
@@ -364,7 +364,7 @@ impl ProductionFixedRoutePolicy {
             instructions: &self.prompt.instructions,
             skills_dir: self.prompt.skills_dir.as_deref(),
             verbosity: self.prompt.verbosity.as_deref(),
-            skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
+            skills_scan_dse_only: self.prompt.skills_scan_dse_only,
             shell_binary: &self.prompt.shell_binary,
             tool_mode,
         })
@@ -1006,7 +1006,7 @@ impl ProductionComposition {
             instructions: &self.prompt.instructions,
             skills_dir: self.prompt.skills_dir.as_deref(),
             verbosity: self.prompt.verbosity.as_deref(),
-            skills_scan_codewhale_only: self.prompt.skills_scan_codewhale_only,
+            skills_scan_dse_only: self.prompt.skills_scan_dse_only,
             shell_binary: &self.prompt.shell_binary,
             tool_mode,
         })

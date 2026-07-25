@@ -6,10 +6,10 @@
 //! - `AGENTS.md` - Cross-agent project instructions (canonical, highest priority)
 //! - `.claude/instructions.md` - Claude-style hidden instructions (compat)
 //! - `CLAUDE.md` - Claude-style instructions (compat)
-//! - `.codewhale/instructions.md` - Hidden instructions file (compat)
+//! - `.dse/instructions.md` - Hidden instructions file (compat)
 //!
 //! DSE-specific repo authority/prioritization policy lives separately in
-//! `.codewhale/constitution.json` and is rendered as its own higher-authority
+//! `.dse/constitution.json` and is rendered as its own higher-authority
 //! block. The loaded content is injected into the system prompt to give the
 //! agent context about the project's conventions, structure, and requirements.
 
@@ -26,7 +26,7 @@ use thiserror::Error;
 /// `AGENTS.md` is the canonical cross-agent project-instructions file.
 /// `WHALE.md` is no longer an active context surface; when present, DSE
 /// reports a migration warning but ignores it. DSE-specific repo
-/// authority now lives in `.codewhale/constitution.json`, not a bespoke
+/// authority now lives in `.dse/constitution.json`, not a bespoke
 /// markdown file. `CLAUDE.md` and the `*/instructions.md` variants are
 /// read-only compatibility fallbacks; DSE never creates or recommends
 /// them.
@@ -34,25 +34,25 @@ const PROJECT_CONTEXT_FILES: &[&str] = &[
     "AGENTS.md",
     ".claude/instructions.md",
     "CLAUDE.md",
-    ".codewhale/instructions.md",
+    ".dse/instructions.md",
 ];
 
 /// Rules directories auto-discovered at workspace level, in priority order.
-/// `.codewhale/rules/` is DSE-native; `.claude/rules/` is Claude compatibility.
+/// `.dse/rules/` is DSE-native; `.claude/rules/` is Claude compatibility.
 /// All `.md` files in these directories are loaded as project rules in filename order.
 /// Security model: same trust class as AGENTS.md — workspace-contained content only,
 /// no absolute-path escape. Does not require #417 project-config relaxation.
-const RULES_DIRS: &[&str] = &[".codewhale/rules", ".claude/rules"];
+const RULES_DIRS: &[&str] = &[".dse/rules", ".claude/rules"];
 
 /// File name of the deprecated DSE-native instructions file.
 const DEPRECATED_WHALE_FILENAME: &str = "WHALE.md";
 
 /// Warning surfaced when an ignored `WHALE.md` is present.
-const WHALE_IGNORED_WARNING: &str = "WHALE.md is ignored; move project instructions to AGENTS.md, or DSE-specific authority policy to .codewhale/constitution.json.";
+const WHALE_IGNORED_WARNING: &str = "WHALE.md is ignored; move project instructions to AGENTS.md, or DSE-specific authority policy to .dse/constitution.json.";
 
 /// Relative path (within a workspace or one of its parents) to the
 /// DSE-specific repo authority/prioritization policy.
-const REPO_CONSTITUTION_RELATIVE_PATH: &[&str] = &[".codewhale", "constitution.json"];
+const REPO_CONSTITUTION_RELATIVE_PATH: &[&str] = &[".dse", "constitution.json"];
 
 /// `schema_version` understood by this build of the constitution loader.
 const SUPPORTED_CONSTITUTION_SCHEMA: u32 = 1;
@@ -60,15 +60,15 @@ const SUPPORTED_CONSTITUTION_SCHEMA: u32 = 1;
 /// User-level project instructions loaded as a fallback when the workspace and
 /// its parents do not define project context. Any global AGENTS.md takes
 /// priority over a global instructions.md (#3012). Within each file name,
-/// `.codewhale/` takes priority over vendor-neutral `.agents/`. Global
+/// `.dse/` takes priority over vendor-neutral `.agents/`. Global
 /// `WHALE.md` files are ignored and reported as migration-only diagnostics.
-const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codewhale", "AGENTS.md"];
+const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".dse", "AGENTS.md"];
 const GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "AGENTS.md"];
-const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codewhale", "WHALE.md"];
+const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".dse", "WHALE.md"];
 const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
 /// Global `instructions.md` (#3012): auto-loaded as a fallback context layer,
 /// ranked below AGENTS.md, mirroring the project-level precedence.
-const GLOBAL_INSTRUCTIONS_RELATIVE_PATH: &[&str] = &[".codewhale", "instructions.md"];
+const GLOBAL_INSTRUCTIONS_RELATIVE_PATH: &[&str] = &[".dse", "instructions.md"];
 const GLOBAL_INSTRUCTIONS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "instructions.md"];
 
 /// Maximum size for project context files (to prevent loading huge files)
@@ -145,7 +145,7 @@ enum ProjectContextError {
 pub struct ProjectContext {
     /// The loaded instructions content
     pub instructions: Option<String>,
-    /// Auto-discovered rules from `.codewhale/rules/` / `.claude/rules/`.
+    /// Auto-discovered rules from `.dse/rules/` / `.claude/rules/`.
     /// Kept separate from `instructions` so rules alone don't block
     /// parent-directory AGENTS.md discovery via `has_instructions()`.
     pub rules_block: Option<String>,
@@ -153,7 +153,7 @@ pub struct ProjectContext {
     pub source_path: Option<PathBuf>,
     /// Any warnings during loading
     pub warnings: Vec<String>,
-    /// Rendered `.codewhale/constitution.json` authority block, if present.
+    /// Rendered `.dse/constitution.json` authority block, if present.
     /// DSE-specific repo authority/prioritization policy — distinct from
     /// the cross-agent prose in `instructions`.
     pub constitution_block: Option<String>,
@@ -188,7 +188,7 @@ impl ProjectContext {
 
     /// Get the instructions as a formatted block for system prompt.
     ///
-    /// The DSE repo constitution (`.codewhale/constitution.json`), when
+    /// The DSE repo constitution (`.dse/constitution.json`), when
     /// present, is emitted first as a higher-authority block, followed by the
     /// cross-agent `<project_instructions>` prose. Either may be absent.
     pub fn as_system_block(&self) -> Option<String> {
@@ -233,7 +233,7 @@ impl ProjectContext {
 }
 
 /// DSE-specific repo authority/prioritization policy, loaded from
-/// `.codewhale/constitution.json`. All fields are optional so a minimal file
+/// `.dse/constitution.json`. All fields are optional so a minimal file
 /// (or a future schema) still parses; unknown fields are ignored.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct RepoConstitution {
@@ -354,7 +354,7 @@ impl RepoConstitution {
             }
         }
         format!(
-            "<codewhale_repo_constitution source=\"{}\">\n这是仓库级权限规则：低于用户当前请求和系统契约，高于记忆与历史接力。`WHALE.md` 不构成规则，应迁移而不是继续使用。\n\n{}</codewhale_repo_constitution>",
+            "<dse_repo_constitution source=\"{}\">\n这是仓库级权限规则：低于用户当前请求和系统契约，高于记忆与历史接力。`WHALE.md` 不构成规则，应迁移而不是继续使用。\n\n{}</dse_repo_constitution>",
             source.display(),
             body.trim_end()
         )
@@ -398,7 +398,7 @@ fn contains_release_version_token(value: &str) -> bool {
         })
 }
 
-/// Discover and render `.codewhale/constitution.json` from `workspace` or, if
+/// Discover and render `.dse/constitution.json` from `workspace` or, if
 /// absent, its parent directories up to the git root. Returns the rendered
 /// authority block plus any parse warnings.
 fn load_repo_constitution_block(
@@ -768,7 +768,7 @@ pub fn load_project_context(workspace: &Path) -> ProjectContext {
     ctx.warnings
         .extend(ignored_project_whale_warnings(workspace));
 
-    // Load rules from auto-discovered directories (.codewhale/rules/, .claude/rules/)
+    // Load rules from auto-discovered directories (.dse/rules/, .claude/rules/)
     // Each rule file is wrapped in a <project_rule> block and appended after
     // the main instructions content. Security model: same as AGENTS.md —
     // workspace-contained content only, no absolute-path escape.
@@ -897,7 +897,7 @@ fn load_project_context_with_parents_and_home(
 
     // Generate a bounded in-memory fallback when no context file exists
     // anywhere. This keeps prompt shape stable without creating project-local
-    // `.codewhale/` files merely because DSE was opened in a directory.
+    // `.dse/` files merely because DSE was opened in a directory.
     if !ctx.has_instructions()
         && let Some(generated) = generate_ephemeral_context(workspace)
     {
@@ -906,7 +906,7 @@ fn load_project_context_with_parents_and_home(
     }
 
     // Load the DSE-specific repo authority policy
-    // (.codewhale/constitution.json) independently of the prose instructions —
+    // (.dse/constitution.json) independently of the prose instructions —
     // it is a distinct, higher-authority artifact and may exist with or without
     // an AGENTS.md. Legacy WHALE.md files are ignored and reported as
     // migration-only diagnostics.
@@ -1090,9 +1090,9 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
     let home = home_dir?;
 
     // Priority order (AGENTS.md preferred; instructions.md next, #3012):
-    // 1. ~/.codewhale/AGENTS.md       (canonical)
+    // 1. ~/.dse/AGENTS.md       (canonical)
     // 2. ~/.agents/AGENTS.md          (vendor-neutral fallback)
-    // 3. ~/.codewhale/instructions.md (canonical)
+    // 3. ~/.dse/instructions.md (canonical)
     // 4. ~/.agents/instructions.md    (vendor-neutral fallback)
     // Global WHALE.md files are ignored and reported as migration-only
     // diagnostics, never loaded as fallback law.
@@ -1132,7 +1132,7 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     Some(format!(
         "# 项目上下文（自动生成，仅当前运行有效）\n\n\
          > 此上下文由 DSE 在内存中生成。\n\
-         > 未写入 `.codewhale/instructions.md`。\n\n\
+         > 未写入 `.dse/instructions.md`。\n\n\
          {overview}"
     ))
 }
@@ -1375,7 +1375,7 @@ mod tests {
         }))
         .expect("parse scoped invariant");
 
-        let rendered = constitution.render_block(Path::new(".codewhale/constitution.json"));
+        let rendered = constitution.render_block(Path::new(".dse/constitution.json"));
 
         assert!(rendered.contains("不得破坏运行时协议"));
         assert!(rendered.contains("相关路径：crates/protocol/**"));
@@ -1385,7 +1385,7 @@ mod tests {
     #[test]
     fn fallback_overview_and_project_pack_repeat_the_same_payload() {
         let workspace = std::env::temp_dir().join(format!(
-            "codewhale-project-context-duplicate-fixture-{}",
+            "dse-project-context-duplicate-fixture-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&workspace);

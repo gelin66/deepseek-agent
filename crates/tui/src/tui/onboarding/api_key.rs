@@ -106,14 +106,14 @@ fn mask_key(input: &str) -> String {
 /// Display path for the effective config.toml (#3986).
 ///
 /// Prefers the App's session `config_path` override, then the same resolution
-/// used by persistence (`CODEWHALE_CONFIG_PATH` / `CODEWHALE_HOME` / default).
+/// used by persistence (`DSE_CONFIG_PATH` / `DSE_HOME` / default).
 /// Collapses `$HOME` to `~` when the path is under the process home.
 fn effective_config_path_display(app: &App) -> String {
     let path = app
         .config_path
         .clone()
         .or_else(|| crate::config_persistence::config_toml_path(None).ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.codewhale/config.toml"));
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.dse/config.toml"));
     collapse_home_prefix(&path)
 }
 
@@ -158,13 +158,13 @@ mod tests {
 
     #[test]
     fn api_key_saved_hint_uses_effective_config_path() {
-        // Isolated installs set CODEWHALE_CONFIG_PATH; the UI must not hardcode
-        // ~/.codewhale/config.toml (#3986).
+        // Isolated installs set DSE_CONFIG_PATH; the UI must not hardcode
+        // ~/.dse/config.toml (#3986).
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = tmp.path().join("isolated-config.toml");
         let _cfg = crate::test_support::EnvVarGuard::set(
-            "CODEWHALE_CONFIG_PATH",
+            "DSE_CONFIG_PATH",
             config.to_string_lossy().as_ref(),
         );
         let mut app = test_app();
@@ -180,7 +180,7 @@ mod tests {
             "saved hint should show effective path, body was:\n{body}"
         );
         assert!(
-            !body.contains("~/.codewhale/config.toml"),
+            !body.contains("~/.dse/config.toml"),
             "must not hardcode default home path when isolated: {body}"
         );
     }

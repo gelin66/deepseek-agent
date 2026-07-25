@@ -1,5 +1,5 @@
 //! TUI runtime logging. Initializes a `tracing-subscriber` that writes to a
-//! per-process file under `~/.codewhale/logs/tui-YYYY-MM-DD-PID.log`, and (on
+//! per-process file under `~/.dse/logs/tui-YYYY-MM-DD-PID.log`, and (on
 //! Unix and Windows) redirects the process's `stderr` handle/fd to that same
 //! file for the lifetime of the alt-screen TUI.
 //!
@@ -22,7 +22,7 @@
 //!
 //! Defence-in-depth:
 //!   1. A `tracing-subscriber` writes formatted logs to
-//!      `~/.codewhale/logs/tui-YYYY-MM-DD-PID.log` so `tracing::warn!` /
+//!      `~/.dse/logs/tui-YYYY-MM-DD-PID.log` so `tracing::warn!` /
 //!      `tracing::error!` calls go somewhere observable instead of
 //!      disappearing into the void (the TUI previously had no global
 //!      subscriber, so contributors reached for `eprintln!`).
@@ -47,7 +47,7 @@ use anyhow::{Context, Result};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const DEFAULT_LOG_RETENTION_DAYS: u64 = 7;
-const LOG_RETENTION_ENV: &str = "CODEWHALE_LOG_RETENTION_DAYS";
+const LOG_RETENTION_ENV: &str = "DSE_LOG_RETENTION_DAYS";
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Owns the active tracing subscriber and (on Unix/Windows) a saved copy of
@@ -193,11 +193,11 @@ pub fn init() -> Result<TuiLogGuard> {
 }
 
 pub(crate) fn log_directory() -> Option<PathBuf> {
-    // $CODEWHALE_HOME is a hard override of the base data directory.
-    if let Some(home) = std::env::var_os("CODEWHALE_HOME").filter(|value| !value.is_empty()) {
+    // $DSE_HOME is a hard override of the base data directory.
+    if let Some(home) = std::env::var_os("DSE_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(home).join("logs"));
     }
-    let resolve = |base: PathBuf| Some(base.join(".codewhale").join("logs"));
+    let resolve = |base: PathBuf| Some(base.join(".dse").join("logs"));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && !home.as_os_str().is_empty()
     {
@@ -357,7 +357,7 @@ mod tests {
         }
 
         let resolved = log_directory().expect("log_directory should resolve");
-        assert_eq!(resolved, tmp.path().join(".codewhale").join("logs"));
+        assert_eq!(resolved, tmp.path().join(".dse").join("logs"));
 
         // SAFETY: cleanup under the same lock.
         unsafe {
@@ -387,7 +387,7 @@ mod tests {
         }
 
         let resolved = log_directory().expect("log_directory should resolve");
-        assert_eq!(resolved, tmp.path().join(".codewhale").join("logs"));
+        assert_eq!(resolved, tmp.path().join(".dse").join("logs"));
         assert!(legacy.exists(), "retired log directory remains untouched");
 
         // SAFETY: cleanup under the same lock.
@@ -466,19 +466,19 @@ mod tests {
     }
 
     #[test]
-    fn log_directory_honors_codewhale_home_as_hard_override() {
+    fn log_directory_honors_dse_home_as_hard_override() {
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         // SAFETY: serialised by lock_test_env.
         unsafe {
-            std::env::set_var("CODEWHALE_HOME", tmp.path());
+            std::env::set_var("DSE_HOME", tmp.path());
         }
-        // $CODEWHALE_HOME IS the home dir (no ".codewhale" appended).
+        // $DSE_HOME IS the home dir (no ".dse" appended).
         let resolved = log_directory().expect("log_directory should resolve");
         assert_eq!(resolved, tmp.path().join("logs"));
         // SAFETY: cleanup under the same lock.
         unsafe {
-            std::env::remove_var("CODEWHALE_HOME");
+            std::env::remove_var("DSE_HOME");
         }
     }
 }

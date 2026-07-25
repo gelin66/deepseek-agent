@@ -338,7 +338,7 @@ impl ProductionToolContext {
             .strip_prefix(workspace)
             .expect("path prefix checked above");
         let protected = relative.components().any(|component| {
-            matches!(component, Component::Normal(name) if name == ".git" || name == ".codewhale" || name == ".deepseek")
+            matches!(component, Component::Normal(name) if name == ".git" || name == ".dse" || name == ".deepseek")
         });
         if protected {
             return Err(isolated_writer_write_denied(&resolved));

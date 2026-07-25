@@ -295,7 +295,7 @@ struct ExecResult {
 }
 
 fn prepare_exec_config(home: &Path) -> PathBuf {
-    let config_dir = home.join(".codewhale");
+    let config_dir = home.join(".dse");
     std::fs::create_dir_all(config_dir.join("skills")).expect("create isolated config");
     std::fs::write(
         config_dir.join("config.toml"),
@@ -306,7 +306,7 @@ fn prepare_exec_config(home: &Path) -> PathBuf {
 }
 
 fn run_exec(base_url: &str, workspace: &Path, home: &Path, config: &Path) -> ExecResult {
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(workspace)
@@ -328,10 +328,10 @@ fn run_exec(base_url: &str, workspace: &Path, home: &Path, config: &Path) -> Exe
         .arg("--output-format")
         .arg("stream-json")
         .arg(TEST_PROMPT)
-        .env("CODEWHALE_HOME", home.join(".codewhale"))
-        .env("CODEWHALE_CONFIG_PATH", config)
+        .env("DSE_HOME", home.join(".dse"))
+        .env("DSE_CONFIG_PATH", config)
         .env("DEEPSEEK_API_KEY", TEST_KEY)
-        .env("CODEWHALE_BASE_URL", base_url)
+        .env("DSE_BASE_URL", base_url)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -406,7 +406,7 @@ fn production_application(
         instructions: Vec::new(),
         skills_dir: Some(skills_dir.to_path_buf()),
         verbosity: None,
-        skills_scan_codewhale_only: false,
+        skills_scan_dse_only: false,
         shell_binary: dse_tools::shell_dispatcher::global_dispatcher()
             .kind()
             .binary()
@@ -1383,7 +1383,7 @@ fn preserve_host_env(command: &mut Command) {
     }
 }
 
-fn codewhale_tui_binary() -> PathBuf {
+fn dse_tui_binary() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }

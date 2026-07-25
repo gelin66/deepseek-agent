@@ -153,7 +153,7 @@ struct Cli {
     #[arg(long)]
     skip_onboarding: bool,
 
-    /// Skip loading project-level config from $WORKSPACE/.codewhale/config.toml
+    /// Skip loading project-level config from $WORKSPACE/.dse/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
 }
@@ -320,7 +320,7 @@ const EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 const EXEC_OUTPUT_QUEUE_CAPACITY: usize = 256;
 const EXEC_OUTPUT_CLOSE_TIMEOUT_SECS: u64 = 2;
 
-const CODEWHALE_TOOL_SURFACE_ENV: &str = "CODEWHALE_TOOL_SURFACE";
+const DSE_TOOL_SURFACE_ENV: &str = "DSE_TOOL_SURFACE";
 const SHELL_ONLY_EXEC_TOOLS: &[&str] = &["exec_shell", "exec_shell_wait", "exec_shell_interact"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,12 +355,12 @@ fn resolve_exec_approval_controls(
 }
 
 fn exec_tool_surface_from_env() -> Option<ExecToolSurface> {
-    std::env::var(CODEWHALE_TOOL_SURFACE_ENV)
+    std::env::var(DSE_TOOL_SURFACE_ENV)
         .ok()
         .and_then(|value| {
             if should_warn_unknown_exec_tool_surface(&value) {
                 eprintln!(
-                    "warning: unrecognized {CODEWHALE_TOOL_SURFACE_ENV}; leaving exec tool surface unchanged. Use `shell-only`, `full`, or `native-tools`."
+                    "warning: unrecognized {DSE_TOOL_SURFACE_ENV}; leaving exec tool surface unchanged. Use `shell-only`, `full`, or `native-tools`."
                 );
             }
             parse_exec_tool_surface(&value)
@@ -632,14 +632,12 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
 }
 
 fn exec_model_env_override() -> Option<String> {
-    ["CODEWHALE_MODEL", "DEEPSEEK_MODEL"]
-        .into_iter()
-        .find_map(|key| {
-            std::env::var(key)
-                .ok()
-                .map(|model| model.trim().to_string())
-                .filter(|model| !model.is_empty())
-        })
+    ["DSE_MODEL", "DEEPSEEK_MODEL"].into_iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+    })
 }
 
 fn top_level_prompt_initial_input(parts: &[String]) -> Option<tui::InitialInput> {
@@ -868,7 +866,7 @@ enum SandboxCommand {
     },
 }
 
-const CODEWHALE_MAIN_STACK_BYTES: usize = 16 * 1024 * 1024;
+const DSE_MAIN_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 fn tui_command_message(name: &str) -> Option<MessageId> {
     Some(match name {
@@ -1069,7 +1067,7 @@ fn run_main() -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
         // Write crash dump best-effort
-        if let Ok(home) = dse_config::codewhale_home() {
+        if let Ok(home) = dse_config::dse_home() {
             let crash_dir = home.join("crashes");
             let _ = std::fs::create_dir_all(&crash_dir);
             use chrono::Utc;
@@ -1091,10 +1089,10 @@ fn run_main() -> Result<()> {
     // explicit stack while keeping process hardening and the global panic hook
     // above this boundary, before Tokio or any worker thread exists.
     let runtime_thread = std::thread::Builder::new()
-        .name("codewhale-main".to_string())
-        .stack_size(CODEWHALE_MAIN_STACK_BYTES)
+        .name("dse-main".to_string())
+        .stack_size(DSE_MAIN_STACK_BYTES)
         .spawn(run_async_main)
-        .context("Failed to start the Codewhale runtime thread")?;
+        .context("Failed to start the DSE runtime thread")?;
     match runtime_thread.join() {
         Ok(result) => result,
         Err(payload) => {
@@ -1103,7 +1101,7 @@ fn run_main() -> Result<()> {
                 .map(|value| (*value).to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic payload".to_string());
-            Err(anyhow!("Codewhale runtime thread panicked: {message}"))
+            Err(anyhow!("DSE runtime thread panicked: {message}"))
         }
     }
 }
@@ -1201,7 +1199,7 @@ async fn run_async_main() -> Result<()> {
                 let prompt = join_prompt_parts(&args.prompt);
                 let run_launch = resolve_exec_run_launch(&args)?;
                 // The DSE dispatcher forwards `--yolo` to this binary via
-                // the CODEWHALE_YOLO env var (which the config loader folds into
+                // the DSE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let env_tool_surface = exec_tool_surface_from_env();
@@ -1387,7 +1385,7 @@ fn plugins_readme_template() -> &'static str {
      Plugins are richer than tools: each one lives in its own subdirectory\n\
      with a `PLUGIN.md` describing what it does and how to enable it. The\n\
      directory is created so users have a documented place to drop\n\
-     experiments without touching `~/.codewhale/skills/`.\n\n\
+     experiments without touching `~/.dse/skills/`.\n\n\
      A plugin layout looks like:\n\n\
      ```\n\
      plugins/\n\
@@ -1428,8 +1426,8 @@ fn init_plugins_dir(
 }
 
 fn deepseek_home_dir() -> PathBuf {
-    dse_config::codewhale_home().unwrap_or_else(|_| {
-        dirs::home_dir().map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"))
+    dse_config::dse_home().unwrap_or_else(|_| {
+        dirs::home_dir().map_or_else(|| PathBuf::from(".dse"), |h| h.join(".dse"))
     })
 }
 
@@ -1632,7 +1630,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         ),
         ApiKeySource::Missing => {
             println!(
-                "  {} api_key: missing  (set {} or `api_key` in ~/.codewhale/config.toml; or run `dse auth set --api-key \"...\"`)",
+                "  {} api_key: missing  (set {} or `api_key` in ~/.dse/config.toml; or run `dse auth set --api-key \"...\"`)",
                 "✗".truecolor(red_r, red_g, red_b),
                 crate::config::DEEPSEEK_API_KEY_ENV,
             );
@@ -1779,8 +1777,8 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         .map(PathBuf::from)
         .or_else(|| dse_config::resolve_config_path(None).ok())
         .unwrap_or_else(|| {
-            dse_config::codewhale_home()
-                .unwrap_or_else(|_| PathBuf::from(".codewhale"))
+            dse_config::dse_home()
+                .unwrap_or_else(|_| PathBuf::from(".dse"))
                 .join("config.toml")
         });
 
@@ -1808,7 +1806,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // Canonical product state root
     println!();
     println!("{}", tr(MessageId::DoctorSectionStateRoot).bold());
-    let code_home = dse_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    let code_home = dse_config::dse_home().unwrap_or_else(|_| PathBuf::from("~/.dse"));
     println!(
         "  {}",
         tr(MessageId::DoctorStateActive).replace("{path}", &crate::utils::display_path(&code_home))
@@ -2529,7 +2527,7 @@ fn doctor_inherited_setup_facts(
     let has_user_constitution = user_constitution
         .as_ref()
         .is_some_and(|loaded| !matches!(loaded, dse_config::UserConstitutionLoad::Missing));
-    let has_expert_override = dse_config::codewhale_home()
+    let has_expert_override = dse_config::dse_home()
         .ok()
         .map(|home| home.join(Path::new(crate::prompts::CONSTITUTION_OVERRIDE_FILE)))
         .is_some_and(|path| path.exists());
@@ -2666,7 +2664,7 @@ fn doctor_ready_label(ready: bool) -> Cow<'static, str> {
 /// The setup transaction writes `constitution.json` and `setup_state.json`
 /// together, so a persisted state that points at a user-global constitution
 /// which is missing or unusable on disk means a write was interrupted or a
-/// file was removed out-of-band. Stale `.tmp*` files in `$CODEWHALE_HOME`
+/// file was removed out-of-band. Stale `.tmp*` files in `$DSE_HOME`
 /// are the other fingerprint of an interrupted atomic write.
 fn doctor_setup_consistency(state: &dse_config::SetupState, source: &str) -> serde_json::Value {
     use serde_json::json;
@@ -2697,7 +2695,7 @@ fn doctor_setup_consistency(state: &dse_config::SetupState, source: &str) -> ser
     }
 
     if doctor_home_has_stale_setup_temp_files() {
-        issues.push("stale_setup_temp_files_in_codewhale_home");
+        issues.push("stale_setup_temp_files_in_dse_home");
     }
 
     json!({
@@ -2708,7 +2706,7 @@ fn doctor_setup_consistency(state: &dse_config::SetupState, source: &str) -> ser
 }
 
 fn doctor_home_has_stale_setup_temp_files() -> bool {
-    let Ok(home) = dse_config::codewhale_home() else {
+    let Ok(home) = dse_config::dse_home() else {
         return false;
     };
     let Ok(entries) = std::fs::read_dir(&home) else {
@@ -2937,7 +2935,7 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             "constitution": "/constitution",
             "setup_report": "/setup report",
             "provider_model": "dse auth status/set, or /model",
-            "runtime_posture": "~/.codewhale/config.toml",
+            "runtime_posture": "~/.dse/config.toml",
             "task_graph": "使用 canonical agent 能力；通过 dse runs/resume 查看或恢复运行",
             "tools_mcp": "/setup tools",
             "persistence": "/setup persistence",
@@ -3020,8 +3018,8 @@ fn run_doctor_json(
         .map(PathBuf::from)
         .or_else(|| dse_config::resolve_config_path(None).ok())
         .unwrap_or_else(|| {
-            dse_config::codewhale_home()
-                .unwrap_or_else(|_| PathBuf::from(".codewhale"))
+            dse_config::dse_home()
+                .unwrap_or_else(|_| PathBuf::from(".dse"))
                 .join("config.toml")
         });
 
@@ -3117,7 +3115,7 @@ fn run_doctor_json(
 
     let api_target = doctor_api_target(config);
     let tls_status = doctor_tls_status(config);
-    let code_home = dse_config::codewhale_home().unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    let code_home = dse_config::dse_home().unwrap_or_else(|_| PathBuf::from("~/.dse"));
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -3463,7 +3461,7 @@ fn init_project() -> Result<()> {
             );
             println!();
             println!("Edit this file to customize how the AI agent works with your project.");
-            println!("The instructions will be loaded automatically when you run codewhale.");
+            println!("The instructions will be loaded automatically when you run dse.");
         }
         Err(e) => {
             println!(
@@ -3487,7 +3485,7 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     let profile = cli
         .profile
         .clone()
-        .or_else(|| std::env::var("CODEWHALE_PROFILE").ok());
+        .or_else(|| std::env::var("DSE_PROFILE").ok());
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     cli.feature_toggles.apply(&mut config)?;
     Ok(config)
@@ -4261,7 +4259,7 @@ fn should_use_mouse_capture_with(
 /// Off elsewhere only for JetBrains' JediTerm, which advertises mouse
 /// support but forwards the same SGR escape sequences as raw input. The
 /// user can still opt back in with `[tui] mouse_capture = true` in
-/// `~/.codewhale/config.toml` or `--mouse-capture`.
+/// `~/.dse/config.toml` or `--mouse-capture`.
 fn default_mouse_capture_enabled(
     terminal_emulator: Option<&str>,
     wt_session: Option<&str>,
@@ -4293,9 +4291,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
         return;
     }
 
-    let path = workspace
-        .join(dse_config::CODEWHALE_APP_DIR)
-        .join("config.toml");
+    let path = workspace.join(dse_config::DSE_APP_DIR).join("config.toml");
     let raw = match read_project_config_file(&path) {
         Ok(Some(r)) => r,
         Ok(None) => return,
@@ -4317,7 +4313,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
     };
 
     // #417: dangerous keys are denied at project scope. A malicious
-    // `<workspace>/.codewhale/config.toml` could otherwise:
+    // `<workspace>/.dse/config.toml` could otherwise:
     // * `api_key` / `base_url` / `provider` — exfiltrate prompts to a
     //   look-alike endpoint by swapping the user's credentials and
     //   target host with project-controlled values.
@@ -4343,7 +4339,7 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
         if table.contains_key(*key) {
             eprintln!(
                 "warning: project-scope config key `{key}` is ignored — \
-                 set it in `~/.codewhale/config.toml` instead. \
+                 set it in `~/.dse/config.toml` instead. \
                  (See #417 for the deny-list rationale.)"
             );
         }
@@ -4461,7 +4457,7 @@ fn merge_user_workspace_config(
     workspace: &Path,
 ) {
     let allow_shell_before = config.allow_shell;
-    let allow_shell_from_env = std::env::var_os("CODEWHALE_ALLOW_SHELL").is_some();
+    let allow_shell_from_env = std::env::var_os("DSE_ALLOW_SHELL").is_some();
     let Some(path) = crate::config::resolve_load_config_path(config_path) else {
         return;
     };
@@ -4547,7 +4543,7 @@ async fn run_interactive(
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    // Merge project-level config from $WORKSPACE/.codewhale/config.toml unless
+    // Merge project-level config from $WORKSPACE/.dse/config.toml unless
     // --no-project-config was passed (#485).
     let mut merged_config = config.clone();
     merge_user_workspace_config(&mut merged_config, cli.config.clone(), &workspace);
@@ -4588,7 +4584,7 @@ async fn run_interactive(
     startup_trace::mark("interactive_config");
 
     // The `deepseek` launcher forwards `--yolo` to this binary via the
-    // CODEWHALE_YOLO env var (config.yolo), not as a CLI flag. Honour either.
+    // DSE_YOLO env var (config.yolo), not as a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
     tui::run_tui(

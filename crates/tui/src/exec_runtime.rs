@@ -902,7 +902,7 @@ pub(crate) fn production_application_config(
         instructions,
         skills_dir: Some(config.skills_dir()),
         verbosity: config.verbosity.clone(),
-        skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
+        skills_scan_dse_only: config.skills_config().scan_dse_only(),
         shell_binary: dse_tools::shell_dispatcher::global_dispatcher()
             .kind()
             .binary()
@@ -1982,7 +1982,7 @@ mod tests {
             1_025,
         );
         let value = crate::exec_stream_value(&stream).unwrap();
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], 4);
         assert_eq!(value["type"], "tool_result");
         assert_eq!(value["failure_code"], "stale_read");
         assert_eq!(value["invocation_status"], "accepted");

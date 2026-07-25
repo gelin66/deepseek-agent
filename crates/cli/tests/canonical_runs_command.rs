@@ -117,9 +117,9 @@ fn run_dispatcher(home: &Path, workspace: &Path, args: &[&str]) -> Output {
     let mut command = Command::new(dse_binary());
     command
         .current_dir(workspace)
-        .env("CODEWHALE_HOME", home)
+        .env("DSE_HOME", home)
         .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("CODEWHALE_CLI_API_KEY")
+        .env_remove("DSE_CLI_API_KEY")
         .args(args);
     command.output().expect("run dse dispatcher")
 }
@@ -129,7 +129,7 @@ fn install_tui_probe(home: &Path) -> (PathBuf, PathBuf) {
     let fake_tui = home.join("fake-dse-tui");
     std::fs::write(
         &fake_tui,
-        "#!/bin/sh\nprintf launched > \"$CODEWHALE_TUI_MARKER\"\n",
+        "#!/bin/sh\nprintf launched > \"$DSE_TUI_MARKER\"\n",
     )
     .expect("write fake TUI");
     #[cfg(unix)]
@@ -153,11 +153,11 @@ fn run_dispatcher_with_tui_probe(
 ) -> Output {
     Command::new(dse_binary())
         .current_dir(workspace)
-        .env("CODEWHALE_HOME", home)
+        .env("DSE_HOME", home)
         .env("DSE_TUI_BIN", fake_tui)
-        .env("CODEWHALE_TUI_MARKER", marker)
+        .env("DSE_TUI_MARKER", marker)
         .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("CODEWHALE_CLI_API_KEY")
+        .env_remove("DSE_CLI_API_KEY")
         .args(args)
         .output()
         .expect("run dse dispatcher with TUI probe")
@@ -185,7 +185,7 @@ fn help_has_command(help: &str, command: &str) -> bool {
 async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec() {
     const OVERRIDE_MARKER: &str = "app-server-process-override-marker";
 
-    let home = tempfile::tempdir().expect("temporary app-server CODEWHALE_HOME");
+    let home = tempfile::tempdir().expect("temporary app-server DSE_HOME");
     let workspace = tempfile::tempdir().expect("temporary app-server workspace");
     let prompt_path = home.path().join("prompts/constitution.md");
     std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
@@ -195,8 +195,8 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
 
     let mut child = tokio::process::Command::new(dse_binary())
         .current_dir(workspace.path())
-        .env("CODEWHALE_HOME", home.path())
-        .env("CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE", "1")
+        .env("DSE_HOME", home.path())
+        .env("DSE_ALLOW_BASE_PROMPT_OVERRIDE", "1")
         .env("DEEPSEEK_API_KEY", "offline-app-server-prompt-key")
         // Preserve the official endpoint contract while making any model
         // attempt fail locally; RunCreated is committed before the response.
@@ -295,7 +295,7 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
 
 #[tokio::test]
 async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
-    let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
+    let home = tempfile::tempdir().expect("temporary DSE_HOME");
     let workspace_root = tempfile::tempdir().expect("temporary workspace root");
     let workspace = workspace_root.path().join("current");
     let other_workspace = workspace_root.path().join("other");
@@ -414,7 +414,7 @@ fn dispatcher_help_exposes_runs_and_removes_retired_top_level_commands() {
 
 #[test]
 fn completion_bypasses_malformed_config_without_opening_store_or_tui() {
-    let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
+    let home = tempfile::tempdir().expect("temporary DSE_HOME");
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let (fake_tui, marker) = install_tui_probe(home.path());
     std::fs::write(home.path().join("config.toml"), "provider = [")
@@ -447,7 +447,7 @@ fn completion_bypasses_malformed_config_without_opening_store_or_tui() {
 
 #[tokio::test]
 async fn canonical_runs_bypasses_malformed_config_without_tui_or_credentials() {
-    let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
+    let home = tempfile::tempdir().expect("temporary DSE_HOME");
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let workspace = workspace
         .path()
@@ -499,7 +499,7 @@ async fn canonical_runs_bypasses_malformed_config_without_tui_or_credentials() {
 
 #[test]
 fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
-    let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
+    let home = tempfile::tempdir().expect("temporary DSE_HOME");
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let (fake_tui, marker) = install_tui_probe(home.path());
     // A malformed real config proves the rejection happens before ConfigStore
@@ -588,7 +588,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         );
     }
 
-    let explicit_home = tempfile::tempdir().expect("temporary explicit-prompt CODEWHALE_HOME");
+    let explicit_home = tempfile::tempdir().expect("temporary explicit-prompt DSE_HOME");
     let (explicit_tui, explicit_marker) = install_tui_probe(explicit_home.path());
     let explicit_prompt = run_dispatcher_with_tui_probe(
         explicit_home.path(),
@@ -608,7 +608,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     );
 
     let explicit_workflow_home =
-        tempfile::tempdir().expect("temporary explicit-workflow-prompt CODEWHALE_HOME");
+        tempfile::tempdir().expect("temporary explicit-workflow-prompt DSE_HOME");
     let (explicit_workflow_tui, explicit_workflow_marker) =
         install_tui_probe(explicit_workflow_home.path());
     let explicit_workflow_prompt = run_dispatcher_with_tui_probe(
@@ -628,8 +628,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         "explicit --prompt workflow ... was mistaken for the retired command"
     );
 
-    let explicit_acp_home =
-        tempfile::tempdir().expect("temporary explicit-ACP-prompt CODEWHALE_HOME");
+    let explicit_acp_home = tempfile::tempdir().expect("temporary explicit-ACP-prompt DSE_HOME");
     let (explicit_acp_tui, explicit_acp_marker) = install_tui_probe(explicit_acp_home.path());
     let explicit_acp_prompt = run_dispatcher_with_tui_probe(
         explicit_acp_home.path(),
@@ -649,7 +648,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     );
 
     let explicit_review_home =
-        tempfile::tempdir().expect("temporary explicit-review-prompt CODEWHALE_HOME");
+        tempfile::tempdir().expect("temporary explicit-review-prompt DSE_HOME");
     let (explicit_review_tui, explicit_review_marker) =
         install_tui_probe(explicit_review_home.path());
     let explicit_review_prompt = run_dispatcher_with_tui_probe(
@@ -670,7 +669,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     );
 
     let explicit_speech_home =
-        tempfile::tempdir().expect("temporary explicit-speech-prompt CODEWHALE_HOME");
+        tempfile::tempdir().expect("temporary explicit-speech-prompt DSE_HOME");
     let (explicit_speech_tui, explicit_speech_marker) =
         install_tui_probe(explicit_speech_home.path());
     let explicit_speech_prompt = run_dispatcher_with_tui_probe(

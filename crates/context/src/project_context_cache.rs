@@ -202,11 +202,8 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         let home = tempdir().expect("home");
         fs::create_dir(workspace.path().join(".git")).expect("mkdir git");
-        fs::create_dir(workspace.path().join(".codewhale")).expect("mkdir codewhale");
-        let constitution = workspace
-            .path()
-            .join(".codewhale")
-            .join("constitution.json");
+        fs::create_dir(workspace.path().join(".dse")).expect("mkdir dse");
+        let constitution = workspace.path().join(".dse").join("constitution.json");
         fs::write(&constitution, r#"{"schema_version":1,"authority":["a"]}"#)
             .expect("write constitution a");
         let before = compute_cache_key(workspace.path(), Some(home.path()));
@@ -222,7 +219,7 @@ mod tests {
     fn signature_changes_when_rules_file_changes() {
         let workspace = tempdir().expect("workspace");
         let home = tempdir().expect("home");
-        let rules_dir = workspace.path().join(".codewhale/rules");
+        let rules_dir = workspace.path().join(".dse/rules");
         fs::create_dir_all(&rules_dir).expect("mkdir rules");
         fs::write(rules_dir.join("rule.md"), "alpha").expect("write alpha");
 
@@ -241,7 +238,7 @@ mod tests {
     fn signature_changes_when_rules_file_is_added_or_removed() {
         let workspace = tempdir().expect("workspace");
         let home = tempdir().expect("home");
-        let rules_dir = workspace.path().join(".codewhale/rules");
+        let rules_dir = workspace.path().join(".dse/rules");
         fs::create_dir_all(&rules_dir).expect("mkdir rules");
 
         // No rules yet

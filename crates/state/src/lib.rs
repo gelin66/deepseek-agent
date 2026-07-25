@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 24;
+const STATE_SCHEMA_VERSION: u32 = 25;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -30,7 +30,7 @@ pub struct StateStore {
 impl StateStore {
     /// Open (or create) a state store at the given database path.
     ///
-    /// If `path` is `None`, the default location (`~/.codewhale/state.db`) is used.
+    /// If `path` is `None`, the default location (`~/.dse/state.db`) is used.
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let db_path = path.unwrap_or_else(default_state_db_path);
@@ -301,6 +301,27 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-fixed-route canonical run state")?;
         }
+        if user_version < 25 {
+            // RuntimeEvent v19 hard-cuts the active product namespace from
+            // CodeWhale to DSE. Handoff envelopes and verification artifact
+            // media types are model-visible canonical transcript facts, so a
+            // materialized v18 run cannot be upgraded without rewriting exact
+            // history. Preserve only replay-safe pending Start intents and
+            // retire materialized rows atomically. The one-time filesystem
+            // migration keeps the original database as the read-only backup;
+            // no v18 reader, dual write, or transcript rewrite remains here.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire pre-DSE run creation state")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-DSE creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-DSE canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -485,6 +506,11 @@ impl StateStore {
                 .context("failed to commit fixed actor route state cutover")?;
             user_version = 24;
         }
+        if user_version < 25 {
+            tx.pragma_update(None, "user_version", 25)
+                .context("failed to commit DSE identity state cutover")?;
+            user_version = 25;
+        }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()
             .context("failed to commit state schema migration")?;
@@ -549,25 +575,25 @@ fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
 }
 
 fn default_state_db_path() -> PathBuf {
-    // $CODEWHALE_HOME is a hard override of the base data directory.
-    if let Some(overridden) = codewhale_home_override() {
+    // $DSE_HOME is a hard override of the base data directory.
+    if let Some(overridden) = dse_home_override() {
         return overridden.join("state.db");
     }
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".codewhale").join("state.db")
+    home.join(".dse").join("state.db")
 }
 
-/// Resolve `$CODEWHALE_HOME` as a hard override of the data directory root.
+/// Resolve `$DSE_HOME` as a hard override of the data directory root.
 ///
 /// Returns the path verbatim (the env var IS the home dir, matching
-/// `codewhale_home()` in config — `$CODEWHALE_HOME=/data/cw` means the home is
-/// `/data/cw`, not `/data/cw/.codewhale`). Returns `None` when unset/empty so
+/// `dse_home()` in config — `$DSE_HOME=/data/cw` means the home is
+/// `/data/cw`, not `/data/cw/.dse`). Returns `None` when unset/empty so
 /// callers can branch on "explicit override" vs "default home + legacy
 /// fallback." Mirrors config's helper without taking a dependency on it (state
 /// is a low-level leaf crate; config cannot be a dependency here without
 /// inverting the layering).
-fn codewhale_home_override() -> Option<PathBuf> {
-    std::env::var_os("CODEWHALE_HOME")
+fn dse_home_override() -> Option<PathBuf> {
+    std::env::var_os("DSE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
@@ -620,80 +646,80 @@ mod tests {
         assert_eq!(foreign_keys, 1);
     }
 
-    // ── $CODEWHALE_HOME override tests ──────────────────────────────
+    // ── $DSE_HOME override tests ──────────────────────────────
     //
     // These touch a process-global env var, so they serialize against each
     // other (and restore the prior value) to stay hermetic under parallel test
     // runs — the same concern AGENTS.md flags for config_command_allow_shell_*.
 
-    static CODEWHALE_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static DSE_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct CodeWhaleHomeGuard {
+    struct DseHomeGuard {
         prior: Option<std::ffi::OsString>,
     }
-    impl CodeWhaleHomeGuard {
+    impl DseHomeGuard {
         fn set(value: &str) -> Self {
-            let prior = std::env::var_os("CODEWHALE_HOME");
-            // SAFETY: serialised by CODEWHALE_HOME_TEST_LOCK.
-            unsafe { std::env::set_var("CODEWHALE_HOME", value) };
+            let prior = std::env::var_os("DSE_HOME");
+            // SAFETY: serialised by DSE_HOME_TEST_LOCK.
+            unsafe { std::env::set_var("DSE_HOME", value) };
             Self { prior }
         }
         fn remove() -> Self {
-            let prior = std::env::var_os("CODEWHALE_HOME");
-            // SAFETY: serialised by CODEWHALE_HOME_TEST_LOCK.
-            unsafe { std::env::remove_var("CODEWHALE_HOME") };
+            let prior = std::env::var_os("DSE_HOME");
+            // SAFETY: serialised by DSE_HOME_TEST_LOCK.
+            unsafe { std::env::remove_var("DSE_HOME") };
             Self { prior }
         }
     }
-    impl Drop for CodeWhaleHomeGuard {
+    impl Drop for DseHomeGuard {
         fn drop(&mut self) {
-            // SAFETY: serialised by CODEWHALE_HOME_TEST_LOCK.
+            // SAFETY: serialised by DSE_HOME_TEST_LOCK.
             unsafe {
                 match &self.prior {
-                    Some(value) => std::env::set_var("CODEWHALE_HOME", value),
-                    None => std::env::remove_var("CODEWHALE_HOME"),
+                    Some(value) => std::env::set_var("DSE_HOME", value),
+                    None => std::env::remove_var("DSE_HOME"),
                 }
             }
         }
     }
 
     #[test]
-    fn codewhale_home_override_returns_the_env_value_verbatim() {
-        let _lock = CODEWHALE_HOME_TEST_LOCK.lock().unwrap();
-        let _g = CodeWhaleHomeGuard::set("/tmp/cw-isolated-state");
-        // The env var IS the home dir — no ".codewhale" appended. This matches
-        // codewhale_home() in config ($CODEWHALE_HOME=/x means home is /x).
+    fn dse_home_override_returns_the_env_value_verbatim() {
+        let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
+        let _g = DseHomeGuard::set("/tmp/cw-isolated-state");
+        // The env var IS the home dir — no ".dse" appended. This matches
+        // dse_home() in config ($DSE_HOME=/x means home is /x).
         assert_eq!(
-            codewhale_home_override().as_deref(),
+            dse_home_override().as_deref(),
             Some(std::path::Path::new("/tmp/cw-isolated-state"))
         );
     }
 
     #[test]
-    fn codewhale_home_override_none_when_unset() {
-        let _lock = CODEWHALE_HOME_TEST_LOCK.lock().unwrap();
-        let _g = CodeWhaleHomeGuard::remove();
-        assert!(codewhale_home_override().is_none());
+    fn dse_home_override_none_when_unset() {
+        let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
+        let _g = DseHomeGuard::remove();
+        assert!(dse_home_override().is_none());
     }
 
     #[test]
-    fn codewhale_home_override_none_when_empty() {
-        let _lock = CODEWHALE_HOME_TEST_LOCK.lock().unwrap();
-        let _g = CodeWhaleHomeGuard::set("   ");
+    fn dse_home_override_none_when_empty() {
+        let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
+        let _g = DseHomeGuard::set("   ");
         // The helper filters empty values (after the OsString check). Note:
         // var_os returns the raw "   ", and our filter only catches truly-empty,
         // so this documents that whitespace-only is NOT treated as unset at the
-        // override layer (config's codewhale_home trims; we don't here — the
+        // override layer (config's dse_home trims; we don't here — the
         // branch is "was it set at all").
         assert!(
-            codewhale_home_override().is_some(),
+            dse_home_override().is_some(),
             "non-empty (even whitespace) counts as set; trimming is the caller's job"
         );
     }
 
     #[test]
-    fn default_state_db_path_uses_codewhale_home_when_set() {
-        let _lock = CODEWHALE_HOME_TEST_LOCK.lock().unwrap();
+    fn default_state_db_path_uses_dse_home_when_set() {
+        let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
             "cw-home-state-{}-{}",
             std::process::id(),
@@ -702,9 +728,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let _g = CodeWhaleHomeGuard::set(dir.to_str().unwrap());
-        // Hard override: the DB is <CODEWHALE_HOME>/state.db, NOT
-        // <CODEWHALE_HOME>/.codewhale/state.db.
+        let _g = DseHomeGuard::set(dir.to_str().unwrap());
+        // Hard override: the DB is <DSE_HOME>/state.db, NOT
+        // <DSE_HOME>/.dse/state.db.
         assert_eq!(default_state_db_path(), dir.join("state.db"));
     }
 }

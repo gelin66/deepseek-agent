@@ -136,7 +136,7 @@ impl TerminalInputPump {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = thread::Builder::new()
-            .name("codewhale-terminal-input".to_string())
+            .name("dse-terminal-input".to_string())
             .spawn(move || {
                 while !thread_stop.load(Ordering::Acquire) {
                     match event::poll(TERMINAL_INPUT_POLL_INTERVAL) {

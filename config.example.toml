@@ -1,7 +1,7 @@
-# CodeWhale DeepSeek-only configuration
+# DSE DeepSeek-only configuration
 #
-# Canonical user path: ~/.codewhale/config.toml
-# Save a key with `codewhale auth set`; avoid committing credentials.
+# Canonical user path: ~/.dse/config.toml
+# Save a key with `dse auth set`; avoid committing credentials.
 #
 # The model backend is fixed to the official DeepSeek API. There is no
 # `provider`, `[providers.*]`, fallback-provider, OAuth-provider, custom-header,
@@ -27,9 +27,9 @@ yolo = false
 
 # Optional local paths. MCP server definitions live in the JSON file named by
 # `mcp_config_path`; MCP OAuth is transport auth, not model-provider auth.
-# skills_dir = "~/.codewhale/skills"
-# mcp_config_path = "~/.codewhale/mcp.json"
-# instructions = ["~/.codewhale/AGENTS.md"]
+# skills_dir = "~/.dse/skills"
+# mcp_config_path = "~/.dse/mcp.json"
+# instructions = ["~/.dse/AGENTS.md"]
 
 [retry]
 enabled = true
@@ -50,7 +50,7 @@ stream_chunk_timeout_secs = 900
 osc8_links = true
 
 [skills]
-scan_codewhale_only = false
+scan_dse_only = false
 
 [subagents]
 enabled = true
@@ -68,6 +68,6 @@ provider = "duckduckgo"
 verbosity = "concise"
 allow_shell = false
 
-# Project-local `.codewhale/config.toml` is untrusted. It may tighten approval
+# Project-local `.dse/config.toml` is untrusted. It may tighten approval
 # and sandbox posture and set safe local tool values, but cannot change
 # credentials, endpoint, model, telemetry, or provider identity.

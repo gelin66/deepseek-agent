@@ -298,7 +298,7 @@ async fn underwater_configured_themes_emit_each_palette_to_the_terminal() -> Res
     let mut previous_signature = None;
     for (index, theme) in themes.iter().enumerate() {
         std::fs::write(
-            ws.home().join(".codewhale").join("settings.toml"),
+            ws.home().join(".dse").join("settings.toml"),
             format!("theme = \"{theme}\"\n"),
         )?;
         let mut tui = common_tui_builder(&ws)
@@ -458,7 +458,7 @@ async fn release_six_child_fanout_keeps_typing_render_and_esc_cancel_live() -> R
 
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".codewhale").join("config.toml"),
+        ws.home().join(".dse").join("config.toml"),
         "[subagents]\nmax_concurrent = 6\nmax_depth = 1\n",
     )?;
     let mut tui = common_tui_builder(&ws)
@@ -651,7 +651,7 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
 
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".codewhale").join("config.toml"),
+        ws.home().join(".dse").join("config.toml"),
         format!("[subagents]\nmax_concurrent = {WORKERS}\nmax_depth = 1\n"),
     )?;
     let mut tui = common_tui_builder(&ws)

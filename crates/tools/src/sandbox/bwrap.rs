@@ -39,7 +39,7 @@ use std::io;
 pub const BWRAP_PATH: &str = "/usr/bin/bwrap";
 
 #[cfg(any(target_os = "linux", test))]
-const ISOLATED_WRITER_PROTECTED_DIRECTORIES: [&str; 2] = [".codewhale", ".deepseek"];
+const ISOLATED_WRITER_PROTECTED_DIRECTORIES: [&str; 2] = [".dse", ".deepseek"];
 
 /// Check if bubblewrap is installed and executable.
 #[cfg(target_os = "linux")]
@@ -254,7 +254,7 @@ mod tests {
         let workspace = tempfile::tempdir().expect("writer workspace");
         std::fs::write(
             workspace.path().join(".git"),
-            "gitdir: /tmp/codewhale-test-gitdir\n",
+            "gitdir: /tmp/dse-test-gitdir\n",
         )
         .expect("write Git pointer");
         workspace
@@ -279,7 +279,7 @@ mod tests {
     fn isolated_writer_materializes_missing_protected_mount_points() {
         let workspace = isolated_writer_fixture();
         let policy = crate::sandbox::SandboxPolicy::isolated_writer(workspace.path());
-        assert!(!workspace.path().join(".codewhale").exists());
+        assert!(!workspace.path().join(".dse").exists());
         assert!(!workspace.path().join(".deepseek").exists());
 
         prepare_isolated_writer_protected_paths(&policy).expect("prepare protected paths");
@@ -371,7 +371,7 @@ mod tests {
         let error = prepare_isolated_writer_protected_paths(&policy)
             .expect_err("Git symlink must fail closed");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(!workspace.path().join(".codewhale").exists());
+        assert!(!workspace.path().join(".dse").exists());
         assert!(!workspace.path().join(".deepseek").exists());
     }
 
@@ -411,7 +411,7 @@ mod tests {
             .canonicalize()
             .expect("canonical workspace");
 
-        for name in [".git", ".codewhale", ".deepseek"] {
+        for name in [".git", ".dse", ".deepseek"] {
             assert_read_only_bind(&command, &canonical_workspace.join(name));
         }
     }
@@ -453,7 +453,7 @@ mod tests {
 
         assert!(run("touch ordinary").status.success());
         for script in [
-            "touch .codewhale/blocked",
+            "touch .dse/blocked",
             "touch .deepseek/blocked",
             "printf blocked >> .git",
         ] {
@@ -463,7 +463,7 @@ mod tests {
             );
         }
         assert!(workspace.path().join("ordinary").is_file());
-        assert!(!workspace.path().join(".codewhale/blocked").exists());
+        assert!(!workspace.path().join(".dse/blocked").exists());
         assert!(!workspace.path().join(".deepseek/blocked").exists());
         assert_eq!(
             std::fs::read_to_string(workspace.path().join(".deepseek/owned"))

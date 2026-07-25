@@ -4,7 +4,7 @@
 //! This is the single record every setup step (#3404–#3412) reads and writes so
 //! that "configured", "skipped", "verified", and "ready" mean the same thing
 //! everywhere. It is persisted as a JSON sidecar (`setup_state.json`) under
-//! `$CODEWHALE_HOME`, written atomically through [`crate::persistence`] so it is
+//! `$DSE_HOME`, written atomically through [`crate::persistence`] so it is
 //! independent of `config.toml`'s comment-preserving writes and can never leave
 //! a half-written file.
 //!
@@ -33,7 +33,7 @@ use crate::persistence;
 /// Current schema version of the persisted setup-state record.
 pub const SETUP_STATE_SCHEMA_VERSION: u32 = 2;
 
-/// Filename of the setup-state sidecar under `$CODEWHALE_HOME`.
+/// Filename of the setup-state sidecar under `$DSE_HOME`.
 pub const SETUP_STATE_FILE_NAME: &str = "setup_state.json";
 
 /// Canonical setup step ids. The ordering matches the first-run spine so a
@@ -161,7 +161,7 @@ pub enum ConstitutionChoice {
     /// Created a guided structured user-global constitution.
     GuidedCustom,
     /// Expert full-Markdown override
-    /// (`$CODEWHALE_HOME/prompts/constitution.md` + opt-in env).
+    /// (`$DSE_HOME/prompts/constitution.md` + opt-in env).
     ExpertOverride,
     /// Explicitly postponed; bundled law applies until the user returns.
     Deferred,
@@ -201,7 +201,7 @@ pub enum ConstitutionSource {
     /// Only the bundled floor is active.
     #[default]
     Bundled,
-    /// A structured `constitution.json` under `$CODEWHALE_HOME`.
+    /// A structured `constitution.json` under `$DSE_HOME`.
     UserGlobal,
     /// An expert full-Markdown override file.
     ExpertOverride,
@@ -453,9 +453,9 @@ impl SetupState {
         state
     }
 
-    /// Path to the setup-state sidecar under `$CODEWHALE_HOME`.
+    /// Path to the setup-state sidecar under `$DSE_HOME`.
     pub fn path() -> Result<PathBuf> {
-        Ok(crate::codewhale_home()?.join(SETUP_STATE_FILE_NAME))
+        Ok(crate::dse_home()?.join(SETUP_STATE_FILE_NAME))
     }
 
     /// Load the persisted setup-state from the home sidecar.

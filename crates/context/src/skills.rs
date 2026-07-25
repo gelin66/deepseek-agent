@@ -14,8 +14,8 @@ const MAX_SKILL_NAME_CHARS: usize = 64;
 #[must_use]
 pub fn default_skills_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codewhale/skills"),
-        |p| p.join(".codewhale").join("skills"),
+        || PathBuf::from("/tmp/dse/skills"),
+        |p| p.join(".dse").join("skills"),
     )
 }
 
@@ -30,19 +30,19 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
 /// Session-time skill discovery scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillDiscoveryMode {
-    /// Preserve the existing broad compatibility scan across CodeWhale,
+    /// Preserve the existing broad compatibility scan across DSE,
     /// agentskills.io, Claude, OpenCode, Cursor, and legacy DeepSeek roots.
     Compatible,
-    /// Scan only CodeWhale-owned roots. Callers that also pass an explicit
+    /// Scan only DSE-owned roots. Callers that also pass an explicit
     /// `skills_dir` still get that directory because it is user configuration.
-    CodeWhaleOnly,
+    DseOnly,
 }
 
 impl SkillDiscoveryMode {
     #[must_use]
-    pub fn from_codewhale_only(value: bool) -> Self {
+    pub fn from_dse_only(value: bool) -> Self {
         if value {
-            Self::CodeWhaleOnly
+            Self::DseOnly
         } else {
             Self::Compatible
         }
@@ -581,10 +581,10 @@ fn normalize_skill_name_for_lookup(name: &str) -> String {
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
 /// 5. `<workspace>/.cursor/skills` — Cursor interop.
-/// 6. `<workspace>/.codewhale/skills` — CodeWhale workspace skills.
+/// 6. `<workspace>/.dse/skills` — DSE workspace skills.
 /// 7. [`agents_global_skills_dir`] — agentskills.io global.
 /// 8. `~/.claude/skills` — Claude-ecosystem global (#902).
-/// 9. `~/.codewhale/skills` — CodeWhale global, primary install target.
+/// 9. `~/.dse/skills` — DSE global, primary install target.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -607,31 +607,29 @@ fn skills_directories_with_home_and_mode(
             workspace.join(".opencode").join("skills"),
             workspace.join(".claude").join("skills"),
             workspace.join(".cursor").join("skills"),
-            workspace.join(".codewhale").join("skills"),
+            workspace.join(".dse").join("skills"),
         ],
-        SkillDiscoveryMode::CodeWhaleOnly => codewhale_workspace_skills_dir(workspace)
-            .into_iter()
-            .collect(),
+        SkillDiscoveryMode::DseOnly => dse_workspace_skills_dir(workspace).into_iter().collect(),
     };
     if let Some(home) = home_dir {
         match mode {
             SkillDiscoveryMode::Compatible => {
                 candidates.push(home.join(".agents").join("skills"));
                 candidates.push(home.join(".claude").join("skills"));
-                candidates.push(home.join(".codewhale").join("skills"));
+                candidates.push(home.join(".dse").join("skills"));
             }
-            SkillDiscoveryMode::CodeWhaleOnly => {
-                candidates.push(home.join(".codewhale").join("skills"));
+            SkillDiscoveryMode::DseOnly => {
+                candidates.push(home.join(".dse").join("skills"));
             }
         }
     } else {
-        candidates.push(PathBuf::from("/tmp/codewhale/skills"));
+        candidates.push(PathBuf::from("/tmp/dse/skills"));
     }
     existing_skill_dirs(candidates)
 }
 
-pub fn codewhale_workspace_skills_dir(workspace: &Path) -> Option<PathBuf> {
-    let skills_dir = workspace.join(".codewhale").join("skills");
+pub fn dse_workspace_skills_dir(workspace: &Path) -> Option<PathBuf> {
+    let skills_dir = workspace.join(".dse").join("skills");
     let canonical_workspace = fs::canonicalize(workspace).ok()?;
     let canonical_skills = fs::canonicalize(&skills_dir).ok()?;
     (canonical_skills.is_dir() && canonical_skills.starts_with(canonical_workspace))

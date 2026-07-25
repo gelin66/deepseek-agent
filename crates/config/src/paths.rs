@@ -11,23 +11,23 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use crate::CONFIG_FILE_NAME;
 
-/// Canonical CodeWhale app directory name under $HOME.
-pub const CODEWHALE_APP_DIR: &str = ".codewhale";
+/// Canonical DSE app directory name under $HOME.
+pub const DSE_APP_DIR: &str = ".dse";
 
-/// Resolve the CodeWhale home directory.
+/// Resolve the DSE home directory.
 ///
-/// `$CODEWHALE_HOME` takes precedence when set. Otherwise defaults to
-/// `$HOME/.codewhale`. This is the write target for new product state.
-pub fn codewhale_home() -> Result<PathBuf> {
-    if let Some(path) = codewhale_home_env_override() {
+/// `$DSE_HOME` takes precedence when set. Otherwise defaults to
+/// `$HOME/.dse`. This is the write target for new product state.
+pub fn dse_home() -> Result<PathBuf> {
+    if let Some(path) = dse_home_env_override() {
         return Ok(path);
     }
     let home = effective_home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(CODEWHALE_APP_DIR))
+    Ok(home.join(DSE_APP_DIR))
 }
 
-fn codewhale_home_env_override() -> Option<PathBuf> {
-    let val = std::env::var("CODEWHALE_HOME").ok()?;
+fn dse_home_env_override() -> Option<PathBuf> {
+    let val = std::env::var("DSE_HOME").ok()?;
     let trimmed = val.trim();
     if trimmed.is_empty() {
         None
@@ -76,11 +76,11 @@ fn ensure_safe_state_subdir(subdir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ensure a state subdirectory exists under the canonical CodeWhale root,
+/// Ensure a state subdirectory exists under the canonical DSE root,
 /// creating it if necessary. This is the write-path resolver.
 pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
     ensure_safe_state_subdir(subdir)?;
-    let dir = codewhale_home()?.join(subdir);
+    let dir = dse_home()?.join(subdir);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create {}/", dir.display()))?;
     Ok(dir)
@@ -90,7 +90,7 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return normalize_config_file_path(path);
     }
-    if let Ok(path) = std::env::var("CODEWHALE_CONFIG_PATH") {
+    if let Ok(path) = std::env::var("DSE_CONFIG_PATH") {
         if let Some(path) = config_path_from_env_value(&path)? {
             return Ok(path);
         }
@@ -109,7 +109,7 @@ fn config_path_from_env_value(path: &str) -> Result<Option<PathBuf>> {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
-    Ok(codewhale_home()?.join(CONFIG_FILE_NAME))
+    Ok(dse_home()?.join(CONFIG_FILE_NAME))
 }
 
 pub(crate) fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {

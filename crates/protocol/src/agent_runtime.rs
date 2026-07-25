@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 18;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 18;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 19;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 19;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -991,7 +991,7 @@ fn canonical_verification_artifact_bytes(content: &Value) -> Result<Vec<u8>, ser
 
 impl ToolArtifact {
     const VERIFICATION_ID_PREFIX: &'static str = "verification-evidence:";
-    const VERIFICATION_MEDIA_TYPE: &'static str = "application/vnd.codewhale.verification+json";
+    const VERIFICATION_MEDIA_TYPE: &'static str = "application/vnd.dse.verification+json";
 
     #[must_use]
     pub fn inline_verification(payload: VerificationArtifactPayload) -> Self {
@@ -3388,8 +3388,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 18);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 18);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 19);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 19);
     }
 
     #[test]
@@ -4083,6 +4083,10 @@ mod tests {
             },
         });
         artifact.validate_inline_verification().unwrap();
+        assert_eq!(
+            artifact.media_type.as_deref(),
+            Some("application/vnd.dse.verification+json")
+        );
 
         let mut corrupt = artifact;
         corrupt.byte_len = Some(0);

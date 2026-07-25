@@ -43,11 +43,11 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::sync::{Semaphore, oneshot};
 
-const CHILD_MODE: &str = "CODEWHALE_M4B_APP_SERVER_CHILD";
-const CHILD_DB: &str = "CODEWHALE_M4B_APP_SERVER_DB";
-const CHILD_ENDPOINT: &str = "CODEWHALE_M4B_APP_SERVER_ENDPOINT";
-const CHILD_WITH_KEY: &str = "CODEWHALE_M4B_APP_SERVER_WITH_KEY";
-const CHILD_HOME: &str = "CODEWHALE_M4B_APP_SERVER_HOME";
+const CHILD_MODE: &str = "DSE_M4B_APP_SERVER_CHILD";
+const CHILD_DB: &str = "DSE_M4B_APP_SERVER_DB";
+const CHILD_ENDPOINT: &str = "DSE_M4B_APP_SERVER_ENDPOINT";
+const CHILD_WITH_KEY: &str = "DSE_M4B_APP_SERVER_WITH_KEY";
+const CHILD_HOME: &str = "DSE_M4B_APP_SERVER_HOME";
 const COMPOSITION_REVISION: &str = "m4b-app-server-process-contract-v1";
 const CHILD_TEST_NAME: &str = "app_server_process_child";
 

@@ -394,7 +394,7 @@ impl Renderable for ChatWidget {
 
         let area = _area;
 
-        // Repaint the full chat area with the codewhale-ink background each
+        // Repaint the full chat area with the dse-ink background each
         // frame. Ratatui's `Paragraph` only writes cells that contain text,
         // so cells the current frame's paragraph doesn't touch would
         // otherwise hold the *previous* frame's contents (the `:24Z`
@@ -2936,7 +2936,7 @@ mod tests {
     #[test]
     fn empty_state_shows_startup_context() {
         let mut app = create_test_app();
-        app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");
+        app.workspace = PathBuf::from("/tmp/dse-test-workspace");
         app.mcp_configured_count = 2;
 
         let lines = build_empty_state_lines(&app, Rect::new(0, 0, 100, 20));
@@ -2951,7 +2951,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("dse · 工作区：/tmp/codewhale-test-workspace · mcp 2"));
+        assert!(rendered.contains("dse · 工作区：/tmp/dse-test-workspace · mcp 2"));
         assert!(!rendered.contains("/fleet"));
         assert!(!rendered.contains("Model  /model"));
         assert!(!rendered.contains("Rules  /constitution"));
@@ -2960,7 +2960,7 @@ mod tests {
     #[test]
     fn empty_state_centers_startup_block_by_actual_text_width() {
         let mut app = create_test_app();
-        app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");
+        app.workspace = PathBuf::from("/tmp/dse-test-workspace");
 
         let lines = build_empty_state_lines(&app, Rect::new(0, 0, 100, 20));
         let text_lines = lines
@@ -2972,7 +2972,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let context = "dse · 工作区：/tmp/codewhale-test-workspace · mcp 0";
+        let context = "dse · 工作区：/tmp/dse-test-workspace · mcp 0";
         let context_line = text_lines
             .iter()
             .find(|line| line.trim_start() == context)
@@ -2986,7 +2986,7 @@ mod tests {
     #[test]
     fn underwater_empty_state_is_visibly_deep_and_preserves_text_cells() {
         let mut app = create_test_app();
-        app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");
+        app.workspace = PathBuf::from("/tmp/dse-test-workspace");
         app.model = "deepseek-v4-pro".to_string();
 
         let area = Rect::new(0, 0, 100, 20);
@@ -3002,7 +3002,7 @@ mod tests {
             "wide idle water should contain three fish:\n{rendered}"
         );
 
-        let context = "dse · 工作区：/tmp/codewhale-test-workspace · mcp 0";
+        let context = "dse · 工作区：/tmp/dse-test-workspace · mcp 0";
         let context_x = ((100usize - UnicodeWidthStr::width(context)) / 2) as u16;
         let context_cell = (0..area.height)
             .find_map(|y| (buf[(context_x, y)].symbol() == "d").then_some((context_x, y)))
@@ -3094,7 +3094,7 @@ mod tests {
         );
     }
 
-    /// #4208: `CODEWHALE_ASCII_SAFE=1` must narrow every DSE-authored
+    /// #4208: `DSE_ASCII_SAFE=1` must narrow every DSE-authored
     /// decorative glyph — whale mark, fish, bubble, context meter, borders,
     /// braille state markers — across real rendered surfaces, not a
     /// hand-picked symbol list.
@@ -3852,7 +3852,7 @@ mod tests {
             "approval-1",
             "exec_shell",
             &serde_json::json!({
-                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p dse-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
+                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p dse-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/dse-clippy.log",
                 "cwd": "/Volumes/VIXinSSD/codewhale",
             }),
             ApprovalStakes::Elevated,

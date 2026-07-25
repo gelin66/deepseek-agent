@@ -58,7 +58,7 @@ fn configured_model_preserves_explicit_reasoning_setting() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
+    let _config_path = EnvVarGuard::set("DSE_CONFIG_PATH", &config_path);
     let config = Config {
         reasoning_effort: Some("off".to_owned()),
         ..Config::default()
@@ -78,7 +78,7 @@ fn app_new_uses_only_the_explicit_cost_currency_setting() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
     let settings_path = tmp.path().join("settings.toml");
-    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
+    let _config_path = EnvVarGuard::set("DSE_CONFIG_PATH", &config_path);
 
     std::fs::write(&settings_path, "cost_currency = \"usd\"\n").expect("usd settings");
     let usd = App::new(test_options(false), &Config::default());
@@ -463,8 +463,8 @@ fn app_new_detects_missing_api_key_with_default_config() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
-    let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
+    let _config_path = EnvVarGuard::set("DSE_CONFIG_PATH", &config_path);
+    let _provider_env = EnvVarGuard::remove("DSE_PROVIDER");
     let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
     let _api_key_envs: Vec<_> = [
         "DEEPSEEK_API_KEY",
@@ -503,8 +503,8 @@ fn app_new_with_explicit_api_key_does_not_trigger_onboarding() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
-    let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
+    let _config_path = EnvVarGuard::set("DSE_CONFIG_PATH", &config_path);
+    let _provider_env = EnvVarGuard::remove("DSE_PROVIDER");
     let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
 
     let config = Config {
@@ -580,7 +580,7 @@ fn cached_skills_merges_across_candidate_directories() {
 }
 
 #[test]
-fn cached_skills_respect_codewhale_only_scan_config() {
+fn cached_skills_respect_dse_only_scan_config() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
 
@@ -595,14 +595,11 @@ fn cached_skills_respect_codewhale_only_scan_config() {
     )
     .expect("write claude skill");
 
-    let codewhale_dir = workspace
-        .join(".codewhale")
-        .join("skills")
-        .join("codewhale-skill");
-    std::fs::create_dir_all(&codewhale_dir).expect("dse skill dir");
+    let dse_dir = workspace.join(".dse").join("skills").join("dse-skill");
+    std::fs::create_dir_all(&dse_dir).expect("dse skill dir");
     std::fs::write(
-        codewhale_dir.join("SKILL.md"),
-        "---\nname: codewhale-skill\ndescription: DSE skill\n---\nbody\n",
+        dse_dir.join("SKILL.md"),
+        "---\nname: dse-skill\ndescription: DSE skill\n---\nbody\n",
     )
     .expect("write dse skill");
 
@@ -612,7 +609,7 @@ fn cached_skills_respect_codewhale_only_scan_config() {
     options.skills_dir = global_skills_dir.clone();
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
-            scan_codewhale_only: Some(true),
+            scan_dse_only: Some(true),
         }),
         ..Default::default()
     };
@@ -620,12 +617,12 @@ fn cached_skills_respect_codewhale_only_scan_config() {
 
     assert_eq!(
         resolve_skills_dir(&workspace, &global_skills_dir, &config),
-        workspace.join(".codewhale").join("skills")
+        workspace.join(".dse").join("skills")
     );
     assert!(
         app.cached_skills
             .iter()
-            .any(|(name, _)| name == "codewhale-skill"),
+            .any(|(name, _)| name == "dse-skill"),
         "DSE skill should be cached: {:?}",
         app.cached_skills
     );
@@ -639,20 +636,16 @@ fn cached_skills_respect_codewhale_only_scan_config() {
 }
 
 #[test]
-fn resolve_skills_dir_requires_codewhale_skills_to_be_directory() {
+fn resolve_skills_dir_requires_dse_skills_to_be_directory() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
-    std::fs::create_dir_all(workspace.join(".codewhale")).expect("dse dir");
-    std::fs::write(
-        workspace.join(".codewhale").join("skills"),
-        "not a directory",
-    )
-    .expect("skills file");
+    std::fs::create_dir_all(workspace.join(".dse")).expect("dse dir");
+    std::fs::write(workspace.join(".dse").join("skills"), "not a directory").expect("skills file");
 
     let global_skills_dir = tmp.path().join("global-skills");
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
-            scan_codewhale_only: Some(true),
+            scan_dse_only: Some(true),
         }),
         ..Default::default()
     };
@@ -696,18 +689,15 @@ fn cached_skills_include_configured_directory() {
 }
 
 #[test]
-fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
+fn cached_skills_preserve_configured_directory_in_dse_only_scan() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
 
-    let codewhale_skill_dir = workspace
-        .join(".codewhale")
-        .join("skills")
-        .join("workspace-codewhale");
-    std::fs::create_dir_all(&codewhale_skill_dir).expect("workspace dse skill dir");
+    let dse_skill_dir = workspace.join(".dse").join("skills").join("workspace-dse");
+    std::fs::create_dir_all(&dse_skill_dir).expect("workspace dse skill dir");
     std::fs::write(
-        codewhale_skill_dir.join("SKILL.md"),
-        "---\nname: workspace-codewhale\ndescription: Workspace DSE skill\n---\nbody\n",
+        dse_skill_dir.join("SKILL.md"),
+        "---\nname: workspace-dse\ndescription: Workspace DSE skill\n---\nbody\n",
     )
     .expect("write workspace dse skill");
 
@@ -726,7 +716,7 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
     let config = Config {
         skills_dir: Some(configured_dir.to_string_lossy().into_owned()),
         skills: Some(crate::config::SkillsConfig {
-            scan_codewhale_only: Some(true),
+            scan_dse_only: Some(true),
         }),
         ..Default::default()
     };
@@ -739,7 +729,7 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
     assert!(
         app.cached_skills
             .iter()
-            .any(|(name, _)| name == "workspace-codewhale"),
+            .any(|(name, _)| name == "workspace-dse"),
         "workspace DSE skill should still be cached: {:?}",
         app.cached_skills
     );
@@ -753,12 +743,12 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
 }
 
 #[test]
-fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
+fn cached_skills_reject_dse_only_workspace_symlink_escape() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
     let escape_target = tmp.path().join("escape-target");
     let escaped_skill_dir = escape_target.join("escaped-skill");
-    std::fs::create_dir_all(workspace.join(".codewhale")).expect("dse dir");
+    std::fs::create_dir_all(workspace.join(".dse")).expect("dse dir");
     std::fs::create_dir_all(&escaped_skill_dir).expect("escaped skill dir");
     std::fs::write(
         escaped_skill_dir.join("SKILL.md"),
@@ -766,7 +756,7 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
     )
     .expect("write escaped skill");
 
-    let link_path = workspace.join(".codewhale").join("skills");
+    let link_path = workspace.join(".dse").join("skills");
     if create_dir_symlink(&escape_target, &link_path).is_err() {
         return;
     }
@@ -777,7 +767,7 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
     options.skills_dir = global_skills_dir.clone();
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
-            scan_codewhale_only: Some(true),
+            scan_dse_only: Some(true),
         }),
         ..Default::default()
     };
@@ -811,7 +801,7 @@ fn paste_defers_oversized_text_consolidation_until_submit() {
 
     assert_eq!(app.input, full_content);
     assert_eq!(app.cursor_position, app.input.chars().count());
-    let pastes_dir = tmp.path().join(".codewhale/pastes");
+    let pastes_dir = tmp.path().join(".dse/pastes");
     assert!(
         !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
         "paste file should not be written before submit"
@@ -833,7 +823,7 @@ fn paste_defers_oversized_text_consolidation_until_submit() {
     );
     let mention_start = full_content.len();
     assert!(
-        submitted[mention_start..].starts_with("\n@.codewhale/pastes/paste-"),
+        submitted[mention_start..].starts_with("\n@.dse/pastes/paste-"),
         "expected @mention suffix, got: {}",
         &submitted[mention_start..]
     );
@@ -864,9 +854,9 @@ fn paste_under_threshold_does_not_consolidate() {
     app.insert_paste_text(&small);
 
     assert_eq!(app.input, small);
-    assert!(!app.input.starts_with("@.codewhale/pastes/"));
+    assert!(!app.input.starts_with("@.dse/pastes/"));
     // No paste file gets written for under-cap pastes.
-    let pastes_dir = tmp.path().join(".codewhale/pastes");
+    let pastes_dir = tmp.path().join(".dse/pastes");
     assert!(
         !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
         "no paste file should be written for under-cap content"
@@ -895,7 +885,7 @@ fn submit_input_consolidates_oversized_input_into_paste_file() {
     );
     let mention_start = full_content.len();
     assert!(
-        submitted[mention_start..].starts_with("\n@.codewhale/pastes/paste-"),
+        submitted[mention_start..].starts_with("\n@.dse/pastes/paste-"),
         "submitted text should end with @mention, got suffix: {}",
         &submitted[mention_start..]
     );
@@ -938,7 +928,7 @@ fn test_clear_input() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "test input".to_string();
     app.cursor_position = app.input.len();
-    app.pending_paste_reference = Some("@.codewhale/pastes/input.md".to_string());
+    app.pending_paste_reference = Some("@.dse/pastes/input.md".to_string());
     app.oversized_paste_full_text = Some("full input".to_string());
     app.clear_input();
     assert!(app.input.is_empty());
@@ -965,7 +955,7 @@ fn obsolete_default_mode_yolo_cannot_grant_authority() {
         "default_mode = \"yolo\"\n",
     )
     .expect("obsolete settings fixture");
-    let _config_env = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_path);
+    let _config_env = EnvVarGuard::set("DSE_CONFIG_PATH", &config_path);
     let mut options = test_options(false);
     options.config_path = Some(config_path);
 

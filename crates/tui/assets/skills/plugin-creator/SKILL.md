@@ -1,6 +1,6 @@
 ---
 name: plugin-creator
-description: Scaffold dse local plugin directories and activation notes. Use when the user asks to create, package, or sketch a plugin for codewhale.
+description: Scaffold dse local plugin directories and activation notes. Use when the user asks to create, package, or sketch a plugin for dse.
 ---
 
 # Plugin Creator

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::codewhale_home;
+use crate::dse_home;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
@@ -92,8 +92,8 @@ struct PromptPreferencesWire {
 
 #[derive(Debug, Clone)]
 struct SettingsPathInputs {
-    codewhale_config_path: Option<PathBuf>,
-    codewhale_home: Option<PathBuf>,
+    dse_config_path: Option<PathBuf>,
+    dse_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ struct SettingsPathCandidates {
 }
 
 fn settings_path_candidates_from(inputs: SettingsPathInputs) -> SettingsPathCandidates {
-    if let Some(config_path) = inputs.codewhale_config_path
+    if let Some(config_path) = inputs.dse_config_path
         && let Some(parent) = config_path.parent()
     {
         return SettingsPathCandidates {
@@ -111,9 +111,7 @@ fn settings_path_candidates_from(inputs: SettingsPathInputs) -> SettingsPathCand
     }
 
     SettingsPathCandidates {
-        primary: inputs
-            .codewhale_home
-            .map(|home| home.join(SETTINGS_FILE_NAME)),
+        primary: inputs.dse_home.map(|home| home.join(SETTINGS_FILE_NAME)),
     }
 }
 
@@ -141,15 +139,13 @@ fn load_settings_source_from_candidates(
 }
 
 fn current_settings_path_candidates() -> SettingsPathCandidates {
-    let codewhale_config_path = std::env::var("CODEWHALE_CONFIG_PATH")
-        .ok()
-        .and_then(|path| {
-            let path = path.trim();
-            (!path.is_empty()).then(|| expand_home_path(path))
-        });
+    let dse_config_path = std::env::var("DSE_CONFIG_PATH").ok().and_then(|path| {
+        let path = path.trim();
+        (!path.is_empty()).then(|| expand_home_path(path))
+    });
     settings_path_candidates_from(SettingsPathInputs {
-        codewhale_config_path,
-        codewhale_home: codewhale_home().ok(),
+        dse_config_path,
+        dse_home: dse_home().ok(),
     })
 }
 
@@ -207,10 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn codewhale_config_path_owns_the_sibling_settings_source() {
+    fn dse_config_path_owns_the_sibling_settings_source() {
         let inputs = SettingsPathInputs {
-            codewhale_config_path: Some(PathBuf::from("/override/config.toml")),
-            codewhale_home: Some(PathBuf::from("/home/user/.codewhale")),
+            dse_config_path: Some(PathBuf::from("/override/config.toml")),
+            dse_home: Some(PathBuf::from("/home/user/.dse")),
         };
 
         let resolved = settings_path_candidates_from(inputs);
@@ -222,10 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn codewhale_home_is_the_only_default_settings_root() {
+    fn dse_home_is_the_only_default_settings_root() {
         let inputs = SettingsPathInputs {
-            codewhale_config_path: None,
-            codewhale_home: Some(PathBuf::from("/isolated")),
+            dse_config_path: None,
+            dse_home: Some(PathBuf::from("/isolated")),
         };
 
         let resolved = settings_path_candidates_from(inputs);

@@ -40,7 +40,7 @@ fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harne
 fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".codewhale").join("config.toml"),
+        ws.home().join(".dse").join("config.toml"),
         "[retry]\nenabled = false\n",
     )?;
     spawn_minimal(ws)
@@ -211,7 +211,7 @@ fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Re
     let _guard = qa_pty_test_lock();
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".codewhale").join("config.toml"),
+        ws.home().join(".dse").join("config.toml"),
         r#"
 api_key = "deepseek-test-key"
 default_text_model = "deepseek-v4-pro"
@@ -388,7 +388,7 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
     )?;
     h.send(b"2")?;
     if let Err(err) = h.wait_for_text("DENIAL-HONORED", Duration::from_secs(10)) {
-        let logs = std::fs::read_dir(ws.home().join(".codewhale/logs"))
+        let logs = std::fs::read_dir(ws.home().join(".dse/logs"))
             .ok()
             .into_iter()
             .flatten()

@@ -20,12 +20,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Default OS keychain service name. macOS users can verify entries with
-/// `security find-generic-password -s codewhale -a deepseek`.
-pub const DEFAULT_SERVICE: &str = "codewhale";
+/// `security find-generic-password -s dse -a deepseek`.
+pub const DEFAULT_SERVICE: &str = "dse";
 /// Select the secret storage backend. Supported values are `file` (default)
 /// and `system`/`keyring` for the OS credential store.
-pub const SECRET_BACKEND_ENV: &str = "CODEWHALE_SECRET_BACKEND";
-const FILE_BACKEND_LABEL: &str = "file-based (~/.codewhale/secrets/)";
+pub const SECRET_BACKEND_ENV: &str = "DSE_SECRET_BACKEND";
+const FILE_BACKEND_LABEL: &str = "file-based (~/.dse/secrets/)";
 
 /// Errors that may arise from a [`KeyringStore`] backend.
 #[derive(Debug, Error)]
@@ -52,7 +52,7 @@ pub enum SecretsError {
 /// Abstract secret store trait.
 ///
 /// Concrete implementations may use the OS keyring ([`DefaultKeyringStore`]),
-/// a JSON file under `~/.codewhale/secrets/` ([`FileKeyringStore`]), or an
+/// a JSON file under `~/.dse/secrets/` ([`FileKeyringStore`]), or an
 /// in-memory map for tests ([`InMemoryKeyringStore`]).
 ///
 /// All implementations must be [`Send`] + [`Sync`] so they can be shared
@@ -79,7 +79,7 @@ pub trait KeyringStore: Send + Sync {
     /// Short, human-readable label for this backend.
     ///
     /// Used by diagnostic output (e.g. `doctor` command) to indicate which
-    /// storage backend is active. Examples: `"file-based (~/.codewhale/secrets/)"`,
+    /// storage backend is active. Examples: `"file-based (~/.dse/secrets/)"`,
     /// `"system keyring"`, `"in-memory (test)"`.
     fn backend_name(&self) -> &'static str;
 }
@@ -340,7 +340,7 @@ impl KeyringStore for InMemoryKeyringStore {
 /// JSON-on-disk secret store for headless environments.
 ///
 /// This is the default backend. Secrets are serialised as a JSON object
-/// at `<home>/.codewhale/secrets/secrets.json` with Unix file mode `0600`
+/// at `<home>/.dse/secrets/secrets.json` with Unix file mode `0600`
 /// (owner read/write only). The parent directory is created with mode `0700`
 /// if it does not exist.
 ///
@@ -368,11 +368,11 @@ impl FileKeyringStore {
         Self { path: path.into() }
     }
 
-    /// Default path: `<home>/.codewhale/secrets/secrets.json`. Honours
-    /// `CODEWHALE_HOME`, then `HOME`, `USERPROFILE`, and finally the platform
+    /// Default path: `<home>/.dse/secrets/secrets.json`. Honours
+    /// `DSE_HOME`, then `HOME`, `USERPROFILE`, and finally the platform
     /// home directory from the `dirs` crate.
     pub fn default_path() -> Result<PathBuf, SecretsError> {
-        default_codewhale_secrets_path()
+        default_dse_secrets_path()
     }
 
     fn home_dir() -> Result<PathBuf, SecretsError> {
@@ -517,15 +517,15 @@ impl KeyringStore for FileKeyringStore {
     }
 }
 
-fn default_codewhale_secrets_path() -> Result<PathBuf, SecretsError> {
-    if let Ok(value) = std::env::var("CODEWHALE_HOME") {
+fn default_dse_secrets_path() -> Result<PathBuf, SecretsError> {
+    if let Ok(value) = std::env::var("DSE_HOME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed).join("secrets").join("secrets.json"));
         }
     }
     Ok(FileKeyringStore::home_dir()?
-        .join(".codewhale")
+        .join(".dse")
         .join("secrets")
         .join("secrets.json"))
 }
@@ -649,8 +649,8 @@ impl Secrets {
     }
 
     fn file_backed_default() -> Self {
-        let path = FileKeyringStore::default_path()
-            .unwrap_or_else(|_| PathBuf::from(".codewhale-secrets.json"));
+        let path =
+            FileKeyringStore::default_path().unwrap_or_else(|_| PathBuf::from(".dse-secrets.json"));
         Self::new(Arc::new(FileKeyringStore::new(path)))
     }
 
@@ -860,7 +860,7 @@ mod tests {
 
     fn clear_known_envs() {
         for var in [
-            "CODEWHALE_HOME",
+            "DSE_HOME",
             "DEEPSEEK_API_KEY",
             "OPENROUTER_API_KEY",
             "NOVITA_API_KEY",
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn file_default_path_uses_codewhale_home() {
+    fn file_default_path_uses_dse_home() {
         let _lock = env_lock();
         clear_known_envs();
         let tmp = tempfile::tempdir().unwrap();
@@ -1006,22 +1006,19 @@ mod tests {
 
         assert_eq!(
             path,
-            tmp.path()
-                .join(".codewhale")
-                .join("secrets")
-                .join("secrets.json")
+            tmp.path().join(".dse").join("secrets").join("secrets.json")
         );
     }
 
     #[test]
-    fn file_default_path_honors_codewhale_home() {
+    fn file_default_path_honors_dse_home() {
         let _lock = env_lock();
         clear_known_envs();
         let tmp = tempfile::tempdir().unwrap();
-        let custom = tmp.path().join("custom-codewhale");
+        let custom = tmp.path().join("custom-dse");
         let _home = EnvVarGuard::set("HOME", tmp.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", &custom);
+        let _dse_home = EnvVarGuard::set("DSE_HOME", &custom);
 
         let path = FileKeyringStore::default_path().unwrap();
 
@@ -1049,10 +1046,7 @@ mod tests {
 
         assert_eq!(
             primary,
-            tmp.path()
-                .join(".codewhale")
-                .join("secrets")
-                .join("secrets.json")
+            tmp.path().join(".dse").join("secrets").join("secrets.json")
         );
         assert_eq!(
             primary_store.get("deepseek").unwrap(),
@@ -1559,10 +1553,7 @@ mod tests {
         let path = FileKeyringStore::default_path().unwrap();
         assert_eq!(
             path,
-            tmp.path()
-                .join(".codewhale")
-                .join("secrets")
-                .join("secrets.json")
+            tmp.path().join(".dse").join("secrets").join("secrets.json")
         );
     }
 }

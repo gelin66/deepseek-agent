@@ -2934,7 +2934,7 @@ fn cleanup_tombstone_ref(facts: &OwnedWorktreeFacts, expected: &str) -> Result<S
             "Writer cleanup tombstone requires a full hexadecimal object id".to_string(),
         ));
     }
-    let reference = format!("refs/codewhale/cleanup/{}/{}", facts.owner_id, expected);
+    let reference = format!("refs/dse/cleanup/{}/{}", facts.owner_id, expected);
     Ok(reference)
 }
 
@@ -4091,7 +4091,7 @@ fn unique_integration_marker_temp_path(root_git_dir: &Path) -> Result<PathBuf> {
         .as_nanos();
     let sequence = NEXT_INTEGRATION_LOCK_TEMP.fetch_add(1, Ordering::Relaxed);
     let path = root_git_dir.join(format!(
-        ".codewhale-head-lock-{}-{timestamp}-{sequence}.tmp",
+        ".dse-head-lock-{}-{timestamp}-{sequence}.tmp",
         std::process::id()
     ));
     if symlink_metadata_optional(&path)?.is_some() {

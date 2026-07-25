@@ -148,7 +148,7 @@ pub fn default_marker_path() -> Option<PathBuf> {
 }
 
 fn marker_path_with_home(home: &Path) -> PathBuf {
-    home.join(".codewhale").join(ONBOARDED_MARKER_FILE)
+    home.join(".dse").join(ONBOARDED_MARKER_FILE)
 }
 
 pub fn is_onboarded() -> bool {
@@ -350,10 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_marker_path_uses_codewhale_not_legacy() {
+    fn fresh_install_marker_path_uses_dse_not_legacy() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let expected = tmp.path().join(".codewhale").join(ONBOARDED_MARKER_FILE);
+        let expected = tmp.path().join(".dse").join(ONBOARDED_MARKER_FILE);
         assert_eq!(marker_path_with_home(tmp.path()), expected);
 
         let written = mark_onboarded_at_home(tmp.path()).expect("mark onboarded");
@@ -372,7 +372,7 @@ mod tests {
         std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("mkdir legacy");
         std::fs::write(&legacy, "").expect("seed legacy marker");
 
-        let primary = tmp.path().join(".codewhale").join(ONBOARDED_MARKER_FILE);
+        let primary = tmp.path().join(".dse").join(ONBOARDED_MARKER_FILE);
         assert_eq!(marker_path_with_home(tmp.path()), primary);
         assert_eq!(
             mark_onboarded_at_home(tmp.path()).expect("mark onboarded"),
@@ -382,9 +382,9 @@ mod tests {
     }
 
     #[test]
-    fn codewhale_marker_wins_over_legacy_marker() {
+    fn dse_marker_wins_over_legacy_marker() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let primary = tmp.path().join(".codewhale").join(ONBOARDED_MARKER_FILE);
+        let primary = tmp.path().join(".dse").join(ONBOARDED_MARKER_FILE);
         let legacy = tmp.path().join(".deepseek").join(ONBOARDED_MARKER_FILE);
         for marker in [&primary, &legacy] {
             std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("mkdir");

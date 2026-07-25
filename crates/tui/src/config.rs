@@ -24,8 +24,8 @@ mod models;
 pub use models::*;
 mod paths;
 use paths::{
-    canonicalize_or_keep, codewhale_home_dir, default_config_path, default_mcp_config_path,
-    default_skills_dir, env_config_path, expand_pathbuf, home_config_path, workspace_config_key,
+    canonicalize_or_keep, default_config_path, default_mcp_config_path, default_skills_dir,
+    dse_home_dir, env_config_path, expand_pathbuf, home_config_path, workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
 mod search;
@@ -117,14 +117,14 @@ pub struct SubagentsConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SkillsConfig {
-    #[serde(default, alias = "scanCodewhaleOnly")]
-    pub scan_codewhale_only: Option<bool>,
+    #[serde(default, alias = "scanDseOnly")]
+    pub scan_dse_only: Option<bool>,
 }
 
 impl SkillsConfig {
     #[must_use]
-    pub fn scan_codewhale_only(&self) -> bool {
-        self.scan_codewhale_only.unwrap_or(false)
+    pub fn scan_dse_only(&self) -> bool {
+        self.scan_dse_only.unwrap_or(false)
     }
 }
 
@@ -191,7 +191,7 @@ impl Config {
             }
             _ => Config::default(),
         };
-        for name in ["CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER"] {
+        for name in ["DSE_PROVIDER", "DEEPSEEK_PROVIDER"] {
             if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
                 anyhow::bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量。");
             }
@@ -318,7 +318,7 @@ impl Config {
     #[must_use]
     pub fn deepseek_base_url(&self) -> String {
         let configured = self.base_url.as_deref().map(str::to_string);
-        let environment = std::env::var("CODEWHALE_BASE_URL")
+        let environment = std::env::var("DSE_BASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .or_else(|| {
@@ -519,7 +519,7 @@ impl Config {
 
     #[must_use]
     pub fn search_provider_resolution(&self) -> SearchProviderResolution {
-        if let Ok(raw) = std::env::var("CODEWHALE_SEARCH_PROVIDER")
+        if let Ok(raw) = std::env::var("DSE_SEARCH_PROVIDER")
             && let Some(provider) = SearchProvider::parse(&raw)
         {
             return SearchProviderResolution {
@@ -659,67 +659,67 @@ fn merge_features(
 }
 
 fn apply_env_overrides(config: &mut Config) {
-    if let Some(base_url) = deepseek_env_override("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
+    if let Some(base_url) = deepseek_env_override("DSE_BASE_URL", "DEEPSEEK_BASE_URL") {
         config.base_url = Some(base_url);
     }
-    if let Some(model) = deepseek_env_override("CODEWHALE_MODEL", "DEEPSEEK_MODEL").or_else(|| {
+    if let Some(model) = deepseek_env_override("DSE_MODEL", "DEEPSEEK_MODEL").or_else(|| {
         std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
             .ok()
             .filter(|value| !value.trim().is_empty())
     }) {
         config.default_text_model = Some(model);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SKILLS_DIR") {
+    if let Some(value) = dse_env("DSE_SKILLS_DIR") {
         config.skills_dir = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_MCP_CONFIG") {
+    if let Some(value) = dse_env("DSE_MCP_CONFIG") {
         config.mcp_config_path = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_ALLOW_SHELL") {
+    if let Some(value) = dse_env("DSE_ALLOW_SHELL") {
         config.allow_shell = Some(env_truthy(&value));
     }
-    if let Some(value) = codewhale_env("CODEWHALE_APPROVAL_POLICY") {
+    if let Some(value) = dse_env("DSE_APPROVAL_POLICY") {
         config.approval_policy = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_MODE") {
+    if let Some(value) = dse_env("DSE_SANDBOX_MODE") {
         config.sandbox_mode = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_YOLO") {
+    if let Some(value) = dse_env("DSE_YOLO") {
         config.yolo = Some(env_truthy(&value));
     }
-    if let Some(value) = codewhale_env("CODEWHALE_VERBOSITY") {
+    if let Some(value) = dse_env("DSE_VERBOSITY") {
         config.verbosity = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_BACKEND") {
+    if let Some(value) = dse_env("DSE_SANDBOX_BACKEND") {
         config.sandbox_backend = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_URL") {
+    if let Some(value) = dse_env("DSE_SANDBOX_URL") {
         config.sandbox_url = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SANDBOX_API_KEY") {
+    if let Some(value) = dse_env("DSE_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SEARCH_API_KEY") {
+    if let Some(value) = dse_env("DSE_SEARCH_API_KEY") {
         config
             .search
             .get_or_insert_with(SearchConfig::default)
             .api_key = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_SEARCH_BASE_URL") {
+    if let Some(value) = dse_env("DSE_SEARCH_BASE_URL") {
         config
             .search
             .get_or_insert_with(SearchConfig::default)
             .base_url = Some(value);
     }
-    if let Some(value) = codewhale_env("CODEWHALE_MAX_SUBAGENTS")
+    if let Some(value) = dse_env("DSE_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
     {
         config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
     }
 }
 
-fn deepseek_env_override(codewhale_name: &str, deepseek_name: &str) -> Option<String> {
-    std::env::var(codewhale_name)
+fn deepseek_env_override(dse_name: &str, deepseek_name: &str) -> Option<String> {
+    std::env::var(dse_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
@@ -729,7 +729,7 @@ fn deepseek_env_override(codewhale_name: &str, deepseek_name: &str) -> Option<St
         })
 }
 
-fn codewhale_env(name: &str) -> Option<String> {
+fn dse_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -765,12 +765,10 @@ pub(crate) fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
     if let Some(path) = env_config_path() {
         return vec![path];
     }
-    if let Some(home) = codewhale_home_dir() {
+    if let Some(home) = dse_home_dir() {
         return vec![home.join("config.toml")];
     }
-    effective_home_dir().map_or_else(Vec::new, |home| {
-        vec![home.join(".codewhale").join("config.toml")]
-    })
+    effective_home_dir().map_or_else(Vec::new, |home| vec![home.join(".dse").join("config.toml")])
 }
 
 #[must_use]
@@ -1021,7 +1019,7 @@ pub(crate) fn explicit_cli_api_key_override() -> Option<String> {
     if std::env::var("DEEPSEEK_API_KEY_SOURCE").as_deref() != Ok("cli") {
         return None;
     }
-    std::env::var("CODEWHALE_CLI_API_KEY")
+    std::env::var("DSE_CLI_API_KEY")
         .ok()
         .filter(|key| !key.trim().is_empty())
         .or_else(|| {

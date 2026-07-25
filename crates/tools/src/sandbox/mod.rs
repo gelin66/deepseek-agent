@@ -498,7 +498,7 @@ impl SandboxManager {
 
         // Add sandbox indicator to environment
         let mut env = spec.env.clone();
-        env.insert("CODEWHALE_SANDBOX".to_string(), "seatbelt".to_string());
+        env.insert("DSE_SANDBOX".to_string(), "seatbelt".to_string());
 
         ExecEnv {
             command,
@@ -533,7 +533,7 @@ impl SandboxManager {
             };
 
             let mut env = spec.env.clone();
-            env.insert("CODEWHALE_SANDBOX".to_string(), "bwrap".to_string());
+            env.insert("DSE_SANDBOX".to_string(), "bwrap".to_string());
 
             return ExecEnv {
                 command,
@@ -550,7 +550,7 @@ impl SandboxManager {
         command.extend(spec.args.clone());
 
         let mut env = spec.env.clone();
-        env.insert("CODEWHALE_SANDBOX".to_string(), "landlock".to_string());
+        env.insert("DSE_SANDBOX".to_string(), "landlock".to_string());
 
         ExecEnv {
             command,
@@ -575,12 +575,9 @@ impl SandboxManager {
 
         let mut env = spec.env.clone();
         let kind = windows::select_best_kind(&spec.sandbox_policy, &spec.cwd);
-        env.insert("CODEWHALE_SANDBOX".to_string(), format!("windows:{kind}"));
+        env.insert("DSE_SANDBOX".to_string(), format!("windows:{kind}"));
         if !spec.sandbox_policy.has_network_access() {
-            env.insert(
-                "CODEWHALE_SANDBOX_BLOCK_NETWORK".to_string(),
-                "1".to_string(),
-            );
+            env.insert("DSE_SANDBOX_BLOCK_NETWORK".to_string(), "1".to_string());
         }
 
         ExecEnv {
@@ -991,7 +988,7 @@ mod tests {
         let env = manager.prepare(&spec);
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         {
-            let marker = env.env.get("CODEWHALE_SANDBOX");
+            let marker = env.env.get("DSE_SANDBOX");
             assert!(marker.is_none_or(|v| v != "bwrap"));
         }
         let _ = env;
@@ -1006,7 +1003,7 @@ mod tests {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         {
             if crate::sandbox::bwrap::is_available() {
-                let marker = env.env.get("CODEWHALE_SANDBOX");
+                let marker = env.env.get("DSE_SANDBOX");
                 assert_eq!(marker.map(String::as_str), Some("bwrap"));
             }
         }

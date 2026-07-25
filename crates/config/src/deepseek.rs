@@ -518,7 +518,7 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
             return None;
         }
     };
-    let path = workspace.join(".codewhale").join(CONFIG_FILE_NAME);
+    let path = workspace.join(".dse").join(CONFIG_FILE_NAME);
     if !path.exists() {
         return None;
     }
@@ -938,35 +938,31 @@ struct EnvRuntimeOverrides {
 
 impl EnvRuntimeOverrides {
     fn load() -> Result<Self> {
-        for name in ["CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER"] {
+        for name in ["DSE_PROVIDER", "DEEPSEEK_PROVIDER"] {
             if let Ok(value) = std::env::var(name)
                 && !value.trim().is_empty()
             {
                 bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量");
             }
         }
-        let model = first_env(&[
-            "CODEWHALE_MODEL",
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_DEFAULT_TEXT_MODEL",
-        ]);
+        let model = first_env(&["DSE_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_DEFAULT_TEXT_MODEL"]);
         if let Some(model) = model.as_deref() {
             canonical_deepseek_model(model)?;
         }
-        let base_url = first_env(&["CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL"]);
+        let base_url = first_env(&["DSE_BASE_URL", "DEEPSEEK_BASE_URL"]);
         if let Some(base_url) = base_url.as_deref() {
             validate_deepseek_base_url(base_url)?;
         }
         Ok(Self {
             model,
             base_url,
-            output_mode: first_env(&["CODEWHALE_OUTPUT_MODE"]),
-            log_level: first_env(&["CODEWHALE_LOG_LEVEL"]),
-            telemetry: parse_optional_bool_env("CODEWHALE_TELEMETRY")?,
-            approval_policy: first_env(&["CODEWHALE_APPROVAL_POLICY"]),
-            sandbox_mode: first_env(&["CODEWHALE_SANDBOX_MODE"]),
-            yolo: parse_optional_bool_env("CODEWHALE_YOLO")?,
-            verbosity: first_env(&["CODEWHALE_VERBOSITY"]),
+            output_mode: first_env(&["DSE_OUTPUT_MODE"]),
+            log_level: first_env(&["DSE_LOG_LEVEL"]),
+            telemetry: parse_optional_bool_env("DSE_TELEMETRY")?,
+            approval_policy: first_env(&["DSE_APPROVAL_POLICY"]),
+            sandbox_mode: first_env(&["DSE_SANDBOX_MODE"]),
+            yolo: parse_optional_bool_env("DSE_YOLO")?,
+            verbosity: first_env(&["DSE_VERBOSITY"]),
         })
     }
 }

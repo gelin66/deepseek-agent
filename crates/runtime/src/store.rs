@@ -3866,7 +3866,7 @@ mod tests {
                 root_workspace: "/repo".to_owned(),
                 root_branch: Some("deepseek-agent".to_owned()),
                 base_commit: BASE.to_owned(),
-                worktree_path: Some("/tmp/codewhale-writer".to_owned()),
+                worktree_path: Some("/tmp/dse-writer".to_owned()),
                 branch: Some("dse/writer/task-1".to_owned()),
                 allowed_paths: vec!["src/lib.rs".to_owned()],
                 owner_token: Some("owner-1".to_owned()),
@@ -5188,7 +5188,7 @@ mod tests {
         second.call_id = "call-2".to_owned();
         second.task_contract.generation_id = TaskGenerationId::from("child-2");
         second.workspace.base_commit = FINAL.to_owned();
-        second.workspace.worktree_path = Some("/tmp/codewhale-writer-2".to_owned());
+        second.workspace.worktree_path = Some("/tmp/dse-writer-2".to_owned());
         second.workspace.branch = Some("dse/writer/task-2".to_owned());
         second.workspace.owner_token = Some("owner-2".to_owned());
         kinds.extend([

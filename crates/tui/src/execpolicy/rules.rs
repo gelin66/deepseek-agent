@@ -51,7 +51,7 @@ impl ExecPolicyConfig {
 }
 
 pub fn default_execpolicy_path() -> Option<PathBuf> {
-    dse_config::codewhale_home()
+    dse_config::dse_home()
         .ok()
         .map(|home| home.join("execpolicy.toml"))
 }

@@ -38,7 +38,7 @@ struct ToolLifecycleWorld {
 }
 
 #[given("an offline DSE workspace containing:")]
-fn offline_codewhale_workspace_containing(world: &mut ToolLifecycleWorld, step: &Step) {
+fn offline_dse_workspace_containing(world: &mut ToolLifecycleWorld, step: &Step) {
     let workspace = TempDir::new().expect("workspace tempdir");
     let home = TempDir::new().expect("home tempdir");
 
@@ -99,7 +99,7 @@ fn mocked_llm_will_answer_after_tool_result(world: &mut ToolLifecycleWorld, step
 #[when(regex = r#"^the user asks "([^"]+)"$"#)]
 async fn user_asks(world: &mut ToolLifecycleWorld, prompt: String) {
     let server = start_mock_llm(world).await;
-    let output = run_codewhale_exec(world, &server, &prompt);
+    let output = run_dse_exec(world, &server, &prompt);
 
     world.prompt = Some(prompt);
     world.stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -128,7 +128,7 @@ async fn user_asks(world: &mut ToolLifecycleWorld, prompt: String) {
 }
 
 #[then("DSE should send the user request to the mocked LLM")]
-fn codewhale_should_send_user_request_to_mocked_llm(world: &mut ToolLifecycleWorld) {
+fn dse_should_send_user_request_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let first_request = world
         .requests
         .first()
@@ -187,7 +187,7 @@ fn public_tool_result_should_return_directory_entries(world: &mut ToolLifecycleW
 }
 
 #[then("DSE should send the tool result back to the mocked LLM")]
-fn codewhale_should_send_tool_result_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
+fn dse_should_send_tool_result_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let request = world
         .requests
         .iter()
@@ -263,9 +263,7 @@ fn public_tool_result_should_report_malformed_arguments_for(
 }
 
 #[then("DSE should send the malformed argument error back to the mocked LLM")]
-fn codewhale_should_send_malformed_argument_error_back_to_mocked_llm(
-    world: &mut ToolLifecycleWorld,
-) {
+fn dse_should_send_malformed_argument_error_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let request = world
         .requests
         .iter()
@@ -397,7 +395,7 @@ async fn start_mock_llm(world: &ToolLifecycleWorld) -> MockServer {
     server
 }
 
-fn run_codewhale_exec(
+fn run_dse_exec(
     world: &ToolLifecycleWorld,
     server: &MockServer,
     prompt: &str,
@@ -410,7 +408,7 @@ fn run_codewhale_exec(
         .to_path_buf();
     let home = world.home.as_ref().expect("home").path().to_path_buf();
 
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(&workspace)
@@ -429,20 +427,17 @@ fn run_codewhale_exec(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env(
-            "CODEWHALE_CONFIG_PATH",
-            home.join(".codewhale").join("config.toml"),
-        )
+        .env("DSE_CONFIG_PATH", home.join(".dse").join("config.toml"))
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
         .env("DEEPSEEK_BASE_URL", server.uri())
-        .env("CODEWHALE_BASE_URL", server.uri())
+        .env("DSE_BASE_URL", server.uri())
         .env("DEEPSEEK_MODEL", TEST_MODEL)
-        .env("CODEWHALE_MODEL", TEST_MODEL)
+        .env("DSE_MODEL", TEST_MODEL)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    std::fs::create_dir_all(home.join(".codewhale")).expect("create dse home config dir");
+    std::fs::create_dir_all(home.join(".dse")).expect("create dse home config dir");
     run_with_timeout(command, Duration::from_secs(45))
 }
 
@@ -757,7 +752,7 @@ fn row_value(row: &[(String, String)], header: &str) -> String {
         .unwrap_or_else(|| panic!("data table row missing {header} value"))
 }
 
-fn codewhale_tui_binary() -> PathBuf {
+fn dse_tui_binary() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }

@@ -1241,7 +1241,7 @@ mod tests {
         );
 
         for command in [
-            "rm -rf /tmp/codewhale-critical-test",
+            "rm -rf /tmp/dse-critical-test",
             "git push origin main",
             "npm publish",
             "cargo publish",
@@ -1850,7 +1850,7 @@ mod tests {
         let other = fixture.path().join("other");
         for directory in [
             &per_worktree_git,
-            &writer.join(".codewhale"),
+            &writer.join(".dse"),
             &writer.join(".deepseek"),
             &other,
         ] {
@@ -1871,7 +1871,7 @@ mod tests {
         std::fs::write(common_git.join("config"), "common\n").unwrap();
         std::fs::write(root.join("root.txt"), "root\n").unwrap();
         std::fs::write(other.join("other.txt"), "other\n").unwrap();
-        std::fs::write(writer.join(".codewhale/state"), "codewhale\n").unwrap();
+        std::fs::write(writer.join(".dse/state"), "dse\n").unwrap();
         std::fs::write(writer.join(".deepseek/config"), "deepseek\n").unwrap();
         std::fs::write(writer.join("owned.txt"), "before\n").unwrap();
 
@@ -1881,7 +1881,7 @@ mod tests {
         let forbidden = [
             writer.join(".git"),
             writer.join(".git/index"),
-            writer.join("nested/../.codewhale/state"),
+            writer.join("nested/../.dse/state"),
             writer.join(".deepseek/config"),
             per_worktree_git.join("index"),
             common_git.join("config"),
@@ -2018,11 +2018,11 @@ mod tests {
     #[tokio::test]
     async fn ordinary_root_builtin_write_paths_do_not_gain_writer_restrictions() {
         let root = tempfile::tempdir().unwrap();
-        for directory in [".git", ".codewhale", ".deepseek"] {
+        for directory in [".git", ".dse", ".deepseek"] {
             std::fs::create_dir_all(root.path().join(directory)).unwrap();
         }
         std::fs::write(root.path().join(".git/local"), "git-before\n").unwrap();
-        std::fs::write(root.path().join(".codewhale/state"), "state-before\n").unwrap();
+        std::fs::write(root.path().join(".dse/state"), "state-before\n").unwrap();
         std::fs::write(root.path().join(".deepseek/config"), "config-before\n").unwrap();
         let executor = ProductionToolExecutor::new(ProductionToolConfig::new(root.path()));
 
@@ -2033,7 +2033,7 @@ mod tests {
                     json!({
                         "changes": [
                             {"path": ".git/local", "content": "git-after\n"},
-                            {"path": ".codewhale/state", "content": "state-after\n"}
+                            {"path": ".dse/state", "content": "state-after\n"}
                         ]
                     }),
                 ),
@@ -2071,7 +2071,7 @@ mod tests {
             b"git-after\n"
         );
         assert_eq!(
-            std::fs::read(root.path().join(".codewhale/state")).unwrap(),
+            std::fs::read(root.path().join(".dse/state")).unwrap(),
             b"state-after\n"
         );
         assert_eq!(

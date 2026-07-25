@@ -7,7 +7,9 @@ use super::*;
 
 fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 struct ScopedEnv {
@@ -52,13 +54,42 @@ fn in_memory_secrets() -> (Arc<InMemoryKeyringStore>, Secrets) {
 }
 
 #[test]
+fn m17b_paths_use_only_the_dse_home_and_config_contract() {
+    let _lock = env_lock();
+    let directory = tempdir().expect("isolated HOME");
+    let retired_home = directory.path().join("retired-codewhale-home");
+    let retired_config = directory.path().join("retired-codewhale-config.toml");
+    let dse_override = directory.path().join("dse-home");
+    let dse_config = directory.path().join("dse-config.toml");
+    let _home = ScopedEnv::set("HOME", directory.path().to_str().unwrap());
+    let _dse_home = ScopedEnv::remove("DSE_HOME");
+    let _dse_config = ScopedEnv::remove("DSE_CONFIG_PATH");
+    let _retired_home = ScopedEnv::set("CODEWHALE_HOME", retired_home.to_str().unwrap());
+    let _retired_config = ScopedEnv::set("CODEWHALE_CONFIG_PATH", retired_config.to_str().unwrap());
+
+    assert_eq!(dse_home().unwrap(), directory.path().join(".dse"));
+    assert_eq!(
+        resolve_config_path(None).unwrap(),
+        directory.path().join(".dse").join("config.toml")
+    );
+
+    let _dse_home = ScopedEnv::set("DSE_HOME", dse_override.to_str().unwrap());
+    let _dse_config = ScopedEnv::set("DSE_CONFIG_PATH", dse_config.to_str().unwrap());
+    assert_eq!(dse_home().unwrap(), dse_override);
+    assert_eq!(
+        resolve_config_path(None).unwrap(),
+        normalize_config_file_path(dse_config).unwrap()
+    );
+}
+
+#[test]
 fn m8a_default_runtime_is_official_deepseek() {
     let _lock = env_lock();
-    let _provider = ScopedEnv::remove("CODEWHALE_PROVIDER");
+    let _provider = ScopedEnv::remove("DSE_PROVIDER");
     let _legacy_provider = ScopedEnv::remove("DEEPSEEK_PROVIDER");
-    let _model = ScopedEnv::remove("CODEWHALE_MODEL");
+    let _model = ScopedEnv::remove("DSE_MODEL");
     let _legacy_model = ScopedEnv::remove("DEEPSEEK_MODEL");
-    let _base = ScopedEnv::remove("CODEWHALE_BASE_URL");
+    let _base = ScopedEnv::remove("DSE_BASE_URL");
     let _legacy_base = ScopedEnv::remove("DEEPSEEK_BASE_URL");
     let _key = ScopedEnv::remove("DEEPSEEK_API_KEY");
 
@@ -137,7 +168,7 @@ fn m8a_config_save_has_one_root_model_owner() {
 #[test]
 fn m8a_credential_precedence_is_cli_config_keyring_env() {
     let _lock = env_lock();
-    let _provider = ScopedEnv::remove("CODEWHALE_PROVIDER");
+    let _provider = ScopedEnv::remove("DSE_PROVIDER");
     let _legacy_provider = ScopedEnv::remove("DEEPSEEK_PROVIDER");
     let _env_key = ScopedEnv::set("DEEPSEEK_API_KEY", "env-key");
     let (keyring, secrets) = in_memory_secrets();
@@ -184,11 +215,11 @@ fn m8a_credential_precedence_is_cli_config_keyring_env() {
 #[test]
 fn m8a_any_retired_provider_environment_selector_fails_closed() {
     let _lock = env_lock();
-    let _provider = ScopedEnv::set("CODEWHALE_PROVIDER", "deepseek");
+    let _provider = ScopedEnv::set("DSE_PROVIDER", "deepseek");
     let error = ConfigToml::default()
         .resolve_runtime_options(&CliRuntimeOverrides::default())
         .expect_err("provider selector must not survive cutover");
-    assert!(error.to_string().contains("CODEWHALE_PROVIDER"));
+    assert!(error.to_string().contains("DSE_PROVIDER"));
 }
 
 #[test]
@@ -209,7 +240,7 @@ fn m8a_endpoint_accepts_official_or_loopback_only() {
 #[test]
 fn m8a_project_config_cannot_change_model_authority() {
     let directory = tempdir().unwrap();
-    let project_dir = directory.path().join(".codewhale");
+    let project_dir = directory.path().join(".dse");
     std::fs::create_dir_all(&project_dir).unwrap();
     for (key, value) in [
         ("api_key", "\"secret\""),

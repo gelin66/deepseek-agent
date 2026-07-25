@@ -47,10 +47,10 @@ const RECOVERY_PROMPT: &str = "恢复中断的显式创建，不得生成第二�
 fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow::Result<()> {
     let fixture = CountingDeepSeekFixture::spawn()?;
     let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    std::fs::create_dir_all(&codewhale_home)?;
-    let config_path = codewhale_home.join("config.toml");
-    let state_path = codewhale_home.join("state.db");
+    let dse_home = isolated.home().join(".dse");
+    std::fs::create_dir_all(&dse_home)?;
+    let config_path = dse_home.join("config.toml");
+    let state_path = dse_home.join("state.db");
     std::fs::write(
         &config_path,
         concat!(
@@ -64,8 +64,8 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
-        .env("CODEWHALE_CONFIG_PATH", config_path.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
+        .env("DSE_CONFIG_PATH", config_path.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "must-not-be-used")
         .env("DEEPSEEK_BASE_URL", fixture.base_url())
         .env("NO_ANIMATIONS", "1")
@@ -99,8 +99,8 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
 fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> anyhow::Result<()> {
     let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
     let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    let state_path = codewhale_home.join("state.db");
+    let dse_home = isolated.home().join(".dse");
+    let state_path = dse_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
         .display()
         .to_string();
@@ -109,7 +109,7 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "offline-canonical-pty-key")
         .env("DEEPSEEK_BASE_URL", &base_url)
         .env("NO_ANIMATIONS", "1")
@@ -166,9 +166,9 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
 #[test]
 fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyhow::Result<()> {
     let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    let state_path = codewhale_home.join("state.db");
-    let config_path = codewhale_home.join("config.toml");
+    let dse_home = isolated.home().join(".dse");
+    let state_path = dse_home.join("state.db");
+    let config_path = dse_home.join("config.toml");
     let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
         .display()
         .to_string();
@@ -177,7 +177,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("NO_ANIMATIONS", "1")
         .env("RUST_LOG", "warn")
         .args([
@@ -235,7 +235,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
                 project.get("trust_level").and_then(toml::Value::as_str) == Some("trusted")
             }))
     );
-    assert!(codewhale_home.join(".onboarded").is_file());
+    assert!(dse_home.join(".onboarded").is_file());
     assert!(
         !isolated.home().join(".deepseek").exists(),
         "first-run flow must not write legacy .deepseek state"
@@ -246,7 +246,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("DEEPSEEK_BASE_URL", &base_url)
         .env("NO_ANIMATIONS", "1")
         .env("RUST_LOG", "warn")
@@ -292,8 +292,8 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
 fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow::Result<()> {
     let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
     let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    let state_path = codewhale_home.join("state.db");
+    let dse_home = isolated.home().join(".dse");
+    let state_path = dse_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
         .display()
         .to_string();
@@ -310,7 +310,7 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "offline-canonical-recovery-key")
         .env("DEEPSEEK_BASE_URL", &base_url)
         .env("NO_ANIMATIONS", "1")
@@ -368,8 +368,8 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
     let isolated = make_sealed_workspace()?;
     std::fs::create_dir_all(isolated.workspace().join("src"))?;
     std::fs::write(isolated.workspace().join("src/alpha.rs"), FILE_SENTINEL)?;
-    let codewhale_home = isolated.home().join(".codewhale");
-    let state_path = codewhale_home.join("state.db");
+    let dse_home = isolated.home().join(".dse");
+    let state_path = dse_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
         .display()
         .to_string();
@@ -378,7 +378,7 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "offline-canonical-mention-key")
         .env("DEEPSEEK_BASE_URL", &base_url)
         .env("NO_ANIMATIONS", "1")
@@ -443,7 +443,7 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
 
     assert_canonical_sqlite_truth(&state_path, &canonical_workspace, RAW_PROMPT)?;
     assert!(
-        !codewhale_home.join("file-frecency.jsonl").exists(),
+        !dse_home.join("file-frecency.jsonl").exists(),
         "mention acceptance must not recreate retired frecency state"
     );
     Ok(())
@@ -453,13 +453,13 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
 fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow::Result<()> {
     let fixture = CountingDeepSeekFixture::spawn()?;
     let isolated = make_sealed_workspace()?;
-    let codewhale_home = isolated.home().join(".codewhale");
+    let dse_home = isolated.home().join(".dse");
 
     let mut tui = Harness::builder(Harness::cargo_bin("dse-tui"))
         .cwd(isolated.workspace())
         .clear_env()
         .seal_home(isolated.home())
-        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DSE_HOME", dse_home.to_string_lossy())
         .env("DEEPSEEK_API_KEY", "offline-canonical-command-key")
         .env("DEEPSEEK_BASE_URL", fixture.base_url())
         .env("NO_ANIMATIONS", "1")

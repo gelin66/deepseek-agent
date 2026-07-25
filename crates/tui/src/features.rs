@@ -1,4 +1,4 @@
-//! Feature flags and metadata for codewhale.
+//! Feature flags and metadata for dse.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

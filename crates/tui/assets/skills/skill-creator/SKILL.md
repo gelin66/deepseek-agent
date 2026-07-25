@@ -93,7 +93,7 @@ plain single-line values. Use lower-case hyphen-case names.
   unless the user asked for a rewrite.
 - Tighten descriptions when the skill is under-triggering or over-triggering.
 - Remove stale tool names, unavailable dependencies, and copied instructions
-  from other agents that do not apply to codewhale.
+  from other agents that do not apply to dse.
 - Keep examples short and directly tied to this runtime's commands and tools.
 
 ## Validation Checklist

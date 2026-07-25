@@ -24,7 +24,7 @@ pub struct ProductionPromptRequest<'a> {
     pub instructions: &'a [InstructionSource],
     pub skills_dir: Option<&'a Path>,
     pub verbosity: Option<&'a str>,
-    pub skills_scan_codewhale_only: bool,
+    pub skills_scan_dse_only: bool,
     pub shell_binary: &'a str,
     pub tool_mode: bool,
 }
@@ -164,14 +164,14 @@ fn is_concise_verbosity(value: Option<&str>) -> bool {
 /// system prompt (after mode prompt + project context, before
 /// configured instructions / skills).
 fn render_environment_block(shell: &str) -> String {
-    let codewhale_version = env!("CARGO_PKG_VERSION");
+    let dse_version = env!("CARGO_PKG_VERSION");
     let platform = std::env::consts::OS;
 
     format!(
         "## 运行环境\n\
          \n\
          - lang: zh-Hans\n\
-         - codewhale_version: {codewhale_version}\n\
+         - dse_version: {dse_version}\n\
          - platform: {platform}\n\
          - shell: {shell}"
     )
@@ -396,7 +396,7 @@ pub fn set_static_prompt_composer_override(
 //
 // Because replacing the base prompt is a trust-boundary action (per maintainer
 // review on #3638), the override file alone is NOT sufficient: the user must
-// also set an explicit opt-in flag (`CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE`).
+// also set an explicit opt-in flag (`DSE_ALLOW_BASE_PROMPT_OVERRIDE`).
 // This keeps replacing the global Constitution a deliberate, auditable act
 // rather than something a stray file can do.
 
@@ -407,7 +407,7 @@ pub const CONSTITUTION_OVERRIDE_FILE: &str = "prompts/constitution.md";
 /// Env flag that must be set (`1`/`true`/`on`/`yes`) to enable config-dir base
 /// prompt overrides. Required in addition to the override file so the global
 /// base prompt can never be replaced by file presence alone.
-pub const BASE_PROMPT_OVERRIDE_OPT_IN_ENV: &str = "CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE";
+pub const BASE_PROMPT_OVERRIDE_OPT_IN_ENV: &str = "DSE_ALLOW_BASE_PROMPT_OVERRIDE";
 
 /// Whether the user has explicitly opted in to base-prompt overrides.
 pub fn base_prompt_override_opt_in() -> bool {
@@ -495,7 +495,7 @@ pub fn load_config_dir_prompt_overrides(config_dir: &Path) -> Vec<&'static str> 
 /// startup wiring; silently does nothing when the config home cannot be
 /// resolved.
 pub fn load_prompt_overrides_from_config_home() {
-    let Ok(home) = dse_config::codewhale_home() else {
+    let Ok(home) = dse_config::dse_home() else {
         return;
     };
     let applied = load_config_dir_prompt_overrides(&home);
@@ -673,12 +673,12 @@ fn assemble_system_prompt(
     // 3. Skills block. #432: default discovery walks every compatible
     // workspace/global skill directory so skills installed for other AI-tool
     // conventions show up in the catalogue. Users can opt into a DSE-only
-    // scan with `[skills] scan_codewhale_only = true`. When an explicit
+    // scan with `[skills] scan_dse_only = true`. When an explicit
     // `skills_dir` is configured, union it with the workspace view instead of
     // treating it as a fallback; the workspace view often returns Some and
     // would otherwise shadow the configured directory entirely.
     let skill_discovery_mode =
-        crate::skills::SkillDiscoveryMode::from_codewhale_only(request.skills_scan_codewhale_only);
+        crate::skills::SkillDiscoveryMode::from_dse_only(request.skills_scan_dse_only);
     let skills_block = match request.skills_dir {
         Some(dir) => {
             crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode(
@@ -965,9 +965,8 @@ mod tests {
         let _ = fs::remove_dir_all(&fixture);
         let home = fixture.join("home");
         let workspace = fixture.join("workspace");
-        fs::create_dir_all(home.join(".codewhale/skills")).expect("home skills");
-        fs::create_dir_all(workspace.join(".codewhale/skills/frozen-skill"))
-            .expect("workspace skill");
+        fs::create_dir_all(home.join(".dse/skills")).expect("home skills");
+        fs::create_dir_all(workspace.join(".dse/skills/frozen-skill")).expect("workspace skill");
         fs::create_dir_all(workspace.join("src")).expect("source dir");
         fs::write(
             workspace.join("AGENTS.md"),
@@ -981,7 +980,7 @@ mod tests {
         .expect("README");
         fs::write(workspace.join("src/lib.rs"), "pub fn fixture() {}\n").expect("source");
         fs::write(
-            workspace.join(".codewhale/skills/frozen-skill/SKILL.md"),
+            workspace.join(".dse/skills/frozen-skill/SKILL.md"),
             "---\nname: frozen-skill\ndescription: OPAQUE_SKILL English skill description stays unchanged.\n---\nUse it.\n",
         )
         .expect("skill");
@@ -993,7 +992,7 @@ mod tests {
         .expect("configured instruction");
 
         let _home = EnvGuard::set("HOME", &home);
-        let _codewhale_home = EnvGuard::set("CODEWHALE_HOME", &home.join(".codewhale"));
+        let _dse_home = EnvGuard::set("DSE_HOME", &home.join(".dse"));
         let preferences = PromptPreferences {
             show_thinking: false,
         };
@@ -1011,9 +1010,9 @@ mod tests {
             model: "deepseek-v4-pro",
             preferences: &preferences,
             instructions: &instructions,
-            skills_dir: Some(&workspace.join(".codewhale/skills")),
+            skills_dir: Some(&workspace.join(".dse/skills")),
             verbosity: Some("concise"),
-            skills_scan_codewhale_only: true,
+            skills_scan_dse_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: true,
         });
@@ -1107,8 +1106,8 @@ mod tests {
         assert_eq!(
             block_hashes,
             [
-                "4bc8bafe6fa99d5da2753c8362142f460d78582c5219543e4ba925590fc2580b",
-                "2caa65b9283dccb613c68ab9e334dee8999d36519d393cd45d42eccd9b25d3ca",
+                "5e812446d731a56792420c2077566b7d580d620f53353bff28a70e96224944fd",
+                "df21f9a7d25fb706fa3621cd00fe458156f22e27b2c6c807ec057356d2e10e10",
                 "70e9297a2ae78cb815d9a24c18d93f57eb8fe05cc12b005a9826e778ffd1c4fe",
                 "50f497cd9e457dacbe0e0b8ce8166bcaa7da57a705a5b3b781b2623a5a21dd00",
                 "bde16f8906147ce294b97a26bb17115acf9c41654c356ca0ee40cd2f39fee645",
@@ -1128,7 +1127,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "7a10883783669fcb86676de79f86f871f0d6135a8c31c3e4c3600a0096ae1c5f"
+            "e68daff8b4e2ff2a2445181f3b91e2516a2c68238cb484e5a1b6945f82ed1645"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {
@@ -1136,9 +1135,9 @@ mod tests {
             model: "deepseek-v4-pro",
             preferences: &preferences,
             instructions: &instructions,
-            skills_dir: Some(&workspace.join(".codewhale/skills")),
+            skills_dir: Some(&workspace.join(".dse/skills")),
             verbosity: Some("concise"),
-            skills_scan_codewhale_only: true,
+            skills_scan_dse_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: false,
         });
@@ -1163,7 +1162,7 @@ mod tests {
             "pub fn fallback_fixture() {}\n",
         )
         .expect("fallback source");
-        let fallback_skills_dir = fallback_workspace.join(".codewhale/skills");
+        let fallback_skills_dir = fallback_workspace.join(".dse/skills");
         let fallback_request = || ProductionPromptRequest {
             workspace: fallback_workspace.as_path(),
             model: "deepseek-v4-pro",
@@ -1171,7 +1170,7 @@ mod tests {
             instructions: &[],
             skills_dir: Some(fallback_skills_dir.as_path()),
             verbosity: None,
-            skills_scan_codewhale_only: true,
+            skills_scan_dse_only: true,
             shell_binary: "/fixture/bin/zsh",
             tool_mode: true,
         };

@@ -34,7 +34,7 @@ const TEST_KEY: &str = "offline-exec-terminal-test-key";
 const MULTI_AGENT_ROOT_PROMPT: &str = "exec-multi-agent-root-production-marker";
 const MULTI_AGENT_SPAWN_CALL_ID: &str = "call_exec_multi_agent_spawn";
 const MULTI_AGENT_CHILD_SYSTEM_MARKER: &str = "你是在同一 AgentRuntime 中运行的";
-const MULTI_AGENT_HANDOFF_MARKER: &str = "<codewhale:runtime_event kind=\"subagent_completion\"";
+const MULTI_AGENT_HANDOFF_MARKER: &str = "<dse:runtime_event kind=\"subagent_completion\"";
 const MULTI_AGENT_CHILD_MARKER: &str = "child-production-complete-marker";
 const MULTI_AGENT_PARENT_MARKER: &str = "parent-integrated-child-production-marker";
 const NESTED_ROOT_PROMPT: &str = "exec-nested-agent-root-production-marker";
@@ -45,8 +45,7 @@ const NESTED_GRANDCHILD_PROMPT: &str = "nested-grandchild-task-production-marker
 const NESTED_GRANDCHILD_MARKER: &str = "nested-grandchild-production-complete";
 const NESTED_PARENT_INTEGRATED_MARKER: &str = "nested-parent-integrated-grandchild";
 const NESTED_ROOT_INTEGRATED_MARKER: &str = "nested-root-integrated-full-tree";
-const NESTED_CHILD_HANDOFF_MARKER: &str =
-    "<codewhale:runtime_event kind=\"child_subagent_completion\"";
+const NESTED_CHILD_HANDOFF_MARKER: &str = "<dse:runtime_event kind=\"child_subagent_completion\"";
 const UNAUTHORIZED_WRITE_CALL_ID: &str = "call_exec_unauthorized_write";
 const UNAUTHORIZED_WRITE_PATH: &str = "must-not-be-created.txt";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -216,7 +215,7 @@ async fn completed_exec_resume_replays_the_same_terminal_without_another_model_r
     );
     assert_eq!(chat_request_count(&server).await, 1);
 
-    let state_db = home.path().join(".codewhale/state.db");
+    let state_db = home.path().join(".dse/state.db");
     assert!(
         state_db.is_file(),
         "production exec did not create the canonical SQLite store: {}",
@@ -319,8 +318,8 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
     let continue_prompt = "continue only the second fresh run";
     let (mut first_command, workspace, home) =
         prepare_exec(&server.uri(), 30, first_prompt, "", None);
-    let codewhale_home = home.path().join(".codewhale");
-    first_command.env("CODEWHALE_HOME", &codewhale_home);
+    let dse_home = home.path().join(".dse");
+    first_command.env("DSE_HOME", &dse_home);
     let first = run_with_timeout(first_command, PROCESS_TIMEOUT);
     assert!(
         first.status.success(),
@@ -360,7 +359,7 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
     );
     assert_ne!(second_run_id, first_run_id);
 
-    let state_db = codewhale_home.join("state.db");
+    let state_db = dse_home.join("state.db");
     let store = StateStore::open(Some(state_db.clone())).expect("open shared exec state db");
     let second_before = store
         .load(&second_run_id)
@@ -481,7 +480,7 @@ async fn killed_in_flight_model_request_resumes_fail_closed_without_resending() 
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let state_db = home.path().join(".codewhale/state.db");
+    let state_db = home.path().join(".dse/state.db");
     let canonical_workspace = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
     let store = StateStore::open(Some(state_db.clone())).expect("open live run state db");
     let live_run = store
@@ -646,7 +645,7 @@ async fn resume_environment_mismatches_fail_closed_before_model_io() {
     let canonical_other_workspace =
         std::fs::canonicalize(other_workspace.path()).expect("canonical other workspace");
     let home = TempDir::new().expect("home tempdir");
-    let config_dir = home.path().join(".codewhale");
+    let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
     std::fs::write(config_dir.join("config.toml"), "[retry]\nenabled = false\n")
         .expect("write isolated exec config");
@@ -748,7 +747,7 @@ async fn resume_execution_fingerprint_missing_or_mismatch_fails_closed_before_mo
     );
     assert_eq!(chat_request_count(&server).await, 1);
 
-    let state_db = home.path().join(".codewhale/state.db");
+    let state_db = home.path().join(".dse/state.db");
     let store = StateStore::open(Some(state_db)).expect("open fingerprint fixture state db");
     let seed_replay = store
         .load(&seed_run_id)
@@ -1237,7 +1236,7 @@ async fn explicit_fixed_pro_uses_one_root_request_and_one_exact_ledger() {
             .as_str()
             .expect("terminal metadata must expose the canonical run id"),
     );
-    let store = StateStore::open(Some(home.path().join(".codewhale/state.db")))
+    let store = StateStore::open(Some(home.path().join(".dse/state.db")))
         .expect("open fixed-Pro production state db");
     let replay = store
         .load(&run_id)
@@ -1762,7 +1761,7 @@ async fn sigterm_drains_the_canonical_cancel_terminal_before_exiting() {
             .as_str()
             .expect("cancel terminal identifies canonical run"),
     );
-    let replay = StateStore::open(Some(home.path().join(".codewhale/state.db")))
+    let replay = StateStore::open(Some(home.path().join(".dse/state.db")))
         .expect("open SIGTERM RunStore")
         .load(&run_id)
         .await
@@ -1930,7 +1929,7 @@ async fn full_unread_stdout_pipe_still_honors_the_runtime_bound() {
     let server = LoopbackSseServer::start(RawSseMode::ContentFlood);
     let (mut command, _workspace, _home) =
         prepare_exec(&server.uri(), 8, "fill an unread stdout pipe", "", None);
-    command.env("CODEWHALE_TOOL_SURFACE", "shell-only");
+    command.env("DSE_TOOL_SURFACE", "shell-only");
 
     let output = run_with_unconsumed_stdout(
         command,
@@ -2032,13 +2031,13 @@ fn prepare_resume_exec(
     auto: bool,
     provider: Option<&str>,
 ) -> Command {
-    let config_path = home.join(".codewhale/config.toml");
+    let config_path = home.join(".dse/config.toml");
     assert!(
         config_path.is_file(),
         "resume fixture config does not exist: {}",
         config_path.display()
     );
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(workspace)
@@ -2068,9 +2067,9 @@ fn prepare_resume_exec(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env("CODEWHALE_CONFIG_PATH", config_path)
+        .env("DSE_CONFIG_PATH", config_path)
         .env("DEEPSEEK_API_KEY", TEST_KEY)
-        .env("CODEWHALE_BASE_URL", base_url)
+        .env("DSE_BASE_URL", base_url)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2084,14 +2083,14 @@ fn prepare_existing_exec(
     prompt: &str,
     continue_latest: bool,
 ) -> Command {
-    let codewhale_home = home.join(".codewhale");
-    let config_path = codewhale_home.join("config.toml");
+    let dse_home = home.join(".dse");
+    let config_path = dse_home.join("config.toml");
     assert!(
         config_path.is_file(),
         "shared exec fixture config does not exist: {}",
         config_path.display()
     );
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(workspace)
@@ -2118,10 +2117,10 @@ fn prepare_existing_exec(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env("CODEWHALE_HOME", &codewhale_home)
-        .env("CODEWHALE_CONFIG_PATH", config_path)
+        .env("DSE_HOME", &dse_home)
+        .env("DSE_CONFIG_PATH", config_path)
         .env("DEEPSEEK_API_KEY", TEST_KEY)
-        .env("CODEWHALE_BASE_URL", base_url)
+        .env("DSE_BASE_URL", base_url)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2156,12 +2155,12 @@ fn prepare_non_agent_exec(
 ) -> (Command, TempDir, TempDir) {
     let workspace = TempDir::new().expect("workspace tempdir");
     let home = TempDir::new().expect("home tempdir");
-    let config_dir = home.path().join(".codewhale");
+    let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
     std::fs::write(config_dir.join("config.toml"), "[retry]\nenabled = false\n")
         .expect("write isolated exec config");
 
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(workspace.path())
@@ -2190,9 +2189,9 @@ fn prepare_non_agent_exec(
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("XDG_DATA_HOME", home.path().join(".local/share"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
-        .env("CODEWHALE_CONFIG_PATH", config_dir.join("config.toml"))
+        .env("DSE_CONFIG_PATH", config_dir.join("config.toml"))
         .env("DEEPSEEK_API_KEY", TEST_KEY)
-        .env("CODEWHALE_BASE_URL", base_url)
+        .env("DSE_BASE_URL", base_url)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2213,7 +2212,7 @@ fn prepare_exec_with_options(
 ) -> (Command, TempDir, TempDir) {
     let workspace = TempDir::new().expect("workspace tempdir");
     let home = TempDir::new().expect("home tempdir");
-    let config_dir = home.path().join(".codewhale");
+    let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
     std::fs::write(
         config_dir.join("config.toml"),
@@ -2221,7 +2220,7 @@ fn prepare_exec_with_options(
     )
     .expect("write isolated exec config");
 
-    let mut command = Command::new(codewhale_tui_binary());
+    let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
     command
         .current_dir(workspace.path())
@@ -2243,9 +2242,9 @@ fn prepare_exec_with_options(
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("XDG_DATA_HOME", home.path().join(".local/share"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
-        .env("CODEWHALE_CONFIG_PATH", config_dir.join("config.toml"))
+        .env("DSE_CONFIG_PATH", config_dir.join("config.toml"))
         .env("DEEPSEEK_API_KEY", TEST_KEY)
-        .env("CODEWHALE_BASE_URL", base_url)
+        .env("DSE_BASE_URL", base_url)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2388,8 +2387,8 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                     index + 1
                 )
             });
-            assert_eq!(event["schema"], "codewhale.exec-stream");
-            assert_eq!(event["schema_version"], 3);
+            assert_eq!(event["schema"], "dse.exec-stream");
+            assert_eq!(event["schema_version"], 4);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",
@@ -2634,7 +2633,7 @@ fn wait_for_loopback_sse_server(address: std::net::SocketAddr) {
         .expect("set stalled SSE readiness timeout");
     stream
         .write_all(
-            b"POST /__codewhale/ready HTTP/1.1\r\n\
+            b"POST /__dse/ready HTTP/1.1\r\n\
 Host: localhost\r\n\
 Content-Type: application/json\r\n\
 Content-Length: 2\r\n\
@@ -2708,7 +2707,7 @@ fn serve_loopback_sse_connection(
     let mut parts = request_line.split_ascii_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
-    if method == "POST" && path == "/__codewhale/ready" {
+    if method == "POST" && path == "/__dse/ready" {
         let body = serde_json::to_vec(&json!({
             "ready": true
         }))
@@ -3189,7 +3188,7 @@ fn preserve_host_env(command: &mut Command) {
     }
 }
 
-fn codewhale_tui_binary() -> PathBuf {
+fn dse_tui_binary() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }

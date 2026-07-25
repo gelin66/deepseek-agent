@@ -727,7 +727,7 @@ fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunReq
             access: AgentWorkspaceAccess::IsolatedWrite,
             root_workspace: "/workspace".to_owned(),
             base_commit: "a".repeat(40),
-            worktree_path: Some("/workspace/.codewhale-writer/actor-failure".to_owned()),
+            worktree_path: Some("/workspace/.dse-writer/actor-failure".to_owned()),
             root_branch: Some("deepseek-agent".to_owned()),
             branch: Some("dse/writer/actor-failure".to_owned()),
             allowed_paths: vec!["src/lib.rs".to_owned()],

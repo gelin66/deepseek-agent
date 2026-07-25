@@ -17,8 +17,8 @@ pub(crate) fn default_config_path() -> Option<PathBuf> {
     env_config_path().or_else(home_config_path)
 }
 
-pub(crate) fn codewhale_home_dir() -> Option<PathBuf> {
-    std::env::var_os("CODEWHALE_HOME").and_then(|path| {
+pub(crate) fn dse_home_dir() -> Option<PathBuf> {
+    std::env::var_os("DSE_HOME").and_then(|path| {
         let path = PathBuf::from(path);
         (!path.as_os_str().is_empty()).then_some(path)
     })
@@ -56,11 +56,11 @@ pub(crate) fn effective_home_dir() -> Option<PathBuf> {
 }
 
 pub(crate) fn home_config_path() -> Option<PathBuf> {
-    if let Some(home) = codewhale_home_dir() {
+    if let Some(home) = dse_home_dir() {
         return Some(home.join("config.toml"));
     }
 
-    effective_home_dir().map(|home| home.join(".codewhale").join("config.toml"))
+    effective_home_dir().map(|home| home.join(".dse").join("config.toml"))
 }
 
 pub(crate) fn workspace_config_key(workspace: &Path) -> String {
@@ -74,7 +74,7 @@ pub(crate) fn canonicalize_or_keep(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn env_config_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("CODEWHALE_CONFIG_PATH") {
+    if let Ok(path) = std::env::var("DSE_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Some(expand_path(trimmed));
@@ -107,9 +107,9 @@ pub(crate) fn expand_path(path: &str) -> PathBuf {
 }
 
 pub(crate) fn default_skills_dir() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codewhale").join("skills"))
+    effective_home_dir().map(|home| home.join(".dse").join("skills"))
 }
 
 pub(crate) fn default_mcp_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codewhale").join("mcp.json"))
+    effective_home_dir().map(|home| home.join(".dse").join("mcp.json"))
 }

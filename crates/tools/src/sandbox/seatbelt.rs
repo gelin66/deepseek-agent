@@ -538,10 +538,7 @@ mod tests {
         assert!(run(format!("touch {}", inside.display())).status.success());
         assert!(inside.is_file());
 
-        let slash_tmp = PathBuf::from(format!(
-            "/tmp/codewhale-isolated-writer-{}",
-            std::process::id()
-        ));
+        let slash_tmp = PathBuf::from(format!("/tmp/dse-isolated-writer-{}", std::process::id()));
         let forbidden = [
             root.join("blocked"),
             other.join("blocked"),

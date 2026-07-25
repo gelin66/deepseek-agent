@@ -11,16 +11,16 @@ fn tui_binary() -> PathBuf {
 }
 
 fn run_cli(home: &Path, workspace: &Path, mcp_config: &Path, args: &[&str]) -> Output {
-    let codewhale_home = home.join(".codewhale");
+    let dse_home = home.join(".dse");
     let mut command = Command::new(tui_binary());
     command
         .current_dir(workspace)
         .env_clear()
         .env("HOME", home)
         .env("USERPROFILE", home)
-        .env("CODEWHALE_HOME", &codewhale_home)
-        .env("CODEWHALE_CONFIG_PATH", codewhale_home.join("config.toml"))
-        .env("CODEWHALE_MCP_CONFIG", mcp_config)
+        .env("DSE_HOME", &dse_home)
+        .env("DSE_CONFIG_PATH", dse_home.join("config.toml"))
+        .env("DSE_MCP_CONFIG", mcp_config)
         .env("RUST_LOG", "error")
         .arg("--workspace")
         .arg(workspace)
@@ -52,11 +52,11 @@ fn real_cli_mcp_config_lifecycle_writes_only_the_global_owner() {
     let isolated = tempfile::tempdir().expect("isolated home");
     let home = isolated.path().join("home");
     let workspace = isolated.path().join("workspace");
-    let codewhale_home = home.join(".codewhale");
-    let global_config = codewhale_home.join("mcp.json");
-    let project_config = workspace.join(".codewhale").join("mcp.json");
+    let dse_home = home.join(".dse");
+    let global_config = dse_home.join("mcp.json");
+    let project_config = workspace.join(".dse").join("mcp.json");
     std::fs::create_dir_all(project_config.parent().unwrap()).expect("project MCP directory");
-    std::fs::create_dir_all(&codewhale_home).expect("DSE home");
+    std::fs::create_dir_all(&dse_home).expect("DSE home");
     std::fs::write(
         &project_config,
         serde_json::to_vec_pretty(&json!({
@@ -73,7 +73,7 @@ fn real_cli_mcp_config_lifecycle_writes_only_the_global_owner() {
 
     let canonical_workspace = workspace.canonicalize().expect("canonical workspace");
     std::fs::write(
-        codewhale_home.join("config.toml"),
+        dse_home.join("config.toml"),
         format!(
             "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
             canonical_workspace.display()

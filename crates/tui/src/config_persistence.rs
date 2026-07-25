@@ -241,8 +241,8 @@ mod tests {
     struct EnvGuard {
         home: Option<OsString>,
         userprofile: Option<OsString>,
-        codewhale_home: Option<OsString>,
-        codewhale_config_path: Option<OsString>,
+        dse_home: Option<OsString>,
+        dse_config_path: Option<OsString>,
         retired_config_path: Option<OsString>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
@@ -251,28 +251,28 @@ mod tests {
         fn new(home: &Path) -> Self {
             let lock = crate::test_support::lock_test_env();
             let home_str = OsString::from(home.as_os_str());
-            let config_path = home.join(".codewhale").join("config.toml");
+            let config_path = home.join(".dse").join("config.toml");
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
-            let codewhale_home_prev = env::var_os("CODEWHALE_HOME");
-            let codewhale_config_prev = env::var_os("CODEWHALE_CONFIG_PATH");
+            let dse_home_prev = env::var_os("DSE_HOME");
+            let dse_config_prev = env::var_os("DSE_CONFIG_PATH");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
 
             // Safety: test-only environment mutation guarded by process-wide mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
-                env::remove_var("CODEWHALE_HOME");
-                env::set_var("CODEWHALE_CONFIG_PATH", &config_str);
+                env::remove_var("DSE_HOME");
+                env::set_var("DSE_CONFIG_PATH", &config_str);
                 env::remove_var("DEEPSEEK_CONFIG_PATH");
             }
 
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
-                codewhale_home: codewhale_home_prev,
-                codewhale_config_path: codewhale_config_prev,
+                dse_home: dse_home_prev,
+                dse_config_path: dse_config_prev,
                 retired_config_path: deepseek_config_prev,
                 _lock: lock,
             }
@@ -305,27 +305,27 @@ mod tests {
                 }
             }
 
-            if let Some(value) = self.codewhale_home.take() {
+            if let Some(value) = self.dse_home.take() {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::set_var("CODEWHALE_HOME", value);
+                    env::set_var("DSE_HOME", value);
                 }
             } else {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::remove_var("CODEWHALE_HOME");
+                    env::remove_var("DSE_HOME");
                 }
             }
 
-            if let Some(value) = self.codewhale_config_path.take() {
+            if let Some(value) = self.dse_config_path.take() {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::set_var("CODEWHALE_CONFIG_PATH", value);
+                    env::set_var("DSE_CONFIG_PATH", value);
                 }
             } else {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::remove_var("CODEWHALE_CONFIG_PATH");
+                    env::remove_var("DSE_CONFIG_PATH");
                 }
             }
 
@@ -352,34 +352,34 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_uses_codewhale_home_for_fresh_installs() {
-        let temp_root = temp_root("codewhale-config-path-fresh");
+    fn config_toml_path_uses_dse_home_for_fresh_installs() {
+        let temp_root = temp_root("dse-config-path-fresh");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::remove_var("CODEWHALE_CONFIG_PATH");
+            env::remove_var("DSE_CONFIG_PATH");
         }
 
         assert_eq!(
             config_toml_path(None).unwrap(),
-            temp_root.join(".codewhale").join("config.toml")
+            temp_root.join(".dse").join("config.toml")
         );
     }
 
     #[test]
     fn config_toml_path_ignores_legacy_config_when_it_exists() {
-        let temp_root = temp_root("codewhale-config-path-legacy");
+        let temp_root = temp_root("dse-config-path-legacy");
         let legacy_config = temp_root.join(".deepseek").join("config.toml");
         fs::create_dir_all(legacy_config.parent().unwrap()).unwrap();
         fs::write(&legacy_config, "").unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
-        unsafe { env::remove_var("CODEWHALE_CONFIG_PATH") };
+        unsafe { env::remove_var("DSE_CONFIG_PATH") };
 
         assert_eq!(
             config_toml_path(None).unwrap(),
-            temp_root.join(".codewhale").join("config.toml")
+            temp_root.join(".dse").join("config.toml")
         );
         assert!(
             legacy_config.exists(),
@@ -388,17 +388,17 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_ignores_legacy_config_when_codewhale_home_is_set() {
-        let temp_root = temp_root("codewhale-config-path-explicit-home");
-        let explicit_home = temp_root.join("isolated-codewhale");
+    fn config_toml_path_ignores_legacy_config_when_dse_home_is_set() {
+        let temp_root = temp_root("dse-config-path-explicit-home");
+        let explicit_home = temp_root.join("isolated-dse");
         let legacy_config = temp_root.join(".deepseek").join("config.toml");
         fs::create_dir_all(legacy_config.parent().unwrap()).unwrap();
         fs::write(&legacy_config, "").unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::remove_var("CODEWHALE_CONFIG_PATH");
-            env::set_var("CODEWHALE_HOME", &explicit_home);
+            env::remove_var("DSE_CONFIG_PATH");
+            env::set_var("DSE_HOME", &explicit_home);
         }
 
         assert_eq!(
@@ -409,14 +409,14 @@ mod tests {
 
     #[test]
     fn config_toml_path_ignores_retired_env() {
-        let temp_root = temp_root("codewhale-config-path-env");
+        let temp_root = temp_root("dse-config-path-env");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
         let preferred = temp_root.join("preferred.toml");
         let legacy = temp_root.join("legacy.toml");
 
         unsafe {
-            env::set_var("CODEWHALE_CONFIG_PATH", &preferred);
+            env::set_var("DSE_CONFIG_PATH", &preferred);
             env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
         }
 
@@ -424,9 +424,9 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_uses_codewhale_env_even_when_target_is_missing() {
-        let temp_root = temp_root("codewhale-config-path-missing-env-fallback");
-        let home_config = temp_root.join(".codewhale").join("config.toml");
+    fn config_toml_path_uses_dse_env_even_when_target_is_missing() {
+        let temp_root = temp_root("dse-config-path-missing-env-fallback");
+        let home_config = temp_root.join(".dse").join("config.toml");
         fs::create_dir_all(home_config.parent().unwrap()).unwrap();
         fs::write(&home_config, "# existing fallback\n").unwrap();
         let _guard = EnvGuard::new(&temp_root);
@@ -434,7 +434,7 @@ mod tests {
 
         unsafe {
             env::set_var("DEEPSEEK_CONFIG_PATH", &missing_env);
-            env::remove_var("CODEWHALE_CONFIG_PATH");
+            env::remove_var("DSE_CONFIG_PATH");
         }
 
         assert_eq!(config_toml_path(None).unwrap(), home_config);
@@ -467,10 +467,10 @@ trust_level = "untrusted" # keep in sync with docs
 
     #[test]
     fn golden_replacing_existing_root_value_only_touches_that_value() {
-        let temp_root = temp_root("codewhale-golden-root-value");
+        let temp_root = temp_root("dse-golden-root-value");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
+        let path = temp_root.join(".dse").join("config.toml");
         write_golden_config(&path);
 
         persist_root_string_key(Some(&path), "default_text_model", "deepseek-v4-flash")
@@ -486,10 +486,10 @@ trust_level = "untrusted" # keep in sync with docs
 
     #[test]
     fn golden_production_mutation_preserves_unrelated_comments_order_and_quoted_tables() {
-        let temp_root = temp_root("codewhale-golden-mutations");
+        let temp_root = temp_root("dse-golden-mutations");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
+        let path = temp_root.join(".dse").join("config.toml");
         write_golden_config(&path);
 
         mutate_config_document(&path, |doc| {
@@ -549,10 +549,10 @@ trust_level = "untrusted" # keep in sync with docs
         // Finding #20 at the primitive level: the old string scan treated a
         // comment mentioning api_key as an existing assignment and skipped
         // the insert entirely.
-        let temp_root = temp_root("codewhale-golden-api-key-comment");
+        let temp_root = temp_root("dse-golden-api-key-comment");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
+        let path = temp_root.join(".dse").join("config.toml");
         write_golden_config(&path);
 
         mutate_config_document(&path, |doc| {
@@ -588,10 +588,10 @@ trust_level = "untrusted" # keep in sync with docs
     fn config_writes_land_with_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_root = temp_root("codewhale-persist-perms");
+        let temp_root = temp_root("dse-persist-perms");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
+        let path = temp_root.join(".dse").join("config.toml");
         write_golden_config(&path);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
