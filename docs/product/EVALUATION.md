@@ -116,20 +116,28 @@
 - hard-limit 本地 compaction 不调用模型，因此不得消耗最后的最终请求许可；
 - 单 Agent 与多 Agent 净收益对照。
 
-### G. 固定简体中文产品契约
+### G. DSA 中英文产品契约
 
-固定中文是产品验收，不作为 Agent 能力提升的 A/B treatment。候选至少验证：
+双语 UI 是产品验收，不作为 Agent 能力提升的 A/B treatment。候选至少验证：
 
-- 首次启动、API Key、信任、canonical 命令、审批、取消、失败、恢复和终态使用简体中文；
-- 80/120 列终端的 CJK 宽度、截断、换行和鼠标/键盘命中保持正确；
-- 只有一个 `zh-Hans` 消息目录，不存在 Locale 状态、环境检测、语言选择或运行时切换；
-- 不存在 `/translate` 或思考内容后处理翻译产生的额外模型请求；
-- JSON/NDJSON、Schema、命令、工具名、模型 ID、配置键、路径、代码、diff 与原始输出保持
-  机器契约或原始字节；
-- 被删除命令的 PTY 验收应证明中文拒绝且没有模型请求，不能恢复旧兼容来满足旧测试。
+- 首次启动、API Key、信任、canonical 命令、审批、取消、失败、恢复和终态完整支持
+  `en` 与 `zh-Hans`；
+- 两个 catalog 的 message key 和 placeholder 完全一致，缺失翻译不能静默 fallback；
+- 80/120 列终端同时覆盖英文换行和 CJK 宽度、截断、鼠标/键盘命中；
+- 一个进程只有一个解析后的 `ProductLanguage`；不存在 per-Run/per-Agent locale、系统语言
+  持续检测或模型语言分类；
+- 不存在 `/translate`、在线翻译或思考内容后处理产生的额外模型请求；
+- JSON/NDJSON、Schema、命令、工具名、模型 ID、配置键、稳定错误码、路径、代码、diff 与
+  原始输出保持机器契约或原始字节；
+- 改变 UI locale 不得改变 model/reasoning、route、工具目录、预算、RequestPlan 或
+  canonical RuntimeEvent/RunStore 事实；
+- root、read-only child、explicit Writer、resume/recovery 和 headless 人类投影使用同一
+  进程级语言；
+- 被删除命令的 PTY 验收应证明两种语言下都在配置或模型请求前稳定拒绝，不能恢复旧兼容。
 
-生产 Agent 提示词的中文重构属于独立 treatment，仍需按本文件记录同任务成功率、Token、
-时间和成本；UI 中文验收不能替代该 A/B。
+生产 Agent prompt 的语言比较属于独立 treatment，必须按本文件和 ADR-0010 记录同任务
+verified success、false success、安全拒绝、请求预算耗尽、请求数、Token、时间和成本；
+UI 双语验收不能替代该 A/B。
 
 ## 4. 运行变体
 
@@ -2535,6 +2543,91 @@ success。raw label 不回写；read-only report 派生产品 false success 为 
 `insufficient_repeated_current_loss`，不准入 Scoped Context、Working-Set、Acceptance
 Progress、Typed Recovery 或 Environment treatment。完整证据见
 [M15 current product-loss acquisition](../../eval/summaries/m15-current-product-loss-acquisition-2026-07-25.md)。
+
+### M17 DSA bilingual open-source cutover
+
+M17 是已接受的产品身份和双语发布切换，不是继续搜索未归因 Agent treatment。它分开验证
+DSA branding、`en`/`zh-Hans` 人类界面和模型可见 prompt 语言，禁止用一个混合 diff
+同时声称三个结论。
+
+#### DSA identity gate
+
+- 当前产品显示、binary、Cargo package/import、config/path/env、active schema/media type、
+  delivery/CI、User-Agent 和 model-visible identity 使用 ADR-0009 的唯一 DSA 命名；
+- release binary set 严格为 `dsa`、`dsa-tui`，locked/offline package/install/verify/
+  upgrade/rollback/uninstall 全生命周期通过；
+- 新运行和新评测不产生 CodeWhale namespace；旧名称只允许出现在 MIT provenance、Git
+  历史与不可改写 frozen evidence allowlist；
+- 一次性本地迁移必须证明 config、Secret、可保留状态和原目录备份完整，随后从 release
+  candidate 删除旧路径 reader、命令 alias、双写和迁移代码。
+
+Brand rename 本身不构成任务质量提升结论。`CodeWhale -> DSA` 的 model-visible identity
+替换必须保持其余 prompt 语义相同，并通过 root/read-only/Writer、recovery、prompt
+provenance、SQLite reopen 与 whole-release conformance，随后作为语言实验共同基线。
+
+#### bilingual UI gate
+
+- `en.json` 与 `zh-Hans.json` exact key/placeholder parity；
+- `--language -> ui.language -> first-run choice -> noninteractive en` 解析契约及旧本地
+  `zh-Hans` 迁移；
+- CLI/TUI/onboarding/Doctor/approval/error/recovery/multi-Agent/help 的双语 golden/PTY；
+- English narrow layout 与 CJK 80/120-column layout；
+- locale switch 前后 canonical machine output、route/model/reasoning/catalog/budget、
+  request count 和 Store facts 保持一致；
+- Agent 在中文任务默认中文、英文任务默认英文，并服从用户显式语言要求；该检查不增加
+  模型分类或翻译调用。
+
+#### prompt language A/B gate
+
+baseline 为 current Chinese DSA prompt，candidate 为逐条语义、顺序、强度和完成/工具规则
+等价的 English DSA prompt。两个 variant 的 tool catalog、schema、Runtime、Store、
+model/reasoning、预算、fixture 初态、deterministic external verifier 和非语言 prompt
+组成必须相同。旧 2026-07-18 English-long vs Chinese-rewrite 结果不是本实验输入。
+
+正式冻结矩阵：
+
+```text
+8 independent task families
+  x 2 task languages (en, zh-Hans)
+  x 2 system prompt languages (en, zh-Hans)
+  = block 1: 32 runs
+```
+
+任务覆盖单文件、跨文件、搜索定位、调试、正确安全拒绝、verifier recovery、read-only
+child 和 explicit Writer。每个 task family 的中英文 TaskContract 语义等价，external
+verifier 验证行为与约束，不要求参考实现的 exact changed-file set。
+
+只有 block 1 无质量否决、全部 measurement-valid 且预注册判定仍需置信度时，才执行预先
+冻结的完整 block 2；总量最多 64 runs。不得选择性 rerun、补 mate、续接旧 prompt raw
+或改变任务/预算。正式 credential 前必须通过 fixture、identity、prompt hash、catalog、
+schedule、journal/reopen、observer 和费用 ceiling preflight。
+
+硬门顺序：
+
+```text
+verified success
+  > false success
+  > correct safety rejection
+  > request-budget exhaustion
+  > requests
+  > tokens
+  > wall time
+  > cost
+```
+
+任一额外 false success、质量回退、unknown billing、incomplete usage、prompt/catalog/
+binary/workspace identity drift、observer/evaluator ambiguity 或费用硬门都在下一 arm 前
+停止。Token、时间或费用改善不能补偿 verified success、安全或 false-success 回退。
+
+产品决策只允许：
+
+1. English 在两个任务语言层都不回归且相同或更好：保留单一 English prompt；
+2. Chinese 在两个任务语言层都相同或更好：保留单一 Chinese prompt；
+3. 各自在同语言层占优：不增加 Auto，最多预注册一个单一 compact bilingual candidate；
+4. 无效/证据不足：保留 current Chinese DSA baseline，不声明语言优劣。
+
+任一 winner 接管后删除 loser、eval-only selector/assets、临时 config/test surface 和双
+production branch；whole-release rollback 是唯一 prompt rollback owner。
 
 ## 10. 结果与决策记录
 

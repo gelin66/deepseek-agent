@@ -1,6 +1,6 @@
 # ADR-0004：固定简体中文产品语言
 
-- 状态：已接受
+- 状态：已被 [ADR-0010](0010-bilingual-product-and-prompt-admission.md) 取代
 - 日期：2026-07-18
 
 ## 决策

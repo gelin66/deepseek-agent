@@ -1,11 +1,11 @@
-# DeepSeek Agent 产品总纲
+# DSA 产品总纲
 
 > 文档类别：产品权威。仅定义范围、原则与目标架构。
 
 - 状态：已接受（V1 方向）
 - 生效日期：2026-07-15
-- 工作名称：DeepSeek Agent（正式品牌待定）
-- 代码底座：CodeWhale `352e86a611fdf3cd8bd27c36d24d482c06a71117`
+- 正式品牌：DSA（DeepSeek Agent）
+- 导入源码基线：CodeWhale `352e86a611fdf3cd8bd27c36d24d482c06a71117`
 
 本文件是产品范围和目标架构的唯一总纲。开发顺序以
 [ROADMAP.md](ROADMAP.md) 为准，能力取舍以 [EVALUATION.md](EVALUATION.md)
@@ -24,8 +24,8 @@
 > Rust 原生、DeepSeek 专用、本地优先、支持单 Agent 与多 Agent、可恢复且可验证的编码 Agent 产品。
 
 它不是继续维护上游 CodeWhale 的通用多模型发行版，也不是把 Cline、Codex、
-Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参考；最终实现必须
-在 CodeWhale 的 Rust 底座上形成一套统一逻辑。
+Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参考；DSA 在导入的 Rust
+源码树上形成一套统一逻辑，CodeWhale 只保留为 MIT 上游来源和历史基线。
 
 产品保留三个入口：
 
@@ -63,7 +63,7 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 
 以下是产品架构边界。除非真实评测和新的 ADR 证明必须改变，否则开发中不得漂移：
 
-1. CodeWhale/Rust 是唯一源码和运行时底座。
+1. DSA/Rust 是唯一当前源码和运行时底座；CodeWhale 只作为导入基线与来源事实保留。
 2. DeepSeek 是唯一模型后端。
 3. 只有一个 `AgentRuntime`。
 4. 根 Agent 与子 Agent 运行同一个内核。
@@ -75,8 +75,8 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 10. 完成状态由最新工作区 revision 对应的证据决定，不由模型自报决定。
 11. 新路径接管能力后必须删除旧路径。
 12. 不引入 TypeScript sidecar、Cline runtime 或永久兼容桥。
-13. 面向人的产品界面只使用简体中文，不提供语言配置、检测、切换或其他语言包；机器协议
-    和技术标识保持稳定。
+13. 面向人的产品界面只支持 `en` 与 `zh-Hans`，由一个 localization owner 在进程级
+    确定性解析；机器协议和技术标识保持稳定。
 14. UI 消息目录与模型提示词组合是两个独立层次，不能用界面文案替代 Agent 提示词调优。
 
 ## 4. 第一性原理运行链
@@ -200,26 +200,30 @@ reasoning/tool replay、usage/retry/accounting 与 RunStore 已形成唯一 prod
 完整长期决策见
 [ADR-0008](../decisions/0008-fixed-deepseek-routing-and-auto-retirement.md)。
 
-### 6.1 中文原生交互与 Agent 提示词
+### 6.1 中英文产品界面与 Agent 提示词
 
-中文原生产品分为两个解耦层次：
+DSA 双语产品分为两个解耦层次：
 
-1. **人类界面消息目录**：唯一 `zh-Hans` 目录覆盖 CLI/TUI、帮助、配置向导、Doctor、
-   错误与恢复提示、上下文状态、多 Agent 进度以及产品文档。产品不保存 locale，不读取
-   `LANG/LC_*` 决定界面语言，也不提供语言选择、运行时切换、其他语言包或模型后处理翻译。
-   根 Agent、子 Agent、恢复会话和 Headless 文本输出使用同一固定中文投影。
-2. **模型提示词组合**：DeepSeek 的自然语言系统提示固定使用简洁中文；工具名、协议字段、
-   路径、代码和原始输出保持机器契约。规划、工具策略、失败恢复、上下文压缩和子 Agent
-   协作等能力提示仍按语义独立设计、版本化和评测，不能与 UI 消息目录或 Runtime 分叉绑定。
+1. **人类界面消息目录**：`en` 与 `zh-Hans` 目录覆盖 CLI/TUI、帮助、配置向导、Doctor、
+   错误与恢复提示、上下文状态、多 Agent 进度以及公共产品文档。语言按显式进程参数、
+   持久化配置、首次交互选择、非交互英文默认的顺序解析一次。根 Agent、子 Agent、恢复
+   会话和 Headless 人类文本使用同一进程级投影；不增加每 Run/Agent locale、模型语言
+   classifier、在线翻译或输出后处理调用。
+2. **模型提示词组合**：`crates/context` 保持唯一 production prompt owner。Agent 默认
+   使用用户当前任务的语言回答；工具名、协议字段、路径、代码和原始输出保持机器契约。
+   品牌切换后的等价中英文 system prompt 必须做 current fixed-Pro 2×2 配对评测，最终只
+   保留一个 production prompt，不增加 Auto 路由、语言 mode、selector 或双行为分支。
 
 以下内容保持原样，不因汉化而改变契约：命令和 flags、工具名、JSON Schema 与 API 字段、
 模型 ID、文件路径、代码、diff、stdout/stderr 以及上游原始日志。面向用户的错误应提供
 中文摘要和可执行建议，同时保留可展开的原始技术细节。
 
-固定中文是产品语言契约，不作为能力提升结论。任何改变规划、工具策略、失败恢复、压缩或
-多 Agent 协作语义的提示词候选，必须在相同任务、仓库 revision、模型、工具面和预算下与
-当前生产提示做 A/B，至少记录 verified success、工具错误率、模型轮次、Token、时延和
-成本。只有能力不回归且至少一个关键效率或结果指标有明确净提升时才能接管生产路径。
+双语 UI 是产品验收，不作为 Agent 能力提升结论。提示词语言或任何改变规划、工具策略、
+失败恢复、压缩或多 Agent 协作语义的候选，必须在相同任务、仓库 revision、模型、工具面
+和预算下与当前生产提示做 A/B，至少记录 verified success、false success、正确安全拒绝、
+工具错误率、模型轮次、Token、时延和成本。效果硬门优先于成本；只有能力不回归且按照
+[ADR-0010](../decisions/0010-bilingual-product-and-prompt-admission.md) 的预注册规则胜出时
+才能接管生产路径。
 
 ## 7. 工具与完成语义
 
@@ -384,11 +388,13 @@ V1 必须同时满足：
 - release benchmark 同时保留合格的真实官方 DeepSeek coding evidence 与 exact current
   production retention；不要求对缺失完整 physical accounting 的旧 revision 伪造不可计量的
   imported superiority；
-- 保留的人类交互链路只使用 `zh-Hans`，不存在语言状态、选择器或其他语言包，也没有未列入
-  技术白名单的英文泄漏；
-- 固定中文 Agent prompt 具有可追溯、可回滚的版本身份，并保留合格的官方 DeepSeek
-  coding/false-success evidence 与 exact current production retention；
-  任何新的模型可见提示语义候选仍须在接管前通过 current same-revision 同任务 A/B；
+- 当前产品与发布身份只使用 DSA；二进制为 `dsa`、`dsa-tui`，活动 package/path/env、
+  协议和 release artifact 不再产生 CodeWhale 身份；
+- 保留的人类交互链路完整支持 `en` 与 `zh-Hans`，一个进程只有一个解析后的 locale；
+  不存在其他语言包、模型语言分类或翻译请求；
+- 最终单一 Agent prompt 具有可追溯、可回滚的版本身份，并保留合格的官方 DeepSeek
+  coding/false-success evidence 与 exact current production retention；中英文 prompt
+  按 ADR-0010 的 2×2 current fixed-Pro A/B 决定，失败候选与 selector 在 cutover 删除；
 - login、interactive start、headless coding、run inspection 与 resume 等共同用户 workflow
   的显式动作数不高于 imported baseline。
 

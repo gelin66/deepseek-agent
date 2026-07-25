@@ -3,6 +3,10 @@
 - 状态：已接受
 - 日期：2026-07-24
 
+> 范围说明：本 ADR 继续作为旧 fixed-Chinese baseline 的 immutable identity、历史
+> release evidence 与 rollback 事实；其固定中文长期产品方向已被
+> [ADR-0010](0010-bilingual-product-and-prompt-admission.md) 取代。
+
 ## 决策
 
 V1 把当前固定简体中文 Agent prompt 作为已经接受的产品语言约束，而不是一个仍须不断
