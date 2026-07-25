@@ -18,11 +18,11 @@ fn modal_block(title: &str) -> Block<'static> {
     Block::default()
         .title(Line::from(vec![Span::styled(
             title.to_string(),
-            Style::default().fg(palette::WHALE_ACCENT_PRIMARY).bold(),
+            Style::default().fg(palette::DSE_ACCENT_PRIMARY).bold(),
         )]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::WHALE_BG))
+        .style(Style::default().bg(palette::DSE_BG))
         .padding(Padding::uniform(1))
 }
 
@@ -346,7 +346,7 @@ impl ModalView for UserInputView {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
             tr(MessageId::UserInputActionRequired).into_owned(),
-            Style::default().fg(palette::WHALE_INFO).bold(),
+            Style::default().fg(palette::DSE_INFO).bold(),
         )]));
         lines.push(Line::from(vec![
             Span::styled(
@@ -428,7 +428,7 @@ impl ModalView for UserInputView {
                     } else {
                         self.other_input.clone()
                     },
-                    Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
+                    Style::default().fg(palette::DSE_ACCENT_PRIMARY),
                 ),
             ]));
         }
@@ -444,13 +444,13 @@ impl ModalView for UserInputView {
         lines.push(Line::from(""));
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
-                Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
+                Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
                 Span::styled(
                     format!(" {}", tr(MessageId::UserInputSubmit)),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
                 Span::raw("  "),
-                Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
+                Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
                 Span::styled(
                     format!(" {}", tr(MessageId::UserInputBack)),
                     Style::default().fg(palette::TEXT_MUTED),
@@ -467,26 +467,26 @@ impl ModalView for UserInputView {
                 lines.push(Line::from(vec![
                     Span::styled(
                         quick_pick_label,
-                        Style::default().fg(palette::WHALE_INFO).bold(),
+                        Style::default().fg(palette::DSE_INFO).bold(),
                     ),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputMove)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Space", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Space", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputToggle)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputToggleConfirm)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputCancel)),
                         Style::default().fg(palette::TEXT_MUTED),
@@ -496,26 +496,26 @@ impl ModalView for UserInputView {
                 lines.push(Line::from(vec![
                     Span::styled(
                         quick_pick_label,
-                        Style::default().fg(palette::WHALE_INFO).bold(),
+                        Style::default().fg(palette::DSE_INFO).bold(),
                     ),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputQuickPick)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Up/Down", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Up/Down", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputMove)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputConfirmSelection)),
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                     Span::raw("  "),
-                    Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
+                    Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
                     Span::styled(
                         format!(" {}", tr(MessageId::UserInputCancel)),
                         Style::default().fg(palette::TEXT_MUTED),

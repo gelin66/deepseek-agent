@@ -21,7 +21,7 @@ use dse_localization::{MessageId, tr};
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default().style(Style::default().bg(palette::WHALE_BG));
+    let block = Block::default().style(Style::default().bg(palette::DSE_BG));
     f.render_widget(block, area);
 
     const TOP_MARGIN: u16 = 2;
@@ -47,12 +47,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .title(Line::from(Span::styled(
                 app.tr(MessageId::OnboardPanelTitle).to_string(),
                 Style::default()
-                    .fg(palette::WHALE_ACCENT_PRIMARY)
+                    .fg(palette::DSE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_PANEL))
+            .style(Style::default().bg(palette::DSE_PANEL))
             .padding(Padding::new(2, 2, 1, 1));
         if !app.onboarding_workspace_trust_gate {
             let (step, total) = onboarding_step(app);
@@ -119,7 +119,7 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
         Line::from(Span::styled(
             app.tr(MessageId::OnboardTipsTitle).to_string(),
             Style::default()
-                .fg(palette::WHALE_INFO)
+                .fg(palette::DSE_INFO)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),

@@ -315,7 +315,7 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, app: &mut App) {
     crate::tui::phase_strip::render(area, buf, app);
 }
 
-/// Build the idle composition: one brand mark and one context line.
+/// Build the idle composition: one DSE wordmark and one context line.
 /// Commands are discovered only through the canonical composer menu.
 pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if area.width == 0 || area.height == 0 {
@@ -327,23 +327,23 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if tier != ShellTier::Compact && area.height >= 14 && area.width >= 28 {
         let mark = [
             vec![Span::styled(
-                "   ˚",
-                Style::default().fg(app.ui_theme.accent_secondary),
-            )],
-            vec![Span::styled(
-                " ▗▄▄▄▄▄▄▄▄▄▄▄▄▄▖    ▚▞",
+                "████   █████  █████",
                 Style::default().fg(app.ui_theme.accent_primary),
             )],
-            vec![
-                Span::styled("▐██", Style::default().fg(app.ui_theme.accent_primary)),
-                Span::styled("·", Style::default().fg(app.ui_theme.text_body)),
-                Span::styled(
-                    "████████████▙▄▄▄▞",
-                    Style::default().fg(app.ui_theme.accent_primary),
-                ),
-            ],
             vec![Span::styled(
-                " ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▘",
+                "█   █  █      █",
+                Style::default().fg(app.ui_theme.accent_primary),
+            )],
+            vec![Span::styled(
+                "█   █  ████   ████",
+                Style::default().fg(app.ui_theme.accent_primary),
+            )],
+            vec![Span::styled(
+                "█   █      █  █",
+                Style::default().fg(app.ui_theme.accent_primary),
+            )],
+            vec![Span::styled(
+                "████   █████  █████",
                 Style::default().fg(app.ui_theme.accent_primary),
             )],
         ];

@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn whale_ramp_is_perceptibly_deep_not_merely_non_equal() {
+    fn dse_dark_ramp_is_perceptibly_deep_not_merely_non_equal() {
         let ramp = OceanRamp::for_theme(&crate::palette::UI_THEME).expect("RGB theme");
         assert!(
             distance(ramp.surface, ramp.deep) >= 32,

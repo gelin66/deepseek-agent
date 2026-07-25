@@ -1126,7 +1126,7 @@ impl Renderable for ComposerWidget<'_> {
 
                 // Name column
                 let name_style = if entry.is_skill && !is_selected {
-                    Style::default().fg(palette::WHALE_INFO)
+                    Style::default().fg(palette::DSE_INFO)
                 } else {
                     sel_style
                 };
@@ -1317,7 +1317,7 @@ impl<'a> ApprovalWidget<'a> {
             Span::styled(
                 format!(" {} ", stakes_badge_text(stakes)),
                 Style::default()
-                    .fg(palette::WHALE_BG)
+                    .fg(palette::DSE_BG)
                     .bg(palette_colors.accent)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -1325,7 +1325,7 @@ impl<'a> ApprovalWidget<'a> {
             Span::styled(
                 self.request.tool_name.clone(),
                 Style::default()
-                    .fg(palette::WHALE_INFO)
+                    .fg(palette::DSE_INFO)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -1511,7 +1511,7 @@ impl Renderable for ApprovalWidget<'_> {
             let line = Line::from(Span::styled(
                 summary,
                 Style::default()
-                    .fg(palette::WHALE_BG)
+                    .fg(palette::DSE_BG)
                     .bg(palette_colors.accent)
                     .add_modifier(Modifier::BOLD),
             ));
@@ -1535,7 +1535,7 @@ impl Renderable for ApprovalWidget<'_> {
         // approval is no longer a full-screen takeover (#3799).
         Clear.render(region, buf);
         Block::default()
-            .style(Style::default().bg(palette::WHALE_BG))
+            .style(Style::default().bg(palette::DSE_BG))
             .render(region, buf);
 
         // Top separator rule, risk-tinted, so the prompt reads as a distinct
@@ -1749,18 +1749,18 @@ fn approval_palette(stakes: crate::tui::approval::ApprovalStakes) -> ApprovalCol
     match stakes {
         ApprovalStakes::Routine => ApprovalColors {
             border: palette::BORDER_COLOR,
-            accent: palette::WHALE_INFO,
-            shortcut: palette::WHALE_INFO,
+            accent: palette::DSE_INFO,
+            shortcut: palette::DSE_INFO,
         },
         // Ordinary state-touching work: a calm ask, not an alarm.
         ApprovalStakes::Elevated => ApprovalColors {
             border: palette::BORDER_COLOR,
             accent: palette::STATUS_WARNING,
-            shortcut: palette::WHALE_INFO,
+            shortcut: palette::DSE_INFO,
         },
         ApprovalStakes::Critical => ApprovalColors {
-            border: palette::WHALE_ERROR,
-            accent: palette::WHALE_ERROR,
+            border: palette::DSE_ERROR,
+            accent: palette::DSE_ERROR,
             shortcut: palette::STATUS_WARNING,
         },
     }
@@ -1806,9 +1806,9 @@ fn category_label_for(category: ToolCategory) -> (Cow<'static, str>, Color) {
         ToolCategory::FileWrite => palette::STATUS_WARNING,
         ToolCategory::Shell => palette::STATUS_ERROR,
         ToolCategory::Network => palette::STATUS_WARNING,
-        ToolCategory::McpRead => palette::WHALE_INFO,
+        ToolCategory::McpRead => palette::DSE_INFO,
         ToolCategory::McpAction => palette::STATUS_WARNING,
-        ToolCategory::Agent => palette::WHALE_INFO,
+        ToolCategory::Agent => palette::DSE_INFO,
         ToolCategory::Unknown => palette::STATUS_ERROR,
     };
     (label, color)
@@ -1836,7 +1836,7 @@ fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
         Span::styled(
             format!("{label:<7} "),
             Style::default()
-                .fg(palette::WHALE_INFO)
+                .fg(palette::DSE_INFO)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(value.to_string(), Style::default().fg(palette::TEXT_BODY)),
@@ -1874,7 +1874,7 @@ fn push_shell_command_lines(
         Span::styled(
             format!("{label}:"),
             Style::default()
-                .fg(palette::WHALE_INFO)
+                .fg(palette::DSE_INFO)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -3036,7 +3036,7 @@ mod tests {
             .collect::<String>();
 
         assert!(!rendered.contains("/fleet"));
-        assert!(!rendered.contains("▗▄▄"));
+        assert!(!rendered.contains("████   █████  █████"));
     }
 
     #[test]
@@ -3051,10 +3051,16 @@ mod tests {
 
             assert!(rendered.contains("dse"));
             assert!(!rendered.contains("/fleet"));
-            if height < 14 {
+            assert!(!rendered.contains("▗▄▄▄▄▄▄▄▄▄▄▄▄▄▖"));
+            if height >= 14 && width >= 28 {
                 assert!(
-                    !rendered.contains("▗▄▄"),
-                    "the decorative whale must yield at {width}x{height}"
+                    rendered.contains("████   █████  █████"),
+                    "wide DSE shell must render the DSE wordmark at {width}x{height}"
+                );
+            } else {
+                assert!(
+                    !rendered.contains("████   █████  █████"),
+                    "the DSE wordmark must yield at {width}x{height}"
                 );
             }
         }
@@ -3103,7 +3109,7 @@ mod tests {
     }
 
     /// #4208: `DSE_ASCII_SAFE=1` must narrow every DSE-authored
-    /// decorative glyph — whale mark, fish, bubble, context meter, borders,
+    /// decorative glyph — DSE mark, fish, bubble, context meter, borders,
     /// braille state markers — across real rendered surfaces, not a
     /// hand-picked symbol list.
     #[test]
@@ -3112,7 +3118,7 @@ mod tests {
         app.low_motion = false;
         app.fancy_animations = true;
 
-        // Idle empty water at a size that earns the whale, fish, and bubble.
+        // Idle empty water at a size that earns the DSE mark, fish, and bubble.
         let transcript_area = Rect::new(0, 0, 100, 32);
         let mut transcript = Buffer::empty(transcript_area);
         ChatWidget::new(&mut app, transcript_area).render(transcript_area, &mut transcript);
@@ -3860,8 +3866,8 @@ mod tests {
             "approval-1",
             "exec_shell",
             &serde_json::json!({
-                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p dse-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/dse-clippy.log",
-                "cwd": "/Volumes/VIXinSSD/codewhale",
+                "command": "cd /Volumes/VIXinSSD/dse; cargo clippy -p dse-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/dse-clippy.log",
+                "cwd": "/Volumes/VIXinSSD/dse",
             }),
             ApprovalStakes::Elevated,
             Some("Confirmed - passes in isolation, so this is the documentation gate."),

@@ -101,6 +101,37 @@ SECRET_RE = re.compile(
     r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
 )
 
+LEGACY_SOURCE_RE = re.compile(r"CodeWhale|codewhale|CODEWHALE_|\.codewhale")
+RETIRED_VISUAL_RE = re.compile(r"\bwhale\b|whale_", re.IGNORECASE)
+CRATE_LEGACY_ALLOWLIST = {
+    Path("crates/app-server/src/lib.rs"): (
+        re.compile(r'"codewhale-(?:core|state|tools|agent|config)"'),
+        re.compile(r'"deploy/tencent-lighthouse/systemd/codewhale-runtime\.service"'),
+    ),
+    Path("crates/app-server/tests/process_crash_recovery.rs"): (
+        re.compile(r'"schema": "codewhale\.eval\.m4b-app-server-recovery\.v1"'),
+    ),
+    Path("crates/cli/src/lib.rs"): (
+        re.compile(r'assert!\(!help\.contains\("(?:CodeWhale|codewhale (?:exec|app-server))"\)'),
+    ),
+    Path("crates/config/src/tests.rs"): (
+        re.compile(r"retired-codewhale-(?:home|config\.toml)"),
+        re.compile(r'ScopedEnv::set\("CODEWHALE_(?:HOME|CONFIG_PATH)"'),
+    ),
+    Path("crates/context/src/prompts.rs"): (
+        re.compile(r'assert!\(!prompt\.blocks\[0\]\.text\.contains\("CodeWhale"\)\)'),
+    ),
+    Path("crates/protocol/tests/fixtures/canonical-json-v1.json"): (
+        re.compile(r'"schema": "codewhale\.protocol\.canonical-json\.v1"'),
+    ),
+    Path("crates/state/src/lib.rs"): (
+        re.compile(r"// CodeWhale to DSE\."),
+    ),
+    Path("crates/state/tests/run_store.rs"): (
+        re.compile(r'request\("v18-materialized-codewhale-run"'),
+    ),
+}
+
 
 def fail(message: str) -> None:
     print(f"public repository check failed: {message}", file=sys.stderr)
@@ -112,6 +143,19 @@ def read(relative: Path) -> str:
     if not path.is_file():
         fail(f"missing required file: {relative}")
     return path.read_text(encoding="utf-8")
+
+
+def tracked_files(*pathspecs: str) -> tuple[Path, ...]:
+    proc = subprocess.run(
+        ["git", "ls-files", "--", *pathspecs],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        fail(f"git ls-files failed: {proc.stderr.strip() or proc.returncode}")
+    return tuple(Path(line) for line in proc.stdout.splitlines() if line)
 
 
 def check_required_files() -> None:
@@ -162,6 +206,53 @@ def check_historical_identity_allowlist() -> None:
                 fail(f"{relative}: historical identity fact changed: {fact}")
         if relative.parts[:2] == ("eval", "summaries") and "DeepSeek Engineer" in body:
             fail(f"{relative}: current DSE identity was written into frozen history")
+
+
+def check_active_identity_allowlist() -> None:
+    retired_tracked = tuple(
+        path for path in tracked_files(".codewhale") if (ROOT / path).exists()
+    )
+    if retired_tracked:
+        fail(
+            "retired .codewhale product path remains tracked: "
+            + ", ".join(map(str, retired_tracked))
+        )
+
+    source_files = tracked_files(
+        "Cargo.toml",
+        "Cargo.lock",
+        "config.example.toml",
+        ".github",
+        "crates",
+    )
+    for relative in source_files:
+        if relative.suffix not in {".json", ".md", ".rs", ".toml", ".yml", ".yaml"}:
+            continue
+        body = read(relative)
+        for line_number, line in enumerate(body.splitlines(), start=1):
+            if not LEGACY_SOURCE_RE.search(line):
+                continue
+            allowed = CRATE_LEGACY_ALLOWLIST.get(relative, ())
+            if not any(pattern.search(line) for pattern in allowed):
+                fail(
+                    f"{relative}:{line_number}: retired identity is not an "
+                    "explicit migration/rejection/frozen-fixture fact"
+                )
+        if re.search(r"\bDSA\b", body):
+            fail(f"{relative}: superseded DSA identity remains in active source")
+
+    for relative in tracked_files("crates/tui"):
+        if relative.suffix != ".rs":
+            continue
+        for line_number, line in enumerate(read(relative).splitlines(), start=1):
+            if not RETIRED_VISUAL_RE.search(line):
+                continue
+            if (
+                relative == Path("crates/tui/src/palette/tests.rs")
+                and 'normalize_theme_name("whale"), None' in line
+            ):
+                continue
+            fail(f"{relative}:{line_number}: retired whale visual identity remains active")
 
 
 def check_local_links() -> None:
@@ -235,6 +326,7 @@ def main() -> int:
     check_required_files()
     check_readme_contract()
     check_historical_identity_allowlist()
+    check_active_identity_allowlist()
     check_local_links()
     check_bash_blocks()
     check_templates()

@@ -37,8 +37,8 @@ fn adapt_fg_for_light_palette(color: Color) -> Color {
         LIGHT_TEXT_SOFT
     } else if color == BORDER_COLOR {
         LIGHT_BORDER
-    } else if color == TEXT_ACCENT || color == WHALE_INFO || color == ACCENT_TOOL_LIVE {
-        WHALE_ACCENT_PRIMARY
+    } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
+        DSE_ACCENT_PRIMARY
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         Color::Rgb(146, 64, 14)
     } else if color == ACCENT_TOOL_ISSUE {
@@ -53,9 +53,9 @@ fn adapt_fg_for_light_palette(color: Color) -> Color {
 }
 
 fn adapt_bg_for_light_palette(color: Color) -> Color {
-    if color == WHALE_BG || color == BACKGROUND_DARK {
+    if color == DSE_BG || color == BACKGROUND_DARK {
         LIGHT_SURFACE
-    } else if color == WHALE_PANEL
+    } else if color == DSE_PANEL
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -94,7 +94,7 @@ fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
         SOLARIZED_TEXT_SOFT
     } else if color == BORDER_COLOR {
         SOLARIZED_BORDER
-    } else if color == TEXT_ACCENT || color == WHALE_INFO || color == ACCENT_TOOL_LIVE {
+    } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
         SOLARIZED_BLUE
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         SOLARIZED_ORANGE
@@ -108,9 +108,9 @@ fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
 }
 
 fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
-    if color == WHALE_BG || color == BACKGROUND_DARK {
+    if color == DSE_BG || color == BACKGROUND_DARK {
         SOLARIZED_SURFACE
-    } else if color == WHALE_PANEL
+    } else if color == DSE_PANEL
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -139,12 +139,12 @@ fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
 // === Community-theme remap ===
 //
 // The vast majority of render sites in this crate reach for `palette::TEXT_*`,
-// `palette::WHALE_BG`, `palette::BORDER_COLOR`, etc. directly rather than
+// `palette::DSE_BG`, `palette::BORDER_COLOR`, etc. directly rather than
 // looking up `app.ui_theme`. To make community theme presets (Catppuccin,
 // Tokyo Night, …) actually move the needle visually we intercept colors at
 // the backend layer (see `tui::color_compat::ColorCompatBackend`) and remap
 // every well-known dark-palette constant to the equivalent UiTheme slot for
-// the active preset. For `System`, `Whale`, and `WhaleLight` the remap is a
+// the active preset. For `System`, `Dark`, and `Light` the remap is a
 // no-op — the existing dark/light pipeline handles those.
 
 /// Per-preset green accent used for things that semantically *should* stay
@@ -168,7 +168,7 @@ const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
 }
 
 /// Returns `true` if the preset participates in the cell-level remap. The
-/// default Whale and System themes pass through unchanged so this whole
+/// default dark/light and System themes pass through unchanged so this whole
 /// stage compiles down to a single load+compare on the hot path.
 #[inline]
 #[must_use]
@@ -213,7 +213,7 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         ui.text_soft
     } else if color == BORDER_COLOR {
         ui.border
-    } else if color == TEXT_ACCENT || color == WHALE_INFO || color == ACCENT_TOOL_LIVE {
+    } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
         ui.status_working
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         if theme == ThemeId::Matrix {
@@ -225,11 +225,11 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         ui.mode_yolo
     } else if color == STATUS_WARNING {
         ui.warning
-    } else if color == STATUS_ERROR || color == WHALE_ERROR {
+    } else if color == STATUS_ERROR || color == DSE_ERROR {
         ui.error_fg
     } else if color == DIFF_ADDED || color == USER_BODY {
         theme_green(ui)
-    } else if color == WHALE_ACCENT_PRIMARY {
+    } else if color == DSE_ACCENT_PRIMARY {
         ui.mode_agent
     } else {
         color
@@ -244,9 +244,9 @@ pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         return color;
     }
 
-    if color == WHALE_BG || color == BACKGROUND_DARK {
+    if color == DSE_BG || color == BACKGROUND_DARK {
         ui.surface_bg
-    } else if color == WHALE_PANEL
+    } else if color == DSE_PANEL
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -282,7 +282,7 @@ fn adapt_fg_for_grayscale_palette(color: Color) -> Color {
         || color == SELECTION_TEXT
         || color == LIGHT_TEXT_BODY
         || color == Color::White
-        || color == WHALE_ERROR
+        || color == DSE_ERROR
         || color == STATUS_ERROR
         || color == MODE_YOLO
     {
@@ -291,8 +291,8 @@ fn adapt_fg_for_grayscale_palette(color: Color) -> Color {
         || color == TEXT_TOOL_OUTPUT
         || color == LIGHT_TEXT_SOFT
         || color == TEXT_ACCENT
-        || color == WHALE_INFO
-        || color == WHALE_ACCENT_PRIMARY
+        || color == DSE_INFO
+        || color == DSE_ACCENT_PRIMARY
         || color == ACCENT_TOOL_LIVE
         || color == STATUS_SUCCESS
         || color == STATUS_INFO
@@ -346,9 +346,9 @@ fn adapt_bg_for_grayscale_palette(color: Color) -> Color {
     if color == Color::Reset {
         return color;
     }
-    if color == WHALE_BG || color == BACKGROUND_DARK || color == LIGHT_SURFACE {
+    if color == DSE_BG || color == BACKGROUND_DARK || color == LIGHT_SURFACE {
         GRAYSCALE_SURFACE
-    } else if color == WHALE_PANEL
+    } else if color == DSE_PANEL
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL

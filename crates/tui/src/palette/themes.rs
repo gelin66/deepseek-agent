@@ -59,15 +59,15 @@ pub struct UiTheme {
 }
 
 pub const UI_THEME: UiTheme = UiTheme {
-    name: "whale",
+    name: "dark",
     mode: PaletteMode::Dark,
-    surface_bg: WHALE_BG,
-    panel_bg: WHALE_PANEL,
+    surface_bg: DSE_BG,
+    panel_bg: DSE_PANEL,
     elevated_bg: SURFACE_ELEVATED,
-    composer_bg: WHALE_PANEL,
+    composer_bg: DSE_PANEL,
     selection_bg: SELECTION_BG,
-    header_bg: WHALE_BG,
-    footer_bg: WHALE_BG,
+    header_bg: DSE_BG,
+    footer_bg: DSE_BG,
     text_dim: TEXT_DIM,
     text_hint: TEXT_HINT,
     text_muted: TEXT_MUTED,
@@ -75,78 +75,70 @@ pub const UI_THEME: UiTheme = UiTheme {
     text_soft: TEXT_SOFT,
     border: BORDER_COLOR,
     accent_primary: Color::Rgb(
-        WHALE_ACCENT_PRIMARY_RGB.0,
-        WHALE_ACCENT_PRIMARY_RGB.1,
-        WHALE_ACCENT_PRIMARY_RGB.2,
+        DSE_ACCENT_PRIMARY_RGB.0,
+        DSE_ACCENT_PRIMARY_RGB.1,
+        DSE_ACCENT_PRIMARY_RGB.2,
     ),
     accent_secondary: Color::Rgb(
-        WHALE_ACCENT_SECONDARY_RGB.0,
-        WHALE_ACCENT_SECONDARY_RGB.1,
-        WHALE_ACCENT_SECONDARY_RGB.2,
+        DSE_ACCENT_SECONDARY_RGB.0,
+        DSE_ACCENT_SECONDARY_RGB.1,
+        DSE_ACCENT_SECONDARY_RGB.2,
     ),
     accent_action: Color::Rgb(
-        WHALE_ACCENT_ACTION_RGB.0,
-        WHALE_ACCENT_ACTION_RGB.1,
-        WHALE_ACCENT_ACTION_RGB.2,
+        DSE_ACCENT_ACTION_RGB.0,
+        DSE_ACCENT_ACTION_RGB.1,
+        DSE_ACCENT_ACTION_RGB.2,
     ),
-    error_fg: Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1, WHALE_ERROR_RGB.2),
+    error_fg: Color::Rgb(DSE_ERROR_RGB.0, DSE_ERROR_RGB.1, DSE_ERROR_RGB.2),
     error_hover: Color::Rgb(
-        WHALE_ERROR_HOVER_RGB.0,
-        WHALE_ERROR_HOVER_RGB.1,
-        WHALE_ERROR_HOVER_RGB.2,
+        DSE_ERROR_HOVER_RGB.0,
+        DSE_ERROR_HOVER_RGB.1,
+        DSE_ERROR_HOVER_RGB.2,
     ),
     error_surface: Color::Rgb(
-        WHALE_ERROR_SURFACE_RGB.0,
-        WHALE_ERROR_SURFACE_RGB.1,
-        WHALE_ERROR_SURFACE_RGB.2,
+        DSE_ERROR_SURFACE_RGB.0,
+        DSE_ERROR_SURFACE_RGB.1,
+        DSE_ERROR_SURFACE_RGB.2,
     ),
     error_border: Color::Rgb(
-        WHALE_ERROR_BORDER_RGB.0,
-        WHALE_ERROR_BORDER_RGB.1,
-        WHALE_ERROR_BORDER_RGB.2,
+        DSE_ERROR_BORDER_RGB.0,
+        DSE_ERROR_BORDER_RGB.1,
+        DSE_ERROR_BORDER_RGB.2,
     ),
     error_text: Color::Rgb(
-        WHALE_ERROR_TEXT_RGB.0,
-        WHALE_ERROR_TEXT_RGB.1,
-        WHALE_ERROR_TEXT_RGB.2,
+        DSE_ERROR_TEXT_RGB.0,
+        DSE_ERROR_TEXT_RGB.1,
+        DSE_ERROR_TEXT_RGB.2,
     ),
-    warning: Color::Rgb(
-        WHALE_WARNING_RGB.0,
-        WHALE_WARNING_RGB.1,
-        WHALE_WARNING_RGB.2,
-    ),
-    success: Color::Rgb(
-        WHALE_SUCCESS_RGB.0,
-        WHALE_SUCCESS_RGB.1,
-        WHALE_SUCCESS_RGB.2,
-    ),
-    info: Color::Rgb(WHALE_INFO_RGB.0, WHALE_INFO_RGB.1, WHALE_INFO_RGB.2),
+    warning: Color::Rgb(DSE_WARNING_RGB.0, DSE_WARNING_RGB.1, DSE_WARNING_RGB.2),
+    success: Color::Rgb(DSE_SUCCESS_RGB.0, DSE_SUCCESS_RGB.1, DSE_SUCCESS_RGB.2),
+    info: Color::Rgb(DSE_INFO_RGB.0, DSE_INFO_RGB.1, DSE_INFO_RGB.2),
     mode_agent: MODE_AGENT,
     mode_yolo: MODE_YOLO,
     mode_plan: MODE_PLAN,
     mode_operate: MODE_OPERATE,
     status_ready: TEXT_MUTED,
     status_working: Color::Rgb(
-        WHALE_ACCENT_SECONDARY_RGB.0,
-        WHALE_ACCENT_SECONDARY_RGB.1,
-        WHALE_ACCENT_SECONDARY_RGB.2,
+        DSE_ACCENT_SECONDARY_RGB.0,
+        DSE_ACCENT_SECONDARY_RGB.1,
+        DSE_ACCENT_SECONDARY_RGB.2,
     ),
     status_warning: STATUS_WARNING,
     diff_added_fg: DIFF_ADDED,
-    diff_deleted_fg: Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1, WHALE_ERROR_RGB.2),
+    diff_deleted_fg: Color::Rgb(DSE_ERROR_RGB.0, DSE_ERROR_RGB.1, DSE_ERROR_RGB.2),
     diff_added_bg: DIFF_ADDED_BG,
     diff_deleted_bg: DIFF_DELETED_BG,
     tool_running: ACCENT_TOOL_LIVE,
     tool_success: Color::Rgb(
-        WHALE_WORKING_GREEN_RGB.0,
-        WHALE_WORKING_GREEN_RGB.1,
-        WHALE_WORKING_GREEN_RGB.2,
+        DSE_WORKING_GREEN_RGB.0,
+        DSE_WORKING_GREEN_RGB.1,
+        DSE_WORKING_GREEN_RGB.2,
     ),
     tool_failed: ACCENT_TOOL_ISSUE,
 };
 
 pub const LIGHT_UI_THEME: UiTheme = UiTheme {
-    name: "whale-light",
+    name: "light",
     mode: PaletteMode::Light,
     surface_bg: LIGHT_SURFACE,
     panel_bg: LIGHT_PANEL,
@@ -671,8 +663,8 @@ pub const MATRIX_UI_THEME: UiTheme = UiTheme {
 pub enum ThemeId {
     System,
     Terminal,
-    Whale,
-    WhaleLight,
+    Dark,
+    Light,
     Grayscale,
     CatppuccinMocha,
     TokyoNight,
@@ -685,15 +677,15 @@ pub enum ThemeId {
 
 impl ThemeId {
     /// Parse a settings string (`"system"`, `"dark"`, `"catppuccin-mocha"`, …).
-    /// Accepts a few aliases (`"whale"` for dark, `"light"` for whale-light)
-    /// so existing config files keep working. Case-insensitive.
+    /// Current DSE settings names are case-insensitive; retired product-theme
+    /// aliases are deliberately not accepted.
     #[must_use]
     pub fn from_name(value: &str) -> Option<Self> {
         match normalize_theme_name(value)? {
             "system" => Some(Self::System),
             "terminal" => Some(Self::Terminal),
-            "dark" => Some(Self::Whale),
-            "light" => Some(Self::WhaleLight),
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
             "grayscale" => Some(Self::Grayscale),
             "catppuccin-mocha" => Some(Self::CatppuccinMocha),
             "tokyo-night" => Some(Self::TokyoNight),
@@ -714,8 +706,8 @@ impl ThemeId {
         match self {
             Self::System => "system",
             Self::Terminal => "terminal",
-            Self::Whale => "dark",
-            Self::WhaleLight => "light",
+            Self::Dark => "dark",
+            Self::Light => "light",
             Self::Grayscale => "grayscale",
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::TokyoNight => "tokyo-night",
@@ -736,8 +728,8 @@ impl ThemeId {
         match self {
             Self::System => UiTheme::detect(),
             Self::Terminal => TERMINAL_UI_THEME,
-            Self::Whale => UI_THEME,
-            Self::WhaleLight => LIGHT_UI_THEME,
+            Self::Dark => UI_THEME,
+            Self::Light => LIGHT_UI_THEME,
             Self::Grayscale => GRAYSCALE_UI_THEME,
             Self::CatppuccinMocha => CATPPUCCIN_MOCHA_UI_THEME,
             Self::TokyoNight => TOKYO_NIGHT_UI_THEME,
@@ -780,8 +772,8 @@ pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "system" | "default" => Some("system"),
         "terminal" | "term" | "transparent" | "follow-terminal" | "inherit" => Some("terminal"),
-        "dark" | "whale" | "whale-dark" => Some("dark"),
-        "light" | "whale-light" => Some("light"),
+        "dark" => Some("dark"),
+        "light" => Some("light"),
         "grayscale" | "greyscale" | "gray" | "grey" | "mono" | "monochrome" | "black-white"
         | "black_and_white" | "blackwhite" | "bw" | "b&w" => Some("grayscale"),
         "catppuccin-mocha" | "catppuccin" | "mocha" => Some("catppuccin-mocha"),
@@ -825,8 +817,8 @@ pub fn hex_rgb_string(color: Color) -> Option<String> {
 pub(crate) const SHIPPED_THEME_IDS: &[ThemeId] = &[
     ThemeId::System,
     ThemeId::Terminal,
-    ThemeId::Whale,
-    ThemeId::WhaleLight,
+    ThemeId::Dark,
+    ThemeId::Light,
     ThemeId::Grayscale,
     ThemeId::CatppuccinMocha,
     ThemeId::TokyoNight,

@@ -7,7 +7,7 @@
 //! 2. **Semantic `Color` constants** — pre-computed `ratatui::style::Color`
 //!    values mapped to UI roles (surface, text, accent, status, mode).
 //! 3. **Backward-compatible aliases** (`DEEPSEEK_*`) — legacy names that
-//!    delegate to the current Whale palette constants.
+//!    delegate to the current Dark palette constants.
 
 mod adapt;
 mod detect;

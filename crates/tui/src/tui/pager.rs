@@ -447,7 +447,7 @@ impl ModalView for PagerView {
             visible_lines.push(Line::from(Span::styled(
                 prompt,
                 Style::default()
-                    .fg(palette::WHALE_INFO)
+                    .fg(palette::DSE_INFO)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if !self.search_matches.is_empty() {
@@ -1055,7 +1055,7 @@ mod tests {
             assert!(!text.contains('X'), "{w}x{h}: background bleed-through");
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::DSE_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
 

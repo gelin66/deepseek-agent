@@ -20,7 +20,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled(
             "dse",
             Style::default()
-                .fg(palette::WHALE_ACCENT_PRIMARY)
+                .fg(palette::DSE_ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(

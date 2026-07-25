@@ -1601,8 +1601,8 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
-    let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::DSE_INFO_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DSE_INFO_RGB;
 
     let any_explicit = args.mcp || args.skills || args.plugins;
     let run_mcp = args.mcp || args.all || !any_explicit;
@@ -1804,9 +1804,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
-    let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
-    let (red_r, red_g, red_b) = palette::WHALE_ERROR_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::DSE_INFO_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DSE_INFO_RGB;
+    let (red_r, red_g, red_b) = palette::DSE_ERROR_RGB;
 
     println!(
         "{}",
@@ -1979,10 +1979,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     use crate::palette;
     use colored::Colorize;
 
-    let (accent_r, accent_g, accent_b) = palette::WHALE_ACCENT_PRIMARY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
-    let (red_r, red_g, red_b) = palette::WHALE_ERROR_RGB;
+    let (accent_r, accent_g, accent_b) = palette::DSE_ACCENT_PRIMARY_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DSE_INFO_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::DSE_INFO_RGB;
+    let (red_r, red_g, red_b) = palette::DSE_ERROR_RGB;
 
     println!(
         "{}",
@@ -3688,9 +3688,9 @@ fn init_project() -> Result<()> {
     use colored::Colorize;
     use project_context::create_default_agents_md;
 
-    let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
-    let (red_r, red_g, red_b) = palette::WHALE_ERROR_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DSE_INFO_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::DSE_INFO_RGB;
+    let (red_r, red_g, red_b) = palette::DSE_ERROR_RGB;
 
     let workspace = std::env::current_dir()?;
     let agents_path = workspace.join("AGENTS.md");

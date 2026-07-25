@@ -54,7 +54,7 @@ pub(crate) fn render_modal_surface(area: Rect, popup_area: Rect, buf: &mut Buffe
 
     Clear.render(popup_area, buf);
     Block::default()
-        .style(Style::default().bg(palette::WHALE_BG))
+        .style(Style::default().bg(palette::DSE_BG))
         .render(popup_area, buf);
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn render_underwater_surface(
     };
     Clear.render(area, buf);
     Block::default()
-        .style(Style::default().bg(palette::WHALE_BG))
+        .style(Style::default().bg(palette::DSE_BG))
         .render(area, buf);
     // Ratatui clips long block titles at the border edge without signalling
     // that anything is missing. Reserve the corner cells and semantic-ellipsis
@@ -89,12 +89,12 @@ pub(crate) fn render_underwater_surface(
         .title(Line::from(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(palette::WHALE_ACCENT_PRIMARY)
+                .fg(palette::DSE_ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         )))
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::WHALE_BG))
+        .style(Style::default().bg(palette::DSE_BG))
         .padding(Padding::new(1, 1, 1, 1));
     let inner = block.inner(surface);
     block.render(surface, buf);
@@ -153,7 +153,7 @@ fn render_modal_backdrop(area: Rect, buf: &mut Buffer) {
         for x in area.left()..area.right() {
             buf[(x, y)]
                 .set_symbol(" ")
-                .set_style(Style::default().bg(palette::WHALE_BG));
+                .set_style(Style::default().bg(palette::DSE_BG));
         }
     }
 }
@@ -191,7 +191,7 @@ impl ActionHint {
             Span::styled(
                 format!(" {} ", self.key),
                 Style::default()
-                    .fg(palette::WHALE_INFO)
+                    .fg(palette::DSE_INFO)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -590,7 +590,7 @@ mod tests {
                 );
                 assert_eq!(
                     cell.bg,
-                    palette::WHALE_BG,
+                    palette::DSE_BG,
                     "backdrop at ({x},{y}) must be opaque"
                 );
             }

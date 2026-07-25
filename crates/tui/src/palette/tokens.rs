@@ -2,31 +2,31 @@
 
 use ratatui::style::Color;
 
-// v0.8.46 Whale dark palette — improved contrast and layer separation.
-pub const WHALE_BG_RGB: (u8, u8, u8) = (10, 17, 32); // #0A1120 Deep Navy
-pub const WHALE_PANEL_RGB: (u8, u8, u8) = (22, 34, 56); // #162238
-pub const WHALE_ELEVATED_RGB: (u8, u8, u8) = (36, 52, 78); // #24344E
-pub const WHALE_SELECTION_RGB: (u8, u8, u8) = (40, 56, 84); // #283854 — darker to avoid bright pop on deep navy
-pub const WHALE_TEXT_BODY_RGB: (u8, u8, u8) = (246, 242, 232); // #F6F2E8 Whale Ivory
-pub const WHALE_TEXT_SOFT_RGB: (u8, u8, u8) = (217, 224, 234); // #D9E0EA
-pub const WHALE_TEXT_MUTED_RGB: (u8, u8, u8) = (169, 180, 199); // #A9B4C7 Mist Gray
-pub const WHALE_TEXT_HINT_RGB: (u8, u8, u8) = (138, 150, 174); // #8A96AE
-pub const WHALE_ACCENT_PRIMARY_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
-pub const WHALE_ACCENT_SECONDARY_RGB: (u8, u8, u8) = (79, 209, 197); // #4FD1C5 Seafoam
-pub const WHALE_WORKING_GREEN_RGB: (u8, u8, u8) = (155, 214, 111); // #9BD66F Working Green
-pub const WHALE_ACCENT_ACTION_RGB: (u8, u8, u8) = (255, 122, 89); // #FF7A59 Coral Spark
-pub const WHALE_ERROR_RGB: (u8, u8, u8) = (255, 92, 122); // #FF5C7A Rose Red
-pub const WHALE_ERROR_HOVER_RGB: (u8, u8, u8) = (255, 120, 144); // #FF7890 Rose Hover
-pub const WHALE_ERROR_SURFACE_RGB: (u8, u8, u8) = (42, 18, 26); // #2A121A Error Surface
-pub const WHALE_ERROR_BORDER_RGB: (u8, u8, u8) = (255, 138, 160); // #FF8AA0 Error Border
-pub const WHALE_ERROR_TEXT_RGB: (u8, u8, u8) = (255, 214, 222); // #FFD6DE Error Text
-pub const WHALE_WARNING_RGB: (u8, u8, u8) = (240, 160, 48); // #F0A030
-pub const WHALE_SUCCESS_RGB: (u8, u8, u8) = WHALE_WORKING_GREEN_RGB; // completed / verified
-pub const WHALE_INFO_RGB: (u8, u8, u8) = (106, 174, 242); // #6AAEF2 Sky
-pub const WHALE_BORDER_RGB: (u8, u8, u8) = (52, 88, 145); // #345891
-pub const WHALE_REASONING_TEXT_RGB: (u8, u8, u8) = (224, 153, 72); // #E09948
-pub const WHALE_REASONING_SURFACE_RGB: (u8, u8, u8) = (42, 34, 24); // #2A2218
-pub const WHALE_REASONING_TINT_RGB: (u8, u8, u8) = (24, 36, 52); // #182434
+// v0.8.46 DSE dark palette — improved contrast and layer separation.
+pub const DSE_BG_RGB: (u8, u8, u8) = (10, 17, 32); // #0A1120 Deep Navy
+pub const DSE_PANEL_RGB: (u8, u8, u8) = (22, 34, 56); // #162238
+pub const DSE_ELEVATED_RGB: (u8, u8, u8) = (36, 52, 78); // #24344E
+pub const DSE_SELECTION_RGB: (u8, u8, u8) = (40, 56, 84); // #283854 — darker to avoid bright pop on deep navy
+pub const DSE_TEXT_BODY_RGB: (u8, u8, u8) = (246, 242, 232); // #F6F2E8 Warm Ivory
+pub const DSE_TEXT_SOFT_RGB: (u8, u8, u8) = (217, 224, 234); // #D9E0EA
+pub const DSE_TEXT_MUTED_RGB: (u8, u8, u8) = (169, 180, 199); // #A9B4C7 Mist Gray
+pub const DSE_TEXT_HINT_RGB: (u8, u8, u8) = (138, 150, 174); // #8A96AE
+pub const DSE_ACCENT_PRIMARY_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
+pub const DSE_ACCENT_SECONDARY_RGB: (u8, u8, u8) = (79, 209, 197); // #4FD1C5 Seafoam
+pub const DSE_WORKING_GREEN_RGB: (u8, u8, u8) = (155, 214, 111); // #9BD66F Working Green
+pub const DSE_ACCENT_ACTION_RGB: (u8, u8, u8) = (255, 122, 89); // #FF7A59 Coral Spark
+pub const DSE_ERROR_RGB: (u8, u8, u8) = (255, 92, 122); // #FF5C7A Rose Red
+pub const DSE_ERROR_HOVER_RGB: (u8, u8, u8) = (255, 120, 144); // #FF7890 Rose Hover
+pub const DSE_ERROR_SURFACE_RGB: (u8, u8, u8) = (42, 18, 26); // #2A121A Error Surface
+pub const DSE_ERROR_BORDER_RGB: (u8, u8, u8) = (255, 138, 160); // #FF8AA0 Error Border
+pub const DSE_ERROR_TEXT_RGB: (u8, u8, u8) = (255, 214, 222); // #FFD6DE Error Text
+pub const DSE_WARNING_RGB: (u8, u8, u8) = (240, 160, 48); // #F0A030
+pub const DSE_SUCCESS_RGB: (u8, u8, u8) = DSE_WORKING_GREEN_RGB; // completed / verified
+pub const DSE_INFO_RGB: (u8, u8, u8) = (106, 174, 242); // #6AAEF2 Sky
+pub const DSE_BORDER_RGB: (u8, u8, u8) = (52, 88, 145); // #345891
+pub const DSE_REASONING_TEXT_RGB: (u8, u8, u8) = (224, 153, 72); // #E09948
+pub const DSE_REASONING_SURFACE_RGB: (u8, u8, u8) = (42, 34, 24); // #2A2218
+pub const DSE_REASONING_TINT_RGB: (u8, u8, u8) = (24, 36, 52); // #182434
 
 // Solarized Light palette RGB tuples
 pub const SOLARIZED_BASE03_RGB: (u8, u8, u8) = (0x00, 0x2B, 0x36);
@@ -46,18 +46,18 @@ pub const SOLARIZED_PANEL_RGB: (u8, u8, u8) = (0xF0, 0xED, 0xE7);
 pub const SOLARIZED_ELEVATED_RGB: (u8, u8, u8) = (0xE4, 0xDF, 0xCF);
 pub const SOLARIZED_SELECT_RGB: (u8, u8, u8) = (0xD6, 0xD2, 0xC9);
 
-pub const WHALE_DIFF_ADDED_RGB: (u8, u8, u8) = (87, 199, 133); // #57C785
-pub const WHALE_DIFF_ADDED_BG_RGB: (u8, u8, u8) = (18, 42, 34); // #122A22
-pub const WHALE_DIFF_DELETED_BG_RGB: (u8, u8, u8) = (42, 18, 26); // #2A121A
-pub const WHALE_MODE_AGENT_RGB: (u8, u8, u8) = (80, 150, 255); // #5096FF
-pub const WHALE_MODE_YOLO_RGB: (u8, u8, u8) = (255, 100, 100); // #FF6464
-pub const WHALE_MODE_PLAN_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
-pub const WHALE_MODE_OPERATE_RGB: (u8, u8, u8) = (178, 132, 255); // #B284FF
-pub const WHALE_TOOL_LIVE_RGB: (u8, u8, u8) = (140, 190, 238); // #8CBEEE
-pub const WHALE_TOOL_ISSUE_RGB: (u8, u8, u8) = (198, 150, 160); // #C696A0
-pub const WHALE_TOOL_OUTPUT_RGB: (u8, u8, u8) = (194, 208, 224); // #C2D0E0
-pub const WHALE_TOOL_SURFACE_RGB: (u8, u8, u8) = (28, 40, 62); // #1C283E
-pub const WHALE_TOOL_ACTIVE_RGB: (u8, u8, u8) = (38, 54, 80); // #263650
+pub const DSE_DIFF_ADDED_RGB: (u8, u8, u8) = (87, 199, 133); // #57C785
+pub const DSE_DIFF_ADDED_BG_RGB: (u8, u8, u8) = (18, 42, 34); // #122A22
+pub const DSE_DIFF_DELETED_BG_RGB: (u8, u8, u8) = (42, 18, 26); // #2A121A
+pub const DSE_MODE_AGENT_RGB: (u8, u8, u8) = (80, 150, 255); // #5096FF
+pub const DSE_MODE_YOLO_RGB: (u8, u8, u8) = (255, 100, 100); // #FF6464
+pub const DSE_MODE_PLAN_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
+pub const DSE_MODE_OPERATE_RGB: (u8, u8, u8) = (178, 132, 255); // #B284FF
+pub const DSE_TOOL_LIVE_RGB: (u8, u8, u8) = (140, 190, 238); // #8CBEEE
+pub const DSE_TOOL_ISSUE_RGB: (u8, u8, u8) = (198, 150, 160); // #C696A0
+pub const DSE_TOOL_OUTPUT_RGB: (u8, u8, u8) = (194, 208, 224); // #C2D0E0
+pub const DSE_TOOL_SURFACE_RGB: (u8, u8, u8) = (28, 40, 62); // #1C283E
+pub const DSE_TOOL_ACTIVE_RGB: (u8, u8, u8) = (38, 54, 80); // #263650
 
 pub const LIGHT_SURFACE_RGB: (u8, u8, u8) = (246, 248, 251); // #F6F8FB
 pub const LIGHT_PANEL_RGB: (u8, u8, u8) = (236, 242, 248); // #ECF2F8
@@ -190,17 +190,17 @@ pub const MATRIX_TEXT_DIM_RGB: (u8, u8, u8) = (0, 68, 0); // #004400
 pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
 
 // New semantic colors
-pub const BORDER_COLOR_RGB: (u8, u8, u8) = WHALE_BORDER_RGB; // #2A4A7F
+pub const BORDER_COLOR_RGB: (u8, u8, u8) = DSE_BORDER_RGB; // #2A4A7F
 
-pub const WHALE_ACCENT_PRIMARY: Color = Color::Rgb(
-    WHALE_ACCENT_PRIMARY_RGB.0,
-    WHALE_ACCENT_PRIMARY_RGB.1,
-    WHALE_ACCENT_PRIMARY_RGB.2,
+pub const DSE_ACCENT_PRIMARY: Color = Color::Rgb(
+    DSE_ACCENT_PRIMARY_RGB.0,
+    DSE_ACCENT_PRIMARY_RGB.1,
+    DSE_ACCENT_PRIMARY_RGB.2,
 );
-pub const WHALE_INFO: Color = Color::Rgb(WHALE_INFO_RGB.0, WHALE_INFO_RGB.1, WHALE_INFO_RGB.2);
-pub const WHALE_BG: Color = Color::Rgb(WHALE_BG_RGB.0, WHALE_BG_RGB.1, WHALE_BG_RGB.2);
-pub const WHALE_PANEL: Color = Color::Rgb(WHALE_PANEL_RGB.0, WHALE_PANEL_RGB.1, WHALE_PANEL_RGB.2);
-pub const WHALE_ERROR: Color = Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1, WHALE_ERROR_RGB.2);
+pub const DSE_INFO: Color = Color::Rgb(DSE_INFO_RGB.0, DSE_INFO_RGB.1, DSE_INFO_RGB.2);
+pub const DSE_BG: Color = Color::Rgb(DSE_BG_RGB.0, DSE_BG_RGB.1, DSE_BG_RGB.2);
+pub const DSE_PANEL: Color = Color::Rgb(DSE_PANEL_RGB.0, DSE_PANEL_RGB.1, DSE_PANEL_RGB.2);
+pub const DSE_ERROR: Color = Color::Rgb(DSE_ERROR_RGB.0, DSE_ERROR_RGB.1, DSE_ERROR_RGB.2);
 
 pub const LIGHT_SURFACE: Color = Color::Rgb(
     LIGHT_SURFACE_RGB.0,
@@ -313,39 +313,39 @@ pub const GRAYSCALE_SELECTION_BG: Color = Color::Rgb(
 );
 
 pub const TEXT_BODY: Color = Color::Rgb(
-    WHALE_TEXT_BODY_RGB.0,
-    WHALE_TEXT_BODY_RGB.1,
-    WHALE_TEXT_BODY_RGB.2,
+    DSE_TEXT_BODY_RGB.0,
+    DSE_TEXT_BODY_RGB.1,
+    DSE_TEXT_BODY_RGB.2,
 );
 pub const TEXT_SECONDARY: Color = Color::Rgb(
-    WHALE_TEXT_MUTED_RGB.0,
-    WHALE_TEXT_MUTED_RGB.1,
-    WHALE_TEXT_MUTED_RGB.2,
+    DSE_TEXT_MUTED_RGB.0,
+    DSE_TEXT_MUTED_RGB.1,
+    DSE_TEXT_MUTED_RGB.2,
 );
 pub const TEXT_HINT: Color = Color::Rgb(
-    WHALE_TEXT_HINT_RGB.0,
-    WHALE_TEXT_HINT_RGB.1,
-    WHALE_TEXT_HINT_RGB.2,
+    DSE_TEXT_HINT_RGB.0,
+    DSE_TEXT_HINT_RGB.1,
+    DSE_TEXT_HINT_RGB.2,
 );
 pub const TEXT_ACCENT: Color = Color::Rgb(
-    WHALE_ACCENT_SECONDARY_RGB.0,
-    WHALE_ACCENT_SECONDARY_RGB.1,
-    WHALE_ACCENT_SECONDARY_RGB.2,
+    DSE_ACCENT_SECONDARY_RGB.0,
+    DSE_ACCENT_SECONDARY_RGB.1,
+    DSE_ACCENT_SECONDARY_RGB.2,
 );
 pub const SELECTION_TEXT: Color = Color::Rgb(
-    WHALE_TEXT_BODY_RGB.0,
-    WHALE_TEXT_BODY_RGB.1,
-    WHALE_TEXT_BODY_RGB.2,
+    DSE_TEXT_BODY_RGB.0,
+    DSE_TEXT_BODY_RGB.1,
+    DSE_TEXT_BODY_RGB.2,
 ); // Ivory — softer than pure white
 pub const TEXT_SOFT: Color = Color::Rgb(
-    WHALE_TEXT_SOFT_RGB.0,
-    WHALE_TEXT_SOFT_RGB.1,
-    WHALE_TEXT_SOFT_RGB.2,
+    DSE_TEXT_SOFT_RGB.0,
+    DSE_TEXT_SOFT_RGB.1,
+    DSE_TEXT_SOFT_RGB.2,
 );
 pub const TEXT_REASONING: Color = Color::Rgb(
-    WHALE_REASONING_TEXT_RGB.0,
-    WHALE_REASONING_TEXT_RGB.1,
-    WHALE_REASONING_TEXT_RGB.2,
+    DSE_REASONING_TEXT_RGB.0,
+    DSE_REASONING_TEXT_RGB.1,
+    DSE_REASONING_TEXT_RGB.2,
 );
 
 // Compatibility aliases for existing call sites.
@@ -359,125 +359,115 @@ pub const LIGHT_USER_BODY: Color = Color::Rgb(21, 128, 61); // #15803D green
 pub const BORDER_COLOR: Color =
     Color::Rgb(BORDER_COLOR_RGB.0, BORDER_COLOR_RGB.1, BORDER_COLOR_RGB.2);
 #[allow(dead_code)]
-pub const BACKGROUND_DARK: Color = Color::Rgb(WHALE_BG_RGB.0, WHALE_BG_RGB.1, WHALE_BG_RGB.2);
+pub const BACKGROUND_DARK: Color = Color::Rgb(DSE_BG_RGB.0, DSE_BG_RGB.1, DSE_BG_RGB.2);
 #[allow(dead_code)]
-pub const SURFACE_PANEL: Color =
-    Color::Rgb(WHALE_PANEL_RGB.0, WHALE_PANEL_RGB.1, WHALE_PANEL_RGB.2);
+pub const SURFACE_PANEL: Color = Color::Rgb(DSE_PANEL_RGB.0, DSE_PANEL_RGB.1, DSE_PANEL_RGB.2);
 #[allow(dead_code)]
-pub const SURFACE_ELEVATED: Color = Color::Rgb(
-    WHALE_ELEVATED_RGB.0,
-    WHALE_ELEVATED_RGB.1,
-    WHALE_ELEVATED_RGB.2,
-);
+pub const SURFACE_ELEVATED: Color =
+    Color::Rgb(DSE_ELEVATED_RGB.0, DSE_ELEVATED_RGB.1, DSE_ELEVATED_RGB.2);
 pub const SURFACE_REASONING: Color = Color::Rgb(
-    WHALE_REASONING_SURFACE_RGB.0,
-    WHALE_REASONING_SURFACE_RGB.1,
-    WHALE_REASONING_SURFACE_RGB.2,
+    DSE_REASONING_SURFACE_RGB.0,
+    DSE_REASONING_SURFACE_RGB.1,
+    DSE_REASONING_SURFACE_RGB.2,
 );
 pub const SURFACE_REASONING_TINT: Color = Color::Rgb(
-    WHALE_REASONING_TINT_RGB.0,
-    WHALE_REASONING_TINT_RGB.1,
-    WHALE_REASONING_TINT_RGB.2,
+    DSE_REASONING_TINT_RGB.0,
+    DSE_REASONING_TINT_RGB.1,
+    DSE_REASONING_TINT_RGB.2,
 );
 #[allow(dead_code)]
 pub const SURFACE_REASONING_ACTIVE: Color = Color::Rgb(58, 46, 32);
 #[allow(dead_code)]
 pub const SURFACE_TOOL: Color = Color::Rgb(
-    WHALE_TOOL_SURFACE_RGB.0,
-    WHALE_TOOL_SURFACE_RGB.1,
-    WHALE_TOOL_SURFACE_RGB.2,
+    DSE_TOOL_SURFACE_RGB.0,
+    DSE_TOOL_SURFACE_RGB.1,
+    DSE_TOOL_SURFACE_RGB.2,
 );
 #[allow(dead_code)]
 pub const SURFACE_TOOL_ACTIVE: Color = Color::Rgb(
-    WHALE_TOOL_ACTIVE_RGB.0,
-    WHALE_TOOL_ACTIVE_RGB.1,
-    WHALE_TOOL_ACTIVE_RGB.2,
+    DSE_TOOL_ACTIVE_RGB.0,
+    DSE_TOOL_ACTIVE_RGB.1,
+    DSE_TOOL_ACTIVE_RGB.2,
 );
 #[allow(dead_code)]
 pub const SURFACE_SUCCESS: Color = Color::Rgb(18, 42, 37); // dark teal tint
 #[allow(dead_code)]
 pub const SURFACE_ERROR: Color = Color::Rgb(
-    WHALE_ERROR_SURFACE_RGB.0,
-    WHALE_ERROR_SURFACE_RGB.1,
-    WHALE_ERROR_SURFACE_RGB.2,
+    DSE_ERROR_SURFACE_RGB.0,
+    DSE_ERROR_SURFACE_RGB.1,
+    DSE_ERROR_SURFACE_RGB.2,
 );
 pub const DIFF_ADDED_BG: Color = Color::Rgb(
-    WHALE_DIFF_ADDED_BG_RGB.0,
-    WHALE_DIFF_ADDED_BG_RGB.1,
-    WHALE_DIFF_ADDED_BG_RGB.2,
+    DSE_DIFF_ADDED_BG_RGB.0,
+    DSE_DIFF_ADDED_BG_RGB.1,
+    DSE_DIFF_ADDED_BG_RGB.2,
 );
 pub const DIFF_DELETED_BG: Color = Color::Rgb(
-    WHALE_DIFF_DELETED_BG_RGB.0,
-    WHALE_DIFF_DELETED_BG_RGB.1,
-    WHALE_DIFF_DELETED_BG_RGB.2,
+    DSE_DIFF_DELETED_BG_RGB.0,
+    DSE_DIFF_DELETED_BG_RGB.1,
+    DSE_DIFF_DELETED_BG_RGB.2,
 );
 pub const DIFF_ADDED: Color = Color::Rgb(
-    WHALE_DIFF_ADDED_RGB.0,
-    WHALE_DIFF_ADDED_RGB.1,
-    WHALE_DIFF_ADDED_RGB.2,
+    DSE_DIFF_ADDED_RGB.0,
+    DSE_DIFF_ADDED_RGB.1,
+    DSE_DIFF_ADDED_RGB.2,
 );
 pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(
-    WHALE_REASONING_TEXT_RGB.0,
-    WHALE_REASONING_TEXT_RGB.1,
-    WHALE_REASONING_TEXT_RGB.2,
+    DSE_REASONING_TEXT_RGB.0,
+    DSE_REASONING_TEXT_RGB.1,
+    DSE_REASONING_TEXT_RGB.2,
 );
 pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(
-    WHALE_TOOL_LIVE_RGB.0,
-    WHALE_TOOL_LIVE_RGB.1,
-    WHALE_TOOL_LIVE_RGB.2,
+    DSE_TOOL_LIVE_RGB.0,
+    DSE_TOOL_LIVE_RGB.1,
+    DSE_TOOL_LIVE_RGB.2,
 );
 pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(
-    WHALE_TOOL_ISSUE_RGB.0,
-    WHALE_TOOL_ISSUE_RGB.1,
-    WHALE_TOOL_ISSUE_RGB.2,
+    DSE_TOOL_ISSUE_RGB.0,
+    DSE_TOOL_ISSUE_RGB.1,
+    DSE_TOOL_ISSUE_RGB.2,
 );
 pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(
-    WHALE_TOOL_OUTPUT_RGB.0,
-    WHALE_TOOL_OUTPUT_RGB.1,
-    WHALE_TOOL_OUTPUT_RGB.2,
+    DSE_TOOL_OUTPUT_RGB.0,
+    DSE_TOOL_OUTPUT_RGB.1,
+    DSE_TOOL_OUTPUT_RGB.2,
 );
 
-// Legacy status colors - keep for backward compatibility
-pub const STATUS_SUCCESS: Color = Color::Rgb(
-    WHALE_SUCCESS_RGB.0,
-    WHALE_SUCCESS_RGB.1,
-    WHALE_SUCCESS_RGB.2,
-);
-pub const STATUS_WARNING: Color = Color::Rgb(
-    WHALE_WARNING_RGB.0,
-    WHALE_WARNING_RGB.1,
-    WHALE_WARNING_RGB.2,
-);
-pub const STATUS_ERROR: Color = Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1, WHALE_ERROR_RGB.2);
+// Semantic status roles used by retained TUI call sites.
+pub const STATUS_SUCCESS: Color =
+    Color::Rgb(DSE_SUCCESS_RGB.0, DSE_SUCCESS_RGB.1, DSE_SUCCESS_RGB.2);
+pub const STATUS_WARNING: Color =
+    Color::Rgb(DSE_WARNING_RGB.0, DSE_WARNING_RGB.1, DSE_WARNING_RGB.2);
+pub const STATUS_ERROR: Color = Color::Rgb(DSE_ERROR_RGB.0, DSE_ERROR_RGB.1, DSE_ERROR_RGB.2);
 #[allow(dead_code)]
-pub const STATUS_INFO: Color = Color::Rgb(WHALE_INFO_RGB.0, WHALE_INFO_RGB.1, WHALE_INFO_RGB.2);
+pub const STATUS_INFO: Color = Color::Rgb(DSE_INFO_RGB.0, DSE_INFO_RGB.1, DSE_INFO_RGB.2);
 
 // Mode-specific accent colors for mode badges
 pub const MODE_AGENT: Color = Color::Rgb(
-    WHALE_MODE_AGENT_RGB.0,
-    WHALE_MODE_AGENT_RGB.1,
-    WHALE_MODE_AGENT_RGB.2,
+    DSE_MODE_AGENT_RGB.0,
+    DSE_MODE_AGENT_RGB.1,
+    DSE_MODE_AGENT_RGB.2,
 );
 pub const MODE_YOLO: Color = Color::Rgb(
-    WHALE_MODE_YOLO_RGB.0,
-    WHALE_MODE_YOLO_RGB.1,
-    WHALE_MODE_YOLO_RGB.2,
+    DSE_MODE_YOLO_RGB.0,
+    DSE_MODE_YOLO_RGB.1,
+    DSE_MODE_YOLO_RGB.2,
 );
 pub const MODE_PLAN: Color = Color::Rgb(
-    WHALE_MODE_PLAN_RGB.0,
-    WHALE_MODE_PLAN_RGB.1,
-    WHALE_MODE_PLAN_RGB.2,
+    DSE_MODE_PLAN_RGB.0,
+    DSE_MODE_PLAN_RGB.1,
+    DSE_MODE_PLAN_RGB.2,
 );
 pub const MODE_OPERATE: Color = Color::Rgb(
-    WHALE_MODE_OPERATE_RGB.0,
-    WHALE_MODE_OPERATE_RGB.1,
-    WHALE_MODE_OPERATE_RGB.2,
+    DSE_MODE_OPERATE_RGB.0,
+    DSE_MODE_OPERATE_RGB.1,
+    DSE_MODE_OPERATE_RGB.2,
 );
 
 pub const SELECTION_BG: Color = Color::Rgb(
-    WHALE_SELECTION_RGB.0,
-    WHALE_SELECTION_RGB.1,
-    WHALE_SELECTION_RGB.2,
+    DSE_SELECTION_RGB.0,
+    DSE_SELECTION_RGB.1,
+    DSE_SELECTION_RGB.2,
 );
 #[allow(dead_code)]
-pub const COMPOSER_BG: Color = WHALE_PANEL;
+pub const COMPOSER_BG: Color = DSE_PANEL;

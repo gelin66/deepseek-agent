@@ -73,37 +73,37 @@ fn verify_status_success_uses_success_token() {
     assert_eq!(
         palette::STATUS_SUCCESS,
         Color::Rgb(
-            palette::WHALE_SUCCESS_RGB.0,
-            palette::WHALE_SUCCESS_RGB.1,
-            palette::WHALE_SUCCESS_RGB.2
+            palette::DSE_SUCCESS_RGB.0,
+            palette::DSE_SUCCESS_RGB.1,
+            palette::DSE_SUCCESS_RGB.2
         ),
         "STATUS_SUCCESS should use the current success token"
     );
     assert_ne!(
         palette::STATUS_SUCCESS,
-        palette::WHALE_ACCENT_PRIMARY,
+        palette::DSE_ACCENT_PRIMARY,
         "STATUS_SUCCESS should not regress to the primary accent"
     );
 }
 
 #[test]
 #[allow(deprecated)]
-fn verify_brand_aliases_follow_whale_tokens() {
-    assert_eq!(palette::WHALE_ACCENT_PRIMARY_RGB, (246, 196, 83));
-    assert_eq!(palette::WHALE_INFO_RGB, (106, 174, 242));
-    assert_eq!(palette::WHALE_ERROR_RGB, (255, 92, 122));
+fn verify_brand_aliases_follow_dse_tokens() {
+    assert_eq!(palette::DSE_ACCENT_PRIMARY_RGB, (246, 196, 83));
+    assert_eq!(palette::DSE_INFO_RGB, (106, 174, 242));
+    assert_eq!(palette::DSE_ERROR_RGB, (255, 92, 122));
     assert_eq!(
-        color_to_rgb(palette::WHALE_ACCENT_PRIMARY),
-        palette::WHALE_ACCENT_PRIMARY_RGB
+        color_to_rgb(palette::DSE_ACCENT_PRIMARY),
+        palette::DSE_ACCENT_PRIMARY_RGB
     );
 
     assert_eq!(
-        palette::WHALE_ACCENT_PRIMARY_RGB,
-        palette::WHALE_ACCENT_PRIMARY_RGB
+        palette::DSE_ACCENT_PRIMARY_RGB,
+        palette::DSE_ACCENT_PRIMARY_RGB
     );
-    assert_eq!(palette::WHALE_ACCENT_PRIMARY, palette::WHALE_ACCENT_PRIMARY);
-    assert_eq!(palette::WHALE_INFO_RGB, palette::WHALE_INFO_RGB);
-    assert_eq!(palette::WHALE_ERROR_RGB, palette::WHALE_ERROR_RGB);
+    assert_eq!(palette::DSE_ACCENT_PRIMARY, palette::DSE_ACCENT_PRIMARY);
+    assert_eq!(palette::DSE_INFO_RGB, palette::DSE_INFO_RGB);
+    assert_eq!(palette::DSE_ERROR_RGB, palette::DSE_ERROR_RGB);
 }
 
 #[test]
@@ -111,33 +111,33 @@ fn contrast_guardrails_for_key_ui_pairs() {
     let min_readable = 4.5;
 
     assert_min_contrast(
-        "TEXT_BODY on WHALE_BG",
+        "TEXT_BODY on DSE_BG",
         palette::TEXT_BODY,
-        palette::WHALE_BG,
+        palette::DSE_BG,
         min_readable,
     );
     assert_min_contrast(
-        "TEXT_SECONDARY on WHALE_BG",
+        "TEXT_SECONDARY on DSE_BG",
         palette::TEXT_SECONDARY,
-        palette::WHALE_BG,
+        palette::DSE_BG,
         min_readable,
     );
     assert_min_contrast(
-        "TEXT_HINT on WHALE_BG",
+        "TEXT_HINT on DSE_BG",
         palette::TEXT_HINT,
-        palette::WHALE_BG,
+        palette::DSE_BG,
         min_readable,
     );
     assert_min_contrast(
-        "STATUS_WARNING on WHALE_BG",
+        "STATUS_WARNING on DSE_BG",
         palette::STATUS_WARNING,
-        palette::WHALE_BG,
+        palette::DSE_BG,
         min_readable,
     );
     assert_min_contrast(
-        "STATUS_ERROR on WHALE_BG",
+        "STATUS_ERROR on DSE_BG",
         palette::STATUS_ERROR,
-        palette::WHALE_BG,
+        palette::DSE_BG,
         min_readable,
     );
     assert_min_contrast(

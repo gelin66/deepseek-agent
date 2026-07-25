@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn braille_spinner_advances_at_shared_cadence() {
         // Assert cadence behavior against the frame table rather than specific
-        // glyphs so the whale-spout pattern can be retuned without churn here.
+        // glyphs so the status pattern can be retuned without churn here.
         assert_eq!(
             braille_spinner_frame_for_elapsed_ms(0, false),
             LIVE_STATIC_MARKER

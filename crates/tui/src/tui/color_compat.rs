@@ -27,7 +27,7 @@ pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
     palette_mode: PaletteMode,
-    /// Currently active named theme. `System`/`Whale`/`WhaleLight` make the
+    /// Currently active named theme. `System`/`Dark`/`Light` make the
     /// theme remap a no-op (those rely on the dark/light pipeline); the
     /// community presets (Catppuccin, Tokyo Night, Dracula, Gruvbox) trigger
     /// a per-cell rewrite of dark-palette constants → preset slots.
@@ -255,7 +255,7 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
 }
 
 /// Narrow every DSE-authored decorative glyph to a semantic ASCII
-/// alternative. Scope is deliberate: box drawing, block elements (whale
+/// alternative. Scope is deliberate: box drawing, block elements (DSE
 /// mark, meters, rails), braille state markers, geometric role/state marks,
 /// arrows, and typographic chrome. Language text — CJK labels, accented
 /// letters, user and model content outside those decorative classes —
@@ -289,7 +289,7 @@ pub(crate) fn adapt_cell_symbol_for_ascii(cell: &mut Cell) {
         "┌" | "┐" | "└" | "┘" | "╭" | "╮" | "╰" | "╯" | "├" | "┤" | "┬" | "┴" | "┼" => {
             "+"
         }
-        // Block elements: the whale mark, context meter, and scroll thumbs.
+        // Block elements: the DSE mark, context meter, and scroll thumbs.
         "█" | "▉" | "▊" | "▋" | "▀" | "▄" | "▅" | "▆" | "▇" | "▙" | "▛" | "▜" | "▟" | "▰" => {
             "#"
         }
@@ -310,9 +310,6 @@ pub(crate) fn adapt_cell_symbol_for_ascii(cell: &mut Cell) {
         "✓" | "✔" | "☑" => "Y",
         "✕" | "×" | "⊘" | "✗" | "✘" | "☒" => "X",
         "⏸" => "=",
-        // The legacy opt-in whale status indicator; the brand mark survives
-        // as a letter rather than an emoji tofu box.
-        "🐳" | "🐋" => "w",
         "…" => ".",
         _ => return,
     };
@@ -359,7 +356,7 @@ fn adapt_cell_colors(
     ui_theme: &UiTheme,
 ) {
     // Stage 1: community-theme remap (dark palette → preset slots). No-op
-    // for System / Whale / WhaleLight so legacy dark/light flows are
+    // for System / Dark / Light so canonical dark/light flows are
     // untouched. Runs *before* the palette-mode remap so a light terminal
     // running e.g. Catppuccin still routes the preset colors through the
     // light adaptation below (rare combo, but the sequencing is the same).
@@ -500,13 +497,13 @@ mod tests {
     fn light_palette_maps_dark_cells_before_depth_adaptation() {
         let mut cell = Cell::default();
         cell.set_fg(Color::White);
-        cell.set_bg(palette::WHALE_BG);
+        cell.set_bg(palette::DSE_BG);
 
         adapt_cell_colors(
             &mut cell,
             ColorDepth::TrueColor,
             PaletteMode::Light,
-            ThemeId::WhaleLight,
+            ThemeId::Light,
             &palette::LIGHT_UI_THEME,
         );
 
@@ -517,8 +514,8 @@ mod tests {
     #[test]
     fn grayscale_palette_maps_hued_cells_before_depth_adaptation() {
         let mut cell = Cell::default();
-        cell.set_fg(palette::WHALE_INFO);
-        cell.set_bg(palette::WHALE_BG);
+        cell.set_fg(palette::DSE_INFO);
+        cell.set_bg(palette::DSE_BG);
 
         adapt_cell_colors(
             &mut cell,
@@ -535,11 +532,11 @@ mod tests {
     #[test]
     fn community_theme_remap_honors_background_color_override() {
         // Tokyo Night + a custom black surface: the remap must rewrite
-        // `palette::WHALE_BG` to the *active* UiTheme's overridden
+        // `palette::DSE_BG` to the *active* UiTheme's overridden
         // surface, not to tokyo-night's default surface.
         let active = palette::TOKYO_NIGHT_UI_THEME.with_background_color(Color::Rgb(0, 0, 0));
         let mut cell = Cell::default();
-        cell.set_bg(palette::WHALE_BG);
+        cell.set_bg(palette::DSE_BG);
 
         adapt_cell_colors(
             &mut cell,

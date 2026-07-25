@@ -48,8 +48,9 @@ eval/results/
 eval/raw/
 
 # Local runtime state
+# Retired pre-DSE local state remains ignored as inert user data. Production
+# has no reader or writer for this path.
 **/.codewhale/*
-!/.codewhale/constitution.json
 .deepseek/
 **/session_*.json
 *.db

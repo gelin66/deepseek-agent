@@ -9,14 +9,14 @@ use super::themes::{
     UI_THEME, UiTheme, normalize_hex_rgb_color, normalize_theme_name, parse_hex_rgb_color,
 };
 use super::tokens::{
-    ACCENT_REASONING_LIVE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
-    GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY,
-    GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL,
-    LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_BODY_RGB, LIGHT_TEXT_HINT,
-    SOLARIZED_PANEL, SOLARIZED_SURFACE, SOLARIZED_TEXT_BODY, SOLARIZED_TEXT_HINT,
+    ACCENT_REASONING_LIVE, DIFF_ADDED, DIFF_ADDED_BG, DSE_BG, DSE_ERROR, DSE_INFO, DSE_PANEL,
+    DSE_REASONING_TEXT_RGB, DSE_REASONING_TINT_RGB, DSE_TEXT_BODY_RGB, GRAYSCALE_BORDER,
+    GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE,
+    GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, LIGHT_BORDER, LIGHT_ELEVATED,
+    LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_BODY_RGB,
+    LIGHT_TEXT_HINT, SOLARIZED_PANEL, SOLARIZED_SURFACE, SOLARIZED_TEXT_BODY, SOLARIZED_TEXT_HINT,
     SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-    TEXT_TOOL_OUTPUT, WHALE_BG, WHALE_ERROR, WHALE_INFO, WHALE_PANEL, WHALE_REASONING_TEXT_RGB,
-    WHALE_REASONING_TINT_RGB, WHALE_TEXT_BODY_RGB,
+    TEXT_TOOL_OUTPUT,
 };
 use ratatui::style::Color;
 
@@ -108,7 +108,7 @@ fn ui_theme_selects_solarized_light_variant() {
 fn theme_names_normalize_common_grayscale_aliases() {
     assert_eq!(normalize_theme_name("system"), Some("system"));
     assert_eq!(normalize_theme_name("default"), Some("system"));
-    assert_eq!(normalize_theme_name("whale"), Some("dark"));
+    assert_eq!(normalize_theme_name("whale"), None);
     assert_eq!(normalize_theme_name("transparent"), Some("terminal"));
     assert_eq!(normalize_theme_name("inherit"), Some("terminal"));
     assert_eq!(normalize_theme_name("black-white"), Some("grayscale"));
@@ -124,7 +124,7 @@ fn terminal_theme_resets_surfaces_and_remaps_direct_palette_constants() {
     assert_eq!(TERMINAL_UI_THEME.text_body, Color::Reset);
 
     assert_eq!(
-        adapt_bg_for_theme(WHALE_BG, ThemeId::Terminal, &TERMINAL_UI_THEME),
+        adapt_bg_for_theme(DSE_BG, ThemeId::Terminal, &TERMINAL_UI_THEME),
         Color::Reset
     );
     assert_eq!(
@@ -152,7 +152,7 @@ fn light_palette_has_quiet_layer_separation() {
 }
 
 #[test]
-fn solarized_light_does_not_mutate_whale_light_text() {
+fn solarized_light_does_not_mutate_dse_light_text() {
     assert_eq!(
         LIGHT_TEXT_BODY,
         Color::Rgb(
@@ -169,25 +169,25 @@ fn dark_palette_uses_soft_body_text_and_warm_reasoning() {
     assert_eq!(
         TEXT_BODY,
         Color::Rgb(
-            WHALE_TEXT_BODY_RGB.0,
-            WHALE_TEXT_BODY_RGB.1,
-            WHALE_TEXT_BODY_RGB.2
+            DSE_TEXT_BODY_RGB.0,
+            DSE_TEXT_BODY_RGB.1,
+            DSE_TEXT_BODY_RGB.2
         )
     );
     assert_eq!(
         TEXT_REASONING,
         Color::Rgb(
-            WHALE_REASONING_TEXT_RGB.0,
-            WHALE_REASONING_TEXT_RGB.1,
-            WHALE_REASONING_TEXT_RGB.2
+            DSE_REASONING_TEXT_RGB.0,
+            DSE_REASONING_TEXT_RGB.1,
+            DSE_REASONING_TEXT_RGB.2
         )
     );
     assert_eq!(
         ACCENT_REASONING_LIVE,
         Color::Rgb(
-            WHALE_REASONING_TEXT_RGB.0,
-            WHALE_REASONING_TEXT_RGB.1,
-            WHALE_REASONING_TEXT_RGB.2
+            DSE_REASONING_TEXT_RGB.0,
+            DSE_REASONING_TEXT_RGB.1,
+            DSE_REASONING_TEXT_RGB.2
         )
     );
     assert_ne!(TEXT_REASONING, TEXT_TOOL_OUTPUT);
@@ -223,11 +223,11 @@ fn hex_rgb_color_parser_accepts_hashless_and_normalizes() {
 #[test]
 fn light_palette_maps_dark_surfaces_and_text() {
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_BG, PaletteMode::Light),
+        adapt_bg_for_palette_mode(DSE_BG, PaletteMode::Light),
         LIGHT_SURFACE
     );
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_PANEL, PaletteMode::Light),
+        adapt_bg_for_palette_mode(DSE_PANEL, PaletteMode::Light),
         LIGHT_PANEL
     );
     assert_eq!(
@@ -243,11 +243,11 @@ fn light_palette_maps_dark_surfaces_and_text() {
 #[test]
 fn solarized_light_palette_maps_dark_surfaces_and_text_to_solarized_roles() {
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_BG, PaletteMode::SolarizedLight),
+        adapt_bg_for_palette_mode(DSE_BG, PaletteMode::SolarizedLight),
         SOLARIZED_SURFACE
     );
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_PANEL, PaletteMode::SolarizedLight),
+        adapt_bg_for_palette_mode(DSE_PANEL, PaletteMode::SolarizedLight),
         SOLARIZED_PANEL
     );
     assert_eq!(
@@ -263,11 +263,11 @@ fn solarized_light_palette_maps_dark_surfaces_and_text_to_solarized_roles() {
 #[test]
 fn grayscale_palette_maps_brand_hues_to_neutral_roles() {
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_BG, PaletteMode::Grayscale),
+        adapt_bg_for_palette_mode(DSE_BG, PaletteMode::Grayscale),
         GRAYSCALE_SURFACE
     );
     assert_eq!(
-        adapt_bg_for_palette_mode(WHALE_PANEL, PaletteMode::Grayscale),
+        adapt_bg_for_palette_mode(DSE_PANEL, PaletteMode::Grayscale),
         GRAYSCALE_PANEL
     );
     assert_eq!(
@@ -275,11 +275,11 @@ fn grayscale_palette_maps_brand_hues_to_neutral_roles() {
         GRAYSCALE_REASONING
     );
     assert_eq!(
-        adapt_fg_for_palette_mode(WHALE_INFO, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
+        adapt_fg_for_palette_mode(DSE_INFO, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
         GRAYSCALE_TEXT_SOFT
     );
     assert_eq!(
-        adapt_fg_for_palette_mode(WHALE_ERROR, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
+        adapt_fg_for_palette_mode(DSE_ERROR, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
         GRAYSCALE_TEXT_BODY
     );
     assert_eq!(
@@ -342,16 +342,10 @@ fn adapt_bg_maps_rgb_to_indexed_on_ansi256() {
 #[test]
 fn adapt_color_drops_to_named_on_ansi16() {
     // Sky: blue-dominant and bright → LightBlue, not terminal cyan.
-    assert_eq!(
-        adapt_color(WHALE_INFO, ColorDepth::Ansi16),
-        Color::LightBlue
-    );
+    assert_eq!(adapt_color(DSE_INFO, ColorDepth::Ansi16), Color::LightBlue);
     // Rose Red is intentionally bright enough to use the terminal's
     // bright red slot.
-    assert_eq!(
-        adapt_color(WHALE_ERROR, ColorDepth::Ansi16),
-        Color::LightRed
-    );
+    assert_eq!(adapt_color(DSE_ERROR, ColorDepth::Ansi16), Color::LightRed);
 }
 
 #[test]
@@ -381,9 +375,9 @@ fn light_palette_maps_reasoning_tint_to_light_surface() {
     assert_eq!(
         SURFACE_REASONING_TINT,
         Color::Rgb(
-            WHALE_REASONING_TINT_RGB.0,
-            WHALE_REASONING_TINT_RGB.1,
-            WHALE_REASONING_TINT_RGB.2
+            DSE_REASONING_TINT_RGB.0,
+            DSE_REASONING_TINT_RGB.1,
+            DSE_REASONING_TINT_RGB.2
         )
     );
     assert_eq!(
@@ -449,5 +443,5 @@ fn color_depth_detect_is_safe_without_env() {
     // Don't try to pin the result — env may be anything in CI. Just
     // exercise the path so a panic would surface.
     let _ = ColorDepth::detect();
-    let _ = adapt_color(WHALE_BG, ColorDepth::detect());
+    let _ = adapt_color(DSE_BG, ColorDepth::detect());
 }

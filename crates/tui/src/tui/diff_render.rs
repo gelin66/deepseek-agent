@@ -268,13 +268,13 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 
 fn render_header_line(line: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
-        .fg(palette::WHALE_INFO)
+        .fg(palette::DSE_INFO)
         .add_modifier(Modifier::BOLD);
     wrap_with_style(line, style, width)
 }
 
 fn render_hunk_header(line: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::WHALE_ACCENT_PRIMARY);
+    let style = Style::default().fg(palette::DSE_ACCENT_PRIMARY);
     wrap_with_style(line, style, width)
 }
 

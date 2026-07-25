@@ -193,7 +193,7 @@ mod tests {
     fn normal_input_unknown_commands_and_arguments_are_distinct() {
         assert_eq!(parse("修复这个错误"), CanonicalSlashParse::NotCommand);
         assert_eq!(
-            parse("/Users/gelin/Desktop/codewhale"),
+            parse("/Users/gelin/Desktop/dse"),
             CanonicalSlashParse::NotCommand
         );
         assert_eq!(

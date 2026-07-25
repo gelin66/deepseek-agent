@@ -1708,7 +1708,7 @@ pub(crate) fn disable_bracketed_paste_mode<W: Write>(writer: &mut W) {
 
 pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
     match level {
-        StatusToastLevel::Info => palette::WHALE_INFO,
+        StatusToastLevel::Info => palette::DSE_INFO,
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
         StatusToastLevel::Warning => palette::STATUS_WARNING,
         StatusToastLevel::Error => palette::STATUS_ERROR,
