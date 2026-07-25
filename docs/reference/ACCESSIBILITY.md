@@ -2,7 +2,7 @@
 
 > Category: current user reference.
 
-CodeWhale TUI runs in a terminal, so the platform's own accessibility
+DSE TUI runs in a terminal, so the platform's own accessibility
 stack (screen readers, magnifiers, terminal-level themes) does most
 of the work. The TUI provides a small set of toggles that reduce
 visual motion and density for screen-reader and low-motion users.
@@ -12,11 +12,11 @@ visual motion and density for screen-reader and low-motion users.
 | Toggle | Default | Effect |
 | --- | --- | --- |
 | `NO_ANIMATIONS=1` env var | unset | At startup, forces `low_motion = true` and `fancy_animations = false`. Overrides whatever's saved in `settings.toml`. |
-| `CODEWHALE_ASCII_SAFE=1` env var | unset | Replaces decorative Unicode and box-drawing marks with narrow ASCII at the terminal backend. Labels, focus, state, and controls remain available. |
+| `DSE_ASCII_SAFE=1` env var | unset | Replaces decorative Unicode and box-drawing marks with narrow ASCII at the terminal backend. Labels, focus, state, and controls remain available. |
 | `low_motion` setting | `false` | Freezes decorative and state animation without changing model text delivery. The footer water strip is controlled separately by `fancy_animations`. |
 | `fancy_animations` setting | `true` | Enables expressive live-state chrome. Set to `false` to keep live-turn chrome still. |
 | `ocean_treatment` setting | `ombre` | Chooses the background appearance: `ombre` paints the state-reactive water column; `flat` uses the plain theme surface. Both keep the same state marks and idle ambient life; appearance is independent of motion settings. |
-| `status_indicator` setting | `cw` | Static typographic header mark. Set to `whale` or `dots` for the legacy animations, or `off` to hide it. |
+| `status_indicator` setting | `dse` | Shows the static `DSE` header mark. Use `dots` for a compact activity mark or `off` to hide it. |
 | `calm_mode` setting | `true` | Collapses tool-output details by default and trims status messages. Useful for screen readers that announce every redraw. |
 | `show_thinking` setting | `false` | Set to `true` to show model `reasoning_content` blocks. |
 | `show_tool_details` setting | `false` | Set to `true` to expand tool calls inline; details remain available on demand either way. |
@@ -30,7 +30,7 @@ Set these in your shell profile so they apply to every session:
 export NO_ANIMATIONS=1
 
 # Force the terminal-safe ASCII rendering tier.
-export CODEWHALE_ASCII_SAFE=1
+export DSE_ASCII_SAFE=1
 
 # Optional: respect the wider terminal-color convention.
 export NO_COLOR=1            # honored by the underlying ratatui backend
@@ -46,7 +46,7 @@ launch.
 
 ## Configuring persisted settings
 
-Edit `~/.codewhale/settings.toml` directly and restart the TUI. For example:
+Edit `~/.dse/settings.toml` directly and restart the TUI. For example:
 
 ```toml
 low_motion = true
@@ -74,10 +74,10 @@ override is reapplied on each launch.
   service (e.g. macOS Terminal.app, iTerm2, Ghostty, Windows
   Terminal) will pass the rendered content straight through.
 * If you find a UI surface that still produces motion when
-  `low_motion = true`, report it in the CodeWhale owner repository with a
+  `low_motion = true`, report it in the DSE owner repository with a
   screenshot or terminal recording.
 
 ## Related issues / history
 
 The imported upstream issue links were removed at the V1 product-identity
-cutover. This page describes only current CodeWhale behavior.
+cutover. This page describes only current DSE behavior.

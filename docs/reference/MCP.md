@@ -2,7 +2,7 @@
 
 > Category: current implementation reference; MCP remains optional and lazy.
 
-CodeWhale provides a top-level MCP client CLI for configuring servers,
+DSE provides a top-level MCP client CLI for configuring servers,
 checking connections, and discovering advertised tools. Servers can be local
 stdio processes started by the client, or remote URL-based servers that speak
 Streamable HTTP with legacy SSE fallback.
@@ -11,8 +11,8 @@ The fixed Agent catalog has no built-in browsing tool or compatibility alias.
 An MCP server may advertise browsing tools to the explicit MCP CLI, but the
 current canonical Agent catalog does not load MCP tools into model requests.
 
-CodeWhale only consumes external MCP tool servers; it no longer exposes itself
-as an MCP server. The canonical local Agent API is `codewhale app-server` over
+DSE only consumes external MCP tool servers; it no longer exposes itself
+as an MCP server. The canonical local Agent API is `dse app-server` over
 HTTP/SSE or stdio. The former ACP editor adapter has been deleted because it
 owned an independent model/session loop instead of projecting the canonical Run
 API.
@@ -21,7 +21,7 @@ API.
 
 The retired TUI `/setup` wizard has been removed. MCP remains optional and is
 configured through the explicit CLI commands below. An empty inventory is not
-an error. `codewhale doctor` reports paths, counts and static configuration
+an error. `dse doctor` reports paths, counts and static configuration
 problems without starting servers or installing packages; summaries redact
 commands, args, environment values, headers and tokens.
 
@@ -30,47 +30,47 @@ commands, args, environment values, headers and tokens.
 Create a starter MCP config at your resolved MCP path:
 
 ```bash
-codewhale mcp init
+dse mcp init
 ```
 
-`codewhale setup --mcp` performs the same MCP bootstrap through the broader
+`dse setup --mcp` performs the same MCP bootstrap through the broader
 setup command.
 
 Common management commands:
 
 ```bash
-codewhale mcp list
-codewhale mcp connect [server]
-codewhale mcp tools [server]
-codewhale mcp add <name> --command "<cmd>" --arg "<arg>"
-codewhale mcp add <name> --url "http://localhost:3000/mcp"
-codewhale mcp add <name> --url "https://example.com/mcp" --bearer-token-env-var MCP_TOKEN
-codewhale mcp login <name>
-codewhale mcp logout <name>
-codewhale mcp enable <name>
-codewhale mcp disable <name>
-codewhale mcp remove <name>
-codewhale mcp validate
+dse mcp list
+dse mcp connect [server]
+dse mcp tools [server]
+dse mcp add <name> --command "<cmd>" --arg "<arg>"
+dse mcp add <name> --url "http://localhost:3000/mcp"
+dse mcp add <name> --url "https://example.com/mcp" --bearer-token-env-var MCP_TOKEN
+dse mcp login <name>
+dse mcp logout <name>
+dse mcp enable <name>
+dse mcp disable <name>
+dse mcp remove <name>
+dse mcp validate
 ```
 
 ## Management Boundary
 
 The interactive TUI does not currently expose a `/mcp` manager, reload
 command, validation view, or manager snapshot. Manage MCP from a shell with
-the top-level `codewhale mcp ...` commands.
+the top-level `dse mcp ...` commands.
 
 The diagnostic commands have distinct behavior:
 
-- `codewhale mcp list` reads the resolved global configuration plus any
+- `dse mcp list` reads the resolved global configuration plus any
   trusted workspace MCP configuration and reports configured servers.
-- `codewhale mcp connect [server]` performs a live connection check for one
+- `dse mcp connect [server]` performs a live connection check for one
   server or all enabled servers.
-- `codewhale mcp tools [server]` connects and prints discovered tools.
-- `codewhale mcp validate` connects all enabled servers and exits with an
+- `dse mcp tools [server]` connects and prints discovered tools.
+- `dse mcp validate` connects all enabled servers and exits with an
   error if any connection fails; it is not merely a JSON syntax check.
 
 Configuration-changing commands write the resolved global MCP file. They do
-not hot-reload an already running process. Each subsequent `codewhale mcp ...`
+not hot-reload an already running process. Each subsequent `dse mcp ...`
 invocation reloads the configuration it needs. The current interactive and
 canonical Agent paths do not load an MCP pool or advertise MCP tools to the
 model.
@@ -107,19 +107,19 @@ For bearer-token auth, prefer env-backed config:
 For generic remote MCP OAuth, add the URL server and run login:
 
 ```bash
-codewhale mcp add remote --url "https://example.com/mcp"
-codewhale mcp login remote
+dse mcp add remote --url "https://example.com/mcp"
+dse mcp login remote
 ```
 
-CodeWhale discovers the server OAuth metadata, opens the authorization URL in
+DSE discovers the server OAuth metadata, opens the authorization URL in
 your browser, listens on a local callback, exchanges the code, and stores the
-token response through the CodeWhale secrets backend. Stored OAuth tokens are
+token response through the DSE secrets backend. Stored OAuth tokens are
 looked up by server name plus URL and refreshed when possible before requests.
 During login, the CLI prints the authorization URL and a waiting status while
 the local callback listener is active. If a URL-based server returns 401 or
-Unauthorized during connect/discovery, `codewhale mcp connect <name>` reports
+Unauthorized during connect/discovery, `dse mcp connect <name>` reports
 that OAuth authentication is required and points to
-`codewhale mcp login <name>`.
+`dse mcp login <name>`.
 
 Optional OAuth fields:
 
@@ -151,20 +151,20 @@ These callback fields are ignored from project-scope config overlays.
 ## Hugging Face MCP
 
 Hugging Face provides a hosted MCP server for Hub resources, documentation,
-datasets, Spaces, and community tools. CodeWhale can connect to the configured
+datasets, Spaces, and community tools. DSE can connect to the configured
 Hugging Face endpoint and discover its advertised tools through the same MCP
 transport as other URL-based servers.
 
 The recommended setup path is Hugging Face's settings-generated configuration:
 
 1. Visit <https://huggingface.co/settings/mcp> while signed in.
-2. Choose the MCP client closest to your CodeWhale config shape and copy the
+2. Choose the MCP client closest to your DSE config shape and copy the
    generated server snippet.
 3. Paste the Hugging Face server entry into your resolved MCP config file.
-4. Run `codewhale mcp validate` or `codewhale mcp connect huggingface` to test
+4. Run `dse mcp validate` or `dse mcp connect huggingface` to test
    the saved configuration.
 
-CodeWhale reads both `servers` and `mcpServers`, so settings-generated snippets
+DSE reads both `servers` and `mcpServers`, so settings-generated snippets
 can be adapted without changing the rest of the MCP file. A placeholder-only
 shape looks like this:
 
@@ -187,9 +187,9 @@ value in your private MCP config and never commit real Hugging Face tokens.
 Shell diagnostics:
 
 ```bash
-codewhale mcp list
-codewhale mcp connect huggingface
-codewhale mcp tools huggingface
+dse mcp list
+dse mcp connect huggingface
+dse mcp tools huggingface
 ```
 
 The current interactive TUI has no Hugging Face-specific MCP manager or reload
@@ -202,19 +202,19 @@ Official docs: <https://huggingface.co/docs/hub/hf-mcp-server>
 
 Default path:
 
-- `~/.codewhale/mcp.json`
-- A trusted workspace may add `.codewhale/mcp.json`; read-only inventory and
+- `~/.dse/mcp.json`
+- A trusted workspace may add `.dse/mcp.json`; read-only inventory and
   live diagnostic commands merge it with the resolved global configuration.
 
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `CODEWHALE_MCP_CONFIG=/path/to/mcp.json`
+- Env: `DSE_MCP_CONFIG=/path/to/mcp.json`
 
-`codewhale mcp init` (and `codewhale setup --mcp`) writes to this resolved
+`dse mcp init` (and `dse setup --mcp`) writes to this resolved
 path.
 
-Subsequent `codewhale mcp ...` commands read the newly resolved path.
+Subsequent `dse mcp ...` commands read the newly resolved path.
 
 ## Discovery Naming
 
@@ -225,7 +225,7 @@ server-prefixed names:
 
 Example: a server named `git` with a tool named `status` becomes `mcp_git_status`.
 
-`codewhale mcp tools [server]` is the current user-facing discovery surface.
+`dse mcp tools [server]` is the current user-facing discovery surface.
 There is no TUI MCP command-palette manager, persisted discovery snapshot, or
 canonical Agent tool-catalog integration.
 
@@ -282,7 +282,7 @@ path consumes that timeout today.
 
 ## Safety Notes
 
-Only configure MCP servers you trust. `codewhale mcp connect`, `tools`, and
+Only configure MCP servers you trust. `dse mcp connect`, `tools`, and
 `validate` can start configured stdio processes or contact configured remote
 URLs, so treat MCP configuration as equivalent to running code on your
 machine. The current CLI management path does not imply that discovered tools
@@ -292,11 +292,11 @@ Avoid committing literal `Authorization` headers. Prefer `env_headers`,
 
 ## Troubleshooting
 
-- Run `codewhale doctor` to confirm the MCP config path it resolved and whether it exists.
-- Run `codewhale mcp list` to inspect the resolved server inventory.
-- Run `codewhale mcp connect [server]` for a live connection check, or
-  `codewhale mcp validate` to require every enabled server to connect.
-- If the MCP config is missing, run `codewhale mcp init --force` to regenerate it.
+- Run `dse doctor` to confirm the MCP config path it resolved and whether it exists.
+- Run `dse mcp list` to inspect the resolved server inventory.
+- Run `dse mcp connect [server]` for a live connection check, or
+  `dse mcp validate` to require every enabled server to connect.
+- If the MCP config is missing, run `dse mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.
 - The interactive TUI has no `/mcp` manager or hot reload, and the canonical
   Agent does not currently advertise the discovered MCP tools.

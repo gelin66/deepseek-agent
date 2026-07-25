@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a scoped, evidence-driven DSE capability.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DSE optimizes verified coding success and reliability before cost or
+        feature count. Read README.md and docs/product/PRODUCT_PLAN.md first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the observed failure or missing workflow, not only a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Current evidence
+      description: Provide reproducible tasks, verifier outcomes, or trajectory facts with sensitive data removed.
+    validations:
+      required: true
+  - type: textarea
+    id: owner
+    attributes:
+      label: Proposed canonical owner and replaced path
+      description: Identify the existing module that should own the capability and any old path it would delete.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and deletion criteria
+      description: State measurable quality gates and how a rejected treatment would be removed.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Smaller alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: This proposal does not add another model provider, Runtime, Store, or completion authority.
+          required: true
+        - label: I understand that quality regression or false success vetoes an efficiency gain.
+          required: true
+        - label: I read the English README; the complete Chinese entry is README.zh-CN.md.
+          required: true

@@ -32,6 +32,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+      - name: Check public repository surface
+        run: ./scripts/check-public-repository.py
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check workspace

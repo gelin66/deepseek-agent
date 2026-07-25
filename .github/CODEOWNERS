@@ -1,0 +1,9 @@
+# DSE integration and release facts require owner review.
+* @gelin66
+
+/.github/ @gelin66
+/docs/ @gelin66
+/crates/protocol/ @gelin66
+/crates/runtime/ @gelin66
+/crates/state/ @gelin66
+/scripts/dse-delivery.sh @gelin66

@@ -1,273 +1,122 @@
-# Sandbox threat model
+# DSE sandbox and command-execution boundary
 
 > Category: current implementation reference.
 
-CodeWhale executes shell commands spawned by AI reasoning. The sandbox
-module restricts what those commands can do to the host system. This
-document describes what each platform's sandbox actually enforces,
-what is best-effort, and what is explicitly out of scope.
+DSE classifies commands, applies the configured approval policy, and prepares
+local execution through the canonical `crates/tools` sandbox owner. A policy
+describes the requested restriction; the implementation must not claim that a
+platform enforces a restriction when no enforcing backend is wired.
 
-## Platform overview
+## Policy modes
 
-| Mechanism | Platform | Type | Status |
-|---|---|---|---|
-| Seatbelt | macOS | Mandatory access control | Enforced |
-| Landlock | Linux | Filesystem access control | Enforced |
-| seccomp BPF | Linux | Syscall filter | Enforced |
-| Process hardening | Linux | Kernel prctl / rlimit | Enforced |
-| Bubblewrap (bwrap) | Linux | Namespace isolation | Optional |
-| Windows Job Object | Windows | Process-tree containment | v1 (PR #2220) |
+The user-facing modes are:
 
-## Threat model: what each layer addresses
+| Mode | Meaning |
+| --- | --- |
+| `read-only` | Request local read-only execution. |
+| `workspace-write` | Request writes only in the workspace and explicitly allowed roots. This is the default. |
+| `danger-full-access` | Run without a local filesystem sandbox after the applicable approval decision. |
+| `external-sandbox` | Declare that the process is already contained by an external environment. |
 
-### 1. Process hardening (Linux only)
+The isolated Writer uses an additional Host-only `isolated-writer` policy. It
+binds writes to the admitted Git worktree, keeps its control paths protected,
+disables network access, and must fail closed when DSE cannot provide an
+enforcing local sandbox.
 
-**When it runs:** Before any threads are spawned, before Tokio boots,
-before any data is loaded into memory.
+Approval and sandboxing are separate controls. Approval decides whether a
+command may start; a sandbox constrains the process after it starts. Neither
+one turns model output into trusted code.
 
-**What it does:**
+## Current platform enforcement
 
-- `PR_SET_DUMPABLE=0` — prevents ptrace, makes `/proc/<pid>/` root-owned
-- `PR_SET_NO_NEW_PRIVS=1` — irreversible; no child can ever gain privileges
-- `RLIMIT_CORE=0` — no core dumps, so sensitive data never hits disk
+| Platform | Current local enforcement |
+| --- | --- |
+| macOS | DSE uses `/usr/bin/sandbox-exec` with a generated Seatbelt profile when the executable is available and usable. |
+| Linux | Bubblewrap is the enforcing filesystem path when `/usr/bin/bwrap` is installed. The isolated Writer requires it and otherwise fails closed. |
+| Windows | DSE does not currently advertise a local OS sandbox. |
 
-**What it protects against:**
-- Process inspection via ptrace/strace/gdb
-- Privilege escalation via setuid/setgid/fscaps
-- Core dumps leaking API keys, tokens, prompt content
+The Linux tree contains Landlock and seccomp implementation modules, but they
+are not wired into the spawned child process. Without bubblewrap, ordinary
+`read-only` or `workspace-write` local execution therefore does **not** gain
+kernel-enforced filesystem or syscall isolation. Internal detection/marker
+names are not an enforcement guarantee.
 
-**What it does NOT protect against:**
-- A compromised child reading its parent's `/proc/<pid>/mem` (already blocked
-  by `PR_SET_DUMPABLE=0` making `/proc/<pid>/` root-owned)
-- Kernel exploits that bypass prctl
+DSE does not vendor bubblewrap. Install it with the platform package manager
+when Linux filesystem enforcement is required, for example:
 
-### 2. Landlock (Linux, kernel 5.13+)
-
-**When it runs:** Applied to each child process at spawn time via a
-helper script or `landlock_restrict_self`. Only restrictable by the
-process itself — parent cannot force Landlock on a child.
-
-**What it does:**
-- Restricts filesystem access to a whitelist of paths
-- Handles: `EXECUTE`, `READ_FILE`, `READ_DIR`, `WRITE_FILE`, `REMOVE_DIR`,
-  `REMOVE_FILE`, `MAKE_DIR`, `MAKE_REG`, `MAKE_SYM`, `TRUNCATE`
-
-**What it protects against:**
-- Reading files outside the workspace (e.g., `/etc/passwd`, `~/.ssh`)
-- Writing to system directories (`/usr`, `/bin`, `/lib`)
-- Creating or deleting files in protected locations
-
-**What it does NOT protect against:**
-- Network access (Landlock is filesystem-only)
-- Process inspection (use seccomp for this)
-- Reading files that are already mapped (Landlock applies at `open()` time)
-
-**Detection:** `detect_denial()` checks stderr for `Permission denied`,
-`Operation not permitted`, `EACCES`, `EPERM`.
-
-### 3. seccomp BPF (Linux only)
-
-**When it runs:** Installed via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER)`
-on the child process.
-
-**What it does:**
-- Whitelist of ~100 safe syscalls (file I/O, memory, process, IPC,
-  synchronization, signals, time)
-- **Explicitly denied:** `ptrace`, `mount`, `umount2`, `kexec_load`,
-  `kexec_file_load`, `init_module`, `finit_module`, `delete_module`,
-  `bpf`, `reboot`, `swapon`, `swapoff`, `pivot_root`,
-  `setuid`/`setgid`/`setreuid`/`setregid`/`setresuid`/`setresgid`,
-  `personality`
-- Any syscall not on the whitelist → `SECCOMP_RET_KILL_PROCESS` (SIGSYS)
-
-**What it protects against:**
-- Process hijacking via ptrace
-- Mounting filesystems (bypassing Landlock read-only restrictions)
-- Loading kernel modules
-- Loading BPF programs (would bypass seccomp itself!)
-- Rebooting the system
-- Privilege changes via setuid/setgid
-
-**What it does NOT protect against:**
-- Legitimate use of allowed syscalls for malicious purposes
-- Side-channel attacks via allowed syscalls (e.g., timing)
-
-**Detection:** `detect_denial()` checks exit code 31 (SIGSYS) or stderr
-for `Bad system call`, `bad system call`, `SIGSYS`, `seccomp`.
-
-### 4. Bubblewrap / bwrap (Linux, optional)
-
-**When it runs:** If `/usr/bin/bwrap` is present AND the config key
-`[sandbox] prefer_bwrap = true` is set. Runs as an outer wrapper around
-the child command.
-
-**What it does:**
-- Creates a new mount namespace with `--unshare-all`
-- Read-only bind-mounts the entire root filesystem
-- Bind-mounts the workspace directory with read-write access
-- Changes into the workspace with `--chdir`
-
-**What it protects against:**
-- Any filesystem write outside the workspace (stronger than Landlock alone
-  because it's enforced at the namespace level, not just filesystem access)
-- Accidental modification of system files
-
-**What it does NOT protect against:**
-- Network access (bwrap does not create a network namespace by default with
-  `--unshare-all`; the child still has full network access)
-- Process inspection
-- Memory attacks
-
-**Installation:** User must install bubblewrap themselves:
-- Ubuntu/Debian: `apt install bubblewrap`
-- Fedora: `dnf install bubblewrap`
-- Arch: `pacman -S bubblewrap`
-
-CodeWhale does NOT vendor bwrap.
-
-**Fallback:** If bwrap is not installed, the sandbox falls back to Landlock
-only.
-
-### 5. Seatbelt (macOS)
-
-**When it runs:** Applied via the `sandbox-exec` wrapper command. The
-seatbelt profile is generated dynamically based on the `SandboxPolicy`.
-
-**What it does:**
-- Restricts filesystem access based on the policy profile
-- Can restrict network access (when `network_access: false`)
-
-**What it protects against:**
-- Reading/writing files outside allowed paths
-- Network connections (when configured)
-
-**What it does NOT protect against:**
-- Process inspection (Seatbelt does not block ptrace)
-- Syscall-level attacks
-
-**Detection:** Checks stderr for `file-write` and `network` denial patterns.
-
-### 6. Windows Job Object (v1, PR #2220)
-
-**When it runs:** Applied at process spawn time via
-`PROC_THREAD_ATTRIBUTE_JOB_LIST` and restricted token assignment.
-
-**What it does (v1):**
-- Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — all child
-  processes terminate when the parent exits
-- Memory cap: 1 GB per process, 2 GB per job
-- Active process limit: 64
-- UI restrictions: no desktop handle access
-- Restricted token: drops Administrators group SID, sets medium-low
-  integrity level
-
-**What is deferred (v2):**
-- WFP (Windows Filtering Platform) firewall rules — network is open in v1
-- Filesystem ACL integration at spawn time (deferred)
-- AppContainer isolation
-- Registry key isolation
-
-**Detection:** Checks stderr for `Access is denied`, `STATUS_ACCESS_DENIED`,
-`ERROR_ACCESS_DENIED`, `ERROR_PRIVILEGE_NOT_HELD`,
-`ERROR_ACCESS_DISABLED_BY_POLICY`, and integrity/AppContainer patterns.
-
-## Defense in depth
-
-The Linux sandbox applies layers in order:
-
-```
-Process hardening (prctl)    ← before threads
-    ↓
-Landlock (filesystem)        ← at child spawn
-    ↓
-seccomp BPF (syscalls)       ← at child spawn
-    ↓
-bwrap (namespace isolation)  ← optional outer wrapper
+```bash
+sudo apt install bubblewrap
 ```
 
-Each layer addresses a different threat surface. seccomp cannot protect the
-filesystem (that's Landlock's job). Landlock cannot stop ptrace (that's
-seccomp + PR_SET_DUMPABLE). bwrap adds namespace-level isolation that
-neither Landlock nor seccomp can provide.
+The interactive binary applies Linux process hardening to itself before the
+Tokio runtime starts (`PR_SET_DUMPABLE=0`, `PR_SET_NO_NEW_PRIVS=1`, and
+`RLIMIT_CORE=0`). That protects the DSE process posture; it is not a substitute
+for constraining each spawned command.
 
-## Configuration
+## External execution backend
 
-Relevant config keys in `~/.codewhale/config.toml`:
+DSE can route shell execution to the optional OpenSandbox adapter:
 
 ```toml
-# Sandbox policy mode
-sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-access | external-sandbox
-
-# Linux bubblewrap passthrough
-prefer_bwrap = false              # requires `bubblewrap` package installed
-
-# External sandbox backend
-sandbox_backend = "none"          # "none" or "opensandbox"
-sandbox_url = "http://localhost:8080"
-sandbox_api_key = "YOUR_API_KEY"
+sandbox_mode = "external-sandbox"
+sandbox_backend = "opensandbox"
+sandbox_url = "http://127.0.0.1:8080"
+# sandbox_api_key = "..."
 ```
 
-Environment variable overrides:
+Equivalent environment overrides are `DSE_SANDBOX_MODE`,
+`DSE_SANDBOX_BACKEND`, `DSE_SANDBOX_URL`, and
+`DSE_SANDBOX_API_KEY`. The remote service becomes part of the trust boundary;
+DSE records a non-secret endpoint fingerprint rather than the URL or
+credential in replay identity.
 
-- `DEEPSEEK_SANDBOX_MODE` → `sandbox_mode`
-- `DEEPSEEK_PREFER_BWRAP=true` → `prefer_bwrap`
-- `DEEPSEEK_SANDBOX_BACKEND` → `sandbox_backend`
-- `DEEPSEEK_SANDBOX_URL` → `sandbox_url`
-- `DEEPSEEK_SANDBOX_API_KEY` → `sandbox_api_key`
+Do not set `external-sandbox` merely to bypass local enforcement. Use it only
+when the configured external environment actually owns isolation.
 
-## Detecting sandbox denials
+## Local configuration
 
-When a command fails, the sandbox manager checks for denial patterns:
+The canonical file is `~/.dse/config.toml`:
 
-| Platform | Denial mechanism | Exit code | Stderr patterns |
-|---|---|---|---|
-| macOS Seatbelt | sandbox-exec violation | non-zero | `file-write`, `network` |
-| Linux Landlock | EACCES / EPERM | non-zero | `Permission denied`, `Operation not permitted` |
-| Linux seccomp | SIGSYS (31) | 31 or 159 | `Bad system call`, `SIGSYS` |
-| Linux bwrap | Mount/namespace failure | non-zero | varies |
-| Windows | Access denied / privilege | non-zero | `Access is denied`, `ERROR_PRIVILEGE_NOT_HELD` |
+```toml
+sandbox_mode = "workspace-write"
+prefer_bwrap = false
+```
 
-The `was_denied()` method on `SandboxManager` aggregates all platform-specific
-checks. The `denial_message()` method returns a human-readable explanation.
+`prefer_bwrap = true` asks ordinary Linux commands to use bubblewrap when it is
+available. It has no environment override. The isolated Writer does not depend
+on this preference: it requires an enforcing backend regardless.
 
-## Limitations
+The non-interactive CLI can override the mode for one run:
 
-### What the sandbox does NOT protect against
+```bash
+dse exec --auto --sandbox read-only "Inspect this repository."
+dse exec --auto --sandbox workspace-write "Fix and verify the defect."
+```
 
-- **Network attacks** — only macOS Seatbelt can block network; Linux and
-  Windows v1 leave network open
-- **Memory attacks** — no platform prevents a child process from reading
-  its own memory or exploiting memory corruption bugs
-- **Timing side channels** — allowed syscalls on Linux can be used for
-  timing-based information leaks
-- **Resource exhaustion** — the Linux job object limits memory and process
-  count, but does not limit CPU, file descriptors, or disk I/O
-- **Kernel vulnerabilities** — if the kernel itself has a vulnerability,
-  the sandbox cannot prevent exploitation (this applies to all platforms)
-- **Supply chain** — if the child process downloads and executes untrusted
-  code, the sandbox limits what that code can do, but does not prevent the
-  download
+`--allow-sandbox-elevation` is an explicit authorization for a sandbox-rejected
+tool to retry with `danger-full-access`; it is not enabled by `--auto`.
 
-### Platform-specific gaps
+## Security expectations
 
-- **Linux:** Landlock only protects filesystem access. seccomp adds syscall
-  filtering but uses a whitelist that may need updates for new syscalls.
-- **macOS:** Seatbelt profiles are generated at runtime. A misconfigured
-  profile could be too permissive.
-- **Windows v1:** No filesystem ACL enforcement at spawn time. Network is
-  fully open. Job Object is process-tree only.
+- Treat every generated command as untrusted.
+- Keep the HTTP Run API on loopback with authentication.
+- Do not rely on a policy label alone; verify the platform backend reported by
+  `dse doctor`.
+- Do not grant `danger-full-access` to compensate for a missing tool or broken
+  environment without understanding the command.
+- An isolated Writer that cannot obtain enforcing containment must remain
+  blocked rather than run unrestricted.
+- Network controls differ by backend. Do not assume Linux or Windows local
+  execution blocks outbound traffic.
 
-## Related
+## Canonical owners
 
-- `crates/tui/src/sandbox/` — implementation
-- `crates/config/src/lib.rs` — config keys
-- `crates/tui/src/tools/diagnostics.rs` — `diagnostics` tool reports
-  `sandbox_available`, `sandbox_type`, `bwrap_available`, `cgroup_version`
-- `config.example.toml` — annotated config reference
-- Issue #2180 — this document
-- Issue #2182 — seccomp filter implementation
-- Issue #2183 — process hardening
-- Issue #2184 — bwrap passthrough
-- Issue #2185 — Windows Job Object v1
-- Issue #2186 — SandboxExecutor trait unification
-- Issue #2187 — sandbox parity tests
+- [`crates/tools/src/sandbox/`](../../crates/tools/src/sandbox/) owns local
+  policy preparation and denial classification.
+- [`crates/tools/src/shell/`](../../crates/tools/src/shell/) owns the managed
+  foreground process lifecycle.
+- [`crates/tui/src/sandbox_backend/`](../../crates/tui/src/sandbox_backend/)
+  owns the optional OpenSandbox transport adapter.
+- [`crates/config/src/deepseek.rs`](../../crates/config/src/deepseek.rs) and
+  [`crates/tui/src/config.rs`](../../crates/tui/src/config.rs) own the current
+  persisted and environment configuration projections.

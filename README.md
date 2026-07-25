@@ -1,110 +1,166 @@
 # DSE
 
-DeepSeek Engineer（DSE）是一个面向官方 DeepSeek API 的 Rust-native、本地优先编码
-Agent。
+[简体中文](README.zh-CN.md)
 
-目标不是继续扩展通用模型兼容，也不是把多个 Agent 项目拼接在一起；目标是形成一套
-统一、可恢复、可验证、支持单 Agent 与多 Agent 的 Rust 运行时，并让 CLI、TUI 和
-Headless API 共用它。
+**DSE (DeepSeek Engineer)** is a Rust-native, local-first coding agent built
+exclusively for the official DeepSeek API. Its CLI, interactive TUI, and local
+Run API share one application service, one agent runtime, one tool catalog, and
+one SQLite-backed source of truth.
 
-exec、app-server 与交互 TUI 已统一到
-`AgentApplication -> AgentRuntime -> RunStore`。产品二进制固定为 `dse` 与
-`dse-tui`，产品状态只写入 `~/.dse`（或显式 `DSE_HOME`）。
+> Release status: DSE is still on its pre-public development line. There are no
+> official public binaries, tags, or releases yet. Build and test from source;
+> do not treat a partial M17 checkpoint as a public V1.
 
-## 从这里开始
+## Why DSE
 
-- [产品总纲](docs/product/PRODUCT_PLAN.md)
-- [开发路线图](docs/product/ROADMAP.md)
-- [能力评测规范](docs/product/EVALUATION.md)
-- [M1 可执行评测](eval/README.md)
-- [文档入口](docs/README.md)
-- [当前实现架构](docs/architecture/CURRENT_CODEWHALE.md)
+DSE is deliberately narrow:
 
-这几份文档的职责不同：产品总纲定义固定方向，Roadmap 记录可调整的执行顺序，
-Evaluation 决定能力是否值得保留，当前架构文档只描述尚未迁移的源码事实。
+- one official DeepSeek backend using OpenAI-format Chat Completions at
+  `https://api.deepseek.com/chat/completions`;
+- one `AgentRuntime` for the root agent, read-only children, and an explicitly
+  admitted isolated Writer;
+- one canonical event protocol and one `RunStore` for exact replay, resume,
+  accounting, and crash recovery;
+- Host-owned `TaskContract`, latest-revision `EvidenceReceipt`, and
+  deterministic verification before completion;
+- atomic, workspace-scoped tools with typed outcomes and retry/side-effect
+  facts;
+- complete `en` and `zh-Hans` human interfaces without a language-classifier
+  request or translation model.
 
-## 产品目标
+The current protocol identities are Run API v12, RuntimeEvent v19,
+State schema v25, and exec-stream v4.
 
-```text
-用户任务
-  -> 精准代码上下文
-  -> AgentRuntime
-  -> 工具和工作区
-  -> 最新验证证据
-  -> 明确终态
-```
+## Fixed model profiles
 
-最终产品只保留三个入口：
+When the user does not explicitly select a model or reasoning effort, DSE uses
+deterministic actor profiles:
 
-1. 交互式 CLI/TUI；
-2. Headless/NDJSON 本地自动化；
-3. 多 Agent 团队任务。
+| Actor or action | Model | Reasoning |
+|---|---|---|
+| Root agent | `deepseek-v4-pro` | `high` |
+| Explicit isolated Writer | `deepseek-v4-pro` | `high` |
+| Typed recovery, recheck, or rework | `deepseek-v4-pro` | `max` |
+| Ordinary isolated read-only child | `deepseek-v4-flash` | `high` |
 
-它们必须共享：
+There is no model Auto mode, prompt classifier, dynamic router, fallback
+provider, or extra routing request. Explicit Pro/Flash and reasoning choices
+remain replayable user inputs.
 
-- 一个 DeepSeekBackend；
-- 一个 AgentRuntime；
-- 一个 RuntimeEvent 协议；
-- 一个 RunStore；
-- 一个 TaskGraph/Orchestrator；
-- 一套 ToolOutcome 和 EvidenceReceipt 语义。
+`dse exec --auto` has an unrelated CLI meaning: it enables the non-interactive
+tool-agent loop. It does **not** choose a model automatically or grant access
+outside the configured sandbox.
 
-## 当前已有能力
+DeepSeek retired the old `deepseek-chat` and `deepseek-reasoner` aliases on
+2026-07-24. DSE uses the current `deepseek-v4-pro` and
+`deepseek-v4-flash` identifiers while keeping the official base URL. See the
+[DeepSeek V4 release note](https://api-docs.deepseek.com/news/news260424/) and
+[Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion).
 
-- exec、app-server 与交互 TUI 使用同一 production application/runtime/store；
-- 根 Agent、只读子 Agent和隔离 Writer 使用同一个 `AgentRuntime`；
-- 单 Writer 由唯一 Orchestrator 完成 worktree、diff、verify、integrate 和 cleanup；
-- 固定生产工具目录、typed `ToolOutcome`、TaskContract、EvidenceReceipt 与 Host 终态；
-- DeepSeek Standard Chat、reasoning/tool history exact replay、完整 stream/usage evidence；
-- hard-limit 本地上下文压缩、持久恢复、approval、steer、cancel 和 canonical Run API；
-- Run API v10、RuntimeEvent v16、State schema v21、exec-stream v2。
+## Build from source
 
-DeepSeek Beta Strict planner 仍保留，但 M7-B 证明六个默认可执行 actor 的完整工具目录均会
-无损回退 Standard Chat，因此 Strict 当前不是生产默认，也没有用户开关。Beta FIM 只有
-独立 request-planning/transport 基础，没有 canonical production 编辑调用方；下一切片将
-独立比较 `apply_patch`、`edit_file` 与 FIM，而不是恢复旧 `FimEditTool`。
+Requirements:
 
-## 本地开发与交付
+- Git;
+- the Rust 1.97.0 toolchain pinned by `rust-toolchain.toml`;
+- platform build dependencies required by Cargo packages;
+- an official DeepSeek API key for live model requests.
 
-仓库使用 `rust-toolchain.toml` 固定 Rust 1.97.0。源码构建：
+Build the two shipped binaries:
 
 ```bash
 cargo build -p dse-cli -p dse-tui --locked
 ```
 
-API Key 只放在环境或系统凭据存储中：
+Save a key without printing it:
 
 ```bash
-export DEEPSEEK_API_KEY='your-key'
+dse login
 ```
 
-当前配置样例：
+Alternatively, provide the official environment variable only to the process
+that needs it:
+
+```bash
+export DEEPSEEK_API_KEY='replace-with-your-key'
+```
+
+Never commit a key, `.env`, raw provider traffic, local Run state, or evaluation
+raw data.
+
+## Use DSE
+
+Start the interactive product in English or Simplified Chinese:
+
+```bash
+dse --language en
+dse --language zh-Hans
+```
+
+Run a one-response request:
+
+```bash
+dse exec "Explain the ownership of this module."
+```
+
+Run the canonical non-interactive coding loop:
+
+```bash
+dse exec --auto "Fix the failing tests and verify the result."
+```
+
+Start the same canonical Run API over stdio:
+
+```bash
+dse app-server --stdio
+```
+
+HTTP/SSE binds to loopback by default and requires authentication:
+
+```bash
+export DSE_APP_SERVER_TOKEN='replace-with-a-random-token'
+dse app-server --host 127.0.0.1 --port 7878
+```
+
+Do not expose an unauthenticated local API on a non-loopback interface.
+
+## Configuration
+
+The canonical user configuration is `~/.dse/config.toml`. Override the DSE
+state root with `DSE_HOME` or the config file with `DSE_CONFIG_PATH`. Start from
+[config.example.toml](config.example.toml); environment-only users can consult
+[.env.example](.env.example).
+
+The default endpoint is `https://api.deepseek.com`, and the sender posts to
+`/chat/completions`. DSE rejects model-provider selectors and foreign provider
+tables. `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL` retain
+their official names; product-specific settings use `DSE_*`.
+
+The human-interface language resolves once per process:
 
 ```text
-config.example.toml
+--language
+  -> [ui].language
+  -> first-run bilingual choice
+  -> en for a fresh non-interactive environment
 ```
 
-运行当前本地入口：
+Changing the UI language does not translate commands, paths, code, diffs,
+machine JSON/NDJSON/HTTP/SSE, model ids, or stable error codes. The production
+system prompt is a single evidence-selected Chinese-expression prompt that
+instructs the agent to answer in the user's task language unless explicitly
+asked otherwise.
 
-```bash
-cargo run -p dse-cli --locked --
-cargo run -p dse-cli --locked -- exec "inspect this repository"
-```
+## Local delivery lifecycle
 
-Focused 检查：
-
-```bash
-./scripts/dev-dse.sh focused
-```
-
-生成 checksum-bound 本地包（命令只使用已锁定、已缓存依赖，不访问网络）：
+Build a checksum-bound package from the locked source tree:
 
 ```bash
 CARGO_TARGET_DIR=/private/tmp/dse-delivery-target \
   ./scripts/dse-delivery.sh package --output-dir dist
 ```
 
-安装、验证、回滚与卸载：
+Install, verify, roll back, or uninstall under an explicit prefix:
 
 ```bash
 artifact="$(find dist -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
@@ -114,36 +170,72 @@ artifact="$(find dist -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
 ./scripts/dse-delivery.sh uninstall --prefix "$HOME/.local"
 ```
 
-安装器只管理指定 prefix 下的两个程序和 immutable release 目录；卸载不会读取或删除
-`DSE_HOME`。完整离线生命周期自测：
+The uninstaller manages only the DSE program links and immutable release
+directories under the selected prefix. It does not delete `DSE_HOME`.
+
+## Development
+
+Run the public-repository and focused production gates:
 
 ```bash
-./scripts/test-dse-delivery.sh
+CARGO_INCREMENTAL=0 \
+CARGO_TARGET_DIR=/private/tmp/dse-development-target \
+  ./scripts/dev-dse.sh focused
 ```
 
-每项 DeepSeek 能力按 [Roadmap](docs/product/ROADMAP.md) 独立冻结、评测和取舍；协议 canary
-不等于真实编码收益，缺少 treatment surface 时不会为了运行 A/B 而读取 Key 或调用 API。
+Before integrating Rust changes:
 
-## 开发原则
+```bash
+CARGO_INCREMENTAL=0 \
+CARGO_TARGET_DIR=/private/tmp/dse-development-target \
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+CARGO_INCREMENTAL=0 \
+CARGO_TARGET_DIR=/private/tmp/dse-development-target \
+  cargo test --workspace --locked
+```
 
-- 真实可用性优先于功能数量；
-- 每次只迁移一条完整能力链；
-- 新路径接管后删除旧路径；
-- 只在真正会变化的边界使用小型 trait；
-- 多 Agent 复用同一个 Runtime；
-- 写 Agent 使用独立 worktree；
-- 完成依赖最新证据，不依赖模型自报；
-- 没有基准收益的功能缩小、推迟或删除；
-- 不引入其他模型、TypeScript sidecar、云平台或插件市场。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the review contract,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting, and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
-## 项目状态
+## Architecture and product authority
 
-M0-M7 的主要 canonical 迁移与专项评测已完成，当前里程碑是 M8 V1 产品化。具体状态和
-下一步只在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker
-或 handoff 文件。
+These documents have distinct roles:
 
-## 来源与许可
+1. [Product plan](docs/product/PRODUCT_PLAN.md) — accepted scope and fixed
+   architecture.
+2. [Architecture decisions](docs/decisions/) — long-lived accepted decisions.
+3. [Roadmap](docs/product/ROADMAP.md) — current migration and deletion order.
+4. [Evaluation contract](docs/product/EVALUATION.md) — evidence required to
+   keep a capability.
+5. [Current architecture facts](docs/architecture/CURRENT_CODEWHALE.md) —
+   implementation facts, including historical names where accuracy requires
+   them.
 
-本项目基于 MIT 许可的 CodeWhale 源码继续开发。许可证见 [LICENSE](LICENSE)。
-CodeWhale 和其他 Agent 项目提供了重要参考，但本产品独立开发，且不隶属于任何模型
-提供商。
+The repository does not create a translated parallel roadmap or a second
+product-state tracker.
+
+## Deliberate non-goals
+
+DSE does not provide:
+
+- Anthropic Messages or a general provider ecosystem;
+- a model Auto router or task-difficulty classifier;
+- a production FIM editor or a second editing surface;
+- a second Runtime, Store, tool catalog, or completion authority;
+- default multi-Writer, swarm, cloud-agent platform, or plugin marketplace.
+
+The sole Writer path is explicit-only and isolated in a Git worktree. Ordinary
+read-only children may investigate with their fixed actor profile; the root
+agent remains responsible for integration and verified completion.
+
+## Source, license, and independence
+
+DSE continues from the MIT-licensed CodeWhale source imported at commit
+`352e86a611fdf3cd8bd27c36d24d482c06a71117`. The preserved license is in
+[LICENSE](LICENSE), and provenance details are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+DSE is an independent community project. It is not affiliated with, sponsored
+by, or endorsed by DeepSeek. DeepSeek names, models, APIs, and trademarks
+belong to their respective owners.

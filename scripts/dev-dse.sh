@@ -27,6 +27,10 @@ fi
 mode="${1:-focused}"
 test_args=(-p dse-tui --bin dse-tui --locked)
 
+run_public_repository_gate() {
+  ./scripts/check-public-repository.py
+}
+
 run_focused_tests() {
   local filters=(
     "m8a_deepseek_only_entry_tests::taskgraph_cutover"
@@ -62,15 +66,18 @@ run_focused_tests() {
 
 case "$mode" in
   focused)
+    run_public_repository_gate
     cargo fmt --all -- --check
     run_focused_tests
     cargo check -p dse-tui --bin dse-tui --locked
     ;;
   crate)
+    run_public_repository_gate
     cargo fmt --all -- --check
     cargo test "${test_args[@]}"
     ;;
   full)
+    run_public_repository_gate
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
