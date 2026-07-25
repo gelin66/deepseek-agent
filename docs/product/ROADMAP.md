@@ -312,7 +312,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M6 | 统一多 Agent 与 worktree 生命周期 | 核心机制完成（Writer explicit-only；M6-B2 不准入） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 已完成（M7-I 关闭 request/Token 调优；未准入的 FIM/thinking/cache/fan-out treatment 保持 hold） | 没有 material model treatment 时不消费 Key/API；可复现 correctness 与非结论入库 |
 | M8 | V1 本地产品化 | 已完成（M8-N 按 ADR-0007 接受 fixed-Chinese baseline release evidence；16/16 pass，V1 可发布） | 自己的品牌、配置、CI、打包、固定中文界面和可归因 prompt/V1 gap 证据完整 |
-| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C/D 完成；M17-E next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
+| M17 | DSE 双语开源身份硬切换 | 进行中（M17-A/B/C/D/E 完成；M17-F next） | DSE 唯一身份、`en`/`zh-Hans` 完整产品面、单一 prompt 胜者与公开发布门禁闭环 |
 
 ## 4. M0：仓库基线与整理
 
@@ -3528,6 +3528,17 @@ SIGKILL/reopen 和固定 actor route 门全部通过；没有 Key、官方 API�
 locale 切换前后的 command/flag/tool/model/path/code/diff/stdout/stderr、stable error code、
 canonical JSON/NDJSON/HTTP/SSE、route/model/reasoning/catalog/budget/request count 与
 RunStore facts必须相同。
+
+M17-E 已在 `6464fe155` 完成：`en.json` 与 `zh-Hans.json` 各有 768 个 exact-matching
+key 和 named-placeholder multiset；CLI/TUI 的 help、config、setup、Doctor、MCP/OAuth、
+approval、error、recovery、root/read-only child/Writer 与 work-surface 人类投影全部迁移
+到同一 catalog owner。英文 80-column multiline、中文 CJK 80/120-column、双语真实
+approval PTY 和 canonical Run parity 通过；切换 locale 不改变 JSON/NDJSON/HTTP/SSE、
+route、request、accounting、协议或 RunStore。raw stdout/stderr/tool/provider facts、
+stable code、首次语言选择器、模型用 prompt/template 与历史 frozen evidence 保持原样。
+focused、fmt、strict Clippy、全 workspace test 和 crash/reopen 均通过；没有 Key、官方
+API、网络或发布动作。完整证据见
+[M17-E DSE bilingual human projection](../../eval/summaries/m17-e-dse-bilingual-human-projection-2026-07-25.md)。
 
 #### M17-F：DSE 中英文 prompt 2×2 A/B
 

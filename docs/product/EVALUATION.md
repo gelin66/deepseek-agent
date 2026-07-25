@@ -2612,6 +2612,19 @@ Clippy、全 workspace test 均通过；没有 Key、官方 API、协议/State �
 仍未完成。完整 evidence 和 catalog digest 见
 [M17-D DSE bilingual localization owner](../../eval/summaries/m17-d-dse-bilingual-localization-owner-2026-07-25.md)。
 
+M17-E human-projection gate 已在 `6464fe155` 通过：两份 catalog 从 417 扩展到
+768 个 exact-matching key，SHA-256 分别为
+`8002ff24aa24977f12e5f02f1f9ff0ae325d15ecc9a7e4279fc1707bb1cfee27` 与
+`ce328fc30690ebac2c6cb965e76b221a1d8a0589ecbbe204f90fc30f355ae6c3`。
+CLI/TUI 的 retained human surface 已迁移到唯一 localization owner；双语真实 approval
+PTY、English 80-column、CJK layout、root/read-only/Writer/recovery 和 canonical Run
+machine-output parity 均通过。raw tool/provider/stdout/stderr、stable code、
+JSON/NDJSON/HTTP/SSE、route、request、accounting、protocol 与 Store facts 没有被
+本地化或改变；first-run picker 和模型用 prompt/template 也在明确 allowlist 内保持稳定。
+focused、fmt、strict Clippy、workspace test 与 crash/reopen 通过；没有 Key、官方 API、
+网络或质量/成本结论。完整证据见
+[M17-E DSE bilingual human projection](../../eval/summaries/m17-e-dse-bilingual-human-projection-2026-07-25.md)。
+
 #### bilingual UI gate
 
 - `en.json` 与 `zh-Hans.json` exact key/placeholder parity；
