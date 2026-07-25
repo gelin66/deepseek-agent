@@ -1,0 +1,131 @@
+{
+  "schema": "codewhale.eval.m15-product-loss-acquisition-live-admission.v1",
+  "admitted_at_utc": "2026-07-25T06:01:06Z",
+  "contract_manifest": "eval/manifests/m15-product-loss-acquisition-v1.json",
+  "contract_manifest_sha256": "sha256:60749ac1e3f73f3bfce87914a3f9890a1e3f06567d50b1093f25caab419549ce",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "candidate_revision": "8f887fe211936825f25ca36ab271e796e9b3f08d",
+  "candidate_tree": "94a8b18f30367e5a1d39880a2821eb65e815bb10",
+  "candidate_binary": "/private/tmp/codewhale-m15-target/release/codewhale",
+  "candidate_binary_sha256": "sha256:8b6c0f9ea900871cc8689e35c7e5aaddf7a8597bb1386cb1b036a7a5ce1bd8b7",
+  "candidate_binary_size_bytes": 14073952,
+  "candidate_binary_version": "codewhale 0.8.68 (8f887fe21193)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:180011b0722ecb9521516e132cad92ee6c840a66430dad9907f9046727800176",
+  "schedule_sha256": "sha256:39dbf08f0bbd520dec7b1bf3b6b2864a94fa8bcdd3d26d672b80f502747e2000",
+  "task_contracts_sha256": "sha256:a2d4d1bd71e7709ef78579feab181b9e3d2b027f253eb3b8c41f2521cdb4a44f",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "reference_solution_patch_sha256": "sha256:bd8dc0df8bb1f24e8c80b6a88cc98fc324cbb5dcb6962aa2c7b7075ff49d1cb2",
+  "harness_self_test_sha256": "sha256:fa0ac63a35c638b2b4747d397083846009bd6e777d81d7ddb4f87f7850d448fb",
+  "freeze_report_sha256": "sha256:3e7183ae8439386991a624864028f9dc7ff02cca17d57dc37c155ff46715be3a",
+  "dry_run_sha256": "sha256:86a4c56c6ae8ba51219d3a0129e60b57f98019784e31181f08333df5a105bdec",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new position-1 24-arm current product-loss acquisition after M14 typed observer conformance"
+  },
+  "offline_gates": [
+    {
+      "gate": "M15 fixture, schedule, task-contract, hash-chain, environment parity and four SIGKILL Harness windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "all eight initial verifiers fail without tree mutation; isolated reference patch makes seven positive tasks pass while safety remains failing",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M14 typed observer conformance remains 12/12 with byte-identical result hash",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M9-C, M11 and M12 campaign compatibility self-tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-codewhale.sh focused",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass"
+    },
+    {
+      "gate": "production fixed route, root/read-only/Writer, verifier recovery, RunStore exact reopen, process SIGKILL and CLI/TUI/API loopbacks",
+      "result": "pass"
+    },
+    {
+      "gate": "immutable release binary build and credential-free M15 Harness dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "rust_scoped_rules": "sha256:f168c391e092ab1a28752a4e3cf9d55061ac98edfe5f40695ab0710f1cb18689",
+    "typescript_stacktrace": "sha256:a2c7f6f7792ea8ae5450798e790aaccb1eb4d3c400c7c02ff67e61d135ce791a",
+    "python_config_migration": "sha256:c72224400934ff8251eaad31fd085e981d82b3f794a7efd2adeee4d29c3ddb47",
+    "root_recovery": "sha256:9d802ba6d0ff584ab9f68c12d2d6bb057cd7832b3a4bcd295fede8aa03ee16a5",
+    "python_runtime_process": "sha256:502896e10231c45a25026dad25f16cb9570e959ef87da52c046e2775f4ae5f6d",
+    "readonly_service_graph": "sha256:66c02d47e628b7731cbe17ab49c65784337afebb34db4745298b3356bd08479d",
+    "writer_envelope_migration": "sha256:59338bd44d2e11e40ef4508423fbd789232d69c2e7f8e5464828a38d7f47fc6e",
+    "safety_false_completion": "sha256:886d5c2d65583bbae82ad1770cac8ef87785fe67c8575845cd33e2da419d1902"
+  },
+  "live_contract": {
+    "formal_tasks": 8,
+    "runs_per_task": 3,
+    "formal_arms": 24,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.15,
+    "suite_known_cost_ceiling_usd": 3.6,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "output": "eval/results/m15-product-loss-8f887fe21193-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-25",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
