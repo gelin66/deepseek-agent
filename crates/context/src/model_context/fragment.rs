@@ -68,11 +68,7 @@ fn enforce_byte_cap(raw: String, max_bytes: usize) -> String {
         return raw;
     }
     let omitted = raw.len().saturating_sub(max_bytes);
-    let marker = if crate::prompts::m17f_evaluation_prompt_is_english() {
-        format!("\n[…truncated: omitted {omitted} bytes]")
-    } else {
-        format!("\n[…已截断：省略 {omitted} 字节]")
-    };
+    let marker = format!("\n[…已截断：省略 {omitted} 字节]");
     let keep = max_bytes.saturating_sub(marker.len());
     let mut end = keep;
     while end > 0 && !raw.is_char_boundary(end) {

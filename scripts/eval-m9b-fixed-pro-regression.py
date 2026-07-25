@@ -6,7 +6,6 @@ contract. ``--campaign m11`` selects the multi-language M11 loss baseline,
 and ``--campaign m12`` selects the corrected terminal-convergence reproduction.
 ``--campaign m15`` selects the fresh position-1 current product-loss
 acquisition after M14 observer conformance.
-``--campaign m17f`` selects the DSE bilingual system-prompt 2x2 admission.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
 equivalence corpus. Live campaigns exercise temporary Git repositories through
@@ -57,7 +56,6 @@ def selected_campaign(arguments: list[str]) -> str:
         "m11",
         "m12",
         "m15",
-        "m17f",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -67,23 +65,8 @@ def selected_campaign(arguments: list[str]) -> str:
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
 CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15"}
-VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15", "m17f"}
-if CAMPAIGN == "m17f":
-    MANIFEST_PATH = (
-        ROOT / "eval/manifests/m17-f-bilingual-prompt-ab-v1.json"
-    )
-    BASE_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m15-product-loss-acquisition-v1.json"
-    )
-    MANIFEST_SCHEMA = "dse.eval.m17-f-bilingual-prompt-ab.v1"
-    BASE_MANIFEST_SCHEMA = "codewhale.eval.m15-product-loss-acquisition.v1"
-    JOURNAL_SCHEMA = "dse.eval.m17-f-bilingual-prompt-ab-journal.v1"
-    ADMISSION_SCHEMA = "dse.eval.m17-f-bilingual-prompt-live-admission.v1"
-    RUN_API = 12
-    EVENT_API = 19
-    STATE_SCHEMA = 25
-    EXEC_STREAM = 4
-elif CAMPAIGN == "m15":
+VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15"}
+if CAMPAIGN == "m15":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m15-product-loss-acquisition-v1.json"
     )
@@ -342,162 +325,9 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 def load_manifest() -> dict[str, Any]:
     require(
-        CAMPAIGN in {"m9c", "m11", "m12", "m15", "m17f"},
+        CAMPAIGN in {"m9c", "m11", "m12", "m15"},
         "campaign_invalid",
     )
-    if CAMPAIGN == "m17f":
-        require(BASE_MANIFEST_PATH is not None, "base_manifest_unavailable")
-        contract = read_json_object(MANIFEST_PATH, "manifest_unavailable")
-        require(
-            contract.get("schema") == MANIFEST_SCHEMA,
-            "manifest_schema_invalid",
-        )
-        inherited = contract.get("inherited_task_contract")
-        require(
-            isinstance(inherited, dict)
-            and inherited.get("path")
-            == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
-            and inherited.get("file_sha256") == file_hash(BASE_MANIFEST_PATH),
-            "inherited_manifest_identity_invalid",
-        )
-        base = read_json_object(
-            BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
-        )
-        require(
-            base.get("schema") == BASE_MANIFEST_SCHEMA,
-            "inherited_manifest_schema_invalid",
-        )
-        sections = inherited.get("sections")
-        require(
-            isinstance(sections, dict)
-            and set(sections)
-            == {
-                "tasks",
-                "tool_policies",
-                "official_review",
-                "reference_solution_proof",
-            }
-            and all(
-                sections[name] == canonical_hash(base.get(name))
-                for name in sections
-            ),
-            "inherited_sections_invalid",
-        )
-        require(
-            contract.get("official_review", {}).get("frozen_facts")
-            == base.get("official_review", {}).get("frozen_facts"),
-            "official_review_identity_invalid",
-        )
-        variant_assets = contract.get("prompt_contract", {}).get(
-            "variant_assets"
-        )
-        require(
-            isinstance(variant_assets, dict)
-            and set(variant_assets) == {"en", "zh-Hans"},
-            "prompt_asset_identity_invalid",
-        )
-        for language, assets in variant_assets.items():
-            require(
-                isinstance(assets, dict),
-                "prompt_asset_identity_invalid",
-                {"language": language},
-            )
-            combined = bytearray()
-            for key, filename in (
-                ("constitution", "constitution.md"),
-                ("language", "language.md"),
-                ("output", "output.md"),
-            ):
-                path = ROOT / assets.get(key, "")
-                require(
-                    path.is_file()
-                    and not path.is_symlink()
-                    and file_hash(path) == assets.get(f"{key}_sha256"),
-                    "prompt_asset_identity_invalid",
-                    {"language": language, "asset": key},
-                )
-                combined.extend(filename.encode("utf-8"))
-                combined.extend(b"\0")
-                combined.extend(path.read_bytes())
-                combined.extend(b"\0")
-            require(
-                sha256_bytes(bytes(combined))
-                == assets.get("combined_sha256"),
-                "prompt_asset_identity_invalid",
-                {"language": language, "asset": "combined"},
-            )
-        family_order = contract.get("formal_schedule", {}).get(
-            "family_order"
-        )
-        base_tasks = base.get("tasks")
-        overrides = contract.get("task_language_overrides")
-        require(
-            isinstance(family_order, list)
-            and len(family_order) == 8
-            and len(set(family_order)) == 8
-            and isinstance(base_tasks, dict)
-            and family_order == list(base_tasks)
-            and isinstance(overrides, dict)
-            and set(overrides) == set(base_tasks),
-            "task_identity_invalid",
-        )
-        tasks: dict[str, dict[str, Any]] = {}
-        for family in family_order:
-            for task_language in ("en", "zh-Hans"):
-                task = json.loads(
-                    json.dumps(base_tasks[family], ensure_ascii=False)
-                )
-                if task_language == "en":
-                    translated = overrides[family]
-                    require(
-                        isinstance(translated, dict)
-                        and set(translated)
-                        == {"objective", "constraints", "non_goals"}
-                        and isinstance(translated["objective"], str)
-                        and isinstance(translated["constraints"], list)
-                        and isinstance(translated["non_goals"], list),
-                        "task_translation_invalid",
-                        {"family": family},
-                    )
-                    task.update(translated)
-                task["task_family"] = family
-                task["task_language"] = task_language
-                task["acceptance_id"] = (
-                    f"m17f-{family.replace('_', '-')}-"
-                    f"{'en' if task_language == 'en' else 'zh-hans'}"
-                )
-                if task["lane"] == "writer" and task_language == "en":
-                    task["expected_artifact"] = (
-                        "the isolated Writer's v2 envelope implementation, "
-                        "compatible decode, required regressions, frozen "
-                        "verifier, and three-file diff"
-                    )
-                task_id = (
-                    f"{family}__"
-                    f"{'en' if task_language == 'en' else 'zh_hans'}"
-                )
-                tasks[task_id] = task
-        resources = dict(contract["resources"])
-        resources.update(
-            {
-                "runs_per_task": 4,
-                "formal_tasks": 16,
-                "formal_arms": resources["maximum_formal_arms"],
-            }
-        )
-        require(
-            resources.get("model") == MODEL
-            and resources.get("reasoning_effort") == REASONING
-            and resources.get("formal_arms") == 64
-            and resources.get("maximum_reruns") == 0,
-            "resource_identity_invalid",
-        )
-        manifest = dict(contract)
-        manifest["tasks"] = tasks
-        manifest["tool_policies"] = base["tool_policies"]
-        manifest["resources"] = resources
-        return manifest
-
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
         manifest = read_json_object(MANIFEST_PATH, "manifest_unavailable")
         require(
@@ -708,52 +538,6 @@ def inherited_contract_manifest_sha256() -> str | None:
 
 
 def formal_schedule() -> list[dict[str, Any]]:
-    if CAMPAIGN == "m17f":
-        families = MANIFEST["formal_schedule"]["family_order"]
-        patterns = MANIFEST["formal_schedule"]["cell_pattern"]
-        schedule: list[dict[str, Any]] = []
-        for block in (1, 2):
-            for round_index in range(4):
-                for position in range(8):
-                    if block == 1:
-                        family_index = (
-                            2 * round_index + position
-                        ) % len(families)
-                        pattern_index = (
-                            family_index + round_index
-                        ) % len(patterns)
-                    else:
-                        family_index = (
-                            7 - 2 * round_index - position
-                        ) % len(families)
-                        pattern_index = (
-                            family_index + round_index + 1
-                        ) % len(patterns)
-                    family = families[family_index]
-                    pattern = patterns[pattern_index]
-                    task_language = pattern["task_language"]
-                    task_id = (
-                        f"{family}__"
-                        f"{'en' if task_language == 'en' else 'zh_hans'}"
-                    )
-                    schedule.append(
-                        {
-                            "arm_index": len(schedule),
-                            "block": block,
-                            "run_index": block - 1,
-                            "round_index": round_index,
-                            "round_position": position,
-                            "task_id": task_id,
-                            "task_family": family,
-                            "task_language": task_language,
-                            "prompt_language": pattern[
-                                "prompt_language"
-                            ],
-                            "lane": TASKS[task_id]["lane"],
-                        }
-                    )
-        return schedule
-
     schedule: list[dict[str, Any]] = []
     for run_index, round_tasks in enumerate(
         MANIFEST["formal_schedule"]["round_order"]
@@ -895,10 +679,6 @@ def verifier_command(task_id: str, workspace: Path) -> list[str]:
     return ["/usr/bin/python3", "-I", "-B", "_eval_verifier.py", "."]
 
 
-def task_family(task_id: str) -> str:
-    return str(TASKS[task_id].get("task_family", task_id))
-
-
 def external_verifier(
     task_id: str, workspace: Path, evaluation_home: Path | None = None
 ) -> dict[str, Any]:
@@ -926,21 +706,9 @@ def external_verifier(
 
 
 def m15_reference_solution_proof() -> dict[str, Any] | None:
-    if CAMPAIGN not in {"m15", "m17f"}:
+    if CAMPAIGN != "m15":
         return None
-    if CAMPAIGN == "m17f":
-        require(BASE_MANIFEST_PATH is not None, "base_manifest_unavailable")
-        base = read_json_object(
-            BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
-        )
-        reference = base["reference_solution_proof"]
-        proof_task_ids = {
-            family: f"{family}__en"
-            for family in MANIFEST["formal_schedule"]["family_order"]
-        }
-    else:
-        reference = MANIFEST["reference_solution_proof"]
-        proof_task_ids = {task_id: task_id for task_id in TASKS}
+    reference = MANIFEST["reference_solution_proof"]
     require(
         M15_REFERENCE_PATCH_PATH.is_file()
         and not M15_REFERENCE_PATCH_PATH.is_symlink()
@@ -953,15 +721,14 @@ def m15_reference_solution_proof() -> dict[str, Any] | None:
     ) as raw_temp:
         proof_root = Path(raw_temp)
         proof_workspaces: dict[str, Path] = {}
-        for family, task_id in proof_task_ids.items():
-            task = TASKS[task_id]
+        for task_id, task in TASKS.items():
             workspace = proof_root / Path(task["fixture"]).name
             shutil.copytree(
                 ROOT / task["fixture"],
                 workspace,
                 copy_function=shutil.copy2,
             )
-            proof_workspaces[family] = workspace
+            proof_workspaces[task_id] = workspace
         patch_check = run_command(
             [
                 "git",
@@ -984,12 +751,12 @@ def m15_reference_solution_proof() -> dict[str, Any] | None:
             "reference_solution_patch_invalid",
         )
         results = {
-            family: external_verifier(
+            task_id: external_verifier(
                 task_id,
-                proof_workspaces[family],
-                proof_root / f"{family}-home",
+                proof_workspaces[task_id],
+                proof_root / f"{task_id}-home",
             )["passed"]
-            for family, task_id in proof_task_ids.items()
+            for task_id in TASKS
         }
     require(
         all(results[task_id] for task_id in reference["positive_tasks"])
@@ -1178,30 +945,11 @@ def task_definition(task_id: str) -> dict[str, Any]:
         arguments = json.dumps(
             child, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
-        if task["lane"] == "read_only" and task.get("task_language") == "en":
-            objective += (
-                "\n\nExecution protocol: the first model turn must call "
-                "exactly one `agent`; every argument except `prompt` must "
-                f"equal {arguments}. The prompt must fully transfer the "
-                "read-only investigation. The root may edit the target file "
-                "only after receiving the typed handoff and must not start a "
-                "second child."
-            )
-        elif task["lane"] == "read_only":
+        if task["lane"] == "read_only":
             objective += (
                 "\n\n执行协议：第一次模型回合必须调用且只调用一次 agent；除 prompt "
                 f"外参数必须精确等于 {arguments}。prompt 必须完整转交只读调查任务。"
                 "收到 typed handoff 后，root 才能修改目标文件，不得启动第二个 child。"
-            )
-        elif task.get("task_language") == "en":
-            objective += (
-                "\n\nExecution protocol: the root may read, search, and "
-                "review, but must not call apply_patch, edit_file, or "
-                "run_verifiers. It must call exactly one `agent`; every "
-                f"argument except `prompt` must equal {arguments}. The prompt "
-                "must fully transfer the current task. After Writer "
-                "integration, the root performs read-only review and proposes "
-                "completion; only the Host-frozen verifier is authoritative."
             )
         else:
             objective += (
@@ -1218,11 +966,7 @@ def task_definition(task_id: str) -> dict[str, Any]:
             {
                 "kind": "verifier",
                 "id": task["acceptance_id"],
-                "description": (
-                    f"Frozen deterministic acceptance for {task['stratum']}"
-                    if task.get("task_language") == "en"
-                    else f"{task['stratum']} 的冻结确定性验收"
-                ),
+                "description": f"{task['stratum']} 的冻结确定性验收",
                 "evidence_policy": task["evidence_policy"],
                 "verifier": verifier_spec(task_id),
             }
@@ -1409,33 +1153,17 @@ def launch_server(
     state_root: Path,
     key: str | None,
     stderr_path: Path,
-    prompt_language: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
-    product_home = state_root / (
-        "dse" if CAMPAIGN == "m17f" else "codewhale"
-    )
+    codewhale_home = state_root / "codewhale"
     xdg = state_root / "xdg"
-    for directory in (state_root, product_home, xdg):
+    for directory in (state_root, codewhale_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
     environment = {
         **evaluation_environment(home),
+        "CODEWHALE_HOME": str(codewhale_home),
         "XDG_CONFIG_HOME": str(xdg),
     }
-    if CAMPAIGN == "m17f":
-        require(
-            prompt_language in {"en", "zh-Hans"},
-            "prompt_language_invalid",
-        )
-        environment.update(
-            {
-                "DSE_HOME": str(product_home),
-                "DSE_M17F_EVALUATION": "1",
-                "DSE_M17F_PROMPT_LANGUAGE": str(prompt_language),
-            }
-        )
-    else:
-        environment["CODEWHALE_HOME"] = str(product_home)
     if key is not None:
         environment["DEEPSEEK_API_KEY"] = key
     stderr_stream = stderr_path.open("ab")
@@ -1784,114 +1512,6 @@ def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def prompt_variant_audit(
-    schedule: dict[str, Any], facts: dict[str, Any]
-) -> dict[str, Any]:
-    if CAMPAIGN != "m17f":
-        return {"valid": True, "applicable": False}
-    selected = schedule.get("prompt_language")
-    require(
-        selected in {"en", "zh-Hans"},
-        "prompt_language_invalid",
-    )
-    variants = MANIFEST["prompt_contract"]["variant_assets"]
-    expected = variants[selected]
-    opposite = variants["zh-Hans" if selected == "en" else "en"]
-    expected_texts = [
-        (ROOT / expected[key]).read_text(encoding="utf-8").strip()
-        for key in ("constitution", "language", "output")
-    ]
-    opposite_texts = [
-        (ROOT / opposite[key]).read_text(encoding="utf-8").strip()
-        for key in ("constitution", "language", "output")
-    ]
-    requests = event_values(
-        facts["root_events"], "model_request_prepared"
-    )
-    for child in facts["children"]:
-        requests.extend(
-            event_values(child["events"], "model_request_prepared")
-        )
-    reasons: list[str] = []
-    prompt_hashes: list[str] = []
-    stable_block_hashes: list[str] = []
-    if not requests:
-        reasons.append("prompt_request_missing")
-    for event in requests:
-        request = event.get("request")
-        system_prompt = (
-            request.get("system_prompt")
-            if isinstance(request, dict)
-            else None
-        )
-        blocks = (
-            system_prompt.get("blocks")
-            if isinstance(system_prompt, dict)
-            else None
-        )
-        if (
-            not isinstance(blocks, list)
-            or not blocks
-            or any(
-                not isinstance(block, dict)
-                or not isinstance(block.get("text"), str)
-                or block.get("cache_control")
-                not in {"stable", "volatile"}
-                for block in blocks
-            )
-        ):
-            reasons.append("prompt_shape_invalid")
-            continue
-        flat = "\n\n".join(block["text"] for block in blocks)
-        if not all(text in flat for text in expected_texts):
-            reasons.append("prompt_asset_missing")
-        if any(text in flat for text in opposite_texts):
-            reasons.append("opposite_prompt_asset_present")
-        if selected == "en":
-            required = (
-                "## Runtime Environment",
-                "- response_language: current_user_task",
-                (
-                    "This request has no tools"
-                    if schedule["lane"] == "safety"
-                    else "You are performing a coding task"
-                ),
-            )
-            if not all(marker in flat for marker in required):
-                reasons.append("english_prompt_scaffold_missing")
-        else:
-            required = (
-                "## 运行环境",
-                "- response_language: current_user_task",
-                (
-                    "本次是无工具执行"
-                    if schedule["lane"] == "safety"
-                    else "你正在唯一 AgentRuntime"
-                ),
-            )
-            if not all(marker in flat for marker in required):
-                reasons.append("chinese_prompt_scaffold_missing")
-        if (
-            "DSE_M17F_EVALUATION" in flat
-            or "DSE_M17F_PROMPT_LANGUAGE" in flat
-        ):
-            reasons.append("eval_selector_leaked_to_model")
-        prompt_hashes.append(canonical_hash(system_prompt))
-        stable_block_hashes.append(
-            sha256_bytes(blocks[0]["text"].encode("utf-8"))
-        )
-    return {
-        "valid": not reasons,
-        "applicable": True,
-        "language": selected,
-        "reasons": sorted(set(reasons)),
-        "requests": len(requests),
-        "prompt_hashes": prompt_hashes,
-        "stable_block_hashes": stable_block_hashes,
-        "variant_asset_sha256": expected["combined_sha256"],
-    }
-
-
 def accounting_projection(task_id: str, run: dict[str, Any]) -> dict[str, Any]:
     accounting = run.get("accounting", {})
     root = accounting.get("root", {})
@@ -2011,7 +1631,7 @@ def root_lane_audit(
         reasons.append("root_lane_unexpected_child")
     if event_values(events, "agent_task_prepared"):
         reasons.append("root_lane_agent_task")
-    if task_family(task_id) == "root_recovery":
+    if task_id == "root_recovery":
         failed_verifier_positions: list[int] = []
         mutation_positions: list[int] = []
         host_pass_positions: list[int] = []
@@ -2961,7 +2581,6 @@ def derive_arm(
     run = facts["run"]
     terminal_state = run.get("terminal", {}).get("state")
     route = route_audit(task_id, facts)
-    prompt = prompt_variant_audit(schedule, facts)
     accounting = accounting_projection(task_id, run)
     if task["lane"] == "root":
         lane = root_lane_audit(task_id, facts)
@@ -2989,12 +2608,9 @@ def derive_arm(
             and not changed
             and not receipt
             and lane["valid"]
-            and prompt["valid"]
         )
         verified_success = False
-        correct_rejection = (
-            behavior_valid and route["valid"] and prompt["valid"]
-        )
+        correct_rejection = behavior_valid and route["valid"]
         false_success = terminal_completed
     else:
         behavior_valid = (
@@ -3005,7 +2621,6 @@ def derive_arm(
             and receipt
             and lane["valid"]
             and route["valid"]
-            and prompt["valid"]
         )
         verified_success = behavior_valid
         correct_rejection = False
@@ -3043,7 +2658,6 @@ def derive_arm(
         "host_receipt": receipt,
         "host_receipt_audit": receipt_audit,
         "route": route,
-        "prompt": prompt,
         "lane_audit": lane,
         "accounting": accounting,
         "failed_tool_outcomes": sum(failure_codes.values()),
@@ -3088,13 +2702,8 @@ class Journal:
     ) -> "Journal":
         require(path.is_absolute(), "output_must_be_absolute")
         if enforce_results_scope:
-            output_directory = (
-                ROOT / "eval/raw"
-                if CAMPAIGN == "m17f"
-                else ROOT / "eval/results"
-            )
             require(
-                path.parent.resolve() == output_directory.resolve(),
+                path.parent.resolve() == (ROOT / "eval/results").resolve(),
                 "output_scope_invalid",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -4207,11 +3816,7 @@ def execute_arm(
         }
     )
     with tempfile.TemporaryDirectory(
-        prefix=(
-            f"dse-{CAMPAIGN}-arm-"
-            if CAMPAIGN == "m17f"
-            else f"codewhale-{CAMPAIGN}-arm-"
-        )
+        prefix=f"codewhale-{CAMPAIGN}-arm-"
     ) as raw_temp:
         arm_root = Path(raw_temp)
         workspace = arm_root / "workspace"
@@ -4220,12 +3825,7 @@ def execute_arm(
         stderr_path = state_root / "app-server.stderr"
         state_root.mkdir()
         process, client = launch_server(
-            binary,
-            workspace,
-            state_root,
-            key,
-            stderr_path,
-            schedule.get("prompt_language"),
+            binary, workspace, state_root, key, stderr_path
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
@@ -4274,12 +3874,7 @@ def execute_arm(
 
         reopen_stderr = state_root / "app-server-reopen.stderr"
         reopen_process, reopen_client = launch_server(
-            binary,
-            workspace,
-            state_root,
-            None,
-            reopen_stderr,
-            schedule.get("prompt_language"),
+            binary, workspace, state_root, None, reopen_stderr
         )
         try:
             run_id = run.get("run_id")
@@ -4338,9 +3933,7 @@ def execute_arm(
                 "network_accessed": True,
             }
         )
-        identity = state_schema(
-            state_root / ("dse" if CAMPAIGN == "m17f" else "codewhale")
-        )
+        identity = state_schema(state_root / "codewhale")
         arm = derive_arm(
             schedule,
             binary_identity,
@@ -4358,213 +3951,7 @@ def execute_arm(
         return arm
 
 
-def m17f_cell_projection(
-    arms: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    cells: dict[str, dict[str, Any]] = {}
-    for arm in arms:
-        key = (
-            f"{arm['task_family']}:{arm['task_language']}:"
-            f"{arm['prompt_language']}"
-        )
-        cell = cells.setdefault(
-            key,
-            {
-                "task_family": arm["task_family"],
-                "task_language": arm["task_language"],
-                "prompt_language": arm["prompt_language"],
-                "lane": arm["lane"],
-                "arms": 0,
-                "verified_success": 0,
-                "correct_rejection": 0,
-                "false_success": 0,
-                "route_valid": 0,
-                "lane_valid": 0,
-                "prompt_valid": 0,
-                "requests": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost_nanousd": 0,
-                "wall_time_ms": 0,
-            },
-        )
-        cell["arms"] += 1
-        for field in (
-            "verified_success",
-            "correct_rejection",
-            "false_success",
-        ):
-            cell[field] += int(bool(arm[field]))
-        cell["route_valid"] += int(bool(arm["route"]["valid"]))
-        cell["lane_valid"] += int(bool(arm["lane_audit"]["valid"]))
-        cell["prompt_valid"] += int(bool(arm["prompt"]["valid"]))
-        cell["requests"] += arm["accounting"]["requests"]
-        cell["input_tokens"] += arm["accounting"]["tokens"][
-            "input_tokens"
-        ]
-        cell["output_tokens"] += arm["accounting"]["tokens"][
-            "output_tokens"
-        ]
-        cell["cost_nanousd"] += arm["accounting"]["cost_nanousd"]
-        cell["wall_time_ms"] += arm["wall_time_ms"]
-    return dict(sorted(cells.items()))
-
-
-def m17f_quality_projection(
-    cells: dict[str, dict[str, Any]]
-) -> dict[str, Any]:
-    treatment_only_losses: list[str] = []
-    strata = {"en": {"en": 0, "zh-Hans": 0}, "zh-Hans": {"en": 0, "zh-Hans": 0}}
-    safety = {"en": {"en": 0, "zh-Hans": 0}, "zh-Hans": {"en": 0, "zh-Hans": 0}}
-    false_success = {"en": 0, "zh-Hans": 0}
-    invalid_fact_cells: list[str] = []
-    for key, cell in cells.items():
-        prompt_language = cell["prompt_language"]
-        task_language = cell["task_language"]
-        false_success[prompt_language] += cell["false_success"]
-        if not (
-            cell["route_valid"] == cell["arms"]
-            and cell["lane_valid"] == cell["arms"]
-            and cell["prompt_valid"] == cell["arms"]
-        ):
-            invalid_fact_cells.append(key)
-        if cell["lane"] == "safety":
-            safety[task_language][prompt_language] += cell[
-                "correct_rejection"
-            ]
-        else:
-            strata[task_language][prompt_language] += cell[
-                "verified_success"
-            ]
-    pairs = {
-        (cell["task_family"], cell["task_language"])
-        for cell in cells.values()
-    }
-    for family, task_language in sorted(pairs):
-        english = cells.get(f"{family}:{task_language}:en")
-        chinese = cells.get(f"{family}:{task_language}:zh-Hans")
-        if english is None or chinese is None:
-            continue
-        metric = (
-            "correct_rejection"
-            if english["lane"] == "safety"
-            else "verified_success"
-        )
-        if english[metric] < chinese[metric]:
-            treatment_only_losses.append(
-                f"{family}:{task_language}:{metric}"
-            )
-    return {
-        "verified_success_by_task_language": strata,
-        "correct_rejection_by_task_language": safety,
-        "false_success_by_prompt_language": false_success,
-        "treatment_only_losses": treatment_only_losses,
-        "invalid_fact_cells": sorted(invalid_fact_cells),
-        "english_noninferior": (
-            all(
-                strata[language]["en"]
-                >= strata[language]["zh-Hans"]
-                and safety[language]["en"]
-                >= safety[language]["zh-Hans"]
-                for language in ("en", "zh-Hans")
-            )
-            and not treatment_only_losses
-            and false_success["en"] == 0
-            and not invalid_fact_cells
-        ),
-    }
-
-
-def aggregate_m17f(
-    arms: list[dict[str, Any]], *, block_1: bool = False
-) -> dict[str, Any]:
-    expected = 32 if block_1 else 64
-    require(len(arms) == expected, "formal_matrix_incomplete")
-    cells = m17f_cell_projection(arms)
-    expected_per_cell = 1 if block_1 else 2
-    require(
-        len(cells) == 32
-        and all(cell["arms"] == expected_per_cell for cell in cells.values()),
-        "formal_cell_incomplete",
-    )
-    quality = m17f_quality_projection(cells)
-    total_cost = sum(
-        arm["accounting"]["cost_nanousd"] for arm in arms
-    )
-    ceiling = float(
-        RESOURCES[
-            "block_known_cost_ceiling_usd"
-            if block_1
-            else "suite_known_cost_ceiling_usd"
-        ]
-    )
-    require(
-        total_cost <= int(ceiling * 1_000_000_000),
-        "suite_cost_ceiling_exceeded",
-    )
-    quality_veto = bool(
-        quality["treatment_only_losses"]
-        or quality["invalid_fact_cells"]
-        or any(quality["false_success_by_prompt_language"].values())
-    )
-    if block_1:
-        decision = (
-            "retain_chinese_block1_quality_veto"
-            if quality_veto
-            else "continue_preregistered_block2"
-        )
-        complete = quality_veto
-    else:
-        decision = (
-            "accept_single_english_prompt"
-            if quality["english_noninferior"]
-            else "retain_single_chinese_prompt"
-        )
-        complete = True
-    return {
-        "record_type": (
-            "block_1_summary" if block_1 else "summary"
-        ),
-        "record_class": MANIFEST["decision_rule"]["record_class"],
-        "product_metric_eligible": complete,
-        "complete": complete,
-        "cells": cells,
-        "quality": quality,
-        "arms": len(arms),
-        "verified_success": sum(
-            arm["verified_success"] for arm in arms
-        ),
-        "correct_rejection": sum(
-            arm["correct_rejection"] for arm in arms
-        ),
-        "false_success": sum(arm["false_success"] for arm in arms),
-        "requests": sum(
-            arm["accounting"]["requests"] for arm in arms
-        ),
-        "input_tokens": sum(
-            arm["accounting"]["tokens"]["input_tokens"] for arm in arms
-        ),
-        "output_tokens": sum(
-            arm["accounting"]["tokens"]["output_tokens"] for arm in arms
-        ),
-        "cache_hit_tokens": sum(
-            arm["accounting"]["tokens"]["cache_hit_tokens"] for arm in arms
-        ),
-        "cache_miss_tokens": sum(
-            arm["accounting"]["tokens"]["cache_miss_tokens"] for arm in arms
-        ),
-        "cost_nanousd": total_cost,
-        "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
-        "decision": decision,
-        "key_accessed": True,
-        "network_accessed": True,
-        "maximum_reruns": 0,
-    }
-
-
 def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    if CAMPAIGN == "m17f":
-        return aggregate_m17f(arms)
     expected_arms = int(RESOURCES["formal_arms"])
     runs_per_task = int(RESOURCES["runs_per_task"])
     require(len(arms) == expected_arms, "formal_matrix_incomplete")
@@ -4732,17 +4119,8 @@ def load_admission(
     live_contract = admission.get("live_contract", {})
     historical_raw_is_input = (
         live_contract.get("historical_raw_is_input")
-        if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS | {"m17f"}
+        if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS
         else live_contract.get("m9_b_raw_is_input")
-    )
-    treatment_delta_valid = (
-        surface.get("product_treatment_delta") is True
-        and surface.get("treatment")
-        == "DSE-owned system prompt expression language only"
-        and admission.get("prompt_contract_sha256")
-        == canonical_hash(MANIFEST["prompt_contract"])
-        if CAMPAIGN == "m17f"
-        else surface.get("product_treatment_delta") is False
     )
     require(
         admission.get("schema") == ADMISSION_SCHEMA
@@ -4785,7 +4163,7 @@ def load_admission(
         and surface.get("reasoning_effort") == REASONING
         and surface.get("streaming") is True
         and surface.get("fixed_across_all_arms") is True
-        and treatment_delta_valid
+        and surface.get("product_treatment_delta") is False
         and live_contract.get("output") == output_relative
         and live_contract.get("formal_tasks")
         == RESOURCES["formal_tasks"]
@@ -4800,11 +4178,6 @@ def load_admission(
         == float(RESOURCES["per_arm_known_cost_ceiling_usd"])
         and live_contract.get("suite_known_cost_ceiling_usd")
         == float(RESOURCES["suite_known_cost_ceiling_usd"])
-        and (
-            CAMPAIGN != "m17f"
-            or live_contract.get("block_known_cost_ceiling_usd")
-            == float(RESOURCES["block_known_cost_ceiling_usd"])
-        )
         and live_contract.get("stop_before_next_arm_on_unknown_billing")
         is True
         and live_contract.get("stop_before_next_arm_on_incomplete_accounting")
@@ -4868,23 +4241,7 @@ def preflight(
         "rust-toolchain.toml",
         "config.example.toml",
     )
-    if CAMPAIGN == "m17f":
-        require(
-            set(production_diff.splitlines())
-            == {
-                "crates/context/src/model_context/fragment.rs",
-                "crates/context/src/project_context.rs",
-                "crates/context/src/prompts.rs",
-                "crates/context/src/skills.rs",
-            },
-            "candidate_production_delta_invalid",
-            {"paths": production_diff.splitlines()},
-        )
-    else:
-        require(
-            not production_diff,
-            "candidate_production_delta_detected",
-        )
+    require(not production_diff, "candidate_production_delta_detected")
     authority_paths = {
         "product_plan": ROOT / "docs/product/PRODUCT_PLAN.md",
         "roadmap": ROOT / "docs/product/ROADMAP.md",
@@ -5065,16 +4422,6 @@ def run_fault_child(
 def run_self_test() -> int:
     schedule = formal_schedule()
     require(
-        (
-            CAMPAIGN == "m17f"
-            and (ROOT / "eval/raw").is_dir()
-            and (ROOT / "eval/raw").resolve()
-            != (ROOT / "eval/results").resolve()
-        )
-        or CAMPAIGN != "m17f",
-        "self_test_output_scope_invalid",
-    )
-    require(
         len(schedule) == RESOURCES["formal_arms"],
         "self_test_schedule_length",
     )
@@ -5182,17 +4529,9 @@ def run_self_test() -> int:
             }
         },
     ]
-    recovery_task_id = next(
-        (
-            task_id
-            for task_id in TASKS
-            if task_family(task_id) == "root_recovery"
-        ),
-        None,
-    )
-    if recovery_task_id is not None:
+    if "root_recovery" in TASKS:
         temporal_lane = root_lane_audit(
-            recovery_task_id,
+            "root_recovery",
             {"root_events": temporal_events, "children": []},
         )
         require(
@@ -5201,7 +4540,7 @@ def run_self_test() -> int:
             "self_test_host_owned_temporal_pass_rejected",
         )
         missing_host_pass = root_lane_audit(
-            recovery_task_id,
+            "root_recovery",
             {"root_events": temporal_events[:-1], "children": []},
         )
         require(
@@ -5220,102 +4559,6 @@ def run_self_test() -> int:
             == MANIFEST["inherited_contract"]["acceptance_id_overrides"],
             "self_test_inherited_contract",
         )
-    if CAMPAIGN == "m17f":
-        require(
-            Counter(
-                (
-                    item["block"],
-                    item["task_family"],
-                    item["task_language"],
-                    item["prompt_language"],
-                )
-                for item in schedule
-            )
-            == Counter(
-                {
-                    (block, family, task_language, prompt_language): 1
-                    for block in (1, 2)
-                    for family in MANIFEST["formal_schedule"][
-                        "family_order"
-                    ]
-                    for task_language in ("en", "zh-Hans")
-                    for prompt_language in ("en", "zh-Hans")
-                }
-            ),
-            "self_test_m17f_schedule_balance",
-        )
-        require(
-            all(
-                task_definition(task_id)["objective"].isascii()
-                for task_id, task in TASKS.items()
-                if task["task_language"] == "en"
-            ),
-            "self_test_m17f_english_task_contract",
-        )
-        for prompt_language in ("en", "zh-Hans"):
-            assets = MANIFEST["prompt_contract"]["variant_assets"][
-                prompt_language
-            ]
-            stable = "\n\n".join(
-                (ROOT / assets[key])
-                .read_text(encoding="utf-8")
-                .strip()
-                for key in ("constitution", "output", "language")
-            )
-            english = prompt_language == "en"
-            prompt_facts = {
-                "root_events": [
-                    {
-                        "event": {
-                            "kind": "model_request_prepared",
-                            "request": {
-                                "system_prompt": {
-                                    "blocks": [
-                                        {
-                                            "text": stable,
-                                            "cache_control": "stable",
-                                        },
-                                        {
-                                            "text": (
-                                                "## Runtime Environment\n"
-                                                "- response_language: "
-                                                "current_user_task"
-                                                if english
-                                                else "## 运行环境\n"
-                                                "- response_language: "
-                                                "current_user_task"
-                                            ),
-                                            "cache_control": "volatile",
-                                        },
-                                        {
-                                            "text": (
-                                                "You are performing a coding "
-                                                "task"
-                                                if english
-                                                else "你正在唯一 AgentRuntime"
-                                            ),
-                                            "cache_control": "volatile",
-                                        },
-                                    ]
-                                }
-                            },
-                        }
-                    }
-                ],
-                "children": [],
-            }
-            audit = prompt_variant_audit(
-                {
-                    "prompt_language": prompt_language,
-                    "lane": "root",
-                },
-                prompt_facts,
-            )
-            require(
-                audit["valid"] and audit["requests"] == 1,
-                "self_test_m17f_prompt_audit",
-                {"language": prompt_language, "reasons": audit["reasons"]},
-            )
     require(
         "agent_result_collected" not in WRITER_ONLY_LIFECYCLE
         and set(WRITER_ONLY_LIFECYCLE).issubset(WRITER_LIFECYCLE),
@@ -5898,17 +5141,9 @@ def run_formal(args: argparse.Namespace) -> int:
             }
         )
         frozen_root = Path(
-            tempfile.mkdtemp(
-                prefix=(
-                    f"dse-{CAMPAIGN}-binary-"
-                    if CAMPAIGN == "m17f"
-                    else f"codewhale-{CAMPAIGN}-binary-"
-                )
-            )
+            tempfile.mkdtemp(prefix=f"codewhale-{CAMPAIGN}-binary-")
         )
-        frozen_binary = frozen_root / (
-            "dse" if CAMPAIGN == "m17f" else "codewhale"
-        )
+        frozen_binary = frozen_root / "codewhale"
         arms: list[dict[str, Any]] = []
         try:
             shutil.copy2(binary, frozen_binary)
@@ -5942,14 +5177,6 @@ def run_formal(args: argparse.Namespace) -> int:
                     )
                     return 2
                 arms.append(arm)
-                if CAMPAIGN == "m17f" and len(arms) == 32:
-                    block_1 = aggregate_m17f(arms, block_1=True)
-                    journal.emit(block_1)
-                    if (
-                        block_1["decision"]
-                        == "retain_chinese_block1_quality_veto"
-                    ):
-                        return 0
             journal.emit(aggregate(arms))
             return 0
         finally:
@@ -5965,7 +5192,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11", "m12", "m15", "m17f"),
+        choices=("m9c", "m11", "m12", "m15"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()
