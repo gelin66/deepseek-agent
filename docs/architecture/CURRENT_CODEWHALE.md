@@ -2295,6 +2295,20 @@ M17-F 的正式身份、指标、质量否决与删除证据见
 M17-G 的公开仓库、身份 allowlist、秘密/许可/来源与门禁证据见
 [M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
 
+M17-H local candidate `a8c4bafab` 又删除了最后一个 tracked
+`.codewhale/constitution.json` 死路径、whale theme aliases/内部 palette identity 与
+鲸鱼空状态视觉，并由 public checker 对 active crates 建立精确 old-identity allowlist。
+它没有新增 repo-local `.dse/constitution.json`，所以 M17-F 的 production prompt owner
+和 winner 不变。当前 ignored `eval/raw` 269 个文件均为 `0600`；LICENSE 与导入基线
+byte-identical。
+
+同 revision macOS locked/offline source artifact 与 Linux arm64 无网络 fixture lifecycle
+通过，但 private origin 仍停在 `54fb7cb9`，当前 candidate 没有 remote CI。GitHub 当前
+套餐对 private branch protection/rulesets 返回 403，必须升级 Pro 或在明确授权下先 public。
+没有 push、remote rename、visibility、tag、release 或本地 workspace directory rename。
+完整事实与下一授权边界见
+[M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

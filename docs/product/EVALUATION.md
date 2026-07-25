@@ -2728,6 +2728,20 @@ visibility、tag 或 release。该 gate 接受本地公开仓库候选，不等�
 公开发布证据。完整记录见
 [M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
 
+M17-H local release-readiness 在 `a8c4bafab` 通过。active-source checker 删除并拒绝旧
+`.codewhale` authority、whale theme alias/视觉与未分类旧身份，同时保留精确 migration/
+negative assertion/frozen fixture 及 M7-A/M7-A2 历史 allowlist。没有新增 `.dse`
+constitution，因为这会在正式 prompt 决策后增加未经评测的模型可见 authority。
+
+同一 revision 的 focused、strict Clippy、workspace test、macOS locked/offline exact-source
+package/install/verify/uninstall 和 Linux arm64 无网络 fixture lifecycle 均通过；269 个
+ignored raw 文件现在全部为 `0600`，LICENSE 与导入基线 byte-identical。private origin
+仍落后 621 commits，当前 candidate 没有 remote CI；classic protection/rulesets 在当前
+private 仓库上均返回需 Pro 或 public 的 403。因此 M17-H 当前结论为
+`local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`，
+不是公开发布完成。见
+[M17-H DSE release-readiness](../../eval/summaries/m17-h-dse-release-readiness-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
