@@ -1,16 +1,17 @@
 # crates/localization/locales — agent guidance
 
-`zh-Hans.json` is the sole user-facing message catalog. This is a deliberate
-single-user product boundary, not a fallback locale.
+`en.json` and `zh-Hans.json` are the complete user-facing catalog set accepted
+by ADR-0010. Do not add locale aliases, automatic environment detection, a
+third catalog, or post-hoc translation.
 
 ## Adding or changing a string
 
-1. Add the `MessageId` variant, the `ALL_MESSAGE_IDS` entry, and the
-   `zh-Hans.json` key. The exact-parity test must pass.
-2. Write concise native Simplified Chinese. Do not add an English source key,
-   fallback value, or a second catalog.
-3. If a long-lived product decision later requires another language, record a
-   new ADR before adding any runtime language machinery.
+1. Add the `MessageId` variant, the `ALL_MESSAGE_IDS` entry, and the same key
+   to `en.json` and `zh-Hans.json`.
+2. Keep the exact named-placeholder multiset identical in both values.
+3. Write concise native English and native Simplified Chinese; do not use one
+   language as the runtime fallback text for the other.
+4. Changing the admitted language set requires a new product decision and ADR.
 
 ## Message conventions
 

@@ -36,13 +36,17 @@ The default shell is the underwater system (`src/tui/underwater.rs`,
 
 ## Localization rules
 
-- The product has one user-facing language: Simplified Chinese. Do not add a
-  locale type, language setting, environment detection, language picker,
-  alternate pack, or post-hoc output translation.
+- The complete human-facing language set is `en` and `zh-Hans`.
+  `crates/localization::ProductLanguage` is the only locale owner. Resolution
+  is process-wide: explicit `--language`, persisted `[ui].language`, first-run
+  bilingual choice, then English for a fresh non-interactive environment.
+  Do not add environment-language guessing, per-Run/per-Agent locale,
+  post-hoc output translation, or another catalog.
 - Every user-visible string goes through `tr(MessageId::…)`. No hardcoded
   English in render paths. Adding a string requires an enum variant,
-  `ALL_MESSAGE_IDS` entry, and `zh-Hans.json` key; the exact-parity test keeps
-  those three sources synchronized. See `locales/AGENTS.md`.
+  `ALL_MESSAGE_IDS` entry, and exact-key/placeholder-compatible entries in
+  both `en.json` and `zh-Hans.json`; parity tests keep those sources
+  synchronized.
 - Glyphs (`▸ · ▾ ─`), key names (`Enter`, `Alt+?`), and commands
   (`/agent`) are composed in code, not embedded in translations.
 - Protocol values, config keys, tool names, paths, source code, and raw tool

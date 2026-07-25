@@ -11,8 +11,7 @@
 base_url = "https://api.deepseek.com"
 default_text_model = "deepseek-v4-pro"
 
-# `auto`, `deepseek-v4-pro`, `deepseek-v4-flash`, or a future official
-# `deepseek-*` model id.
+# `off`, `low`, `medium`, `high`, or `max`.
 reasoning_effort = "max"
 
 # CLI/runtime presentation and local execution posture.
@@ -48,6 +47,10 @@ mouse_capture = true
 terminal_probe_timeout_ms = 250
 stream_chunk_timeout_secs = 900
 osc8_links = true
+
+[ui]
+# Human-facing CLI/TUI/app-server projection only; never changes model prompts.
+language = "en"
 
 [skills]
 scan_dse_only = false

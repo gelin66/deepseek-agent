@@ -6,7 +6,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::borrow::Cow;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,7 +21,10 @@ use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 use dse_context::{project_context, prompts, skills as skill_context};
-use dse_localization::{MessageId, tr};
+use dse_localization::{
+    MessageId, ProductLanguage, process_language, process_language_is_set,
+    resolve_product_language, set_process_language, tr, tr_in,
+};
 
 mod audit;
 mod config;
@@ -113,6 +116,10 @@ struct Cli {
     /// Path to config file
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Human interface language: en or zh-Hans.
+    #[arg(long, value_name = "LANGUAGE")]
+    language: Option<ProductLanguage>,
 
     /// Enable verbose logging
     #[arg(short, long)]
@@ -889,9 +896,13 @@ fn tui_command_message(name: &str) -> Option<MessageId> {
 }
 
 fn localize_tui_command(command: &mut clap::Command) {
+    localize_tui_command_in(command, process_language());
+}
+
+fn localize_tui_command_in(command: &mut clap::Command, language: ProductLanguage) {
     let mut localized = command
         .clone()
-        .help_template(tr(MessageId::CliHelpTemplate).into_owned())
+        .help_template(tr_in(language, MessageId::CliHelpTemplate).into_owned())
         .disable_help_subcommand(true)
         .disable_help_flag(true)
         .disable_version_flag(true)
@@ -909,7 +920,7 @@ fn localize_tui_command(command: &mut clap::Command) {
             .short('h')
             .long("help")
             .action(clap::ArgAction::Help)
-            .help(tr(MessageId::CliArgHelp).into_owned()),
+            .help(tr_in(language, MessageId::CliArgHelp).into_owned()),
     );
     if command.get_version().is_some() {
         localized = localized.arg(
@@ -917,16 +928,16 @@ fn localize_tui_command(command: &mut clap::Command) {
                 .short('V')
                 .long("version")
                 .action(clap::ArgAction::Version)
-                .help(tr(MessageId::CliArgVersion).into_owned()),
+                .help(tr_in(language, MessageId::CliArgVersion).into_owned()),
         );
     }
     if command.get_name() == "dse-tui" {
-        localized = localized.about(tr(MessageId::CliAbout).into_owned());
+        localized = localized.about(tr_in(language, MessageId::CliAbout).into_owned());
     } else if let Some(message) = tui_command_message(command.get_name()) {
-        localized = localized.about(tr(message).into_owned());
+        localized = localized.about(tr_in(language, message).into_owned());
     }
     if command.get_name() == "exec" {
-        localized = localized.after_help(tr(MessageId::CliExecAfterHelp).into_owned());
+        localized = localized.after_help(tr_in(language, MessageId::CliExecAfterHelp).into_owned());
     }
 
     let arg_messages = [
@@ -939,6 +950,7 @@ fn localize_tui_command(command: &mut clap::Command) {
         ("disable", MessageId::CliArgDisableFeature),
         ("max_subagents", MessageId::CliArgMaxSubagents),
         ("config", MessageId::CliArgConfig),
+        ("language", MessageId::CliArgLanguage),
         ("verbose", MessageId::CliArgVerbose),
         ("profile", MessageId::CliArgProfile),
         ("resume", MessageId::CliArgResume),
@@ -967,13 +979,15 @@ fn localize_tui_command(command: &mut clap::Command) {
             .get_arguments()
             .any(|argument| argument.get_id() == id)
         {
-            localized = localized.mut_arg(id, |argument| argument.help(tr(message).into_owned()));
+            localized = localized.mut_arg(id, |argument| {
+                argument.help(tr_in(language, message).into_owned())
+            });
         }
     }
 
     *command = localized;
     for child in command.get_subcommands_mut() {
-        localize_tui_command(child);
+        localize_tui_command_in(child, language);
     }
 }
 
@@ -984,6 +998,7 @@ fn localized_tui_command() -> clap::Command {
 }
 
 fn parse_tui_cli() -> Cli {
+    initialize_process_language_from_args();
     let matches = match localized_tui_command().try_get_matches() {
         Ok(matches) => matches,
         Err(error)
@@ -1000,6 +1015,134 @@ fn parse_tui_cli() -> Cli {
         }
     };
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+fn initialize_process_language_from_args() {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let (explicit, config_path) = startup_language_arguments(&arguments);
+    let explicit = explicit
+        .as_deref()
+        .and_then(|value| value.parse::<ProductLanguage>().ok());
+    let persisted = Config::load(config_path, None)
+        .ok()
+        .and_then(|config| config.ui_language().ok().flatten());
+    let existing_dse_installation = dse_config::dse_home()
+        .ok()
+        .is_some_and(|home| home.join(".onboarded").is_file());
+    let has_noninteractive_surface = arguments.iter().skip(1).any(|argument| {
+        matches!(
+            argument.to_str(),
+            Some(
+                "-h" | "--help"
+                    | "-V"
+                    | "--version"
+                    | "doctor"
+                    | "session-diagnostics"
+                    | "setup"
+                    | "completions"
+                    | "init"
+                    | "login"
+                    | "logout"
+                    | "exec"
+                    | "mcp"
+                    | "execpolicy"
+                    | "features"
+                    | "sandbox"
+            )
+        )
+    });
+    let defer_fresh_to_first_run_choice =
+        !has_noninteractive_surface && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let language = resolve_product_language(
+        explicit,
+        persisted,
+        existing_dse_installation,
+        defer_fresh_to_first_run_choice,
+    );
+    if let Some(language) = language {
+        let _ = set_process_language(language);
+    }
+}
+
+fn startup_language_arguments(
+    arguments: &[std::ffi::OsString],
+) -> (Option<String>, Option<PathBuf>) {
+    fn option_value(
+        arguments: &[std::ffi::OsString],
+        long_name: &str,
+    ) -> Option<std::ffi::OsString> {
+        let prefix = format!("{long_name}=");
+        let mut index = 1;
+        while index < arguments.len() {
+            let value = arguments[index].to_string_lossy();
+            if value == long_name {
+                return arguments.get(index + 1).cloned();
+            }
+            if let Some(value) = value.strip_prefix(&prefix) {
+                return Some(value.into());
+            }
+            index += 1;
+        }
+        None
+    }
+
+    let explicit =
+        option_value(arguments, "--language").map(|value| value.to_string_lossy().into_owned());
+    let config_path = option_value(arguments, "--config").map(PathBuf::from);
+    (explicit, config_path)
+}
+
+fn initialize_first_run_language(cli: &Cli) -> Result<()> {
+    if process_language_is_set() {
+        return Ok(());
+    }
+
+    let opens_interactive_tui = cli.command.is_none()
+        || matches!(
+            &cli.command,
+            Some(Commands::Pr { .. } | Commands::Resume { .. })
+        );
+    let can_ask = opens_interactive_tui
+        && !cli.skip_onboarding
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal();
+    let language = if can_ask {
+        print!(
+            "DSE · DeepSeek Engineer\n\
+             Choose interface language / 选择界面语言\n\
+             1) English\n\
+             2) 简体中文\n\
+             > "
+        );
+        io::stdout()
+            .flush()
+            .context("failed to display language choice")?;
+        let mut answer = String::new();
+        io::stdin()
+            .read_line(&mut answer)
+            .context("failed to read language choice")?;
+        parse_first_run_language_choice(&answer)?
+    } else {
+        ProductLanguage::English
+    };
+
+    set_process_language(language).map_err(|existing| {
+        anyhow!("product language was already frozen as {existing}; cannot select {language}")
+    })?;
+    if can_ask {
+        let mut store = dse_config::ConfigStore::load(cli.config.clone())?;
+        store.config.set_value("ui.language", language.tag())?;
+        store.save()?;
+    }
+    Ok(())
+}
+
+fn parse_first_run_language_choice(value: &str) -> Result<ProductLanguage> {
+    match value.trim() {
+        "" | "1" | "en" | "English" | "english" => Ok(ProductLanguage::English),
+        "2" | "zh-Hans" | "简体中文" => Ok(ProductLanguage::SimplifiedChinese),
+        other => bail!("invalid language choice {other:?}; enter 1 for English or 2 for 简体中文"),
+    }
 }
 
 fn render_main_error(error: &anyhow::Error) -> String {
@@ -1124,6 +1267,7 @@ async fn run_async_main() -> Result<()> {
     // suspend path, and SIGTERM / SIGHUP from the OS.
     dotenv().ok();
     let cli = parse_tui_cli();
+    initialize_first_run_language(&cli)?;
     // Engine-backed Headless exec installs its own structured controller.
     // Other commands retain the emergency terminal-restoration behavior.
     if !matches!(&cli.command, Some(Commands::Exec(_))) {
@@ -4591,6 +4735,10 @@ async fn run_interactive(
         config,
         tui::TuiOptions {
             model,
+            language: cli
+                .language
+                .or(config.ui_language()?)
+                .unwrap_or_else(dse_localization::process_language),
             workspace,
             config_path: cli.config.clone(),
             allow_shell: interactive_tui_allow_shell(yolo, config),
@@ -5047,5 +5195,64 @@ mod m8c_fixed_zh_hans_help_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod m17d_bilingual_entry_tests {
+    use super::*;
+    use clap::error::ErrorKind;
+    use std::ffi::OsString;
+    use unicode_width::UnicodeWidthStr;
+
+    fn help_for(language: ProductLanguage, argv: &[&str], width: usize) -> String {
+        let mut command = Cli::command();
+        localize_tui_command_in(&mut command, language);
+        let error = command
+            .term_width(width)
+            .try_get_matches_from(argv)
+            .expect_err("--help must stop parsing");
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        error.to_string()
+    }
+
+    #[test]
+    fn direct_tui_english_help_is_complete_and_width_safe() {
+        for width in [80usize, 120] {
+            let help = help_for(ProductLanguage::English, &["dse-tui", "--help"], width);
+            assert!(help.contains("A local terminal coding agent"));
+            assert!(help.contains("Check local configuration"));
+            assert!(help.contains("--language"));
+            assert!(!help.contains("面向官方"));
+            for line in help.lines() {
+                assert!(
+                    line.width() <= width,
+                    "rendered help width {} exceeds {width}: {line:?}",
+                    line.width()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn language_precedence_scanner_and_first_run_choice_are_strict() {
+        let arguments = ["dse-tui", "--config", "/tmp/dse.toml", "--language=zh-Hans"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let (language, config) = startup_language_arguments(&arguments);
+        assert_eq!(language.as_deref(), Some("zh-Hans"));
+        assert_eq!(config.as_deref(), Some(Path::new("/tmp/dse.toml")));
+
+        assert_eq!(
+            parse_first_run_language_choice("").unwrap(),
+            ProductLanguage::English
+        );
+        assert_eq!(
+            parse_first_run_language_choice("2").unwrap(),
+            ProductLanguage::SimplifiedChinese
+        );
+        assert!(parse_first_run_language_choice("fr").is_err());
+        assert!(Cli::try_parse_from(["dse-tui", "--language", "en-US"]).is_err());
     }
 }

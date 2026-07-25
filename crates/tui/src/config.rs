@@ -106,6 +106,11 @@ pub struct TuiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct UiConfig {
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentsConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -159,6 +164,7 @@ pub struct Config {
     pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
     pub tui: Option<TuiConfig>,
+    pub ui: Option<UiConfig>,
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
@@ -298,7 +304,19 @@ impl Config {
         {
             anyhow::bail!("tui.alternate_screen 无效：'{mode}'。");
         }
+        if let Some(language) = self.ui.as_ref().and_then(|ui| ui.language.as_deref()) {
+            let _ = language.parse::<dse_localization::ProductLanguage>()?;
+        }
         Ok(())
+    }
+
+    pub fn ui_language(&self) -> Result<Option<dse_localization::ProductLanguage>> {
+        self.ui
+            .as_ref()
+            .and_then(|ui| ui.language.as_deref())
+            .map(str::parse)
+            .transpose()
+            .map_err(Into::into)
     }
 
     #[must_use]
@@ -637,6 +655,7 @@ fn merge_config(base: Config, selected: Config) -> Config {
         retry: selected.retry.or(base.retry),
         features: merge_features(base.features, selected.features),
         tui: selected.tui.or(base.tui),
+        ui: base.ui,
         skills: selected.skills.or(base.skills),
         search: selected.search.or(base.search),
         subagents: selected.subagents.or(base.subagents),

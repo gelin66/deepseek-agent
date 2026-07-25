@@ -19,7 +19,10 @@ use dse_config::{
     canonical_deepseek_model, is_official_deepseek_base_url, load_prompt_preferences,
 };
 use dse_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use dse_localization::{MessageId, tr};
+use dse_localization::{
+    MessageId, ProductLanguage, process_language, resolve_product_language, set_process_language,
+    tr, tr_in,
+};
 use dse_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -36,6 +39,8 @@ use dse_secrets::Secrets;
 struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long, value_name = "LANGUAGE")]
+    language: Option<ProductLanguage>,
     #[arg(long)]
     profile: Option<String>,
     #[arg(long)]
@@ -450,9 +455,13 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
 }
 
 fn localize_cli_command(command: &mut clap::Command) {
+    localize_cli_command_in(command, process_language());
+}
+
+fn localize_cli_command_in(command: &mut clap::Command, language: ProductLanguage) {
     let mut localized = command
         .clone()
-        .help_template(tr(MessageId::CliHelpTemplate).into_owned())
+        .help_template(tr_in(language, MessageId::CliHelpTemplate).into_owned())
         .disable_help_subcommand(true)
         .disable_help_flag(true)
         .disable_version_flag(true)
@@ -470,7 +479,7 @@ fn localize_cli_command(command: &mut clap::Command) {
             .short('h')
             .long("help")
             .action(clap::ArgAction::Help)
-            .help(tr(MessageId::CliArgHelp).into_owned()),
+            .help(tr_in(language, MessageId::CliArgHelp).into_owned()),
     );
     if command.get_version().is_some() {
         localized = localized.arg(
@@ -478,18 +487,19 @@ fn localize_cli_command(command: &mut clap::Command) {
                 .short('V')
                 .long("version")
                 .action(clap::ArgAction::Version)
-                .help(tr(MessageId::CliArgVersion).into_owned()),
+                .help(tr_in(language, MessageId::CliArgVersion).into_owned()),
         );
     }
     if command.get_name() == "dse" {
-        localized = localized.about(tr(MessageId::CliAbout).into_owned());
+        localized = localized.about(tr_in(language, MessageId::CliAbout).into_owned());
     } else if let Some(message) = cli_command_message(command.get_name()) {
-        localized = localized.about(tr(message).into_owned());
+        localized = localized.about(tr_in(language, message).into_owned());
     }
     if command.get_name() == "exec" {
-        localized = localized.after_help(tr(MessageId::CliExecAfterHelp).into_owned());
+        localized = localized.after_help(tr_in(language, MessageId::CliExecAfterHelp).into_owned());
     } else if command.get_name() == "app-server" {
-        localized = localized.after_help(tr(MessageId::CliAppServerAfterHelp).into_owned());
+        localized =
+            localized.after_help(tr_in(language, MessageId::CliAppServerAfterHelp).into_owned());
     }
 
     let arg_messages = [
@@ -502,6 +512,7 @@ fn localize_cli_command(command: &mut clap::Command) {
         ("json", MessageId::CliArgJson),
         ("limit", MessageId::CliArgLimit),
         ("config", MessageId::CliArgConfig),
+        ("language", MessageId::CliArgLanguage),
         ("profile", MessageId::CliArgProfile),
         ("model", MessageId::CliArgModel),
         ("output_mode", MessageId::CliArgOutputMode),
@@ -530,13 +541,15 @@ fn localize_cli_command(command: &mut clap::Command) {
             .get_arguments()
             .any(|argument| argument.get_id() == id)
         {
-            localized = localized.mut_arg(id, |argument| argument.help(tr(message).into_owned()));
+            localized = localized.mut_arg(id, |argument| {
+                argument.help(tr_in(language, message).into_owned())
+            });
         }
     }
 
     *command = localized;
     for child in command.get_subcommands_mut() {
-        localize_cli_command(child);
+        localize_cli_command_in(child, language);
     }
 }
 
@@ -547,6 +560,7 @@ fn localized_cli_command() -> clap::Command {
 }
 
 fn parse_cli() -> Cli {
+    initialize_process_language_from_args();
     let matches = match localized_cli_command().try_get_matches() {
         Ok(matches) => matches,
         Err(error)
@@ -563,6 +577,51 @@ fn parse_cli() -> Cli {
         }
     };
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+fn initialize_process_language_from_args() {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let (explicit, config_path) = startup_language_arguments(&arguments);
+    let explicit = explicit
+        .as_deref()
+        .and_then(|value| value.parse::<ProductLanguage>().ok());
+    let persisted = ConfigStore::load(config_path)
+        .ok()
+        .and_then(|store| store.config.ui_language().ok().flatten());
+    let existing_dse_installation = dse_config::dse_home()
+        .ok()
+        .is_some_and(|home| home.join(".onboarded").is_file());
+    let language = resolve_product_language(explicit, persisted, existing_dse_installation, false)
+        .expect("fresh non-interactive language always resolves to English");
+    let _ = set_process_language(language);
+}
+
+fn startup_language_arguments(
+    arguments: &[std::ffi::OsString],
+) -> (Option<String>, Option<PathBuf>) {
+    fn option_value(
+        arguments: &[std::ffi::OsString],
+        long_name: &str,
+    ) -> Option<std::ffi::OsString> {
+        let prefix = format!("{long_name}=");
+        let mut index = 1;
+        while index < arguments.len() {
+            let value = arguments[index].to_string_lossy();
+            if value == long_name {
+                return arguments.get(index + 1).cloned();
+            }
+            if let Some(value) = value.strip_prefix(&prefix) {
+                return Some(value.into());
+            }
+            index += 1;
+        }
+        None
+    }
+
+    let explicit =
+        option_value(arguments, "--language").map(|value| value.to_string_lossy().into_owned());
+    let config_path = option_value(arguments, "--config").map(PathBuf::from);
+    (explicit, config_path)
 }
 
 fn run() -> Result<()> {
@@ -1296,6 +1355,9 @@ fn build_tui_command_with_paths(
     if let Some(config) = config_path {
         cmd.arg("--config").arg(config);
     }
+    if let Some(language) = cli.language {
+        cmd.arg("--language").arg(language.tag());
+    }
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
     }
@@ -1494,12 +1556,18 @@ mod tests {
         Cli::try_parse_from(argv).unwrap_or_else(|err| panic!("解析失败 {argv:?}: {err}"))
     }
 
-    fn help_for(argv: &[&str]) -> String {
-        let err = localized_cli_command()
+    fn help_for_in(language: ProductLanguage, argv: &[&str]) -> String {
+        let mut command = Cli::command();
+        localize_cli_command_in(&mut command, language);
+        let err = command
             .try_get_matches_from(argv)
-            .expect_err("--help 应终止解析");
+            .expect_err("--help must stop parsing");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         err.to_string()
+    }
+
+    fn help_for(argv: &[&str]) -> String {
+        help_for_in(ProductLanguage::English, argv)
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1600,8 +1668,8 @@ mod tests {
     }
 
     #[test]
-    fn m8c_cli_help_uses_fixed_zh_hans_without_changing_command_ids() {
-        let help = help_for(&["dse", "--help"]);
+    fn m17d_cli_help_is_bilingual_without_changing_command_ids() {
+        let help = help_for_in(ProductLanguage::SimplifiedChinese, &["dse", "--help"]);
         assert!(help.contains("面向官方 DeepSeek API 的本地终端编码 Agent"));
         assert!(help.contains("用法："));
         assert!(help.contains("检查本地配置、凭据、运行环境与恢复建议"));
@@ -1622,7 +1690,10 @@ mod tests {
         }
         assert!(help.contains("是否启用本地遥测：true 或 false"));
 
-        let app_server = help_for(&["dse", "app-server", "--help"]);
+        let app_server = help_for_in(
+            ProductLanguage::SimplifiedChinese,
+            &["dse", "app-server", "--help"],
+        );
         assert!(app_server.contains("HTTP 监听地址"));
         assert!(app_server.contains("通过标准输入/输出运行同一个"));
         assert!(app_server.contains("HTTP 默认要求 --auth-token"));
@@ -1636,6 +1707,13 @@ mod tests {
                 "English app-server help leaked: {leak}"
             );
         }
+
+        let english = help_for_in(ProductLanguage::English, &["dse", "--help"]);
+        assert!(english.contains("A local terminal coding agent"));
+        assert!(english.contains("Usage:"));
+        assert!(english.contains("Check local configuration"));
+        assert!(english.contains("--language"));
+        assert!(!english.contains("面向官方"));
     }
 
     #[test]
@@ -1729,6 +1807,8 @@ mod tests {
 
         let cli = parse_ok(&[
             "dse",
+            "--language",
+            "zh-Hans",
             "--api-key",
             "explicit-secret",
             "--model",
@@ -1759,6 +1839,14 @@ mod tests {
             command_env(&command, "DEEPSEEK_MODEL").as_deref(),
             Some("deepseek-v4-pro")
         );
+        assert!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| pair == ["--language", "zh-Hans"])
+        );
         assert!(command_env(&command, "DEEPSEEK_PROVIDER").is_none());
         assert!(command_env(&command, "OPENAI_API_KEY").is_none());
         assert!(command_env(&command, "XAI_API_KEY").is_none());
@@ -1777,7 +1865,24 @@ mod tests {
             Ok(_) => panic!("foreign endpoint must fail before app construction"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("官方 DeepSeek endpoint"));
+        let message = error.to_string();
+        assert!(message.contains("DeepSeek"));
+        assert!(message.contains("https://example.com/v1"));
+    }
+
+    #[test]
+    fn m17d_startup_language_scanner_preserves_cli_precedence() {
+        let arguments = ["dse", "--config=/tmp/dse.toml", "--language", "zh-Hans"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let (language, config) = startup_language_arguments(&arguments);
+        assert_eq!(language.as_deref(), Some("zh-Hans"));
+        assert_eq!(config.as_deref(), Some(Path::new("/tmp/dse.toml")));
+
+        let cli = parse_ok(&["dse", "--language=en", "doctor"]);
+        assert_eq!(cli.language, Some(ProductLanguage::English));
+        assert!(Cli::try_parse_from(["dse", "--language", "en-US"]).is_err());
     }
 
     #[test]

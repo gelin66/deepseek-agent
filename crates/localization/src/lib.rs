@@ -1,15 +1,140 @@
-//! Fixed Simplified Chinese message registry for DSE product strings.
+//! Bilingual human-message registry for DSE product strings.
 //!
 //! Machine-facing identifiers, protocol values, paths, and raw tool output do
 //! not pass through this registry.
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt, str::FromStr, sync::OnceLock};
 
-rust_i18n::i18n!("locales", fallback = ["zh-Hans"]);
+rust_i18n::i18n!("locales", fallback = "en");
 
 // Keep Cargo's dependency graph aware of catalog-only edits. The proc macro
 // loads this file at compile time, but an explicit include is what guarantees a
 // changed message rebuilds every consumer without requiring a clean target.
-pub const FIXED_ZH_HANS_CATALOG_SOURCE: &str = include_str!("../locales/zh-Hans.json");
+pub const ENGLISH_CATALOG_SOURCE: &str = include_str!("../locales/en.json");
+pub const SIMPLIFIED_CHINESE_CATALOG_SOURCE: &str = include_str!("../locales/zh-Hans.json");
+
+/// The complete product-language surface admitted by ADR-0010.
+///
+/// This affects only human-facing projections. Protocol values, persisted
+/// machine facts, model selection, prompts, paths, code, diffs, and raw tool
+/// output remain language-independent.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProductLanguage {
+    #[default]
+    English,
+    SimplifiedChinese,
+}
+
+impl ProductLanguage {
+    pub const ALL: [Self; 2] = [Self::English, Self::SimplifiedChinese];
+
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::SimplifiedChinese => "zh-Hans",
+        }
+    }
+
+    pub const fn catalog_source(self) -> &'static str {
+        match self {
+            Self::English => ENGLISH_CATALOG_SOURCE,
+            Self::SimplifiedChinese => SIMPLIFIED_CHINESE_CATALOG_SOURCE,
+        }
+    }
+}
+
+impl fmt::Display for ProductLanguage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.tag())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedProductLanguage {
+    value: String,
+}
+
+impl UnsupportedProductLanguage {
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl fmt::Display for UnsupportedProductLanguage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported product language {:?}; expected en or zh-Hans",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedProductLanguage {}
+
+impl FromStr for ProductLanguage {
+    type Err = UnsupportedProductLanguage;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "en" => Ok(Self::English),
+            "zh-Hans" => Ok(Self::SimplifiedChinese),
+            _ => Err(UnsupportedProductLanguage {
+                value: value.to_owned(),
+            }),
+        }
+    }
+}
+
+static PROCESS_LANGUAGE: OnceLock<ProductLanguage> = OnceLock::new();
+
+/// Freezes the human projection language for this process.
+///
+/// Repeating the same choice is harmless. Attempting to change it is rejected
+/// so a resumed run cannot mix human projections or create per-run locale
+/// state.
+pub fn set_process_language(language: ProductLanguage) -> Result<(), ProductLanguage> {
+    match PROCESS_LANGUAGE.set(language) {
+        Ok(()) => Ok(()),
+        Err(_) if process_language() == language => Ok(()),
+        Err(_) => Err(process_language()),
+    }
+}
+
+/// Returns the frozen process language.
+///
+/// Entry points resolve every fresh non-interactive process to English before
+/// rendering. The pre-resolution fallback remains Simplified Chinese so an
+/// existing local installation and catalog-only callers never silently change
+/// language before startup has inspected persisted state.
+pub fn process_language() -> ProductLanguage {
+    PROCESS_LANGUAGE
+        .get()
+        .copied()
+        .unwrap_or(ProductLanguage::SimplifiedChinese)
+}
+
+#[must_use]
+pub fn process_language_is_set() -> bool {
+    PROCESS_LANGUAGE.get().is_some()
+}
+
+/// Resolves the fixed startup precedence without reading config, terminal, or
+/// filesystem state inside the localization owner.
+///
+/// `defer_fresh_to_first_run_choice` is true only for a fresh interactive TUI
+/// that is about to present the bilingual first-run choice.
+#[must_use]
+pub fn resolve_product_language(
+    explicit: Option<ProductLanguage>,
+    persisted: Option<ProductLanguage>,
+    existing_local_installation: bool,
+    defer_fresh_to_first_run_choice: bool,
+) -> Option<ProductLanguage> {
+    explicit
+        .or(persisted)
+        .or_else(|| existing_local_installation.then_some(ProductLanguage::SimplifiedChinese))
+        .or_else(|| (!defer_fresh_to_first_run_choice).then_some(ProductLanguage::English))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageId {
@@ -49,6 +174,7 @@ pub enum MessageId {
     CliArgDisableFeature,
     CliArgMaxSubagents,
     CliArgConfig,
+    CliArgLanguage,
     CliArgVerbose,
     CliArgProfile,
     CliArgResume,
@@ -486,6 +612,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CliArgDisableFeature,
     MessageId::CliArgMaxSubagents,
     MessageId::CliArgConfig,
+    MessageId::CliArgLanguage,
     MessageId::CliArgVerbose,
     MessageId::CliArgProfile,
     MessageId::CliArgResume,
@@ -868,42 +995,47 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ExecToolFailed,
 ];
 
+pub fn tr_in(language: ProductLanguage, id: MessageId) -> Cow<'static, str> {
+    rust_i18n::t!(format!("{id:?}"), locale = language.tag())
+}
+
 pub fn tr(id: MessageId) -> Cow<'static, str> {
-    rust_i18n::t!(format!("{id:?}"), locale = "zh-Hans")
+    tr_in(process_language(), id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    pub fn missing_message_ids() -> Vec<MessageId> {
+    pub fn missing_message_ids(language: ProductLanguage) -> Vec<MessageId> {
         ALL_MESSAGE_IDS
             .iter()
             .copied()
-            .filter(|id| tr(*id).eq(&format!("{id:?}")))
+            .filter(|id| tr_in(language, *id).eq(&format!("{id:?}")))
             .collect()
-    }
-
-    fn message_source() -> &'static str {
-        FIXED_ZH_HANS_CATALOG_SOURCE
     }
 
     #[test]
     fn message_pack_has_no_missing_core_messages() {
-        assert!(missing_message_ids().is_empty());
+        for language in ProductLanguage::ALL {
+            assert!(
+                missing_message_ids(language).is_empty(),
+                "{language} has missing messages"
+            );
+        }
     }
 
-    fn raw_message_keys() -> std::collections::BTreeSet<String> {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(message_source())
-            .expect("zh-Hans message catalog should parse")
-            .keys()
-            .cloned()
-            .collect()
+    fn raw_messages(language: ProductLanguage) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_str(language.catalog_source())
+            .unwrap_or_else(|error| panic!("{language} message catalog should parse: {error}"))
+    }
+
+    fn raw_message_keys(language: ProductLanguage) -> std::collections::BTreeSet<String> {
+        raw_messages(language).keys().cloned().collect()
     }
 
     #[test]
     fn message_id_list_and_catalog_stay_in_exact_sync() {
-        let catalog = raw_message_keys();
         let ids: std::collections::BTreeSet<String> =
             ALL_MESSAGE_IDS.iter().map(|id| format!("{id:?}")).collect();
         assert_eq!(
@@ -911,20 +1043,23 @@ mod tests {
             ALL_MESSAGE_IDS.len(),
             "ALL_MESSAGE_IDS contains duplicates"
         );
-        let unlisted: Vec<_> = catalog.difference(&ids).collect();
-        assert!(
-            unlisted.is_empty(),
-            "zh-Hans keys absent from ALL_MESSAGE_IDS: {unlisted:?}"
-        );
-        let missing: Vec<_> = ids.difference(&catalog).collect();
-        assert!(
-            missing.is_empty(),
-            "ALL_MESSAGE_IDS entries without a zh-Hans string: {missing:?}"
-        );
+        for language in ProductLanguage::ALL {
+            let catalog = raw_message_keys(language);
+            let unlisted: Vec<_> = catalog.difference(&ids).collect();
+            assert!(
+                unlisted.is_empty(),
+                "{language} keys absent from ALL_MESSAGE_IDS: {unlisted:?}"
+            );
+            let missing: Vec<_> = ids.difference(&catalog).collect();
+            assert!(
+                missing.is_empty(),
+                "ALL_MESSAGE_IDS entries without a {language} string: {missing:?}"
+            );
+        }
     }
 
     #[test]
-    fn fixed_product_language_has_exactly_one_catalog() {
+    fn bilingual_product_has_exactly_the_admitted_catalogs() {
         let locale_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
         let mut catalogs = std::fs::read_dir(locale_dir)
             .expect("read fixed locale directory")
@@ -941,7 +1076,89 @@ mod tests {
                 .iter()
                 .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            ["zh-Hans.json"]
+            ["en.json", "zh-Hans.json"]
         );
+    }
+
+    #[test]
+    fn catalogs_have_identical_named_placeholders() {
+        fn placeholders(value: &str) -> Vec<&str> {
+            let mut result = Vec::new();
+            let mut rest = value;
+            while let Some(open) = rest.find('{') {
+                let after_open = &rest[open + 1..];
+                let Some(close) = after_open.find('}') else {
+                    break;
+                };
+                let name = &after_open[..close];
+                if !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                {
+                    result.push(name);
+                }
+                rest = &after_open[close + 1..];
+            }
+            result.sort_unstable();
+            result
+        }
+
+        let english = raw_messages(ProductLanguage::English);
+        let chinese = raw_messages(ProductLanguage::SimplifiedChinese);
+        for (key, english_value) in english {
+            let english_value = english_value
+                .as_str()
+                .unwrap_or_else(|| panic!("en {key} must be a string"));
+            let chinese_value = chinese[&key]
+                .as_str()
+                .unwrap_or_else(|| panic!("zh-Hans {key} must be a string"));
+            assert_eq!(
+                placeholders(english_value),
+                placeholders(chinese_value),
+                "placeholder mismatch for {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn language_parser_is_strict_and_default_is_english() {
+        assert_eq!(
+            "en".parse::<ProductLanguage>(),
+            Ok(ProductLanguage::English)
+        );
+        assert_eq!(
+            "zh-Hans".parse::<ProductLanguage>(),
+            Ok(ProductLanguage::SimplifiedChinese)
+        );
+        assert!("en-US".parse::<ProductLanguage>().is_err());
+        assert!("zh-hans".parse::<ProductLanguage>().is_err());
+        assert_eq!(ProductLanguage::default(), ProductLanguage::English);
+    }
+
+    #[test]
+    fn startup_resolution_is_explicit_then_persisted_then_migration_then_fresh() {
+        assert_eq!(
+            resolve_product_language(
+                Some(ProductLanguage::English),
+                Some(ProductLanguage::SimplifiedChinese),
+                true,
+                false,
+            ),
+            Some(ProductLanguage::English)
+        );
+        assert_eq!(
+            resolve_product_language(None, Some(ProductLanguage::SimplifiedChinese), false, false,),
+            Some(ProductLanguage::SimplifiedChinese)
+        );
+        assert_eq!(
+            resolve_product_language(None, None, true, false),
+            Some(ProductLanguage::SimplifiedChinese)
+        );
+        assert_eq!(
+            resolve_product_language(None, None, false, false),
+            Some(ProductLanguage::English)
+        );
+        assert_eq!(resolve_product_language(None, None, false, true), None);
     }
 }

@@ -35,6 +35,7 @@
     "CliArgDisableFeature": "禁用功能；可重复使用",
     "CliArgMaxSubagents": "最大并发只读子 Agent 数量（1–20）",
     "CliArgConfig": "配置文件路径",
+    "CliArgLanguage": "人类界面语言：en 或 zh-Hans",
     "CliArgVerbose": "启用详细日志",
     "CliArgProfile": "配置 profile 名称",
     "CliArgResume": "按准确 Run ID 恢复 canonical Agent 运行",

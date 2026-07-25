@@ -194,6 +194,8 @@ fn common_tui_builder(ws: &SealedWorkspace) -> qa_harness::harness::HarnessBuild
         .args([
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])

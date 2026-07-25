@@ -166,6 +166,48 @@ fn m8a_config_save_has_one_root_model_owner() {
 }
 
 #[test]
+fn m17d_ui_language_is_nested_validated_and_comment_preserving() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "# user language\n[ui]\nlanguage = \"zh-Hans\"\n").unwrap();
+
+    let mut store = ConfigStore::load(Some(path.clone())).unwrap();
+    assert_eq!(
+        store.config.ui_language().unwrap(),
+        Some(dse_localization::ProductLanguage::SimplifiedChinese)
+    );
+    assert_eq!(
+        store.config.get_value("ui.language").as_deref(),
+        Some("zh-Hans")
+    );
+
+    store.config.set_value("ui.language", "en").unwrap();
+    store.save().unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("# user language"));
+    assert!(raw.contains("[ui]"));
+    assert!(raw.contains("language = \"en\""));
+
+    store.config.unset_value("ui.language").unwrap();
+    assert_eq!(store.config.ui_language().unwrap(), None);
+}
+
+#[test]
+fn m17d_unknown_ui_language_fails_before_runtime_resolution() {
+    let parsed: ConfigToml = toml::from_str("[ui]\nlanguage = \"en-US\"\n").unwrap();
+    let error = parsed
+        .validate()
+        .expect_err("unknown language must fail closed");
+    assert!(error.to_string().contains("expected en or zh-Hans"));
+
+    let mut config = ConfigToml::default();
+    let error = config
+        .set_value("ui.language", "zh-hans")
+        .expect_err("locale aliases are not a second compatibility surface");
+    assert!(error.to_string().contains("expected en or zh-Hans"));
+}
+
+#[test]
 fn m8a_credential_precedence_is_cli_config_keyring_env() {
     let _lock = env_lock();
     let _provider = ScopedEnv::remove("DSE_PROVIDER");

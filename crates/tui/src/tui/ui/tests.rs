@@ -7,6 +7,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 fn create_test_app() -> App {
     let options = TuiOptions {
         model: "deepseek-v4-pro".to_string(),
+        language: dse_localization::ProductLanguage::SimplifiedChinese,
         workspace: PathBuf::from("."),
         config_path: None,
         allow_shell: false,
@@ -31,6 +32,7 @@ fn create_test_app() -> App {
 fn interactive_tui_entry_rejects_provider_or_model_truth_mismatch_before_terminal_setup() {
     let options = TuiOptions {
         model: "deepseek-v4-flash".to_owned(),
+        language: dse_localization::ProductLanguage::SimplifiedChinese,
         workspace: PathBuf::from("."),
         config_path: None,
         allow_shell: false,

@@ -21,6 +21,7 @@ mod tests {
     fn app() -> App {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
+            language: dse_localization::ProductLanguage::SimplifiedChinese,
             workspace: PathBuf::from("."),
             config_path: None,
             allow_shell: false,

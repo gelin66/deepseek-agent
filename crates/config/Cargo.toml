@@ -8,6 +8,7 @@ description = "Config schema and precedence model for DSE"
 
 [dependencies]
 anyhow.workspace = true
+dse-localization = { path = "../localization", version = "0.8.68" }
 dse-secrets = { path = "../secrets", version = "0.8.68" }
 dirs.workspace = true
 libc = "0.2"

@@ -112,6 +112,25 @@ fn m8a_first_start_template_has_no_secret_or_provider_mode() -> Result<()> {
 }
 
 #[test]
+fn m17d_interactive_config_accepts_only_root_bilingual_language() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("config.toml");
+    fs::write(
+        &path,
+        "[ui]\nlanguage = \"zh-Hans\"\n\n[profiles.work.ui]\nlanguage = \"en\"\n",
+    )?;
+    let config = Config::load(Some(path), Some("work"))?;
+    assert_eq!(
+        config.ui_language()?,
+        Some(dse_localization::ProductLanguage::SimplifiedChinese)
+    );
+
+    let invalid: Config = toml::from_str("[ui]\nlanguage = \"en-US\"\n")?;
+    assert!(invalid.validate().is_err());
+    Ok(())
+}
+
+#[test]
 fn m8a_workspace_trust_round_trips_without_provider_state() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let config_path = temp.path().join("config.toml");

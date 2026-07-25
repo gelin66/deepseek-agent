@@ -837,6 +837,7 @@ name = "dse-config"
 version = "0.8.68"
 dependencies = [
  "anyhow",
+ "dse-localization",
  "dse-secrets",
  "dirs",
  "libc",

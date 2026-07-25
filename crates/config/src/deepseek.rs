@@ -31,6 +31,13 @@ pub struct ToolsToml {
     pub always_load: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UiToml {
+    /// Admitted values are exactly `en` and `zh-Hans`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
 const RETIRED_ROOT_KEYS: &[&str] = &[
     "apiKey",
     "baseUrl",
@@ -80,6 +87,10 @@ pub struct ConfigToml {
     pub sandbox_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsToml>,
+    /// Human-facing product projection. This never enters model requests,
+    /// route selection, protocol facts, or RunStore state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiToml>,
     /// Non-model TUI and local-development settings keep their existing owner.
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
@@ -94,6 +105,7 @@ impl ConfigToml {
         if let Some(base_url) = self.base_url.as_deref() {
             validate_deepseek_base_url(base_url)?;
         }
+        let _ = self.ui_language()?;
         if self
             .api_key
             .as_deref()
@@ -145,6 +157,11 @@ impl ConfigToml {
             "approval_policy" => self.approval_policy.clone(),
             "sandbox_mode" => self.sandbox_mode.clone(),
             "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
+            "ui.language" => self
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.language.as_ref())
+                .cloned(),
             "stream_chunk_timeout_secs" | "tui.stream_chunk_timeout_secs" => {
                 Some(self.stream_chunk_timeout_secs().to_string())
             }
@@ -199,6 +216,10 @@ impl ConfigToml {
                     .get_or_insert_with(ToolsToml::default)
                     .always_load = values;
             }
+            "ui.language" => {
+                let language = value.parse::<dse_localization::ProductLanguage>()?;
+                self.ui.get_or_insert_with(UiToml::default).language = Some(language.to_string());
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -224,6 +245,14 @@ impl ConfigToml {
                     tools.always_load.clear();
                 }
             }
+            "ui.language" => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.language = None;
+                }
+                if self.ui.as_ref().is_some_and(|ui| ui.language.is_none()) {
+                    self.ui = None;
+                }
+            }
             _ => {
                 self.extras.remove(key);
             }
@@ -245,6 +274,7 @@ impl ConfigToml {
             "approval_policy",
             "sandbox_mode",
             "tools.always_load",
+            "ui.language",
         ] {
             if let Some(value) = self.get_display_value(key) {
                 values.insert(key.to_string(), value);
@@ -280,6 +310,15 @@ impl ConfigToml {
         } else {
             raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
         }
+    }
+
+    pub fn ui_language(&self) -> Result<Option<dse_localization::ProductLanguage>> {
+        self.ui
+            .as_ref()
+            .and_then(|ui| ui.language.as_deref())
+            .map(str::parse)
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub fn resolve_runtime_options(

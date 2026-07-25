@@ -76,6 +76,8 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
                 .workspace()
                 .to_str()
                 .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])
@@ -120,6 +122,8 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
                 .workspace()
                 .to_str()
                 .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])
@@ -192,6 +196,10 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .spawn()?;
 
     onboarding
+        .wait_for_text("Choose interface language / 选择界面语言", BOOT_TIMEOUT)
+        .context("wait for first-run language choice")?;
+    onboarding.send(b"2\n")?;
+    onboarding
         .wait_for_text("这是面向 DeepSeek 的本地编码 Agent", BOOT_TIMEOUT)
         .context("wait for first-run welcome")?;
     onboarding.send(keys::key::enter())?;
@@ -226,6 +234,14 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
     assert_eq!(
         config.get("api_key").and_then(toml::Value::as_str),
         Some(ONBOARDING_KEY)
+    );
+    assert_eq!(
+        config
+            .get("ui")
+            .and_then(toml::Value::as_table)
+            .and_then(|ui| ui.get("language"))
+            .and_then(toml::Value::as_str),
+        Some("zh-Hans")
     );
     assert!(
         config
@@ -321,6 +337,8 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
                 .workspace()
                 .to_str()
                 .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])
@@ -389,6 +407,8 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
                 .workspace()
                 .to_str()
                 .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])
@@ -470,6 +490,8 @@ fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow:
                 .workspace()
                 .to_str()
                 .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
             "--prompt",

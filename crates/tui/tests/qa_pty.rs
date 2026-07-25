@@ -1,6 +1,6 @@
 //! End-to-end TUI scenarios driven through a real pseudo-terminal.
 //!
-//! Each scenario boots `deepseek-tui` in a sealed workspace + sealed `$HOME`,
+//! Each scenario boots `dse-tui` in a sealed workspace + sealed `$HOME`,
 //! sends scripted input through the PTY, and asserts on the parsed terminal
 //! frame and on the workspace filesystem. See `support/qa_harness/README.md`
 //! for design + how-to.
@@ -67,6 +67,8 @@ fn spawn_minimal(
         .args([
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])
@@ -229,6 +231,8 @@ subagents = true
         .args([
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
         ])
         .size(40, 140)
@@ -317,6 +321,8 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
         .args([
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
             "--mouse-capture",
@@ -362,6 +368,8 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
         .args([
             "--workspace",
             ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
             "--no-project-config",
             "--skip-onboarding",
         ])

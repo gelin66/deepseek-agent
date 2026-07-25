@@ -18,7 +18,7 @@ use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptScroll;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use dse_localization::{MessageId, tr};
+use dse_localization::{MessageId, ProductLanguage, tr, tr_in};
 
 // === Types ===
 
@@ -613,6 +613,8 @@ const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
 #[allow(clippy::struct_excessive_bools)]
 pub struct TuiOptions {
     pub model: String,
+    /// Immutable human projection selected once at process startup.
+    pub language: ProductLanguage,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
     pub allow_shell: bool,
@@ -802,6 +804,7 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
+    pub language: ProductLanguage,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Ctrl+T; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
@@ -929,13 +932,14 @@ impl std::ops::DerefMut for App {
 
 impl App {
     pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
-        tr(id)
+        tr_in(self.language, id)
     }
 
     #[allow(clippy::too_many_lines)]
     pub fn new(options: TuiOptions, config: &Config) -> Self {
         let TuiOptions {
             model,
+            language,
             workspace,
             config_path,
             allow_shell,
@@ -1088,6 +1092,7 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
+            language,
             reasoning_effort,
             workspace,
             config_path,

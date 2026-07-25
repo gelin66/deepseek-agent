@@ -6,6 +6,7 @@ use crate::tui::history::HistoryCell;
 fn test_options(yolo: bool) -> TuiOptions {
     TuiOptions {
         model: "deepseek-v4-pro".to_string(),
+        language: dse_localization::ProductLanguage::SimplifiedChinese,
         workspace: PathBuf::from("."),
         config_path: None,
         allow_shell: yolo,
@@ -51,6 +52,30 @@ fn m8a_app_projection_is_deepseek_only() {
     options.model = "deepseek-v4-flash".to_string();
     let app = App::new(options, &config);
     assert_eq!(app.model, "deepseek-v4-flash");
+}
+
+#[test]
+fn m17d_app_projects_both_languages_without_changing_machine_facts() {
+    let config = Config {
+        api_key: Some("fixture-key".to_string()),
+        ..Config::default()
+    };
+    let mut english_options = test_options(false);
+    english_options.language = dse_localization::ProductLanguage::English;
+    let english = App::new(english_options, &config);
+
+    let chinese = App::new(test_options(false), &config);
+    assert_eq!(
+        english.tr(MessageId::ComposerPlaceholder),
+        "Write a task or use /."
+    );
+    assert_eq!(
+        chinese.tr(MessageId::ComposerPlaceholder),
+        "编写任务或使用 /。"
+    );
+    assert_eq!(english.model, chinese.model);
+    assert_eq!(english.workspace, chinese.workspace);
+    assert_eq!(english.approval_mode, chinese.approval_mode);
 }
 
 #[test]

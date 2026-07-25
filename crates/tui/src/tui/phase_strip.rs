@@ -201,6 +201,7 @@ mod tests {
         App::new(
             TuiOptions {
                 model: "deepseek-v4-flash".to_string(),
+                language: dse_localization::ProductLanguage::SimplifiedChinese,
                 workspace: PathBuf::from("."),
                 config_path: None,
                 allow_shell: false,
