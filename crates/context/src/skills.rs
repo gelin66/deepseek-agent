@@ -769,13 +769,24 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         return None;
     }
 
+    let english = crate::prompts::m17f_evaluation_prompt_is_english();
     let mut out = String::new();
-    out.push_str("## 技能\n");
-    out.push_str(
-        "技能是存放在 `SKILL.md` 中的本地操作说明。下面只列出本次会话可用技能的名称、\
+    if english {
+        out.push_str("## Skills\n");
+        out.push_str(
+            "Skills are local operating instructions stored in `SKILL.md`. The list below exposes \
+only each available skill's name, description, and path; open the corresponding file only when \
+the skill is needed.\n\n",
+        );
+        out.push_str("### Available Skills\n");
+    } else {
+        out.push_str("## 技能\n");
+        out.push_str(
+            "技能是存放在 `SKILL.md` 中的本地操作说明。下面只列出本次会话可用技能的名称、\
 说明和路径；需要使用某个技能时再打开对应文件。\n\n",
-    );
-    out.push_str("### 可用技能\n");
+        );
+        out.push_str("### 可用技能\n");
+    }
 
     let mut omitted = 0usize;
     for skill in registry.list() {
@@ -784,7 +795,7 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
         // and the model would fail to open it.
         let description = truncate_for_prompt(
-            skill.description_for_locale("zh-Hans"),
+            skill.description_for_locale(if english { "en" } else { "zh-Hans" }),
             MAX_SKILL_DESCRIPTION_CHARS,
         );
         let line = if description.is_empty() {
@@ -806,13 +817,23 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     }
 
     if omitted > 0 {
-        out.push_str(&format!(
-            "- … 另有 {omitted} 个技能因提示词预算限制而省略。\n"
-        ));
+        if english {
+            out.push_str(&format!(
+                "- … {omitted} additional skills were omitted by the prompt budget.\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "- … 另有 {omitted} 个技能因提示词预算限制而省略。\n"
+            ));
+        }
     }
 
     if !registry.warnings().is_empty() {
-        out.push_str("\n### 技能加载警告\n");
+        out.push_str(if english {
+            "\n### Skill Loading Warnings\n"
+        } else {
+            "\n### 技能加载警告\n"
+        });
         for warning in registry.warnings().iter().take(8) {
             out.push_str("- ");
             out.push_str(&truncate_for_prompt(warning, MAX_SKILL_DESCRIPTION_CHARS));
@@ -820,13 +841,23 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         }
     }
 
-    out.push_str(
-        "\n### 使用规则\n\
+    if english {
+        out.push_str(
+            "\n### Usage Rules\n\
+- Skill bodies live at the listed paths. When a task matches, open only that skill's `SKILL.md` and the necessary files it explicitly references.\n\
+- Use a skill when the user names it (`$SkillName`, `/skill <name>`, or natural language) or the task clearly matches its description. Do not carry it into the next turn unless it is mentioned again.\n\
+- If a named skill is missing or unreadable, say so briefly and continue with the best alternative.\n\
+- Do not execute scripts bundled with community skills without explicit user request or trust.\n",
+        );
+    } else {
+        out.push_str(
+            "\n### 使用规则\n\
 - 技能正文位于列出的路径。任务匹配时只打开该技能的 `SKILL.md` 及其明确引用的必要文件。\n\
 - 用户点名技能（`$SkillName`、`/skill <name>` 或自然语言）或任务明显匹配描述时使用；下一轮未再次提及时不要自动沿用。\n\
 - 点名技能缺失或不可读时简要说明，并使用最佳替代方案继续。\n\
 - 未经用户明确要求或信任，不要执行社区技能附带的脚本。\n",
-    );
+        );
+    }
 
     Some(out)
 }

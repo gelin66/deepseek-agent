@@ -304,14 +304,23 @@ impl RepoConstitution {
     /// model: base myth → global constitution → repo constitution = local law).
     fn render_block(&self, source: &Path) -> String {
         let mut body = String::new();
+        let english = crate::prompts::m17f_evaluation_prompt_is_english();
         if let Some(authority) = self.authority.as_ref().filter(|a| !a.is_empty()) {
-            body.push_str("本地规则冲突时按以下顺序处理（从高到低）：\n");
+            body.push_str(if english {
+                "Resolve local-rule conflicts in this order (highest first):\n"
+            } else {
+                "本地规则冲突时按以下顺序处理（从高到低）：\n"
+            });
             for (idx, item) in authority.iter().enumerate() {
                 body.push_str(&format!("{}. {item}\n", idx + 1));
             }
         }
         if let Some(invariants) = self.protected_invariants.as_ref().filter(|i| !i.is_empty()) {
-            body.push_str("\n受保护的不变量——不得破坏：\n");
+            body.push_str(if english {
+                "\nProtected invariants — do not break them:\n"
+            } else {
+                "\n受保护的不变量——不得破坏：\n"
+            });
             for item in invariants {
                 match item {
                     ProtectedInvariant::Advisory(text) => {
@@ -326,6 +335,8 @@ impl RepoConstitution {
                             .join(", ");
                         if paths.is_empty() {
                             body.push_str(&format!("- {}\n", scoped.text));
+                        } else if english {
+                            body.push_str(&format!("- {} (related paths: {paths})\n", scoped.text));
                         } else {
                             body.push_str(&format!("- {}（相关路径：{paths}）\n", scoped.text));
                         }
@@ -334,7 +345,11 @@ impl RepoConstitution {
             }
         }
         if let Some(policy) = self.branch_policy.as_ref().filter(|s| !s.trim().is_empty()) {
-            body.push_str(&format!("\n分支 / 发布规则：{}\n", policy.trim()));
+            if english {
+                body.push_str(&format!("\nBranch / release rule: {}\n", policy.trim()));
+            } else {
+                body.push_str(&format!("\n分支 / 发布规则：{}\n", policy.trim()));
+            }
         }
         if let Some(steps) = self
             .verification_policy
@@ -342,22 +357,38 @@ impl RepoConstitution {
             .and_then(|p| p.before_claiming_done.as_ref())
             .filter(|s| !s.is_empty())
         {
-            body.push_str("\n声称任务完成前：\n");
+            body.push_str(if english {
+                "\nBefore claiming completion:\n"
+            } else {
+                "\n声称任务完成前：\n"
+            });
             for step in steps {
                 body.push_str(&format!("- {step}\n"));
             }
         }
         if let Some(conditions) = self.escalate_when.as_ref().filter(|c| !c.is_empty()) {
-            body.push_str("\n出现以下情况时停止并请用户决策：\n");
+            body.push_str(if english {
+                "\nStop and ask the user to decide when:\n"
+            } else {
+                "\n出现以下情况时停止并请用户决策：\n"
+            });
             for item in conditions {
                 body.push_str(&format!("- {item}\n"));
             }
         }
-        format!(
-            "<dse_repo_constitution source=\"{}\">\n这是仓库级权限规则：低于用户当前请求和系统契约，高于记忆与历史接力。`WHALE.md` 不构成规则，应迁移而不是继续使用。\n\n{}</dse_repo_constitution>",
-            source.display(),
-            body.trim_end()
-        )
+        if english {
+            format!(
+                "<dse_repo_constitution source=\"{}\">\nThese are repository-level authorization rules: lower than the user's current request and the system contract, but higher than memory and historical handoff. `WHALE.md` is not authority and should be migrated rather than retained.\n\n{}</dse_repo_constitution>",
+                source.display(),
+                body.trim_end()
+            )
+        } else {
+            format!(
+                "<dse_repo_constitution source=\"{}\">\n这是仓库级权限规则：低于用户当前请求和系统契约，高于记忆与历史接力。`WHALE.md` 不构成规则，应迁移而不是继续使用。\n\n{}</dse_repo_constitution>",
+                source.display(),
+                body.trim_end()
+            )
+        }
     }
 
     fn policy_warnings(&self, source: &Path) -> Vec<String> {
@@ -482,15 +513,27 @@ struct ReadmePack {
 pub fn generate_project_context_pack(workspace: &Path) -> Option<String> {
     let pack = build_project_context_pack(workspace)?;
     let json = serde_json::to_string_pretty(&pack).ok()?;
-    Some(format!(
-        "## 项目上下文包\n\n<project_context_pack>\n{json}\n</project_context_pack>"
-    ))
+    if crate::prompts::m17f_evaluation_prompt_is_english() {
+        Some(format!(
+            "## Project Context Pack\n\n<project_context_pack>\n{json}\n</project_context_pack>"
+        ))
+    } else {
+        Some(format!(
+            "## 项目上下文包\n\n<project_context_pack>\n{json}\n</project_context_pack>"
+        ))
+    }
 }
 
 fn generate_bounded_project_overview(workspace: &Path) -> Option<String> {
     let pack = build_project_context_pack(workspace)?;
     let json = serde_json::to_string_pretty(&pack).ok()?;
-    Some(format!("## 有界项目概览\n\n```json\n{json}\n```"))
+    if crate::prompts::m17f_evaluation_prompt_is_english() {
+        Some(format!(
+            "## Bounded Project Overview\n\n```json\n{json}\n```"
+        ))
+    } else {
+        Some(format!("## 有界项目概览\n\n```json\n{json}\n```"))
+    }
 }
 
 fn build_project_context_pack(workspace: &Path) -> Option<ProjectContextPack> {
@@ -1076,14 +1119,25 @@ fn merge_global_and_project_instructions(
     global_source: Option<&Path>,
     project: &str,
 ) -> String {
-    let global_label = global_source
-        .map(|p| format!("<!-- 全局：{} -->", p.display()))
-        .unwrap_or_else(|| "<!-- 全局 -->".to_string());
-    format!(
-        "{global_label}\n{}\n\n<!-- 项目规则（冲突时覆盖全局规则） -->\n{}",
-        global.trim_end(),
-        project.trim_start(),
-    )
+    if crate::prompts::m17f_evaluation_prompt_is_english() {
+        let global_label = global_source
+            .map(|p| format!("<!-- global: {} -->", p.display()))
+            .unwrap_or_else(|| "<!-- global -->".to_string());
+        format!(
+            "{global_label}\n{}\n\n<!-- project rules (override conflicting global rules) -->\n{}",
+            global.trim_end(),
+            project.trim_start(),
+        )
+    } else {
+        let global_label = global_source
+            .map(|p| format!("<!-- 全局：{} -->", p.display()))
+            .unwrap_or_else(|| "<!-- 全局 -->".to_string());
+        format!(
+            "{global_label}\n{}\n\n<!-- 项目规则（冲突时覆盖全局规则） -->\n{}",
+            global.trim_end(),
+            project.trim_start(),
+        )
+    }
 }
 
 fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Option<ProjectContext> {
@@ -1129,12 +1183,21 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
 fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     let overview = generate_bounded_project_overview(workspace)?;
 
-    Some(format!(
-        "# 项目上下文（自动生成，仅当前运行有效）\n\n\
-         > 此上下文由 DSE 在内存中生成。\n\
-         > 未写入 `.dse/instructions.md`。\n\n\
-         {overview}"
-    ))
+    if crate::prompts::m17f_evaluation_prompt_is_english() {
+        Some(format!(
+            "# Project Context (generated for this run only)\n\n\
+             > DSE generated this context in memory.\n\
+             > It was not written to `.dse/instructions.md`.\n\n\
+             {overview}"
+        ))
+    } else {
+        Some(format!(
+            "# 项目上下文（自动生成，仅当前运行有效）\n\n\
+             > 此上下文由 DSE 在内存中生成。\n\
+             > 未写入 `.dse/instructions.md`。\n\n\
+             {overview}"
+        ))
+    }
 }
 
 /// Load a context file with size checking
