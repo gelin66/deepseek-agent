@@ -1,0 +1,306 @@
+diff --git a/rust-scoped-event-id/src/identity/event_id.rs b/rust-scoped-event-id/src/identity/event_id.rs
+--- a/rust-scoped-event-id/src/identity/event_id.rs
++++ b/rust-scoped-event-id/src/identity/event_id.rs
+@@ -1,7 +1,28 @@
+ pub fn normalize_event_id(value: &str) -> Result<String, &'static str> {
+-    let normalized = value.trim().to_ascii_lowercase();
+-    if normalized.is_empty() {
++    let value = value.trim();
++    if value.is_empty() {
+         return Err("empty event id");
+     }
+-    Ok(normalized)
++    let mut segments = Vec::new();
++    let mut current = String::new();
++    for character in value.chars() {
++        if character.is_ascii_alphanumeric() {
++            current.push(character.to_ascii_lowercase());
++        } else if matches!(character, '.' | '_' | '-') {
++            if current.is_empty() {
++                return Err("invalid event id");
++            }
++            segments.push(std::mem::take(&mut current));
++        } else {
++            return Err("invalid event id");
++        }
++    }
++    if current.is_empty() {
++        return Err("invalid event id");
++    }
++    segments.push(current);
++    if segments.len() != 3 || segments[0] != "dse" {
++        return Err("invalid event id");
++    }
++    Ok(segments.join("."))
+ }
+diff --git a/rust-scoped-event-id/tests/event_id.rs b/rust-scoped-event-id/tests/event_id.rs
+--- a/rust-scoped-event-id/tests/event_id.rs
++++ b/rust-scoped-event-id/tests/event_id.rs
+@@ -5,2 +5,16 @@ fn keeps_simple_event_id() {
+     assert_eq!(normalize_event_id("dse.run.started").unwrap(), "dse.run.started");
+ }
++
++#[test]
++fn normalizes_dse_event_ids() {
++    assert_eq!(
++        normalize_event_id(" DSE.Run_Started ").unwrap(),
++        "dse.run.started"
++    );
++}
++
++#[test]
++fn rejects_invalid_event_id_boundaries() {
++    assert!(normalize_event_id("dse..started").is_err());
++    assert!(normalize_event_id("agent.run.started").is_err());
++}
+diff --git a/typescript-request-id/src/core/request_id.ts b/typescript-request-id/src/core/request_id.ts
+--- a/typescript-request-id/src/core/request_id.ts
++++ b/typescript-request-id/src/core/request_id.ts
+@@ -1,3 +1,12 @@
+ export function normalizeRequestId(value: string | undefined): string | null {
+-  return value ?? null;
++  if (value === undefined) return null;
++  const normalized = value.trim().toLowerCase();
++  if (normalized.length === 0 || normalized.length > 64) return null;
++  const segments = normalized.split("-");
++  if (
++    segments.some(
++      (segment) => segment.length === 0 || !/^[a-z0-9]+$/.test(segment),
++    )
++  ) return null;
++  return normalized;
+ }
+diff --git a/typescript-request-id/test/dispatch.test.ts b/typescript-request-id/test/dispatch.test.ts
+--- a/typescript-request-id/test/dispatch.test.ts
++++ b/typescript-request-id/test/dispatch.test.ts
+@@ -7,3 +7,15 @@ test("accepts a simple request id", () => {
+     requestId: "run-42",
+   });
+ });
++
++test("normalizes bounded request ids", () => {
++  assert.deepEqual(dispatchRequest({ "x-dse-request-id": " RUN-42 " }), {
++    requestId: "run-42",
++  });
++});
++
++test("rejects malformed segments and missing headers", () => {
++  assert.equal(dispatchRequest({ "x-dse-request-id": "run--42" }), null);
++  assert.equal(dispatchRequest({ "x-dse-request-id": "run_42" }), null);
++  assert.equal(dispatchRequest({}), null);
++});
+diff --git a/rust-netstring-recovery/src/lib.rs b/rust-netstring-recovery/src/lib.rs
+--- a/rust-netstring-recovery/src/lib.rs
++++ b/rust-netstring-recovery/src/lib.rs
+@@ -5,12 +5,50 @@ pub struct NetstringDecoder {
+ 
+ impl NetstringDecoder {
+     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, &'static str> {
+-        let text = String::from_utf8(chunk.to_vec()).map_err(|_| "invalid netstring")?;
+-        Ok(vec![text])
++        self.pending.extend_from_slice(chunk);
++        let mut decoded = Vec::new();
++        loop {
++            let Some(colon) = self.pending.iter().position(|byte| *byte == b':') else {
++                if self.pending.iter().any(|byte| !byte.is_ascii_digit()) {
++                    return Err("invalid netstring");
++                }
++                return Ok(decoded);
++            };
++            let length_bytes = &self.pending[..colon];
++            if length_bytes.is_empty()
++                || length_bytes.iter().any(|byte| !byte.is_ascii_digit())
++                || (length_bytes.len() > 1 && length_bytes[0] == b'0')
++            {
++                return Err("invalid netstring");
++            }
++            let length_text =
++                std::str::from_utf8(length_bytes).map_err(|_| "invalid netstring")?;
++            let length = length_text
++                .parse::<usize>()
++                .map_err(|_| "invalid netstring")?;
++            let payload_start = colon + 1;
++            let comma = payload_start
++                .checked_add(length)
++                .ok_or("invalid netstring")?;
++            if self.pending.len() <= comma {
++                return Ok(decoded);
++            }
++            if self.pending[comma] != b',' {
++                return Err("invalid netstring");
++            }
++            let payload = std::str::from_utf8(&self.pending[payload_start..comma])
++                .map_err(|_| "invalid netstring")?
++                .to_owned();
++            self.pending.drain(..=comma);
++            decoded.push(payload);
++        }
+     }
+ 
+     pub fn finish(&mut self) -> Result<(), &'static str> {
+-        self.pending.clear();
+-        Ok(())
++        if self.pending.is_empty() {
++            Ok(())
++        } else {
++            Err("incomplete netstring")
++        }
+     }
+ }
+diff --git a/rust-netstring-recovery/tests/netstring.rs b/rust-netstring-recovery/tests/netstring.rs
+--- a/rust-netstring-recovery/tests/netstring.rs
++++ b/rust-netstring-recovery/tests/netstring.rs
+@@ -7,2 +7,23 @@ fn decodes_one_complete_record() {
+     assert_eq!(decoder.finish(), Ok(()));
+ }
++
++#[test]
++fn buffers_split_and_multiple_netstrings() {
++    let mut decoder = NetstringDecoder::default();
++    assert!(decoder.push(b"5:he").unwrap().is_empty());
++    assert_eq!(
++        decoder.push(b"llo,2:ok,").unwrap(),
++        ["hello", "ok"]
++    );
++}
++
++#[test]
++fn rejects_noncanonical_lengths_invalid_utf8_and_incomplete_finish() {
++    let mut leading_zero = NetstringDecoder::default();
++    assert!(leading_zero.push(b"02:ok,").is_err());
++    let mut invalid_utf8 = NetstringDecoder::default();
++    assert!(invalid_utf8.push(b"1:\xff,").is_err());
++    let mut incomplete = NetstringDecoder::default();
++    assert!(incomplete.push(b"3:ab").unwrap().is_empty());
++    assert_eq!(incomplete.finish(), Err("incomplete netstring"));
++}
+diff --git a/readonly-component-graph/deployment.ts b/readonly-component-graph/deployment.ts
+--- a/readonly-component-graph/deployment.ts
++++ b/readonly-component-graph/deployment.ts
+@@ -1,4 +1,9 @@
+-export const schemaFloor = 0;
+-export const sharedCapabilities: string[] = [];
+-export const startupOrder: string[] = [];
+-export const runtimeMatrix: Record<string, string> = {};
++export const schemaFloor = 4;
++export const sharedCapabilities: string[] = ["audit"];
++export const startupOrder: string[] = ["policy", "ledger", "indexer", "worker"];
++export const runtimeMatrix: Record<string, string> = {
++  indexer: "rust-1.97",
++  ledger: "python-3.9",
++  policy: "rust-1.97",
++  worker: "node-25",
++};
+diff --git a/writer-policy-migration/policy.py b/writer-policy-migration/policy.py
+--- a/writer-policy-migration/policy.py
++++ b/writer-policy-migration/policy.py
+@@ -4,9 +4,15 @@ from typing import Any
+ def build_policy(
+     model: str, effort: str, scopes: list[str]
+ ) -> dict[str, Any]:
++    if model not in {"deepseek-v4-pro", "deepseek-v4-flash"}:
++        raise ValueError("invalid model")
++    if effort not in {"high", "max"}:
++        raise ValueError("invalid effort")
++    canonical_scopes = sorted(set(scopes))
++    if any(not isinstance(scope, str) or not scope for scope in canonical_scopes):
++        raise ValueError("invalid scope")
+     return {
+-        "version": 2,
+-        "model": model,
+-        "reasoning": effort,
+-        "paths": scopes,
++        "version": 3,
++        "route": {"model": model, "effort": effort},
++        "scopes": list(canonical_scopes),
+     }
+diff --git a/writer-policy-migration/codec.py b/writer-policy-migration/codec.py
+--- a/writer-policy-migration/codec.py
++++ b/writer-policy-migration/codec.py
+@@ -1,9 +1,43 @@
+ from typing import Any
+ 
+ 
++def _scope(value: Any) -> str:
++    if not isinstance(value, str) or not value or value.startswith("/"):
++        raise ValueError("invalid scope")
++    parts = value.split("/")
++    if any(part in {"", ".", ".."} for part in parts):
++        raise ValueError("invalid scope")
++    return value
++
++
++def _values(
++    model: Any, effort: Any, scopes: Any
++) -> tuple[str, str, list[str]]:
++    if model not in {"deepseek-v4-pro", "deepseek-v4-flash"}:
++        raise ValueError("invalid model")
++    if effort not in {"high", "max"}:
++        raise ValueError("invalid effort")
++    if not isinstance(scopes, list):
++        raise TypeError("invalid scopes")
++    checked = [_scope(scope) for scope in scopes]
++    if len(checked) != len(set(checked)):
++        raise ValueError("duplicate scope")
++    return model, effort, checked
++
++
+ def decode_policy(payload: dict[str, Any]) -> tuple[str, str, list[str]]:
+-    return (
+-        str(payload["model"]),
+-        str(payload["reasoning"]),
+-        list(payload["paths"]),
+-    )
++    version = payload["version"]
++    if isinstance(version, bool):
++        raise TypeError("invalid version")
++    if version == 2:
++        if set(payload) != {"version", "model", "reasoning", "paths"}:
++            raise ValueError("invalid v2 policy")
++        return _values(payload["model"], payload["reasoning"], payload["paths"])
++    if version == 3:
++        if set(payload) != {"version", "route", "scopes"}:
++            raise ValueError("invalid v3 policy")
++        route = payload["route"]
++        if not isinstance(route, dict) or set(route) != {"model", "effort"}:
++            raise ValueError("invalid route")
++        return _values(route["model"], route["effort"], payload["scopes"])
++    raise ValueError("invalid version")
+diff --git a/writer-policy-migration/test_policy.py b/writer-policy-migration/test_policy.py
+--- a/writer-policy-migration/test_policy.py
++++ b/writer-policy-migration/test_policy.py
+@@ -11,6 +11,34 @@ class PolicyTests(unittest.TestCase):
+             ("deepseek-v4-pro", "high", ["src"]),
+         )
+ 
++    def test_emits_v3_with_canonical_scopes_and_copy(self) -> None:
++        scopes = ["tests", "src", "src"]
++        encoded = build_policy("deepseek-v4-pro", "high", scopes)
++        self.assertEqual(
++            encoded,
++            {
++                "version": 3,
++                "route": {"model": "deepseek-v4-pro", "effort": "high"},
++                "scopes": ["src", "tests"],
++            },
++        )
++        encoded["scopes"].append("docs")
++        self.assertEqual(scopes, ["tests", "src", "src"])
++
++    def test_decodes_v2_v3_and_rejects_invalid_contracts(self) -> None:
++        self.assertEqual(
++            decode_policy(
++                {
++                    "version": 3,
++                    "route": {"model": "deepseek-v4-pro", "effort": "max"},
++                    "scopes": ["src"],
++                }
++            ),
++            ("deepseek-v4-pro", "max", ["src"]),
++        )
++        with self.assertRaises(ValueError):
++            decode_policy({"version": 3, "route": {}, "scopes": []})
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

@@ -6,6 +6,8 @@ contract. ``--campaign m11`` selects the multi-language M11 loss baseline,
 and ``--campaign m12`` selects the corrected terminal-convergence reproduction.
 ``--campaign m15`` selects the fresh position-1 current product-loss
 acquisition after M14 observer conformance.
+``--campaign m18`` selects the first DSE-native position-1 local reliability
+baseline after the bilingual identity cutover.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
 equivalence corpus. Live campaigns exercise temporary Git repositories through
@@ -56,6 +58,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m11",
         "m12",
         "m15",
+        "m18",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -64,9 +67,22 @@ def selected_campaign(arguments: list[str]) -> str:
 
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
-CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15"}
-VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15"}
-if CAMPAIGN == "m15":
+CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15", "m18"}
+VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15", "m18"}
+if CAMPAIGN == "m18":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m18-local-reliability-baseline-v1.json"
+    )
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = "dse.eval.m18-local-reliability-baseline.v1"
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = "dse.eval.m18-local-reliability-journal.v1"
+    ADMISSION_SCHEMA = "dse.eval.m18-local-reliability-live-admission.v1"
+    RUN_API = 12
+    EVENT_API = 19
+    STATE_SCHEMA = 25
+    EXEC_STREAM = 4
+elif CAMPAIGN == "m15":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m15-product-loss-acquisition-v1.json"
     )
@@ -131,7 +147,15 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m15":
+if CAMPAIGN == "m18":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m18-local-reliability-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m18-local-reliability-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = "dse.eval.m18-local-reliability-report.v1"
+elif CAMPAIGN == "m15":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m15-product-loss-analysis-v1.json"
     )
@@ -190,6 +214,9 @@ ACCEPTANCE_CORPUS_SCHEMA = (
 )
 M15_REFERENCE_PATCH_PATH = (
     ROOT / "eval/fixtures/m15-product-loss-reference.patch"
+)
+M18_REFERENCE_PATCH_PATH = (
+    ROOT / "eval/fixtures/m18-local-reliability-reference.patch"
 )
 STABLE_TOOL_OUTCOME_FIELDS = (
     "failure_code",
@@ -325,7 +352,7 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 def load_manifest() -> dict[str, Any]:
     require(
-        CAMPAIGN in {"m9c", "m11", "m12", "m15"},
+        CAMPAIGN in {"m9c", "m11", "m12", "m15", "m18"},
         "campaign_invalid",
     )
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
@@ -345,7 +372,16 @@ def load_manifest() -> dict[str, Any]:
             and source.get("exec_stream") == EXEC_STREAM,
             "protocol_identity_invalid",
         )
-        if CAMPAIGN == "m15":
+        if CAMPAIGN == "m18":
+            expected_tasks = [
+                "rust_scoped_event_id",
+                "typescript_request_id",
+                "root_recovery",
+                "readonly_component_graph",
+                "writer_policy_migration",
+                "safety_false_completion",
+            ]
+        elif CAMPAIGN == "m15":
             expected_tasks = [
                 "rust_scoped_rules",
                 "typescript_stacktrace",
@@ -401,13 +437,18 @@ def load_manifest() -> dict[str, Any]:
             ),
             "schedule_identity_invalid",
         )
-        if CAMPAIGN == "m15":
+        if CAMPAIGN in {"m15", "m18"}:
+            reference_path = (
+                M18_REFERENCE_PATCH_PATH
+                if CAMPAIGN == "m18"
+                else M15_REFERENCE_PATCH_PATH
+            )
             reference = manifest.get("reference_solution_proof", {})
             require(
                 reference.get("patch")
-                == M15_REFERENCE_PATCH_PATH.relative_to(ROOT).as_posix()
+                == reference_path.relative_to(ROOT).as_posix()
                 and reference.get("patch_sha256")
-                == file_hash(M15_REFERENCE_PATCH_PATH)
+                == file_hash(reference_path)
                 and reference.get("positive_tasks")
                 == [
                     task_id
@@ -705,19 +746,24 @@ def external_verifier(
     }
 
 
-def m15_reference_solution_proof() -> dict[str, Any] | None:
-    if CAMPAIGN != "m15":
+def reference_solution_proof() -> dict[str, Any] | None:
+    if CAMPAIGN not in {"m15", "m18"}:
         return None
     reference = MANIFEST["reference_solution_proof"]
+    reference_path = (
+        M18_REFERENCE_PATCH_PATH
+        if CAMPAIGN == "m18"
+        else M15_REFERENCE_PATCH_PATH
+    )
     require(
-        M15_REFERENCE_PATCH_PATH.is_file()
-        and not M15_REFERENCE_PATCH_PATH.is_symlink()
-        and file_hash(M15_REFERENCE_PATCH_PATH)
+        reference_path.is_file()
+        and not reference_path.is_symlink()
+        and file_hash(reference_path)
         == reference["patch_sha256"],
         "reference_solution_identity_invalid",
     )
     with tempfile.TemporaryDirectory(
-        prefix="codewhale-m15-reference-proof-"
+        prefix=f"dse-{CAMPAIGN}-reference-proof-"
     ) as raw_temp:
         proof_root = Path(raw_temp)
         proof_workspaces: dict[str, Path] = {}
@@ -734,7 +780,7 @@ def m15_reference_solution_proof() -> dict[str, Any] | None:
                 "git",
                 "apply",
                 "--check",
-                M15_REFERENCE_PATCH_PATH.as_posix(),
+                reference_path.as_posix(),
             ],
             cwd=proof_root,
         )
@@ -743,7 +789,7 @@ def m15_reference_solution_proof() -> dict[str, Any] | None:
             "reference_solution_patch_invalid",
         )
         patch_apply = run_command(
-            ["git", "apply", M15_REFERENCE_PATCH_PATH.as_posix()],
+            ["git", "apply", reference_path.as_posix()],
             cwd=proof_root,
         )
         require(
@@ -819,8 +865,13 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         "m11-2026-07-25",
         "m12-2026-07-25",
         "m15-2026-07-25",
+        "m18-2026-07-26",
     }:
-        date = "2026-07-25T00:00:00Z"
+        date = (
+            "2026-07-26T00:00:00Z"
+            if profile == "m18-2026-07-26"
+            else "2026-07-25T00:00:00Z"
+        )
         milestone = profile.split("-", maxsplit=1)[0].upper()
         message = f"{milestone} frozen fixture {source.name}"
         init = ["git", "init", "-q", "-b", "main"]
@@ -830,6 +881,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         )
     environment["GIT_AUTHOR_DATE"] = date
     environment["GIT_COMMITTER_DATE"] = date
+    evaluator_name = "DSE Eval" if CAMPAIGN == "m18" else "CodeWhale Eval"
     commands = (
         init,
         ["git", "add", "--", "."],
@@ -838,7 +890,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
-            "user.name=CodeWhale Eval",
+            f"user.name={evaluator_name}",
             "-c",
             "user.email=eval.invalid",
             "commit",
@@ -1155,15 +1207,17 @@ def launch_server(
     stderr_path: Path,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
-    codewhale_home = state_root / "codewhale"
+    product_home = state_root / ("dse" if CAMPAIGN == "m18" else "codewhale")
     xdg = state_root / "xdg"
-    for directory in (state_root, codewhale_home, xdg):
+    for directory in (state_root, product_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
     environment = {
         **evaluation_environment(home),
-        "CODEWHALE_HOME": str(codewhale_home),
         "XDG_CONFIG_HOME": str(xdg),
     }
+    environment[
+        "DSE_HOME" if CAMPAIGN == "m18" else "CODEWHALE_HOME"
+    ] = str(product_home)
     if key is not None:
         environment["DEEPSEEK_API_KEY"] = key
     stderr_stream = stderr_path.open("ab")
@@ -1291,8 +1345,8 @@ def fetch_store_facts(
     }
 
 
-def state_schema(codewhale_home: Path) -> dict[str, Any]:
-    database = codewhale_home / "state.db"
+def state_schema(product_home: Path) -> dict[str, Any]:
+    database = product_home / "state.db"
     require(
         database.is_file() and not database.is_symlink(),
         "state_database_missing",
@@ -3933,7 +3987,9 @@ def execute_arm(
                 "network_accessed": True,
             }
         )
-        identity = state_schema(state_root / "codewhale")
+        identity = state_schema(
+            state_root / ("dse" if CAMPAIGN == "m18" else "codewhale")
+        )
         arm = derive_arm(
             schedule,
             binary_identity,
@@ -3987,14 +4043,14 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    if CAMPAIGN in {"m12", "m15"}:
+    if CAMPAIGN in {"m12", "m15", "m18"}:
         complete = all(
             cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
             and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        if CAMPAIGN == "m15":
+        if CAMPAIGN in {"m15", "m18"}:
             safety = cells["safety_false_completion"]
             complete = (
                 complete
@@ -4029,6 +4085,13 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "suite_cost_ceiling_exceeded",
     )
+    complete_decision = {
+        "m9c": "keep_fixed_pro_regression_baseline_successor",
+        "m11": "keep_m11_current_loss_baseline",
+        "m12": "keep_m12_terminal_convergence_reproduction",
+        "m15": "keep_m15_current_product_loss_acquisition",
+        "m18": "keep_m18_local_reliability_baseline",
+    }[CAMPAIGN]
     return {
         "record_type": "summary",
         "record_class": MANIFEST["decision_rule"]["record_class"],
@@ -4062,21 +4125,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_nanousd": total_cost,
         "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
         "decision": (
-            (
-                "keep_m12_terminal_convergence_reproduction"
-                if CAMPAIGN == "m12"
-                else (
-                    "keep_m15_current_product_loss_acquisition"
-                    if CAMPAIGN == "m15"
-                    else (
-                        "keep_m11_current_loss_baseline"
-                        if CAMPAIGN == "m11"
-                        else "keep_fixed_pro_regression_baseline_successor"
-                    )
-                )
-            )
-            if complete
-            else "reject_incomplete_baseline"
+            complete_decision if complete else "reject_incomplete_baseline"
         ),
         "key_accessed": True,
         "network_accessed": True,
@@ -4600,7 +4649,7 @@ def run_self_test() -> int:
                 in rustc_probe.stdout,
                 "self_test_isolated_toolchain_unavailable",
             )
-    reference_solution = m15_reference_solution_proof()
+    reference_solution = reference_solution_proof()
     materialized: dict[str, str] = {}
     with tempfile.TemporaryDirectory(
         prefix=f"codewhale-{CAMPAIGN}-fixture-test-"
@@ -5084,7 +5133,7 @@ def run_freeze_report() -> int:
                     verifier_environment_contract()
                 ),
                 "reference_solution_proof": (
-                    m15_reference_solution_proof()
+                    reference_solution_proof()
                 ),
                 "key_accessed": False,
                 "network_accessed": False,
@@ -5143,7 +5192,9 @@ def run_formal(args: argparse.Namespace) -> int:
         frozen_root = Path(
             tempfile.mkdtemp(prefix=f"codewhale-{CAMPAIGN}-binary-")
         )
-        frozen_binary = frozen_root / "codewhale"
+        frozen_binary = frozen_root / (
+            "dse" if CAMPAIGN == "m18" else "codewhale"
+        )
         arms: list[dict[str, Any]] = []
         try:
             shutil.copy2(binary, frozen_binary)
@@ -5192,7 +5243,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11", "m12", "m15"),
+        choices=("m9c", "m11", "m12", "m15", "m18"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()

@@ -1,0 +1,7 @@
+{
+  "name": "ledger",
+  "runtime": "python-3.9",
+  "schemaFloor": 3,
+  "dependsOn": ["policy"],
+  "capabilities": ["audit", "transactions"]
+}

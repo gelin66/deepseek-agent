@@ -1,0 +1,7 @@
+{
+  "name": "policy",
+  "runtime": "rust-1.97",
+  "schemaFloor": 2,
+  "dependsOn": [],
+  "capabilities": ["audit", "authorization"]
+}
