@@ -3191,10 +3191,10 @@ fn preserve_host_env(command: &mut Command) {
 }
 
 fn dse_tui_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dse-tui") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_dse-tui") {
         return PathBuf::from(path);
     }
 
