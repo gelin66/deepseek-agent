@@ -2736,7 +2736,8 @@ constitution，因为这会在正式 prompt 决策后增加未经评测的模型
 同一 revision 的 focused、strict Clippy、workspace test、macOS locked/offline exact-source
 package/install/verify/uninstall 和 Linux arm64 无网络 fixture lifecycle 均通过；269 个
 ignored raw 文件现在全部为 `0600`，LICENSE 与导入基线 byte-identical。private origin
-仍落后 621 commits，当前 candidate 没有 remote CI；classic protection/rulesets 在当前
+相对被测 `a8c4bafab` candidate 落后 621 commits，当前 candidate 没有 remote CI；
+classic protection/rulesets 在当前
 private 仓库上均返回需 Pro 或 public 的 403。因此 M17-H 当前结论为
 `local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`，
 不是公开发布完成。见

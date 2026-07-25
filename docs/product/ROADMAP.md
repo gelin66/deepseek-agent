@@ -3688,7 +3688,8 @@ M17-H 本地 release-readiness 已在 `a8c4bafab` 闭合。活动 TUI palette、
 同 revision focused、strict Clippy、workspace test、macOS Rust 1.97.0 locked/offline
 source package/install/verify/uninstall、Linux arm64 `--pull never --network none` 完整
 fixture lifecycle、秘密/许可/来源与 raw `0600` 门禁均通过。private origin 仍停在
-`54fb7cb9`，落后本地 621 commits，唯一 CI 是旧 revision 的 Clippy 失败；当前 private
+`54fb7cb9`，相对被测 `a8c4bafab` candidate 落后 621 commits，唯一 CI 是旧 revision
+的 Clippy 失败；当前 private
 仓库的 classic protection 与 rulesets 均被 GitHub 以“升级 Pro 或先设 public”拒绝。
 因此结论是
 `local_release_ready_remote_actions_pending_explicit_authorization_and_protection_capability`，
