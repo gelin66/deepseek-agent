@@ -3088,8 +3088,13 @@ class Journal:
     ) -> "Journal":
         require(path.is_absolute(), "output_must_be_absolute")
         if enforce_results_scope:
+            output_directory = (
+                ROOT / "eval/raw"
+                if CAMPAIGN == "m17f"
+                else ROOT / "eval/results"
+            )
             require(
-                path.parent.resolve() == (ROOT / "eval/results").resolve(),
+                path.parent.resolve() == output_directory.resolve(),
                 "output_scope_invalid",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -5059,6 +5064,16 @@ def run_fault_child(
 
 def run_self_test() -> int:
     schedule = formal_schedule()
+    require(
+        (
+            CAMPAIGN == "m17f"
+            and (ROOT / "eval/raw").is_dir()
+            and (ROOT / "eval/raw").resolve()
+            != (ROOT / "eval/results").resolve()
+        )
+        or CAMPAIGN != "m17f",
+        "self_test_output_scope_invalid",
+    )
     require(
         len(schedule) == RESOURCES["formal_arms"],
         "self_test_schedule_length",
