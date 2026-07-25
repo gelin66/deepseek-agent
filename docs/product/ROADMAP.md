@@ -3644,6 +3644,24 @@ frozen contract/admission、ignored `0600` raw、summary 与 Git 历史保留为
 Roadmap、Evaluation 和架构事实仍只有一套权威文档；不复制整套双语 Roadmap。历史中文
 评测无需翻译，公共入口提供准确英文导航。
 
+M17-G 已在 public candidate `85e241223` 完成。`README.md` 现在是英文 canonical
+entry，`README.zh-CN.md` 是完整中文入口；贡献、安全、行为准则、来源声明、CODEOWNERS
+与 issue/PR templates 已建立。public-repository checker 在本机 focused 与 GitHub Actions
+共用，检查 current facts、链接、bash block、governance、秘密形状，以及 M7-A/M7-A2
+`DeepSeek Agent` 历史标题不被当前品牌机械改写。无消费者且陈旧的 KEYBINDINGS/PROVIDERS
+参考页已删除，Sandbox 参考也只声明真实 enforcing backend。
+
+公开审计前置纠错分别为 `389aac896`（`cw:ctx -> dse:ctx`、DSE header、删除 whale
+状态选项）与 `de6bc7004`（嵌套 auth/model help 进入唯一 localization owner）。current
+locale catalog 各有 776 个 key；完整 assembled prompt fixture 因 identity-only marker
+变化为 SHA-256
+`d7746692db36eea33da0305553499b708a4d8b2b7d9688633aba1673142d49c9`。
+M17-F 被测 hash `a9179903...`、中文 prompt winner 与 frozen evidence 保持原样，不能
+把 current marker 修正回写为正式 A/B 输入。focused、strict Clippy、workspace test、
+真实 binary smoke、秘密/许可/来源与历史 identity allowlist 均通过；没有 Key、API、
+push、tag、release 或 visibility 变化。完整证据见
+[M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
+
 #### M17-H：公开发布
 
 1. 全 workspace fmt、clippy `-D warnings`、test、focused、crash/reopen 和 release

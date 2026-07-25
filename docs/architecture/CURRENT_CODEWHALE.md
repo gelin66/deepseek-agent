@@ -80,6 +80,8 @@
 - M17-D DSE bilingual localization owner：`68f3aa739`
 - M17-E DSE bilingual human projection cutover：`6464fe155`
 - M17-F DSE bilingual prompt formal candidate / cutover：`73d02d05e` / `c1856fa4b`
+- M17-G DSE identity-marker / nested-help / public repository：
+  `389aac896` / `de6bc7004` / `85e241223`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
   safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
@@ -2249,10 +2251,11 @@ M17-C 当前交付事实：
 完整证据见
 [M17-C DSE delivery and CI](../../eval/summaries/m17-c-dse-delivery-ci-2026-07-25.md)。
 
-M17-E 当前 localization / human projection 事实：
+M17-E/M17-G 当前 localization / human projection 事实：
 
 - `crates/localization` 是唯一 product-language owner，活动语言精确为 `en` 和
-  `zh-Hans`；两个 JSON catalog 各有 768 个相同 key 和相同 named placeholders；
+  `zh-Hans`；M17-E checkpoint 为 768/768 key，M17-G 嵌套 auth/model help 纠错后 current
+  catalog 为 776/776 exact keys，named placeholders 仍相同；
 - CLI/TUI process language 在启动时冻结，优先级为显式 `--language`、persisted
   `[ui].language`、旧本地 DSE 迁移、fresh environment；没有 per-Run/per-Agent locale、
   language classifier、翻译模型或额外 DeepSeek request；
@@ -2271,15 +2274,26 @@ M17-E 当前 localization / human projection 事实：
 - M17-F 已用 fixed-Pro/high 完成 block-1 2x2 正式评测：32/32 measurement-valid，
   26 个正向 verified、4 个正确安全拒绝、false success 0。English prompt 在
   `rust_scoped_rules:en` 出现 treatment-only loss，因此未通过非劣门；block 2 未执行；
-- production 只保留中文表达的 system prompt，normalized SHA-256 为
-  `a91799031d8f430945e98871f19d3cefd0496834304b4af0ff04197944ab1bdb`，并按用户当前任务
-  语言回答。不存在 prompt selector、双 production branch、语言分类请求或翻译模型；
-  English candidate、临时翻译 scaffolding、eval assets 与 M17-F-only runner 已删除。
+- production 只保留中文表达的 system prompt，并按用户当前任务语言回答。M17-F 被测
+  normalized SHA-256 为 `a9179903...`；M17-G 把 active context marker 从 `cw:ctx`
+  修为 `dse:ctx` 后，current full assembled fixture SHA-256 为
+  `d7746692db36eea33da0305553499b708a4d8b2b7d9688633aba1673142d49c9`，constitution 与
+  winner 不变。不存在 prompt selector、双 production branch、语言分类请求或翻译模型；
+  English candidate、临时翻译 scaffolding、eval assets 与 M17-F-only runner 已删除；
+- `README.md` 是英文 canonical public entry，`README.zh-CN.md` 是完整中文入口；current
+  reference、贡献/安全/行为/来源、CODEOWNERS 与 issue/PR templates 由
+  `scripts/check-public-repository.py` 检查。M7-A/M7-A2 `DeepSeek Agent` 标题与 frozen
+  evidence 是历史 allowlist，未改写为当前产品名；
+- Sandbox 当前真实 enforcing 路径是 macOS Seatbelt 与 Linux bubblewrap；isolated Writer
+  无 enforcing backend 时 fail closed。Landlock/seccomp 未接入 spawned child，Windows
+  不声明 local OS sandbox。
 
 完整证据见
 [M17-E DSE bilingual human projection](../../eval/summaries/m17-e-dse-bilingual-human-projection-2026-07-25.md)。
 M17-F 的正式身份、指标、质量否决与删除证据见
 [M17-F DSE bilingual prompt 2x2](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)。
+M17-G 的公开仓库、身份 allowlist、秘密/许可/来源与门禁证据见
+[M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
 
 ## 7. 明确非结论
 

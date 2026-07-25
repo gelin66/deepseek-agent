@@ -2708,6 +2708,26 @@ selector、English candidate、翻译 scaffolding、tracked eval assets 与 M17-
 English candidate。完整证据见
 [M17-F DSE bilingual prompt 2x2](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)。
 
+M17-G public-repository gate 已在 `85e241223` 通过。英文 canonical README、完整中文
+入口、贡献/安全/行为/来源文件、CODEOWNERS 和 issue/PR templates 由同一个离线 checker
+验证 current protocol/model/architecture facts、链接、bash block、governance 与公开秘密
+形状。checker 还冻结 ROADMAP/EVALUATION 与两个 M7 summary 中的 M7-A/M7-A2
+`DeepSeek Agent` 历史标题；public candidate 没有修改任何 eval manifest、fixture、
+schema、raw、frozen summary 或 hash。
+
+前置 identity/localization 纠错 `389aac896`、`de6bc7004` 使 current context marker 与
+TUI header 使用 DSE，并让 auth/model 嵌套帮助进入唯一 catalog owner。current catalog
+为 776/776 exact keys；full assembled prompt fixture 的 current SHA-256 为
+`d7746692db36eea33da0305553499b708a4d8b2b7d9688633aba1673142d49c9`。这只反映
+`cw:ctx -> dse:ctx` identity marker，M17-F 被测 `a9179903...` hash、中文 prompt winner
+和正式结论不回写。
+
+public checker、真实 binary smoke、focused、strict Clippy、workspace test、crash/reopen、
+LICENSE/provenance 与 tracked-secret audit 通过；没有 Key、DeepSeek API、push、远端改名、
+visibility、tag 或 release。该 gate 接受本地公开仓库候选，不等于 M17-H 的远端 CI 或
+公开发布证据。完整记录见
+[M17-G DSE bilingual public repository](../../eval/summaries/m17-g-dse-public-repository-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
