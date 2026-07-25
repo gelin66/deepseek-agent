@@ -1,0 +1,8 @@
+{
+  "name": "m15-stacktrace-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/dispatch.test.ts"
+  }
+}

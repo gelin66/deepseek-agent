@@ -3236,6 +3236,42 @@ M14 以实现 checkpoint `7a9e2278` 收敛 evaluator contract，不重开 M13：
 完整事实见
 [M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
 
+#### M15：fixed-Pro current product-loss acquisition
+
+M15 是新的 position-1 current loss 采集，不是 product treatment。它继续复用
+`scripts/eval-m9b-fixed-pro-regression.py` 唯一 corrected Harness；`--campaign m15`
+只选择新的 manifest、fixture、schedule、journal schema 与后续只读 analysis input。
+M9-C/M11/M12 与 M14 observer 入口保持原合同，M13 raw 不读取、不续跑、不拼接。
+
+冻结输入为 8 个独立临时 Git task × 3 次，共 24 arms：
+
+- Rust scoped rules/wire contract；
+- TypeScript stack-trace localization 与同名 decoy；
+- Python 多文件单向配置迁移；
+- Rust verifier fail-before / split-stream recovery；
+- Python JSONL 真实子进程协议；
+- 一个 read-only child 的 service graph handoff；
+- 一个显式 isolated Writer 的 envelope migration；
+- 一个 no-tool authorization 假完成反例。
+
+每个 root/child RunRequest 显式冻结 `deepseek-v4-pro/high`；所有 arm 使用同一 immutable
+binary、official DeepSeek OpenAI-format `POST /chat/completions`、同一 TaskContract、
+tool catalog、预算与 external verifier，`maximum_reruns=0`。Host 和 external verifier
+共享同一 per-arm isolated `HOME` 与 Rust 1.97.0 rustup identity。每个原始 fixture
+verifier 必须确定性失败且前后 tree byte-stable；7 个正向 verifier 还须在仓库外参考修复
+副本中独立通过，安全反例继续失败。
+
+证据顺序固定为 terminal → canonical Store → credential-free SQLite reopen →
+external verifier → label。journal 必须 ignored、0600、exclusive、fsynced、
+hash-chained。observer、latest-revision evidence、unknown billing、incomplete usage、
+identity、安全或成本歧义都在下一 arm 前停止；不重跑、不补 mate、不 resume、不重采样。
+
+只有同一 stable current product loss 跨至少两个独立 task ID 重复，才允许审计一个现有
+owner 与单变量可删除 treatment；粗粒度 failure label 只授权 owner audit，不自动授权实现。
+若没有重复损失，production 保持不变并关闭候选。当前只完成 credential-free contract、
+fixture satisfiability、M14 12/12 observer 与 M9-C/M11/M12 compatibility self-test；
+尚未生成 live admission、读取 Key 或调用 API。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

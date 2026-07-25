@@ -17,5 +17,9 @@ scripts/release/*.sh text eol=lf
 # Keep repository attributes themselves stable on every platform.
 .gitattributes text eol=lf
 
+# Unified-diff fixtures require a one-space context marker on otherwise blank
+# lines. Treat that syntax as data rather than trailing-whitespace damage.
+eval/fixtures/*.patch text eol=lf whitespace=-blank-at-eol
+
 # Everything else auto-detects (default).
 * text=auto

@@ -1,0 +1,7 @@
+{
+  "name": "auth",
+  "runtime": "rust-1.97",
+  "protocolFloor": 2,
+  "dependsOn": [],
+  "features": ["oauth", "tracing"]
+}

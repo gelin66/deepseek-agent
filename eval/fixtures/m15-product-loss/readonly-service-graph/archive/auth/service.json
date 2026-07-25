@@ -1,0 +1,7 @@
+{
+  "name": "auth",
+  "runtime": "node-18",
+  "protocolFloor": 1,
+  "dependsOn": [],
+  "features": ["legacy"]
+}

@@ -2122,6 +2122,28 @@ M14 决定为 `keep_offline_observer_conformance / retire_m13_live_acquisition`�
 checkpoint 为 `7a9e2278`；完整证据见
 [M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
 
+M15 当前只增加 eval acquisition 输入，不改变 production：
+
+- `scripts/eval-m9b-fixed-pro-regression.py --campaign m15` 选择 8 个新的 current
+  fixed-Pro tasks；M9-C/M11/M12 与 M14 observer consumer 保持；
+- 任务覆盖 scoped rules、同名 symbol localization、多文件 acceptance、verifier
+  recovery、真实 JSONL subprocess、一个 read-only child、一个 explicit Writer 和
+  no-tool safety counterexample；每项 3 次，`maximum_reruns=0`；
+- 每个 root/child RunRequest 显式为 `deepseek-v4-pro/high`，继续使用唯一
+  AgentApplication、AgentRuntime、RunStore、ChatCompletions sender 与工具目录；
+- Host 与 external verifier 共享 per-arm isolated `HOME`、`.rustup` identity 与
+  Rust 1.97.0；8 个初始 fixture verifier 全部 fail 且 tree byte-stable，7 个正向
+  verifier 在仓库外参考修复副本通过，安全反例继续失败；
+- M14 observer 仍为 12/12，M9-C/M11/M12/M15 self-test、journal hash-chain 与四个
+  SIGKILL window 通过；
+- 当前尚未生成 live admission、读取 credential、调用官方 API 或写入新 raw。后续只有
+  accounting-complete fresh position-1 acquisition 中同一 stable product loss 跨两个
+  independent tasks 重复，才允许审计一个现有 owner；否则 production 保持不变。
+
+M15 没有 production crate/config/protocol/schema/model sender delta。Run API v12、
+RuntimeEvent v18、State v24 与 exec-stream v3 不变；M13 frozen raw 不读取、不续跑、
+不拼接。
+
 ## 7. 明确非结论
 
 当前源码不证明：

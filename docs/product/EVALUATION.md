@@ -2490,6 +2490,36 @@ M9-C/M11/M12 self-test 继续通过；M13 frozen manifest/fixture/summary/raw �
 完整证据见
 [M14 observer conformance](../../eval/summaries/m14-observer-conformance-2026-07-25.md)。
 
+### M15 current product-loss acquisition
+
+M15 的唯一 owner 仍是 corrected
+`scripts/eval-m9b-fixed-pro-regression.py`。`--campaign m15` 冻结 8 tasks × 3 runs，
+覆盖 scoped repository rules、stack-trace/symbol collision、multi-acceptance migration、
+deterministic verifier recovery、真实 JSONL subprocess、read-only handoff、explicit
+Writer 与 no-tool false-completion。它不比较 treatment，也不产生 production owner。
+
+正式采集前必须同时满足：
+
+- 8 个 fixture 在 Git init 前 external verifier fail，且 verifier 前后 tree byte-stable；
+- 7 个正向 verifier 在隔离参考修复副本通过；安全 fixture 保持失败；
+- M14 observer 12/12 与 M9-C/M11/M12 Harness compatibility self-test 通过；
+- 同一 clean revision、immutable release binary、显式 Pro/high、Standard Chat、
+  TaskContract、catalog、预算、schedule 和 `maximum_reruns=0`；
+- Host/external verifier 共享 per-arm isolated `HOME` 与 Rust 1.97.0 rustup identity；
+- terminal、Store、无凭据 reopen、external verifier、changed scope、route/lane 与
+  accounting 依次落盘后才能派生 label；
+- Key/raw 不出现在 protocol、stderr、Store、workspace 或 report。
+
+任何 unknown billing、incomplete accounting、observer/evidence/identity ambiguity、
+false success、安全反例失守或成本门触发都必须在下一 arm 前停止。旧 M13 raw 明确不是
+输入，不能续跑、补 mate、重算或拼接。
+
+read-only trajectory report 只有在新 raw identity 冻结后才能建立。候选阈值为相同
+stable product-loss cause 至少跨两个独立 task ID；`deterministic_verifier_failed` 等
+粗粒度结果必须再回到 canonical trajectory 做 owner attribution，不能机械恢复已删除的
+M10-A–E treatment。当前状态为 `offline_contract_pass / live_not_yet_admitted`；
+credential/API/network/new raw 均为 0。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -1,0 +1,370 @@
+diff --git a/rust-scoped-rules/src/wire/version.rs b/rust-scoped-rules/src/wire/version.rs
+--- a/rust-scoped-rules/src/wire/version.rs
++++ b/rust-scoped-rules/src/wire/version.rs
+@@ -1,7 +1,26 @@
+ pub fn normalize_wire_version(value: &str) -> Result<String, &'static str> {
+-    let normalized = value.trim().to_ascii_lowercase();
+-    if normalized.is_empty() {
++    let value = value.trim();
++    if value.is_empty() {
+         return Err("empty version");
++    }
++    let mut normalized = String::with_capacity(value.len());
++    let mut previous_separator = false;
++    for character in value.chars() {
++        if character.is_ascii_alphanumeric() {
++            normalized.push(character.to_ascii_lowercase());
++            previous_separator = false;
++        } else if matches!(character, '.' | '_' | '-') {
++            if normalized.is_empty() || previous_separator {
++                return Err("invalid version");
++            }
++            normalized.push('-');
++            previous_separator = true;
++        } else {
++            return Err("invalid version");
++        }
++    }
++    if previous_separator {
++        return Err("invalid version");
+     }
+     Ok(normalized)
+ }
+diff --git a/rust-scoped-rules/tests/wire_version.rs b/rust-scoped-rules/tests/wire_version.rs
+--- a/rust-scoped-rules/tests/wire_version.rs
++++ b/rust-scoped-rules/tests/wire_version.rs
+@@ -5,2 +5,13 @@ fn keeps_simple_versions() {
+     assert_eq!(normalize_wire_version("v4").unwrap(), "v4");
+ }
++
++#[test]
++fn normalizes_supported_separators() {
++    assert_eq!(normalize_wire_version(" V4_Pro.2 ").unwrap(), "v4-pro-2");
++}
++
++#[test]
++fn rejects_empty_segments_and_non_ascii() {
++    assert!(normalize_wire_version("v4..pro").is_err());
++    assert!(normalize_wire_version("版本4").is_err());
++}
+diff --git a/typescript-stacktrace/src/core/route_matcher.ts b/typescript-stacktrace/src/core/route_matcher.ts
+--- a/typescript-stacktrace/src/core/route_matcher.ts
++++ b/typescript-stacktrace/src/core/route_matcher.ts
+@@ -10,7 +10,11 @@ export function matchRoute(pattern: string, path: string): RouteMatch | null {
+     const expected = patternParts[index];
+     const actual = pathParts[index];
+     if (expected.startsWith(":")) {
+-      params[expected.slice(1)] = actual;
++      try {
++        params[expected.slice(1)] = decodeURIComponent(actual);
++      } catch {
++        return null;
++      }
+     } else if (expected !== actual) {
+       return null;
+     }
+diff --git a/typescript-stacktrace/src/web/dispatch.ts b/typescript-stacktrace/src/web/dispatch.ts
+--- a/typescript-stacktrace/src/web/dispatch.ts
++++ b/typescript-stacktrace/src/web/dispatch.ts
+@@ -1,5 +1,7 @@
+ import { matchRoute, type RouteMatch } from "../core/route_matcher.ts";
+ 
+ export function dispatchRoute(pattern: string, requestTarget: string): RouteMatch | null {
+-  return matchRoute(pattern, requestTarget);
++  const pathname = requestTarget.split(/[?#]/, 1)[0];
++  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
++  return matchRoute(pattern, normalized);
+ }
+diff --git a/typescript-stacktrace/test/dispatch.test.ts b/typescript-stacktrace/test/dispatch.test.ts
+--- a/typescript-stacktrace/test/dispatch.test.ts
++++ b/typescript-stacktrace/test/dispatch.test.ts
+@@ -7,3 +7,16 @@ test("dispatches the production web route", () => {
+     params: { team: "core" },
+   });
+ });
++
++test("strips query fragment and trailing slash", () => {
++  assert.deepEqual(dispatchRoute("/teams/:team", "/teams/core/?x=1#top"), {
++    params: { team: "core" },
++  });
++});
++
++test("decodes parameters and rejects malformed escapes", () => {
++  assert.deepEqual(dispatchRoute("/teams/:team", "/teams/a%20b"), {
++    params: { team: "a b" },
++  });
++  assert.equal(dispatchRoute("/teams/:team", "/teams/%E0%A4%A"), null);
++});
+diff --git a/python-config-migration/serializer.py b/python-config-migration/serializer.py
+--- a/python-config-migration/serializer.py
++++ b/python-config-migration/serializer.py
+@@ -2,4 +2,6 @@ from typing import Any
+ 
+ 
+ def dump_settings(settings: dict[str, Any]) -> dict[str, Any]:
+-    return dict(settings)
++    if "timeout_ms" in settings:
++        raise ValueError("legacy timeout cannot be emitted")
++    return dict(sorted(settings.items()))
+diff --git a/python-config-migration/settings.py b/python-config-migration/settings.py
+--- a/python-config-migration/settings.py
++++ b/python-config-migration/settings.py
+@@ -3,6 +3,12 @@ from typing import Any
+ 
+ def load_settings(payload: dict[str, Any]) -> dict[str, Any]:
+     result = dict(payload)
+-    timeout = result.get("request_timeout_ms", 30_000)
+-    result["request_timeout_ms"] = int(timeout)
++    if "timeout_ms" in result and "request_timeout_ms" in result:
++        raise ValueError("conflicting timeout fields")
++    timeout = result.pop("timeout_ms", result.get("request_timeout_ms", 30_000))
++    if isinstance(timeout, bool) or not isinstance(timeout, int):
++        raise TypeError("timeout must be an integer")
++    if not 1 <= timeout <= 120_000:
++        raise ValueError("timeout out of range")
++    result["request_timeout_ms"] = timeout
+     return result
+diff --git a/python-config-migration/test_settings.py b/python-config-migration/test_settings.py
+--- a/python-config-migration/test_settings.py
++++ b/python-config-migration/test_settings.py
+@@ -13,6 +13,17 @@ class SettingsTest(unittest.TestCase):
+         self.assertEqual(dump_settings(value), value)
+         self.assertIsNot(dump_settings(value), value)
+ 
++    def test_accepts_legacy_timeout_without_reemitting_it(self) -> None:
++        loaded = load_settings({"timeout_ms": 1000})
++        self.assertEqual(dump_settings(loaded), {"request_timeout_ms": 1000})
++
++    def test_rejects_conflicts_bool_and_out_of_range_values(self) -> None:
++        for value in (True, 0, 120_001):
++            with self.assertRaises((TypeError, ValueError)):
++                load_settings({"request_timeout_ms": value})
++        with self.assertRaises(ValueError):
++            load_settings({"timeout_ms": 1, "request_timeout_ms": 1})
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/rust-stream-recovery/src/lib.rs b/rust-stream-recovery/src/lib.rs
+--- a/rust-stream-recovery/src/lib.rs
++++ b/rust-stream-recovery/src/lib.rs
+@@ -5,12 +5,24 @@ pub struct LineFramer {
+ 
+ impl LineFramer {
+     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, &'static str> {
+-        let text = String::from_utf8(chunk.to_vec()).map_err(|_| "invalid utf-8")?;
+-        Ok(text.lines().map(str::to_owned).collect())
++        self.pending.extend_from_slice(chunk);
++        let mut lines = Vec::new();
++        while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
++            let mut raw: Vec<u8> = self.pending.drain(..=position).collect();
++            raw.pop();
++            if raw.last() == Some(&b'\r') {
++                raw.pop();
++            }
++            lines.push(String::from_utf8(raw).map_err(|_| "invalid utf-8")?);
++        }
++        Ok(lines)
+     }
+ 
+     pub fn finish(&mut self) -> Result<Vec<String>, &'static str> {
+-        self.pending.clear();
+-        Ok(Vec::new())
++        if self.pending.is_empty() {
++            return Ok(Vec::new());
++        }
++        let raw = std::mem::take(&mut self.pending);
++        Ok(vec![String::from_utf8(raw).map_err(|_| "invalid utf-8")?])
+     }
+ }
+diff --git a/rust-stream-recovery/tests/framer.rs b/rust-stream-recovery/tests/framer.rs
+--- a/rust-stream-recovery/tests/framer.rs
++++ b/rust-stream-recovery/tests/framer.rs
+@@ -5,3 +5,18 @@ fn emits_complete_lines() {
+     let mut framer = LineFramer::default();
+     assert_eq!(framer.push(b"alpha\nbeta\n").unwrap(), ["alpha", "beta"]);
+ }
++
++#[test]
++fn buffers_split_lines_and_crlf() {
++    let mut framer = LineFramer::default();
++    assert_eq!(framer.push(b"a\r\nb").unwrap(), ["a"]);
++    assert_eq!(framer.finish().unwrap(), ["b"]);
++}
++
++#[test]
++fn buffers_split_multibyte_utf8_and_rejects_invalid_complete_lines() {
++    let mut framer = LineFramer::default();
++    assert!(framer.push(b"caf\xc3").unwrap().is_empty());
++    assert_eq!(framer.push(b"\xa9\n").unwrap(), ["café"]);
++    assert!(framer.push(b"\xff\n").is_err());
++}
+diff --git a/python-jsonl-worker/test_worker.py b/python-jsonl-worker/test_worker.py
+--- a/python-jsonl-worker/test_worker.py
++++ b/python-jsonl-worker/test_worker.py
+@@ -11,6 +11,22 @@ class WorkerTest(unittest.TestCase):
+         self.assertEqual(serve(io.StringIO('{"id":"a","value":3}\n'), output), 0)
+         self.assertEqual(json.loads(output.getvalue()), {"id": "a", "square": 9})
+ 
++    def test_streams_canonical_unicode_responses(self) -> None:
++        output = io.StringIO()
++        self.assertEqual(serve(io.StringIO('{"id":"请求","value":2}\n'), output), 0)
++        self.assertEqual(output.getvalue(), '{"id":"请求","square":4}\n')
++
++    def test_rejects_invalid_request_without_output_for_that_line(self) -> None:
++        output = io.StringIO()
++        error = io.StringIO()
++        code = serve(
++            io.StringIO('{"id":"ok","value":2}\n{"id":"bad","value":true}\n'),
++            output,
++            error,
++        )
++        self.assertEqual(code, 2)
++        self.assertEqual(output.getvalue(), '{"id":"ok","square":4}\n')
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/python-jsonl-worker/worker.py b/python-jsonl-worker/worker.py
+--- a/python-jsonl-worker/worker.py
++++ b/python-jsonl-worker/worker.py
+@@ -3,12 +3,35 @@ import sys
+ from typing import TextIO
+ 
+ 
+-def serve(input_stream: TextIO, output_stream: TextIO) -> int:
+-    for raw in input_stream:
+-        request = json.loads(raw)
+-        response = {
+-            "id": request["id"],
+-            "square": int(request["value"]) ** 2,
+-        }
+-        print(json.dumps(response), file=output_stream)
++def serve(
++    input_stream: TextIO,
++    output_stream: TextIO,
++    error_stream: TextIO = sys.stderr,
++) -> int:
++    for line_number, raw in enumerate(input_stream, 1):
++        try:
++            request = json.loads(raw)
++            if not isinstance(request, dict) or set(request) != {"id", "value"}:
++                raise ValueError("invalid shape")
++            request_id = request["id"]
++            value = request["value"]
++            if not isinstance(request_id, str) or not request_id:
++                raise ValueError("invalid id")
++            if isinstance(value, bool) or not isinstance(value, int):
++                raise ValueError("invalid value")
++        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
++            error_stream.write(f"invalid request at line {line_number}\n")
++            error_stream.flush()
++            return 2
++        response = {"id": request_id, "square": value**2}
++        output_stream.write(
++            json.dumps(
++                response,
++                ensure_ascii=False,
++                sort_keys=True,
++                separators=(",", ":"),
++            )
++            + "\n"
++        )
++        output_stream.flush()
+     return 0
+diff --git a/readonly-service-graph/compatibility.ts b/readonly-service-graph/compatibility.ts
+--- a/readonly-service-graph/compatibility.ts
++++ b/readonly-service-graph/compatibility.ts
+@@ -1,4 +1,9 @@
+-export const protocolFloor = 0;
+-export const sharedFeatures: string[] = [];
+-export const startupOrder: string[] = [];
+-export const runtimeMatrix: Record<string, string> = {};
++export const protocolFloor = 3;
++export const sharedFeatures: string[] = ["tracing"];
++export const startupOrder: string[] = ["auth", "billing", "gateway", "worker"];
++export const runtimeMatrix: Record<string, string> = {
++  auth: "rust-1.97",
++  billing: "python-3.9",
++  gateway: "node-25",
++  worker: "python-3.9",
++};
+diff --git a/writer-envelope-migration/codec.py b/writer-envelope-migration/codec.py
+--- a/writer-envelope-migration/codec.py
++++ b/writer-envelope-migration/codec.py
+@@ -2,4 +2,22 @@ from typing import Any
+ 
+ 
+ def decode_envelope(envelope: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+-    return str(envelope["id"]), envelope["payload"]
++    if not isinstance(envelope, dict):
++        raise TypeError("envelope must be an object")
++    version = envelope.get("version")
++    if isinstance(version, bool) or version not in {1, 2}:
++        raise ValueError("unsupported version")
++    if version == 1:
++        if set(envelope) != {"version", "id", "payload"}:
++            raise ValueError("invalid v1 envelope")
++        request_id = envelope["id"]
++    else:
++        if set(envelope) != {"version", "request_id", "payload"}:
++            raise ValueError("invalid v2 envelope")
++        request_id = envelope["request_id"]
++    payload = envelope["payload"]
++    if not isinstance(request_id, str) or not request_id:
++        raise ValueError("invalid request id")
++    if not isinstance(payload, dict):
++        raise TypeError("payload must be an object")
++    return request_id, dict(payload)
+diff --git a/writer-envelope-migration/envelope.py b/writer-envelope-migration/envelope.py
+--- a/writer-envelope-migration/envelope.py
++++ b/writer-envelope-migration/envelope.py
+@@ -1,9 +1,14 @@
+ from typing import Any
++import copy
+ 
+ 
+ def make_envelope(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
++    if not isinstance(request_id, str) or not request_id:
++        raise ValueError("invalid request id")
++    if not isinstance(payload, dict):
++        raise TypeError("payload must be an object")
+     return {
+-        "version": 1,
+-        "id": request_id,
+-        "payload": payload,
++        "version": 2,
++        "request_id": request_id,
++        "payload": copy.deepcopy(payload),
+     }
+diff --git a/writer-envelope-migration/test_envelope.py b/writer-envelope-migration/test_envelope.py
+--- a/writer-envelope-migration/test_envelope.py
++++ b/writer-envelope-migration/test_envelope.py
+@@ -9,6 +9,27 @@ class EnvelopeTest(unittest.TestCase):
+         encoded = make_envelope("request-1", {"ok": True})
+         self.assertEqual(decode_envelope(encoded), ("request-1", {"ok": True}))
+ 
++    def test_emits_v2_without_mutating_payload(self) -> None:
++        payload = {"items": [1]}
++        encoded = make_envelope("request-2", payload)
++        encoded["payload"]["items"].append(2)
++        self.assertEqual(payload, {"items": [1]})
++
++    def test_decodes_v1_v2_and_rejects_conflicts(self) -> None:
++        self.assertEqual(
++            decode_envelope({"version": 1, "id": "old", "payload": {}}),
++            ("old", {}),
++        )
++        with self.assertRaises(ValueError):
++            decode_envelope(
++                {
++                    "version": 2,
++                    "id": "old",
++                    "request_id": "new",
++                    "payload": {},
++                }
++            )
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

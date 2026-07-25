@@ -1,0 +1,7 @@
+{
+  "name": "worker",
+  "runtime": "python-3.9",
+  "protocolFloor": 3,
+  "dependsOn": ["billing"],
+  "features": ["jobs", "tracing"]
+}
