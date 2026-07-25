@@ -3170,7 +3170,8 @@ current loss 至少跨两个独立 task 重复；不得继续围绕 M11 粗粒�
 
 #### M13：长任务恢复损失基线
 
-M13 当前只冻结新的 acquisition contract，不先写 recovery treatment：
+M13 已以 `close_m13_inadmissible_observer_contract_instability` 关闭，不写 recovery
+treatment：
 
 - 继续复用 `scripts/eval-m9b-fixed-pro-regression.py` 唯一 corrected Harness；
   `--campaign m13` 选择 6 个独立任务，默认 M9-C/M11/M12 contract 不变；
@@ -3182,18 +3183,28 @@ M13 当前只冻结新的 acquisition contract，不先写 recovery treatment：
 - Host 与 external verifier 沿用 M12 的相同隔离 `HOME` 与显式 Rust 1.97.0 identity；
   每个 fixture 必须 fail-before、Git base/hash 可重建且 verifier 不污染 tree；
 - `ambiguous_edit`、stale-context `workspace_precondition` 和 `verifier_failed` 是冻结任务
-  协议，用来观察 current typed feedback 后的恢复；指定失败必须 non-applied，并先于首次
-  effective mutation 与 final Host receipt；
+  协议，用来观察 current typed feedback 后的恢复；前两项必须 non-applied，
+  `verifier_failed` 保留执行外部命令后的 canonical `indeterminate/unsafe`，三者均先于
+  首次 effective mutation 与 final Host receipt；
 - unknown billing、incomplete accounting、false success、identity/observer 歧义或成本门
-  立即在下一 arm 前停止，`maximum_reruns=0`，不补 mate、不续跑、不拼接；
+  均在下一 arm 前停止，`maximum_reruns=0`，没有补 mate、续跑或拼接；
 - 只有同一 stable current product loss 至少跨两个独立 task 重复，且能指定单一 owner、
   单变量 treatment、deterministic fixture 与 old-path deletion，才准许后续 vertical
   slice；否则关闭假设，不新增 controller。
 
 2026-07-25 官方复核确认 production 继续使用
 `https://api.deepseek.com/chat/completions`、`deepseek-v4-pro/high`。7 月 24 日退役的是
-legacy model alias，不是 ChatCompletions。当前 production/schema/config delta=0，
-Key/API=0；完整冻结契约见
+legacy model alias，不是 ChatCompletions。三次 position-1 acquisition 分别在 3、6、5
+个 arm results 后揭示 Writer scope order、malformed stale hunk、verifier disposition
+三项 evaluator-contract mismatch；每次均在下一 arm 前停止。三份 raw 不续跑、不拼接，
+共 126 physical requests、known cost USD 0.274936878，均不作为 product metric。
+最后一次 production terminal、external verifier、latest-revision Host receipt 和
+accounting 实际闭合；false-success label 只来自 observer 把已执行外部命令的 verifier
+failure 错误要求为 `not_applied/after_correction`，而 canonical outcome 正确为
+`indeterminate/unsafe`。
+
+因此不再付费迭代 M13 observer，不生成产品 trajectory candidate；stable loss 未跨两个
+独立任务成立。当前 production/schema/config delta=0；完整证据见
 [M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
 
 ### 调优

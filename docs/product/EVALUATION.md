@@ -2407,7 +2407,8 @@ prompt、retry、Runtime/Store 状态或第二 analyzer。冻结 raw/manifest �
 
 ### M13 current long-task recovery-loss baseline
 
-M13 只做新的 current label acquisition，不把 M12 的单次已恢复失败当成 candidate。
+M13 只做新的 current label acquisition，不把 M12 的单次已恢复失败当成 candidate；
+当前已以 `close_m13_inadmissible_observer_contract_instability` 关闭。
 冻结矩阵为 6 tasks × 3 runs = 18 arms，固定同一 immutable binary、
 `deepseek-v4-pro/high`、Standard Chat、TaskContract、tool catalog、budget、verifier 和
 `maximum_reruns=0`。
@@ -2420,10 +2421,13 @@ M13 只做新的 current label acquisition，不把 M12 的单次已恢复失败
   `workspace_precondition` 的 edit-conflict root task；
 - 一个四文件 explicit isolated Writer task。
 
-required failure 必须具有 `side_effect=not_applied`、`retry=after_correction`，并在第一
-次 applied mutation 与 final Host receipt 前发生。它是恢复测量触发器，不单独计作
-production loss。verified label 仍要求 terminal completed、exact external verifier、
-expected changed-file scope、latest-revision Host receipt、lane contract 与 fixed route。
+`ambiguous_edit` 与 stale-context `workspace_precondition` 必须具有
+`side_effect=not_applied`、`retry=after_correction`。这一 disposition 不适用于已经执行
+外部 verifier 命令的 `verifier_failed`：canonical production outcome 正确保守表示为
+`side_effect=indeterminate`、`retry=unsafe`。冻结 observer 错误地把三者统一，最终成为
+第三个 evaluator-contract mismatch。verified label 仍要求 terminal completed、exact
+external verifier、expected changed-file scope、latest-revision Host receipt、lane
+contract 与 fixed route。
 
 每个 arm 的 terminal、canonical Store、credential-free SQLite reopen、external verifier
 和 changed files 必须在 label 前持久化；request/usage/cache/cost accounting 必须完整。
@@ -2435,9 +2439,18 @@ unknown billing、incomplete accounting、false success、identity/observer 歧�
 cutover deletion 同时成立，才返回 candidate audit；否则是
 `insufficient_repeated_current_loss`，production delta 必须为零。
 
-当前离线状态：6/6 fixture fail-before、Git base/hash 重建、forced-failure ordering、
-isolated Rust environment、journal crash/tamper 与 Harness self-test 已通过；
-credential/API=0。正式 acquisition 结果与 trajectory decision 尚未产生。冻结事实见
+离线 gates 全部通过。三次 fresh acquisition 都从新 immutable candidate/position 1
+开始并在下一 arm 前停止：v1 为 Writer scope order observer mismatch（3 results），
+v2 为 malformed stale-patch contract（6 results），v3 为 verifier disposition observer
+mismatch（5 results）。三份 raw 共 126 physical requests、known cost
+USD 0.274936878，全部 accounting known，但均为不完整且 observer-invalid acquisition，
+不得续跑、补 mate、拼接或用于成功率/恢复率结论。
+
+v3 前四项描述性结果为 4/4 verified；第五星 terminal、external verifier、Host receipt、
+changed scope 与 accounting 也全部通过，false-success label 只由错误 disposition
+observer 产生，不是 Host false success。由于 admission 已预注册“再出现 observer
+ambiguity 即关闭”，不做第四次付费纠正，不生成产品 trajectory report，也不实现
+production treatment。冻结事实与 exact raw identity 见
 [M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
 
 ## 10. 结果与决策记录
