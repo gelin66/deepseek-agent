@@ -1073,7 +1073,7 @@ mod tests {
             "<project_context_pack>",
             "\"directory_structure\"",
             "<instructions source=\"cli:append-system-prompt\">",
-            "<!-- cw:ctx:route -->",
+            "<!-- dse:ctx:route -->",
             "model: deepseek-v4-pro",
             "show_thinking: off",
             "src/lib.rs",
@@ -1112,9 +1112,9 @@ mod tests {
             block_hashes,
             [
                 "559a4078671044495e7261dc69bb63ffbde2fc7a58b78367a041e90a89af3e4c",
-                "a482088193d5a8ee9b86e49db68982902bfb708ec9dc7f6dc6732b531e8e9574",
-                "70e9297a2ae78cb815d9a24c18d93f57eb8fe05cc12b005a9826e778ffd1c4fe",
-                "50f497cd9e457dacbe0e0b8ce8166bcaa7da57a705a5b3b781b2623a5a21dd00",
+                "eb7b2001a9d73dca127881d763774646adc8884c1fcdff7508a3bd26e93a3632",
+                "5e8571dae69434e271da2bd3d9fe85418b40e0f6a254efd7e63df2f9c793b2f1",
+                "a2fd7cc81b3bf99e30e69ae0edf862c6c26dd2a3049501a92ba93226b22984a1",
                 "53b653986406c8bbfa2680cba570165a68497f6a0669190bc379934d2690fb32",
             ]
         );
@@ -1132,7 +1132,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "a91799031d8f430945e98871f19d3cefd0496834304b4af0ff04197944ab1bdb"
+            "d7746692db36eea33da0305553499b708a4d8b2b7d9688633aba1673142d49c9"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {

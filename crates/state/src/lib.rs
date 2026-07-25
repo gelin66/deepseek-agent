@@ -586,8 +586,8 @@ fn default_state_db_path() -> PathBuf {
 /// Resolve `$DSE_HOME` as a hard override of the data directory root.
 ///
 /// Returns the path verbatim (the env var IS the home dir, matching
-/// `dse_home()` in config — `$DSE_HOME=/data/cw` means the home is
-/// `/data/cw`, not `/data/cw/.dse`). Returns `None` when unset/empty so
+/// `dse_home()` in config — `$DSE_HOME=/data/custom-home` means the home is
+/// `/data/custom-home`, not `/data/custom-home/.dse`). Returns `None` when unset/empty so
 /// callers can branch on "explicit override" vs "default home + legacy
 /// fallback." Mirrors config's helper without taking a dependency on it (state
 /// is a low-level leaf crate; config cannot be a dependency here without
@@ -686,12 +686,12 @@ mod tests {
     #[test]
     fn dse_home_override_returns_the_env_value_verbatim() {
         let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
-        let _g = DseHomeGuard::set("/tmp/cw-isolated-state");
+        let _g = DseHomeGuard::set("/tmp/dse-isolated-state");
         // The env var IS the home dir — no ".dse" appended. This matches
         // dse_home() in config ($DSE_HOME=/x means home is /x).
         assert_eq!(
             dse_home_override().as_deref(),
-            Some(std::path::Path::new("/tmp/cw-isolated-state"))
+            Some(std::path::Path::new("/tmp/dse-isolated-state"))
         );
     }
 
@@ -721,7 +721,7 @@ mod tests {
     fn default_state_db_path_uses_dse_home_when_set() {
         let _lock = DSE_HOME_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "cw-home-state-{}-{}",
+            "dse-home-state-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

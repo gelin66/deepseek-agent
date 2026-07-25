@@ -1,9 +1,6 @@
 use std::time::Instant;
 
 const STATUS_INDICATOR_FRAME_MS: u128 = 420;
-const STATUS_INDICATOR_WHALE_FRAMES: &[&str] = &[
-    "🐳", "🐳.", "🐳..", "🐳...", "🐳..", "🐳.", "🐋", "🐋.", "🐋..", "🐋...", "🐋..", "🐋.",
-];
 const STATUS_INDICATOR_DOT_FRAMES: &[&str] = &["◍", "◉", "◌", "◌", "◉", "◍"];
 
 /// Resolve the current status mark used by the canonical underwater header.
@@ -14,15 +11,14 @@ pub fn header_status_indicator_frame(
 ) -> Option<&'static str> {
     if matches!(
         mode.trim().to_ascii_lowercase().as_str(),
-        "cw" | "mark" | "text"
+        "dse" | "mark" | "text"
     ) {
-        return Some("cw");
+        return Some("DSE");
     }
     let frames: &[&str] = match mode.trim().to_ascii_lowercase().as_str() {
         "off" | "none" | "hidden" | "false" => return None,
         "dots" | "dot" => STATUS_INDICATOR_DOT_FRAMES,
-        "whale" | "🐳" | "🐋" => STATUS_INDICATOR_WHALE_FRAMES,
-        _ => return Some("cw"),
+        _ => return Some("DSE"),
     };
     let elapsed_ms = turn_started_at
         .map(|started_at| started_at.elapsed().as_millis())
@@ -39,11 +35,10 @@ mod tests {
 
     #[test]
     fn canonical_names_select_visible_or_hidden_marks() {
-        assert_eq!(header_status_indicator_frame(None, "cw"), Some("cw"));
-        assert_eq!(header_status_indicator_frame(None, "whale"), Some("🐳"));
+        assert_eq!(header_status_indicator_frame(None, "dse"), Some("DSE"));
         assert_eq!(header_status_indicator_frame(None, "dots"), Some("◍"));
         assert_eq!(header_status_indicator_frame(None, "off"), None);
-        assert_eq!(header_status_indicator_frame(None, "unknown"), Some("cw"));
+        assert_eq!(header_status_indicator_frame(None, "unknown"), Some("DSE"));
     }
 
     #[test]

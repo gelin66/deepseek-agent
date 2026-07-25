@@ -204,7 +204,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     );
     let mut left = vec![
         Span::styled(
-            "cw",
+            "DSE",
             Style::default()
                 .fg(app.ui_theme.accent_primary)
                 .add_modifier(Modifier::BOLD),
@@ -214,7 +214,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     ];
     if tier != ShellTier::Compact {
         // The shell header owns the selected status mark.
-        // "cw" is already the leading brand mark; the other choices deserve
+        // "DSE" is already the leading brand mark; the other choices deserve
         // their visible indicator beside it.
         if let Some(indicator) = crate::tui::widgets::header_status_indicator_frame(
             (!app.low_motion && app.fancy_animations)
@@ -222,7 +222,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
                 .flatten(),
             &app.status_indicator,
         )
-        .filter(|indicator| *indicator != "cw")
+        .filter(|indicator| *indicator != "DSE")
         {
             left.push(Span::raw(" "));
             left.push(Span::styled(
@@ -275,14 +275,14 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     if span_width(&left) > left_budget {
         left = vec![
             Span::styled(
-                "cw",
+                "DSE",
                 Style::default()
                     .fg(app.ui_theme.accent_primary)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled(
-                truncate_to_width(&app.model_display_label(), left_budget.saturating_sub(7)),
+                truncate_to_width(&app.model_display_label(), left_budget.saturating_sub(8)),
                 Style::default().fg(app.ui_theme.text_muted),
             ),
         ];

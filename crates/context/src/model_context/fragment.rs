@@ -18,12 +18,12 @@ impl FragmentId {
     #[must_use]
     pub fn marker(self) -> &'static str {
         match self {
-            Self::Workspace => "<!-- cw:ctx:workspace -->",
-            Self::Permissions => "<!-- cw:ctx:permissions -->",
-            Self::Route => "<!-- cw:ctx:route -->",
-            Self::AgentTopology => "<!-- cw:ctx:agent_topology -->",
-            Self::SkillsTools => "<!-- cw:ctx:skills_tools -->",
-            Self::TokenBudget => "<!-- cw:ctx:token_budget -->",
+            Self::Workspace => "<!-- dse:ctx:workspace -->",
+            Self::Permissions => "<!-- dse:ctx:permissions -->",
+            Self::Route => "<!-- dse:ctx:route -->",
+            Self::AgentTopology => "<!-- dse:ctx:agent_topology -->",
+            Self::SkillsTools => "<!-- dse:ctx:skills_tools -->",
+            Self::TokenBudget => "<!-- dse:ctx:token_budget -->",
         }
     }
 }
@@ -90,7 +90,7 @@ mod tests {
             FragmentRole::AgentTopology,
             "x".repeat(DEFAULT_FRAGMENT_MAX_BYTES + 64),
         );
-        assert_eq!(fragment.marker, "<!-- cw:ctx:agent_topology -->");
+        assert_eq!(fragment.marker, "<!-- dse:ctx:agent_topology -->");
         assert!(fragment.content.len() <= DEFAULT_FRAGMENT_MAX_BYTES);
         assert!(fragment.content.contains("[…已截断：省略"));
     }

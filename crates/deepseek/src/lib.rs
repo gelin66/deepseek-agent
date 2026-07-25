@@ -1051,11 +1051,11 @@ mod tests {
                     cache_control: PromptCacheControl::Stable,
                 },
                 SystemPromptBlock {
-                    text: "<!-- cw:ctx:workspace -->\nworkspace facts".to_owned(),
+                    text: "<!-- dse:ctx:workspace -->\nworkspace facts".to_owned(),
                     cache_control: PromptCacheControl::Volatile,
                 },
                 SystemPromptBlock {
-                    text: "<!-- cw:ctx:route -->\nroute facts".to_owned(),
+                    text: "<!-- dse:ctx:route -->\nroute facts".to_owned(),
                     cache_control: PromptCacheControl::Volatile,
                 },
             ],
@@ -1077,7 +1077,7 @@ mod tests {
             messages[0],
             json!({
                 "role": "system",
-                "content": "稳定 constitution\n\n---\n\n<!-- cw:ctx:workspace -->\nworkspace facts\n\n---\n\n<!-- cw:ctx:route -->\nroute facts"
+                "content": "稳定 constitution\n\n---\n\n<!-- dse:ctx:workspace -->\nworkspace facts\n\n---\n\n<!-- dse:ctx:route -->\nroute facts"
             })
         );
         assert_eq!(

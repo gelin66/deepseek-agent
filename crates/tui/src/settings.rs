@@ -68,12 +68,9 @@ pub struct Settings {
     pub reasoning_effort: Option<String>,
     /// Header status indicator next to the effort chip. Cycles through a
     /// per-turn animation keyed off `App::turn_started_at`:
-    /// - `"cw"` (default): static typographic DSE mark.
-    /// - `"whale"`: historical `🐳 → 🐋` 12-frame sequence
-    ///   originally shipped in v0.3.5, removed in v0.8.x's "smoother TUI
-    ///   streaming" pass, restored in v0.8.30. Idle frame is a steady `🐳`.
+    /// - `"dse"` (default): static typographic DSE mark.
     /// - `"dots"`: the 6-frame geometric sequence (`◍ ◉ ◌ ◌ ◉ ◍`) that
-    ///   replaced the whale during the dots era.
+    ///   shows turn activity without carrying a retired product identity.
     /// - `"off"`: hide the indicator entirely.
     pub status_indicator: String,
     /// Whether to wrap each draw in DEC mode 2026 synchronized output
@@ -144,7 +141,7 @@ impl Default for Settings {
             transcript_spacing: "comfortable".to_string(),
             cost_currency: "usd".to_string(),
             reasoning_effort: None,
-            status_indicator: "cw".to_string(),
+            status_indicator: "dse".to_string(),
             synchronized_output: "auto".to_string(),
             prefer_external_pdftotext: false,
             workspace_follow_symlinks: false,
@@ -374,8 +371,7 @@ fn normalize_tool_collapse_mode(value: &str) -> &str {
 /// in `update_setting` can surface a clear error.
 fn normalize_status_indicator(value: &str) -> &str {
     match value.trim().to_ascii_lowercase().as_str() {
-        "cw" | "mark" | "text" => "cw",
-        "whale" | "🐳" | "🐋" => "whale",
+        "dse" | "mark" | "text" => "dse",
         "dots" | "dot" => "dots",
         "off" | "none" | "hidden" | "false" => "off",
         _ => value,
@@ -511,6 +507,7 @@ mod tests {
         assert!(settings.fancy_animations);
         assert_eq!(settings.transcript_spacing, "comfortable");
         assert_eq!(settings.tool_collapse_mode, "compact");
+        assert_eq!(settings.status_indicator, "dse");
         // Thinking is opt-in so the transcript stays focused on the chat.
         assert!(!settings.show_thinking);
     }

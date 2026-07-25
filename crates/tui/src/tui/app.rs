@@ -840,9 +840,9 @@ pub struct App {
     /// the draw loop the decision is already made. See the
     /// `Settings::synchronized_output` doc for the user-facing knob.
     pub synchronized_output_enabled: bool,
-    /// Header status-indicator chip mode. `"cw"` is the static default;
-    /// `"whale"` and `"dots"` preserve the animated legacy choices, while
-    /// `"off"` hides the chip. Loaded from settings.
+    /// Header status-indicator chip mode. `"dse"` is the static default;
+    /// `"dots"` preserves an animated activity mark, while `"off"` hides the
+    /// chip. Other values fall back to the static DSE mark.
     pub status_indicator: String,
     pub show_thinking: bool,
     pub show_tool_details: bool,
