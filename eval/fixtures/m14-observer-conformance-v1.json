@@ -1,0 +1,583 @@
+{
+  "schema": "codewhale.eval.m14-observer-conformance-corpus.v1",
+  "stable_tool_outcome_fields": [
+    "failure_code",
+    "invocation",
+    "transport",
+    "operation",
+    "side_effect",
+    "retry"
+  ],
+  "cases": [
+    {
+      "case_id": "writer_scope_is_a_canonical_semantic_set",
+      "kind": "semantic_string_set",
+      "observed": [
+        "loader.py",
+        "settings.py",
+        "test_loader.py",
+        "test_settings.py"
+      ],
+      "expected": [
+        "test_settings.py",
+        "settings.py",
+        "test_loader.py",
+        "loader.py"
+      ],
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "writer_scope_rejects_noncanonical_observation",
+      "kind": "semantic_string_set",
+      "observed": [
+        "settings.py",
+        "loader.py"
+      ],
+      "expected": [
+        "settings.py",
+        "loader.py"
+      ],
+      "expected_valid": false,
+      "expected_reasons": [
+        "semantic_set_not_canonical"
+      ]
+    },
+    {
+      "case_id": "writer_scope_rejects_duplicate_observation",
+      "kind": "semantic_string_set",
+      "observed": [
+        "loader.py",
+        "loader.py"
+      ],
+      "expected": [
+        "loader.py"
+      ],
+      "expected_valid": false,
+      "expected_reasons": [
+        "semantic_set_not_canonical"
+      ]
+    },
+    {
+      "case_id": "patch_parse_is_a_rejected_preflight",
+      "kind": "required_failure_sequence",
+      "required": {
+        "tool": "apply_patch",
+        "parsed_arguments": {
+          "path": "src/window.ts",
+          "fuzz": 0,
+          "patch": "@@ -1,3 +1,3 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;"
+        },
+        "outcome": {
+          "failure_code": "patch_parse",
+          "invocation": "rejected",
+          "transport": "not_started",
+          "operation": "not_started",
+          "side_effect": "not_applied",
+          "retry": "after_correction"
+        }
+      },
+      "events": [
+        {
+          "kind": "tool_prepared",
+          "workspace_access": "may_write",
+          "invocation": {
+            "name": "apply_patch",
+            "arguments": {
+              "parsed": {
+                "path": "src/window.ts",
+                "fuzz": 0,
+                "patch": "@@ -1,3 +1,3 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;"
+              }
+            }
+          }
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "apply_patch",
+          "outcome": {
+            "failure_code": "patch_parse",
+            "invocation": "rejected",
+            "transport": "not_started",
+            "operation": "not_started",
+            "side_effect": "not_applied",
+            "retry": "after_correction",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "patch parse fixture"
+          }
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "edit_file",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "applied",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "mutation fixture"
+          }
+        },
+        {
+          "kind": "host_verification_committed",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "indeterminate",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "produced",
+              "references": [
+                "artifact:host-pass"
+              ]
+            },
+            "artifacts": [],
+            "content": "host pass fixture"
+          },
+          "receipt": {
+            "id": "receipt:patch-parse"
+          }
+        }
+      ],
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "workspace_precondition_is_an_observed_operation_failure",
+      "kind": "required_failure_sequence",
+      "required": {
+        "tool": "apply_patch",
+        "parsed_arguments": {
+          "path": "src/window.ts",
+          "fuzz": 0,
+          "patch": "@@ -1,2 +1,2 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;"
+        },
+        "outcome": {
+          "failure_code": "workspace_precondition",
+          "invocation": "accepted",
+          "transport": "succeeded",
+          "operation": "failed",
+          "side_effect": "not_applied",
+          "retry": "after_correction"
+        }
+      },
+      "events": [
+        {
+          "kind": "tool_prepared",
+          "workspace_access": "may_write",
+          "invocation": {
+            "name": "apply_patch",
+            "arguments": {
+              "parsed": {
+                "path": "src/window.ts",
+                "fuzz": 0,
+                "patch": "@@ -1,2 +1,2 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;"
+              }
+            }
+          }
+        },
+        {
+          "kind": "tool_execution_started",
+          "operation_id": "operation:workspace-precondition"
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "apply_patch",
+          "outcome": {
+            "failure_code": "workspace_precondition",
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "failed",
+            "side_effect": "not_applied",
+            "retry": "after_correction",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "workspace precondition fixture"
+          }
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "apply_patch",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "applied",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "mutation fixture"
+          }
+        },
+        {
+          "kind": "host_verification_committed",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "indeterminate",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "produced",
+              "references": [
+                "artifact:host-pass"
+              ]
+            },
+            "artifacts": [],
+            "content": "host pass fixture"
+          },
+          "receipt": {
+            "id": "receipt:workspace-precondition"
+          }
+        }
+      ],
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "patch_parse_cannot_label_workspace_precondition",
+      "kind": "required_failure_sequence",
+      "required": {
+        "tool": "apply_patch",
+        "outcome": {
+          "failure_code": "workspace_precondition",
+          "invocation": "accepted",
+          "transport": "succeeded",
+          "operation": "failed",
+          "side_effect": "not_applied",
+          "retry": "after_correction"
+        }
+      },
+      "events": [
+        {
+          "kind": "tool_outcome_committed",
+          "name": "apply_patch",
+          "outcome": {
+            "failure_code": "patch_parse",
+            "invocation": "rejected",
+            "transport": "not_started",
+            "operation": "not_started",
+            "side_effect": "not_applied",
+            "retry": "after_correction",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "patch parse fixture"
+          }
+        }
+      ],
+      "expected_valid": false,
+      "expected_reasons": [
+        "required_failure_signature"
+      ]
+    },
+    {
+      "case_id": "verifier_failure_preserves_external_side_effect_uncertainty",
+      "kind": "required_failure_sequence",
+      "required": {
+        "tool": "run_verifiers",
+        "outcome": {
+          "failure_code": "verifier_failed",
+          "invocation": "accepted",
+          "transport": "succeeded",
+          "operation": "failed",
+          "side_effect": "indeterminate",
+          "retry": "unsafe"
+        }
+      },
+      "events": [
+        {
+          "kind": "tool_prepared",
+          "workspace_access": "may_write",
+          "invocation": {
+            "name": "run_verifiers",
+            "arguments": {
+              "parsed": {
+                "profile": "exact"
+              }
+            }
+          }
+        },
+        {
+          "kind": "tool_execution_started",
+          "operation_id": "operation:verifier-failure"
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "run_verifiers",
+          "outcome": {
+            "failure_code": "verifier_failed",
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "failed",
+            "side_effect": "indeterminate",
+            "retry": "unsafe",
+            "evidence": {
+              "status": "produced",
+              "references": [
+                "artifact:verifier-failure"
+              ]
+            },
+            "artifacts": [],
+            "content": "verifier failure fixture"
+          }
+        },
+        {
+          "kind": "tool_outcome_committed",
+          "name": "edit_file",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "applied",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "not_applicable",
+              "references": []
+            },
+            "artifacts": [],
+            "content": "mutation fixture"
+          }
+        },
+        {
+          "kind": "host_verification_committed",
+          "outcome": {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "indeterminate",
+            "retry": "not_needed",
+            "evidence": {
+              "status": "produced",
+              "references": [
+                "artifact:host-pass"
+              ]
+            },
+            "artifacts": [],
+            "content": "host pass fixture"
+          },
+          "receipt": {
+            "id": "receipt:verifier-recovery"
+          }
+        }
+      ],
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "verifier_failure_cannot_be_rewritten_as_non_applied",
+      "kind": "required_failure_sequence",
+      "required": {
+        "tool": "run_verifiers",
+        "outcome": {
+          "failure_code": "verifier_failed",
+          "invocation": "accepted",
+          "transport": "succeeded",
+          "operation": "failed",
+          "side_effect": "indeterminate",
+          "retry": "unsafe"
+        }
+      },
+      "events": [
+        {
+          "kind": "tool_outcome_committed",
+          "name": "run_verifiers",
+          "outcome": {
+            "failure_code": "verifier_failed",
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "failed",
+            "side_effect": "not_applied",
+            "retry": "after_correction",
+            "evidence": {
+              "status": "produced",
+              "references": [
+                "artifact:verifier-failure"
+              ]
+            },
+            "artifacts": [],
+            "content": "invalid observer rewrite fixture"
+          }
+        }
+      ],
+      "expected_valid": false,
+      "expected_reasons": [
+        "required_failure_signature"
+      ]
+    },
+    {
+      "case_id": "writer_worktree_assignment_uses_canonical_scope",
+      "kind": "writer_assignment",
+      "observed": {
+        "access": "isolated_write",
+        "root_workspace": "/workspace/root",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worktree_path": "/workspace/writer",
+        "root_branch": "main",
+        "branch": "codewhale/writer-task",
+        "allowed_paths": [
+          "loader.py",
+          "settings.py",
+          "test_loader.py",
+          "test_settings.py"
+        ],
+        "owner_token": "owner:writer-task"
+      },
+      "expected": {
+        "access": "isolated_write",
+        "root_workspace": "/workspace/root",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worktree_path": "/workspace/writer",
+        "root_branch": "main",
+        "branch": "codewhale/writer-task",
+        "allowed_paths": [
+          "test_settings.py",
+          "settings.py",
+          "test_loader.py",
+          "loader.py"
+        ],
+        "owner_token": "owner:writer-task"
+      },
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "writer_worktree_assignment_rejects_wrong_workspace",
+      "kind": "writer_assignment",
+      "observed": {
+        "access": "isolated_write",
+        "root_workspace": "/workspace/root",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worktree_path": "/workspace/root",
+        "root_branch": "main",
+        "branch": "codewhale/writer-task",
+        "allowed_paths": [
+          "loader.py"
+        ],
+        "owner_token": "owner:writer-task"
+      },
+      "expected": {
+        "access": "isolated_write",
+        "root_workspace": "/workspace/root",
+        "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worktree_path": "/workspace/writer",
+        "root_branch": "main",
+        "branch": "codewhale/writer-task",
+        "allowed_paths": [
+          "loader.py"
+        ],
+        "owner_token": "owner:writer-task"
+      },
+      "expected_valid": false,
+      "expected_reasons": [
+        "writer_assignment_mismatch"
+      ]
+    },
+    {
+      "case_id": "tool_started_crash_reopens_exact_prefix",
+      "kind": "exact_reopen",
+      "crash_window": "after_tool_execution_started_before_outcome",
+      "before": [
+        {
+          "schema_version": 18,
+          "seq": 1,
+          "event": {
+            "kind": "tool_prepared",
+            "operation_id": "operation:crash",
+            "workspace_access": "may_write"
+          }
+        },
+        {
+          "schema_version": 18,
+          "seq": 2,
+          "event": {
+            "kind": "tool_execution_started",
+            "operation_id": "operation:crash"
+          }
+        }
+      ],
+      "reopened": [
+        {
+          "schema_version": 18,
+          "seq": 1,
+          "event": {
+            "kind": "tool_prepared",
+            "operation_id": "operation:crash",
+            "workspace_access": "may_write"
+          }
+        },
+        {
+          "schema_version": 18,
+          "seq": 2,
+          "event": {
+            "kind": "tool_execution_started",
+            "operation_id": "operation:crash"
+          }
+        }
+      ],
+      "expected_valid": true,
+      "expected_reasons": []
+    },
+    {
+      "case_id": "writer_reopen_rejects_lifecycle_drift",
+      "kind": "exact_reopen",
+      "crash_window": "after_writer_workspace_created",
+      "before": [
+        {
+          "schema_version": 18,
+          "seq": 1,
+          "event": {
+            "kind": "agent_workspace_created",
+            "task_id": "writer-task",
+            "assignment": {
+              "access": "isolated_write",
+              "worktree_path": "/workspace/writer",
+              "allowed_paths": [
+                "loader.py"
+              ]
+            }
+          }
+        }
+      ],
+      "reopened": [
+        {
+          "schema_version": 18,
+          "seq": 1,
+          "event": {
+            "kind": "agent_workspace_created",
+            "task_id": "writer-task",
+            "assignment": {
+              "access": "isolated_write",
+              "worktree_path": "/workspace/other",
+              "allowed_paths": [
+                "loader.py"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_valid": false,
+      "expected_reasons": [
+        "sqlite_reopen_mismatch"
+      ]
+    }
+  ]
+}

@@ -1021,7 +1021,9 @@ fn run_verifiers_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_protocol::agent_runtime::{RunId, ToolArguments, ToolInvocationStatus};
+    use codewhale_protocol::agent_runtime::{
+        RunId, ToolArguments, ToolInvocationStatus, ToolTransportStatus,
+    };
 
     fn invocation(name: &str, value: Value) -> ToolInvocation {
         ToolInvocation {
@@ -1448,6 +1450,35 @@ mod tests {
         assert_eq!(stale.side_effect, ToolSideEffectStatus::NotApplied);
         assert_eq!(stale.retry, ToolRetryDisposition::AfterCorrection);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "external\n");
+
+        let patch_path = temp.path().join("patch.txt");
+        std::fs::write(&patch_path, "current\n").unwrap();
+        let patch = invocation(
+            "apply_patch",
+            json!({
+                "path":"patch.txt",
+                "fuzz":0,
+                "patch":"@@ -1 +1 @@\n-stale\n+changed"
+            }),
+        );
+        assert!(
+            executor.preflight(&patch).is_none(),
+            "parse-valid stale patch must cross the execution boundary"
+        );
+        let precondition = executor
+            .execute(patch, CancellationToken::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            precondition.failure_code,
+            Some(ToolFailureCode::WorkspacePrecondition)
+        );
+        assert_eq!(precondition.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(precondition.transport, ToolTransportStatus::Succeeded);
+        assert_eq!(precondition.operation, ToolOperationStatus::Failed);
+        assert_eq!(precondition.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(precondition.retry, ToolRetryDisposition::AfterCorrection);
+        assert_eq!(std::fs::read_to_string(patch_path).unwrap(), "current\n");
     }
 
     #[test]

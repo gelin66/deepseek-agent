@@ -1376,6 +1376,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!outcome.is_success());
+        assert_eq!(outcome.failure_code, Some(ToolFailureCode::VerifierFailed));
+        assert_eq!(outcome.operation, ToolOperationStatus::Failed);
+        assert_eq!(outcome.side_effect, ToolSideEffectStatus::Indeterminate);
+        assert_eq!(outcome.retry, ToolRetryDisposition::Unsafe);
         assert!(!workspace.path().join("__pycache__").exists());
         assert!(!workspace.path().join(".pytest_cache").exists());
         assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
@@ -1387,7 +1391,7 @@ mod tests {
                 .map(|value| value.verdict),
             Some(codewhale_protocol::task::VerifierVerdict::Failed)
         );
-        assert_eq!(outcome.side_effect, ToolSideEffectStatus::Indeterminate);
+        outcome.validate().unwrap();
     }
 
     #[tokio::test]

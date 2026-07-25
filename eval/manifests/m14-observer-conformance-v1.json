@@ -1,0 +1,54 @@
+{
+  "schema": "codewhale.eval.m14-observer-conformance.v1",
+  "suite_id": "m14-observer-conformance-v1",
+  "frozen_at_utc": "2026-07-25T00:00:00Z",
+  "source_identity": {
+    "baseline_revision": "e1aa0fe9e75dfaeabdd0a3455bcb6b10db522015",
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3
+  },
+  "slice_contract": {
+    "real_problem": "M13 closed after three independent evaluator-contract mismatches, while its closed live campaign still contains an observer assertion that rewrites every required failure as not_applied/after_correction.",
+    "acceptance": [
+      "one offline corpus covers semantic set canonicalization, patch parse versus workspace precondition, verifier side-effect and retry disposition, Writer worktree assignment, and exact crash/reopen",
+      "every observer label is an exact projection of canonical event kinds, ToolOutcome typed axes, AgentWorkspaceAssignment fields, or byte-equivalent reopened facts",
+      "the closed M13 live acquisition path, its incorrect generic disposition assertion, and unreachable M13 trajectory branch are physically deleted",
+      "frozen M13 manifests, fixtures, summaries, and ignored raw remain immutable historical evidence",
+      "no credential, DeepSeek API, M13 raw, production model behavior, Runtime, Store, or protocol version changes"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the sole corrected fixed-Pro and offline observer Harness",
+    "old_path_replaced": "the closed --campaign m13 acquisition mode and required_failure_audit implicit not_applied/after_correction classifier",
+    "offline_evidence": [
+      "M14 observer corpus exact self-test",
+      "protocol ToolOutcome validation",
+      "production tool patch/precondition/verifier disposition tests",
+      "Runtime Writer scope canonicalization",
+      "State writer lifecycle SQLite reopen",
+      "process-level tool and Writer SIGKILL/reopen"
+    ],
+    "cutover_deletion": [
+      "--campaign m13 selection and live execution",
+      "M13 successor loader and nonexistent trajectory-report branch",
+      "implicit required_failure disposition classifier and M13-only self-tests",
+      "M13-only acquisition profile and false-success abort branch"
+    ],
+    "failed_candidate_deletion": "delete the M14 corpus mode and fixture; do not restore the M13 live campaign or reinterpret its frozen raw"
+  },
+  "corpus": {
+    "path": "eval/fixtures/m14-observer-conformance-v1.json",
+    "file_sha256": "sha256:40e58f5a14008fa98fe1a347e3e5f2e30ebec9780aaee0cfaa977cffb15b705b",
+    "schema": "codewhale.eval.m14-observer-conformance-corpus.v1",
+    "case_count": 12,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "canonical_owners": {
+    "tool_outcome": "crates/protocol/src/agent_runtime.rs",
+    "production_tool_projection": "crates/tools/src/production.rs and crates/tools/src/run_verifiers.rs",
+    "writer_scope": "crates/runtime/src/agent.rs and crates/orchestrator/src/workspace.rs",
+    "exact_replay": "crates/state"
+  }
+}

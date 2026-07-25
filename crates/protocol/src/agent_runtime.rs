@@ -3259,6 +3259,52 @@ mod tests {
         TaskGenerationId, VerifierPlan, VerifierStep,
     };
 
+    #[test]
+    fn m14_observer_corpus_uses_protocol_valid_typed_facts() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../eval/fixtures/m14-observer-conformance-v1.json"
+        ))
+        .expect("M14 observer corpus JSON");
+        assert_eq!(
+            corpus["stable_tool_outcome_fields"],
+            serde_json::json!([
+                "failure_code",
+                "invocation",
+                "transport",
+                "operation",
+                "side_effect",
+                "retry"
+            ])
+        );
+        let cases = corpus["cases"].as_array().expect("M14 cases");
+        assert_eq!(cases.len(), 12);
+        for case in cases {
+            if let Some(events) = case.get("events").and_then(Value::as_array) {
+                for event in events {
+                    let Some(outcome) = event.get("outcome") else {
+                        continue;
+                    };
+                    let outcome: ToolOutcome = serde_json::from_value(outcome.clone())
+                        .expect("corpus ToolOutcome must deserialize through protocol owner");
+                    outcome
+                        .validate()
+                        .expect("corpus ToolOutcome must satisfy protocol invariants");
+                }
+            }
+            if case["kind"] == "writer_assignment" {
+                let assignment: AgentWorkspaceAssignment =
+                    serde_json::from_value(case["observed"].clone())
+                        .expect("corpus Writer assignment must deserialize");
+                assert_eq!(
+                    assignment.validate().is_ok(),
+                    case["expected_valid"].as_bool().expect("expected_valid"),
+                    "{}",
+                    case["case_id"].as_str().expect("case id")
+                );
+            }
+        }
+    }
+
     fn known_workspace(generation: u64, digest: char) -> WorkspaceState {
         WorkspaceState {
             generation,

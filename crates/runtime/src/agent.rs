@@ -5732,7 +5732,7 @@ mod actor_capability_tests {
                 "prompt": " 调查调用链 ",
                 "type": "reviewer",
                 "workspace_access": "isolated_write",
-                "allowed_paths": ["src/lib.rs", "tests/case.rs"],
+                "allowed_paths": ["tests/case.rs", "src/lib.rs"],
                 "fork_context": true,
                 "allowed_tools": ["read_file", "apply_patch"],
                 "max_steps": 3,

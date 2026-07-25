@@ -3,13 +3,12 @@
 
 The default M9-C campaign remains byte-addressed to its frozen successor
 contract. ``--campaign m11`` selects the multi-language M11 loss baseline,
-``--campaign m12`` selects the corrected terminal-convergence reproduction,
-and ``--campaign m13`` selects the independent long-task recovery-loss
-baseline without creating a second evaluator. All campaigns exercise temporary
-Git repositories through canonical ``codewhale app-server --stdio`` and record
-terminal and RunStore facts before credential-free reopen, deterministic
-verification, or label derivation. They are regression label collectors, not
-product A/Bs.
+and ``--campaign m12`` selects the corrected terminal-convergence reproduction.
+``--observer-conformance`` runs the credential-free M14 corpus over typed
+canonical facts. Live campaigns exercise temporary Git repositories through
+canonical ``codewhale app-server --stdio`` and record terminal and RunStore
+facts before credential-free reopen, deterministic verification, or label
+derivation. They are regression label collectors, not product A/Bs.
 """
 
 from __future__ import annotations
@@ -49,34 +48,16 @@ def selected_campaign(arguments: list[str]) -> str:
             selected.append(argument.partition("=")[2])
     if not selected:
         return "m9c"
-    if len(selected) != 1 or selected[0] not in {
-        "m9c",
-        "m11",
-        "m12",
-        "m13",
-    }:
-        return "invalid"
+    if len(selected) != 1 or selected[0] not in {"m9c", "m11", "m12"}:
+        # Let argparse reject retired or unknown campaign names after the
+        # credential-free default contract has loaded.
+        return "m9c"
     return selected[0]
 
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
-CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m13"}
-if CAMPAIGN == "m13":
-    MANIFEST_PATH = ROOT / "eval/manifests/m13-long-task-loss-baseline-v2.json"
-    BASE_MANIFEST_PATH: Path | None = (
-        ROOT / "eval/manifests/m13-long-task-loss-baseline-v1.json"
-    )
-    MANIFEST_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline.v2"
-    BASE_MANIFEST_SCHEMA: str | None = (
-        "codewhale.eval.m13-long-task-loss-baseline.v1"
-    )
-    JOURNAL_SCHEMA = "codewhale.eval.m13-long-task-loss-baseline-journal.v2"
-    ADMISSION_SCHEMA = "codewhale.eval.m13-long-task-loss-live-admission.v2"
-    RUN_API = 12
-    EVENT_API = 18
-    STATE_SCHEMA = 24
-    EXEC_STREAM = 3
-elif CAMPAIGN == "m12":
+CURRENT_LOSS_CAMPAIGNS = {"m11", "m12"}
+if CAMPAIGN == "m12":
     MANIFEST_PATH = (
         ROOT
         / "eval/manifests/m12-terminal-convergence-reproduction-v1.json"
@@ -126,15 +107,7 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m13":
-    TRAJECTORY_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m13-long-task-loss-analysis-v2.json"
-    )
-    TRAJECTORY_MANIFEST_SCHEMA = (
-        "codewhale.eval.m13-long-task-loss-analysis.v2"
-    )
-    TRAJECTORY_REPORT_SCHEMA = "codewhale.eval.m13-long-task-loss-report.v2"
-elif CAMPAIGN == "m12":
+if CAMPAIGN == "m12":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT
         / "eval/manifests/m12-terminal-convergence-analysis-v1.json"
@@ -165,6 +138,21 @@ else:
     TRAJECTORY_REPORT_SCHEMA = (
         "codewhale.eval.m10-f-trajectory-loss-report.v1"
     )
+OBSERVER_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m14-observer-conformance-v1.json"
+)
+OBSERVER_MANIFEST_SCHEMA = "codewhale.eval.m14-observer-conformance.v1"
+OBSERVER_CORPUS_SCHEMA = (
+    "codewhale.eval.m14-observer-conformance-corpus.v1"
+)
+STABLE_TOOL_OUTCOME_FIELDS = (
+    "failure_code",
+    "invocation",
+    "transport",
+    "operation",
+    "side_effect",
+    "retry",
+)
 MODEL = "deepseek-v4-pro"
 REASONING = "high"
 ZERO_HASH = "sha256:" + ("0" * 64)
@@ -289,105 +277,10 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
     return value
 
 
-def load_m13_successor_manifest() -> dict[str, Any]:
-    require(
-        BASE_MANIFEST_PATH is not None
-        and BASE_MANIFEST_SCHEMA is not None,
-        "base_manifest_unavailable",
-    )
-    successor = read_json_object(MANIFEST_PATH, "manifest_unavailable")
-    require(
-        set(successor)
-        == {
-            "schema",
-            "suite_id",
-            "frozen_at_utc",
-            "inherited_contract",
-            "slice_contract",
-            "correction",
-            "task_overrides",
-        }
-        and successor.get("schema") == MANIFEST_SCHEMA,
-        "manifest_schema_invalid",
-    )
-    inherited = successor.get("inherited_contract")
-    require(
-        isinstance(inherited, dict)
-        and inherited.get("path")
-        == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
-        and inherited.get("file_sha256") == file_hash(BASE_MANIFEST_PATH),
-        "inherited_manifest_identity_invalid",
-    )
-    base = read_json_object(
-        BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
-    )
-    require(
-        base.get("schema") == BASE_MANIFEST_SCHEMA,
-        "inherited_manifest_schema_invalid",
-    )
-    tasks = base.get("tasks")
-    require(isinstance(tasks, dict), "inherited_task_identity_invalid")
-    base_task = tasks.get("typescript_patch_conflict")
-    require(
-        isinstance(base_task, dict)
-        and inherited.get("required_failure_sha256")
-        == canonical_hash(base_task.get("required_failure"))
-        and inherited.get("objective_sha256")
-        == canonical_hash(base_task.get("objective")),
-        "inherited_task_identity_invalid",
-    )
-    overrides = successor.get("task_overrides")
-    require(
-        isinstance(overrides, dict)
-        and set(overrides) == {"typescript_patch_conflict"}
-        and isinstance(overrides["typescript_patch_conflict"], dict)
-        and set(overrides["typescript_patch_conflict"])
-        == {"objective", "required_failure"},
-        "task_override_invalid",
-    )
-    override = overrides["typescript_patch_conflict"]
-    require(
-        override.get("required_failure")
-        == {
-            "tool": "apply_patch",
-            "failure_code": "workspace_precondition",
-            "parsed_arguments": {
-                "path": "src/window.ts",
-                "fuzz": 0,
-                "patch": (
-                    "@@ -1,2 +1,2 @@\n"
-                    "-export function staleWindow(value: string): "
-                    "Window | null {\n"
-                    "+export function parseWindow(value: string): "
-                    "Window | null {\n"
-                    "   return null;"
-                ),
-            },
-        }
-        and isinstance(override.get("objective"), str)
-        and "@@ -1,2 +1,2 @@" in override["objective"]
-        and "@@ -1,3 +1,3 @@" not in override["objective"],
-        "task_override_invalid",
-    )
-    materialized = json.loads(json.dumps(base, ensure_ascii=False))
-    materialized["schema"] = successor["schema"]
-    materialized["suite_id"] = successor["suite_id"]
-    materialized["frozen_at_utc"] = successor["frozen_at_utc"]
-    materialized["inherited_contract"] = inherited
-    materialized["slice_contract"] = successor["slice_contract"]
-    materialized["correction"] = successor["correction"]
-    materialized["tasks"]["typescript_patch_conflict"].update(override)
-    return materialized
-
-
 def load_manifest() -> dict[str, Any]:
-    require(CAMPAIGN in {"m9c", "m11", "m12", "m13"}, "campaign_invalid")
+    require(CAMPAIGN in {"m9c", "m11", "m12"}, "campaign_invalid")
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
-        manifest = (
-            load_m13_successor_manifest()
-            if CAMPAIGN == "m13"
-            else read_json_object(MANIFEST_PATH, "manifest_unavailable")
-        )
+        manifest = read_json_object(MANIFEST_PATH, "manifest_unavailable")
         require(
             manifest.get("schema") == MANIFEST_SCHEMA,
             "manifest_schema_invalid",
@@ -403,16 +296,7 @@ def load_manifest() -> dict[str, Any]:
             and source.get("exec_stream") == EXEC_STREAM,
             "protocol_identity_invalid",
         )
-        if CAMPAIGN == "m13":
-            expected_tasks = [
-                "rust_crossfile_proxy",
-                "typescript_crossfile_cursor",
-                "python_verifier_recovery",
-                "python_ambiguous_edit",
-                "typescript_patch_conflict",
-                "writer_config_migration",
-            ]
-        elif CAMPAIGN == "m12":
+        if CAMPAIGN == "m12":
             expected_tasks = [
                 "rust_endpoint",
                 "typescript_cache",
@@ -613,7 +497,7 @@ def safe_env() -> dict[str, str]:
 
 def prepare_evaluation_home(home: Path) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    if CAMPAIGN not in {"m12", "m13"}:
+    if CAMPAIGN != "m12":
         return
     rustup_source = (Path.home() / ".rustup").resolve()
     require(
@@ -636,7 +520,7 @@ def evaluation_environment(home: Path) -> dict[str, str]:
 
 
 def verifier_environment_contract() -> dict[str, Any] | None:
-    if CAMPAIGN not in {"m12", "m13"}:
+    if CAMPAIGN != "m12":
         return None
     rustup_source = (Path.home() / ".rustup").resolve()
     require(rustup_source.is_dir(), "rustup_home_unavailable")
@@ -723,7 +607,7 @@ def external_verifier(
 ) -> dict[str, Any]:
     started = time.monotonic()
     environment = safe_env()
-    if CAMPAIGN in {"m12", "m13"}:
+    if CAMPAIGN == "m12":
         require(
             evaluation_home is not None,
             "verifier_environment_missing",
@@ -760,7 +644,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         external_verifier(
             task_id,
             destination,
-            verifier_home if CAMPAIGN in {"m12", "m13"} else None,
+            verifier_home if CAMPAIGN == "m12" else None,
         )["passed"]
         is False,
         "fixture_must_fail_before_task",
@@ -785,11 +669,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         date = "2026-07-19T00:00:00Z"
         message = "fixture"
         init = ["git", "init", "-q"]
-    elif profile in {
-        "m11-2026-07-25",
-        "m12-2026-07-25",
-        "m13-2026-07-25",
-    }:
+    elif profile in {"m11-2026-07-25", "m12-2026-07-25"}:
         date = "2026-07-25T00:00:00Z"
         milestone = profile.split("-", maxsplit=1)[0].upper()
         message = f"{milestone} frozen fixture {source.name}"
@@ -1530,92 +1410,6 @@ def child_arguments_audit(
     return not reasons, reasons
 
 
-def required_failure_audit(
-    task_id: str, events: list[dict[str, Any]]
-) -> tuple[bool | None, list[str]]:
-    required = TASKS[task_id].get("required_failure")
-    if not isinstance(required, dict):
-        return None, []
-    expected_tool = required.get("tool")
-    expected_code = required.get("failure_code")
-    require(
-        isinstance(expected_tool, str) and isinstance(expected_code, str),
-        "required_failure_contract_invalid",
-        {"task_id": task_id},
-    )
-    expected_arguments = required.get("parsed_arguments")
-    require(
-        expected_arguments is None or isinstance(expected_arguments, dict),
-        "required_failure_contract_invalid",
-        {"task_id": task_id},
-    )
-    matching_failures: list[int] = []
-    matching_prepared: list[int] = []
-    applied_mutations: list[int] = []
-    host_passes: list[int] = []
-    write_prepared: list[int] = []
-    side_effect_valid = True
-    for index, stored in enumerate(events):
-        event = stored["event"]
-        kind = event_kind(stored)
-        if kind == "tool_prepared":
-            name = tool_name(event)
-            if (
-                event.get("workspace_access") == "may_write"
-                and name != "agent"
-            ):
-                write_prepared.append(index)
-            if name == expected_tool and (
-                expected_arguments is None
-                or parsed_tool_arguments(event) == expected_arguments
-            ):
-                matching_prepared.append(index)
-        elif kind == "tool_outcome_committed":
-            outcome = event.get("outcome", {})
-            if (
-                event.get("name") == expected_tool
-                and outcome.get("failure_code") == expected_code
-                and not tool_outcome_success(outcome)
-            ):
-                matching_failures.append(index)
-                side_effect_valid = side_effect_valid and (
-                    outcome.get("side_effect") == "not_applied"
-                    and outcome.get("retry") == "after_correction"
-                )
-            if (
-                event.get("name") in MAY_WRITE_TOOLS
-                and outcome.get("side_effect") == "applied"
-            ):
-                applied_mutations.append(index)
-        elif (
-            kind == "host_verification_committed"
-            and event.get("receipt") is not None
-            and tool_outcome_success(event.get("outcome"))
-        ):
-            host_passes.append(index)
-    reasons: list[str] = []
-    if len(matching_failures) != 1:
-        reasons.append("required_failure_cardinality")
-    if not side_effect_valid:
-        reasons.append("required_failure_disposition")
-    if expected_arguments is not None:
-        if len(matching_prepared) != 1:
-            reasons.append("required_failure_arguments")
-        elif write_prepared and matching_prepared[0] != write_prepared[0]:
-            reasons.append("required_failure_not_first_write")
-    ordered = bool(
-        matching_failures
-        and applied_mutations
-        and host_passes
-        and matching_failures[0]
-        < applied_mutations[0]
-        < host_passes[-1]
-    )
-    if not ordered:
-        reasons.append("required_failure_mutation_host_pass_order")
-    return not reasons, reasons
-
-
 def root_lane_audit(
     task_id: str, facts: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1627,13 +1421,7 @@ def root_lane_audit(
         reasons.append("root_lane_unexpected_child")
     if event_values(events, "agent_task_prepared"):
         reasons.append("root_lane_agent_task")
-    required_recovery, required_reasons = required_failure_audit(
-        task_id, events
-    )
-    reasons.extend(required_reasons)
-    if required_recovery is not None:
-        recovery_valid = required_recovery
-    elif task_id == "root_recovery":
+    if task_id == "root_recovery":
         failed_verifier_positions: list[int] = []
         mutation_positions: list[int] = []
         host_pass_positions: list[int] = []
@@ -1860,6 +1648,269 @@ def writer_allowed_paths_match(
     return observed == sorted(observed) and observed == sorted(expected)
 
 
+def typed_outcome_signature(outcome: Any) -> dict[str, Any] | None:
+    if not isinstance(outcome, dict):
+        return None
+    return {
+        field: outcome.get(field)
+        for field in STABLE_TOOL_OUTCOME_FIELDS
+    }
+
+
+def observer_required_failure_sequence(
+    case: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    required = case.get("required")
+    events = case.get("events")
+    require(
+        isinstance(required, dict) and isinstance(events, list),
+        "observer_required_failure_contract_invalid",
+        {"case_id": case.get("case_id")},
+    )
+    expected_tool = required.get("tool")
+    expected_outcome = required.get("outcome")
+    expected_arguments = required.get("parsed_arguments")
+    require(
+        isinstance(expected_tool, str)
+        and isinstance(expected_outcome, dict)
+        and tuple(expected_outcome) == STABLE_TOOL_OUTCOME_FIELDS
+        and expected_outcome.get("failure_code") is not None
+        and (
+            expected_arguments is None
+            or isinstance(expected_arguments, dict)
+        ),
+        "observer_required_failure_contract_invalid",
+        {"case_id": case.get("case_id")},
+    )
+    matching_failures: list[int] = []
+    same_tool_failures: list[int] = []
+    matching_prepared: list[int] = []
+    write_prepared: list[int] = []
+    applied_mutations: list[int] = []
+    host_passes: list[int] = []
+    for index, event in enumerate(events):
+        require(
+            isinstance(event, dict) and isinstance(event.get("kind"), str),
+            "observer_event_invalid",
+            {"case_id": case.get("case_id"), "event_index": index},
+        )
+        kind = event["kind"]
+        if kind == "tool_prepared":
+            invocation = event.get("invocation", {})
+            name = invocation.get("name")
+            if (
+                event.get("workspace_access") == "may_write"
+                and name != "agent"
+            ):
+                write_prepared.append(index)
+            parsed = invocation.get("arguments", {}).get("parsed")
+            if name == expected_tool and (
+                expected_arguments is None or parsed == expected_arguments
+            ):
+                matching_prepared.append(index)
+        elif kind == "tool_outcome_committed":
+            outcome = event.get("outcome")
+            if (
+                event.get("name") == expected_tool
+                and isinstance(outcome, dict)
+                and not tool_outcome_success(outcome)
+            ):
+                same_tool_failures.append(index)
+                if typed_outcome_signature(outcome) == expected_outcome:
+                    matching_failures.append(index)
+            if (
+                event.get("name") in MAY_WRITE_TOOLS
+                and isinstance(outcome, dict)
+                and outcome.get("side_effect") == "applied"
+            ):
+                applied_mutations.append(index)
+        elif (
+            kind == "host_verification_committed"
+            and event.get("receipt") is not None
+            and tool_outcome_success(event.get("outcome"))
+        ):
+            host_passes.append(index)
+
+    reasons: list[str] = []
+    if len(matching_failures) != 1:
+        reasons.append(
+            "required_failure_signature"
+            if same_tool_failures
+            else "required_failure_cardinality"
+        )
+    if expected_arguments is not None:
+        if len(matching_prepared) != 1:
+            reasons.append("required_failure_arguments")
+        elif write_prepared and matching_prepared[0] != write_prepared[0]:
+            reasons.append("required_failure_not_first_write")
+    if len(matching_failures) == 1 and not (
+        applied_mutations
+        and host_passes
+        and matching_failures[0]
+        < applied_mutations[0]
+        < host_passes[-1]
+    ):
+        reasons.append("required_failure_mutation_host_pass_order")
+    return not reasons, sorted(set(reasons))
+
+
+def observer_case_audit(
+    case: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    kind = case.get("kind")
+    if kind == "semantic_string_set":
+        valid = writer_allowed_paths_match(
+            case.get("observed"), case.get("expected")
+        )
+        return (
+            valid,
+            [] if valid else ["semantic_set_not_canonical"],
+        )
+    if kind == "required_failure_sequence":
+        return observer_required_failure_sequence(case)
+    if kind == "writer_assignment":
+        observed = case.get("observed")
+        expected = case.get("expected")
+        require(
+            isinstance(observed, dict) and isinstance(expected, dict),
+            "observer_writer_assignment_invalid",
+            {"case_id": case.get("case_id")},
+        )
+        fields = set(expected) | set(observed)
+        scalar_fields = fields - {"allowed_paths"}
+        valid = (
+            set(observed) == set(expected)
+            and all(
+                observed.get(field) == expected.get(field)
+                for field in scalar_fields
+            )
+            and writer_allowed_paths_match(
+                observed.get("allowed_paths"),
+                expected.get("allowed_paths"),
+            )
+        )
+        return (
+            valid,
+            [] if valid else ["writer_assignment_mismatch"],
+        )
+    if kind == "exact_reopen":
+        valid = canonical_bytes(case.get("before")) == canonical_bytes(
+            case.get("reopened")
+        )
+        return (
+            valid,
+            [] if valid else ["sqlite_reopen_mismatch"],
+        )
+    raise EvaluationError(
+        "observer_case_kind_invalid",
+        {"case_id": case.get("case_id"), "kind": kind},
+    )
+
+
+def run_observer_conformance() -> int:
+    manifest = read_json_object(
+        OBSERVER_MANIFEST_PATH, "observer_manifest_unavailable"
+    )
+    require(
+        manifest.get("schema") == OBSERVER_MANIFEST_SCHEMA,
+        "observer_manifest_schema_invalid",
+    )
+    source = manifest.get("source_identity")
+    corpus_contract = manifest.get("corpus")
+    require(
+        isinstance(source, dict)
+        and source.get("run_api") == 12
+        and source.get("runtime_event") == 18
+        and source.get("state_schema") == 24
+        and source.get("exec_stream") == 3
+        and isinstance(corpus_contract, dict)
+        and corpus_contract.get("historical_raw_is_input") is False
+        and corpus_contract.get("credential_required") is False
+        and corpus_contract.get("network_required") is False,
+        "observer_manifest_contract_invalid",
+    )
+    corpus_path_value = corpus_contract.get("path")
+    require(
+        isinstance(corpus_path_value, str),
+        "observer_corpus_path_invalid",
+    )
+    corpus_path = (ROOT / corpus_path_value).resolve()
+    require(
+        repository_relative(corpus_path, "observer_corpus_path_invalid")
+        == corpus_path_value
+        and file_hash(corpus_path)
+        == corpus_contract.get("file_sha256"),
+        "observer_corpus_identity_invalid",
+    )
+    corpus = read_json_object(corpus_path, "observer_corpus_unavailable")
+    cases = corpus.get("cases")
+    require(
+        corpus.get("schema") == OBSERVER_CORPUS_SCHEMA
+        and corpus_contract.get("schema") == OBSERVER_CORPUS_SCHEMA
+        and corpus.get("stable_tool_outcome_fields")
+        == list(STABLE_TOOL_OUTCOME_FIELDS)
+        and isinstance(cases, list)
+        and len(cases) == corpus_contract.get("case_count"),
+        "observer_corpus_schema_invalid",
+    )
+    case_ids = [
+        case.get("case_id")
+        for case in cases
+        if isinstance(case, dict)
+    ]
+    require(
+        len(case_ids) == len(cases)
+        and all(isinstance(case_id, str) and case_id for case_id in case_ids)
+        and len(case_ids) == len(set(case_ids)),
+        "observer_case_identity_invalid",
+    )
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        valid, reasons = observer_case_audit(case)
+        require(
+            isinstance(case.get("expected_valid"), bool)
+            and isinstance(case.get("expected_reasons"), list)
+            and valid == case["expected_valid"]
+            and reasons == case["expected_reasons"],
+            "observer_case_result_mismatch",
+            {
+                "case_id": case["case_id"],
+                "valid": valid,
+                "reasons": reasons,
+            },
+        )
+        results.append(
+            {
+                "case_id": case["case_id"],
+                "kind": case["kind"],
+                "valid": valid,
+                "reasons": reasons,
+            }
+        )
+    report = {
+        "schema": "codewhale.eval.m14-observer-conformance-report.v1",
+        "status": "pass",
+        "manifest_sha256": file_hash(OBSERVER_MANIFEST_PATH),
+        "corpus_sha256": file_hash(corpus_path),
+        "cases": len(results),
+        "positive_cases": sum(result["valid"] for result in results),
+        "negative_cases": sum(not result["valid"] for result in results),
+        "results_sha256": canonical_hash(results),
+        "historical_raw_read": False,
+        "key_accessed": False,
+        "network_accessed": False,
+    }
+    print(
+        json.dumps(
+            report,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
 def safety_lane_audit(
     facts: dict[str, Any], verifier: dict[str, Any], changed: list[str]
 ) -> dict[str, Any]:
@@ -1936,12 +1987,6 @@ def derive_arm(
     run = facts["run"]
     terminal_state = run.get("terminal", {}).get("state")
     route = route_audit(task_id, facts)
-    if CAMPAIGN == "m13":
-        require(
-            route["valid"],
-            "route_identity_invalid",
-            {"task_id": task_id, "reasons": route["reasons"]},
-        )
     accounting = accounting_projection(task_id, run)
     if task["lane"] == "root":
         lane = root_lane_audit(task_id, facts)
@@ -3156,7 +3201,7 @@ def execute_arm(
             workspace,
             (
                 state_root / "home"
-                if CAMPAIGN in {"m12", "m13"}
+                if CAMPAIGN == "m12"
                 else None
             ),
         )
@@ -3225,13 +3270,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    if CAMPAIGN == "m13":
-        complete = all(
-            cell["false_success"] == 0
-            and cell["route_valid"] == runs_per_task
-            for cell in positive
-        )
-    elif CAMPAIGN == "m12":
+    if CAMPAIGN == "m12":
         complete = all(
             cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
@@ -3298,16 +3337,12 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
         "decision": (
             (
-                "keep_m13_current_long_task_loss_baseline"
-                if CAMPAIGN == "m13"
+                "keep_m12_terminal_convergence_reproduction"
+                if CAMPAIGN == "m12"
                 else (
-                    "keep_m12_terminal_convergence_reproduction"
-                    if CAMPAIGN == "m12"
-                    else (
-                        "keep_m11_current_loss_baseline"
-                        if CAMPAIGN == "m11"
-                        else "keep_fixed_pro_regression_baseline_successor"
-                    )
+                    "keep_m11_current_loss_baseline"
+                    if CAMPAIGN == "m11"
+                    else "keep_fixed_pro_regression_baseline_successor"
                 )
             )
             if complete
@@ -3384,7 +3419,7 @@ def load_admission(
             }
         )
         and (
-            CAMPAIGN not in {"m12", "m13"}
+            CAMPAIGN != "m12"
             or admission.get("verifier_environment_contract_sha256")
             == canonical_hash(verifier_environment_contract())
         )
@@ -3683,8 +3718,8 @@ def run_self_test() -> int:
                 "outcome": {
                     **accepted,
                     "operation": "failed",
-                    "side_effect": "not_applied",
-                    "retry": "after_correction",
+                    "side_effect": "indeterminate",
+                    "retry": "unsafe",
                     "failure_code": "verifier_failed",
                 },
             }
@@ -3725,67 +3760,6 @@ def run_self_test() -> int:
             not missing_host_pass["valid"],
             "self_test_missing_host_temporal_pass_accepted",
         )
-    for task_id, task in TASKS.items():
-        required = task.get("required_failure")
-        if not isinstance(required, dict):
-            continue
-        expected_arguments = required.get("parsed_arguments")
-        prepared = {
-            "event": {
-                "kind": "tool_prepared",
-                "workspace_access": (
-                    "may_write"
-                    if required["tool"] in MAY_WRITE_TOOLS
-                    else "read_only"
-                ),
-                "invocation": {
-                    "name": required["tool"],
-                    "call_id": f"required-{task_id}",
-                    "arguments": {
-                        "parsed": expected_arguments or {},
-                        "raw": "{}",
-                    },
-                },
-            }
-        }
-        failed = {
-            "event": {
-                "kind": "tool_outcome_committed",
-                "name": required["tool"],
-                "outcome": {
-                    **accepted,
-                    "operation": "failed",
-                    "side_effect": "not_applied",
-                    "retry": "after_correction",
-                    "failure_code": required["failure_code"],
-                },
-            }
-        }
-        required_events = [
-            prepared,
-            failed,
-            temporal_events[1],
-            temporal_events[2],
-        ]
-        required_lane = root_lane_audit(
-            task_id,
-            {"root_events": required_events, "children": []},
-        )
-        require(
-            required_lane["valid"]
-            and required_lane["recovery_order_valid"] is True,
-            "self_test_required_failure_pass_rejected",
-            {"task_id": task_id, "reasons": required_lane["reasons"]},
-        )
-        missing_failure = root_lane_audit(
-            task_id,
-            {"root_events": required_events[2:], "children": []},
-        )
-        require(
-            not missing_failure["valid"],
-            "self_test_required_failure_missing_accepted",
-            {"task_id": task_id},
-        )
     if CAMPAIGN == "m9c":
         require(
             BASE_MANIFEST_PATH is not None
@@ -3813,27 +3787,7 @@ def run_self_test() -> int:
         },
         "self_test_fixture_identity",
     )
-    if CAMPAIGN == "m13":
-        writer_paths = TASKS["writer_config_migration"]["allowed_paths"]
-        require(
-            writer_paths != sorted(writer_paths),
-            "self_test_writer_scope_order_fixture_missing",
-        )
-        require(
-            writer_allowed_paths_match(sorted(writer_paths), writer_paths),
-            "self_test_writer_scope_set_rejected",
-        )
-        require(
-            not writer_allowed_paths_match(writer_paths, writer_paths),
-            "self_test_noncanonical_writer_scope_accepted",
-        )
-        require(
-            not writer_allowed_paths_match(
-                sorted(writer_paths[:-1]), writer_paths
-            ),
-            "self_test_changed_writer_scope_accepted",
-        )
-    if CAMPAIGN in {"m12", "m13"}:
+    if CAMPAIGN == "m12":
         with tempfile.TemporaryDirectory(
             prefix=f"codewhale-{CAMPAIGN}-toolchain-home-"
         ) as raw_home:
@@ -4363,14 +4317,6 @@ def run_formal(args: argparse.Namespace) -> int:
                         scheduled,
                         journal,
                     )
-                    if CAMPAIGN == "m13" and arm["false_success"]:
-                        raise EvaluationError(
-                            "false_success_observed",
-                            {
-                                "task_id": arm["task_id"],
-                                "arm_index": arm["arm_index"],
-                            },
-                        )
                 except EvaluationError as error:
                     journal.emit(
                         {
@@ -4400,13 +4346,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11", "m12", "m13"),
+        choices=("m9c", "m11", "m12"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--freeze-report", action="store_true")
     mode.add_argument("--trajectory-report", action="store_true")
+    mode.add_argument("--observer-conformance", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
@@ -4436,6 +4383,8 @@ def main() -> int:
             return run_freeze_report()
         if args.trajectory_report:
             return run_trajectory_report()
+        if args.observer_conformance:
+            return run_observer_conformance()
         require(args.binary, "binary_required")
         if args.dry_run:
             return run_dry(args)

@@ -21,6 +21,7 @@ Key 或联网：
 ```bash
 python3 scripts/eval-m9b-fixed-pro-regression.py --self-test
 python3 scripts/eval-m9b-fixed-pro-regression.py --freeze-report
+python3 scripts/eval-m9b-fixed-pro-regression.py --observer-conformance
 ```
 
 M9-B v1 在正式第 2 个完整 arm 暴露 read-only/Writer observer 分类错误，并按冻结规则在
@@ -28,6 +29,12 @@ M9-B v1 在正式第 2 个完整 arm 暴露 read-only/Writer observer 分类错�
 会 fail closed，不能用它续跑、补样或拼接旧 raw。fresh paid successor 必须先冻结新的
 manifest、candidate/admission 和 raw path，从 position 1 开始。停止证据与删除边界见
 [M9-B fixed-Pro coding regression baseline](summaries/m9-b-fixed-pro-regression-baseline-2026-07-24.md)。
+
+M13 已因三次 evaluator-contract mismatch 关闭；当前 Harness 不再提供
+`--campaign m13`，也不能读取或拼接其 frozen raw。M14 的
+`--observer-conformance` 只读取提交的离线 corpus，并从 canonical event kind、
+`ToolOutcome` typed axes、Writer assignment 与 exact reopened facts 派生结果；它不接收
+binary、Key、admission 或 output 参数，也不联网。
 
 M5-A 的 canonical TaskContract/EvidenceReceipt 不能由普通 Host-only exec A/B 验收。
 专用评测器通过 app-server Run API v4/v5 给 baseline/candidate 提供相同 model-visible
