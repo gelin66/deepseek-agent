@@ -2405,6 +2405,41 @@ prompt、retry、Runtime/Store 状态或第二 analyzer。冻结 raw/manifest �
 只增加 superseding correction。完整证据见
 [M12 terminal convergence reproduction](../../eval/summaries/m12-terminal-convergence-2026-07-25.md)。
 
+### M13 current long-task recovery-loss baseline
+
+M13 只做新的 current label acquisition，不把 M12 的单次已恢复失败当成 candidate。
+冻结矩阵为 6 tasks × 3 runs = 18 arms，固定同一 immutable binary、
+`deepseek-v4-pro/high`、Standard Chat、TaskContract、tool catalog、budget、verifier 和
+`maximum_reruns=0`。
+
+任务层为：
+
+- 两个独立 cross-file root debugging；
+- 一个必须先产生 `verifier_failed` 的 failed-write-pass root task；
+- 两个分别必须先产生 `ambiguous_edit` 与 stale-context
+  `workspace_precondition` 的 edit-conflict root task；
+- 一个四文件 explicit isolated Writer task。
+
+required failure 必须具有 `side_effect=not_applied`、`retry=after_correction`，并在第一
+次 applied mutation 与 final Host receipt 前发生。它是恢复测量触发器，不单独计作
+production loss。verified label 仍要求 terminal completed、exact external verifier、
+expected changed-file scope、latest-revision Host receipt、lane contract 与 fixed route。
+
+每个 arm 的 terminal、canonical Store、credential-free SQLite reopen、external verifier
+和 changed files 必须在 label 前持久化；request/usage/cache/cost accounting 必须完整。
+unknown billing、incomplete accounting、false success、identity/observer 歧义或成本门
+在下一 arm 前停止；不重跑、不补 mate、不续跑、不重采样、不拼接历史 raw。
+
+候选门保持约束优化：只有相同 stable product loss code 至少跨两个独立 task ID 重复，
+且一个现有 owner、一个 treatment variable、一个 deterministic fixture 和一个
+cutover deletion 同时成立，才返回 candidate audit；否则是
+`insufficient_repeated_current_loss`，production delta 必须为零。
+
+当前离线状态：6/6 fixture fail-before、Git base/hash 重建、forced-failure ordering、
+isolated Rust environment、journal crash/tamper 与 Harness self-test 已通过；
+credential/API=0。正式 acquisition 结果与 trajectory decision 尚未产生。冻结事实见
+[M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

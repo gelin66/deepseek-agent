@@ -3168,6 +3168,34 @@ M12 只纠正 M11 环境身份并复现假设，不建立 product treatment：
 后续候选必须来自新的 accounting-complete canonical trajectory，并先满足同一 stable
 current loss 至少跨两个独立 task 重复；不得继续围绕 M11 粗粒度 label 补样。
 
+#### M13：长任务恢复损失基线
+
+M13 当前只冻结新的 acquisition contract，不先写 recovery treatment：
+
+- 继续复用 `scripts/eval-m9b-fixed-pro-regression.py` 唯一 corrected Harness；
+  `--campaign m13` 选择 6 个独立任务，默认 M9-C/M11/M12 contract 不变；
+- 任务覆盖两项跨文件调试、一项 deterministic verifier fail-before/write/pass、两项
+  typed 编辑冲突恢复和一个显式 isolated Writer；每项 3 次，共 18 arms；
+- 所有 root/Writer request 显式冻结 `deepseek-v4-pro/high`，共享同一
+  AgentApplication、AgentRuntime、RunStore、Standard Chat sender、工具目录和
+  TaskContract/EvidenceReceipt owner；
+- Host 与 external verifier 沿用 M12 的相同隔离 `HOME` 与显式 Rust 1.97.0 identity；
+  每个 fixture 必须 fail-before、Git base/hash 可重建且 verifier 不污染 tree；
+- `ambiguous_edit`、stale-context `workspace_precondition` 和 `verifier_failed` 是冻结任务
+  协议，用来观察 current typed feedback 后的恢复；指定失败必须 non-applied，并先于首次
+  effective mutation 与 final Host receipt；
+- unknown billing、incomplete accounting、false success、identity/observer 歧义或成本门
+  立即在下一 arm 前停止，`maximum_reruns=0`，不补 mate、不续跑、不拼接；
+- 只有同一 stable current product loss 至少跨两个独立 task 重复，且能指定单一 owner、
+  单变量 treatment、deterministic fixture 与 old-path deletion，才准许后续 vertical
+  slice；否则关闭假设，不新增 controller。
+
+2026-07-25 官方复核确认 production 继续使用
+`https://api.deepseek.com/chat/completions`、`deepseek-v4-pro/high`。7 月 24 日退役的是
+legacy model alias，不是 ChatCompletions。当前 production/schema/config delta=0，
+Key/API=0；完整冻结契约见
+[M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
+
 ### 调优
 
 - release benchmark 持续验证 qualified real coding evidence、current exact-production

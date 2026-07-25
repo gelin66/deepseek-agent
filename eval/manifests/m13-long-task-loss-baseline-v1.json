@@ -1,0 +1,443 @@
+{
+  "schema": "codewhale.eval.m13-long-task-loss-baseline.v1",
+  "suite_id": "m13-long-task-loss-baseline-v1",
+  "frozen_at_utc": "2026-07-25T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "db3338bcdc7b1a37f72e76e0fd2606423182b9ea",
+    "starting_tree": "4122511561c25073567e085dfb97105a9c5fa275",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 18,
+    "state_schema": 24,
+    "exec_stream": 3,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.9.6",
+    "cargo_lock_sha256": "sha256:f7fe42f3cd6c64bf01b3ca089b2a2767378ad49b14769d2454a0727ea998c8e0",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:b9ab949efcb10a0405393d0a16f8b6e1dbb232869085b0f988c45f5139864668",
+    "roadmap": "sha256:5fae7925d583f8bc83329a4d7386fde96ad5675969d8436852ab38f420c9a89d",
+    "evaluation": "sha256:2d3d32b0295e0ed57713663ed59849c9a2c03499f2ca5e06a5582514bdcf78da",
+    "current_architecture": "sha256:a94805f889374e483b5ce7f7be439befb757188d3f7434b31eed623777385d10"
+  },
+  "slice_contract": {
+    "real_problem": "M12 removed the only apparent current product loss by proving it was an evaluator environment mismatch. CodeWhale therefore lacks independent accounting-complete long-task evidence showing whether cross-file debugging, verifier recovery, edit-conflict correction, or explicit Writer execution still loses verified outcomes after the current owner-specific typed recovery mechanisms.",
+    "acceptance": [
+      "materialize every arm as a fresh independent Git repository whose frozen external verifier fails before the task",
+      "run Host and external verifier under the same isolated HOME and explicit Rust 1.97.0 toolchain identity",
+      "execute all 6 tasks exactly 3 times through one immutable codewhale binary, explicit deepseek-v4-pro/high, the official OpenAI-format ChatCompletions sender, canonical AgentApplication -> AgentRuntime -> RunStore, and maximum_reruns=0",
+      "cover two independent cross-file debugging tasks, one deterministic verifier fail-before/write/pass task, two independent typed edit-conflict recovery tasks, and one explicit isolated Writer task",
+      "durably record terminal, canonical Store, credential-free SQLite reopen, deterministic verifier, changed-file scope, fixed route, request/usage/cache/cost, typed failures, and journal identity before deriving labels",
+      "stop before the next arm on unknown billing, incomplete accounting, false success, identity mismatch, observer ambiguity, or cost ceiling; never rerun, complete a mate, resume, resample, or splice",
+      "authorize only a candidate audit when one identical stable current product loss occurs across at least two independent task IDs and one existing owner, one treatment variable, and one old-path deletion can be named"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the only corrected fixed-Pro acquisition and canonical trajectory Harness",
+    "production_delta": "none; M13 adds only frozen tasks, fixtures, one Harness campaign, admission evidence, summaries, and authority documentation",
+    "old_path_replaced_after_complete_cutover": [
+      "extrapolating recovery quality from M12's one recovered verifier failure",
+      "manual long-task loss inspection outside the corrected Harness"
+    ],
+    "failed_candidate_deletion": "if no stable loss repeats across two independent tasks, create no production branch; if a later single-variable treatment fails its gate, delete that treatment and retain only the frozen acquisition evidence",
+    "forbidden": [
+      "Auto, Anthropic, FIM, swarm, multi-Writer, second Runtime/Store/tool catalog, LLM Judge, or production self-modification",
+      "historical raw continuation, mate completion, resampling, selective rerun, or sample splicing",
+      "candidate implementation before one stable current loss repeats across at least two independent tasks"
+    ]
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-25",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "stream_usage_precedes_done": true,
+      "tool_call_reasoning_replay_required": true
+    }
+  },
+  "resources": {
+    "runs_per_task": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 6,
+    "formal_arms": 18,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 12288,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 420000,
+    "harness_wall_time_ms": 450000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 120,
+    "per_arm_known_cost_ceiling_usd": "0.18",
+    "suite_known_cost_ceiling_usd": "3.24",
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/codewhale-m13-target"
+  },
+  "tool_policies": {
+    "root_tools": [
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "root_with_agent_tools": [
+      "agent",
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "read_only_child_tools": [
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file"
+    ],
+    "writer_child_tools": [
+      "apply_patch",
+      "edit_file",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ]
+  },
+  "tasks": {
+    "rust_crossfile_proxy": {
+      "lane": "root",
+      "language": "rust",
+      "stratum": "cross-file Rust proxy configuration debugging",
+      "fixture": "eval/fixtures/m13-long-task-loss/rust-proxy",
+      "fixture_tree_sha256": "sha256:c21661798d03cec5fb8034a352211af9abc7d46eee4a92f40e78724eda859c6e",
+      "fixture_base_commit": "4200d4994260237bbadfa4fde275fa968f4de51a",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "调试并修复 Rust parse_proxy_args 的跨文件契约：endpoint 必须且只能出现一次，只接受 http/https origin（scheme 大小写不敏感，保留 host 大小写与可选 port，移除末尾 slash，拒绝 credentials/path/query/fragment）；timeout-ms 范围 1..=60000；重复 header 名大小写不敏感且后值覆盖，按小写名排序，value 可含等号并拒绝 CR/LF；未知参数必须失败。同时在 tests/proxy_contract.rs 新增 parses_headers_with_equals_and_last_value_wins、rejects_invalid_endpoint_and_timeout、rejects_unknown_and_duplicate_endpoint 三个真实回归测试。最终 cargo test 由冻结 verifier 验收。",
+      "constraints": [
+        "保持 ProxyConfig 与 parse_proxy_args 公共签名",
+        "不得新增依赖、网络步骤或修改 Cargo 文件",
+        "只允许修改 src/config.rs、src/parser.rs 和 tests/proxy_contract.rs"
+      ],
+      "non_goals": [
+        "修改 src/lib.rs、tests/hidden_contract.rs、_eval_verifier.py 或 Git 元数据",
+        "调用子 Agent"
+      ],
+      "acceptance_id": "m13-rust-crossfile-proxy",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "src/config.rs",
+        "src/parser.rs",
+        "tests/proxy_contract.rs"
+      ],
+      "expected_changed_files": [
+        "src/config.rs",
+        "src/parser.rs",
+        "tests/proxy_contract.rs"
+      ],
+      "max_api_requests": 12,
+      "max_tool_calls": 36,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "typescript_crossfile_cursor": {
+      "lane": "root",
+      "language": "typescript",
+      "stratum": "cross-file TypeScript cursor and pagination debugging",
+      "fixture": "eval/fixtures/m13-long-task-loss/typescript-cursor",
+      "fixture_tree_sha256": "sha256:b62d53d75070dd9ea38a3ee4bc286dd5ee7f278a109f975f7ef36204491c1c4a",
+      "fixture_base_commit": "3d899e26467f35886cd1b8a440a0f5861e7e091d",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "调试并修复 TypeScript cursor/pagination 跨文件契约：cursor 必须使用无 +、/、= 的 canonical base64url UTF-8 编码；decode 只接受 exact {offset,snapshot}，offset 为非负安全整数且 snapshot 为非空字符串，畸形输入返回 null；paginate 要求 limit 为正安全整数、cursor snapshot 与当前 snapshot 一致、offset 不得越界，返回稳定 nextCursor 且不修改输入。同时在 test/page.test.ts 新增 round trips unicode base64url cursors、rejects malformed cursor shape and snapshot drift、rejects invalid limit and offset 三个回归测试。",
+      "constraints": [
+        "保持 Cursor、Page、encodeCursor、decodeCursor 与 paginate 公共签名",
+        "只使用 Node 内建能力，不新增依赖或构建步骤",
+        "只允许修改 src/token.ts、src/page.ts 和 test/page.test.ts"
+      ],
+      "non_goals": [
+        "修改 package.json、test/hidden.test.ts、_eval_verifier.py 或 Git 元数据",
+        "调用子 Agent"
+      ],
+      "acceptance_id": "m13-typescript-crossfile-cursor",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "src/token.ts",
+        "src/page.ts",
+        "test/page.test.ts"
+      ],
+      "expected_changed_files": [
+        "src/page.ts",
+        "src/token.ts",
+        "test/page.test.ts"
+      ],
+      "max_api_requests": 12,
+      "max_tool_calls": 36,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "python_verifier_recovery": {
+      "lane": "root",
+      "language": "python",
+      "stratum": "deterministic verifier failure followed by quota repair",
+      "fixture": "eval/fixtures/m13-long-task-loss/python-quota",
+      "fixture_tree_sha256": "sha256:ac560e3069038b7230ac3d340789789f9c837edea6e56beb725b2d779d35f4fc",
+      "fixture_base_commit": "b4b56a76d3f64a54a7364bd40b3962a12bdc983f",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "第一次模型回合必须先调用 run_verifiers 并且只提交冻结 acceptance ID，观察确定性失败；然后修复 allocate_quota：拒绝空 weights、负数/全零 weights、负 minimum、total 不足，保证每项 minimum、总和精确等于 total，并按最大余数分配（余数相同按较小 index），不得使用浮点。同时在 test_quota.py 新增 test_distributes_largest_remainders_stably、test_respects_minimum_and_exact_total、test_rejects_invalid_inputs。最后提出完成，由 Host 形成 failure→有效修改→latest revision pass 的 canonical 证据。",
+      "constraints": [
+        "保持 allocate_quota(total, weights, minimum=0) 签名",
+        "只使用整数运算且不新增依赖",
+        "只允许修改 quota.py 和 test_quota.py"
+      ],
+      "non_goals": [
+        "修改 _eval_verifier.py、绕过首次失败验证、调用子 Agent或修改 Git 元数据"
+      ],
+      "acceptance_id": "m13-python-verifier-recovery",
+      "evidence_policy": "failed_write_pass",
+      "required_failure": {
+        "tool": "run_verifiers",
+        "failure_code": "verifier_failed"
+      },
+      "allowed_paths": [
+        "quota.py",
+        "test_quota.py"
+      ],
+      "expected_changed_files": [
+        "quota.py",
+        "test_quota.py"
+      ],
+      "max_api_requests": 12,
+      "max_tool_calls": 30,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "python_ambiguous_edit": {
+      "lane": "root",
+      "language": "python",
+      "stratum": "ambiguous edit failure and narrow correction",
+      "fixture": "eval/fixtures/m13-long-task-loss/python-alias",
+      "fixture_tree_sha256": "sha256:0a0c2df074bb1e0634f42eabdd50ec004e4e823186313eb43d65cc49c5a261cb",
+      "fixture_base_commit": "293ef6fe0e1671ead6ae741223acd57f144f42ed",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "先读取 aliases.py；第一次写调用必须精确使用 edit_file 参数 {\"path\":\"aliases.py\",\"search\":\"return normalize(name)\",\"replace\":\"return normalize(name).casefold()\"}，观察两处匹配产生的 typed ambiguous_edit 且不得写盘；随后重读并用唯一上下文只修复 canonical_public_alias：strip/collapse whitespace 后 Unicode casefold，拒绝空白、控制字符与保留名 root/system/admin（大小写不敏感），而 canonical_cache_alias 必须继续保留大小写。同时在 test_aliases.py 新增 test_public_alias_casefolds_unicode、test_public_alias_rejects_empty_control_and_reserved、test_cache_alias_preserves_case，最后由冻结 verifier 验收。",
+      "constraints": [
+        "保持三个公共函数签名",
+        "第一次失败后才能进行有效写入",
+        "只允许修改 aliases.py 和 test_aliases.py"
+      ],
+      "non_goals": [
+        "修改 _eval_verifier.py、跳过指定 ambiguous_edit、调用子 Agent或修改 Git 元数据"
+      ],
+      "acceptance_id": "m13-python-ambiguous-edit",
+      "evidence_policy": "latest_pass",
+      "required_failure": {
+        "tool": "edit_file",
+        "failure_code": "ambiguous_edit",
+        "parsed_arguments": {
+          "path": "aliases.py",
+          "replace": "return normalize(name).casefold()",
+          "search": "return normalize(name)"
+        }
+      },
+      "allowed_paths": [
+        "aliases.py",
+        "test_aliases.py"
+      ],
+      "expected_changed_files": [
+        "aliases.py",
+        "test_aliases.py"
+      ],
+      "max_api_requests": 12,
+      "max_tool_calls": 32,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "typescript_patch_conflict": {
+      "lane": "root",
+      "language": "typescript",
+      "stratum": "stale-context patch failure and current-context recovery",
+      "fixture": "eval/fixtures/m13-long-task-loss/typescript-window",
+      "fixture_tree_sha256": "sha256:36ee63c31ff7c38a2f17a361d21af324d66d577c8803b6476324adc3829bea03",
+      "fixture_base_commit": "1a57955f27ffb87f43fcf0a2c25db4afc359bc3d",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "先读取 src/window.ts；第一次写调用必须精确使用 apply_patch 参数 {\"path\":\"src/window.ts\",\"fuzz\":0,\"patch\":\"@@ -1,3 +1,3 @@\\n-export function staleWindow(value: string): Window | null {\\n+export function parseWindow(value: string): Window | null {\\n   return null;\"}，观察 stale context 导致 typed workspace_precondition 且不得写盘；随后重读当前文件并修复 parseWindow（只接受 trim 后非负安全整数 start:end 且 start<=end）和 mergeWindows（排序并合并 overlap/adjacent，不修改输入），同时在 test/window.test.ts 新增 rejects malformed and reversed windows 与 merges overlap and adjacency without mutation，最后由冻结 verifier 验收。",
+      "constraints": [
+        "保持 Window、parseWindow 与 mergeWindows 公共签名",
+        "第一次失败后才能进行有效写入，不得提高 fuzz 猜测目标",
+        "只允许修改 src/window.ts 和 test/window.test.ts"
+      ],
+      "non_goals": [
+        "修改 package.json、test/hidden.test.ts、_eval_verifier.py、调用子 Agent或修改 Git 元数据"
+      ],
+      "acceptance_id": "m13-typescript-patch-conflict",
+      "evidence_policy": "latest_pass",
+      "required_failure": {
+        "tool": "apply_patch",
+        "failure_code": "workspace_precondition",
+        "parsed_arguments": {
+          "fuzz": 0,
+          "patch": "@@ -1,3 +1,3 @@\n-export function staleWindow(value: string): Window | null {\n+export function parseWindow(value: string): Window | null {\n   return null;",
+          "path": "src/window.ts"
+        }
+      },
+      "allowed_paths": [
+        "src/window.ts",
+        "test/window.test.ts"
+      ],
+      "expected_changed_files": [
+        "src/window.ts",
+        "test/window.test.ts"
+      ],
+      "max_api_requests": 12,
+      "max_tool_calls": 32,
+      "max_depth": 0,
+      "max_concurrent_children": 0
+    },
+    "writer_config_migration": {
+      "lane": "writer",
+      "language": "python",
+      "stratum": "explicit isolated Writer multi-file settings migration",
+      "fixture": "eval/fixtures/m13-long-task-loss/writer-config",
+      "fixture_tree_sha256": "sha256:0ce707b4096b34814a136a7eeb4005eff5b9225fab98736451b48f3ad532da15",
+      "fixture_base_commit": "0cd31d8b406f8d59e8181f0787d202c3f1aad4c7",
+      "fixture_commit_profile": "m13-2026-07-25",
+      "objective": "完成 Python settings migration：load_settings 必须要求 APP_ENDPOINT，trim 后只接受 http/https 并规范 scheme/末尾 slash，APP_RETRIES 为 1..=10；APP_LABELS 逗号分隔 NAME=VALUE，value 可含等号，名称 strip+casefold，重复后值覆盖并按名称排序，拒绝空名/缺值/CRLF；Settings 保持 frozen immutable 与 canonical tuple。新增 test_settings_is_immutable、test_settings_preserves_canonical_labels、test_normalizes_endpoint_retries_and_labels、test_rejects_invalid_environment。完整任务必须委派给且只委派给一个 isolated Writer，root 只调查、审查和汇聚。",
+      "constraints": [
+        "只允许修改 settings.py、loader.py、test_settings.py 和 test_loader.py",
+        "不得新增依赖，保持 Settings 与 load_settings 公共签名",
+        "Writer 使用冻结 allowed paths、工具、预算和 isolated worktree",
+        "root 不得直接调用 may-write 工具"
+      ],
+      "non_goals": [
+        "修改 _eval_verifier.py、第二个 Writer、read-only child、multi-Writer 或 Git 元数据"
+      ],
+      "acceptance_id": "m13-writer-config-migration",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "settings.py",
+        "loader.py",
+        "test_settings.py",
+        "test_loader.py"
+      ],
+      "expected_changed_files": [
+        "loader.py",
+        "settings.py",
+        "test_loader.py",
+        "test_settings.py"
+      ],
+      "expected_artifact": "Python settings migration、四个冻结回归测试、exact verifier、完整四文件 diff 与 Host latest-root verification",
+      "max_api_requests": 14,
+      "max_tool_calls": 42,
+      "max_depth": 1,
+      "max_concurrent_children": 1
+    }
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "rust_crossfile_proxy",
+        "python_ambiguous_edit",
+        "writer_config_migration",
+        "typescript_crossfile_cursor",
+        "python_verifier_recovery",
+        "typescript_patch_conflict"
+      ],
+      [
+        "typescript_patch_conflict",
+        "python_verifier_recovery",
+        "typescript_crossfile_cursor",
+        "writer_config_migration",
+        "python_ambiguous_edit",
+        "rust_crossfile_proxy"
+      ],
+      [
+        "python_verifier_recovery",
+        "typescript_crossfile_cursor",
+        "rust_crossfile_proxy",
+        "typescript_patch_conflict",
+        "writer_config_migration",
+        "python_ambiguous_edit"
+      ]
+    ],
+    "schedule_semantics": "new position-1 M13 acquisition; every arm receives a fresh independent Git repository and RunStore; order rotates language, conflict, verifier and Writer strata; maximum_reruns=0"
+  },
+  "hard_gates": {
+    "identity": [
+      "one clean candidate revision and one immutable codewhale binary for all 18 arms",
+      "candidate production crates, prompt, model capability, tool catalog, protocol, budget and sender behavior are unchanged from the frozen starting revision",
+      "fixture trees, deterministic Git bases, TaskContracts, exact verifiers, schedule, toolchain versions, model, reasoning, endpoint, authority and budgets match this manifest",
+      "every root and Writer request route is explicit deepseek-v4-pro/high Standard Chat and survives exact SQLite reopen"
+    ],
+    "measurement": [
+      "terminal, canonical Store, no-credential SQLite reopen and verifier snapshots are durable before label derivation",
+      "accounting complete=true, usage_complete=true, billing_unknown=false, unpriced=false, sealed=true, in_flight=0 and started=completed",
+      "journal is exclusive 0600 with monotonic sequence, intact previous-record hash chain, zero partial tail and no credential material"
+    ],
+    "behavior": [
+      "false success must remain zero; any false success stops the campaign before the next arm",
+      "required verifier/edit/patch failures must occur before the first applied mutation and final Host receipt",
+      "Writer creates exactly one isolated Writer and completes seal/integrate/latest-root-verify/cleanup",
+      "any stable production loss requires the same loss code across at least two independent task IDs before a candidate audit"
+    ]
+  },
+  "decision_rule": {
+    "complete_baseline": "only if all 18 scheduled arms are measurement-valid with exact route/reopen/accounting facts and false success is zero; verified task losses and lane-contract losses remain labels rather than being hidden as evaluator invalidity",
+    "stop_incomplete": "on unknown billing, incomplete accounting, false success, identity mismatch, observer failure, cost ceiling or any pre-registered hard gate; do not rerun, complete a mate, resume, resample or splice",
+    "record_class": "m13_current_long_task_loss_baseline",
+    "product_metric_eligible": false,
+    "baseline_label_eligible_when_complete": true,
+    "next_candidate_minimum_repeated_independent_tasks": 2,
+    "non_conclusions": [
+      "this label baseline is not a treatment A/B and cannot claim product improvement",
+      "a forced typed failure is a recovery observation, not evidence that the Host created the initial mistake",
+      "a single task loss, raw tool count or one recovered failure cannot authorize production work",
+      "the baseline cannot reintroduce Auto, Anthropic, FIM, swarm, multi-Writer, a second Runtime/Store or LLM Judge"
+    ]
+  },
+  "execution": {
+    "key_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "key_read_before_live_admission": false,
+    "official_api_requests_before_live_admission": 0,
+    "raw_path_template": "eval/results/m13-long-task-loss-<candidate12>-v1.jsonl",
+    "raw_mode": "ignored_0600_exclusive_hash_chained",
+    "live_api_admitted_at_freeze": false
+  }
+}

@@ -2072,6 +2072,27 @@ M12 之后，current production 仍是唯一 AgentApplication、AgentRuntime、R
 DeepSeek ChatCompletions sender 和 fixed actor route。完整事实见
 [M12 terminal convergence reproduction](../../eval/summaries/m12-terminal-convergence-2026-07-25.md)。
 
+M13 当前只增加 eval acquisition 输入，不改变 production：
+
+- `scripts/eval-m9b-fixed-pro-regression.py --campaign m13` 选择 6 个 current long-task
+  fixtures；默认 M9-C、M11、M12 campaign 保持 frozen；
+- strata 覆盖两项 cross-file root debugging、一项 `verifier_failed` recovery、两项
+  typed edit conflict recovery 与一个 explicit isolated Writer；每项 3 次，
+  `maximum_reruns=0`；
+- `required_failure` 观察器只从 canonical ToolPrepared/ToolOutcome/Host receipt 派生，
+  要求指定 failure non-applied 且先于 applied mutation 与 final Host pass；不持久化
+  第二 recovery truth；
+- Host 与 external verifier 共享每 arm 隔离 `HOME`、`.rustup` identity 和 Rust
+  1.97.0；fixture materialization 在 Git init 前证明 verifier fail；
+- 每个 root/Writer RunRequest 显式为 `deepseek-v4-pro/high`，仍使用唯一
+  AgentApplication、AgentRuntime、RunStore、ChatCompletions sender 与工具目录；
+- production crate/config/protocol/State schema delta=0。当前只完成 offline contract，
+  credential/API=0；只有 formal accounting-complete trajectories 中一个 stable loss
+  至少跨两个 task 重复，才允许另立单-owner treatment。
+
+完整冻结契约见
+[M13 长任务恢复损失基线](../../eval/summaries/m13-long-task-loss-baseline-2026-07-25.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
