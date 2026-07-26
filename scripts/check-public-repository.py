@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+AGENT_GUIDE = Path("AGENTS.md")
+
 MARKDOWN_FILES = (
     Path("README.md"),
     Path("README.zh-CN.md"),
@@ -103,6 +105,38 @@ SECRET_RE = re.compile(
 
 LEGACY_SOURCE_RE = re.compile(r"CodeWhale|codewhale|CODEWHALE_|\.codewhale")
 RETIRED_VISUAL_RE = re.compile(r"\bwhale\b|whale_", re.IGNORECASE)
+AGENT_GUIDE_HISTORY_RE = re.compile(
+    r"(?m)^## Current repository truth\s*$|"
+    r"\bM\d+(?:-[A-Z0-9]+)*\b|"
+    r"`[0-9a-f]{8,40}`"
+)
+AGENT_GUIDE_MAX_LINES = 140
+AGENT_GUIDE_MAX_BYTES = 9_000
+AGENT_GUIDE_REQUIRED_LINKS = (
+    "docs/product/PRODUCT_PLAN.md",
+    "docs/decisions/",
+    "docs/product/ROADMAP.md",
+    "docs/product/EVALUATION.md",
+    "docs/architecture/CURRENT_CODEWHALE.md",
+)
+AGENT_GUIDE_REQUIRED_RULES = (
+    "One DeepSeek backend.",
+    "One `AgentRuntime` for root and child agents.",
+    "one `RunStore`",
+    "Changing one of these constraints requires evidence and a new ADR.",
+    "Each implementation slice must state:",
+    "Never use broad `git clean`",
+    "Preserve existing user and agent changes",
+    "Do not push, release, force-push",
+    "Never rewrite frozen manifests, summaries, raw, or Git history.",
+    "Audit against the official DeepSeek protocol",
+    "Root and child agents must eventually pass the same conformance suite.",
+    "read-only agents may share a view",
+    "./scripts/dev-dse.sh focused",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "git diff --check",
+    "Update `ROADMAP.md` for milestone status",
+)
 CRATE_LEGACY_ALLOWLIST = {
     Path("crates/app-server/src/lib.rs"): (
         re.compile(r'"codewhale-(?:core|state|tools|agent|config)"'),
@@ -162,6 +196,65 @@ def check_required_files() -> None:
     for relative in REQUIRED_FILES:
         if not (ROOT / relative).is_file():
             fail(f"missing required file: {relative}")
+
+
+def agent_guide_contract_errors(body: str) -> tuple[str, ...]:
+    errors: list[str] = []
+    if len(body.splitlines()) > AGENT_GUIDE_MAX_LINES:
+        errors.append("line_budget_exceeded")
+    if len(body.encode("utf-8")) > AGENT_GUIDE_MAX_BYTES:
+        errors.append("byte_budget_exceeded")
+
+    link_targets = {
+        raw.strip().split(maxsplit=1)[0].strip("<>")
+        for raw in LINK_RE.findall(body)
+    }
+    for target in AGENT_GUIDE_REQUIRED_LINKS:
+        if target not in link_targets:
+            errors.append(f"missing_authority_link:{target}")
+    for rule in AGENT_GUIDE_REQUIRED_RULES:
+        if rule not in body:
+            errors.append(f"missing_stable_rule:{rule}")
+    if AGENT_GUIDE_HISTORY_RE.search(body):
+        errors.append("mutable_history")
+    return tuple(errors)
+
+
+def check_agent_guide_contract() -> None:
+    body = read(AGENT_GUIDE)
+    errors = agent_guide_contract_errors(body)
+    if errors:
+        fail(f"{AGENT_GUIDE}: " + ", ".join(errors))
+
+
+def check_agent_guide_validator() -> None:
+    body = read(AGENT_GUIDE)
+    fixtures = (
+        (
+            "oversized guide",
+            body + ("\nfixture line" * (AGENT_GUIDE_MAX_LINES + 1)),
+            "line_budget_exceeded",
+        ),
+        (
+            "missing authority link",
+            body.replace(
+                "](docs/product/PRODUCT_PLAN.md)",
+                "](docs/product/PRODUCT_PLAN.invalid)",
+                1,
+            ),
+            "missing_authority_link:docs/product/PRODUCT_PLAN.md",
+        ),
+        (
+            "mutable milestone history",
+            body + "\n## Current repository truth\n- M25 candidate `deadbeef`\n",
+            "mutable_history",
+        ),
+    )
+    if agent_guide_contract_errors(body):
+        fail("agent-guide validator rejected the canonical guide")
+    for name, fixture, expected in fixtures:
+        if expected not in agent_guide_contract_errors(fixture):
+            fail(f"agent-guide validator false green: {name}")
 
 
 def check_readme_contract() -> None:
@@ -256,7 +349,11 @@ def check_active_identity_allowlist() -> None:
 
 
 def check_local_links() -> None:
-    for relative in MARKDOWN_FILES + CURRENT_REFERENCE_FILES + (Path("docs/README.md"),):
+    for relative in (
+        MARKDOWN_FILES
+        + CURRENT_REFERENCE_FILES
+        + (AGENT_GUIDE, Path("docs/README.md"))
+    ):
         body = read(relative)
         for raw_target in LINK_RE.findall(body):
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
@@ -324,6 +421,8 @@ def check_public_secret_placeholders() -> None:
 
 def main() -> int:
     check_required_files()
+    check_agent_guide_contract()
+    check_agent_guide_validator()
     check_readme_contract()
     check_historical_identity_allowlist()
     check_active_identity_allowlist()

@@ -1,0 +1,177 @@
+{
+  "schema": "dse.eval.m25-agent-legibility.v1",
+  "created_at": "2026-07-26",
+  "baseline": {
+    "revision": "748ed47b8c463163e45f31ff3273ab394e0007fa",
+    "tree": "d4428a4f9d643d0345772eff04db04716aab2d7c",
+    "agent_guide_sha256": "94105edb0472a22c5cbda2c9bedb3cba5fd5bca38d916d78abb4c506af0e6fbe",
+    "public_checker_sha256": "ad152ee5acd0b3cc7f0d696c8720c769ec1cabd619e8be1377fe41fa0114122f"
+  },
+  "scope": {
+    "production_delta": 0,
+    "credential_access": "forbidden",
+    "official_api_requests": 0,
+    "external_network": "forbidden",
+    "github": "forbidden",
+    "push": "forbidden",
+    "release": "forbidden",
+    "frozen_evidence_rewrite": "forbidden"
+  },
+  "problem": "The root AGENTS.md duplicates mutable milestone history from existing authority documents, so stable repository rules are discovered late and the same model-visible guide churns with completed evaluations.",
+  "owner": {
+    "guide": "AGENTS.md",
+    "mechanical_contract": "scripts/check-public-repository.py",
+    "authority_targets": [
+      "docs/product/PRODUCT_PLAN.md",
+      "docs/decisions/",
+      "docs/product/ROADMAP.md",
+      "docs/product/EVALUATION.md",
+      "docs/architecture/CURRENT_CODEWHALE.md"
+    ]
+  },
+  "read_only_loss_inventory": {
+    "rule_discovery": {
+      "selected": true,
+      "agent_guide_lines": 379,
+      "agent_guide_nonblank_lines": 338,
+      "agent_guide_bytes": 21307,
+      "mutable_current_truth_lines": 227,
+      "milestone_mentions": 42,
+      "commit_hash_mentions": 12,
+      "changes_since_product_baseline": 30,
+      "added_lines_since_product_baseline": 215,
+      "deleted_lines_since_product_baseline": 7,
+      "stable_rule_anchor_median_line": 309.5,
+      "stable_rule_anchor_max_line": 375,
+      "reason": "Direct reproducible loss: 60 percent of the guide is mutable history and stable work/validation rules are reached only after it."
+    },
+    "owner_location": {
+      "selected": false,
+      "sampled_owner_anchor_median_line": 51,
+      "reason": "Owner names exist, but are scattered through mutable history. A compact owner map is handled by the selected guide cutover rather than a second candidate."
+    },
+    "large_rust_files": {
+      "selected": false,
+      "tracked_rust_files": 273,
+      "files_at_least_1000_lines": 54,
+      "files_at_least_2000_lines": 24,
+      "files_at_least_5000_lines": 7,
+      "reason": "Size is real, but no current wrong-owner edit, review defect, compile regression, or behavior loss identifies a safe single lifecycle split."
+    },
+    "dependency_direction": {
+      "selected": false,
+      "workspace_crates": 16,
+      "internal_dependency_edges": 51,
+      "reason": "Current focused/full gates and crate-local guards expose no present dependency violation. Inventing a global layer model would exceed the one-loss slice."
+    }
+  },
+  "rule_discovery_tasks": [
+    {
+      "id": "authority_order",
+      "anchor": "docs/product/PRODUCT_PLAN.md",
+      "baseline_first_line": 7
+    },
+    {
+      "id": "architecture_adr",
+      "anchor": "Changing one of these constraints requires evidence and a new ADR.",
+      "baseline_first_line": 44
+    },
+    {
+      "id": "single_runtime",
+      "anchor": "One `AgentRuntime` for root and child agents.",
+      "baseline_first_line": 34
+    },
+    {
+      "id": "no_broad_cleanup",
+      "anchor": "Never use broad `git clean`",
+      "baseline_first_line": 269
+    },
+    {
+      "id": "slice_contract",
+      "anchor": "Each implementation slice must state:",
+      "baseline_first_line": 275
+    },
+    {
+      "id": "official_protocol",
+      "anchor": "Audit against the official DeepSeek protocol",
+      "baseline_first_line": 300
+    },
+    {
+      "id": "root_child_conformance",
+      "anchor": "Root and child agents must eventually pass the same conformance suite.",
+      "baseline_first_line": 319
+    },
+    {
+      "id": "preserve_dirty_tree",
+      "anchor": "Preserve existing user and agent changes",
+      "baseline_first_line": 332
+    },
+    {
+      "id": "no_push",
+      "anchor": "Do not push, release, force-push",
+      "baseline_first_line": 335
+    },
+    {
+      "id": "focused_gate",
+      "anchor": "./scripts/dev-dse.sh focused",
+      "baseline_first_line": 351
+    },
+    {
+      "id": "full_gate",
+      "anchor": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "baseline_first_line": 365
+    },
+    {
+      "id": "doc_owner",
+      "anchor": "Update `ROADMAP.md` for milestone status",
+      "baseline_first_line": 375
+    }
+  ],
+  "candidate_observation": {
+    "agent_guide_sha256": "329e9235897e94a26212a22da331a6b1b14c8fe11107ded8e94f6e728720170e",
+    "public_checker_sha256": "eff65088800a8a87c28ab57195511df8754d62d8cdd58b8a57e52db1e43a23d1",
+    "agent_guide_lines": 134,
+    "agent_guide_nonblank_lines": 103,
+    "agent_guide_bytes": 5488,
+    "mutable_milestone_mentions": 0,
+    "commit_hash_mentions": 0,
+    "stable_rule_anchor_median_line": 76.0,
+    "stable_rule_anchor_max_line": 131,
+    "sampled_owner_anchor_median_line": 45,
+    "relative_delta": {
+      "agent_guide_lines_percent": -64.64,
+      "agent_guide_bytes_percent": -74.24,
+      "stable_rule_anchor_median_line_percent": -75.44,
+      "sampled_owner_anchor_median_line_percent": -11.76
+    },
+    "required_rule_anchors_preserved": "12/12",
+    "negative_contract_fixtures": "3/3",
+    "authority_links": "5/5"
+  },
+  "acceptance": {
+    "agent_guide_max_lines": 140,
+    "agent_guide_max_bytes": 9000,
+    "mutable_milestone_or_commit_facts": 0,
+    "all_rule_discovery_anchors_preserved": true,
+    "stable_rule_anchor_median_line_max": 90,
+    "stable_rule_anchor_max_line": 140,
+    "all_authority_links_resolve": true,
+    "negative_contract_fixtures": [
+      "oversized guide",
+      "missing authority link",
+      "mutable milestone history"
+    ],
+    "production_files_changed": 0,
+    "focused": "pass",
+    "fmt": "pass",
+    "strict_clippy": "pass",
+    "workspace_test": "pass",
+    "clean_checkout_release_regression": "pass"
+  },
+  "old_path_deleted_at_cutover": [
+    "AGENTS.md current-repository milestone ledger",
+    "AGENTS.md commit/checkpoint inventory",
+    "AGENTS.md duplicated historical evaluation conclusions"
+  ],
+  "failure_action": "Restore no compatibility guide. Delete the candidate checker branch and retain the baseline plus decision evidence if the compact guide loses a required invariant or fails any local gate."
+}
