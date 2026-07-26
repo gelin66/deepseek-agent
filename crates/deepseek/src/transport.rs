@@ -87,6 +87,11 @@ impl DeepSeekEndpoint {
             ),
         }
     }
+
+    fn account_probe_url(&self) -> String {
+        let root = self.root().trim_end_matches('/');
+        format!("{}/user/balance", root.strip_suffix("/v1").unwrap_or(root))
+    }
 }
 
 fn normalize_fixture_root(raw: &str) -> Result<String, DeepSeekTransportError> {
@@ -208,6 +213,62 @@ impl DeepSeekConnectionConfig {
                 request_budget,
             },
         )
+    }
+
+    /// Probe the official account endpoint without performing model inference.
+    ///
+    /// This is deliberately separate from [`DeepSeekTransport::complete`] and
+    /// [`DeepSeekTransport::stream`]: it performs one request with no retry and
+    /// never reserves or mutates the physical model-request/usage ledger.
+    /// Success proves only that this client reached the configured DeepSeek
+    /// host, completed TLS/HTTP, and supplied an accepted credential. It does
+    /// not prove Chat inference, usage completeness, or request-level billing.
+    pub async fn probe_account(
+        &self,
+        client: reqwest::Client,
+        credential: DeepSeekCredential,
+    ) -> Result<(), DeepSeekTransportError> {
+        self.validate()?;
+        let request = client
+            .get(self.endpoint.account_probe_url())
+            .header(reqwest::header::USER_AGENT, DSE_USER_AGENT)
+            .bearer_auth(credential.expose());
+        let response =
+            match tokio::time::timeout(self.response_header_timeout, request.send()).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    return Err(DeepSeekTransportError::Network(format_error_chain(&error)));
+                }
+                Err(_) => {
+                    return Err(DeepSeekTransportError::ResponseHeaderTimeout {
+                        timeout: self.response_header_timeout,
+                    });
+                }
+            };
+        let status = response.status();
+        let retry_after = retry_after(response.headers());
+        let body = bounded_body(response).await;
+        if !status.is_success() {
+            return Err(DeepSeekTransportError::Http {
+                status: status.as_u16(),
+                message: sanitize_error_body(&body),
+                retry_after,
+            });
+        }
+        let value: Value = serde_json::from_str(&body).map_err(|error| {
+            DeepSeekTransportError::InvalidJson(format!(
+                "invalid DeepSeek account response JSON: {error}"
+            ))
+        })?;
+        value
+            .get("is_available")
+            .and_then(Value::as_bool)
+            .ok_or(DeepSeekTransportError::MissingField("is_available"))?;
+        value
+            .get("balance_infos")
+            .and_then(Value::as_array)
+            .ok_or(DeepSeekTransportError::MissingField("balance_infos"))?;
+        Ok(())
     }
 }
 
@@ -1128,9 +1189,186 @@ mod tests {
     use std::net::TcpListener;
     use std::num::NonZeroU32;
     use std::thread;
+    use std::time::Instant;
 
     use futures_util::StreamExt;
     use serde_json::json;
+
+    fn account_probe_fixture(
+        status: &'static str,
+        body: &'static str,
+        hold_before_response: Duration,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind account probe fixture");
+        let address = listener.local_addr().expect("account probe address");
+        let root = format!("http://{address}/v1");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept account probe");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).expect("read account probe");
+                assert!(read > 0, "account probe ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_headers = String::from_utf8_lossy(&request);
+            let lower = request_headers.to_ascii_lowercase();
+            assert!(
+                request_headers.starts_with("GET /user/balance HTTP/1.1\r\n"),
+                "unexpected account probe target:\n{request_headers}"
+            );
+            assert!(
+                lower.contains("authorization: bearer fixture-key\r\n"),
+                "account probe credential missing:\n{request_headers}"
+            );
+            assert!(
+                lower.contains(&format!("user-agent: {}\r\n", DSE_USER_AGENT).to_ascii_lowercase()),
+                "canonical DSE User-Agent missing:\n{request_headers}"
+            );
+
+            if !hold_before_response.is_zero() {
+                thread::sleep(hold_before_response);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            drop(stream);
+
+            listener
+                .set_nonblocking(true)
+                .expect("make account listener nonblocking");
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) => panic!("account probe retried despite its single-attempt contract"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("account probe retry audit failed: {error}"),
+                }
+            }
+        });
+        (root, server)
+    }
+
+    fn account_probe_connection(
+        root: &str,
+        response_header_timeout: Duration,
+    ) -> DeepSeekConnectionConfig {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        DeepSeekConnectionConfig {
+            endpoint: DeepSeekEndpoint::loopback_fixture(root).expect("loopback account root"),
+            strict_tools: false,
+            response_header_timeout,
+            stream_idle_timeout: Duration::from_secs(1),
+            retry: TransportRetryPolicy {
+                max_retries: 3,
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(2),
+                exponential_base: 2.0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn account_probe_uses_unversioned_authenticated_get_without_inference_or_retry() {
+        let (root, server) = account_probe_fixture(
+            "200 OK",
+            r#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"9.99"}]}"#,
+            Duration::ZERO,
+        );
+        let connection = account_probe_connection(&root, Duration::from_secs(1));
+
+        connection
+            .probe_account(
+                reqwest::Client::new(),
+                DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            )
+            .await
+            .expect("valid account reachability");
+        server.join().expect("account probe fixture");
+    }
+
+    #[tokio::test]
+    async fn account_probe_preserves_typed_http_failure_and_never_retries() {
+        let (root, server) = account_probe_fixture(
+            "401 Unauthorized",
+            r#"{"error":{"message":"rejected sk-secret"}}"#,
+            Duration::ZERO,
+        );
+        let connection = account_probe_connection(&root, Duration::from_secs(1));
+
+        let error = connection
+            .probe_account(
+                reqwest::Client::new(),
+                DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            )
+            .await
+            .expect_err("401 must fail");
+        let DeepSeekTransportError::Http {
+            status, message, ..
+        } = error
+        else {
+            panic!("unexpected account error: {error:?}");
+        };
+        assert_eq!(status, 401);
+        assert!(!message.contains("sk-secret"));
+        assert!(message.contains("[REDACTED]"));
+        server.join().expect("account probe fixture");
+    }
+
+    #[tokio::test]
+    async fn account_probe_rejects_malformed_or_incomplete_success_body() {
+        for body in [
+            r#"{"is_available":true}"#,
+            r#"{"is_available":"yes","balance_infos":[]}"#,
+            "not-json",
+        ] {
+            let (root, server) = account_probe_fixture("200 OK", body, Duration::ZERO);
+            let connection = account_probe_connection(&root, Duration::from_secs(1));
+            let error = connection
+                .probe_account(
+                    reqwest::Client::new(),
+                    DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+                )
+                .await
+                .expect_err("invalid account response must fail");
+            assert!(matches!(
+                error,
+                DeepSeekTransportError::MissingField(_) | DeepSeekTransportError::InvalidJson(_)
+            ));
+            server.join().expect("account probe fixture");
+        }
+    }
+
+    #[tokio::test]
+    async fn account_probe_response_header_timeout_is_typed_and_not_retried() {
+        let (root, server) = account_probe_fixture(
+            "200 OK",
+            r#"{"is_available":true,"balance_infos":[]}"#,
+            Duration::from_millis(100),
+        );
+        let connection = account_probe_connection(&root, Duration::from_millis(20));
+
+        let error = connection
+            .probe_account(
+                reqwest::Client::new(),
+                DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            )
+            .await
+            .expect_err("held response headers must time out");
+        assert!(matches!(
+            error,
+            DeepSeekTransportError::ResponseHeaderTimeout { .. }
+        ));
+        server.join().expect("account probe fixture");
+    }
 
     #[test]
     fn endpoint_rejects_non_loopback_fixture() {

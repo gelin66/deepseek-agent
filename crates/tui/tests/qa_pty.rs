@@ -58,7 +58,8 @@ fn spawn_minimal(
         // boots straight into the composer. The harness never makes a live
         // request — we just need the binary to think a key exists.
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        // Force a known base URL so the doctor / model probe never escapes
+        // Force a known base URL so Doctor's account probe and model traffic
+        // never escape
         // the box. 127.0.0.1:1 will refuse instantly.
         .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
         // PTY scenarios assert state transitions, not animation cadence.

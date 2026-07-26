@@ -3434,7 +3434,7 @@ fn run_doctor_json(
         },
         "api_connectivity": {
             "checked": false,
-            "note": "Skipped in --json mode; run `dse doctor` for a live check.",
+            "note": "Skipped in --json mode; run `dse doctor` for a non-inference official host and credential reachability check.",
         },
         "capability": deepseek_capability_report(config),
     });
@@ -3625,46 +3625,27 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     }
 }
 
-/// Test API connectivity by making a minimal request
+/// Test official API host/auth reachability without making a model request.
 async fn test_api_connectivity(config: &Config) -> Result<()> {
-    use dse_deepseek::{
-        ChatPlanInput, DeepSeekCredential, ReasoningMode, ResponseMode, SharedApiRequestBudget,
-        official_model_capabilities, plan_chat,
-    };
+    use dse_deepseek::DeepSeekCredential;
 
     let connection = crate::exec_runtime::deepseek_connection_config(config)?;
-    let root = connection.endpoint.root().to_owned();
-    let request_budget = SharedApiRequestBudget::new(
-        NonZeroU32::new(1).expect("Doctor DeepSeek 探针请求预算必须非零"),
-    );
     crate::tls::ensure_rustls_crypto_provider();
-    let transport = connection.bind(
-        reqwest::Client::builder().build()?,
-        DeepSeekCredential::new(config.deepseek_api_key()?)?,
-        request_budget,
-    )?;
-    let configured_model = config.default_model();
-    let model = official_model_capabilities(&configured_model)?.model;
-    let plan = plan_chat(
-        &root,
-        false,
-        ChatPlanInput {
-            model: model.to_owned(),
-            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
-            max_tokens: 1,
-            response_mode: ResponseMode::NonStreaming,
-            tools: None,
-            tool_choice: None,
-            reasoning: ReasoningMode::Off,
-            temperature: None,
-            top_p: None,
-        },
-    )?;
 
-    // Use tokio timeout to catch hanging requests
+    // Keep a bounded whole-probe deadline in addition to the canonical
+    // response-header timeout so a malformed peer cannot hold Doctor open
+    // while sending the small account response body.
     let timeout_duration = std::time::Duration::from_secs(15);
-    match tokio::time::timeout(timeout_duration, transport.complete(plan)).await {
-        Ok(Ok(_response)) => Ok(()),
+    match tokio::time::timeout(
+        timeout_duration,
+        connection.probe_account(
+            reqwest::Client::builder().build()?,
+            DeepSeekCredential::new(config.deepseek_api_key()?)?,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.into()),
         Err(_) => anyhow::bail!("{}", tr(MessageId::MainDoctorProbeTimeout)),
     }
