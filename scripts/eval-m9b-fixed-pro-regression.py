@@ -10,6 +10,8 @@ acquisition after M14 observer conformance.
 baseline after the bilingual identity cutover.
 ``--campaign m19`` selects the fresh DSE local coding-reliability acquisition
 whose outer watchdog preserves a credential-free Store/accounting boundary.
+``--transport-viability`` runs the M20 non-inference official host/account
+reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
 equivalence corpus. Live campaigns exercise temporary Git repositories through
@@ -40,6 +42,14 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
+M20_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m20-transport-viability-v1.json"
+)
+M20_MANIFEST_SCHEMA = "dse.eval.m20-transport-viability.v1"
+M20_ADMISSION_SCHEMA = "dse.eval.m20-transport-viability-live-admission.v1"
+M20_JOURNAL_SCHEMA = "dse.eval.m20-transport-viability-journal.v1"
+M20_SUCCESS_MARKER = b"Official API host and credential are reachable"
+M20_FAILURE_MARKER = b"API connection failed"
 
 
 def selected_campaign(arguments: list[str]) -> str:
@@ -2926,15 +2936,22 @@ def write_all(descriptor: int, value: bytes) -> None:
 class Journal:
     """Exclusive 0600 append-only, fsynced, hash-chained result writer."""
 
-    def __init__(self, path: Path, stream: BinaryIO) -> None:
+    def __init__(
+        self, path: Path, stream: BinaryIO, schema: str
+    ) -> None:
         self.path = path
         self.stream = stream
+        self.schema = schema
         self.sequence = 0
         self.previous_record_sha256 = ZERO_HASH
 
     @classmethod
     def claim(
-        cls, path: Path, *, enforce_results_scope: bool = True
+        cls,
+        path: Path,
+        *,
+        enforce_results_scope: bool = True,
+        schema: str = JOURNAL_SCHEMA,
     ) -> "Journal":
         require(path.is_absolute(), "output_must_be_absolute")
         if enforce_results_scope:
@@ -2957,7 +2974,11 @@ class Journal:
             raise EvaluationError("output_claim_failed") from error
         os.fchmod(descriptor, 0o600)
         fsync_directory(path.parent)
-        return cls(path, os.fdopen(descriptor, "wb", buffering=0))
+        return cls(
+            path,
+            os.fdopen(descriptor, "wb", buffering=0),
+            schema,
+        )
 
     def __enter__(self) -> "Journal":
         return self
@@ -2969,7 +2990,7 @@ class Journal:
         self, payload: dict[str, Any], *, fault: str | None = None
     ) -> str:
         core = {
-            "schema": JOURNAL_SCHEMA,
+            "schema": self.schema,
             "sequence": self.sequence + 1,
             "previous_record_sha256": self.previous_record_sha256,
             "payload": payload,
@@ -5541,6 +5562,532 @@ def run_freeze_report() -> int:
     return 0
 
 
+def load_m20_manifest() -> dict[str, Any]:
+    manifest = read_json_object(
+        M20_MANIFEST_PATH, "m20_manifest_unavailable"
+    )
+    require(
+        manifest.get("schema") == M20_MANIFEST_SCHEMA,
+        "m20_manifest_schema_invalid",
+    )
+    source = manifest.get("source_identity", {})
+    viability = manifest.get("formal_viability", {})
+    decision = manifest.get("decision_rule", {})
+    official = manifest.get("official_review", {}).get(
+        "frozen_facts", {}
+    )
+    require(
+        source.get("branch") == "deepseek-agent"
+        and source.get("run_api") == 12
+        and source.get("runtime_event") == 19
+        and source.get("state_schema") == 25
+        and source.get("exec_stream") == 4,
+        "m20_source_identity_invalid",
+    )
+    require(
+        viability.get("planned_probes") == 3
+        and viability.get("maximum_reruns") == 0
+        and viability.get("stop_on_first_failure") is True
+        and viability.get("model_requests") == 0
+        and viability.get("maximum_known_api_cost_usd") == "0.00"
+        and viability.get("raw_contains_stdout_or_stderr") is False
+        and viability.get("raw_contains_credential_or_balance") is False,
+        "m20_viability_contract_invalid",
+    )
+    require(
+        official.get("official_base_url") == "https://api.deepseek.com"
+        and official.get("account_probe_method") == "GET"
+        and official.get("account_probe_endpoint") == "/user/balance"
+        and official.get("account_probe_is_model_inference") is False
+        and official.get("request_level_billing_reconciliation_documented")
+        is False
+        and official.get("pre_header_attempt_settlement_bound_documented")
+        is False,
+        "m20_official_contract_invalid",
+    )
+    require(
+        isinstance(decision.get("viable"), str)
+        and isinstance(decision.get("not_viable"), str)
+        and isinstance(decision.get("next_acquisition"), str),
+        "m20_decision_contract_invalid",
+    )
+    return manifest
+
+
+def classify_m20_probe(
+    returncode: int, stdout: bytes, stderr: bytes
+) -> str:
+    combined = stdout + b"\n" + stderr
+    if (
+        returncode == 0
+        and M20_SUCCESS_MARKER in stdout
+        and M20_FAILURE_MARKER not in stdout
+    ):
+        return "reachable"
+    if (
+        b"API key is invalid" in combined
+        or b"DeepSeek HTTP 401" in combined
+    ):
+        return "authentication_rejected"
+    if b"DNS resolution failed" in combined:
+        return "dns_failed"
+    if b"timed out" in combined or b"Timeout" in combined:
+        return "response_header_timeout"
+    if b"certificate" in combined or b"TLS" in combined:
+        return "tls_failed"
+    if b"Connection failed" in combined:
+        return "connection_failed"
+    for status in (400, 402, 403, 408, 422, 429, 500, 503):
+        if f"DeepSeek HTTP {status}".encode("ascii") in combined:
+            return f"http_{status}"
+    return "unknown_failure"
+
+
+def m20_changed_production_paths(
+    starting_revision: str, revision: str
+) -> set[str]:
+    changed = git_output(
+        "diff",
+        "--name-only",
+        f"{starting_revision}..{revision}",
+        "--",
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "config.example.toml",
+    )
+    return {path for path in changed.splitlines() if path}
+
+
+def load_m20_admission(
+    path: Path,
+    manifest: dict[str, Any],
+    revision: str,
+    binary: Path,
+    binary_identity: dict[str, Any],
+    output: Path,
+) -> dict[str, Any]:
+    admission = read_json_object(
+        path, "m20_live_admission_unavailable"
+    )
+    live = admission.get("live_contract", {})
+    require(
+        admission.get("schema") == M20_ADMISSION_SCHEMA
+        and admission.get("candidate_revision") == revision
+        and admission.get("candidate_tree")
+        == git_output("rev-parse", f"{revision}^{{tree}}")
+        and admission.get("candidate_binary") == binary.as_posix()
+        and admission.get("candidate_binary_sha256") == file_hash(binary)
+        and admission.get("candidate_binary_size_bytes")
+        == binary.stat().st_size
+        and admission.get("candidate_binary_version")
+        == binary_identity["version"]
+        and admission.get("contract_manifest_sha256")
+        == file_hash(M20_MANIFEST_PATH)
+        and admission.get("harness_sha256")
+        == file_hash(Path(__file__).resolve())
+        and admission.get("official_protocol_revalidated_on")
+        == manifest["official_review"]["reviewed_on"]
+        and admission.get("official_sources")
+        == manifest["official_review"]["sources"]
+        and admission.get("offline_gates_passed") is True
+        and admission.get("live_api_admitted") is True
+        and live.get("output")
+        == repository_relative(output, "m20_live_output_scope_invalid")
+        and live.get("planned_probes") == 3
+        and live.get("maximum_reruns") == 0
+        and live.get("stop_on_first_failure") is True
+        and live.get("model_requests") == 0
+        and live.get("known_api_cost_usd") == 0.0
+        and live.get("output_mode")
+        == "ignored_0600_exclusive_hash_chained"
+        and live.get("credential_path")
+        == manifest["formal_viability"]["credential_path"]
+        and live.get("credential_contents_read_before_admission") is False
+        and live.get("official_api_requests_before_admission") == 0,
+        "m20_live_admission_invalid",
+    )
+    return admission
+
+
+def m20_preflight(
+    binary: Path,
+    revision: str,
+    admission_path: Path | None,
+    output: Path | None,
+    *,
+    formal: bool,
+) -> dict[str, Any]:
+    manifest = load_m20_manifest()
+    require(
+        git_output("branch", "--show-current") == "deepseek-agent",
+        "branch_invalid",
+    )
+    require(not git_output("status", "--porcelain=v1"), "worktree_dirty")
+    require(
+        git_output("rev-parse", "--verify", f"{revision}^{{commit}}")
+        == revision,
+        "revision_invalid",
+    )
+    source = manifest["source_identity"]
+    starting_revision = source["starting_revision"]
+    require(
+        git_output("rev-parse", f"{starting_revision}^{{tree}}")
+        == source["starting_tree"],
+        "m20_starting_identity_mismatch",
+    )
+    ancestry = run_command(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            starting_revision,
+            revision,
+        ],
+        cwd=ROOT,
+    )
+    require(ancestry.returncode == 0, "m20_candidate_ancestry_invalid")
+    require(
+        m20_changed_production_paths(starting_revision, revision)
+        == {
+            "crates/deepseek/src/transport.rs",
+            "crates/localization/locales/en.json",
+            "crates/localization/locales/zh-Hans.json",
+            "crates/tui/src/main.rs",
+            "crates/tui/tests/qa_pty.rs",
+        },
+        "m20_production_delta_invalid",
+    )
+    authority_paths = {
+        "product_plan": ROOT / "docs/product/PRODUCT_PLAN.md",
+        "roadmap": ROOT / "docs/product/ROADMAP.md",
+        "evaluation": ROOT / "docs/product/EVALUATION.md",
+        "current_architecture": (
+            ROOT / "docs/architecture/CURRENT_CODEWHALE.md"
+        ),
+    }
+    require(
+        all(
+            file_hash(path)
+            == manifest["authority_sha256"][authority]
+            for authority, path in authority_paths.items()
+        ),
+        "m20_authority_identity_mismatch",
+    )
+    require(
+        file_hash(ROOT / "Cargo.lock") == source["cargo_lock_sha256"]
+        and file_hash(ROOT / "rust-toolchain.toml")
+        == source["rust_toolchain_sha256"],
+        "m20_toolchain_identity_mismatch",
+    )
+    identity = probe_binary(binary, revision)
+    admission = None
+    if formal:
+        require(
+            admission_path is not None and output is not None,
+            "m20_live_admission_required",
+        )
+        admission = load_m20_admission(
+            admission_path,
+            manifest,
+            revision,
+            binary,
+            identity,
+            output,
+        )
+    return {
+        "manifest_sha256": file_hash(M20_MANIFEST_PATH),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "binary": identity,
+        "admission_sha256": (
+            file_hash(admission_path)
+            if admission is not None and admission_path is not None
+            else None
+        ),
+    }
+
+
+def run_m20_self_test() -> int:
+    manifest = load_m20_manifest()
+    require(
+        classify_m20_probe(
+            0,
+            b"prefix Official API host and credential are reachable suffix",
+            b"",
+        )
+        == "reachable",
+        "m20_success_classification_invalid",
+    )
+    require(
+        classify_m20_probe(
+            0,
+            b"API connection failed\nAPI key is invalid",
+            b"",
+        )
+        == "authentication_rejected",
+        "m20_auth_classification_invalid",
+    )
+    require(
+        classify_m20_probe(
+            0,
+            b"API connection failed\nDNS resolution failed",
+            b"",
+        )
+        == "dns_failed",
+        "m20_dns_classification_invalid",
+    )
+    require(
+        classify_m20_probe(
+            0,
+            b"Official API host and credential are reachable\nAPI connection failed",
+            b"",
+        )
+        != "reachable",
+        "m20_conflicting_marker_accepted",
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="dse-m20-journal-self-test-"
+    ) as temporary:
+        journal_path = Path(temporary) / "journal.jsonl"
+        with Journal.claim(
+            journal_path,
+            enforce_results_scope=False,
+            schema=M20_JOURNAL_SCHEMA,
+        ) as journal:
+            journal.emit(
+                {
+                    "record_type": "self_test",
+                    "model_requests": 0,
+                    "maximum_reruns": 0,
+                }
+            )
+        audit = read_hash_chained_journal(
+            journal_path,
+            M20_JOURNAL_SCHEMA,
+            allow_partial_tail=False,
+        )
+        require(
+            len(audit["records"]) == 1
+            and audit["partial_tail_bytes"] == 0,
+            "m20_journal_self_test_invalid",
+        )
+    print(
+        json.dumps(
+            {
+                "schema": M20_MANIFEST_SCHEMA,
+                "manifest_sha256": file_hash(M20_MANIFEST_PATH),
+                "planned_probes": manifest["formal_viability"][
+                    "planned_probes"
+                ],
+                "model_requests": 0,
+                "maximum_reruns": 0,
+                "result": "pass",
+                "key_accessed": False,
+                "network_accessed": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def run_m20_dry(args: argparse.Namespace) -> int:
+    revision = args.revision or git_output("rev-parse", "HEAD")
+    identity = m20_preflight(
+        Path(args.binary).resolve(),
+        revision,
+        None,
+        None,
+        formal=False,
+    )
+    print(
+        json.dumps(
+            {
+                "schema": M20_MANIFEST_SCHEMA,
+                "record_type": "plan",
+                "source_identity": identity,
+                "planned_probes": 3,
+                "model_requests": 0,
+                "known_api_cost_usd": 0.0,
+                "maximum_reruns": 0,
+                "key_accessed": False,
+                "network_accessed": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def run_m20_formal(args: argparse.Namespace) -> int:
+    require(args.key_file, "key_file_required")
+    require(args.output, "output_required")
+    require(args.admission, "m20_live_admission_required")
+    revision = args.revision or git_output("rev-parse", "HEAD")
+    binary = Path(args.binary).resolve()
+    output = Path(args.output).resolve()
+    identity = m20_preflight(
+        binary,
+        revision,
+        Path(args.admission).resolve(),
+        output,
+        formal=True,
+    )
+    with Journal.claim(
+        output, schema=M20_JOURNAL_SCHEMA
+    ) as journal:
+        journal.emit(
+            {
+                "record_type": "plan",
+                "source_identity": identity,
+                "planned_probes": 3,
+                "model_requests": 0,
+                "known_api_cost_usd": 0.0,
+                "maximum_reruns": 0,
+                "chat_inference_tested": False,
+                "pre_header_billing_reconciliation": (
+                    "unresolved_by_official_contract"
+                ),
+            }
+        )
+        key = read_key(Path(args.key_file).expanduser().resolve())
+        journal.emit(
+            {
+                "record_type": "credential_access",
+                "key_accessed": True,
+                "network_accessed": False,
+            }
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="dse-m20-transport-"
+        ) as temporary:
+            temporary_root = Path(temporary)
+            frozen_binary = temporary_root / "dse-tui"
+            workspace = temporary_root / "workspace"
+            dse_home = temporary_root / "home"
+            shutil.copy2(binary, frozen_binary)
+            os.chmod(frozen_binary, 0o500)
+            workspace.mkdir(mode=0o700)
+            dse_home.mkdir(mode=0o700)
+            frozen_identity = probe_binary(frozen_binary, revision)
+            require(
+                frozen_identity["sha256"]
+                == identity["binary"]["sha256"],
+                "m20_frozen_binary_mismatch",
+            )
+            completed = 0
+            for ordinal in range(1, 4):
+                environment = safe_env()
+                environment.update(
+                    {
+                        "DSE_HOME": str(dse_home),
+                        "DEEPSEEK_API_KEY": key,
+                        "NO_COLOR": "1",
+                        "TERM": "dumb",
+                    }
+                )
+                started = time.monotonic()
+                try:
+                    result = run_command(
+                        [
+                            str(frozen_binary),
+                            "--language",
+                            "en",
+                            "--workspace",
+                            str(workspace),
+                            "--no-project-config",
+                            "--skip-onboarding",
+                            "doctor",
+                        ],
+                        cwd=workspace,
+                        environment=environment,
+                        timeout=30,
+                    )
+                except EvaluationError as error:
+                    journal.emit(
+                        {
+                            "record_type": "abort",
+                            "probe_ordinal": ordinal,
+                            "outcome_class": error.code,
+                            "completed_probes": completed,
+                            "model_requests": 0,
+                            "maximum_reruns": 0,
+                            "key_accessed": True,
+                            "network_accessed": True,
+                        }
+                    )
+                    key = ""
+                    return 2
+                duration_ms = int(
+                    (time.monotonic() - started) * 1000
+                )
+                key_bytes = key.encode("utf-8")
+                require(
+                    key_bytes not in result.stdout
+                    and key_bytes not in result.stderr,
+                    "m20_credential_exposed",
+                )
+                outcome = classify_m20_probe(
+                    result.returncode, result.stdout, result.stderr
+                )
+                record = {
+                    "record_type": "probe_result",
+                    "probe_ordinal": ordinal,
+                    "outcome_class": outcome,
+                    "process_exit": result.returncode,
+                    "duration_ms": duration_ms,
+                    "stdout_bytes": len(result.stdout),
+                    "stdout_sha256": sha256_bytes(result.stdout),
+                    "stderr_bytes": len(result.stderr),
+                    "stderr_sha256": sha256_bytes(result.stderr),
+                    "stdout_or_stderr_retained": False,
+                    "credential_or_balance_retained": False,
+                    "model_requests": 0,
+                    "known_api_cost_usd": 0.0,
+                    "maximum_reruns": 0,
+                    "key_accessed": True,
+                    "network_accessed": True,
+                }
+                journal.emit(record)
+                if outcome != "reachable":
+                    journal.emit(
+                        {
+                            "record_type": "abort",
+                            "probe_ordinal": ordinal,
+                            "outcome_class": outcome,
+                            "completed_probes": completed,
+                            "model_requests": 0,
+                            "maximum_reruns": 0,
+                            "key_accessed": True,
+                            "network_accessed": True,
+                        }
+                    )
+                    key = ""
+                    return 2
+                completed += 1
+            journal.emit(
+                {
+                    "record_type": "summary",
+                    "decision": "viable",
+                    "completed_probes": completed,
+                    "dns_tcp_tls_http_auth": "proven_collectively",
+                    "chat_inference_tested": False,
+                    "inference_accounting_tested": False,
+                    "pre_header_billing_reconciliation": (
+                        "unresolved_by_official_contract"
+                    ),
+                    "model_requests": 0,
+                    "known_api_cost_usd": 0.0,
+                    "maximum_reruns": 0,
+                    "key_accessed": True,
+                    "network_accessed": True,
+                }
+            )
+        key = ""
+    return 0
+
+
 def run_dry(args: argparse.Namespace) -> int:
     revision = args.revision or git_output("rev-parse", "HEAD")
     identity = preflight(
@@ -5648,6 +6195,9 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--observer-conformance", action="store_true")
     mode.add_argument("--acceptance-conformance", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--transport-viability-self-test", action="store_true")
+    mode.add_argument("--transport-viability-dry-run", action="store_true")
+    mode.add_argument("--transport-viability", action="store_true")
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
     parser.add_argument("--binary")
@@ -5680,15 +6230,30 @@ def main() -> int:
             return run_observer_conformance()
         if args.acceptance_conformance:
             return run_acceptance_conformance()
+        if args.transport_viability_self_test:
+            return run_m20_self_test()
         require(args.binary, "binary_required")
+        if args.transport_viability_dry_run:
+            return run_m20_dry(args)
+        if args.transport_viability:
+            return run_m20_formal(args)
         if args.dry_run:
             return run_dry(args)
         return run_formal(args)
     except EvaluationError as error:
+        error_schema = (
+            M20_JOURNAL_SCHEMA
+            if (
+                args.transport_viability_self_test
+                or args.transport_viability_dry_run
+                or args.transport_viability
+            )
+            else JOURNAL_SCHEMA
+        )
         print(
             json.dumps(
                 {
-                    "schema": JOURNAL_SCHEMA,
+                    "schema": error_schema,
                     "record_type": "error",
                     "error_code": error.code,
                     "details": error.details,
