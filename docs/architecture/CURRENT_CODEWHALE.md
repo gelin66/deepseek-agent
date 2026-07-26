@@ -2571,32 +2571,35 @@ AgentRuntime/RunStore、fixed actor route、official DeepSeek ChatCompletions �
 tools 均保持不变。完整事实见
 [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
 
-## 7. 当前 TUI 表面债务（M28 baseline）
+## 7. 当前 TUI 表面系统（M28 complete）
 
-M26 已实现 `CanonicalRunPresentation`，M27 已实现三个且仅三个 canonical permission
-mode 和同一 bottom-sheet selector；这两项都已进入真实 TUI caller。但截至本快照，完整
-TUI 仍未按 ADR-0013 切换：
+M28 已在 PTY cutover checkpoint `1e420d9d7` 完成
+`keep_native_surface_and_delete_legacy`：
 
-- `crates/tui/src/tui/underwater.rs` 仍是唯一主 shell，`ocean.rs`、ChatWidget 和 event loop
-  继续拥有 Ocean column、fish/bubble ambient renderer、flee 动画与 80ms animation cadence；
-- `settings.toml` 仍读取 `fancy_animations`、`ocean_treatment`、
-  `work_surface_placement`、selectable theme/background、composer density/border、
-  transcript spacing 和 status indicator；
-- onboarding 仍是居中 `Borders::ALL` card；`UserInputView` 仍使用约 `82% × 68%`
-  centered modal；
-- permission 使用 bottom sheet，approval 使用 inline band，pager 使用 full-screen
-  Underwater room；容器、token、留白和 focus chrome 尚未统一；
-- reachable renderer 仍混用 resolved `app.ui_theme` 与 direct global palette；
-- `dse-tui doctor` 仍包含 `/constitution`、`/setup`、`/model`、`/setup tools` 和
-  `/setup persistence` 等退役提示，settings parse warning 仍有硬编码英文；
-- `tests/features` 仍有描述 retired session/command surface 的孤儿 Gherkin 文件，是否删除
-  仍须以 production/test caller 审计为准。
+- `shell.rs` 是唯一 terminal-native 主外壳；transcript-first 主工作区在宽屏使用
+  canonical Run right rail，在中屏使用同事实 top strip，在窄/矮屏使用 single column；
+- production topology 只有 main work surface、bottom sheet、full-screen room 和 inline
+  approval interruption。onboarding、user input、permission、approval、pager/help/cost/
+  diff/evidence 都已迁移；generic centered modal 不存在；
+- palette 只保留一个 semantic token owner 与 terminal color-depth adaptation；
+  terminal background/foreground 是 base，没有 selectable theme、background 或第二
+  reader；
+- idle event-driven 且真实 PTY 初帧后 5 秒 byte-still；鱼、气泡、渐变、flee animation、
+  80ms ambient cadence 和 decorative completion 均已删除；
+- persistent display variants、layout/decorative settings、旧 normalizer、Doctor 退役
+  command hints、硬编码 settings warning 和孤儿 session/command fixtures 已删除；
+- tool detail 使用一个默认 compact rule 与 process-local row expansion，不写入第二状态；
+- `CanonicalRunPresentation` 仍是 task/activity/change/verification/Agent/permission/
+  recovery/terminal 的唯一 presentation truth；TUI 没有 plan、progress、evidence 或
+  completion owner。
 
-当前没有 production General Settings、ThemePicker 或 ConfigView；它们已经删除。M28 要
-保持这个减法，不得为了重构恢复设置中心。M28 的目标表面、响应式规则、键鼠语义与物理
-删除门见 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、
-[DESIGN.md](../../DESIGN.md) 和 [ROADMAP M28](../product/ROADMAP.md)；在该里程碑全量
-门禁和 cutover 完成前，不能把本节目标描述成当前实现。
+English/`zh-Hans` × 五个冻结尺寸的真实 PTY resize、keyboard/mouse/paste、approval/
+permission、first-run、live/terminal、pending creation recovery 和 credential-free
+SQLite reopen 通过。live 与 reopen 的可见 glyph/坐标逐 cell 相等。M28 未修改
+RuntimeEvent、Run API、State、DeepSeek、tools、prompt、model 或 permission 语义，也没有
+General Settings、ThemePicker、ConfigView、legacy toggle 或 compatibility reader。设计与
+后续约束见 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、
+[DESIGN.md](../../DESIGN.md) 和 [ROADMAP M28](../product/ROADMAP.md)。
 
 ## 8. 明确非结论
 

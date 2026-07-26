@@ -3522,6 +3522,34 @@ verified task success、Token、cache、费用或模型 wall-time 提升。完�
 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、[DESIGN.md](../../DESIGN.md)
 和 ROADMAP M28。
 
+#### M28 实际判定（2026-07-26）
+
+结论为 **`keep_native_surface_and_delete_legacy`**。
+
+- surface contract 11/11 有唯一 opener、state source、container、exit action 和 deletion
+  point；production container 仅 3 种加 inline approval；
+- English/`zh-Hans` 在五个冻结尺寸的真实 PTY resize 为 10/10，长路径、CJK、
+  combining character、emoji、composer focus 与 cursor 均保持；
+- keyboard/mouse/paste、permission、approval denial/no-side-effect 与 resize parity
+  全通过；没有 mouse-only action；
+- live terminal projection 与同一 RunStore credential-free reopen 的非空 glyph、坐标
+  逐 cell 相等；canonical Store terminal/evidence 仍精确；
+- idle 初帧后 5 秒没有 PTY bytes；ANSI-16/256/truecolor 与 terminal-reset background
+  的 semantic token gate 通过；
+- `en`/`zh-Hans` catalog key/placeholder parity 通过，可达人类文本改由 localization
+  owner 提供；
+- production legacy renderer、centered generic modal、显示模式 reader、第二 theme
+  owner 和孤儿 fixture 均为 0；
+- M28 diff 不触及 protocol/runtime/state/deepseek/tools 的 production owner，permission
+  与 completion semantics delta 为 0。
+
+focused、fmt、strict workspace Clippy、workspace test、public checker、locked/offline
+delivery install/verify/uninstall 与 `git diff --check` 全绿。一个 exec stall fixture 在
+全套并发负载下暴露 transport/open guard 与 model-event guard 同为 1 秒的自相干扰；测试
+已把前者放宽到 5 秒而保持后者 1 秒，production 行为未变。无 Key、official API、GitHub、
+push 或 release。完整审计见
+[M28 summary](../../eval/summaries/m28-native-tui-surface-cutover-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

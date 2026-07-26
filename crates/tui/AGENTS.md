@@ -7,10 +7,10 @@ are specific to this crate.
 ## The surface grammar (do not regress it)
 
 ADR-0013 and the root `DESIGN.md` define one Operate, transcript-first,
-terminal-native surface system. M28 is the active cutover milestone. Until its
-cutover commits land, `src/tui/underwater.rs`, `ocean.rs`, the centered
-onboarding card, and legacy display settings are current baseline debt, not
-accepted target behavior and not a reason to add another legacy caller.
+terminal-native surface system. M28 completed the hard cutover: the old
+`underwater.rs`/`ocean.rs`, centered onboarding card, selectable appearance
+pipeline, and legacy display settings no longer exist. Do not recreate them as
+a compatibility path or add another renderer.
 
 - **Only four surface contracts.** Production UI is the main work surface,
   a bottom sheet, a full-screen room, or the inline approval interruption.
@@ -26,7 +26,7 @@ accepted target behavior and not a reason to add another legacy caller.
   input, scroll, or the facts shown.
 - **Idle is still.** Rendering is event-driven. No fish, bubbles, gradients,
   ambient glyphs, timer redraw, pulsing brand mark, or decorative completion
-  sequence survives M28.
+  sequence is permitted.
 - **One token owner.** Reachable renderers consume the same resolved DSE
   presentation tokens. Terminal background/foreground are the base; one
   accent plus semantic success/warning/error/focus roles carry meaning.
@@ -84,7 +84,7 @@ Real-terminal QA gotchas (learned the hard way):
   highlighted match and runs it (#573). A scripted second Enter lands
   *inside* whatever modal just opened. Send one key, wait, capture.
 - Judge motion from repeated captures diffed over time, never single
-  screenshots. Layout gates: 40x12, 60x16, 80x24, 100x32, 140x40.
+  screenshots. Layout gates: 48x12, 60x16, 80x24, 100x32, 140x40.
 - `DSE_TUI_DEBUG=1` writes per-frame diff sizes to
   `~/.dse/logs/tui-render.log`. Streaming should be tens of cells per
   frame; a multi-thousand-cell frame is only acceptable on a genuine

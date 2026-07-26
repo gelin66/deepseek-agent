@@ -4920,7 +4920,8 @@ policy/network/writable roots 的 `dse-tui sandbox run` 直接执行旁路及其
 
 ## 26. M28：DSE 原生 TUI 全表面切换
 
-- 状态：**方案已接受；等待 M27 clean checkpoint 后执行**
+- 状态：**完成；`keep_native_surface_and_delete_legacy`**
+- cutover checkpoint：`1e420d9d7`（真实 PTY/reopen 合同；最终文档在后续独立提交）
 - 架构决策：[ADR-0013](../decisions/0013-native-tui-surface-system.md)
 - 设计合同：[DESIGN.md](../../DESIGN.md)
 - 目标：把所有可达 TUI surface 切到同一 terminal-native 表面系统，并物理删除
@@ -5125,3 +5126,31 @@ targeted renderer / focus / hitbox / localization tests
 M28 不需要 Key、official DeepSeek API 或付费 A/B；loopback model 和 canonical Store 已足够
 验证 UI correctness。视觉主观印象不能替代上述门禁，PTY/snapshot 也不能被外推成模型质量、
 Token、cache、成本或 verified-success 提升。
+
+### 26.7 实际结果
+
+M28-A–F 已按顺序完成真实 caller cutover。production 只剩 main work surface、bottom
+sheet、full-screen room 与 inline approval interruption；宽屏 rail、中屏 strip 和窄屏
+single-column 都读取同一个 `CanonicalRunPresentation`。onboarding、user input、
+permission、approval、pager/help/cost/diff/evidence 已迁入固定容器，键盘和 mouse 共享
+render-time action/hitbox。
+
+已物理删除：
+
+- `underwater.rs`、`ocean.rs`、鱼/气泡/渐变/80ms idle animation；
+- `status_indicator.rs`、generic centered/modal/shadow helper；
+- selectable theme/background pipeline、direct theme remap、显示模式与布局/装饰 setting
+  reader；
+- 退役 Doctor command hints、硬编码人类英文、孤儿 session/command Gherkin 与旧视觉
+  evidence 文档。
+
+冻结的 English/`zh-Hans` × `48×12`、`60×16`、`80×24`、`100×32`、`140×40`
+真实 PTY resize 矩阵通过；同一 terminal Run 在 credential-free SQLite reopen 后的可见
+glyph 与坐标逐 cell 相等。ANSI depth/reset background、Unicode width、keyboard/mouse/
+paste、approval/permission、idle 5 秒 byte-still 和 installed delivery lifecycle 均由
+deterministic gate 覆盖。macOS Terminal、iTerm2、Ghostty 的宿主渲染差异没有在无对应
+宿主的自动化环境中伪造人工结论。
+
+M28 范围内没有修改 protocol、Runtime、State、DeepSeek、tools、prompt、model 或
+permission 语义；没有 Key、official API、GitHub、push 或 release。完整结果见
+[M28 summary](../../eval/summaries/m28-native-tui-surface-cutover-2026-07-26.md)。

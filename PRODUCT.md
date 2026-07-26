@@ -70,7 +70,8 @@ motion are coherent product defaults or terminal capability adaptations.
 
 ## Accessibility & Inclusion
 
-Maintain readable contrast in every bundled theme, never encode state by color
-alone, preserve keyboard-only operation, provide equivalent mouse interaction
-where the terminal supports it, respect terminal width and Unicode display
-width, and keep English and Simplified Chinese message catalogs complete.
+Maintain readable contrast through the single terminal-adaptive token set,
+never encode state by color alone, preserve keyboard-only operation, provide
+equivalent mouse interaction where the terminal supports it, respect terminal
+width and Unicode display width, and keep English and Simplified Chinese
+message catalogs complete.
