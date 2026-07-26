@@ -38,6 +38,8 @@ mod execpolicy;
 mod features;
 mod hashing;
 mod logging;
+#[cfg(test)]
+mod m22_streaming_delta_benchmark;
 mod mcp;
 mod palette;
 mod plugins;

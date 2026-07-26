@@ -1,0 +1,52 @@
+{
+  "schema": "dse.eval.m22-streaming-delta-baseline-fixture.v1",
+  "source": {
+    "journal": "eval/results/m20b-fixed-pro-reliability-7797ec9d7aaa-v1.jsonl",
+    "journal_sha256": "sha256:cf25d9412fcfb8db3b50f1d5cfda0cf82d8a0d0786daa63fdd0469c468c639b7",
+    "journal_bytes": 5875259,
+    "journal_mode": "0600",
+    "derivation": "Only event counts and UTF-8 delta byte totals are retained. Prompt, reasoning, content, tool arguments, evaluation ids, credentials, workspaces and timestamps are excluded."
+  },
+  "profiles": [
+    {
+      "id": "m20b_typescript_sequence_2993",
+      "observed_total_events": 2993,
+      "observed_reasoning_delta_events": 2743,
+      "observed_reasoning_delta_utf8_bytes": 9299,
+      "observed_content_delta_events": 209,
+      "observed_content_delta_utf8_bytes": 798,
+      "observed_non_delta_events": 41,
+      "synthetic_prefix_events": 3,
+      "synthetic_total_events": 2955
+    },
+    {
+      "id": "m20b_python_sequence_5298",
+      "observed_total_events": 5298,
+      "observed_reasoning_delta_events": 4769,
+      "observed_reasoning_delta_utf8_bytes": 16288,
+      "observed_content_delta_events": 462,
+      "observed_content_delta_utf8_bytes": 1639,
+      "observed_non_delta_events": 67,
+      "synthetic_prefix_events": 3,
+      "synthetic_total_events": 5234
+    }
+  ],
+  "synthetic_contract": {
+    "prefix": [
+      "run_created",
+      "model_request_prepared",
+      "model_request_in_flight"
+    ],
+    "delta_order": "all reasoning deltas followed by all content deltas",
+    "delta_payload": "deterministic ASCII bytes distributed across the exact observed event count and UTF-8 byte total",
+    "state_owner": "dse_state::StateStore through the canonical RunStore trait",
+    "client_owners": [
+      "AgentApplication RunCommand::Events plus canonical response JSON",
+      "tui::run_projection::CanonicalRunProjection",
+      "headless dse.exec-stream content projection"
+    ],
+    "network": false,
+    "credential": false,
+    "model_request": false
+  }
+}

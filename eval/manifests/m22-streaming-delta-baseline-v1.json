@@ -1,0 +1,82 @@
+{
+  "schema": "dse.eval.m22-streaming-delta-baseline.v1",
+  "suite_id": "m22-streaming-delta-baseline-v1",
+  "frozen_on": "2026-07-26",
+  "baseline": {
+    "branch": "deepseek-agent",
+    "commit": "ce4784fa9b5e2c51f1741b8e7382b15fea228a37",
+    "tree": "3d61a9f974f527fc69c1f82a1b0783618b9f4db8",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice": {
+    "real_problem": "M20B reached canonical sequence 5298 and 2993 while streaming deltas represented more than 98 percent of stored events. The 5.87 MB evaluator journal also duplicated complete Store snapshots, so production RuntimeEvent and SQLite amplification must be measured independently before any event-shape change.",
+    "acceptance": [
+      "measure canonical event count, delta payload bytes, SQLite plus WAL footprint, append wall time, credential-free reopen wall time, Run API event retrieval plus canonical JSON serialization, TUI canonical projection and headless stream projection",
+      "use the actual StateStore, AgentApplication Run API, CanonicalRunProjection and headless serializer rather than a copied reducer, Store or client protocol",
+      "repeat each real-scale profile after one warmup and report every sample, median, minimum and maximum",
+      "make no production change unless one pre-registered absolute material-loss threshold and the stability gate both pass",
+      "any candidate must preserve concatenated content and reasoning bytes, partial-response fail-closed behavior, no-blind-retry accounting, latest-revision evidence, exact SQLite reopen, SIGKILL recovery and CLI/TUI/API semantic projection"
+    ],
+    "single_owner": "RuntimeEvent streaming-delta emission remains owned by crates/runtime and wire-frame parsing remains owned by crates/deepseek; StateStore and clients remain consumers. A candidate may change only one owning boundary after the baseline identifies it.",
+    "old_path_replaced": "one canonical StateStore transaction and one StoredRuntimeEvent per non-empty DeepSeek content or reasoning SSE delta",
+    "evidence": "credential-free deterministic benchmark plus existing M21 partial-response, StateStore reopen, process SIGKILL and surface-parity conformance",
+    "cutover_deletion": "if admitted, remove the per-frame emission branch it replaces and keep no compatibility reader, dual event truth or alternate client reducer; if not admitted, delete any experimental production candidate and record reject",
+    "non_goals": [
+      "journal compression or rewriting frozen M20B evidence",
+      "second Store, Runtime, protocol, sender or projection",
+      "GitHub, remote CI, push or release",
+      "DeepSeek credential, official API, external network or model call",
+      "Auto, FIM, Provider, multi-Writer or prompt changes"
+    ]
+  },
+  "benchmark": {
+    "fixture": "eval/fixtures/m22-streaming-delta-baseline-v1.json",
+    "harness": "scripts/eval-m22-streaming-delta-baseline.py",
+    "rust_test": "dse-tui::m22_streaming_delta_benchmark::canonical_m22_streaming_delta_baseline",
+    "warmups_per_profile": 1,
+    "measured_repetitions_per_profile": 5,
+    "maximum_reruns": 0,
+    "cargo_target": "/private/tmp/dse-m22-target",
+    "credential_read": false,
+    "official_api_requests": 0,
+    "external_network": false
+  },
+  "material_loss_gate": {
+    "delta_event_share_minimum": 0.9,
+    "stability": "for the triggering wall-time metric, measured maximum must be no more than 1.50 times the measured median",
+    "absolute_any": {
+      "delta_append_wall_ms_median": 1000,
+      "credential_free_reopen_wall_ms_median": 100,
+      "run_api_events_json_wall_ms_median": 100,
+      "tui_projection_wall_ms_median": 100,
+      "headless_projection_wall_ms_median": 100,
+      "sqlite_plus_wal_bytes_median": 4194304
+    }
+  },
+  "candidate_gate": {
+    "required_quality": [
+      "byte-identical concatenated reasoning and content for complete responses",
+      "partial reasoning/content remains actionable and replay-unsafe",
+      "no completion commit without supported finish plus DONE and usage contract",
+      "no additional retry or side effect",
+      "exact event prefix, attempt identity, accounting, transcript, latest-revision evidence and terminal after SQLite reopen and process SIGKILL",
+      "CLI/TUI/API project the same ordered bytes and terminal facts"
+    ],
+    "required_efficiency": [
+      "canonical streaming-delta event count and SQLite plus WAL bytes each improve by at least 50 percent on both profiles",
+      "at least one baseline material wall-time metric improves by at least 20 percent",
+      "no measured wall-time metric regresses by more than 10 percent",
+      "no added wait beyond bytes already available in the same transport chunk"
+    ],
+    "complexity": "one existing owner, no new schema truth, no mode/config/user surface, and net code must be justified by the measured absolute loss"
+  },
+  "decision": {
+    "if_baseline_not_material": "reject_no_material_production_streaming_delta_loss; delete experimental production candidate",
+    "if_candidate_fails_quality": "reject_quality_or_recovery_regression; delete candidate and retain baseline",
+    "if_candidate_fails_efficiency": "reject_no_stable_net_efficiency; delete candidate and retain baseline",
+    "if_all_gates_pass": "keep_minimal_streaming_delta_convergence and physically delete the replaced per-frame path"
+  }
+}
