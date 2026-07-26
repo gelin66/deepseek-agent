@@ -928,12 +928,11 @@ impl Renderable for ComposerWidget<'_> {
     }
 }
 
-/// Codex-style full-screen approval takeover (#129).
+/// Native inline approval interruption.
 ///
 /// The widget reads its selected option and locale directly from the
-/// [`ApprovalView`]. Rendering reflows to fill most of the transcript
-/// area instead of a centered popup; on small terminals it falls back to
-/// a 65×22 card so existing snapshot tests still see a coherent layout.
+/// [`ApprovalView`]. Rendering reflows inside one bottom-anchored band while
+/// leaving the transcript and canonical Run facts visible above it.
 pub struct ApprovalWidget<'a> {
     request: &'a ApprovalRequest,
     view: &'a ApprovalView,

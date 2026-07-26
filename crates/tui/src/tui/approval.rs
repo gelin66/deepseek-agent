@@ -3,10 +3,8 @@
 //! Hosts the [`ApprovalRequest`] / [`ApprovalView`] pair the runtime asks
 //! the TUI to present whenever a tool needs human approval.
 //!
-//! ## v0.6.7: Codex-style takeover with stakes-based variants (#129)
-//!
-//! The modal now renders as a full-screen takeover (calm centered card
-//! against the transcript area) and routes each request to one of three
+//! The approval renders as a bottom-anchored inline interruption so the
+//! transcript and canonical Run facts remain visible. Requests retain three
 //! stakes-based variants:
 //!
 //! - **Routine** (`ApprovalStakes::Routine`) — read-only ops, MCP discovery,
@@ -1489,25 +1487,22 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_collapsed_card_so_transcript_stays_visible() {
-        // Regression for PR #1455 / @tiger-dog: the approval modal
-        // rendered as a full-screen takeover that hid the transcript
-        // behind it, so users had to dismiss the prompt to remember
-        // what they were approving. Tab now flips between the full
-        // takeover card and a single-line bottom banner.
+    fn tab_toggles_inline_detail_without_hiding_the_transcript() {
+        // Tab switches the same inline interruption between its full detail
+        // and compact forms; neither form takes over the transcript.
         let mut view = ApprovalView::new(benign_request());
         assert!(
             !view.collapsed,
-            "modal must start expanded so first-time users notice it"
+            "approval must start expanded so first-time users notice it"
         );
 
         let action = view.handle_key(create_key_event(KeyCode::Tab));
         assert!(matches!(action, ViewAction::None));
-        assert!(view.collapsed, "first Tab collapses the card");
+        assert!(view.collapsed, "first Tab collapses the detail");
 
         let action = view.handle_key(create_key_event(KeyCode::Tab));
         assert!(matches!(action, ViewAction::None));
-        assert!(!view.collapsed, "second Tab restores the takeover card");
+        assert!(!view.collapsed, "second Tab restores the inline detail");
     }
 
     #[test]
@@ -2072,10 +2067,9 @@ mod tests {
     }
 
     #[test]
-    fn render_takeover_card_fills_most_of_area() {
-        // The card should be wider than the old 65-cell popup whenever
-        // the terminal can hold it; this guards against a regression
-        // back to the centered popup.
+    fn render_inline_interruption_uses_the_available_width() {
+        // The interruption uses the available width instead of introducing
+        // another detached container.
         let view = ApprovalView::new(benign_request());
         let lines = render_lines(&view, 120, 40);
         // Find the widest non-blank rendered row.
@@ -2086,7 +2080,7 @@ mod tests {
             .unwrap_or(0);
         assert!(
             widest >= 80,
-            "takeover card too narrow: widest row = {widest} cells"
+            "inline interruption too narrow: widest row = {widest} cells"
         );
     }
 }

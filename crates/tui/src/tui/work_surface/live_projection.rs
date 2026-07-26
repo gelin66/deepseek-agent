@@ -1,4 +1,4 @@
-//! Read-only canonical child-Agent projection for the Ocean work surface.
+//! Read-only canonical child-Agent projection for the native work surface.
 
 use crate::tui::app::App;
 use dse_localization::MessageId;

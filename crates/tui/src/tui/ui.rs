@@ -1120,7 +1120,7 @@ fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<
                 .unwrap_or(80)
                 .saturating_sub(2);
             app.view_stack
-                .push(PagerView::from_text(title, &content, width));
+                .push(PagerView::from_text(title, &content, width, app.language));
             None
         }
         ViewEvent::CopyToClipboard { text, label } => {

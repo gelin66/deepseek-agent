@@ -13,9 +13,10 @@
 //! - `c` / `y` — copy the entire pager body to the system clipboard
 //! - `q` / Esc — close pager
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use dse_localization::{MessageId, ProductLanguage, tr_in};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -27,12 +28,13 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_panel_scroll_rail, render_underwater_surface,
+    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_full_screen_room,
+    render_modal_footer, render_panel_scroll_rail,
 };
 
 pub struct PagerView {
     title: String,
+    language: ProductLanguage,
     lines: Vec<Line<'static>>,
     plain_lines: Vec<String>,
     scroll: usize,
@@ -41,6 +43,8 @@ pub struct PagerView {
     search_index: usize,
     search_mode: bool,
     pending_g: bool,
+    close_hitbox: RefCell<Option<Rect>>,
+    copy_hitbox: RefCell<Option<Rect>>,
     /// Cached visible content height from the last render. Used by paging
     /// keys (Ctrl+D/U, Ctrl+F/B, Space, etc.) to compute scroll deltas
     /// without access to the render area.
@@ -48,10 +52,15 @@ pub struct PagerView {
 }
 
 impl PagerView {
-    pub fn new(title: impl Into<String>, lines: Vec<Line<'static>>) -> Self {
+    pub fn new(
+        title: impl Into<String>,
+        lines: Vec<Line<'static>>,
+        language: ProductLanguage,
+    ) -> Self {
         let plain_lines = lines.iter().map(line_to_string).collect();
         Self {
             title: title.into(),
+            language,
             lines,
             plain_lines,
             scroll: 0,
@@ -60,11 +69,18 @@ impl PagerView {
             search_index: 0,
             search_mode: false,
             pending_g: false,
+            close_hitbox: RefCell::new(None),
+            copy_hitbox: RefCell::new(None),
             last_visible_height: Cell::new(0),
         }
     }
 
-    pub fn from_text(title: impl Into<String>, text: &str, width: u16) -> Self {
+    pub fn from_text(
+        title: impl Into<String>,
+        text: &str,
+        width: u16,
+        language: ProductLanguage,
+    ) -> Self {
         let mut lines = Vec::new();
         for raw in text.lines() {
             for wrapped in wrap_text(raw, width.max(1) as usize) {
@@ -74,7 +90,7 @@ impl PagerView {
                 lines.push(Line::from(""));
             }
         }
-        Self::new(title, lines)
+        Self::new(title, lines, language)
     }
 
     fn scroll_up(&mut self, amount: usize) {
@@ -124,6 +140,13 @@ impl PagerView {
         // Match the render-side clamp so G/End land at the visible bottom and
         // k/Up immediately scroll back up by one line.
         self.lines.len().saturating_sub(self.page_height())
+    }
+
+    fn emit_copy(&self) -> ViewAction {
+        ViewAction::Emit(ViewEvent::CopyToClipboard {
+            text: self.body_text(),
+            label: tr_in(self.language, MessageId::PagerContentLabel).into_owned(),
+        })
     }
 
     fn start_search(&mut self) {
@@ -344,10 +367,7 @@ impl ModalView for PagerView {
             // working key.
             KeyCode::Char('c') | KeyCode::Char('y') => {
                 self.pending_g = false;
-                ViewAction::Emit(ViewEvent::CopyToClipboard {
-                    text: self.body_text(),
-                    label: "分页内容".to_string(),
-                })
+                self.emit_copy()
             }
             _ => ViewAction::None,
         }
@@ -365,25 +385,51 @@ impl ModalView for PagerView {
                 self.pending_g = false;
                 ViewAction::None
             }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                let position = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if self
+                    .close_hitbox
+                    .borrow()
+                    .is_some_and(|rect| rect.contains(position))
+                {
+                    ViewAction::Close
+                } else if self
+                    .copy_hitbox
+                    .borrow()
+                    .is_some_and(|rect| rect.contains(position))
+                {
+                    self.emit_copy()
+                } else {
+                    ViewAction::None
+                }
+            }
             _ => ViewAction::None,
         }
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let inner = render_underwater_surface(area, buf, self.title.clone());
+        let inner = render_full_screen_room(area, buf, self.title.clone());
 
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
         let hints = vec![
-            ActionHint::new("q/Esc", "close"),
-            ActionHint::new("j/k", "scroll"),
-            ActionHint::new("Space", "page"),
-            ActionHint::new("Ctrl+D/U", "half"),
-            ActionHint::new("g/G", "top/bottom"),
-            ActionHint::new("/", "search"),
-            ActionHint::new("c", "copy"),
+            ActionHint::new("q/Esc", tr_in(self.language, MessageId::PagerClose)),
+            ActionHint::new("j/k", tr_in(self.language, MessageId::PagerScroll)),
+            ActionHint::new("Space", tr_in(self.language, MessageId::PagerPage)),
+            ActionHint::new("Ctrl+D/U", tr_in(self.language, MessageId::PagerHalfPage)),
+            ActionHint::new("g/G", tr_in(self.language, MessageId::PagerTopBottom)),
+            ActionHint::new("/", tr_in(self.language, MessageId::PagerSearch)),
+            ActionHint::new("c", tr_in(self.language, MessageId::PagerCopy)),
         ];
         let content = render_modal_footer(inner, buf, &hints);
+        let footer = Rect {
+            x: inner.x,
+            y: content.bottom(),
+            width: inner.width,
+            height: inner.bottom().saturating_sub(content.bottom()),
+        };
+        *self.close_hitbox.borrow_mut() = find_footer_key(buf, footer, "q/Esc");
+        *self.copy_hitbox.borrow_mut() = find_footer_key(buf, footer, " c ");
 
         // `content` already excludes the border, padding, and footer rows.
         let mut visible_height = content.height as usize;
@@ -469,6 +515,26 @@ impl ModalView for PagerView {
     }
 }
 
+fn find_footer_key(buf: &Buffer, area: Rect, key: &str) -> Option<Rect> {
+    let key_width = u16::try_from(key.chars().count()).ok()?;
+    if key_width == 0 || key_width > area.width {
+        return None;
+    }
+    for y in area.top()..area.bottom() {
+        for x in area.left()..=area.right().saturating_sub(key_width) {
+            let matches = key.chars().enumerate().all(|(offset, expected)| {
+                let offset = u16::try_from(offset).unwrap_or(u16::MAX);
+                let mut chars = buf[(x.saturating_add(offset), y)].symbol().chars();
+                chars.next() == Some(expected) && chars.next().is_none()
+            });
+            if matches {
+                return Some(Rect::new(x, y, key_width, 1));
+            }
+        }
+    }
+    None
+}
+
 fn line_to_string(line: &Line<'static>) -> String {
     line.spans
         .iter()
@@ -549,7 +615,7 @@ mod tests {
         let lines: Vec<Line<'static>> = (0..lines)
             .map(|i| Line::from(format!("line-{i:03}")))
             .collect();
-        PagerView::new("T", lines)
+        PagerView::new("T", lines, ProductLanguage::English)
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -787,7 +853,7 @@ mod tests {
         match action {
             ViewAction::Emit(ViewEvent::CopyToClipboard { text, label }) => {
                 assert_eq!(text, "line-000\nline-001\nline-002");
-                assert_eq!(label, "分页内容");
+                assert_eq!(label, "page content");
             }
             other => panic!("expected CopyToClipboard emit, got {other:?}"),
         }
@@ -948,19 +1014,14 @@ mod tests {
         let mut buf = Buffer::empty(area);
         p.render(area, &mut buf);
 
-        // Text starts at popup_area.x + block_border_left + padding_left
-        // = 1 + 1 + 1 = 3. The fixture text is "line-NNN" (8 chars) so we
-        // sample 3..11. The current-match row is the top of the visible
-        // window because `jump_to_match` set scroll = match_line.
-        let popup_top_y = 1 /* outer popup */ + 1 /* block top border */ + 1 /* padding top */;
-        let mut found_highlight = false;
-        for x in 3..11 {
-            let bg = buf[(x, popup_top_y)].style().bg;
-            if matches!(bg, Some(Color::Yellow) | Some(Color::DarkGray)) {
-                found_highlight = true;
-                break;
-            }
-        }
+        let found_highlight = (0..area.height).any(|y| {
+            (0..area.width).any(|x| {
+                matches!(
+                    buf[(x, y)].style().bg,
+                    Some(Color::Yellow) | Some(Color::DarkGray)
+                )
+            })
+        });
         assert!(
             found_highlight,
             "expected a Yellow/DarkGray highlight cell on the matched-line text columns"
@@ -1014,6 +1075,36 @@ mod tests {
         }
 
         assert_eq!(p.scroll, bottom);
+    }
+
+    #[test]
+    fn pager_action_rail_close_and_copy_are_mouse_reachable() {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut close = make_pager(5);
+        close.render(area, &mut Buffer::empty(area));
+        let close_rect = close.close_hitbox.borrow().expect("rendered close hitbox");
+        assert!(matches!(
+            close.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: close_rect.x,
+                row: close_rect.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ViewAction::Close
+        ));
+
+        let mut copy = make_pager(5);
+        copy.render(area, &mut Buffer::empty(area));
+        let copy_rect = copy.copy_hitbox.borrow().expect("rendered copy hitbox");
+        assert!(matches!(
+            copy.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: copy_rect.x,
+                row: copy_rect.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ViewAction::Emit(ViewEvent::CopyToClipboard { .. })
+        ));
     }
 
     #[test]

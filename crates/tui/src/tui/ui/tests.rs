@@ -217,6 +217,30 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
 }
 
 #[test]
+fn closing_a_secondary_surface_restores_composer_and_transcript_state() {
+    let mut app = create_test_app();
+    app.input = "keep this draft".to_string();
+    app.cursor_position = 6;
+    app.viewport.transcript_scroll = crate::tui::scrolling::TranscriptScroll::at_line(7);
+    app.viewport.pending_scroll_delta = -2;
+    open_permission_selector(&mut app);
+
+    let events = app
+        .view_stack
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(events.is_empty());
+    assert!(app.view_stack.is_empty());
+    assert_eq!(app.input, "keep this draft");
+    assert_eq!(app.cursor_position, 6);
+    assert_eq!(
+        app.viewport.transcript_scroll,
+        crate::tui::scrolling::TranscriptScroll::at_line(7)
+    );
+    assert_eq!(app.viewport.pending_scroll_delta, -2);
+}
+
+#[test]
 fn canonical_mouse_click_on_approval_emits_decision() {
     use crossterm::event::MouseButton;
 

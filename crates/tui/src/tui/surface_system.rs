@@ -61,7 +61,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "CanonicalRunPresentation + App composer/viewport",
         targets: MAIN,
         exit_action: "canonical Ctrl-C/Ctrl-D or /exit",
-        legacy_deletion_point: "underwater.rs + ocean.rs + idle timer redraw",
+        legacy_deletion_point: "deleted in M28-B",
     },
     SurfaceContract {
         surface: ProductionSurface::OnboardingWelcome,
@@ -69,7 +69,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "OnboardingState::Welcome",
         targets: ROOM,
         exit_action: "Enter advances; canonical exit cancels",
-        legacy_deletion_point: "centered Borders::ALL onboarding panel",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::OnboardingApiKey,
@@ -77,7 +77,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "OnboardingState::ApiKey + masked App input",
         targets: ROOM,
         exit_action: "Enter validates/saves; Esc returns",
-        legacy_deletion_point: "centered Borders::ALL onboarding panel",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::OnboardingTrust,
@@ -85,7 +85,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "OnboardingState::TrustDirectory",
         targets: ROOM,
         exit_action: "explicit trust continues; deny/Esc exits",
-        legacy_deletion_point: "centered Borders::ALL onboarding panel",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::OnboardingTips,
@@ -93,7 +93,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "OnboardingState::Tips",
         targets: ROOM,
         exit_action: "Enter completes onboarding",
-        legacy_deletion_point: "centered Borders::ALL onboarding panel",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::SlashMenu,
@@ -117,7 +117,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "RunPermissionMode + active-run freeze fact",
         targets: SHEET,
         exit_action: "Enter selects for next Run; Esc closes",
-        legacy_deletion_point: "modal surface shadow/backdrop",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::UserInput,
@@ -125,7 +125,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "UserInteractionRequest + local bounded response draft",
         targets: ADAPTIVE_INPUT,
         exit_action: "Enter submits; Esc cancels",
-        legacy_deletion_point: "82x68 centered modal",
+        legacy_deletion_point: "deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::Approval,
@@ -133,7 +133,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "ApprovalRequest + Host risk/authority facts",
         targets: INLINE,
         exit_action: "approve/deny/abort decision",
-        legacy_deletion_point: "modal naming/backdrop path",
+        legacy_deletion_point: "detached path deleted in M28-D",
     },
     SurfaceContract {
         surface: ProductionSurface::Pager,
@@ -141,7 +141,7 @@ const CONTRACTS: &[SurfaceContract] = &[
         state_source: "immutable text/log/diff/evidence projection",
         targets: ROOM,
         exit_action: "Esc/q closes and restores main surface",
-        legacy_deletion_point: "render_underwater_surface helper",
+        legacy_deletion_point: "deleted in M28-D",
     },
 ];
 

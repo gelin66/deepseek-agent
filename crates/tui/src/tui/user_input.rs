@@ -1,9 +1,12 @@
 //! Modal for request_user_input tool prompts.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use std::cell::RefCell;
+
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use dse_localization::{MessageId, tr};
 use dse_protocol::agent_runtime::{
@@ -12,23 +15,10 @@ use dse_protocol::agent_runtime::{
 };
 
 use crate::palette;
-use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
-
-fn modal_block(title: &str) -> Block<'static> {
-    Block::default()
-        .title(Line::from(vec![Span::styled(
-            title.to_string(),
-            Style::default().fg(palette::DSE_ACCENT_PRIMARY).bold(),
-        )]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::DSE_BG))
-        .padding(Padding::uniform(1))
-}
-
-fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
-    render_modal_surface(area, popup_area, buf);
-}
+use crate::tui::views::{
+    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, bottom_sheet_rect,
+    render_bottom_sheet, render_full_screen_room, render_modal_footer, render_panel_scroll_rail,
+};
 
 fn push_option_lines(
     lines: &mut Vec<Line<'static>>,
@@ -85,6 +75,7 @@ pub struct UserInputView {
     /// question. Only used when `question.multi_select` is true.
     multi_pending: Vec<usize>,
     validation_message: Option<String>,
+    row_hitboxes: RefCell<Vec<(usize, Rect)>>,
 }
 
 impl UserInputView {
@@ -99,6 +90,7 @@ impl UserInputView {
             answers: Vec::new(),
             multi_pending: Vec::new(),
             validation_message: None,
+            row_hitboxes: RefCell::new(Vec::new()),
         }
     }
 
@@ -137,6 +129,50 @@ impl UserInputView {
 
     fn is_multi_select(&self) -> bool {
         self.current_question().multi_select
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let count = self.option_count() as isize;
+        if count > 0 {
+            self.selected = (self.selected as isize + delta).rem_euclid(count) as usize;
+        }
+    }
+
+    fn estimated_content_rows(&self, width: u16) -> usize {
+        let width = usize::from(width.saturating_sub(4).max(1));
+        let question = self.current_question();
+        let wrapped = |value: &str| UnicodeWidthStr::width(value).div_ceil(width).max(1);
+        let mut rows = 5 + wrapped(&question.question);
+        for option in &question.options {
+            rows += 1 + wrapped(&option.description);
+        }
+        if self.offers_other() {
+            rows += 2;
+        }
+        if self.is_multi_select() {
+            rows += 2;
+        }
+        if self.mode == InputMode::OtherInput {
+            rows += 2;
+        }
+        if self.validation_message.is_some() {
+            rows += 2;
+        }
+        rows
+    }
+
+    fn sheet_height(&self, area: Rect) -> u16 {
+        let desired = u16::try_from(self.estimated_content_rows(area.width).saturating_add(4))
+            .unwrap_or(u16::MAX);
+        let maximum = area.height.saturating_mul(2).div_ceil(3).max(8);
+        desired.min(maximum).min(area.height)
+    }
+
+    fn uses_full_screen_room(&self, area: Rect) -> bool {
+        let sheet = self.sheet_height(area);
+        let required = u16::try_from(self.estimated_content_rows(area.width).saturating_add(4))
+            .unwrap_or(u16::MAX);
+        required > sheet || area.height < 14
     }
 
     fn toggle_pending(&mut self, index: usize) {
@@ -333,17 +369,47 @@ impl ModalView for UserInputView {
         }
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        if self.mode != InputMode::Selecting {
+            return ViewAction::None;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.move_selection(-1);
+                ViewAction::None
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_selection(1);
+                ViewAction::None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let selected = self.row_hitboxes.borrow().iter().find_map(|(index, rect)| {
+                    rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                        .then_some(*index)
+                });
+                if let Some(selected) = selected {
+                    self.selected = selected;
+                    self.activate_or_confirm_selection()
+                } else {
+                    ViewAction::None
+                }
+            }
+            _ => ViewAction::None,
+        }
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let question = self.current_question();
         let total = self.request.questions.len();
-        let header = format!(
-            " {} ({}/{}) ",
+        let title = format!(
+            "{} ({}/{})",
             question.header,
             self.question_index + 1,
             total
         );
 
         let mut lines: Vec<Line> = Vec::new();
+        let mut selectable_lines = Vec::new();
         lines.push(Line::from(vec![Span::styled(
             tr(MessageId::UserInputActionRequired).into_owned(),
             Style::default().fg(palette::DSE_INFO).bold(),
@@ -373,6 +439,7 @@ impl ModalView for UserInputView {
         for (idx, option) in question.options.iter().enumerate() {
             let number = idx + 1;
             let ticked = self.is_multi_select() && self.multi_pending.contains(&idx);
+            selectable_lines.push((idx, lines.len()));
             push_option_lines(
                 &mut lines,
                 self.selected == idx,
@@ -387,6 +454,7 @@ impl ModalView for UserInputView {
         if self.offers_other() {
             let other_index = question.options.len();
             let other_number = other_index + 1;
+            selectable_lines.push((other_index, lines.len()));
             push_option_lines(
                 &mut lines,
                 self.selected == other_index,
@@ -403,6 +471,7 @@ impl ModalView for UserInputView {
         if self.is_multi_select() {
             let confirm_index = self.option_count().saturating_sub(1);
             let confirm_number = confirm_index + 1;
+            selectable_lines.push((confirm_index, lines.len()));
             push_option_lines(
                 &mut lines,
                 self.selected == confirm_index,
@@ -441,21 +510,16 @@ impl ModalView for UserInputView {
             )));
         }
 
-        lines.push(Line::from(""));
-        if self.mode == InputMode::OtherInput {
-            lines.push(Line::from(vec![
-                Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
-                Span::styled(
-                    format!(" {}", tr(MessageId::UserInputSubmit)),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-                Span::raw("  "),
-                Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
-                Span::styled(
-                    format!(" {}", tr(MessageId::UserInputBack)),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
+        let mut inner = if self.uses_full_screen_room(area) {
+            render_full_screen_room(area, buf, title)
+        } else {
+            render_bottom_sheet(area, buf, self.sheet_height(area), title)
+        };
+        let hints = if self.mode == InputMode::OtherInput {
+            vec![
+                ActionHint::new("Enter", tr(MessageId::UserInputSubmit)),
+                ActionHint::new("Esc", tr(MessageId::UserInputBack)),
+            ]
         } else {
             let opt_count = self.option_count();
             let quick_pick_label = if opt_count <= 9 {
@@ -464,95 +528,71 @@ impl ModalView for UserInputView {
                 tr(MessageId::UserInputDigit).into_owned()
             };
             if self.is_multi_select() {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        quick_pick_label,
-                        Style::default().fg(palette::DSE_INFO).bold(),
-                    ),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputMove)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Space", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputToggle)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputToggleConfirm)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputCancel)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                ]));
+                vec![
+                    ActionHint::new(quick_pick_label, tr(MessageId::UserInputMove)),
+                    ActionHint::new("Space", tr(MessageId::UserInputToggle)),
+                    ActionHint::new("Enter", tr(MessageId::UserInputToggleConfirm)),
+                    ActionHint::new("Esc", tr(MessageId::UserInputCancel)),
+                ]
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        quick_pick_label,
-                        Style::default().fg(palette::DSE_INFO).bold(),
-                    ),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputQuickPick)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Up/Down", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputMove)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Enter", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputConfirmSelection)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled("Esc", Style::default().fg(palette::DSE_INFO).bold()),
-                    Span::styled(
-                        format!(" {}", tr(MessageId::UserInputCancel)),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                ]));
+                vec![
+                    ActionHint::new(quick_pick_label, tr(MessageId::UserInputQuickPick)),
+                    ActionHint::new("↑/↓", tr(MessageId::UserInputMove)),
+                    ActionHint::new("Enter", tr(MessageId::UserInputConfirmSelection)),
+                    ActionHint::new("Esc", tr(MessageId::UserInputCancel)),
+                ]
             }
-        }
-
+        };
+        inner = render_modal_footer(inner, buf, &hints);
+        let visible_rows = usize::from(inner.height);
+        let selected_line = selectable_lines
+            .iter()
+            .find_map(|(index, line)| (*index == self.selected).then_some(*line))
+            .unwrap_or(0);
+        let scroll = selected_line
+            .saturating_sub(visible_rows.saturating_sub(2))
+            .min(lines.len().saturating_sub(visible_rows));
+        let content = render_panel_scroll_rail(inner, buf, lines.len(), scroll, visible_rows, true);
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(modal_block(&header));
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
+        paragraph.render(content, buf);
 
-        let popup_area = centered_rect(82, 68, area);
-        render_modal_chrome(area, popup_area, buf);
-        paragraph.render(popup_area, buf);
+        let hitboxes = selectable_lines
+            .into_iter()
+            .filter_map(|(index, line)| {
+                let visible = line.checked_sub(scroll)?;
+                if visible >= usize::from(content.height) {
+                    return None;
+                }
+                Some((
+                    index,
+                    Rect {
+                        x: content.x,
+                        y: content
+                            .y
+                            .saturating_add(u16::try_from(visible).unwrap_or(u16::MAX)),
+                        width: content.width,
+                        height: 2.min(
+                            content
+                                .height
+                                .saturating_sub(u16::try_from(visible).unwrap_or(u16::MAX)),
+                        ),
+                    },
+                ))
+            })
+            .collect();
+        *self.row_hitboxes.borrow_mut() = hitboxes;
     }
-}
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1]);
-    horizontal[1]
+    fn occupied_region(&self, area: Rect) -> Rect {
+        if self.uses_full_screen_room(area) {
+            area
+        } else {
+            bottom_sheet_rect(area, self.sheet_height(area))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -609,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn user_input_modal_calls_out_required_action_and_controls() {
+    fn user_input_sheet_calls_out_required_action_and_controls() {
         let rendered = render_view(&sample_view(), 110, 36);
 
         assert!(rendered.contains("需要你的操作"));
@@ -623,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn user_input_modal_renders_custom_response_state() {
+    fn user_input_sheet_renders_custom_response_state() {
         let mut view = sample_view();
         view.selected = 2;
         view.mode = InputMode::OtherInput;
@@ -638,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn user_input_modal_hides_other_row_when_free_text_disabled() {
+    fn user_input_sheet_hides_other_row_when_free_text_disabled() {
         // Issue #3102: allow_free_text=false must NOT render the Host-owned
         // free-text pseudo-option.
         let mut view = sample_view();
@@ -655,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn user_input_modal_renders_multi_select_ticks_and_confirm() {
+    fn user_input_sheet_renders_multi_select_ticks_and_confirm() {
         // Issue #3102: multi_select=true renders a check-mark gutter on
         // toggled options plus a trailing Host-owned confirmation row.
         let mut view = sample_view();
@@ -684,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn user_input_modal_respects_80_and_120_column_frames() {
+    fn user_input_sheet_respects_80_and_120_column_frames() {
         for width in [80, 120] {
             let rendered = render_view(&sample_view(), width, 40);
             assert!(
@@ -732,5 +772,52 @@ mod tests {
             Some("请输入内容后再确认")
         );
         assert!(render_view(&view, 120, 40).contains('请'));
+    }
+
+    #[test]
+    fn short_input_is_a_bottom_sheet_and_long_input_uses_the_same_full_screen_room() {
+        let area = Rect::new(0, 0, 100, 32);
+        let short = sample_view();
+        let sheet = short.occupied_region(area);
+        assert_eq!(sheet.x, 0);
+        assert_eq!(sheet.width, area.width);
+        assert!(sheet.y > 0, "short input must leave transcript visible");
+        assert_eq!(sheet.bottom(), area.bottom());
+
+        let mut long = sample_view();
+        long.request.questions[0].question = "long bounded question ".repeat(120);
+        assert_eq!(long.occupied_region(area), area);
+        let rendered = render_view(&long, area.width, area.height);
+        assert!(rendered.contains("Confirm"));
+        assert!(rendered.contains("需要你的操作"));
+    }
+
+    #[test]
+    fn keyboard_and_mouse_choose_the_same_user_input_answer() {
+        let mut keyboard = sample_view();
+        let _ = keyboard.handle_key(KeyEvent::from(KeyCode::Down));
+        let keyboard_action = keyboard.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        let mut mouse = sample_view();
+        let area = Rect::new(0, 0, 100, 32);
+        mouse.render(area, &mut Buffer::empty(area));
+        let row = mouse
+            .row_hitboxes
+            .borrow()
+            .iter()
+            .find_map(|(index, rect)| (*index == 1).then_some(*rect))
+            .expect("second answer hitbox");
+        let mouse_action = mouse.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: row.x,
+            row: row.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+
+        assert_eq!(
+            format!("{keyboard_action:?}"),
+            format!("{mouse_action:?}"),
+            "keyboard and mouse must emit the same canonical answer"
+        );
     }
 }

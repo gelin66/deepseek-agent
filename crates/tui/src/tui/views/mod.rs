@@ -23,68 +23,59 @@ pub enum ModalKind {
     Pager,
 }
 
-/// Clear and paint a modal popup with an opaque surface.
-///
-/// Older modals often called `Clear` only, which left reset-background blank
-/// cells that could read as translucent on terminals with a non-default app
-/// background. This helper makes the popup area explicit and keeps the small
-/// shadow from inheriting stale transcript glyphs.
-pub(crate) fn render_modal_surface(area: Rect, popup_area: Rect, buf: &mut Buffer) {
-    let shadow_x = popup_area.x.saturating_add(1);
-    let shadow_y = popup_area.y.saturating_add(1);
-    let shadow_right = area.x.saturating_add(area.width);
-    let shadow_bottom = area.y.saturating_add(area.height);
-    let shadow_width = popup_area.width.min(shadow_right.saturating_sub(shadow_x));
-    let shadow_height = popup_area
-        .height
-        .min(shadow_bottom.saturating_sub(shadow_y));
-
-    if shadow_width > 0 && shadow_height > 0 {
-        Block::default()
-            .style(Style::default().bg(palette::SURFACE_ELEVATED))
-            .render(
-                Rect {
-                    x: shadow_x,
-                    y: shadow_y,
-                    width: shadow_width,
-                    height: shadow_height,
-                },
-                buf,
-            );
+/// Bottom-anchored secondary surface. The transcript above remains visible.
+#[must_use]
+pub(crate) fn bottom_sheet_rect(area: Rect, desired_height: u16) -> Rect {
+    let height = desired_height.clamp(1, area.height.max(1));
+    Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(height),
+        width: area.width,
+        height,
     }
-
-    Clear.render(popup_area, buf);
-    Block::default()
-        .style(Style::default().bg(palette::DSE_BG))
-        .render(popup_area, buf);
 }
 
-/// Paint a full-screen underwater instrument surface and return its body.
-///
-/// Secondary rooms use one title hairline and one bottom action rail instead
-/// of a centered generic card. A one-cell outer margin is retained when the
-/// terminal can afford it; compact panes use every cell.
-pub(crate) fn render_underwater_surface(
+/// Paint a bottom sheet with one title rule and return its content body.
+pub(crate) fn render_bottom_sheet(
+    area: Rect,
+    buf: &mut Buffer,
+    desired_height: u16,
+    title: impl Into<String>,
+) -> Rect {
+    let surface = bottom_sheet_rect(area, desired_height);
+    Clear.render(surface, buf);
+    Block::default()
+        .style(Style::default().bg(palette::DSE_BG))
+        .render(surface, buf);
+    let title_width = usize::from(surface.width.saturating_sub(4));
+    let title = crate::tui::ui_text::semantic_truncate(&title.into(), title_width);
+    let block = Block::default()
+        .title(Line::from(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(palette::DSE_ACCENT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(palette::BORDER_COLOR))
+        .style(Style::default().bg(palette::DSE_BG))
+        .padding(Padding::new(1, 1, 0, 0));
+    let inner = block.inner(surface);
+    block.render(surface, buf);
+    inner
+}
+
+/// Paint the one full-screen reading room used by onboarding and pagers.
+pub(crate) fn render_full_screen_room(
     area: Rect,
     buf: &mut Buffer,
     title: impl Into<String>,
 ) -> Rect {
-    let margin_x = u16::from(area.width >= 44);
-    let margin_y = u16::from(area.height >= 14);
-    let surface = Rect {
-        x: area.x.saturating_add(margin_x),
-        y: area.y.saturating_add(margin_y),
-        width: area.width.saturating_sub(margin_x.saturating_mul(2)),
-        height: area.height.saturating_sub(margin_y.saturating_mul(2)),
-    };
     Clear.render(area, buf);
     Block::default()
         .style(Style::default().bg(palette::DSE_BG))
         .render(area, buf);
-    // Ratatui clips long block titles at the border edge without signalling
-    // that anything is missing. Reserve the corner cells and semantic-ellipsis
-    // the title so compact terminals still read as intentional instruments.
-    let title_width = usize::from(surface.width.saturating_sub(4));
+    let title_width = usize::from(area.width.saturating_sub(4));
     let title = crate::tui::ui_text::semantic_truncate(&title.into(), title_width);
     let block = Block::default()
         .title(Line::from(Span::styled(
@@ -97,8 +88,8 @@ pub(crate) fn render_underwater_surface(
         .border_style(Style::default().fg(palette::BORDER_COLOR))
         .style(Style::default().bg(palette::DSE_BG))
         .padding(Padding::new(1, 1, 1, 1));
-    let inner = block.inner(surface);
-    block.render(surface, buf);
+    let inner = block.inner(area);
+    block.render(area, buf);
     inner
 }
 
@@ -336,10 +327,8 @@ pub trait ModalView {
     fn render(&self, area: Rect, buf: &mut Buffer);
     /// The region this modal actually paints within the full frame `area`.
     ///
-    /// Defaults to the whole frame, which is the legacy full-screen overlay
-    /// behaviour every picker/menu still relies on. Inline modals (the
-    /// approval prompt) override this to return a bottom-anchored band so the
-    /// backdrop only dims their strip and the transcript above stays visible.
+    /// Defaults to the whole frame for full-screen rooms. Inline interruptions
+    /// and bottom sheets override this so the transcript above stays visible.
     /// The returned rect MUST match the region the modal renders into, or the
     /// dim and the painted content will disagree.
     fn occupied_region(&self, area: Rect) -> Rect {
@@ -467,7 +456,7 @@ impl fmt::Debug for ViewStack {
 mod tests {
     use super::{
         ActionHint, ModalKind, ModalView, ViewAction, ViewStack, action_footer_lines,
-        render_modal_footer, render_underwater_surface,
+        render_full_screen_room, render_modal_footer,
     };
     use crate::palette;
     use crossterm::event::KeyEvent;
@@ -530,10 +519,10 @@ mod tests {
     }
 
     #[test]
-    fn underwater_surface_ellipsizes_narrow_titles() {
+    fn full_screen_room_ellipsizes_narrow_titles() {
         let area = Rect::new(0, 0, 24, 8);
         let mut buf = Buffer::empty(area);
-        render_underwater_surface(area, &mut buf, "Help — Concepts, commands, and keybindings");
+        render_full_screen_room(area, &mut buf, "Help — Concepts, commands, and keybindings");
         let top = (0..area.width)
             .map(|x| buf[(x, 0)].symbol())
             .collect::<String>();

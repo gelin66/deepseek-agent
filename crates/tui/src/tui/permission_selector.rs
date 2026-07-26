@@ -10,13 +10,13 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::palette;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_modal_surface,
+    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, bottom_sheet_rect,
+    render_bottom_sheet, render_modal_footer,
 };
 
 const MODES: [RunPermissionMode; 3] = [
@@ -57,13 +57,7 @@ impl PermissionSelector {
     }
 
     fn sheet(area: Rect) -> Rect {
-        let height = area.height.min(10);
-        Rect {
-            x: area.x,
-            y: area.bottom().saturating_sub(height),
-            width: area.width,
-            height,
-        }
+        bottom_sheet_rect(area, 10)
     }
 }
 
@@ -118,19 +112,12 @@ impl ModalView for PermissionSelector {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let sheet = Self::sheet(area);
-        render_modal_surface(area, sheet, buf);
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .title(Line::from(Span::styled(
-                format!(" {} ", tr(MessageId::PermissionSelectorTitle)),
-                Style::default()
-                    .fg(palette::DSE_ACCENT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .style(Style::default().bg(palette::DSE_BG));
-        let mut inner = block.inner(sheet);
-        block.render(sheet, buf);
+        let mut inner = render_bottom_sheet(
+            area,
+            buf,
+            sheet.height,
+            tr(MessageId::PermissionSelectorTitle),
+        );
         inner = render_modal_footer(
             inner,
             buf,

@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
+use crate::tui::views::render_full_screen_room;
 use dse_localization::{MessageId, tr};
 
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
@@ -33,20 +34,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     debug_assert!(!surface_contract.exit_action.is_empty());
     debug_assert!(!surface_contract.legacy_deletion_point.is_empty());
 
-    let block = Block::default().style(Style::default().bg(palette::DSE_BG));
-    f.render_widget(block, area);
-
-    const TOP_MARGIN: u16 = 2;
-    let content_width = 76.min(area.width.saturating_sub(4));
-    let content_height = 20.min(area.height.saturating_sub(TOP_MARGIN + 2));
-    let content_area = Rect {
-        x: (area.width.saturating_sub(content_width)) / 2,
-        y: TOP_MARGIN,
-        width: content_width,
-        height: content_height,
-    };
-
-    let lines = match app.onboarding {
+    let mut lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
@@ -55,30 +43,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     if !lines.is_empty() {
-        let mut panel = Block::default()
-            .title(Line::from(Span::styled(
-                app.tr(MessageId::OnboardPanelTitle).to_string(),
-                Style::default()
-                    .fg(palette::DSE_ACCENT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DSE_PANEL))
-            .padding(Padding::new(2, 2, 1, 1));
         if !app.onboarding_workspace_trust_gate {
             let (step, total) = onboarding_step(app);
-            panel = panel.title_bottom(Line::from(Span::styled(
-                app.tr(MessageId::OnboardStepProgress)
-                    .replace("{step}", &step.to_string())
-                    .replace("{total}", &total.to_string()),
-                Style::default()
-                    .fg(palette::TEXT_MUTED)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            lines.insert(
+                0,
+                Line::from(Span::styled(
+                    app.tr(MessageId::OnboardStepProgress)
+                        .replace("{step}", &step.to_string())
+                        .replace("{total}", &total.to_string()),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )),
+            );
+            lines.insert(1, Line::from(""));
         }
-        let inner = panel.inner(content_area);
-        f.render_widget(panel, content_area);
+        let inner =
+            render_full_screen_room(area, f.buffer_mut(), app.tr(MessageId::OnboardPanelTitle));
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         f.render_widget(paragraph, inner);
     }
@@ -286,6 +265,7 @@ mod tests {
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::canonical_commands::matching_command_infos;
     use dse_localization::tr;
+    use ratatui::{Terminal, backend::TestBackend};
     use std::collections::HashSet;
     use std::path::PathBuf;
 
@@ -355,6 +335,39 @@ mod tests {
             );
         }
         assert!(body.contains("按 Enter 进入任务输入区"));
+    }
+
+    #[test]
+    fn onboarding_uses_the_full_screen_room_without_a_centered_panel() {
+        let mut app = test_app();
+        app.onboarding = OnboardingState::Welcome;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, frame.area(), &app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..24)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered
+                .lines()
+                .next()
+                .is_some_and(|row| row.contains("DSE"))
+        );
+        for detached_corner in ["┌", "┐", "└", "┘"] {
+            assert!(
+                !rendered.contains(detached_corner),
+                "onboarding must not restore a centered panel: {detached_corner}"
+            );
+        }
+        assert!(
+            rendered.contains("DeepSeek"),
+            "welcome content missing from full-screen room:\n{rendered}"
+        );
     }
 
     #[test]
