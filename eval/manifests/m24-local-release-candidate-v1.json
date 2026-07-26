@@ -1,0 +1,100 @@
+{
+  "schema": "dse.eval.m24-local-release-candidate.v1",
+  "suite_id": "m24-local-release-candidate-v1",
+  "frozen_at_utc": "2026-07-26T00:00:00Z",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "candidate_revision": "92d8b84b3a79167b8d912365af8d1e808a94c2ed",
+    "candidate_tree": "ef5983a13b26770cb556970207f421778e5d5e2e",
+    "required_clean_checkout": true,
+    "workspace_version": "0.8.68",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "host_target": "aarch64-apple-darwin",
+    "cargo_lock_sha256": "sha256:33d367336b9e5bc32afe4cf3fb1694193036f288a623bc04b51ef8a2b9a05cf7",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:2173e154f2d76212d60e21bc20bf0e26bdd0695045008f2e3e8c567d3e97bf89",
+    "roadmap": "sha256:9010492aa813cf3b1cd7f30bf7b53c9facf4bb448460166274af5ebe64892f6d",
+    "evaluation": "sha256:384736e7e67d885a4791356e3784c6ceb6586421042a02a48ab0fe1d8b2e9618",
+    "current_architecture": "sha256:544339d49a21d65e9166c0b5e6c58aec34cc9616d3b35d1b0e405a1bd061de26"
+  },
+  "slice_contract": {
+    "real_problem": "M17-H and M18 established the local DSE V1 lifecycle before the retained M22 streaming cutover and the M23 Harness-only stop; the exact current source has not yet been rebound to the complete local release contract.",
+    "acceptance": [
+      "build the exact candidate from a clean detached checkout with Rust 1.97.0, Cargo.lock, CARGO_INCREMENTAL=0, CARGO_NET_OFFLINE=true and no network",
+      "prove the canonical dse.delivery.v1 artifact contains only manifest, LICENSE, SHA256SUMS, dse and dse-tui and binds source revision, source tree, Cargo.lock, target and inner/outer checksums",
+      "exercise install, verify, exact-source upgrade, rollback and uninstall in isolated prefixes while preserving DSE_HOME user data byte-for-byte",
+      "prove installed English and zh-Hans human surfaces and CLI, TUI and app-server machine behavior retain the same canonical Run contract",
+      "prove root, read-only child, explicit Writer, pending Start, crash/replay, accounting and no-credential SQLite reopen remain exact",
+      "re-run the public repository, tracked-secret, ignored-raw mode, license, provenance, localization parity and retired-identity gates",
+      "fix only a reproducible release blocker; otherwise make no production change"
+    ],
+    "single_owners": {
+      "delivery": "scripts/dse-delivery.sh",
+      "delivery_fixture": "scripts/test-dse-delivery.sh",
+      "release_surface_audit": "scripts/check-public-repository.py",
+      "runtime_and_surface_conformance": "existing Rust focused and workspace tests"
+    },
+    "old_path_replaced": "none unless a current exact-source release blocker is reproduced",
+    "cutover_deletion": "delete only the old path replaced by a proven blocker fix; always delete the M24 temporary checkout, Cargo target, install prefixes and artifacts",
+    "failure_disposition": "record the exact blocker and keep the last verified local V1 checkpoint; do not add a compatibility path, second installer or speculative capability"
+  },
+  "execution_contract": {
+    "credential_read": false,
+    "official_api_requests": 0,
+    "external_network": false,
+    "github_access": false,
+    "push": false,
+    "release": false,
+    "maximum_reruns": 0,
+    "temporary_root": "/private/tmp/dse-m24-release-candidate",
+    "cargo_target_dir": "/private/tmp/dse-m24-target",
+    "cargo_incremental": "0",
+    "cargo_net_offline": true
+  },
+  "hard_gates": {
+    "delivery": [
+      "delivery fixture tamper, target, upgrade, rollback, uninstall and data-preservation matrix passes",
+      "exact-source package installs and verifies in an isolated prefix",
+      "both installed binaries report version 0.8.68 and candidate revision 92d8b84b3a79",
+      "archive and installed manifest/checksum identity agree",
+      "uninstall leaves no program link or lib/dse delivery root and preserves DSE_HOME"
+    ],
+    "product_surface": [
+      "English and zh-Hans localization catalogs have exact key and placeholder parity",
+      "CLI, TUI and app-server parity tests pass without a credential",
+      "root, read-only child, explicit Writer, fixed actor route and typed recovery tests pass",
+      "RunStore exact reopen, pending Start and process crash/replay tests pass"
+    ],
+    "repository": [
+      "public repository checker passes",
+      "no tracked credential, raw journal, database, log, target, dist or release artifact exists",
+      "all ignored eval/raw files are mode 0600",
+      "LICENSE is byte-identical to imported baseline and provenance remains present",
+      "active production/user surface has no retired CodeWhale/DSA identity outside the existing audited allowlist"
+    ],
+    "integration": [
+      "cargo fmt --all -- --check",
+      "./scripts/dev-dse.sh focused",
+      "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "cargo test --workspace --locked",
+      "git diff --check"
+    ]
+  },
+  "decision_rule": {
+    "pass": "keep the current local DSE V1 release path and record exact current identity; no product capability claim",
+    "blocker": "write a failing regression, implement the smallest fix in the existing owner, migrate the real caller, delete the replaced path and rerun every gate",
+    "forbidden": [
+      "GitHub, push, remote CI, tag, release or visibility mutation",
+      "reading key.txt or sending an official DeepSeek request",
+      "Auto, Anthropic Messages, a second Provider, Runtime, Store, protocol, installer or tool catalog",
+      "resuming M23, completing mates, high/max A/B or implementing an unselected Hardness candidate"
+    ]
+  }
+}

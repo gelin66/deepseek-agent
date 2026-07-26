@@ -3229,6 +3229,45 @@ transport failure 制造 ApplicationProbe、localization、VerifiedMilestone 或
 完整 hash、官方来源、安全与非结论见
 [M23-B4 Hardness control](../../eval/summaries/m23-b4-hardness-control-2026-07-26.md)。
 
+### M24 current local V1 release-candidate revalidation
+
+M24 是 exact-source release regression，不是模型 treatment、能力 A/B 或 M23 successor。
+它冻结 clean candidate `92d8b84b3a79` / tree `ef5983a13b26`，并只使用现有
+delivery/public-checker/Rust conformance owners。Key、official API、external network、
+GitHub、push 和 release 均为 0。
+
+macOS arm64 的 Rust/Cargo 1.97.0 locked/offline source build 产生
+`dse-0.8.68-aarch64-apple-darwin-92d8b84b3a79.tar.gz`。archive 精确包含 manifest、
+LICENSE、SHA256SUMS、`dse`、`dse-tui` 五项；manifest 绑定 exact revision/tree、
+Cargo.lock、target 和 canonical binary set。archive SHA-256 为
+`54578a5ddb2596b595553e3ef617708e927259dbe9b887b3fd58e7879f52b92a`，两项 binary
+SHA-256 分别为
+`e2d197103af0c757c6b5eaec4c3c70c0054328417308465703d2742ae51c1ac0` 与
+`0a58c9dcc8cc17250b111055ca262a6b2458eaeec0dffac17250acf2a3e1e447`。
+
+交付 self-test 的 tamper/target/install/upgrade/rollback/uninstall matrix 通过；当前 exact
+artifact 又在隔离 prefix 中作为真实升级目标完成 verify、rollback、重新激活与 uninstall。
+installed binaries 均报告 `0.8.68 (92d8b84b3a79)`；English/`zh-Hans` help 正确；
+卸载后程序链接和 `lib/dse` 消失，用户数据 SHA-256
+`33d367336b9e5bc32afe4cf3fb1694193036f288a623bc04b51ef8a2b9a05cf7` 保持不变。
+
+credential-free local gates 通过：
+
+- public repository checker、LICENSE imported-baseline identity、provenance、
+  tracked-secret/retired-identity audit；
+- 776/776 localization key 与 named-placeholder parity；
+- fixed root/read-only/Writer route、typed Pro/max recovery、M22 streaming 和 M21
+  partial-response regression；
+- pending Start、exact RequestPlan/accounting SQLite reopen、process SIGKILL/replay；
+- CLI/TUI/app-server canonical parity、English/CJK PTY；
+- focused、fmt、workspace strict Clippy 与完整 workspace test。
+
+结果为 `keep_local_v1_release_candidate_no_blocker`，production delta=0。M24 没有
+verified-success、Token、费用、M23 baseline 或模型质量结论，也不授权 high/max、
+ApplicationProbe、localization、VerifiedMilestone 或 Tool ACI。完整身份、命令、删除与
+非结论见
+[M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

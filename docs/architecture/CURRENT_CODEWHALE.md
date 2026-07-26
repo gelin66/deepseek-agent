@@ -2502,9 +2502,36 @@ RunStore、fixed actor route、canonical tools、Host latest-revision completion
 DeepSeek ChatCompletions。完整证据见
 [M23-B4 Hardness control](../../eval/summaries/m23-b4-hardness-control-2026-07-26.md)。
 
+M24 没有改变 production architecture。它从 clean detached
+`92d8b84b3a79167b8d912365af8d1e808a94c2ed` 重建当前本地 V1 artifact，并重新验证：
+
+```text
+clean DSE source + Cargo.lock + Rust 1.97.0
+  -> scripts/dse-delivery.sh package --locked --offline
+  -> dse.delivery.v1 exact manifest / inner + outer SHA-256
+  -> isolated install / verify / upgrade / rollback / uninstall
+  -> existing CLI / TUI / app-server / RunStore conformance
+```
+
+artifact 只含 manifest、LICENSE、SHA256SUMS、`dse` 和 `dse-tui`；两项 binary 都报告
+`0.8.68 (92d8b84b3a79)`。当前 exact artifact、双语 human surface、fixed actor route、
+M22 same-chunk convergence、M21 partial-response fail-closed、pending Start、SQLite
+reopen、SIGKILL/replay、accounting 和 root/read-only/Writer surface parity 全部通过。
+public repository、tracked-secret、269 个 ignored `0600` raw、LICENSE/provenance 和
+retired-identity allowlist 也保持闭合。
+
+决定为 `keep_local_v1_release_candidate_no_blocker`，production delta=0。M24 没有读取
+Key、调用 official API、访问 GitHub、push 或 release，也没有增加第二 installer、
+Runtime、Store、Provider、protocol 或兼容路径。完整事实见
+[M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
+
+- M24 的本地 locked/offline release gate 等于远端 CI、公开发布、真实 DeepSeek 质量、
+  M23 Hardness baseline 或新的 verified-success/成本结论；它只把 current exact source
+  重新绑定到现有本地 V1 release contract；
 
 - M22 的 loopback 同 chunk 收敛率等于所有真实 DeepSeek/代理/OS 网络分片，或该本地
   event/SQLite/客户端效率收益已经提高真实编码任务 verified success；它只保留不等待

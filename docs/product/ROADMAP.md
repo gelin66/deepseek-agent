@@ -4550,3 +4550,54 @@ owner 原生吸收：
   -> 同任务验证
   -> 保留或物理删除
 ```
+
+## 22. M24：当前本地 V1 release-candidate 复核
+
+M24 不续跑 M23、不补 mate，也不重开 high/max 或四个 Hardness 候选。真实问题是：
+M17-H/M18 的本地 release lifecycle 早于 M22 的 production streaming cutover 和 M23 的
+Harness-only 收口；因此需要把当前 exact source 重新绑定到同一份本地发布合同，而不是
+机械开发新能力。
+
+冻结 candidate 为 `92d8b84b3a79167b8d912365af8d1e808a94c2ed`，tree 为
+`ef5983a13b26770cb556970207f421778e5d5e2e`。唯一 owner 继续是
+`scripts/dse-delivery.sh`、`scripts/test-dse-delivery.sh`、
+`scripts/check-public-repository.py` 与现有 Rust conformance；不增加第二 installer、
+release store 或 evaluator。
+
+### 22.1 验收与结果
+
+clean detached checkout 在 macOS arm64、Rust/Cargo 1.97.0、Cargo.lock、
+`CARGO_INCREMENTAL=0`、`CARGO_NET_OFFLINE=true` 条件下完成：
+
+- `dse.delivery.v1` exact-source release build；
+- 五项 canonical archive、内外 SHA-256、revision/tree/Cargo.lock/target identity；
+- delivery tamper/target/install/verify/upgrade/rollback/uninstall fixture；
+- 当前 exact artifact 作为升级目标的 install/verify/rollback/re-activate/uninstall，
+  且 `DSE_HOME` 用户数据 byte-identical；
+- English/`zh-Hans` installed help、776/776 catalog/placeholder parity；
+- root/read-only/explicit Writer、fixed actor route、M22 streaming regression、
+  partial response fail-closed、pending Start、SQLite reopen、SIGKILL recovery 与
+  CLI/TUI/app-server parity；
+- public repository、tracked secret、ignored raw mode、LICENSE/provenance 和 retired
+  identity allowlist；
+- focused、fmt、workspace strict Clippy、workspace test 与 diff check。
+
+没有复现 release blocker，production delta 为 0。决定为
+`keep_local_v1_release_candidate_no_blocker`：保留当前唯一 DSE release path，不增加
+compatibility branch，也不从本地 release gate 推导新的模型能力或 M23 product metric。
+
+### 22.2 边界与下一步
+
+- Key 未读取，official DeepSeek API request 为 0；
+- 不访问 GitHub，不 push，不运行远端 CI，不 tag/release；
+- 不修改 frozen M23 raw/manifest/结论，不恢复 Auto、Anthropic、FIM、第二
+  Provider/Runtime/Store 或多 Writer；
+- 临时 checkout、Cargo target、install prefix、artifact 和 fixture identity 在结论提交后
+  精确删除；
+- 后续产品能力仍只能由新的、跨独立任务重复且可归因的 current loss 重新准入；M24 本身
+  只建立当前本地发布回归锚点。
+
+完整冻结合同与证据见：
+
+- `eval/manifests/m24-local-release-candidate-v1.json`；
+- [M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
