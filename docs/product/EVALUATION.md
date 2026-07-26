@@ -3107,6 +3107,39 @@ candidate 继续禁止；M23-B 只有在新的独立 fixed-Pro/high control acqu
 能退出。完整冻结 identity、hash 与非结论见
 [M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
 
+### M23-B2 Hardness metric / continuity observer
+
+M23-B2 保持 production delta、Key、API、network 和历史 raw 读取为 0，只补唯一 corrected
+Harness 的 credential-free 派生契约。canonical RuntimeEvent 的
+`occurred_at_unix_ms`、tool prepared/outcome、mutation epoch、compaction 与 Host
+verification 是定位、首改和恢复指标的唯一输入；冻结 external verifier 是 runtime
+assertion 和 verified service start 的唯一输入。observer 不保留 prompt、reasoning、
+tool argument/content 或文件路径明细，只输出计数、时延和稳定布尔事实。
+
+4-case corpus 连续两次生成 byte-identical report：
+
+```text
+cases                                  4 / 4
+real mid-run resume                    1
+expected goal-constraint loss          1
+runtime assertion case                 1
+terminal SQLite reopen counted resume  0
+Key / API / network / historical raw   0 / 0 / 0 / 0
+```
+
+resume 必须同时证明 `interaction_requested` durable checkpoint、事件前缀重开
+byte-exact、不同进程 identity、重开时 physical requests 未增长，以及交互只在重开后
+解析。终态后的 credential-free SQLite exactness audit 不满足这些条件；缺失或非法的
+required continuity 会直接得到 `goal_constraint_loss=true`，不能作为 measurement-valid
+长任务。
+
+结论为 `keep_offline_hardness_metric_observer_live_continuity_pending`。live Harness
+尚未执行该中途 restart/resolution protocol，也尚未把指标写入正式 arm/aggregate，所以
+M23B formal 入口在读取 credential 前以
+`m23b_live_continuity_not_implemented` fail closed。该切片不建立 control baseline，
+不授权付费采集、high/max 或 production candidate。完整身份与门禁见
+[M23-B2 Hardness metric observer](../../eval/summaries/m23-b2-hardness-metrics-observer-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

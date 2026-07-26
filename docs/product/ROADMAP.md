@@ -3977,7 +3977,7 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 ## 21. M23：effect-first Hardness / Harness 能力优化
 
-- 状态：**执行中；M23-A 与 M23-B1 离线任务集已保留，control baseline 尚未获得**
+- 状态：**执行中；M23-A、M23-B1 与 M23-B2 离线 observer 已保留，control baseline 尚未获得**
 - 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
 - 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
 - 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
@@ -4214,6 +4214,39 @@ false-success 或 stable owner/cause loss matrix。它不满足 M23-B 的 contro
 accounting 边界完整的 fixed-Pro/high control acquisition；在此之前保持停止。完整身份与
 门禁见
 [M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
+
+#### M23-B2 指标与 continuity observer 结果
+
+M23-B2 没有启动 control acquisition；它先补齐 B1 只冻结名称、尚不能执行的指标投影。
+唯一 corrected Harness 现在从 canonical RuntimeEvent envelope 的持久时间戳、tool
+invocation/outcome、mutation epoch、Host verification 与冻结 external verifier 派生：
+
+```text
+first relevant file latency / files seen before first edit
+first-edit verified / repair loops
+same-epoch repeated reads / compaction count
+runtime assertion / verified service start
+```
+
+`resume_count` 采用更严格的独立 continuity truth：只有中途
+`interaction_requested` durable checkpoint、重开前事件前缀 byte-exact、进程 identity
+变化、重开时 physical request count 未增加，并且在新进程中解析交互后继续，才计为一次
+resume。现有每 arm 终态后的 credential-free SQLite reopen 只证明 Store exactness，
+明确不能计入 resume。
+
+4-case credential-free corpus 覆盖真实中途 resume、首改失败后恢复、错误地把终态重开
+当 resume 的反例，以及由冻结 loopback verifier 证明 service/runtime 的正例。报告连续
+两次 byte-identical；4/4 通过，1 个真实 resume、1 个预期 goal-constraint loss、1 个
+runtime assertion，Key/API/network/raw 为 0。production Runtime、Store、protocol、
+prompt、route 与 tool delta 为 0。
+
+M23-B2 决定为 `keep_offline_hardness_metric_observer_live_continuity_pending`。由于 live
+Harness 尚未实现并 crash-test 上述 checkpoint restart/resolution lifecycle，M23B formal
+入口现在在 binary、credential 与 output claim 前以稳定
+`m23b_live_continuity_not_implemented` fail closed。下一独立切片只能实现该 Harness
+continuity caller、把 metrics 接入 arm result/aggregate，并完成 process-level crash/reopen
+门；在此之前 control baseline、M23-C 与四个 production candidate 仍未授权。完整证据见
+[M23-B2 Hardness metric observer](../../eval/summaries/m23-b2-hardness-metrics-observer-2026-07-26.md)。
 
 ### 21.5 M23-C：Root/Writer `high` 对 `max`
 

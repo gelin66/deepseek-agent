@@ -1,0 +1,1292 @@
+{
+  "schema": "dse.eval.m23b-hardness-metrics-observer-corpus.v1",
+  "cases": [
+    {
+      "case_id": "long_recovery_preserves_metric_and_real_resume_truth",
+      "task": {
+        "project_path": "project",
+        "project_files": [
+          "project/README.md",
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "related_files": [
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "allowed_paths": [
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "reference_changed_files": [
+          "project/src/lib.rs"
+        ],
+        "human_estimated_minutes": 45,
+        "evidence_policy": "failed_write_pass",
+        "required_continuity": "process_restart_after_durable_checkpoint"
+      },
+      "facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 1000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 1050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-1",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/README.md"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 1100,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-1",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "overview"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 1110,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-2",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/README.md"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 1120,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-2",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "overview"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 1150,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "search-1",
+                "name": "file_search",
+                "arguments": {
+                  "parsed": {
+                    "query": "lib"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 7,
+            "occurred_at_unix_ms": 1200,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "search-1",
+              "name": "file_search",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "[{\"path\":\"project/src/lib.rs\",\"name\":\"lib.rs\",\"score\":1.0}]"
+              }
+            }
+          },
+          {
+            "sequence": 8,
+            "occurred_at_unix_ms": 1250,
+            "event": {
+              "kind": "context_compaction_committed"
+            }
+          },
+          {
+            "sequence": 9,
+            "occurred_at_unix_ms": 1300,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-before",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 10,
+            "occurred_at_unix_ms": 1350,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-before",
+              "name": "run_verifiers",
+              "outcome": {
+                "failure_code": "verifier_failed",
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "failed",
+                "side_effect": "indeterminate",
+                "content": "frozen failure"
+              }
+            }
+          },
+          {
+            "sequence": 11,
+            "occurred_at_unix_ms": 1400,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-1",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "old",
+                    "replace": "new"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 12,
+            "occurred_at_unix_ms": 1450,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-1",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "updated"
+              }
+            }
+          },
+          {
+            "sequence": 13,
+            "occurred_at_unix_ms": 1500,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-after",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 14,
+            "occurred_at_unix_ms": 1550,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-after",
+              "name": "run_verifiers",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              }
+            }
+          },
+          {
+            "sequence": 15,
+            "occurred_at_unix_ms": 1600,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:latest"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "reopened_facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 1000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 1050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-1",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/README.md"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 1100,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-1",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "overview"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 1110,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-2",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/README.md"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 1120,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-2",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "overview"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 1150,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "search-1",
+                "name": "file_search",
+                "arguments": {
+                  "parsed": {
+                    "query": "lib"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 7,
+            "occurred_at_unix_ms": 1200,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "search-1",
+              "name": "file_search",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "[{\"path\":\"project/src/lib.rs\",\"name\":\"lib.rs\",\"score\":1.0}]"
+              }
+            }
+          },
+          {
+            "sequence": 8,
+            "occurred_at_unix_ms": 1250,
+            "event": {
+              "kind": "context_compaction_committed"
+            }
+          },
+          {
+            "sequence": 9,
+            "occurred_at_unix_ms": 1300,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-before",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 10,
+            "occurred_at_unix_ms": 1350,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-before",
+              "name": "run_verifiers",
+              "outcome": {
+                "failure_code": "verifier_failed",
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "failed",
+                "side_effect": "indeterminate",
+                "content": "frozen failure"
+              }
+            }
+          },
+          {
+            "sequence": 11,
+            "occurred_at_unix_ms": 1400,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-1",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "old",
+                    "replace": "new"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 12,
+            "occurred_at_unix_ms": 1450,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-1",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "updated"
+              }
+            }
+          },
+          {
+            "sequence": 13,
+            "occurred_at_unix_ms": 1500,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-after",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 14,
+            "occurred_at_unix_ms": 1550,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-after",
+              "name": "run_verifiers",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              }
+            }
+          },
+          {
+            "sequence": 15,
+            "occurred_at_unix_ms": 1600,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:latest"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "verifier": {
+        "passed": true
+      },
+      "changed_files": [
+        "project/src/lib.rs"
+      ],
+      "lane_valid": true,
+      "route_valid": true,
+      "continuity": [
+        {
+          "kind": "process_restart_resume",
+          "checkpoint_kind": "interaction_requested",
+          "events_before_restart": [
+            {
+              "sequence": 9,
+              "event_id": "interaction:verify-before"
+            }
+          ],
+          "events_at_reopen": [
+            {
+              "sequence": 9,
+              "event_id": "interaction:verify-before"
+            }
+          ],
+          "process_identity_before": "pid:4101",
+          "process_identity_after": "pid:4102",
+          "physical_requests_started_before": 1,
+          "physical_requests_started_at_reopen": 1,
+          "resolved_after_reopen": true,
+          "terminal_snapshot_only": false
+        }
+      ],
+      "expected": {
+        "human_estimated_minutes": 45,
+        "first_relevant_file_ms": 200,
+        "relevant_files_seen_before_first_edit": 1,
+        "irrelevant_files_seen_before_first_edit": 1,
+        "first_edit_verified": true,
+        "repair_loops": 1,
+        "repeated_reads_same_mutation_epoch": 1,
+        "compaction_count": 1,
+        "resume_count": 1,
+        "goal_constraint_loss": false,
+        "service_started": false,
+        "runtime_assertion_passed": null,
+        "continuity": {
+          "required": "process_restart_after_durable_checkpoint",
+          "resume_count": 1,
+          "invalid_records": 0,
+          "satisfied": true
+        }
+      }
+    },
+    {
+      "case_id": "failed_first_edit_requires_a_repair_loop",
+      "task": {
+        "project_path": "project",
+        "project_files": [
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "related_files": [
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "allowed_paths": [
+          "project/src/lib.rs",
+          "project/tests/lib.rs"
+        ],
+        "reference_changed_files": [
+          "project/src/lib.rs"
+        ],
+        "human_estimated_minutes": 30,
+        "evidence_policy": "latest_pass"
+      },
+      "facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 2000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 2050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 2060,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "source"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 2100,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-1",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "a",
+                    "replace": "b"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 2110,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-1",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "first edit"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 2150,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-1",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 7,
+            "occurred_at_unix_ms": 2160,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-1",
+              "name": "run_verifiers",
+              "outcome": {
+                "failure_code": "verifier_failed",
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "failed",
+                "side_effect": "indeterminate",
+                "content": "fail"
+              }
+            }
+          },
+          {
+            "sequence": 8,
+            "occurred_at_unix_ms": 2200,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-2",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "b",
+                    "replace": "c"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 9,
+            "occurred_at_unix_ms": 2210,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-2",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "repair"
+              }
+            }
+          },
+          {
+            "sequence": 10,
+            "occurred_at_unix_ms": 2300,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:repair"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "reopened_facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 2000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 2050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 2060,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "source"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 2100,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-1",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "a",
+                    "replace": "b"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 2110,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-1",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "first edit"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 2150,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "verify-1",
+                "name": "run_verifiers",
+                "arguments": {
+                  "parsed": {
+                    "profile": "exact"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 7,
+            "occurred_at_unix_ms": 2160,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "verify-1",
+              "name": "run_verifiers",
+              "outcome": {
+                "failure_code": "verifier_failed",
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "failed",
+                "side_effect": "indeterminate",
+                "content": "fail"
+              }
+            }
+          },
+          {
+            "sequence": 8,
+            "occurred_at_unix_ms": 2200,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "edit-2",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "project/src/lib.rs",
+                    "search": "b",
+                    "replace": "c"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 9,
+            "occurred_at_unix_ms": 2210,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "edit-2",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "repair"
+              }
+            }
+          },
+          {
+            "sequence": 10,
+            "occurred_at_unix_ms": 2300,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:repair"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "verifier": {
+        "passed": true
+      },
+      "changed_files": [
+        "project/src/lib.rs"
+      ],
+      "lane_valid": true,
+      "route_valid": true,
+      "continuity": [],
+      "expected": {
+        "human_estimated_minutes": 30,
+        "first_relevant_file_ms": 60,
+        "relevant_files_seen_before_first_edit": 1,
+        "irrelevant_files_seen_before_first_edit": 0,
+        "first_edit_verified": false,
+        "repair_loops": 1,
+        "repeated_reads_same_mutation_epoch": 0,
+        "compaction_count": 0,
+        "resume_count": 0,
+        "goal_constraint_loss": false,
+        "service_started": false,
+        "runtime_assertion_passed": null,
+        "continuity": {
+          "required": null,
+          "resume_count": 0,
+          "invalid_records": 0,
+          "satisfied": true
+        }
+      }
+    },
+    {
+      "case_id": "terminal_reopen_is_not_a_resume",
+      "task": {
+        "project_path": "project",
+        "project_files": [
+          "project/src/lib.rs"
+        ],
+        "related_files": [
+          "project/src/lib.rs"
+        ],
+        "allowed_paths": [
+          "project/src/lib.rs"
+        ],
+        "reference_changed_files": [
+          "project/src/lib.rs"
+        ],
+        "human_estimated_minutes": 40,
+        "evidence_policy": "latest_pass",
+        "required_continuity": "hard_compaction_or_process_restart"
+      },
+      "facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 3000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 3100,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:terminal"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "reopened_facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 3000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 3100,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "pass"
+              },
+              "receipt": {
+                "id": "receipt:terminal"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "verifier": {
+        "passed": true
+      },
+      "changed_files": [
+        "project/src/lib.rs"
+      ],
+      "lane_valid": true,
+      "route_valid": true,
+      "continuity": [
+        {
+          "kind": "process_restart_resume",
+          "checkpoint_kind": "terminal",
+          "events_before_restart": [
+            {
+              "sequence": 2
+            }
+          ],
+          "events_at_reopen": [
+            {
+              "sequence": 2
+            }
+          ],
+          "process_identity_before": "pid:5101",
+          "process_identity_after": "pid:5102",
+          "physical_requests_started_before": 1,
+          "physical_requests_started_at_reopen": 1,
+          "resolved_after_reopen": false,
+          "terminal_snapshot_only": true
+        }
+      ],
+      "expected": {
+        "human_estimated_minutes": 40,
+        "first_relevant_file_ms": null,
+        "relevant_files_seen_before_first_edit": 0,
+        "irrelevant_files_seen_before_first_edit": 0,
+        "first_edit_verified": null,
+        "repair_loops": 0,
+        "repeated_reads_same_mutation_epoch": 0,
+        "compaction_count": 0,
+        "resume_count": 0,
+        "goal_constraint_loss": true,
+        "service_started": false,
+        "runtime_assertion_passed": null,
+        "continuity": {
+          "required": "hard_compaction_or_process_restart",
+          "resume_count": 0,
+          "invalid_records": 1,
+          "satisfied": false
+        }
+      }
+    },
+    {
+      "case_id": "runtime_service_truth_comes_from_the_frozen_verifier",
+      "task": {
+        "project_path": "service",
+        "project_files": [
+          "service/main.go",
+          "service/main_test.go"
+        ],
+        "related_files": [
+          "service/main.go",
+          "service/main_test.go"
+        ],
+        "allowed_paths": [
+          "service/main.go",
+          "service/main_test.go"
+        ],
+        "reference_changed_files": [
+          "service/main.go"
+        ],
+        "human_estimated_minutes": 35,
+        "evidence_policy": "latest_pass",
+        "runtime_assertion": "loopback_http_health_and_teardown"
+      },
+      "facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 4000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 4050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-service",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "service/main.go"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 4060,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-service",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "package main"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 4100,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "service-edit",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "service/main.go",
+                    "search": "old",
+                    "replace": "new"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 4110,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "service-edit",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "updated"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 4200,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "loopback service passed and stopped"
+              },
+              "receipt": {
+                "id": "receipt:service"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "reopened_facts": {
+        "root_events": [
+          {
+            "sequence": 1,
+            "occurred_at_unix_ms": 4000,
+            "event": {
+              "kind": "run_created"
+            }
+          },
+          {
+            "sequence": 2,
+            "occurred_at_unix_ms": 4050,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "read-service",
+                "name": "read_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "service/main.go"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 3,
+            "occurred_at_unix_ms": 4060,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "read-service",
+              "name": "read_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "not_applied",
+                "content": "package main"
+              }
+            }
+          },
+          {
+            "sequence": 4,
+            "occurred_at_unix_ms": 4100,
+            "event": {
+              "kind": "tool_prepared",
+              "invocation": {
+                "call_id": "service-edit",
+                "name": "edit_file",
+                "arguments": {
+                  "parsed": {
+                    "path": "service/main.go",
+                    "search": "old",
+                    "replace": "new"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 5,
+            "occurred_at_unix_ms": 4110,
+            "event": {
+              "kind": "tool_outcome_committed",
+              "call_id": "service-edit",
+              "name": "edit_file",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "applied",
+                "content": "updated"
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "occurred_at_unix_ms": 4200,
+            "event": {
+              "kind": "host_verification_committed",
+              "outcome": {
+                "invocation": "accepted",
+                "transport": "succeeded",
+                "operation": "succeeded",
+                "side_effect": "indeterminate",
+                "content": "loopback service passed and stopped"
+              },
+              "receipt": {
+                "id": "receipt:service"
+              }
+            }
+          }
+        ],
+        "children": []
+      },
+      "verifier": {
+        "passed": true
+      },
+      "changed_files": [
+        "service/main.go"
+      ],
+      "lane_valid": true,
+      "route_valid": true,
+      "continuity": [],
+      "expected": {
+        "human_estimated_minutes": 35,
+        "first_relevant_file_ms": 60,
+        "relevant_files_seen_before_first_edit": 1,
+        "irrelevant_files_seen_before_first_edit": 0,
+        "first_edit_verified": true,
+        "repair_loops": 0,
+        "repeated_reads_same_mutation_epoch": 0,
+        "compaction_count": 0,
+        "resume_count": 0,
+        "goal_constraint_loss": false,
+        "service_started": true,
+        "runtime_assertion_passed": true,
+        "continuity": {
+          "required": null,
+          "resume_count": 0,
+          "invalid_records": 0,
+          "satisfied": true
+        }
+      }
+    }
+  ]
+}

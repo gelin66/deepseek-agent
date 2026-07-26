@@ -1,0 +1,61 @@
+{
+  "schema": "dse.eval.m23b-hardness-metrics-observer.v1",
+  "suite_id": "m23b-hardness-metrics-observer-v1",
+  "frozen_at_utc": "2026-07-26T00:00:00Z",
+  "source_identity": {
+    "baseline_revision": "bcbb2a91ebfb248a9ff6081feb6f254cd0ab9441",
+    "baseline_tree": "9f14e94f6a946279278aebb3800cab755a726b50",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M23-B1 freezes metric names and long-horizon task requirements but the corrected Harness cannot yet derive those metrics from canonical event time and can accidentally confuse its terminal SQLite audit reopen with a real mid-run recovery.",
+    "acceptance": [
+      "derive first relevant file latency, files seen before first edit, first-edit verification, repair loops, same-epoch duplicate reads and compaction count from canonical RuntimeEvent envelopes without retaining model-visible content",
+      "derive runtime assertion and service-start truth only from each task's frozen deterministic external verifier",
+      "count one resume only when an interaction-requested durable checkpoint is reopened under a different process identity with an exact event prefix, unchanged physical-request count at reopen, and resolution after reopen",
+      "make missing or invalid required continuity a typed goal_constraint_loss and never count the existing terminal credential-free SQLite audit as a resume",
+      "produce the same report twice without credential, network, historical raw, production Runtime, Store, protocol, prompt, route or tool changes"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the sole corrected acquisition, trajectory and observer Harness",
+    "old_path_replaced": "metric-name-only validation and any implicit resume_count inference from post-terminal sqlite_reopen_snapshot",
+    "offline_evidence": [
+      "four canonical envelope cases covering long recovery, failed first edit, terminal-reopen rejection and real runtime service verification",
+      "byte-identical report regeneration",
+      "M23-B1 task-set self-test and freeze report",
+      "M14, M16 and M23-A observer compatibility"
+    ],
+    "cutover_deletion": [
+      "no derived metric placeholder that lacks an executable projection",
+      "no terminal-reopen-as-resume interpretation"
+    ],
+    "failed_candidate_deletion": "delete this manifest, corpus, conformance mode and metric projection; do not alter the frozen M23-B1 task set or production behavior"
+  },
+  "corpus": {
+    "path": "eval/fixtures/m23b-hardness-metrics-observer-v1.json",
+    "file_sha256": "sha256:0cb5372c93a3751864a7d94ab4fdd3f6a5a3117053da2922147d40d556302ed0",
+    "schema": "dse.eval.m23b-hardness-metrics-observer-corpus.v1",
+    "case_count": 4,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "metric_owner_map": {
+    "event_time_and_tool_observation": "canonical RuntimeEvent envelopes projected by the corrected Harness",
+    "workspace_scope": "frozen TaskContract allowed_paths plus actual changed files",
+    "latest_behavior": "Host EvidenceReceipt and frozen external verifier",
+    "continuity": "Harness-owned process boundary journal over exact RunStore event prefixes and physical request counts",
+    "accounting": "canonical RunStore ModelAccounting classified independently by ADR-0011"
+  },
+  "live_boundary": {
+    "control_baseline_acquired": false,
+    "live_acquisition_ready": false,
+    "blocking_reason": "the offline continuity observer is executable, but the live Harness has not yet implemented and crash-tested the interaction checkpoint restart/resolution lifecycle",
+    "key_access_authorized_by_this_slice": false,
+    "api_access_authorized_by_this_slice": false,
+    "high_max_authorized_by_this_slice": false,
+    "production_candidate_authorized_by_this_slice": false
+  }
+}

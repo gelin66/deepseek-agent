@@ -20,10 +20,12 @@ reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
 equivalence corpus. ``--truth-conformance`` runs the credential-free M23
-behavior/accounting orthogonality corpus. Live campaigns exercise temporary Git
-repositories through canonical ``dse app-server --stdio`` and record terminal and RunStore
-facts before credential-free reopen, deterministic verification, or label
-derivation. They are regression label collectors, not product A/Bs.
+behavior/accounting orthogonality corpus. ``--hardness-conformance`` runs the
+credential-free M23-B2 metric and real mid-run continuity observer corpus. Live
+campaigns exercise temporary Git repositories through canonical
+``dse app-server --stdio`` and record terminal and RunStore facts before
+credential-free reopen, deterministic verification, or label derivation. They
+are regression label collectors, not product A/Bs.
 """
 
 from __future__ import annotations
@@ -325,6 +327,18 @@ TRUTH_CORPUS_SCHEMA = (
 )
 TRUTH_REPORT_SCHEMA = (
     "dse.eval.m23-behavior-accounting-truth-report.v1"
+)
+HARDNESS_OBSERVER_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m23b-hardness-metrics-observer-v1.json"
+)
+HARDNESS_OBSERVER_MANIFEST_SCHEMA = (
+    "dse.eval.m23b-hardness-metrics-observer.v1"
+)
+HARDNESS_OBSERVER_CORPUS_SCHEMA = (
+    "dse.eval.m23b-hardness-metrics-observer-corpus.v1"
+)
+HARDNESS_OBSERVER_REPORT_SCHEMA = (
+    "dse.eval.m23b-hardness-metrics-observer-report.v1"
 )
 BEHAVIOR_STATUSES = {
     "verified_success",
@@ -3640,6 +3654,570 @@ def run_truth_conformance() -> int:
     return 0
 
 
+HARDNESS_OBSERVATION_TOOLS = {
+    "file_search",
+    "git_diff",
+    "git_status",
+    "grep_files",
+    "list_dir",
+    "read_file",
+}
+HARDNESS_REPEATABLE_READ_TOOLS = {
+    "file_search",
+    "grep_files",
+    "list_dir",
+    "read_file",
+}
+HARDNESS_SERVICE_ASSERTIONS = {
+    "loopback_http_health_and_teardown",
+    "playwright_click_aria_and_empty_state",
+}
+
+
+def hardness_event_records(
+    facts: dict[str, Any],
+) -> list[dict[str, Any]]:
+    streams = trajectory_event_streams(facts)
+    records: list[dict[str, Any]] = []
+    for actor_index, stream in enumerate(streams):
+        sequences = []
+        for envelope in stream:
+            require(
+                isinstance(envelope, dict)
+                and isinstance(envelope.get("sequence"), int)
+                and not isinstance(envelope.get("sequence"), bool)
+                and envelope["sequence"] > 0
+                and isinstance(envelope.get("occurred_at_unix_ms"), int)
+                and not isinstance(
+                    envelope.get("occurred_at_unix_ms"), bool
+                )
+                and envelope["occurred_at_unix_ms"] >= 0
+                and isinstance(envelope.get("event"), dict),
+                "hardness_event_envelope_invalid",
+            )
+            sequences.append(envelope["sequence"])
+            records.append(
+                {
+                    "actor_index": actor_index,
+                    "sequence": envelope["sequence"],
+                    "occurred_at_unix_ms": envelope[
+                        "occurred_at_unix_ms"
+                    ],
+                    "event": envelope["event"],
+                }
+            )
+        require(
+            sequences == list(range(1, len(stream) + 1)),
+            "hardness_event_sequence_invalid",
+        )
+    return sorted(
+        records,
+        key=lambda record: (
+            record["occurred_at_unix_ms"],
+            record["actor_index"],
+            record["sequence"],
+        ),
+    )
+
+
+def hardness_project_files(task: dict[str, Any]) -> set[str]:
+    frozen = task.get("project_files")
+    if frozen is not None:
+        require(
+            isinstance(frozen, list)
+            and frozen
+            and all(isinstance(path, str) and path for path in frozen),
+            "hardness_project_files_invalid",
+        )
+        return set(frozen)
+    fixture = task.get("fixture")
+    project = task.get("project_path")
+    require(
+        isinstance(fixture, str)
+        and isinstance(project, str)
+        and fixture
+        and project,
+        "hardness_project_identity_invalid",
+    )
+    fixture_root = (ROOT / fixture).resolve()
+    project_root = (fixture_root / project).resolve()
+    require(
+        project_root.is_dir()
+        and project_root.is_relative_to(fixture_root),
+        "hardness_project_identity_invalid",
+    )
+    return {
+        path.relative_to(fixture_root).as_posix()
+        for path in project_root.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and ".git" not in path.relative_to(fixture_root).parts
+        and "__pycache__" not in path.relative_to(fixture_root).parts
+    }
+
+
+def hardness_normalize_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+    ):
+        return None
+    return normalized
+
+
+def hardness_json_content(outcome: dict[str, Any]) -> Any:
+    content = outcome.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return None
+
+
+def hardness_observed_paths(
+    name: str,
+    invocation: dict[str, Any],
+    outcome: dict[str, Any],
+    project_files: set[str],
+) -> set[str]:
+    parsed = invocation.get("arguments", {}).get("parsed")
+    arguments = parsed if isinstance(parsed, dict) else {}
+    candidates: set[str] = set()
+    direct = hardness_normalize_path(arguments.get("path"))
+    if name == "read_file" and direct is not None:
+        candidates.add(direct)
+    content = outcome.get("content")
+    decoded = hardness_json_content(outcome)
+    if name == "file_search" and isinstance(decoded, list):
+        for item in decoded:
+            if isinstance(item, dict):
+                path = hardness_normalize_path(item.get("path"))
+                if path is not None:
+                    candidates.add(path)
+    elif name == "grep_files" and isinstance(decoded, dict):
+        matches = decoded.get("matches")
+        if isinstance(matches, list):
+            for item in matches:
+                if isinstance(item, dict):
+                    path = hardness_normalize_path(item.get("file"))
+                    if path is not None:
+                        candidates.add(path)
+    elif name == "list_dir":
+        base = direct or "."
+        entries = (
+            decoded.get("entries")
+            if isinstance(decoded, dict)
+            else decoded
+        )
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict) or item.get("is_dir") is True:
+                    continue
+                entry = hardness_normalize_path(item.get("name"))
+                if entry is None:
+                    continue
+                joined = entry if base == "." else f"{base}/{entry}"
+                normalized = hardness_normalize_path(joined)
+                if normalized is not None:
+                    candidates.add(normalized)
+    elif name == "git_diff" and isinstance(content, str):
+        for line in content.splitlines():
+            if line.startswith("diff --git a/"):
+                left = line.removeprefix("diff --git a/").split(" b/", 1)[0]
+                path = hardness_normalize_path(left)
+                if path is not None:
+                    candidates.add(path)
+    elif name == "git_status" and isinstance(content, str):
+        for line in content.splitlines():
+            candidate = line[3:] if len(line) >= 4 else ""
+            path = hardness_normalize_path(candidate)
+            if path is not None:
+                candidates.add(path)
+    return candidates & project_files
+
+
+def hardness_continuity_projection(
+    task: dict[str, Any], continuity: Any
+) -> dict[str, Any]:
+    required = task.get("required_continuity")
+    require(
+        required
+        in {
+            None,
+            "process_restart_after_durable_checkpoint",
+            "hard_compaction_or_process_restart",
+        },
+        "hardness_continuity_contract_invalid",
+    )
+    records = continuity if continuity is not None else []
+    require(isinstance(records, list), "hardness_continuity_invalid")
+    valid = 0
+    invalid = 0
+    for record in records:
+        require(isinstance(record, dict), "hardness_continuity_invalid")
+        before = record.get("events_before_restart")
+        reopened = record.get("events_at_reopen")
+        before_requests = record.get("physical_requests_started_before")
+        reopen_requests = record.get("physical_requests_started_at_reopen")
+        record_valid = (
+            record.get("kind") == "process_restart_resume"
+            and record.get("checkpoint_kind") == "interaction_requested"
+            and isinstance(before, list)
+            and canonical_bytes(before) == canonical_bytes(reopened)
+            and isinstance(record.get("process_identity_before"), str)
+            and isinstance(record.get("process_identity_after"), str)
+            and record["process_identity_before"]
+            != record["process_identity_after"]
+            and isinstance(before_requests, int)
+            and not isinstance(before_requests, bool)
+            and before_requests >= 0
+            and reopen_requests == before_requests
+            and record.get("resolved_after_reopen") is True
+            and record.get("terminal_snapshot_only") is False
+        )
+        if record_valid:
+            valid += 1
+        else:
+            invalid += 1
+    satisfied = (
+        invalid == 0
+        and (
+            (required is None and valid == 0)
+            or (required is not None and valid == 1)
+        )
+    )
+    return {
+        "required": required,
+        "resume_count": valid,
+        "invalid_records": invalid,
+        "satisfied": satisfied,
+    }
+
+
+def hardness_metrics_projection(
+    task: dict[str, Any],
+    facts: dict[str, Any],
+    verifier: dict[str, Any],
+    changed_files: Any,
+    *,
+    lane_valid: bool,
+    route_valid: bool,
+    continuity: Any,
+) -> dict[str, Any]:
+    require(
+        isinstance(task, dict)
+        and isinstance(verifier, dict)
+        and isinstance(verifier.get("passed"), bool)
+        and isinstance(lane_valid, bool)
+        and isinstance(route_valid, bool),
+        "hardness_metric_input_invalid",
+    )
+    project_files = hardness_project_files(task)
+    related = set(task.get("related_files", []))
+    allowed = set(task.get("allowed_paths", []))
+    relevant = related | allowed
+    require(
+        relevant
+        and relevant.issubset(project_files)
+        and isinstance(changed_files, list)
+        and all(isinstance(path, str) and path for path in changed_files),
+        "hardness_metric_scope_invalid",
+    )
+    records = hardness_event_records(facts)
+    root_created = [
+        record
+        for record in records
+        if record["actor_index"] == 0
+        and record["event"].get("kind") == "run_created"
+    ]
+    require(len(root_created) == 1, "hardness_run_created_invalid")
+    started_ms = root_created[0]["occurred_at_unix_ms"]
+
+    prepared: dict[tuple[int, str], dict[str, Any]] = {}
+    seen_in_epoch: dict[int, set[str]] = {}
+    observed_before_edit: set[str] = set()
+    first_relevant_ms: int | None = None
+    first_edit_seen = False
+    first_edit_verified: bool | None = None
+    first_edit_open = False
+    first_edit_closed = False
+    failed_verifier_pending = False
+    failed_verifier_before_first_edit = False
+    successful_verifier_after_edit = False
+    repair_loops = 0
+    repeated_reads = 0
+    compaction_count = 0
+
+    for record in records:
+        actor = record["actor_index"]
+        event = record["event"]
+        kind = event.get("kind")
+        if kind == "context_compaction_committed":
+            compaction_count += 1
+            continue
+        if kind == "tool_prepared":
+            invocation = event.get("invocation")
+            require(
+                isinstance(invocation, dict)
+                and isinstance(invocation.get("name"), str)
+                and isinstance(invocation.get("call_id"), str),
+                "hardness_tool_prepared_invalid",
+            )
+            prepared[(actor, invocation["call_id"])] = invocation
+            if invocation["name"] in HARDNESS_REPEATABLE_READ_TOOLS:
+                identity = trajectory_argument_identity(invocation)
+                actor_seen = seen_in_epoch.setdefault(actor, set())
+                if identity in actor_seen:
+                    repeated_reads += 1
+                actor_seen.add(identity)
+            continue
+        if kind == "tool_outcome_committed":
+            name = event.get("name")
+            call_id = event.get("call_id")
+            outcome = event.get("outcome")
+            require(
+                isinstance(name, str)
+                and isinstance(call_id, str)
+                and isinstance(outcome, dict),
+                "hardness_tool_outcome_invalid",
+            )
+            invocation = prepared.get((actor, call_id), {})
+            success = tool_outcome_success(outcome)
+            if success and name in HARDNESS_OBSERVATION_TOOLS:
+                paths = hardness_observed_paths(
+                    name, invocation, outcome, project_files
+                )
+                if not first_edit_seen:
+                    observed_before_edit.update(paths)
+                newly_relevant = paths & relevant
+                if newly_relevant and first_relevant_ms is None:
+                    first_relevant_ms = max(
+                        0, record["occurred_at_unix_ms"] - started_ms
+                    )
+            if name in MAY_WRITE_TOOLS and outcome.get("side_effect") == "applied":
+                if failed_verifier_pending:
+                    repair_loops += 1
+                    failed_verifier_pending = False
+                if not first_edit_seen:
+                    first_edit_seen = True
+                    first_edit_open = True
+                    first_edit_verified = False
+                elif first_edit_open:
+                    first_edit_open = False
+                    first_edit_closed = True
+                seen_in_epoch.clear()
+            if name == "run_verifiers":
+                if success:
+                    if first_edit_seen:
+                        successful_verifier_after_edit = True
+                    if first_edit_open and not first_edit_closed:
+                        first_edit_verified = True
+                        first_edit_open = False
+                else:
+                    failed_verifier_pending = True
+                    if not first_edit_seen:
+                        failed_verifier_before_first_edit = True
+            continue
+        if kind == "host_verification_committed":
+            outcome = event.get("outcome")
+            require(
+                isinstance(outcome, dict),
+                "hardness_host_verification_invalid",
+            )
+            if tool_outcome_success(outcome):
+                if first_edit_seen:
+                    successful_verifier_after_edit = True
+                if first_edit_open and not first_edit_closed:
+                    first_edit_verified = True
+                    first_edit_open = False
+            else:
+                failed_verifier_pending = True
+                if not first_edit_seen:
+                    failed_verifier_before_first_edit = True
+
+    continuity_result = hardness_continuity_projection(task, continuity)
+    scope = changed_file_scope_audit(
+        changed_files,
+        task.get("allowed_paths", []),
+        task.get("reference_changed_files", []),
+    )
+    failed_write_pass_valid = (
+        task.get("evidence_policy") != "failed_write_pass"
+        or (
+            failed_verifier_before_first_edit
+            and successful_verifier_after_edit
+        )
+    )
+    runtime_assertion = task.get("runtime_assertion")
+    runtime_assertion_passed = (
+        verifier["passed"] if isinstance(runtime_assertion, str) else None
+    )
+    service_started = (
+        verifier["passed"]
+        if runtime_assertion in HARDNESS_SERVICE_ASSERTIONS
+        else False
+    )
+    goal_constraint_loss = not (
+        lane_valid
+        and route_valid
+        and scope["valid"]
+        and continuity_result["satisfied"]
+        and failed_write_pass_valid
+    )
+    return {
+        "human_estimated_minutes": task.get("human_estimated_minutes"),
+        "first_relevant_file_ms": first_relevant_ms,
+        "relevant_files_seen_before_first_edit": len(
+            observed_before_edit & relevant
+        ),
+        "irrelevant_files_seen_before_first_edit": len(
+            observed_before_edit - relevant
+        ),
+        "first_edit_verified": first_edit_verified,
+        "repair_loops": repair_loops,
+        "repeated_reads_same_mutation_epoch": repeated_reads,
+        "compaction_count": compaction_count,
+        "resume_count": continuity_result["resume_count"],
+        "goal_constraint_loss": goal_constraint_loss,
+        "service_started": service_started,
+        "runtime_assertion_passed": runtime_assertion_passed,
+        "continuity": continuity_result,
+    }
+
+
+def build_hardness_conformance_report() -> dict[str, Any]:
+    require(CAMPAIGN == "m23b", "hardness_campaign_required")
+    manifest = read_json_object(
+        HARDNESS_OBSERVER_MANIFEST_PATH,
+        "hardness_observer_manifest_unavailable",
+    )
+    require(
+        manifest.get("schema") == HARDNESS_OBSERVER_MANIFEST_SCHEMA,
+        "hardness_observer_manifest_schema_invalid",
+    )
+    source = manifest.get("source_identity")
+    corpus_contract = manifest.get("corpus")
+    require(
+        isinstance(source, dict)
+        and source.get("run_api") == RUN_API
+        and source.get("runtime_event") == EVENT_API
+        and source.get("state_schema") == STATE_SCHEMA
+        and source.get("exec_stream") == EXEC_STREAM
+        and isinstance(corpus_contract, dict)
+        and corpus_contract.get("historical_raw_is_input") is False
+        and corpus_contract.get("credential_required") is False
+        and corpus_contract.get("network_required") is False,
+        "hardness_observer_manifest_contract_invalid",
+    )
+    path_value = corpus_contract.get("path")
+    require(
+        isinstance(path_value, str),
+        "hardness_observer_corpus_path_invalid",
+    )
+    corpus_path = (ROOT / path_value).resolve()
+    require(
+        repository_relative(
+            corpus_path, "hardness_observer_corpus_path_invalid"
+        )
+        == path_value
+        and file_hash(corpus_path) == corpus_contract.get("file_sha256"),
+        "hardness_observer_corpus_identity_invalid",
+    )
+    corpus = read_json_object(
+        corpus_path, "hardness_observer_corpus_unavailable"
+    )
+    cases = corpus.get("cases")
+    require(
+        corpus.get("schema") == HARDNESS_OBSERVER_CORPUS_SCHEMA
+        and corpus_contract.get("schema") == HARDNESS_OBSERVER_CORPUS_SCHEMA
+        and isinstance(cases, list)
+        and len(cases) == corpus_contract.get("case_count")
+        and all(isinstance(case, dict) for case in cases),
+        "hardness_observer_corpus_schema_invalid",
+    )
+    case_ids = [case.get("case_id") for case in cases]
+    require(
+        all(isinstance(case_id, str) and case_id for case_id in case_ids)
+        and len(case_ids) == len(set(case_ids)),
+        "hardness_observer_case_identity_invalid",
+    )
+    results = []
+    for case in cases:
+        facts = case.get("facts")
+        reopened = case.get("reopened_facts")
+        task = case.get("task")
+        verifier = case.get("verifier")
+        require(
+            isinstance(facts, dict)
+            and isinstance(reopened, dict)
+            and canonical_bytes(facts) == canonical_bytes(reopened)
+            and isinstance(task, dict)
+            and isinstance(verifier, dict),
+            "hardness_observer_case_shape_invalid",
+            {"case_id": case.get("case_id")},
+        )
+        projection = hardness_metrics_projection(
+            task,
+            facts,
+            verifier,
+            case.get("changed_files"),
+            lane_valid=case.get("lane_valid"),
+            route_valid=case.get("route_valid"),
+            continuity=case.get("continuity"),
+        )
+        require(
+            isinstance(case.get("expected"), dict)
+            and projection == case["expected"],
+            "hardness_observer_case_result_mismatch",
+            {
+                "case_id": case["case_id"],
+                "projection": projection,
+            },
+        )
+        results.append(
+            {"case_id": case["case_id"], "projection": projection}
+        )
+    return {
+        "schema": HARDNESS_OBSERVER_REPORT_SCHEMA,
+        "status": "pass",
+        "manifest_sha256": file_hash(HARDNESS_OBSERVER_MANIFEST_PATH),
+        "corpus_sha256": file_hash(corpus_path),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "cases": len(results),
+        "real_mid_run_resume_cases": sum(
+            result["projection"]["resume_count"] > 0 for result in results
+        ),
+        "goal_constraint_loss_cases": sum(
+            result["projection"]["goal_constraint_loss"]
+            for result in results
+        ),
+        "runtime_assertion_cases": sum(
+            result["projection"]["runtime_assertion_passed"] is not None
+            for result in results
+        ),
+        "results_sha256": canonical_hash(results),
+        "terminal_reopen_counted_as_resume": False,
+        "historical_raw_read": False,
+        "key_accessed": False,
+        "network_accessed": False,
+    }
+
+
+def run_hardness_conformance() -> int:
+    first = canonical_bytes(build_hardness_conformance_report())
+    second = canonical_bytes(build_hardness_conformance_report())
+    require(first == second, "hardness_observer_report_not_reproducible")
+    sys.stdout.buffer.write(first + b"\n")
+    return 0
+
+
 def safety_lane_audit(
     facts: dict[str, Any], verifier: dict[str, Any], changed: list[str]
 ) -> dict[str, Any]:
@@ -5825,6 +6403,10 @@ def preflight(
     admission = None
     if formal:
         require(
+            CAMPAIGN != "m23b",
+            "m23b_live_continuity_not_implemented",
+        )
+        require(
             admission_path is not None and output_path is not None,
             "live_admission_required",
         )
@@ -7274,6 +7856,10 @@ def run_dry(args: argparse.Namespace) -> int:
 
 def run_formal(args: argparse.Namespace) -> int:
     require(CAMPAIGN != "m15", "m15_campaign_closed")
+    require(
+        CAMPAIGN != "m23b",
+        "m23b_live_continuity_not_implemented",
+    )
     require(args.acknowledge_cost, "cost_acknowledgement_required")
     require(args.key_file, "key_file_required")
     require(args.output, "output_required")
@@ -7371,6 +7957,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--observer-conformance", action="store_true")
     mode.add_argument("--acceptance-conformance", action="store_true")
     mode.add_argument("--truth-conformance", action="store_true")
+    mode.add_argument("--hardness-conformance", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--transport-viability-self-test", action="store_true")
     mode.add_argument("--transport-viability-dry-run", action="store_true")
@@ -7409,8 +7996,14 @@ def main() -> int:
             return run_acceptance_conformance()
         if args.truth_conformance:
             return run_truth_conformance()
+        if args.hardness_conformance:
+            return run_hardness_conformance()
         if args.transport_viability_self_test:
             return run_m20_self_test()
+        if CAMPAIGN == "m23b" and not args.dry_run:
+            raise EvaluationError(
+                "m23b_live_continuity_not_implemented"
+            )
         require(args.binary, "binary_required")
         if args.transport_viability_dry_run:
             return run_m20_dry(args)
