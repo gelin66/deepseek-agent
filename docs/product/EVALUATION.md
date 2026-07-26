@@ -3493,7 +3493,9 @@ live / reopen presentation equality
 必须通过：
 
 1. task -> activity -> change -> verification -> required action/terminal 在每种状态可见闭合；
-2. live 与同一 RunStore reopen 的 presentation byte-equivalent；
+2. live 与同一 RunStore reopen 的 semantic presentation equivalent：尺寸、非空
+   glyph/坐标、前后景、modifier 与 cursor 精确；只规范化 clear/overwrite 的等价
+   terminal-default 空白编码，不宣称 raw PTY bytes 相等；
 3. keyboard/mouse 同 action parity 100%，`Enter/Esc/↑/↓/Ctrl-C/Ctrl-D` 不改变既有
    canonical semantics；
 4. 宽屏 right rail、中屏 top strip、窄屏 single-column 只改变 layout，不改变事实和焦点；
@@ -3530,10 +3532,11 @@ verified task success、Token、cache、费用或模型 wall-time 提升。完�
   point；production container 仅 3 种加 inline approval；
 - English/`zh-Hans` 在五个冻结尺寸的真实 PTY resize 为 10/10，长路径、CJK、
   combining character、emoji、composer focus 与 cursor 均保持；
-- keyboard/mouse/paste、permission、approval denial/no-side-effect 与 resize parity
-  全通过；没有 mouse-only action；
-- live terminal projection 与同一 RunStore credential-free reopen 的非空 glyph、坐标
-  逐 cell 相等；canonical Store terminal/evidence 仍精确；
+- keyboard/mouse/paste、onboarding/slash/mention、permission、approval
+  denial/no-side-effect 与 active resize parity 全通过；没有 mouse-only action；
+- English/`zh-Hans` live terminal projection 与同一 RunStore credential-free reopen 的
+  尺寸、非空 glyph/坐标、前后景、bold/italic/underline/inverse 与 cursor 逐项相等；
+  canonical Store terminal/evidence 仍精确；
 - idle 初帧后 5 秒没有 PTY bytes；ANSI-16/256/truecolor 与 terminal-reset background
   的 semantic token gate 通过；
 - `en`/`zh-Hans` catalog key/placeholder parity 通过，可达人类文本改由 localization
@@ -3543,7 +3546,9 @@ verified task success、Token、cache、费用或模型 wall-time 提升。完�
 - M28 diff 不触及 protocol/runtime/state/deepseek/tools 的 production owner，permission
   与 completion semantics delta 为 0。
 
-focused、fmt、strict workspace Clippy、workspace test、public checker、locked/offline
+最终 parity closure 为 `068c8e3a9`，遗留 modal 词汇清理 checkpoint 为
+`60df6f8f7`，PTY resize 观测竞态 closure 为 `07214e2ef`。focused、fmt、strict
+workspace Clippy、workspace test、public checker、locked/offline
 delivery install/verify/uninstall 与 `git diff --check` 全绿。一个 exec stall fixture 在
 全套并发负载下暴露 transport/open guard 与 model-event guard 同为 1 秒的自相干扰；测试
 已把前者放宽到 5 秒而保持后者 1 秒，production 行为未变。无 Key、official API、GitHub、

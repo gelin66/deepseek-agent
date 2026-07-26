@@ -4921,7 +4921,8 @@ policy/network/writable roots 的 `dse-tui sandbox run` 直接执行旁路及其
 ## 26. M28：DSE 原生 TUI 全表面切换
 
 - 状态：**完成；`keep_native_surface_and_delete_legacy`**
-- cutover checkpoint：`1e420d9d7`（真实 PTY/reopen 合同；最终文档在后续独立提交）
+- cutover checkpoint：`07214e2ef`（首次真实 PTY cutover `1e420d9d7`；parity closure
+  `068c8e3a9`；旧术语清理 `60df6f8f7`；最终 PTY 观测闭合 `07214e2ef`）
 - 架构决策：[ADR-0013](../decisions/0013-native-tui-surface-system.md)
 - 设计合同：[DESIGN.md](../../DESIGN.md)
 - 目标：把所有可达 TUI surface 切到同一 terminal-native 表面系统，并物理删除
@@ -5145,9 +5146,11 @@ render-time action/hitbox。
   evidence 文档。
 
 冻结的 English/`zh-Hans` × `48×12`、`60×16`、`80×24`、`100×32`、`140×40`
-真实 PTY resize 矩阵通过；同一 terminal Run 在 credential-free SQLite reopen 后的可见
-glyph 与坐标逐 cell 相等。ANSI depth/reset background、Unicode width、keyboard/mouse/
-paste、approval/permission、idle 5 秒 byte-still 和 installed delivery lifecycle 均由
+真实 PTY resize 矩阵通过；同一 terminal Run 在 English/`zh-Hans` credential-free
+SQLite reopen 后，尺寸、非空 glyph/坐标、前后景、bold/italic/underline/inverse 和
+cursor 逐 cell 相等；clear/overwrite 的 terminal-default 空白编码按合同规范化。真实
+onboarding/slash/mention/approval/permission mouse row、运行中 resize、ANSI depth/reset
+background、Unicode width、idle 5 秒 byte-still 和 installed delivery lifecycle 均由
 deterministic gate 覆盖。macOS Terminal、iTerm2、Ghostty 的宿主渲染差异没有在无对应
 宿主的自动化环境中伪造人工结论。
 

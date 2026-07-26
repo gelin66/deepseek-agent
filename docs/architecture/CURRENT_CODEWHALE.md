@@ -2573,7 +2573,8 @@ tools 均保持不变。完整事实见
 
 ## 7. 当前 TUI 表面系统（M28 complete）
 
-M28 已在 PTY cutover checkpoint `1e420d9d7` 完成
+M28 已在 final cutover closure `07214e2ef`（首次 PTY cutover `1e420d9d7`，
+parity closure `068c8e3a9`，旧术语清理 `60df6f8f7`）完成
 `keep_native_surface_and_delete_legacy`：
 
 - `shell.rs` 是唯一 terminal-native 主外壳；transcript-first 主工作区在宽屏使用
@@ -2593,9 +2594,11 @@ M28 已在 PTY cutover checkpoint `1e420d9d7` 完成
   recovery/terminal 的唯一 presentation truth；TUI 没有 plan、progress、evidence 或
   completion owner。
 
-English/`zh-Hans` × 五个冻结尺寸的真实 PTY resize、keyboard/mouse/paste、approval/
-permission、first-run、live/terminal、pending creation recovery 和 credential-free
-SQLite reopen 通过。live 与 reopen 的可见 glyph/坐标逐 cell 相等。M28 未修改
+English/`zh-Hans` × 五个冻结尺寸的真实 PTY resize、keyboard/mouse/paste、
+onboarding/slash/mention/approval/permission、first-run、live/terminal、pending
+creation recovery 和 credential-free SQLite reopen 通过。live 与 reopen 的尺寸、非空
+glyph/坐标、前后景、modifier 与 cursor 逐项相等；只规范化等价的 terminal-default
+空白编码。M28 未修改
 RuntimeEvent、Run API、State、DeepSeek、tools、prompt、model 或 permission 语义，也没有
 General Settings、ThemePicker、ConfigView、legacy toggle 或 compatibility reader。设计与
 后续约束见 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、
