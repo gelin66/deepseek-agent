@@ -5160,7 +5160,7 @@ permission 语义；没有 Key、official API、GitHub、push 或 release。完�
 
 ## 27. M29：本地 release-candidate 真实工作流验收
 
-- 状态：**合同冻结；执行中**
+- 状态：**完成；`keep_current_workflow_no_reproducible_blocker`**
 - 基线：M28 clean checkpoint `548afbe3e`
 - 目标：用唯一 credential-free production composition 闭合真实用户工作流，而不是把
   M24、M26、M27、M28 的分层机制通过拼接成可用性结论
@@ -5261,3 +5261,22 @@ blocked_by_reproducible_local_release_workflow_defect
 
 本切片不读取 Key、不调用 official DeepSeek API、不访问 GitHub、不 push、不 release，也
 不形成 DeepSeek verified-success、Token、cache、费用或模型 wall-time 改善结论。
+
+### 27.5 实际结果
+
+8/8 冻结 workflow 全部通过。production loopback 闭合多轮 tool/verifier recovery；
+Runtime 85/85、Writer orchestration 25/25、真实 Git orchestrator 44/44、State SIGKILL
+38/38、app-server external process 3/3、canonical TUI PTY 7/7、Run acceptance 18/18、
+双语 QA PTY 15/15、surface parity 2/2。预注册 external helper/heavy storm 仍保持各自
+ignored 角色，没有 unexpected skip 或零匹配 filter。
+
+focused、fmt、strict workspace Clippy、workspace test、public checker、delivery
+self-test 全绿。clean contract commit `cf34589fb` 又构建 locked/offline exact-source
+artifact，install/verify、双 binary version、English/`zh-Hans` help smoke 与 uninstall
+通过。
+
+没有 defect 满足“跨独立 execution 同因重复”或 deterministic safety invariant
+counterexample 的准入条件；因此 production delta=0，没有新增 treatment/probe/runner，
+也没有 old production path 可删。Key、official API、external network、GitHub、push、
+release 均为 0。完整结果见
+[M29 summary](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。

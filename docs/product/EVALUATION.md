@@ -3616,6 +3616,26 @@ blocked_by_reproducible_local_release_workflow_defect
 M29 的 false-success/verification 只属于 deterministic loopback fixture，不外推官方
 DeepSeek coding quality。Key/API/network/GitHub/push/release 必须为 0。
 
+#### M29 result
+
+决定为 `keep_current_workflow_no_reproducible_blocker`。
+
+- 8/8 workflow 的 canonical execution、Host evidence、terminal 与 Store replay 通过；
+- Runtime conformance 85/85、Writer 25/25、真实 Git orchestrator 44/44、State process
+  crash 38/38、app-server process 3/3；
+- canonical PTY 7/7、Run acceptance 18/18、双语/mouse/paste/resize QA 15/15、
+  release runtime 5/5、CLI/HTTP/stdio parity 2/2；
+- fixed actor route、三档 permission、latest-revision completion、Writer isolation 与
+  exactly-once request/side-effect/terminal 没有变化；
+- focused、fmt、strict workspace Clippy、workspace test、public checker、delivery
+  self-test 和 current exact-source locked/offline install lifecycle 全部通过；
+- 没有可重复、可归因 defect，因此 production delta=0，未创建 treatment、probe、
+  parallel Harness 或兼容路径。
+
+Key、official API、external network、GitHub、push、release 均为 0。结论不外推
+official DeepSeek quality/Token/cache/cost/wall-time。完整证据见
+[M29 summary](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -2604,9 +2604,26 @@ General Settings、ThemePicker、ConfigView、legacy toggle 或 compatibility re
 后续约束见 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、
 [DESIGN.md](../../DESIGN.md) 和 [ROADMAP M28](../product/ROADMAP.md)。
 
+M29 没有改变 production architecture。它从 M28 clean checkpoint `548afbe3e` 出发，把
+长 root task、verifier recovery、approval deny/approve、read-only child、explicit
+Writer、process/Store reopen 和 terminal interaction 8 条 workflow 重新绑定到现有唯一
+production composition 与 deterministic acceptance。
+
+全部 workflow 通过；focused、strict workspace Clippy、workspace test、双语 PTY、
+真实 Git Writer、process SIGKILL、surface parity、delivery self-test 和当前 source 的
+locked/offline package/install/verify/uninstall 也通过。没有重复且可归因的 defect，
+所以结论为 `keep_current_workflow_no_reproducible_blocker`，production delta=0。没有新增
+Harness、probe、Runtime、Store、protocol、renderer、permission/model route 或兼容路径。
+完整事实见
+[M29 local workflow acceptance](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
+
 ## 8. 明确非结论
 
 当前源码不证明：
+
+- M29 的 credential-free deterministic workflow pass 等于 official DeepSeek coding
+  quality、Token、cache、费用、模型 wall-time、远端 CI 或公开发布；它只证明当前本地
+  production composition 没有复现合同内的 workflow blocker；
 
 - M25 的 guide bytes/规则行位下降等于真实 DeepSeek Token、cache、wall-time、费用或
   verified-success 提升，或任一超大 Rust 文件/依赖边需要重构；
