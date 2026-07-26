@@ -1,0 +1,55 @@
+diff --git a/python-scope-token/scope_token.py b/python-scope-token/scope_token.py
+--- a/python-scope-token/scope_token.py
++++ b/python-scope-token/scope_token.py
+@@ -1,7 +1,18 @@
++import re
++
++
++SEGMENT = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
++
++
+ def parse_scope_token(value):
+     if not isinstance(value, str):
+         return None
+-    parts = [part.strip().lower() for part in value.split(":")]
++    parts = value.strip().lower().split(":")
+     if len(parts) != 2 or not all(parts):
+         return None
++    if any(
++        len(part) > 32 or SEGMENT.fullmatch(part) is None
++        for part in parts
++    ):
++        return None
+     return tuple(parts)
+diff --git a/typescript-request-budget/src/request_budget.ts b/typescript-request-budget/src/request_budget.ts
+--- a/typescript-request-budget/src/request_budget.ts
++++ b/typescript-request-budget/src/request_budget.ts
+@@ -9,17 +9,19 @@ export function parseRequestBudget(
+   if (value === undefined) {
+     return null;
+   }
+-  const fields = Object.fromEntries(
+-    value.split(";").map((field) => {
+-      const [name, raw] = field.split("=", 2);
+-      return [name?.trim(), Number.parseInt(raw ?? "", 10)];
+-    }),
+-  );
+-  if (!(fields.requests > 0) || !(fields.seconds > 0)) {
++  const matched = /^requests=([1-9][0-9]*);seconds=([1-9][0-9]*)$/.exec(
++    value,
++  );
++  if (matched === null) {
+     return null;
+   }
++  const requests = Number(matched[1]);
++  const seconds = Number(matched[2]);
++  if (requests > 32 || seconds > 600) {
++    return null;
++  }
+   return {
+-    requests: fields.requests,
+-    seconds: fields.seconds,
++    requests,
++    seconds,
+   };
+ }

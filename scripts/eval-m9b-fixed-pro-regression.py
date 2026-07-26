@@ -10,6 +10,8 @@ acquisition after M14 observer conformance.
 baseline after the bilingual identity cutover.
 ``--campaign m19`` selects the fresh DSE local coding-reliability acquisition
 whose outer watchdog preserves a credential-free Store/accounting boundary.
+``--campaign m20b`` selects the fresh post-transport-viability fixed-Pro
+reliability acquisition without rerunning or completing M19.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -72,6 +74,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m15",
         "m18",
         "m19",
+        "m20b",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -80,10 +83,38 @@ def selected_campaign(arguments: list[str]) -> str:
 
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
-CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15", "m18", "m19"}
-VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15", "m18", "m19"}
-DSE_CAMPAIGNS = {"m18", "m19"}
-if CAMPAIGN == "m19":
+CURRENT_LOSS_CAMPAIGNS = {
+    "m11",
+    "m12",
+    "m15",
+    "m18",
+    "m19",
+    "m20b",
+}
+VERIFIER_ENVIRONMENT_CAMPAIGNS = {
+    "m12",
+    "m15",
+    "m18",
+    "m19",
+    "m20b",
+}
+DSE_CAMPAIGNS = {"m18", "m19", "m20b"}
+if CAMPAIGN == "m20b":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m20b-fixed-pro-reliability-v1.json"
+    )
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = "dse.eval.m20b-fixed-pro-reliability.v1"
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = "dse.eval.m20b-fixed-pro-reliability-journal.v1"
+    ADMISSION_SCHEMA = (
+        "dse.eval.m20b-fixed-pro-reliability-live-admission.v1"
+    )
+    RUN_API = 12
+    EVENT_API = 19
+    STATE_SCHEMA = 25
+    EXEC_STREAM = 4
+elif CAMPAIGN == "m19":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m19-local-reliability-baseline-v1.json"
     )
@@ -174,7 +205,17 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m19":
+if CAMPAIGN == "m20b":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m20b-fixed-pro-reliability-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m20b-fixed-pro-reliability-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "dse.eval.m20b-fixed-pro-reliability-report.v1"
+    )
+elif CAMPAIGN == "m19":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m19-local-reliability-analysis-v1.json"
     )
@@ -255,6 +296,9 @@ M18_REFERENCE_PATCH_PATH = (
 )
 M19_REFERENCE_PATCH_PATH = (
     ROOT / "eval/fixtures/m19-local-reliability-reference.patch"
+)
+M20B_REFERENCE_PATCH_PATH = (
+    ROOT / "eval/fixtures/m20b-local-reliability-reference.patch"
 )
 STABLE_TOOL_OUTCOME_FIELDS = (
     "failure_code",
@@ -389,7 +433,8 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 def load_manifest() -> dict[str, Any]:
     require(
-        CAMPAIGN in {"m9c", "m11", "m12", "m15", "m18", "m19"},
+        CAMPAIGN
+        in {"m9c", "m11", "m12", "m15", "m18", "m19", "m20b"},
         "campaign_invalid",
     )
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
@@ -409,7 +454,13 @@ def load_manifest() -> dict[str, Any]:
             and source.get("exec_stream") == EXEC_STREAM,
             "protocol_identity_invalid",
         )
-        if CAMPAIGN == "m19":
+        if CAMPAIGN == "m20b":
+            expected_tasks = [
+                "python_scope_token_recovery",
+                "typescript_request_budget_recovery",
+                "safety_false_completion",
+            ]
+        elif CAMPAIGN == "m19":
             expected_tasks = [
                 "typescript_forwarded_chain_recovery",
                 "typescript_retry_window_recovery",
@@ -489,14 +540,18 @@ def load_manifest() -> dict[str, Any]:
             ),
             "schedule_identity_invalid",
         )
-        if CAMPAIGN in {"m15", "m18", "m19"}:
+        if CAMPAIGN in {"m15", "m18", "m19", "m20b"}:
             reference_path = (
-                M19_REFERENCE_PATCH_PATH
-                if CAMPAIGN == "m19"
+                M20B_REFERENCE_PATCH_PATH
+                if CAMPAIGN == "m20b"
                 else (
-                    M18_REFERENCE_PATCH_PATH
-                    if CAMPAIGN == "m18"
-                    else M15_REFERENCE_PATCH_PATH
+                    M19_REFERENCE_PATCH_PATH
+                    if CAMPAIGN == "m19"
+                    else (
+                        M18_REFERENCE_PATCH_PATH
+                        if CAMPAIGN == "m18"
+                        else M15_REFERENCE_PATCH_PATH
+                    )
                 )
             )
             reference = manifest.get("reference_solution_proof", {})
@@ -803,16 +858,20 @@ def external_verifier(
 
 
 def reference_solution_proof() -> dict[str, Any] | None:
-    if CAMPAIGN not in {"m15", "m18", "m19"}:
+    if CAMPAIGN not in {"m15", "m18", "m19", "m20b"}:
         return None
     reference = MANIFEST["reference_solution_proof"]
     reference_path = (
-        M19_REFERENCE_PATCH_PATH
-        if CAMPAIGN == "m19"
+        M20B_REFERENCE_PATCH_PATH
+        if CAMPAIGN == "m20b"
         else (
-            M18_REFERENCE_PATCH_PATH
-            if CAMPAIGN == "m18"
-            else M15_REFERENCE_PATCH_PATH
+            M19_REFERENCE_PATCH_PATH
+            if CAMPAIGN == "m19"
+            else (
+                M18_REFERENCE_PATCH_PATH
+                if CAMPAIGN == "m18"
+                else M15_REFERENCE_PATCH_PATH
+            )
         )
     )
     require(
@@ -927,10 +986,16 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         "m15-2026-07-25",
         "m18-2026-07-26",
         "m19-2026-07-26",
+        "m20b-2026-07-26",
     }:
         date = (
             "2026-07-26T00:00:00Z"
-            if profile in {"m18-2026-07-26", "m19-2026-07-26"}
+            if profile
+            in {
+                "m18-2026-07-26",
+                "m19-2026-07-26",
+                "m20b-2026-07-26",
+            }
             else "2026-07-25T00:00:00Z"
         )
         milestone = profile.split("-", maxsplit=1)[0].upper()
@@ -4349,14 +4414,14 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    if CAMPAIGN in {"m12", "m15", "m18", "m19"}:
+    if CAMPAIGN in {"m12", "m15", "m18", "m19", "m20b"}:
         complete = all(
             cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
             and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        if CAMPAIGN in {"m15", "m18", "m19"}:
+        if CAMPAIGN in {"m15", "m18", "m19", "m20b"}:
             safety = cells["safety_false_completion"]
             complete = (
                 complete
@@ -4398,6 +4463,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m15": "keep_m15_current_product_loss_acquisition",
         "m18": "keep_m18_local_reliability_baseline",
         "m19": "keep_m19_local_reliability_baseline",
+        "m20b": "keep_m20b_fixed_pro_reliability_baseline",
     }[CAMPAIGN]
     return {
         "record_type": "summary",
@@ -6185,7 +6251,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11", "m12", "m15", "m18", "m19"),
+        choices=("m9c", "m11", "m12", "m15", "m18", "m19", "m20b"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()
