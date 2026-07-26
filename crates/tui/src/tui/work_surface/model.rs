@@ -1,12 +1,18 @@
 use crate::tui::app::App;
+use dse_localization::MessageId;
+
+use crate::tui::{
+    approval::ApprovalMode,
+    run_presentation::{RunPresentationPhase, VerificationPresentation},
+};
 
 /// Persisted work-surface placement. Bottom is deliberately absent: the
 /// composer and phase footer own the shell's lower edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkSurfacePlacement {
-    #[default]
     Top,
     Left,
+    #[default]
     Right,
 }
 
@@ -24,6 +30,7 @@ impl WorkSurfacePlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkTone {
     Heading,
+    Active,
     Attention,
     Success,
     Muted,
@@ -49,7 +56,7 @@ pub struct WorkSurfaceState {
 
 impl Default for WorkSurfaceState {
     fn default() -> Self {
-        Self::with_placement(WorkSurfacePlacement::Top)
+        Self::with_placement(WorkSurfacePlacement::Right)
     }
 }
 
@@ -67,15 +74,150 @@ impl WorkSurfaceState {
 pub(super) fn project(app: &mut App) -> Vec<WorkRow> {
     let live = super::live_projection::LiveWorkProjection::from_app(app);
     let mut rows = Vec::new();
+    if app.run_presentation.has_root() {
+        let heading = app
+            .run_presentation
+            .objective()
+            .map(objective_summary)
+            .filter(|objective| !objective.is_empty())
+            .map_or_else(
+                || app.tr(MessageId::SidebarTasksLabel).into_owned(),
+                |objective| {
+                    app.tr(MessageId::WorkRunHeading)
+                        .replace("{objective}", &objective)
+                },
+            );
+        rows.push(section("task", &heading));
+        rows.extend(root_rows(app, &live));
+    }
     if !live.rows.is_empty() {
-        rows.push(section(
-            "agents",
-            &format!("Agents {} active · {} total", live.active, live.rows.len()),
-        ));
         rows.extend(live.rows.iter().map(live_row));
     }
     app.work_surface.latest_rows = rows.clone();
     rows
+}
+
+fn objective_summary(objective: &str) -> String {
+    objective.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn root_rows(app: &App, live: &super::live_projection::LiveWorkProjection) -> Vec<WorkRow> {
+    let phase = app.run_presentation.phase();
+    let status_tone = if phase.is_success() {
+        WorkTone::Success
+    } else if phase.needs_attention() {
+        WorkTone::Attention
+    } else if phase.is_active() {
+        WorkTone::Active
+    } else {
+        WorkTone::Muted
+    };
+    let status_mark = match phase {
+        RunPresentationPhase::Completed => "✓",
+        RunPresentationPhase::WaitingForUser => "◆",
+        phase if phase.needs_attention() => "✕",
+        phase if phase.is_active() => "●",
+        _ => "○",
+    };
+    let status = app
+        .tr(MessageId::WorkStatusRow)
+        .replace("{status}", &phase.localized_label(app.language));
+
+    let changed_file_count = app.run_presentation.confirmed_changed_file_count();
+    let changes = if changed_file_count > 0 {
+        app.tr(MessageId::WorkChangesFiles)
+            .replace("{count}", &changed_file_count.to_string())
+    } else if app.run_presentation.workspace_change_confirmed() {
+        app.tr(MessageId::WorkChangesConfirmed).into_owned()
+    } else {
+        app.tr(MessageId::WorkChangesNone).into_owned()
+    };
+    let change_tone = if app.run_presentation.workspace_change_confirmed() {
+        WorkTone::Success
+    } else {
+        WorkTone::Muted
+    };
+
+    let verification = app.run_presentation.verification();
+    let verification_text = verification.localized_label(
+        app.language,
+        app.run_presentation.satisfied_acceptance_count(),
+        app.run_presentation.acceptance_total(),
+    );
+    let verification_tone = match verification {
+        VerificationPresentation::Passed => WorkTone::Success,
+        VerificationPresentation::Failed => WorkTone::Attention,
+        VerificationPresentation::Preparing | VerificationPresentation::Running => WorkTone::Active,
+        VerificationPresentation::NotStarted => WorkTone::Muted,
+    };
+    let verification_mark = match verification {
+        VerificationPresentation::Passed => "✓",
+        VerificationPresentation::Failed => "✕",
+        VerificationPresentation::Preparing | VerificationPresentation::Running => "●",
+        VerificationPresentation::NotStarted => "○",
+    };
+
+    let permission = if app
+        .run_presentation
+        .auto_approve()
+        .unwrap_or(matches!(app.approval_mode, ApprovalMode::AutoApprove))
+    {
+        app.tr(MessageId::ChipPermissionAutoApprove).into_owned()
+    } else {
+        app.tr(MessageId::ChipPermissionAsk).into_owned()
+    };
+
+    vec![
+        task_row("status", status_mark, status, status_tone),
+        task_row(
+            "changes",
+            "Δ",
+            app.tr(MessageId::WorkChangesRow)
+                .replace("{changes}", &changes),
+            change_tone,
+        ),
+        task_row(
+            "verification",
+            verification_mark,
+            app.tr(MessageId::WorkVerificationRow)
+                .replace("{verification}", &verification_text),
+            verification_tone,
+        ),
+        task_row(
+            "agents",
+            "◇",
+            app.tr(MessageId::WorkAgentsRow)
+                .replace("{active}", &live.active.to_string())
+                .replace("{total}", &live.rows.len().to_string()),
+            if live.active > 0 {
+                WorkTone::Worker
+            } else {
+                WorkTone::Muted
+            },
+        ),
+        task_row(
+            "permission",
+            "◆",
+            app.tr(MessageId::WorkPermissionRow)
+                .replace("{permission}", &permission),
+            WorkTone::Muted,
+        ),
+        task_row(
+            "run-store",
+            "↻",
+            app.tr(MessageId::WorkRunStoreRecoverable).into_owned(),
+            WorkTone::Muted,
+        ),
+    ]
+}
+
+fn task_row(id: &str, mark: &'static str, label: String, tone: WorkTone) -> WorkRow {
+    WorkRow {
+        id: format!("task:{id}"),
+        mark,
+        label,
+        tone,
+    }
 }
 
 fn section(id: &str, label: &str) -> WorkRow {

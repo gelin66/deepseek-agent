@@ -787,6 +787,8 @@ pub struct App {
     /// Canonical root/child work-surface projection, kept separate from the
     /// transcript so each fact has one presentation owner.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
+    /// Replay-safe, read-only presentation of the canonical root Run.
+    pub run_presentation: crate::tui::run_presentation::CanonicalRunPresentation,
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
     pub history: Vec<HistoryCell>,
@@ -892,8 +894,6 @@ pub struct App {
     pub streaming_message_index: Option<usize>,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
-    /// Current runtime turn status (if known).
-    pub runtime_turn_status: Option<String>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
     /// Set when the user scrolls up/down during a streaming turn so subsequent
@@ -1080,6 +1080,7 @@ impl App {
             work_surface: crate::tui::work_surface::WorkSurfaceState::with_placement(
                 work_surface_placement,
             ),
+            run_presentation: crate::tui::run_presentation::CanonicalRunPresentation::default(),
             session: SessionState::default(),
             history: Vec::new(),
             history_revisions: Vec::new(),
@@ -1139,7 +1140,6 @@ impl App {
             tool_cells: HashMap::new(),
             streaming_message_index: None,
             turn_started_at: None,
-            runtime_turn_status: None,
             needs_redraw: true,
             user_scrolled_during_stream: false,
             auto_submit_initial_input,

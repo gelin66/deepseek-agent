@@ -49,7 +49,7 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
         ProjectionEffectKind::UserTranscript {
             source: UserTranscriptSource::RunCreated,
             ..
-        } if app.runtime_turn_status.as_deref() != Some("in_progress") => None,
+        } if app.run_presentation.root_run_id() != Some(&source_run_id) => None,
         ProjectionEffectKind::UserTranscript { content, .. } => {
             app.add_message(HistoryCell::User { content });
             app.status_message = None;
@@ -58,6 +58,7 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
         ProjectionEffectKind::Canonical(stored) => {
             let stored = *stored;
             debug_assert_eq!(stored.run_id, source_run_id);
+            app.run_presentation.apply(&stored);
             present_canonical_event(app, &source_run_id, stored.event)
         }
     }
@@ -90,11 +91,9 @@ fn present_canonical_event(
                 rebuild_transcript(app, source_run_id, &request.transcript.entries);
                 app.model = request.model.clone();
                 app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
-                app.runtime_turn_status = Some("in_progress".to_owned());
                 app.status_message =
                     Some(tr_in(language, MessageId::RunDeepSeekProcessing).into_owned());
             } else {
-                app.runtime_turn_status = Some("child_in_progress".to_owned());
                 app.status_message =
                     Some(tr_in(language, MessageId::RunChildProcessing).into_owned());
             }
@@ -115,7 +114,6 @@ fn present_canonical_event(
         RuntimeEventKind::ModelRequestPrepared { .. } => {
             discard_uncommitted_streams(app);
             app.is_loading = true;
-            app.runtime_turn_status = Some("in_progress".to_owned());
             app.status_message =
                 Some(tr_in(language, MessageId::RunModelRequestPreparing).into_owned());
             None
@@ -701,7 +699,6 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
     project_accounting(app, accounting);
     app.is_loading = false;
     app.turn_started_at = None;
-    app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
     app.status_message = Some(
         tr_in(app.language, MessageId::RunTerminal)
             .replace("{terminal}", &terminal_label(app.language, terminal)),
@@ -737,17 +734,6 @@ fn project_accounting(app: &mut App, accounting: &ModelAccounting) {
 
 fn narrow_u64(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
-}
-
-fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
-    match terminal {
-        TerminalState::Completed { .. } => "completed",
-        TerminalState::Blocked { .. } => "blocked",
-        TerminalState::Failed { .. } => "failed",
-        TerminalState::Cancelled => "cancelled",
-        TerminalState::Interrupted => "interrupted",
-        TerminalState::RecoveryRequired { .. } => "recovery_required",
-    }
 }
 
 fn terminal_label(language: ProductLanguage, terminal: &TerminalState) -> Cow<'static, str> {
@@ -1094,7 +1080,7 @@ mod tests {
         let mut replay = app();
         apply_events(&mut replay, events);
         assert_eq!(transcript(&live), transcript(&replay));
-        assert_eq!(live.runtime_turn_status, replay.runtime_turn_status);
+        assert_eq!(live.run_presentation, replay.run_presentation);
         assert_eq!(live.is_loading, replay.is_loading);
     }
 
@@ -1508,8 +1494,8 @@ mod tests {
         }
         assert!(!terminal_app.is_loading);
         assert_eq!(
-            terminal_app.runtime_turn_status.as_deref(),
-            Some("completed")
+            terminal_app.run_presentation.phase(),
+            crate::tui::run_presentation::RunPresentationPhase::Completed
         );
     }
 

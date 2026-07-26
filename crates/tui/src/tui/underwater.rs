@@ -17,7 +17,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::{app::App, approval::ApprovalMode, views::ModalKind};
+use crate::tui::{
+    app::App, approval::ApprovalMode, run_presentation::RunPresentationPhase, views::ModalKind,
+};
 use dse_localization::{MessageId, tr};
 
 /// Responsive density tier. It changes how much truth is shown, never the
@@ -76,14 +78,22 @@ impl ShellPhase {
         ) {
             return Self::Approval;
         }
-        if matches!(app.runtime_turn_status.as_deref(), Some("failed" | "error")) {
-            return Self::Failed;
+        match app.run_presentation.phase() {
+            RunPresentationPhase::Thinking
+            | RunPresentationPhase::Executing
+            | RunPresentationPhase::Verifying
+            | RunPresentationPhase::Reworking => return Self::Working,
+            RunPresentationPhase::WaitingForUser => return Self::Approval,
+            RunPresentationPhase::Completed => return Self::Done,
+            RunPresentationPhase::Blocked
+            | RunPresentationPhase::Failed
+            | RunPresentationPhase::Cancelled
+            | RunPresentationPhase::Interrupted
+            | RunPresentationPhase::RecoveryRequired => return Self::Failed,
+            RunPresentationPhase::Idle => {}
         }
-        if app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+        if app.is_loading {
             return Self::Working;
-        }
-        if matches!(app.runtime_turn_status.as_deref(), Some("completed")) {
-            return Self::Done;
         }
         if !app.input.is_empty() {
             return Self::Typing;
@@ -117,9 +127,16 @@ impl ShellPhase {
 }
 
 pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'static, str>) {
+    let label = if app.run_presentation.has_root()
+        && !matches!(app.run_presentation.phase(), RunPresentationPhase::Idle)
+    {
+        Cow::Owned(app.run_presentation.phase().localized_label(app.language))
+    } else {
+        phase.label()
+    };
     match phase {
-        ShellPhase::Idle => ("·", phase.label()),
-        ShellPhase::Typing => ("›", phase.label()),
+        ShellPhase::Idle => ("·", label),
+        ShellPhase::Typing => ("›", label),
         ShellPhase::Working => {
             let frame = if app.low_motion || !app.fancy_animations {
                 WORKING_BUBBLE_FRAMES[4]
@@ -131,11 +148,11 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
                 let index = (elapsed.as_millis() / 300) as usize % WORKING_BUBBLE_FRAMES.len();
                 WORKING_BUBBLE_FRAMES[index]
             };
-            (frame, phase.label())
+            (frame, label)
         }
-        ShellPhase::Approval => ("◆", phase.label()),
-        ShellPhase::Done => ("✓", phase.label()),
-        ShellPhase::Failed => ("✕", phase.label()),
+        ShellPhase::Approval => ("◆", label),
+        ShellPhase::Done => ("✓", label),
+        ShellPhase::Failed => ("✕", label),
     }
 }
 
@@ -490,7 +507,7 @@ mod tests {
     fn phase_markers_make_motion_and_attention_explicit() {
         let mut app = test_app();
 
-        app.runtime_turn_status = Some("in_progress".to_string());
+        app.is_loading = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_millis(1_250));
         let (working, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_eq!(working, WORKING_BUBBLE_FRAMES[4]);
@@ -503,8 +520,8 @@ mod tests {
             WORKING_BUBBLE_FRAMES[4]
         );
 
-        app.runtime_turn_status = Some("failed".to_string());
-        let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
+        app.is_loading = false;
+        let (marker, label) = phase_marker(&app, ShellPhase::Failed);
         assert_eq!(marker, "✕");
         assert_eq!(label, "失败");
     }

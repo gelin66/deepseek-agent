@@ -632,6 +632,10 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   command；
 - `CanonicalRunProjection` 与 presenter 只从 `RunStore` event 投影 root/child 进度、终态和
   durable outcome；
+- `CanonicalRunPresentation` 从同一 ordered event 派生 root 的思考/执行/等待/验证/返工/
+  终态、已确认工作区变更、Host 验收进度、Agent 数、frozen permission 与恢复事实；
+  宽终端默认显示右侧 task rail，窄终端响应式回退到顶部，输入框上方 phase strip 读取
+  同一状态；不存在 TUI 私有 `runtime_turn_status`；
 - 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
   cache 和 registry-driven slash command system 已删除；
 - slash command 只剩统一的 `help/cost/exit` canonical contract；
@@ -640,9 +644,10 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   `crates/context + crates/runtime`，不存在手动 `/compact` 或传输层 command；
 - generic Provider/config/UI active path 已删除；保留的 DeepSeek provider 字段只参与
   canonical environment fingerprint / replay safety，不是用户模式或第二 backend。
-- Work surface 只投影 canonical child/tool facts，不再投影已删除的 TUI 私有 Plan/Todo、
-  Goal/Hunt 或 custom-command pause 状态；canonical Run 的工具 allow-list 不从旧 UI
-  状态注入。
+- Work surface 只投影 canonical root/child/tool facts，不再投影已删除的 TUI 私有
+  Plan/Todo、Goal/Hunt 或 custom-command pause 状态；普通 root edit 没有 exact
+  filename receipt 时只显示 confirmed change，Writer 文件只在 root integration 后计数；
+  canonical Run 的工具 allow-list 不从旧 UI 状态注入。
 
 因此三个保留 foreground 入口与所有生产可达根/只读子/Writer Agent 模型循环已经统一；
 M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。

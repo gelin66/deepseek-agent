@@ -125,7 +125,7 @@ impl Default for Settings {
             low_motion: false,
             fancy_animations: true,
             ocean_treatment: "ombre".to_string(),
-            work_surface_placement: "top".to_string(),
+            work_surface_placement: "right".to_string(),
             bracketed_paste: true,
             mention_menu_limit: 128,
             mention_walk_depth: 10,

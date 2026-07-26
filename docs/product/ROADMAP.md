@@ -4658,3 +4658,56 @@ review、compile 或架构违例；只有“文件很大”不足以准入。
 
 - `eval/manifests/m25-agent-legibility-v1.json`；
 - [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
+
+## 24. M26：canonical Run 可读性闭环
+
+- 状态：**实现完成；保留 canonical presentation**
+- 决策：`keep_canonical_run_legibility_projection`
+- owner：`crates/tui/src/tui/run_presentation.rs`
+
+### 24.1 真实问题与验收
+
+旧 WorkSurface 只显示 child Agent，输入框上方又依赖 TUI 私有
+`runtime_turn_status: Option<String>` 区分 working/completed/failed。用户能看到 Agent
+持续运行，却不能从一个稳定区域确认当前在思考、执行、等待、验证还是返工，也不能确认
+工作区是否已有 Host 观察到的修改、验收进度和 RunStore 恢复事实。
+
+本切片冻结以下验收：
+
+- 只从已排序的 canonical `StoredRuntimeEvent` 派生 root phase、变更、验证、Agent 数、
+  frozen permission 和恢复事实；replay 与 live 必须一致；
+- 根任务 heading、状态、变更、验证、Agent、权限和 RunStore 构成一条可见闭环；
+- 普通 root tool edit 只能显示“已确认变更”，不得虚构文件数；Writer 文件只有
+  `AgentIntegrationCommitted` 后才计入根工作区；
+- 完成拒绝后后续 model/tool 活动保持“返工中”；child `RunCreated` 不得覆盖 root；
+- 宽终端默认右侧 rail，窄终端沿用响应式 Top fallback；transcript 仍是主表面；
+- English/`zh-Hans` catalog 与真实 PTY 都必须覆盖终态状态栏。
+
+### 24.2 Cutover、删除与边界
+
+新增的 `CanonicalRunPresentation` 是无 I/O、无持久化、可重放的只读 reducer。现有
+`CanonicalRunProjection` 仍拥有 event ordering/replay identity，presenter 仍只写
+transcript/tool cells；WorkSurface 和 phase strip 读取同一 presentation，不建立第二
+Runtime、Store、task plan 或 terminal truth。
+
+旧 `App.runtime_turn_status`、presenter 中的自由字符串写入、terminal 字符串 mapper 和
+以 `"in_progress"` 猜 root transcript 所有权的分支已物理删除。root ownership 现在按
+canonical `RunId` 判断。
+
+本切片没有修改 RuntimeEvent、Run API、State schema、DeepSeek prompt/model/tool
+行为或 permission protocol。权限仍只有现有 `Ask/AutoApprove` canonical 控制；Codex
+式可配置审批档位属于后续独立协议切片，不能伪装成当前 UI 选项。
+
+### 24.3 验证与非结论
+
+纯 reducer 覆盖 root completion、child isolation、rework continuity 和 Writer
+integration；WorkSurface 覆盖闭环 rows、侧栏与窄屏 fallback。真实中文宽屏和英文窄屏
+PTY 均通过 loopback official ChatCompletions、canonical Terminal 与 SQLite truth，并
+在最终 frame 观察到 localized root status 与 RunStore recovery。public repository、
+focused、fmt、strict workspace Clippy、完整 workspace test 与 `git diff --check` 全部
+通过；一个旧 release QA 先因仍期待通用“工作中”而失败，更新为 exact canonical
+“思考中”契约后定向与完整 workspace 重跑均通过。
+
+该结果只支持界面可读性、canonical replay 一致性和旧状态债删除，不证明 DeepSeek
+verified success、Token、cache、费用或 wall-time 提升。Key、official API、external
+network、GitHub、push、tag/release 均为 0。

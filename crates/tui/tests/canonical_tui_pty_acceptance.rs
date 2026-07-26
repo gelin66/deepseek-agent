@@ -139,6 +139,14 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
     tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    tui.wait_for(
+        |frame| {
+            frame.contains("状态 · 完成")
+                && frame.contains("验证 · 1/1 通过")
+                && frame.contains("RunStore · 可恢复")
+        },
+        RUN_TIMEOUT,
+    )?;
 
     tui.send(b"\x04")?; // Ctrl+D exits only after the canonical Terminal event.
     assert_eq!(
@@ -209,6 +217,10 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
     tui.wait_for(|frame| frame.contains("✓ done"), RUN_TIMEOUT)?;
+    tui.wait_for(
+        |frame| frame.contains("Status · done") && frame.contains("RunStore · recoverable"),
+        RUN_TIMEOUT,
+    )?;
 
     tui.send(b"\x04")?;
     assert_eq!(

@@ -30,6 +30,7 @@ pub mod output_rows_cache;
 pub mod pager;
 pub mod phase_strip;
 pub mod run_client;
+pub mod run_presentation;
 pub mod run_presenter;
 pub mod run_projection;
 pub mod scrolling;

@@ -65,6 +65,65 @@ mod tests {
         );
     }
 
+    fn start_root(app: &mut App) {
+        use dse_protocol::{
+            agent_runtime::{
+                RunId, RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
+            },
+            task::{TaskContract, TaskDefinition, TaskGenerationId},
+        };
+
+        let request = RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from("root-run"),
+                definition: TaskDefinition::host("修复解析器\n并运行测试"),
+            },
+            "system",
+        );
+        app.run_presentation.apply(&StoredRuntimeEvent {
+            schema_version: 25,
+            run_id: RunId::from("root-run"),
+            parent_run_id: None,
+            event_id: RuntimeEventId("event-1".to_owned()),
+            sequence: 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::RunCreated {
+                request: Box::new(request),
+            },
+        });
+    }
+
+    #[test]
+    fn root_surface_closes_task_change_verification_and_recovery_loop() {
+        let mut app = app();
+        start_root(&mut app);
+        let backend = TestBackend::new(100, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &mut app))
+            .expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        for fact in [
+            "任务 · 修复解析器 并运行测试",
+            "状态 · 思考中",
+            "变更 · 尚未确认",
+            "验证 · 未开始",
+            "Agent · 0/0",
+            "权限 · 需要审批",
+            "RunStore · 可恢复",
+        ] {
+            assert!(text.contains(fact), "missing {fact:?}: {text}");
+        }
+        assert_eq!(
+            app.work_surface
+                .latest_rows
+                .iter()
+                .filter(|row| row.id.starts_with("task:"))
+                .count(),
+            6
+        );
+    }
+
     #[test]
     fn compact_surface_preserves_child_without_fake_controls() {
         let mut app = app();
@@ -123,7 +182,7 @@ mod tests {
         let second = buffer_text(terminal.backend().buffer());
 
         assert_eq!(first, second);
-        assert_eq!(app.work_surface.latest_rows.len(), 7);
+        assert_eq!(app.work_surface.latest_rows.len(), 6);
         assert!(
             !first.contains('┃'),
             "read-only view must not show a fake thumb"

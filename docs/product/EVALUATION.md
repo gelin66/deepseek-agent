@@ -3300,6 +3300,36 @@ cache、费用、wall-time 或 verified-success 结论，也不授权按超大�
 继续重构。完整证据见
 [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
 
+### M26 canonical Run legibility projection
+
+M26 是 credential-free TUI presentation cutover，不是模型或 Runtime treatment。旧基线
+只有 child-Agent WorkSurface 和一个 TUI 私有字符串 turn status；它不能在稳定区域闭合
+task、activity、workspace change、Host verification、terminal 与 recovery。
+
+候选只读取 canonical `StoredRuntimeEvent`，离线断言：
+
+```text
+root phase / terminal projection                 pass
+child Run cannot replace root                    pass
+completion rejection keeps rework phase          pass
+Writer files count only after root integration   pass
+localized root WorkSurface loop                  pass
+wide right rail / narrow Top fallback            pass
+Chinese wide real PTY + SQLite truth             pass
+English narrow real PTY + SQLite truth           pass
+```
+
+旧 `runtime_turn_status` 和对应 string mapper 已删除；live/replay presenter test 直接比较
+同一 `CanonicalRunPresentation`。普通 root edit 没有 canonical filename receipt 时只显示
+confirmed change，不推断文件数。permission row 只投影冻结的现有
+`RunEnvironment.auto_approve`，没有新增权限模式。
+
+决定为 `keep_canonical_run_legibility_projection`。production RuntimeEvent/Run API/State、
+model、prompt、tools 和 accounting delta 为 0；Key、official API、external network 为
+0。focused、fmt、strict workspace Clippy、完整 workspace test、public-repository 和
+diff check 全部通过。该切片不建立 verified-success、Token、cache、cost 或 wall-time
+结论。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

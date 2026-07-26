@@ -264,11 +264,10 @@ async fn underwater_footer_moves_from_working_through_one_shot_completion() -> R
     enter_launch_session(&mut tui)?;
 
     type_and_submit(&mut tui, "show the underwater phase transition")?;
-    // TUI-DOG-008: live phases (working/finishing/done) render on the phase
-    // strip ABOVE the composer, so the bottom row is no longer the phase
-    // owner. Assert the phase words anywhere in the frame — the mock reply
-    // ("local phase proof") and the prompt contain none of them.
-    tui.wait_for(|frame| frame.contains("工作中"), INTERACTION_TIMEOUT)?;
+    // Live canonical phases render on the strip ABOVE the composer. This
+    // response has no tools, so its exact pre-terminal phase is Thinking.
+    // The mock reply and prompt contain none of these phase words.
+    tui.wait_for(|frame| frame.contains("思考中"), INTERACTION_TIMEOUT)?;
     tui.wait_for(
         |frame| frame.contains("收尾中") || frame.contains("✓ 完成"),
         INTERACTION_TIMEOUT,
