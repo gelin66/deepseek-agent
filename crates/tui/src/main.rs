@@ -2805,7 +2805,7 @@ fn print_doctor_setup_report(
                 .replace("{issues}", &issues)
                 .replace(
                     "{repair}",
-                    consistency["repair"].as_str().unwrap_or("/setup")
+                    consistency["repair"].as_str().unwrap_or("dse doctor")
                 ),
         );
     }
@@ -2884,7 +2884,7 @@ fn doctor_setup_consistency(state: &dse_config::SetupState, source: &str) -> ser
     json!({
         "status": if issues.is_empty() { "consistent" } else { "inconsistent" },
         "issues": issues,
-        "repair": "/constitution to rebuild standing law, /setup to re-run the checkpoint",
+        "repair": "inspect ~/.dse configuration and rerun dse doctor",
     })
 }
 
@@ -3019,7 +3019,7 @@ fn doctor_provider_model_report_json(config: &Config) -> serde_json::Value {
         "health": {
             "live_validation": false,
             "next_action": if auth_present_or_local {
-                "/model"
+                "dse auth status"
             } else {
                 "dse auth set"
             },
@@ -3085,13 +3085,9 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "task_graph": doctor_task_graph_report_json(config),
         "consistency": doctor_setup_consistency(&state, source),
         "next_actions": {
-            "constitution": "/constitution",
-            "setup_report": "/setup report",
-            "provider_model": "dse auth status/set, or /model",
-            "runtime_posture": "~/.dse/config.toml",
-            "task_graph": "使用 canonical agent 能力；通过 dse runs/resume 查看或恢复运行",
-            "tools_mcp": "/setup tools",
-            "persistence": "/setup persistence",
+            "authentication": "dse auth status/set",
+            "configuration": "~/.dse/config.toml",
+            "runs": "dse runs; dse resume <run-id>",
         },
         "steps": steps,
     })

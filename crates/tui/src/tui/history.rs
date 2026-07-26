@@ -20,8 +20,8 @@ mod tool_run;
 
 use archived_context::render_archived_context;
 use constants::{
-    ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_DONE_SYMBOL, TOOL_FAILED_SYMBOL,
-    TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL, USER_GLYPH,
+    ASSISTANT_GLYPH, TOOL_DONE_SYMBOL, TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT,
+    TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL, USER_GLYPH,
 };
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, message_body_style, render_message,
@@ -94,8 +94,6 @@ pub enum HistoryCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
-    pub show_tool_details: bool,
-    pub calm_mode: bool,
     pub low_motion: bool,
 }
 
@@ -103,8 +101,6 @@ impl Default for TranscriptRenderOptions {
     fn default() -> Self {
         Self {
             show_thinking: true,
-            show_tool_details: true,
-            calm_mode: false,
             low_motion: false,
         }
     }
@@ -165,21 +161,10 @@ impl HistoryCell {
             HistoryCell::Thinking { content, streaming } => {
                 render_thinking(content, width, *streaming, options.low_motion)
             }
-            HistoryCell::Tool(cell) if !options.show_tool_details && !cell.is_failed() => {
+            HistoryCell::Tool(cell) if !cell.is_failed() => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > 2 {
                     lines.truncate(2);
-                    lines.push(summary_notice_line(
-                        &tr(MessageId::HistoryMoreOutputCollapsed),
-                        Style::default().fg(palette::TEXT_MUTED).italic(),
-                    ));
-                }
-                lines
-            }
-            HistoryCell::Tool(cell) if options.calm_mode && !cell.is_failed() => {
-                let mut lines = cell.lines_with_motion(width, options.low_motion);
-                if lines.len() > TOOL_CARD_SUMMARY_LINES {
-                    lines.truncate(TOOL_CARD_SUMMARY_LINES);
                     lines.push(summary_notice_line(
                         &tr(MessageId::HistoryMoreOutputCollapsed),
                         Style::default().fg(palette::TEXT_MUTED).italic(),

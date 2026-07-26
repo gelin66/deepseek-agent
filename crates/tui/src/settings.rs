@@ -7,16 +7,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::Deserialize;
 
-use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
-
 /// User settings with defaults
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Reduce status noise and collapse details more aggressively
-    pub calm_mode: bool,
-    /// Dense tool-run collapse mode: compact, expanded, or calm.
-    pub tool_collapse_mode: String,
     /// Reduce decorative motion. This must never synthesize model text speed;
     /// streaming follows upstream deltas in both modes.
     pub low_motion: bool,
@@ -36,16 +30,6 @@ pub struct Settings {
     pub mention_menu_behavior: String,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
-    /// Show detailed tool output
-    pub show_tool_details: bool,
-    /// Named UI theme. Accepts `"system"` (follow terminal background),
-    /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
-    /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
-    /// `"gruvbox-dark"`. The `background_color` setting still overrides the
-    /// surface color on top of the resolved theme.
-    pub theme: String,
-    /// Optional main TUI background color as a 6-digit hex RGB value.
-    pub background_color: Option<String>,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,
     /// Default reasoning effort selected from the TUI model picker.
@@ -97,9 +81,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            // #4095: default presentation is compact/calm; verbose detail is opt-in.
-            calm_mode: true,
-            tool_collapse_mode: "compact".to_string(),
             low_motion: false,
             bracketed_paste: true,
             mention_menu_limit: 128,
@@ -108,9 +89,6 @@ impl Default for Settings {
             // Reasoning is useful when explicitly requested, but it should
             // never displace the actual conversation in the default TUI.
             show_thinking: false,
-            show_tool_details: false,
-            theme: "system".to_string(),
-            background_color: None,
             cost_currency: "usd".to_string(),
             reasoning_effort: None,
             synchronized_output: "auto".to_string(),
@@ -131,8 +109,8 @@ impl Settings {
 
     /// Get the canonical settings file path.
     ///
-    /// New writes should target `~/.dse/settings.toml`. Legacy
-    /// DeepSeek-branded paths remain readable as fallbacks during load.
+    /// Settings use only the active DSE path (`~/.dse/settings.toml`, unless
+    /// an explicit DSE config/home override selects another owner).
     pub fn path() -> Result<PathBuf> {
         dse_config::settings_path()
     }
@@ -152,13 +130,8 @@ impl Settings {
         let settings = match source.deserialize::<Settings>() {
             Ok(None) => Self::default(),
             Ok(Some(mut s)) => {
-                s.tool_collapse_mode =
-                    normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
                 s.synchronized_output =
                     normalize_synchronized_output(&s.synchronized_output).to_string();
-                s.background_color =
-                    normalize_optional_background_color(s.background_color.as_deref());
-                s.theme = normalize_settings_theme(&s.theme).to_string();
                 s.reasoning_effort = s
                     .reasoning_effort
                     .as_deref()
@@ -283,15 +256,6 @@ fn normalize_reasoning_effort_setting(value: &str) -> Result<Option<String>> {
     Ok(Some(normalized.to_string()))
 }
 
-fn normalize_tool_collapse_mode(value: &str) -> &str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "compact" | "collapsed" | "collapse" | "default" | "on" | "true" => "compact",
-        "expanded" | "expand" | "off" | "none" | "false" => "expanded",
-        "calm" | "calm_mode" | "calm-mode" | "calm_only" | "calm-only" => "calm",
-        _ => value,
-    }
-}
-
 /// Normalize the `synchronized_output` setting. Accepts the canonical
 /// `"auto"` / `"on"` / `"off"` plus the usual truthy/falsey spellings.
 /// Unknown values fall through unchanged so the parser in `set` can
@@ -303,10 +267,6 @@ fn normalize_synchronized_output(value: &str) -> &str {
         "off" | "false" | "no" | "0" | "disabled" => "off",
         _ => value,
     }
-}
-
-fn normalize_settings_theme(value: &str) -> &'static str {
-    normalize_theme_name(value).unwrap_or("system")
 }
 
 /// Returns `true` when the active terminal is Ptyxis (the new default
@@ -360,28 +320,6 @@ fn legacy_windows_console_host_env(markers: [Option<&std::ffi::OsStr>; 8]) -> bo
     markers.into_iter().all(|value| !has_value(value))
 }
 
-fn normalize_optional_background_color(value: Option<&str>) -> Option<String> {
-    value.and_then(|raw| normalize_background_color_setting(raw).ok().flatten())
-}
-
-fn normalize_background_color_setting(value: &str) -> Result<Option<String>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty()
-        || matches!(
-            trimmed.to_ascii_lowercase().as_str(),
-            "default" | "none" | "reset" | "off"
-        )
-    {
-        return Ok(None);
-    }
-
-    normalize_hex_rgb_color(trimmed).map(Some).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Failed to update setting: invalid background_color '{value}'. Expected #RRGGBB, RRGGBB, or default."
-        )
-    })
-}
-
 /// Resolve an environment variable as a boolean. Recognises the
 /// common truthy spellings (`1`, `true`, `yes`, `on`) case-
 /// insensitively. Used by [`Settings::apply_env_overrides`] for
@@ -403,20 +341,15 @@ mod tests {
     /// Explicit ordinary-terminal baseline for env-force tests.
     fn ordinary_settings() -> Settings {
         Settings {
-            calm_mode: false,
             low_motion: false,
-            show_tool_details: true,
             ..Settings::default()
         }
     }
 
     #[test]
-    fn default_settings_keep_the_transcript_quiet() {
+    fn default_settings_keep_reasoning_opt_in() {
         let settings = Settings::default();
-        assert!(settings.calm_mode);
-        assert!(!settings.show_tool_details);
         assert!(!settings.low_motion);
-        assert_eq!(settings.tool_collapse_mode, "compact");
         // Thinking is opt-in so the transcript stays focused on the chat.
         assert!(!settings.show_thinking);
     }
@@ -1025,21 +958,14 @@ mod tests {
         let explicit_home = tmp.path().join("isolated-dse");
         let legacy_dir = tmp.path().join(".deepseek");
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
-        std::fs::write(
-            legacy_dir.join("settings.toml"),
-            "theme = \"dracula\"\nlow_motion = true\n",
-        )
-        .expect("legacy settings");
+        std::fs::write(legacy_dir.join("settings.toml"), "low_motion = true\n")
+            .expect("legacy settings");
         let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
         let _dse_home = EnvVarRestore::set("DSE_HOME", &explicit_home);
         let _home = EnvVarRestore::set("HOME", tmp.path());
 
         let loaded = Settings::load().expect("load settings");
 
-        assert_eq!(
-            loaded.theme, "system",
-            "explicit DSE_HOME must not inherit ambient legacy settings"
-        );
         assert!(
             !loaded.low_motion,
             "explicit DSE_HOME must not inherit ambient legacy settings"

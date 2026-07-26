@@ -8,6 +8,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::palette;
 use crate::tui::app::App;
 use crate::tui::ui_text::truncate_line_to_width;
 use dse_localization::MessageId;
@@ -130,7 +131,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     Block::default()
-        .style(Style::default().bg(app.ui_theme.surface_bg))
+        .style(Style::default().bg(palette::DSE_BG))
         .render(area, frame.buffer_mut());
 
     let lines = rows
@@ -158,27 +159,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
                 .max(1);
             let label = truncate_line_to_width(&row.label, label_width);
-            Line::from(Span::styled(
-                format!("{prefix}{label}"),
-                row_style(app, row),
-            ))
+            Line::from(Span::styled(format!("{prefix}{label}"), row_style(row)))
         })
         .collect::<Vec<_>>();
 
     Paragraph::new(lines).render(content_area, frame.buffer_mut());
-    render_divider(frame, area, layout, app);
+    render_divider(frame, area, layout);
 }
 
-fn row_style(app: &App, row: &WorkRow) -> Style {
+fn row_style(row: &WorkRow) -> Style {
     let fg = match row.tone {
-        WorkTone::Heading => app.ui_theme.accent_primary,
-        WorkTone::Active => app.ui_theme.status_working,
-        WorkTone::Attention => app.ui_theme.error_fg,
-        WorkTone::Success => app.ui_theme.success,
-        WorkTone::Muted => app.ui_theme.text_muted,
-        WorkTone::Worker => app.ui_theme.info,
+        WorkTone::Heading => palette::DSE_ACCENT_PRIMARY,
+        WorkTone::Active => palette::DSE_INFO,
+        WorkTone::Attention => palette::STATUS_ERROR,
+        WorkTone::Success => palette::STATUS_SUCCESS,
+        WorkTone::Muted => palette::TEXT_MUTED,
+        WorkTone::Worker => palette::DSE_INFO,
     };
-    let style = Style::default().fg(fg).bg(app.ui_theme.surface_bg);
+    let style = Style::default().fg(fg).bg(palette::DSE_BG);
     if row.tone == WorkTone::Heading {
         style.add_modifier(Modifier::BOLD)
     } else {
@@ -186,15 +184,15 @@ fn row_style(app: &App, row: &WorkRow) -> Style {
     }
 }
 
-fn render_divider(frame: &mut Frame, area: Rect, layout: WorkSurfaceLayout, app: &App) {
+fn render_divider(frame: &mut Frame, area: Rect, layout: WorkSurfaceLayout) {
     match layout {
         WorkSurfaceLayout::TopStrip => {
             let y = area.bottom().saturating_sub(1);
             for x in area.left()..area.right() {
                 frame.buffer_mut()[(x, y)]
                     .set_symbol("─")
-                    .set_fg(app.ui_theme.border)
-                    .set_bg(app.ui_theme.surface_bg);
+                    .set_fg(palette::BORDER_COLOR)
+                    .set_bg(palette::DSE_BG);
             }
         }
         WorkSurfaceLayout::RightRail => {
@@ -202,8 +200,8 @@ fn render_divider(frame: &mut Frame, area: Rect, layout: WorkSurfaceLayout, app:
             for y in area.top()..area.bottom() {
                 frame.buffer_mut()[(x, y)]
                     .set_symbol("│")
-                    .set_fg(app.ui_theme.border)
-                    .set_bg(app.ui_theme.surface_bg);
+                    .set_fg(palette::BORDER_COLOR)
+                    .set_bg(palette::DSE_BG);
             }
         }
     }

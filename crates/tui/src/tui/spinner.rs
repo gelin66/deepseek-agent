@@ -9,8 +9,8 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// Braille bubble frames used for running tools and background jobs. Dots fill
-/// upward, then release. Eight distinct states at roughly five hertz stay
+/// Braille activity frames used for running tools and background jobs. Dots
+/// fill upward, then release. Eight distinct states at roughly five hertz stay
 /// readable in peripheral vision without becoming a high-frequency spinner.
 pub(crate) const BRAILLE_SPINNER_FRAMES: [&str; 8] = ["⠀", "⢀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣿"];
 pub(crate) const VERIFY_TICK_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];

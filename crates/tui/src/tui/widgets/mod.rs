@@ -28,6 +28,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const COMPOSER_PANEL_HEIGHT: u16 = 2;
 const JUMP_TO_LATEST_BUTTON_WIDTH: u16 = 3;
 const JUMP_TO_LATEST_BUTTON_HEIGHT: u16 = 3;
+const TOOL_RUN_COLLAPSE_THRESHOLD: usize = 3;
 
 pub struct ChatWidget {
     content_area: Rect,
@@ -52,17 +53,18 @@ struct TranscriptScrollbar {
 impl ChatWidget {
     pub fn new(app: &mut App, area: Rect) -> Self {
         let content_area = area;
-        let background = app.ui_theme.surface_bg;
+        let background = palette::DSE_BG;
         let render_empty_state = should_render_empty_state(app);
-        let scroll_track = app.ui_theme.border;
-        let scroll_thumb = app.ui_theme.status_working;
-        let jump_border = app.ui_theme.border;
-        let jump_arrow = app.ui_theme.status_working;
+        let scroll_track = palette::BORDER_COLOR;
+        let scroll_thumb = palette::DSE_INFO;
+        let jump_border = palette::BORDER_COLOR;
+        let jump_arrow = palette::DSE_INFO;
         let visible_lines = content_area.height as usize;
         let render_options = app.transcript_render_options();
 
         if render_empty_state {
             let lines = build_empty_state_lines(app, content_area);
+            app.tool_run_hitboxes.clear();
             app.viewport.last_transcript_area = Some(content_area);
             app.viewport.last_transcript_top = 0;
             app.viewport.last_transcript_visible = visible_lines;
@@ -95,12 +97,13 @@ impl ChatWidget {
         app.resync_history_revisions();
 
         let history_len = app.history.len();
-        let tool_runs = if app.tool_collapse_active() {
-            crate::tui::history::detect_tool_runs(&app.history, app.tool_collapse_threshold)
-        } else {
-            Vec::new()
-        };
-        let collapsed_run_starts: HashSet<usize> = tool_runs.iter().map(|run| run.start).collect();
+        let tool_runs =
+            crate::tui::history::detect_tool_runs(&app.history, TOOL_RUN_COLLAPSE_THRESHOLD);
+        let collapsed_run_starts: HashSet<usize> = tool_runs
+            .iter()
+            .map(|run| run.start)
+            .filter(|start| !app.expanded_tool_runs.contains(start))
+            .collect();
         let mut collapsed_tool_indices: HashSet<usize> = HashSet::new();
         for run in &tool_runs {
             if !collapsed_run_starts.contains(&run.start) {
@@ -110,7 +113,7 @@ impl ChatWidget {
                 collapsed_tool_indices.insert(run.start + offset);
             }
         }
-        let has_collapsed = !app.collapsed_cells.is_empty() || !collapsed_run_starts.is_empty();
+        let has_collapsed = !collapsed_run_starts.is_empty();
 
         // Fast path: no collapsed cells — use committed history directly.
         if !has_collapsed {
@@ -149,9 +152,6 @@ impl ChatWidget {
             let mut filtered_to_original: Vec<usize> = Vec::with_capacity(history_len);
 
             for (idx, cell) in app.history.iter().enumerate() {
-                if app.collapsed_cells.contains(&idx) {
-                    continue;
-                }
                 if collapsed_tool_indices.contains(&idx) {
                     continue;
                 }
@@ -230,6 +230,34 @@ impl ChatWidget {
         app.viewport.last_transcript_visible = visible_lines;
         app.viewport.last_transcript_total = total_lines;
         let end = (top + visible_lines).min(total_lines);
+        app.tool_run_hitboxes = line_meta[top..end]
+            .iter()
+            .enumerate()
+            .filter_map(|(visible_row, meta)| {
+                let crate::tui::scrolling::TranscriptLineMeta::CellLine {
+                    cell_index,
+                    line_in_cell,
+                } = meta
+                else {
+                    return None;
+                };
+                if *line_in_cell != 0 {
+                    return None;
+                }
+                let original = app.collapsed_cell_map.get(*cell_index).copied()?;
+                collapsed_run_starts.contains(&original).then_some((
+                    Rect::new(
+                        content_area.x,
+                        content_area
+                            .y
+                            .saturating_add(u16::try_from(visible_row).unwrap_or(u16::MAX)),
+                        content_area.width,
+                        1,
+                    ),
+                    original,
+                ))
+            })
+            .collect();
         let lines = if total_lines == 0 {
             vec![Line::from("")]
         } else {
@@ -555,7 +583,7 @@ impl<'a> ComposerWidget<'a> {
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let background = Style::default().bg(self.app.ui_theme.composer_bg);
+        let background = Style::default().bg(palette::COMPOSER_BG);
         let has_panel = self.has_panel(area);
         let inner_area = self.inner_area(area);
         let input_text = &self.app.input;
@@ -586,12 +614,12 @@ impl Renderable for ComposerWidget<'_> {
             let border_color = if input_text.trim().is_empty() {
                 palette::BORDER_COLOR
             } else {
-                self.app.ui_theme.accent_primary
+                palette::DSE_ACCENT_PRIMARY
             };
             let hint_line = if !self.slash_menu_entries.is_empty() {
                 Some(Line::from(Span::styled(
                     self.app.tr(MessageId::ComposerSlashMenuHint),
-                    Style::default().fg(self.app.ui_theme.text_hint),
+                    Style::default().fg(palette::TEXT_HINT),
                 )))
             } else {
                 None
@@ -614,7 +642,7 @@ impl Renderable for ComposerWidget<'_> {
         } else if area.height >= 2 {
             let block = Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(self.app.ui_theme.border))
+                .border_style(Style::default().fg(palette::BORDER_COLOR))
                 .style(background);
             block.render(area, buf);
         } else {
@@ -874,7 +902,7 @@ impl Renderable for ComposerWidget<'_> {
             debug_assert!(cursor_x >= content_geometry.text_area.x);
             buf[(prompt_x, cursor_y)]
                 .set_symbol("❯")
-                .set_style(Style::default().fg(self.app.ui_theme.accent_primary));
+                .set_style(Style::default().fg(palette::DSE_ACCENT_PRIMARY));
         }
     }
 
@@ -1883,11 +1911,12 @@ mod tests {
     };
     use crate::config::Config;
     use crate::palette;
-    use crate::tui::app::{App, ToolCollapseMode, TuiOptions};
+    use crate::tui::app::{App, TuiOptions};
     use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use crate::tui::scrolling::TranscriptScroll;
     use ratatui::{buffer::Buffer, layout::Rect, style::Color};
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use unicode_width::UnicodeWidthStr;
 
@@ -1973,8 +2002,6 @@ mod tests {
     #[test]
     fn chat_widget_collapses_dense_tool_runs_by_default() {
         let mut app = create_test_app();
-        app.tool_collapse_mode = ToolCollapseMode::Compact;
-        app.tool_collapse_threshold = 3;
         add_dense_tool_run(&mut app);
 
         let area = Rect {
@@ -2001,11 +2028,10 @@ mod tests {
     }
 
     #[test]
-    fn chat_widget_expanded_mode_leaves_dense_tool_runs_visible() {
+    fn chat_widget_process_local_expansion_leaves_dense_tool_runs_visible() {
         let mut app = create_test_app();
-        app.tool_collapse_mode = ToolCollapseMode::Expanded;
-        app.tool_collapse_threshold = 3;
         add_dense_tool_run(&mut app);
+        app.expanded_tool_runs.insert(0);
 
         let area = Rect {
             x: 0,
@@ -2019,10 +2045,31 @@ mod tests {
     }
 
     #[test]
+    fn compact_tool_run_keyboard_and_mouse_expand_the_same_process_local_row() {
+        let area = Rect::new(0, 0, 80, 12);
+
+        let mut keyboard = create_test_app();
+        add_dense_tool_run(&mut keyboard);
+        ChatWidget::new(&mut keyboard, area);
+        assert!(keyboard.expand_latest_tool_run());
+
+        let mut mouse = create_test_app();
+        add_dense_tool_run(&mut mouse);
+        ChatWidget::new(&mut mouse, area);
+        let (hitbox, _) = mouse
+            .tool_run_hitboxes
+            .first()
+            .copied()
+            .expect("compact summary hitbox");
+        assert!(mouse.expand_tool_run_at(hitbox.x, hitbox.y));
+
+        assert_eq!(keyboard.expanded_tool_runs, mouse.expanded_tool_runs);
+        assert_eq!(keyboard.expanded_tool_runs, HashSet::from([0]));
+    }
+
+    #[test]
     fn chat_widget_collapse_path_stable_across_frames() {
         let mut app = create_test_app();
-        app.tool_collapse_mode = ToolCollapseMode::Compact;
-        app.tool_collapse_threshold = 3;
         add_dense_tool_run(&mut app);
         app.add_message(HistoryCell::User {
             content: "trailing prompt".to_string(),
@@ -2614,7 +2661,7 @@ mod tests {
         app.model = "deepseek-v4-pro".to_string();
 
         let area = Rect::new(0, 0, 100, 20);
-        let base = app.ui_theme.surface_bg;
+        let base = palette::DSE_BG;
         let mut buf = Buffer::empty(area);
         ChatWidget::new(&mut app, area).render(area, &mut buf);
 
@@ -2662,7 +2709,6 @@ mod tests {
     #[test]
     fn terminal_owned_background_remains_unpainted_and_still() {
         let mut app = create_test_app();
-        app.ui_theme = crate::palette::TERMINAL_UI_THEME;
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);
         ChatWidget::new(&mut app, area).render(area, &mut buf);
@@ -2956,11 +3002,11 @@ mod tests {
             match cell.symbol() {
                 "│" => {
                     saw_track = true;
-                    assert_eq!(cell.fg, palette::TERMINAL_UI_THEME.border);
+                    assert_eq!(cell.fg, palette::BORDER_COLOR);
                 }
                 "┃" => {
                     saw_thumb = true;
-                    assert_eq!(cell.fg, palette::TERMINAL_UI_THEME.status_working);
+                    assert_eq!(cell.fg, palette::DSE_INFO);
                 }
                 _ => {}
             }
@@ -2972,10 +3018,7 @@ mod tests {
             .viewport
             .jump_to_latest_button_area
             .expect("button appears when transcript is not at tail");
-        assert_eq!(
-            buf[(button.x + 1, button.y + 1)].fg,
-            palette::TERMINAL_UI_THEME.status_working
-        );
+        assert_eq!(buf[(button.x + 1, button.y + 1)].fg, palette::DSE_INFO);
     }
 
     #[test]

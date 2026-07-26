@@ -16,7 +16,7 @@ use ratatui::{
     layout::{Position, Size},
 };
 
-use crate::palette::{self, ColorDepth, ThemeId, UiTheme};
+use crate::palette::{self, ColorDepth};
 
 const RENDER_DEBUG_ENV: &str = "DSE_TUI_DEBUG";
 const ASCII_SAFE_ENV: &str = "DSE_ASCII_SAFE";
@@ -26,11 +26,6 @@ const RENDER_DEBUG_SAMPLE_LIMIT: usize = 24;
 pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
-    /// Fixed native surface identity.
-    theme_id: ThemeId,
-    /// Fixed terminal-native roles used while the last direct palette readers
-    /// are migrated.
-    active_ui_theme: UiTheme,
     render_debug: Option<RenderDebugLog>,
     ascii_safe: bool,
 }
@@ -40,16 +35,9 @@ impl<W: Write> ColorCompatBackend<W> {
         Self {
             inner: CrosstermBackend::new(writer),
             depth,
-            theme_id: ThemeId::Terminal,
-            active_ui_theme: palette::TERMINAL_UI_THEME,
             render_debug: RenderDebugLog::from_env(),
             ascii_safe: env_flag_enabled(std::env::var(ASCII_SAFE_ENV).ok().as_deref()),
         }
-    }
-
-    pub(crate) fn set_theme(&mut self, theme_id: ThemeId, ui_theme: UiTheme) {
-        self.theme_id = theme_id;
-        self.active_ui_theme = ui_theme;
     }
 }
 
@@ -73,7 +61,7 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         let adapted = content
             .map(|(x, y, cell)| {
                 let mut cell = cell.clone();
-                adapt_cell_colors(&mut cell, self.depth, self.theme_id, &self.active_ui_theme);
+                adapt_cell_colors(&mut cell, self.depth);
                 if self.ascii_safe {
                     adapt_cell_symbol_for_ascii(&mut cell);
                 }
@@ -238,7 +226,7 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
 /// letters, user and model content outside those decorative classes —
 /// passes through untouched.
 pub(crate) fn adapt_cell_symbol_for_ascii(cell: &mut Cell) {
-    // Braille (U+2800–U+28FF): the working bubble fills from the bottom and
+    // Braille (U+2800–U+28FF): the working marker fills from the bottom and
     // the verifying tick walks a ring. Map by dot density so the clock still
     // reads as a rising fill in ASCII instead of collapsing to one glyph.
     let mut chars = cell.symbol().chars();
@@ -325,11 +313,7 @@ fn render_debug_line(
     line
 }
 
-fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth, theme_id: ThemeId, ui_theme: &UiTheme) {
-    // Stage 1: direct legacy palette → fixed terminal-native roles.
-    cell.fg = palette::adapt_fg_for_theme(cell.fg, theme_id, ui_theme);
-    cell.bg = palette::adapt_bg_for_theme(cell.bg, theme_id, ui_theme);
-    // Stage 2: depth (truecolor / 256 / 16) downsampling.
+fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth) {
     cell.fg = palette::adapt_color(cell.fg, depth);
     cell.bg = palette::adapt_bg(cell.bg, depth);
 }
@@ -390,12 +374,7 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(
-            &mut cell,
-            ColorDepth::Ansi256,
-            ThemeId::Terminal,
-            &palette::TERMINAL_UI_THEME,
-        );
+        adapt_cell_colors(&mut cell, ColorDepth::Ansi256);
 
         assert!(matches!(cell.fg, Color::Indexed(_)));
         assert!(matches!(cell.bg, Color::Indexed(_)));
@@ -407,12 +386,7 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(
-            &mut cell,
-            ColorDepth::TrueColor,
-            ThemeId::Terminal,
-            &palette::TERMINAL_UI_THEME,
-        );
+        adapt_cell_colors(&mut cell, ColorDepth::TrueColor);
 
         assert_eq!(cell.fg, Color::Rgb(53, 120, 229));
         assert_eq!(cell.bg, Color::Rgb(11, 21, 38));
@@ -455,17 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn native_tokens_replace_direct_legacy_surface_colors() {
+    fn native_tokens_are_already_terminal_owned() {
         let mut cell = Cell::default();
         cell.set_bg(palette::DSE_BG);
         cell.set_fg(palette::DSE_INFO);
 
-        adapt_cell_colors(
-            &mut cell,
-            ColorDepth::TrueColor,
-            ThemeId::Terminal,
-            &palette::TERMINAL_UI_THEME,
-        );
+        adapt_cell_colors(&mut cell, ColorDepth::TrueColor);
 
         assert_eq!(cell.bg, Color::Reset);
         assert_eq!(cell.fg, Color::Cyan);

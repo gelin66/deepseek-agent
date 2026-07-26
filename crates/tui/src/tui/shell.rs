@@ -17,6 +17,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::palette;
 use crate::tui::{app::App, run_presentation::RunPresentationPhase, views::ModalKind};
 use dse_localization::{MessageId, tr};
 use dse_protocol::agent_runtime::RunPermissionMode;
@@ -112,14 +113,14 @@ impl ShellPhase {
     }
 
     #[must_use]
-    pub fn color(self, app: &App) -> Color {
+    pub fn color(self) -> Color {
         match self {
-            Self::Idle => app.ui_theme.text_muted,
-            Self::Done => app.ui_theme.success,
-            Self::Typing => app.ui_theme.accent_primary,
-            Self::Working => app.ui_theme.status_working,
-            Self::Approval => app.ui_theme.accent_action,
-            Self::Failed => app.ui_theme.error_fg,
+            Self::Idle => palette::TEXT_MUTED,
+            Self::Done => palette::STATUS_SUCCESS,
+            Self::Typing => palette::DSE_ACCENT_PRIMARY,
+            Self::Working => palette::DSE_INFO,
+            Self::Approval => palette::STATUS_WARNING,
+            Self::Failed => palette::STATUS_ERROR,
         }
     }
 }
@@ -203,7 +204,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     }
     let tier = ShellTier::for_chrome_width(area.width);
     Block::default()
-        .style(Style::default().bg(app.ui_theme.header_bg))
+        .style(Style::default().bg(palette::DSE_BG))
         .render(area, buf);
 
     let route_label = format!(
@@ -215,18 +216,15 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         Span::styled(
             "DSE",
             Style::default()
-                .fg(app.ui_theme.accent_primary)
+                .fg(palette::DSE_ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(route_label, Style::default().fg(app.ui_theme.text_muted)),
+        Span::styled(route_label, Style::default().fg(palette::TEXT_MUTED)),
     ];
     let mut permission_hitbox = None;
     if tier != ShellTier::Compact {
-        left.push(Span::styled(
-            " · ",
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
+        left.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         let permission = permission_label(app);
         let permission_x = area
             .x
@@ -237,7 +235,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         permission_hitbox = Some(Rect::new(permission_x, area.y, permission_width, 1));
         left.push(Span::styled(
             permission,
-            Style::default().fg(app.ui_theme.text_muted),
+            Style::default().fg(palette::TEXT_MUTED),
         ));
     }
 
@@ -255,7 +253,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
                 "▱".repeat(5usize.saturating_sub(filled)),
                 percent
             ),
-            Style::default().fg(app.ui_theme.info),
+            Style::default().fg(palette::DSE_INFO),
         ));
     }
     if tier == ShellTier::Wide {
@@ -264,7 +262,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         }
         right.push(Span::styled(
             format!("v{}", env!("DSE_BUILD_VERSION")),
-            Style::default().fg(app.ui_theme.text_hint),
+            Style::default().fg(palette::TEXT_HINT),
         ));
     }
 
@@ -277,13 +275,13 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             Span::styled(
                 "DSE",
                 Style::default()
-                    .fg(app.ui_theme.accent_primary)
+                    .fg(palette::DSE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled(
                 truncate_to_width(&app.model_display_label(), left_budget.saturating_sub(8)),
-                Style::default().fg(app.ui_theme.text_muted),
+                Style::default().fg(palette::TEXT_MUTED),
             ),
         ];
     }
@@ -302,7 +300,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         };
         Paragraph::new(Line::from(Span::styled(
             "─".repeat(usize::from(area.width)),
-            Style::default().fg(app.ui_theme.border),
+            Style::default().fg(palette::BORDER_COLOR),
         )))
         .render(rule_area, buf);
     }
@@ -342,7 +340,7 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let inset = " ".repeat(width.saturating_sub(context.width()) / 2);
     lines.push(Line::from(Span::styled(
         format!("{inset}{context}"),
-        Style::default().fg(app.ui_theme.text_muted),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     lines
 }
@@ -478,13 +476,9 @@ mod tests {
 
     #[test]
     fn attention_and_failure_keep_distinct_semantic_hues() {
-        let app = test_app();
-        assert_eq!(ShellPhase::Approval.color(&app), app.ui_theme.accent_action);
-        assert_eq!(ShellPhase::Failed.color(&app), app.ui_theme.error_fg);
-        assert_ne!(
-            ShellPhase::Approval.color(&app),
-            ShellPhase::Failed.color(&app)
-        );
+        assert_eq!(ShellPhase::Approval.color(), palette::STATUS_WARNING);
+        assert_eq!(ShellPhase::Failed.color(), palette::STATUS_ERROR);
+        assert_ne!(ShellPhase::Approval.color(), ShellPhase::Failed.color());
     }
 
     #[test]

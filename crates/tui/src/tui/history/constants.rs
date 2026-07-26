@@ -16,6 +16,5 @@ pub(super) const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
 /// detail rows, and affordance lines. Dimmed so it guides the eye without
 /// competing with content.
 pub(super) const TRANSCRIPT_RAIL: &str = "\u{258F} "; // ▏ + space
-pub(super) const TOOL_CARD_SUMMARY_LINES: usize = 4;
 pub(super) const TOOL_DONE_SYMBOL: &str = "✓";
 pub(super) const TOOL_FAILED_SYMBOL: &str = "✕";

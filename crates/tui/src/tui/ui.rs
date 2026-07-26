@@ -793,6 +793,12 @@ fn route_canonical_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEven
         return Vec::new();
     }
 
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        && app.expand_tool_run_at(mouse.column, mouse.row)
+    {
+        return Vec::new();
+    }
+
     match mouse.kind {
         MouseEventKind::ScrollUp => app.scroll_up(3),
         MouseEventKind::ScrollDown => app.scroll_down(3),
@@ -994,7 +1000,9 @@ async fn handle_canonical_key(
             }
         }
         KeyCode::Tab => {
-            let _ = try_autocomplete_slash_command(app);
+            if !app.input.is_empty() || !app.expand_latest_tool_run() {
+                let _ = try_autocomplete_slash_command(app);
+            }
         }
         KeyCode::Up if !slash_menu_entries.is_empty() => {
             select_previous_slash_menu_entry(app, slash_menu_entries.len());
@@ -1307,7 +1315,7 @@ fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     // Clear entire area with the configured app background.
-    let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
+    let background = Block::default().style(Style::default().bg(palette::DSE_BG));
     f.render_widget(background, size);
 
     // Show onboarding screen if needed
@@ -1411,7 +1419,7 @@ fn render(f: &mut Frame, app: &mut App) {
         // uncovered by layout splits after a resize don't retain stale content
         // from a previous frame.
         Block::default()
-            .style(Style::default().bg(app.ui_theme.surface_bg))
+            .style(Style::default().bg(palette::DSE_BG))
             .render(work_chat_area, f.buffer_mut());
 
         let chat_widget = ChatWidget::new(app, work_chat_area);
@@ -1458,7 +1466,6 @@ fn draw_app_frame_inner(
     app: &mut App,
     full_repaint: bool,
 ) -> Result<()> {
-    terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the

@@ -221,8 +221,9 @@ osc8_links = true
 These values change terminal behavior only. The interactive TUI remains a thin
 client of the canonical application/runtime/store.
 
-Accessibility-only settings such as `low_motion`, `fancy_animations`,
-`calm_mode`, and `show_thinking` live in `~/.dse/settings.toml`; see
+Compatibility and model-visibility settings such as `low_motion`,
+`synchronized_output`, `bracketed_paste`, and `show_thinking` live in
+`~/.dse/settings.toml`; see
 [ACCESSIBILITY.md](ACCESSIBILITY.md).
 
 ## Skills, instructions, and tools

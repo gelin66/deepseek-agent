@@ -9,7 +9,6 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::config::{Config, has_api_key};
-use crate::palette::{self, UiTheme};
 use crate::pricing::CostCurrency;
 use crate::settings::Settings;
 use crate::tui::child_agents::ChildAgents;
@@ -122,39 +121,6 @@ impl ReasoningEffort {
             "high" => Self::High,
             "max" | "maximum" | "xhigh" | "ultracode" => Self::Max,
             _ => Self::default(),
-        }
-    }
-}
-
-/// Controls how dense tool-call runs are collapsed in the transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolCollapseMode {
-    /// Collapse qualifying tool runs by default.
-    Compact,
-    /// Never collapse tool runs automatically.
-    Expanded,
-    /// Collapse only when calm mode is active.
-    Calm,
-}
-
-impl ToolCollapseMode {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "expanded" | "off" | "none" => Self::Expanded,
-            "calm" | "calm-mode" | "calm_only" | "calm-only" => Self::Calm,
-            // `collapsed`/`collapse` are issue #3256's preferred names for the
-            // default; treat them like the canonical `compact`.
-            _ => Self::Compact,
-        }
-    }
-
-    #[must_use]
-    pub fn is_active(self, calm_mode: bool) -> bool {
-        match self {
-            Self::Compact => true,
-            Self::Expanded => false,
-            Self::Calm => calm_mode,
         }
     }
 }
@@ -791,7 +757,6 @@ pub struct App {
     /// When `true`, symlinked directories are traversed, enabling
     /// multi-project workspaces.
     pub workspace_follow_symlinks: bool,
-    pub calm_mode: bool,
     pub low_motion: bool,
     /// Whether the renderer should wrap each frame in DEC mode 2026
     /// synchronized output. Resolved from `Settings::synchronized_output`
@@ -802,22 +767,11 @@ pub struct App {
     /// `Settings::synchronized_output` doc for the user-facing knob.
     pub synchronized_output_enabled: bool,
     pub show_thinking: bool,
-    pub show_tool_details: bool,
     pub cost_currency: CostCurrency,
-    /// Minimum number of consecutive safe tool cells needed for auto-collapse.
-    pub tool_collapse_threshold: usize,
-    /// Current dense tool-run collapse behavior.
-    pub tool_collapse_mode: ToolCollapseMode,
     pub allow_shell: bool,
     pub max_subagents: usize,
     /// Ephemeral projection of canonical root/child runtime events.
     pub child_agents: ChildAgents,
-    pub ui_theme: UiTheme,
-    /// Active named theme. Drives the cell-level color remap in
-    /// `tui::color_compat::ColorCompatBackend` so community presets
-    /// (Catppuccin, Tokyo Night, Dracula, Gruvbox) propagate to every
-    /// render site, not just the handful that read `app.ui_theme`.
-    pub theme_id: palette::ThemeId,
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
@@ -859,15 +813,14 @@ pub struct App {
     pub user_scrolled_during_stream: bool,
     /// Startup prompt should be submitted automatically after the engine is ready.
     pub auto_submit_initial_input: bool,
-    // === Transcript filtering (#397) ===
-    /// Transcript cells the user has collapsed (hidden from view).
-    /// Stores **original** virtual cell indices (pre-filtering).
-    pub collapsed_cells: HashSet<usize>,
+    /// Dense tool-run starts expanded for this process only. The default
+    /// presentation stays compact and no display preference is persisted.
+    pub expanded_tool_runs: HashSet<usize>,
     /// Mapping from filtered cell index → original virtual index.
-    /// Populated during `ChatWidget::new` by filtering out collapsed cells.
-    /// Used by `build_context_menu_entries` to convert line-meta indices
-    /// back to original indices for the `HideCell` / `ShowCell` actions.
+    /// Populated during `ChatWidget::new` after compact tool-run projection.
     pub collapsed_cell_map: Vec<usize>,
+    /// Render-time hitboxes for compact tool-run summary rows.
+    pub tool_run_hitboxes: Vec<(Rect, usize)>,
 }
 
 // === Deref to ComposerState for backward compat ===
@@ -922,9 +875,10 @@ impl App {
         let settings_parse_warning = crate::settings::Settings::path().ok().and_then(|p| {
             if p.exists() {
                 std::fs::read_to_string(&p).ok().and_then(|raw| {
-                    ::toml::from_str::<::toml::Value>(&raw)
-                        .err()
-                        .map(|e| format!("⚠ settings.toml is malformed — using defaults ({e})"))
+                    ::toml::from_str::<::toml::Value>(&raw).err().map(|e| {
+                        tr_in(language, MessageId::TuiSettingsMalformed)
+                            .replace("{error}", &e.to_string())
+                    })
                 })
             } else {
                 None
@@ -935,20 +889,11 @@ impl App {
         let needs_api_key = !has_api_key(config);
         let api_key_env_only = crate::config::uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
-        let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let synchronized_output_enabled = settings.synchronized_output_enabled();
         let show_thinking = settings.show_thinking;
-        let show_tool_details = settings.show_tool_details;
         let cost_currency =
             CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
-        // ADR-0013 fixes one terminal-native token owner. The backend still
-        // remaps direct legacy palette constants during the M28 cutover, but
-        // every production frame resolves to this same terminal-owned theme.
-        // The adapter and obsolete theme settings are deleted in M28-E after
-        // the remaining secondary renderers consume `ui_theme` directly.
-        let theme_id = palette::ThemeId::Terminal;
-        let ui_theme = palette::TERMINAL_UI_THEME;
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1031,19 +976,13 @@ impl App {
             workspace,
             config_path,
             use_mouse_capture,
-            calm_mode,
             low_motion,
             synchronized_output_enabled,
             show_thinking,
-            show_tool_details,
             cost_currency,
-            tool_collapse_threshold: 3,
-            tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             allow_shell,
             max_subagents,
             child_agents: ChildAgents::default(),
-            ui_theme,
-            theme_id,
             onboarding,
             onboarding_needs_api_key: needs_api_key,
             onboarding_workspace_trust_gate,
@@ -1070,8 +1009,9 @@ impl App {
             needs_redraw: true,
             user_scrolled_during_stream: false,
             auto_submit_initial_input,
-            collapsed_cells: HashSet::new(),
+            expanded_tool_runs: HashSet::new(),
             collapsed_cell_map: Vec::new(),
+            tool_run_hitboxes: Vec::new(),
             mention_menu_limit: settings.mention_menu_limit,
             mention_walk_depth: settings.mention_walk_depth,
             mention_menu_behavior: settings.mention_menu_behavior.clone(),
@@ -1190,10 +1130,9 @@ impl App {
 
         // Build a single placeholder cell summarizing the folded range.
         let total_folded = folded.len();
-        let summary = format!(
-            "{total_folded} older transcript cells folded to bound memory. \
-             Use /sessions to load a prior session snapshot if needed."
-        );
+        let summary = self
+            .tr(MessageId::HistoryArchivedFoldSummary)
+            .replace("{count}", &total_folded.to_string());
         let placeholder = HistoryCell::ArchivedContext {
             level: 0,
             range: format!("cells 0-{}", total_folded.saturating_sub(1)),
@@ -1225,12 +1164,12 @@ impl App {
             }
         });
 
-        // collapsed_cells
-        self.collapsed_cells = std::mem::take(&mut self.collapsed_cells)
+        self.expanded_tool_runs = std::mem::take(&mut self.expanded_tool_runs)
             .into_iter()
             .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
             .collect();
         self.collapsed_cell_map.clear();
+        self.tool_run_hitboxes.clear();
     }
 
     /// Issue a fresh, monotonically increasing revision counter for a new
@@ -1277,8 +1216,9 @@ impl App {
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.history_revisions.clear();
-        self.collapsed_cells.clear();
+        self.expanded_tool_runs.clear();
         self.collapsed_cell_map.clear();
+        self.tool_run_hitboxes.clear();
         self.needs_redraw = true;
     }
 
@@ -1292,9 +1232,35 @@ impl App {
         cell
     }
 
-    #[must_use]
-    pub fn tool_collapse_active(&self) -> bool {
-        self.tool_collapse_threshold > 0 && self.tool_collapse_mode.is_active(self.calm_mode)
+    fn expand_tool_run(&mut self, start: usize) -> bool {
+        if !self.expanded_tool_runs.insert(start) {
+            return false;
+        }
+        self.tool_run_hitboxes.clear();
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn expand_latest_tool_run(&mut self) -> bool {
+        const TOOL_RUN_COLLAPSE_THRESHOLD: usize = 3;
+        let Some(start) =
+            crate::tui::history::detect_tool_runs(&self.history, TOOL_RUN_COLLAPSE_THRESHOLD)
+                .into_iter()
+                .rev()
+                .map(|run| run.start)
+                .find(|start| !self.expanded_tool_runs.contains(start))
+        else {
+            return false;
+        };
+        self.expand_tool_run(start)
+    }
+
+    pub fn expand_tool_run_at(&mut self, column: u16, row: u16) -> bool {
+        let start = self.tool_run_hitboxes.iter().find_map(|(area, start)| {
+            (column >= area.x && column < area.right() && row >= area.y && row < area.bottom())
+                .then_some(*start)
+        });
+        start.is_some_and(|start| self.expand_tool_run(start))
     }
 
     pub fn push_status_toast(
@@ -1446,8 +1412,6 @@ impl App {
     pub fn transcript_render_options(&self) -> TranscriptRenderOptions {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
-            show_tool_details: self.show_tool_details,
-            calm_mode: self.calm_mode,
             low_motion: self.low_motion,
         }
     }

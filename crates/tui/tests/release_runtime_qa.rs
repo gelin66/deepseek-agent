@@ -2,7 +2,7 @@
 //!
 //! These scenarios cover the live TUI checks that unit tests cannot prove:
 //! canonical six-child fanout liveness/cancellation, DeepSeek-only
-//! multi-terminal isolation, durable steering, and configured theme ANSI
+//! multi-terminal isolation, durable steering, and terminal ANSI
 //! output. Every DeepSeek endpoint is a loopback wiremock server and every
 //! process receives a sealed HOME.
 
@@ -252,7 +252,7 @@ async fn idle_native_surface_emits_no_periodic_frames_for_five_seconds() -> Resu
         .spawn()?;
     enter_launch_session(&mut tui)?;
 
-    // A quiet initial frame must remain byte-still. Any old Ocean cadence,
+    // A quiet initial frame must remain byte-still. Any retired ambient cadence,
     // spinner timer, or unconditional redraw writes PTY bytes and resets this
     // five-second observation window.
     tui.wait_for_idle(Duration::from_secs(5), Duration::from_secs(7))?;
@@ -295,49 +295,6 @@ async fn native_phase_line_tracks_working_through_completion() -> Result<()> {
     tui.wait_for(|frame| frame.contains("✓ 完成"), INTERACTION_TIMEOUT)?;
 
     let _ = tui.shutdown();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_shell_uses_one_terminal_token_resolution() -> Result<()> {
-    let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
-    let ws = make_sealed_workspace()?;
-    // M28-B fixes one terminal-native production token owner. Retired theme
-    // settings are removed at M28-E; while the reader still exists during
-    // cutover, it must not create a second rendered palette.
-    let themes = ["dark", "light", "tokyo-night"];
-    let mut previous_signature = None;
-    for theme in themes {
-        std::fs::write(
-            ws.home().join(".dse").join("settings.toml"),
-            format!("theme = \"{theme}\"\n"),
-        )?;
-        let mut tui = common_tui_builder(&ws)
-            .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
-            .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-            .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
-            .env("COLORTERM", "truecolor")
-            .env("RUST_BACKTRACE", "1")
-            .spawn()?;
-        enter_launch_session(&mut tui)?;
-        let frame = tui.frame();
-        let signature = (
-            frame.colors_at(0, 0).expect("theme surface cell"),
-            frame.first_symbol_colors("c").expect("header brand cell"),
-            frame.first_symbol_colors("─").expect("section rule cell"),
-            frame
-                .first_symbol_colors("❯")
-                .expect("composer prompt cell"),
-        );
-        if let Some(previous) = previous_signature {
-            assert_eq!(
-                signature, previous,
-                "retired theme input created a second production palette: {theme}"
-            );
-        }
-        previous_signature = Some(signature);
-        let _ = tui.shutdown();
-    }
     Ok(())
 }
 

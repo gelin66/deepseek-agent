@@ -1148,7 +1148,7 @@ fn generic_tool_failed_output_live_renders_card_rail() {
 }
 
 #[test]
-fn hidden_tool_details_keeps_failed_generic_output_expanded() {
+fn fixed_compact_rule_keeps_failed_generic_output_expanded() {
     let output = (0..30usize)
         .map(|i| format!("row {i:02}: payload"))
         .collect::<Vec<_>>()
@@ -1163,44 +1163,7 @@ fn hidden_tool_details_keeps_failed_generic_output_expanded() {
         is_diff: false,
     });
 
-    let live_text = lines_text(&cell.lines_with_options(
-        80,
-        TranscriptRenderOptions {
-            show_tool_details: false,
-            ..TranscriptRenderOptions::default()
-        },
-    ));
-
-    assert!(
-        !live_text.contains("已省略") && !live_text.contains("details"),
-        "failed output must not be hidden behind a details affordance: {live_text}"
-    );
-    assert!(live_text.contains("row 29"), "{live_text}");
-}
-
-#[test]
-fn calm_mode_keeps_failed_generic_output_expanded() {
-    let output = (0..30usize)
-        .map(|i| format!("row {i:02}: payload"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let cell = HistoryCell::Tool(GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Failed,
-        input_summary: Some("command: noisy".to_string()),
-        output: Some(output),
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    });
-
-    let live_text = lines_text(&cell.lines_with_options(
-        80,
-        TranscriptRenderOptions {
-            calm_mode: true,
-            ..TranscriptRenderOptions::default()
-        },
-    ));
+    let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
     assert!(
         !live_text.contains("已省略") && !live_text.contains("details"),

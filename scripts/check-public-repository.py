@@ -350,11 +350,6 @@ def check_active_identity_allowlist() -> None:
         for line_number, line in enumerate(read(relative).splitlines(), start=1):
             if not RETIRED_VISUAL_RE.search(line):
                 continue
-            if (
-                relative == Path("crates/tui/src/palette/tests.rs")
-                and 'normalize_theme_name("whale"), None' in line
-            ):
-                continue
             fail(f"{relative}:{line_number}: retired whale visual identity remains active")
 
 

@@ -18,6 +18,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::palette;
 use crate::tui::{
     app::App,
     shell::{ShellPhase, ShellTier, phase_marker},
@@ -105,13 +106,13 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
     let phase = ShellPhase::from_app(app);
     let tier = ShellTier::for_chrome_width(area.width);
     Block::default()
-        .style(Style::default().bg(app.ui_theme.footer_bg))
+        .style(Style::default().bg(palette::DSE_BG))
         .render(area, buf);
 
     let (marker, phase_label) = phase_marker(app, phase);
     let phase_style =
         Style::default()
-            .fg(phase.color(app))
+            .fg(phase.color())
             .add_modifier(if phase == ShellPhase::Approval {
                 Modifier::BOLD
             } else {
@@ -127,14 +128,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         && phase == ShellPhase::Working
         && let Some(detail) = working_detail(app)
     {
-        left.push(Span::styled(
-            " · ",
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
-        left.push(Span::styled(
-            detail,
-            Style::default().fg(app.ui_theme.status_working),
-        ));
+        left.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
+        left.push(Span::styled(detail, Style::default().fg(palette::DSE_INFO)));
     }
 
     if tier != ShellTier::Compact
@@ -143,10 +138,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
             !toast.text.trim().is_empty() && toast.text.trim() != phase_label.as_ref()
         })
     {
-        left.push(Span::styled(
-            " · ",
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
+        left.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         left.push(Span::styled(
             truncate_to_width(toast.text.trim(), 40),
             Style::default().fg(crate::tui::ui::status_color(toast.level)),
@@ -155,13 +147,10 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
 
     let cost = app.total_cost_for_currency(app.cost_currency);
     if cost.is_finite() && cost > 0.0 && tier != ShellTier::Compact {
-        left.push(Span::styled(
-            " · ",
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
+        left.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         left.push(Span::styled(
             crate::pricing::format_cost_amount(cost, app.cost_currency),
-            Style::default().fg(app.ui_theme.text_muted),
+            Style::default().fg(palette::TEXT_MUTED),
         ));
     }
 
@@ -181,7 +170,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         left.push(Span::raw(" ".repeat(available - left_width - right_width)));
         left.push(Span::styled(
             right_text.into_owned(),
-            Style::default().fg(app.ui_theme.text_hint),
+            Style::default().fg(palette::TEXT_HINT),
         ));
     }
     Paragraph::new(Line::from(left)).render(area, buf);
@@ -261,12 +250,7 @@ mod tests {
 
     #[test]
     fn working_marker_uses_the_fixed_live_status_role() {
-        let app = test_app();
-        assert_eq!(
-            ShellPhase::Working.color(&app),
-            app.ui_theme.accent_secondary
-        );
-        assert_eq!(ShellPhase::Working.color(&app), app.ui_theme.status_working);
+        assert_eq!(ShellPhase::Working.color(), palette::DSE_INFO);
     }
 
     #[test]
