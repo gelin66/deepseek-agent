@@ -1491,6 +1491,52 @@ mod tests {
         }
     }
 
+    struct StreamingDeepSeekServer {
+        root: String,
+        task: JoinHandle<CapturedRequest>,
+    }
+
+    impl StreamingDeepSeekServer {
+        async fn start(body: String) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind streaming fixture");
+            let address = listener.local_addr().expect("streaming fixture address");
+            let task = tokio::spawn(async move {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .expect("streaming fixture request timeout")
+                        .expect("accept streaming fixture request");
+                let request = read_request(&mut socket).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket
+                    .write_all(header.as_bytes())
+                    .await
+                    .expect("write streaming fixture header");
+                socket
+                    .write_all(body.as_bytes())
+                    .await
+                    .expect("write streaming fixture body");
+                request
+            });
+            Self {
+                root: format!("http://{address}/v1"),
+                task,
+            }
+        }
+
+        async fn finish(self) -> CapturedRequest {
+            tokio::time::timeout(Duration::from_secs(5), self.task)
+                .await
+                .expect("streaming fixture server completes")
+                .expect("streaming fixture server task")
+        }
+    }
+
     struct FanoutDeepSeekServer {
         root: String,
         task: JoinHandle<Vec<CapturedRequest>>,
@@ -2954,6 +3000,29 @@ mod tests {
         })
     }
 
+    fn m22_streaming_response(frame_count: usize) -> String {
+        let mut body = String::new();
+        for offset in 0..frame_count {
+            let identity = if offset == 0 {
+                "\"id\":\"m22-production-loopback\",\"model\":\"deepseek-v4-pro\","
+            } else {
+                ""
+            };
+            body.push_str(&format!(
+                "data: {{{identity}\"choices\":[{{\"delta\":{{\"reasoning_content\":\"r\"}}}}]}}\n\n"
+            ));
+        }
+        for _ in 0..frame_count {
+            body.push_str("data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\n");
+        }
+        body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+        body.push_str(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110,\"prompt_cache_hit_tokens\":50,\"prompt_cache_miss_tokens\":50,\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+        );
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
     fn tool_response(
         model: &str,
         call_id: &str,
@@ -3728,6 +3797,93 @@ mod tests {
                 .expect("terminal remains")
                 .events,
             frozen
+        );
+    }
+
+    #[tokio::test]
+    async fn m22_production_loopback_converges_received_deltas_before_runstore_and_clients() {
+        let frame_count = 256;
+        let server = StreamingDeepSeekServer::start(m22_streaming_response(frame_count)).await;
+        let temp = tempfile::tempdir().expect("M22 production temp");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("M22 workspace");
+        let state_path = temp.path().join("state.db");
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("M22 production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.streaming = true;
+        command.tool_policy.enabled = false;
+        command.limits.max_turns = 1;
+        command.limits.max_model_requests = 1;
+        let run = run_result(
+            app.execute(envelope(
+                "m22-production-loopback",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let captured = server.finish().await;
+
+        assert_eq!(captured.path, "/v1/chat/completions");
+        assert_eq!(captured.body["stream"], true);
+        let mut reasoning = String::new();
+        let mut content = String::new();
+        let mut reasoning_events = 0;
+        let mut content_events = 0;
+        for event in &replay.events {
+            match &event.event {
+                RuntimeEventKind::ReasoningDelta { delta, .. } => {
+                    reasoning_events += 1;
+                    reasoning.push_str(delta);
+                }
+                RuntimeEventKind::ContentDelta { delta, .. } => {
+                    content_events += 1;
+                    content.push_str(delta);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(reasoning, "r".repeat(frame_count));
+        assert_eq!(content, "c".repeat(frame_count));
+        assert!(
+            reasoning_events + content_events < frame_count / 2,
+            "same-chunk convergence did not materially reduce production events: reasoning={reasoning_events}, content={content_events}"
+        );
+        assert!(matches!(
+            replay.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        let api_events = app
+            .execute(envelope(
+                "m22-production-events",
+                RunCommand::Events {
+                    run_id: run.run_id.clone(),
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            api_events.result,
+            RunCommandResult::Events { ref events, .. } if events == &replay.events
+        ));
+
+        drop(app);
+        let reopened = StateStore::open(Some(state_path)).expect("reopen M22 production Store");
+        assert_eq!(
+            reopened
+                .load(&run.run_id)
+                .await
+                .expect("load reopened M22 run")
+                .expect("reopened M22 run exists"),
+            replay
         );
     }
 

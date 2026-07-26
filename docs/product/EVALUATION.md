@@ -2932,6 +2932,59 @@ M21 不授权重跑 M19/M20B、恢复未收到的 usage、增加 sender/retry/co
 fixed-Pro quality aggregate。完整 fixture、manifest、raw identity、命令与非结论见
 [M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
 
+### M22 canonical streaming-delta convergence
+
+M22 的评测对象是 canonical streaming delta 的本地写放大，不是模型能力或付费任务质量。
+它禁止 Key、官方 API、external network、GitHub、远端 CI、push 和 release。冻结
+M20B journal 只派生两个 redacted scale profile：
+
+- TypeScript：2,993 total Store event，2,743 reasoning + 209 content delta，
+  delta UTF-8 payload 合计 10,097 bytes；
+- Python：5,298 total Store event，4,769 reasoning + 462 content delta，
+  delta UTF-8 payload 合计 17,927 bytes。
+
+fixture 不保存原始文本或身份。baseline manifest 在 `c7a770457469` 独立提交并从该
+immutable identity 运行。每个 profile 使用真实 `StateStore`、Run API canonical JSON、
+TUI canonical projector 和 headless serializer，1 warmup + 5 measured repetition，
+`maximum_reruns=0`。预注册 material gate 要求 delta share 至少 90%，且任一稳定绝对指标
+越过门槛。5,234 synthetic event profile 的 Run API+JSON 中位数为 122.883ms，稳定超过
+100ms，故只授权一个最小 candidate。
+
+candidate manifest 冻结以下质量门：
+
+- complete response 的 concatenated reasoning/content bytes、finish 与 usage 必须一致；
+- malformed/incomplete frame 必须先投影已经收到的 actionable delta，再 typed failure；
+- partial output 继续 replay unsafe，不增加 retry、completion 或 side effect；
+- RuntimeEvent v19、State v25、Run API v12 与 exec-stream v4 不变；
+- SQLite reopen、SIGKILL、root/read-only/Writer 和 CLI/TUI/API projection 必须一致；
+- 两个 profile 的 event 和 SQLite 各至少下降 50%，原 material wall metric 至少改善
+  20%，任一 wall metric不得回退超过 10%。
+
+唯一 candidate 在 `crates/deepseek/src/transport.rs` 合并同一已接收 HTTP body chunk 内
+相邻同类文本 delta。它不等待下一 chunk，evidence/tool/finish/usage/DONE/error 都是
+barrier。正式 `9f59d4a44fbc` 同源码结果：
+
+| profile | baseline delta | candidate delta | event reduction | SQLite reduction | Run API+JSON improvement |
+|---|---:|---:|---:|---:|---:|
+| TypeScript | 2,952 | 8 | 99.73% | 94.33% | 97.97% |
+| Python | 5,231 | 9 | 99.83% | 96.05% | 98.62% |
+
+五次 transport samples 的 candidate event count 完全一致。State downstream A/B 中，
+TypeScript candidate 的 append/reopen/Run API/TUI/headless 中位数为
+2.023/1.266/1.475/0.075/0.050ms；Python 为
+2.367/1.289/1.758/0.086/0.076ms。candidate SQLite+WAL 为
+90,112/106,496 bytes，canonical Run API JSON 为 15,885/23,874 bytes。所有 efficiency
+门通过。
+
+DeepSeek transport 全测试、M21 truncated-body regression、malformed-frame partial
+flush、production loopback、Store snapshot-neutral delta、runtime conformance、
+surface parity、focused、fmt、strict Clippy 与 workspace test 是保留门。结论为
+`keep_minimal_streaming_delta_convergence`；旧 per-frame production emission 已删除，
+没有 compatibility branch、第二 sender/Store/Runtime 或事件真相。该结果不证明真实官方
+网络每个 chunk 都有同样收敛率，也不形成 fixed-Pro coding quality/cost aggregate。完整
+identity、raw hash、命令、删除和非结论见
+[M22 canonical streaming-delta convergence](../../eval/summaries/m22-streaming-delta-convergence-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -2417,10 +2417,38 @@ stream 和 DeepSeek SSE transport，在一个合法 reasoning frame 后截断 de
 访问外部网络、创建第二 sender/Runtime/Store 或启动付费 successor。完整证据见
 [M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
 
+M22 保留了一个纯本地、无 schema 变化的 DeepSeek streaming cutover。当前
+`crates/deepseek/src/transport.rs` 在每次 reqwest body chunk 已经到达后，解析其中所有完整
+SSE frame，并只把相邻同类 reasoning/content delta 收敛成一个 `ModelStreamEvent`。
+evidence、tool fragment、finish、usage、`[DONE]`、provider error 与 parse error 都会先
+flush 已收到的文本，再推进现有 typed boundary。没有 timer、跨 chunk 等待、配置或第二
+stream path。
+
+`AgentRuntime` 仍是唯一 RuntimeEvent v19 emitter，按它实际收到的 converged
+`ModelStreamEvent` 分配 content/reasoning index；`StateStore` 仍 append-only，delta 仍是
+projection-neutral event，只推进 durable sequence 而不重写 snapshot JSON。Run API v12、
+State v25、exec-stream v4、canonical transcript、EvidenceReceipt 和 client reducer 均未
+改变。旧数据库不迁移，既有逐帧事件照常精确 replay；新 run 只产生更少、payload 更大的
+同 schema delta event，因此没有 compatibility reader 或双写。
+
+冻结 M20B scale profile 的 deterministic A/B 从 2,952/5,231 个 delta event 收敛到
+8/9 个；SQLite+WAL 分别下降 94.33%/96.05%，Run API event retrieval 加 canonical JSON
+下降 97.97%/98.62%。真实 production loopback 又通过
+`AgentApplication -> DeepSeekModelPort -> AgentRuntime -> RunStore -> Run API` 证明
+reasoning/content 拼接、terminal、无 Key reopen 与 exact event projection。M21
+partial-response fail-closed、accounting、SIGKILL/reopen、root/read-only/Writer 和
+CLI/TUI/app-server conformance 保持通过。决策为
+`keep_minimal_streaming_delta_convergence`；没有 Key、官方 API、外部网络、GitHub、push
+或 release。完整证据见
+[M22 canonical streaming-delta convergence](../../eval/summaries/m22-streaming-delta-convergence-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
+- M22 的 loopback 同 chunk 收敛率等于所有真实 DeepSeek/代理/OS 网络分片，或该本地
+  event/SQLite/客户端效率收益已经提高真实编码任务 verified success；它只保留不等待
+  下一 chunk 的 deterministic transport cutover；
 - M21 已识别是 DeepSeek provider、代理、OS 或其他网络组件关闭了 M20B response body；
   它只排除当前 deterministic local owner mismatch 和 idle timeout；
 - M20 的 3/3 account reachability 等于 Chat inference、Agent completion 或单 request

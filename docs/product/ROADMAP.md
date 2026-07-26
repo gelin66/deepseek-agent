@@ -3915,7 +3915,42 @@ reconciliation。production sender/parser/retry/completion 路径保持不变，
 没有 diagnostic adapter、第二 sender 或无消费者 treatment 需要保留。完整证据见
 [M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
 
-## 18. 当前源码迁移表
+## 18. M22：canonical streaming-delta 写放大收敛
+
+M22 不重跑 M20B，也不把其 5.87MB evaluator journal 误当 production SQLite。只读派生
+证明 M20B 的两个 Store snapshot 分别有 2,993/5,298 个事件，其中 reasoning/content
+delta 为 2,952/5,231（98.6%/98.7%）；journal 体积主要来自 corrected Harness 两次嵌入
+同一完整 Store facts。冻结 fixture 因此只保留事件数和 UTF-8 byte totals，不保留 prompt、
+reasoning、content、tool arguments、evaluation id、workspace 或 credential。
+
+基线 `c7a770457469` 使用真实 `StateStore`、`AgentApplication RunCommand::Events`、
+`CanonicalRunProjection` 和 headless exec serializer，每个 profile 先 warmup 一次再测五次，
+`maximum_reruns=0`。5,234 synthetic event 档的 Run API 取回加 canonical JSON
+序列化中位数为 122.883ms，超过预注册 100ms material gate；append 为 891.748ms，
+SQLite+WAL 为 2,437,120 bytes。该结果只授权审计一个最小 sender candidate。
+
+唯一 production owner 保持 `crates/deepseek/src/transport.rs`。cutover 只合并同一个已经收到
+的 HTTP body chunk 内、相邻同类的 reasoning/content SSE delta；evidence、tool fragment、
+finish、usage、`[DONE]` 和 error 仍是 flush barrier。它不等待下一 chunk、不加 timer、
+模式、配置、schema、State migration、Store reducer 或第二 sender。malformed/incomplete
+frame 之前已经收到的 delta 必须先投影，原 M21 actionable-partial/no-blind-retry 契约不变。
+
+同源码 candidate A/B 的两个 profile 均五次稳定得到 6 reasoning + 2 content、以及
+7 reasoning + 2 content event。相对 2,952/5,231 baseline delta，事件减少
+99.73%/99.83%；SQLite+WAL 减少 94.33%/96.05%；原 material Run API+JSON 指标改善
+98.62%。append、credential-free reopen、TUI 和 headless projection 均无回退。
+production loopback 进一步通过真实 `AgentApplication -> DeepSeekModelPort ->
+AgentRuntime -> RunStore -> Run API` 证明拼接 bytes、terminal、reopen 与客户端事实一致。
+
+结论为 `keep_minimal_streaming_delta_convergence`。per-frame production emission 已被
+同 chunk convergence 物理替代，没有 compatibility branch 或双事件真相。M21 的
+partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKILL/reopen
+和 CLI/TUI/API conformance 全部通过。该纯本地切片没有读取 Key、调用官方 API、访问
+外部网络、操作 GitHub、push 或 release；它也不声称真实 DeepSeek 网络 chunk 分布永远
+等于 loopback，或已提高编码任务 verified success。完整证据见
+[M22 canonical streaming-delta convergence](../../eval/summaries/m22-streaming-delta-convergence-2026-07-26.md)。
+
+## 19. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
@@ -3929,7 +3964,7 @@ reconciliation。production sender/parser/retry/completion 路径保持不变，
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
-## 19. 调整机制
+## 20. 调整机制
 
 里程碑结束时只允许三种结论：
 
