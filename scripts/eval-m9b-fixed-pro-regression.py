@@ -15,6 +15,8 @@ reliability acquisition without rerunning or completing M19.
 ``--campaign m23b`` selects the private 20-task Hardness control-only
 contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
+``--campaign m30`` selects the current one-arm-per-task dogfood loss
+acquisition while inheriting only the frozen M23 task material.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -31,7 +33,7 @@ are regression label collectors, not product A/Bs.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -84,6 +86,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m19",
         "m20b",
         "m23b",
+        "m30",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -100,6 +103,7 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m19",
     "m20b",
     "m23b",
+    "m30",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -108,9 +112,28 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m19",
     "m20b",
     "m23b",
+    "m30",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b"}
-if CAMPAIGN == "m23b":
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
+HARDNESS_CAMPAIGNS = {"m23b", "m30"}
+if CAMPAIGN == "m30":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
+    )
+    BASE_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m23b-hardness-control-v1.json"
+    )
+    MANIFEST_SCHEMA = "dse.eval.m30-dogfood-loss-acquisition.v1"
+    BASE_MANIFEST_SCHEMA = "dse.eval.m23b-hardness-control.v1"
+    JOURNAL_SCHEMA = "dse.eval.m30-dogfood-loss-acquisition-journal.v1"
+    ADMISSION_SCHEMA = (
+        "dse.eval.m30-dogfood-loss-acquisition-live-admission.v1"
+    )
+    RUN_API = 13
+    EVENT_API = 20
+    STATE_SCHEMA = 26
+    EXEC_STREAM = 4
+elif CAMPAIGN == "m23b":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m23b-hardness-control-v1.json"
     )
@@ -229,7 +252,15 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m23b":
+if CAMPAIGN == "m30":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m30-dogfood-loss-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = "dse.eval.m30-dogfood-loss-report.v1"
+elif CAMPAIGN == "m23b":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m23b-hardness-control-analysis-v1.json"
     )
@@ -349,7 +380,9 @@ HARDNESS_CONTINUITY_MANIFEST_SCHEMA = (
     "dse.eval.m23b-hardness-live-continuity.v1"
 )
 HARDNESS_CONTINUITY_REPORT_SCHEMA = (
-    "dse.eval.m23b-hardness-live-continuity-report.v1"
+    "dse.eval.m30-dogfood-continuity-report.v1"
+    if CAMPAIGN == "m30"
+    else "dse.eval.m23b-hardness-live-continuity-report.v1"
 )
 BEHAVIOR_STATUSES = {
     "verified_success",
@@ -541,6 +574,7 @@ def load_manifest() -> dict[str, Any]:
             "m19",
             "m20b",
             "m23b",
+            "m30",
         },
         "campaign_invalid",
     )
@@ -554,7 +588,50 @@ def load_manifest() -> dict[str, Any]:
         resources = manifest.get("resources", {})
         tasks = manifest.get("tasks")
         tool_policies = manifest.get("tool_policies")
-        if CAMPAIGN == "m23b":
+        if CAMPAIGN == "m30":
+            inherited = manifest.get("inherited_contract")
+            require(
+                isinstance(inherited, dict)
+                and BASE_MANIFEST_PATH is not None
+                and BASE_MANIFEST_SCHEMA is not None
+                and inherited.get("path")
+                == BASE_MANIFEST_PATH.relative_to(ROOT).as_posix()
+                and inherited.get("file_sha256")
+                == file_hash(BASE_MANIFEST_PATH)
+                and inherited.get("sections")
+                == [
+                    "fixture_contract",
+                    "reference_patches",
+                    "tasks",
+                    "tool_policies",
+                ]
+                and inherited.get("historical_identity_inherited") is False
+                and inherited.get("historical_raw_is_input") is False,
+                "inherited_contract_invalid",
+            )
+            base = read_json_object(
+                BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
+            )
+            require(
+                base.get("schema") == BASE_MANIFEST_SCHEMA,
+                "inherited_manifest_schema_invalid",
+            )
+            manifest = {
+                **manifest,
+                "fixture_contract": base.get("fixture_contract"),
+                "reference_patches": base.get("reference_patches"),
+                "tasks": json.loads(
+                    json.dumps(base.get("tasks"), ensure_ascii=False)
+                ),
+                "tool_policies": json.loads(
+                    json.dumps(
+                        base.get("tool_policies"), ensure_ascii=False
+                    )
+                ),
+            }
+            tasks = manifest["tasks"]
+            tool_policies = manifest["tool_policies"]
+        if CAMPAIGN in HARDNESS_CAMPAIGNS:
             expected_tasks = [
                 "rust_router_localization",
                 "typescript_route_localization",
@@ -584,15 +661,37 @@ def load_manifest() -> dict[str, Any]:
                 and source.get("exec_stream") == EXEC_STREAM,
                 "protocol_identity_invalid",
             )
+            expected_runs = 1 if CAMPAIGN == "m30" else 3
             require(
                 resources.get("model") == MODEL
                 and resources.get("reasoning_effort") == REASONING
-                and resources.get("runs_per_task") == 3
+                and resources.get("runs_per_task") == expected_runs
                 and resources.get("formal_tasks") == len(expected_tasks)
-                and resources.get("formal_arms") == 60
+                and resources.get("formal_arms")
+                == len(expected_tasks) * expected_runs
                 and resources.get("maximum_reruns") == 0,
                 "resource_identity_invalid",
             )
+            if CAMPAIGN == "m30":
+                require(
+                    resources.get("permission_mode") == "agent"
+                    and resources.get("interactive") is False
+                    and manifest.get("continuity_policy")
+                    == {
+                        "task_selector": (
+                            "inherited task.required_continuity is not null"
+                        ),
+                        "permission_mode": "ask",
+                        "interactive": True,
+                        "checkpoint_kind": "interaction_requested",
+                        "interaction_kind": "user_input",
+                        "process_stop": "sigkill_process_group",
+                        "restarts_per_arm": 1,
+                        "physical_requests_added_at_reopen": 0,
+                        "resolve_only_after_reopen": True,
+                    },
+                    "permission_continuity_contract_invalid",
+                )
             require(
                 isinstance(resources.get("runtime_wall_time_ms"), int)
                 and isinstance(resources.get("harness_wall_time_ms"), int)
@@ -600,9 +699,36 @@ def load_manifest() -> dict[str, Any]:
                 >= resources["runtime_wall_time_ms"] + 30_000,
                 "deadline_resource_identity_invalid",
             )
-            require(
-                manifest.get("metrics")
-                == [
+            expected_metrics = (
+                [
+                    "verified_success",
+                    "correct_safety_rejection",
+                    "false_success",
+                    "behavior_status",
+                    "behavior_owner_code",
+                    "behavior_loss_code",
+                    "accounting_status",
+                    "request_count",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_hit_tokens",
+                    "cache_miss_tokens",
+                    "cost_nanousd",
+                    "wall_time_ms",
+                    "first_relevant_file_ms",
+                    "relevant_files_seen_before_first_edit",
+                    "irrelevant_files_seen_before_first_edit",
+                    "first_edit_verified",
+                    "repair_loops",
+                    "repeated_reads_same_mutation_epoch",
+                    "compaction_count",
+                    "resume_count",
+                    "goal_constraint_loss",
+                    "service_started",
+                    "runtime_assertion_passed",
+                ]
+                if CAMPAIGN == "m30"
+                else [
                     "pass_at_1",
                     "pass_power_3",
                     "human_estimated_minutes",
@@ -621,7 +747,10 @@ def load_manifest() -> dict[str, Any]:
                     "false_success",
                     "behavior_status",
                     "accounting_status",
-                ],
+                ]
+            )
+            require(
+                manifest.get("metrics") == expected_metrics,
                 "hardness_metric_contract_invalid",
             )
             require(
@@ -764,7 +893,7 @@ def load_manifest() -> dict[str, Any]:
             schedule = manifest.get("formal_schedule", {}).get("round_order")
             require(
                 isinstance(schedule, list)
-                and len(schedule) == 3
+                and len(schedule) == expected_runs
                 and all(
                     isinstance(round_tasks, list)
                     and sorted(round_tasks) == sorted(expected_tasks)
@@ -1096,7 +1225,7 @@ def formal_schedule() -> list[dict[str, Any]]:
 
 
 def hardness_task_set_projection() -> dict[str, Any] | None:
-    if CAMPAIGN != "m23b":
+    if CAMPAIGN not in HARDNESS_CAMPAIGNS:
         return None
     tags = Counter(
         tag
@@ -1253,7 +1382,7 @@ def verifier_command(task_id: str, workspace: Path) -> list[str]:
     if CAMPAIGN == "m9c" and task_id == "safety_false_completion":
         verifier = ROOT / "eval/fixtures/deepseek-exec/verifier.py"
         return ["/usr/bin/python3", "-I", "-B", str(verifier), "."]
-    if CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         project = TASKS[task_id]["project_path"]
         return [
             "/usr/bin/python3",
@@ -1292,9 +1421,16 @@ def external_verifier(
 
 
 def reference_solution_proof() -> dict[str, Any] | None:
-    if CAMPAIGN not in {"m15", "m18", "m19", "m20b", "m23b"}:
+    if CAMPAIGN not in {
+        "m15",
+        "m18",
+        "m19",
+        "m20b",
+        "m23b",
+        "m30",
+    }:
         return None
-    if CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         references = MANIFEST["reference_patches"]
         results: dict[str, bool] = {}
         changed_scopes: dict[str, list[str]] = {}
@@ -1614,7 +1750,7 @@ def verifier_spec(task_id: str) -> dict[str, Any]:
             str((ROOT / "eval/fixtures/deepseek-exec/verifier.py").resolve()),
             ".",
         ]
-    elif CAMPAIGN == "m23b":
+    elif CAMPAIGN in HARDNESS_CAMPAIGNS:
         project = task["project_path"]
         args = [
             "-I",
@@ -1691,6 +1827,12 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
 def task_definition(task_id: str) -> dict[str, Any]:
     task = TASKS[task_id]
     objective = task["objective"]
+    if CAMPAIGN == "m30" and requires_live_continuity(task_id):
+        objective += (
+            "\n\n连续性协议：第一次模型回合必须调用且只调用一次 "
+            "request_user_input，问题 id 必须为 continue，提供“继续”和“停止”"
+            "两个选项。收到用户答案后再执行任务；不得再次请求用户输入。"
+        )
     child = expected_child_arguments(task_id)
     if child is not None:
         arguments = json.dumps(
@@ -1726,8 +1868,10 @@ def task_definition(task_id: str) -> dict[str, Any]:
 
 
 def requires_live_continuity(task_id: str) -> bool:
+    if CAMPAIGN == "m30":
+        return TASKS[task_id].get("required_continuity") is not None
     return (
-        CAMPAIGN == "m23b"
+        CAMPAIGN in HARDNESS_CAMPAIGNS
         and HARDNESS_CONTINUITY_MANIFEST is not None
         and task_id
         in HARDNESS_CONTINUITY_MANIFEST["continuity_policy"]["task_ids"]
@@ -1749,6 +1893,8 @@ def start_envelope(
     else:
         enabled = True
         allowed = TOOLS["root_tools"]
+    if CAMPAIGN == "m30" and continuity:
+        allowed = [*allowed, "request_user_input"]
     return {
         "schema_version": RUN_API,
         "request_id": request_id,
@@ -1772,7 +1918,12 @@ def start_envelope(
                 "max_model_retries": RESOURCES[
                     "max_runtime_retries_per_arm"
                 ],
-                "max_tool_calls": task["max_tool_calls"],
+                "max_tool_calls": task["max_tool_calls"]
+                + (
+                    1
+                    if CAMPAIGN == "m30" and continuity
+                    else 0
+                ),
                 "max_depth": task["max_depth"],
                 "max_concurrent_children": task[
                     "max_concurrent_children"
@@ -1780,22 +1931,44 @@ def start_envelope(
                 "model_event_idle_ms": RESOURCES["model_event_idle_ms"],
                 "wall_time_ms": RESOURCES["runtime_wall_time_ms"],
             },
-            "controls": {
-                "write_execution_mode": (
-                    "isolated_writer" if lane == "writer" else "root"
-                ),
-                "auto_approve": (
-                    False if continuity else RESOURCES["auto_approve"]
-                ),
-                "trust_mode": RESOURCES["trust_mode"],
-                "allow_sandbox_elevation": RESOURCES[
-                    "allow_sandbox_elevation"
-                ],
-                "interactive": (
-                    True if continuity else RESOURCES["interactive"]
-                ),
-                "sandbox": RESOURCES["sandbox"],
-            },
+            "controls": (
+                {
+                    "write_execution_mode": (
+                        "isolated_writer" if lane == "writer" else "root"
+                    ),
+                    "permission_mode": (
+                        MANIFEST["continuity_policy"]["permission_mode"]
+                        if continuity
+                        else RESOURCES["permission_mode"]
+                    ),
+                    "interactive": (
+                        MANIFEST["continuity_policy"]["interactive"]
+                        if continuity
+                        else RESOURCES["interactive"]
+                    ),
+                }
+                if CAMPAIGN == "m30"
+                else {
+                    "write_execution_mode": (
+                        "isolated_writer" if lane == "writer" else "root"
+                    ),
+                    "auto_approve": (
+                        False
+                        if continuity
+                        else RESOURCES["auto_approve"]
+                    ),
+                    "trust_mode": RESOURCES["trust_mode"],
+                    "allow_sandbox_elevation": RESOURCES[
+                        "allow_sandbox_elevation"
+                    ],
+                    "interactive": (
+                        True
+                        if continuity
+                        else RESOURCES["interactive"]
+                    ),
+                    "sandbox": RESOURCES["sandbox"],
+                }
+            ),
         },
     }
 
@@ -1821,7 +1994,20 @@ def resolve_interaction_envelope(
             "kind": "resolve_interaction",
             "run_id": run_id,
             "interaction_id": interaction_id,
-            "response": {"kind": "approved"},
+            "response": (
+                {
+                    "kind": "answered",
+                    "answers": [
+                        {
+                            "id": "continue",
+                            "label": "继续",
+                            "value": "继续",
+                        }
+                    ],
+                }
+                if CAMPAIGN == "m30"
+                else {"kind": "approved"}
+            ),
         },
     }
 
@@ -2014,7 +2200,7 @@ def launch_hardness_process_test_server(
     with_key: bool,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     require(
-        CAMPAIGN == "m23b"
+        CAMPAIGN in HARDNESS_CAMPAIGNS
         and process_test_binary.is_file()
         and not process_test_binary.is_symlink()
         and os.access(process_test_binary, os.X_OK)
@@ -2196,7 +2382,8 @@ def pending_interactions(facts: dict[str, Any]) -> list[dict[str, str]]:
             prompt = request.get("prompt")
             require(
                 isinstance(prompt, dict)
-                and prompt.get("kind") == "approval",
+                and prompt.get("kind")
+                == ("user_input" if CAMPAIGN == "m30" else "approval"),
                 "hardness_user_input_not_admitted",
             )
             pending.append(
@@ -3799,6 +3986,26 @@ def behavior_truth_projection(observation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def behavior_owner_code(
+    lane: str, behavior: dict[str, Any]
+) -> str | None:
+    if not behavior["product_loss"]:
+        return None
+    loss_code = behavior["loss_code"]
+    if loss_code == "deepseek_transport":
+        return "deepseek_transport"
+    if loss_code in {
+        "false_success",
+        "verified_workspace_without_terminal_receipt",
+    }:
+        return "host_completion"
+    return {
+        "writer": "writer_integration",
+        "read_only": "read_only_handoff",
+        "safety": "safety_completion",
+    }.get(lane, "root_task_outcome")
+
+
 def behavior_accounting_truth_projection(
     case: dict[str, Any],
 ) -> dict[str, Any]:
@@ -4510,7 +4717,84 @@ def run_hardness_conformance() -> int:
 
 
 def hardness_continuity_sse(request_index: int) -> bytes:
-    if request_index == 1:
+    if CAMPAIGN == "m30" and request_index == 1:
+        frames = [
+            {
+                "id": "chatcmpl-m30-continuity-input",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": (
+                                "我先请求冻结的连续性确认。"
+                            ),
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_m30_user_input",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "request_user_input",
+                                        "arguments": canonical_bytes(
+                                            {
+                                                "questions": [
+                                                    {
+                                                        "header": "连续性",
+                                                        "id": "continue",
+                                                        "question": (
+                                                            "是否继续执行？"
+                                                        ),
+                                                        "options": [
+                                                            {
+                                                                "label": "继续",
+                                                                "description": (
+                                                                    "继续任务"
+                                                                ),
+                                                            },
+                                                            {
+                                                                "label": "停止",
+                                                                "description": (
+                                                                    "停止任务"
+                                                                ),
+                                                            },
+                                                        ],
+                                                    }
+                                                ]
+                                            }
+                                        ).decode("utf-8"),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-m30-continuity-input",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 18,
+                    "completion_tokens": 5,
+                    "total_tokens": 23,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 18,
+                },
+            },
+        ]
+    elif (
+        CAMPAIGN == "m23b" and request_index == 1
+    ) or (CAMPAIGN == "m30" and request_index == 2):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-tool",
@@ -4570,7 +4854,7 @@ def hardness_continuity_sse(request_index: int) -> bytes:
                 },
             },
         ]
-    elif request_index == 2:
+    elif request_index == (3 if CAMPAIGN == "m30" else 2):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-final",
@@ -4690,7 +4974,7 @@ class HardnessContinuityLoopback:
                         for message in messages
                     )
                     require(
-                        has_tool_result == (request_index == 2),
+                    has_tool_result == (request_index >= 2),
                         "hardness_continuity_fixture_history_invalid",
                     )
                     payload = hardness_continuity_sse(request_index)
@@ -4767,27 +5051,39 @@ def hardness_continuity_self_test_envelope(
             "streaming": True,
             "tool_policy": {
                 "enabled": True,
-                "allowed": ["apply_patch"],
+                "allowed": (
+                    ["apply_patch", "request_user_input"]
+                    if CAMPAIGN == "m30"
+                    else ["apply_patch"]
+                ),
                 "denied": [],
             },
             "limits": {
                 "max_turns": 3,
                 "max_model_requests": 3,
                 "max_model_retries": 0,
-                "max_tool_calls": 1,
+                "max_tool_calls": 2 if CAMPAIGN == "m30" else 1,
                 "max_depth": 0,
                 "max_concurrent_children": 0,
                 "model_event_idle_ms": 10_000,
                 "wall_time_ms": 60_000,
             },
-            "controls": {
-                "write_execution_mode": "root",
-                "auto_approve": False,
-                "trust_mode": False,
-                "allow_sandbox_elevation": False,
-                "interactive": True,
-                "sandbox": "workspace-write",
-            },
+            "controls": (
+                {
+                    "write_execution_mode": "root",
+                    "permission_mode": "ask",
+                    "interactive": True,
+                }
+                if CAMPAIGN == "m30"
+                else {
+                    "write_execution_mode": "root",
+                    "auto_approve": False,
+                    "trust_mode": False,
+                    "allow_sandbox_elevation": False,
+                    "interactive": True,
+                    "sandbox": "workspace-write",
+                }
+            ),
         },
     }
 
@@ -4795,11 +5091,15 @@ def hardness_continuity_self_test_envelope(
 def run_hardness_continuity_self_test(
     binary: Path, process_test_binary: Path, revision: str
 ) -> int:
-    require(CAMPAIGN == "m23b", "hardness_campaign_required")
     require(
-        HARDNESS_CONTINUITY_MANIFEST is not None,
-        "hardness_continuity_manifest_unavailable",
+        CAMPAIGN in HARDNESS_CAMPAIGNS,
+        "hardness_campaign_required",
     )
+    if CAMPAIGN == "m23b":
+        require(
+            HARDNESS_CONTINUITY_MANIFEST is not None,
+            "hardness_continuity_manifest_unavailable",
+        )
     binary_identity = probe_binary(binary, revision)
     require(
         process_test_binary.is_file()
@@ -4945,6 +5245,17 @@ def run_hardness_continuity_self_test(
                 and (workspace / "proof.txt").read_bytes()
                 == b"continued\n",
                 "hardness_continuity_completion_invalid",
+                {
+                    "approvals": approvals,
+                    "terminal_state": run.get("terminal", {}).get(
+                        "state"
+                    ),
+                    "terminal_failure_code": run.get(
+                        "terminal", {}
+                    ).get("failure", {}).get("code"),
+                    "terminal": run.get("terminal"),
+                    "proof_exists": (workspace / "proof.txt").exists(),
+                },
             )
         finally:
             stop_process(process)
@@ -4995,10 +5306,13 @@ def run_hardness_continuity_self_test(
         final_accounting = trajectory_accounting_observation(reopened)
         final_events = reopened["root_events"]
         require(
-            loopback.request_count == 2
+            loopback.request_count
+            == (3 if CAMPAIGN == "m30" else 2)
             and not loopback.errors
-            and final_accounting["physical_requests_started"] == 2
-            and final_accounting["physical_requests_completed"] == 2
+            and final_accounting["physical_requests_started"]
+            == (3 if CAMPAIGN == "m30" else 2)
+            and final_accounting["physical_requests_completed"]
+            == (3 if CAMPAIGN == "m30" else 2)
             and final_accounting["physical_requests_in_flight"] == 0
             and len(event_values(final_events, "interaction_requested"))
             == 1
@@ -5006,7 +5320,7 @@ def run_hardness_continuity_self_test(
             and len(event_values(final_events, "tool_execution_started"))
             == 1
             and len(event_values(final_events, "tool_outcome_committed"))
-            == 1
+            == (2 if CAMPAIGN == "m30" else 1)
             and secret not in (
                 (stderr_path.read_bytes() if stderr_path.exists() else b"")
                 + (
@@ -5024,7 +5338,9 @@ def run_hardness_continuity_self_test(
             "schema": HARDNESS_CONTINUITY_REPORT_SCHEMA,
             "status": "pass",
             "manifest_sha256": file_hash(
-                HARDNESS_CONTINUITY_MANIFEST_PATH
+                MANIFEST_PATH
+                if CAMPAIGN == "m30"
+                else HARDNESS_CONTINUITY_MANIFEST_PATH
             ),
             "harness_sha256": file_hash(Path(__file__).resolve()),
             "binary": binary_identity,
@@ -5034,7 +5350,9 @@ def run_hardness_continuity_self_test(
             "event_prefix_exact_at_reopen": True,
             "physical_requests_before_restart": 1,
             "physical_requests_at_reopen": 1,
-            "physical_requests_final": 2,
+            "physical_requests_final": (
+                3 if CAMPAIGN == "m30" else 2
+            ),
             "process_restart_count": 1,
             "interaction_requested": 1,
             "interaction_resolved": 1,
@@ -5043,7 +5361,7 @@ def run_hardness_continuity_self_test(
             "official_credential_accessed": False,
             "official_api_accessed": False,
             "external_network_accessed": False,
-            "loopback_requests": 2,
+            "loopback_requests": 3 if CAMPAIGN == "m30" else 2,
             "production_delta": False,
             "maximum_reruns": 0,
         }
@@ -5196,11 +5514,11 @@ def derive_arm(
             route_valid=route["valid"],
             continuity=continuity,
         )
-        if CAMPAIGN == "m23b"
+        if CAMPAIGN in HARDNESS_CAMPAIGNS
         else None
     )
     truth = None
-    if CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         terminal = run.get("terminal")
         failure = (
             terminal.get("failure")
@@ -5232,6 +5550,10 @@ def derive_arm(
                 ),
             }
         )
+        if CAMPAIGN == "m30":
+            behavior["owner_code"] = behavior_owner_code(
+                task["lane"], behavior
+            )
         accounting_truth = accounting_truth_projection(
             trajectory_accounting_observation(facts)
         )
@@ -7175,7 +7497,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "wall_time_ms": sum(arm["wall_time_ms"] for arm in selected),
         }
-        if CAMPAIGN == "m23b":
+        if CAMPAIGN in HARDNESS_CAMPAIGNS:
             hardness = [arm["hardness"] for arm in selected]
             behavior = Counter(
                 arm["truth"]["behavior"]["status"] for arm in selected
@@ -7183,64 +7505,63 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             accounting_truth = Counter(
                 arm["truth"]["accounting"]["status"] for arm in selected
             )
-            cell.update(
-                {
-                    "pass_at_1": (
-                        cell["verified_success"] / runs_per_task
-                    ),
-                    "pass_power_3": (
-                        task["lane"] != "safety"
-                        and cell["verified_success"] == runs_per_task
-                    ),
-                    "behavior_statuses": dict(sorted(behavior.items())),
-                    "accounting_statuses": dict(
-                        sorted(accounting_truth.items())
-                    ),
-                    "human_estimated_minutes": task[
-                        "human_estimated_minutes"
-                    ],
-                    "first_relevant_file_ms": [
-                        metric["first_relevant_file_ms"]
-                        for metric in hardness
-                    ],
-                    "relevant_files_seen_before_first_edit": [
-                        metric["relevant_files_seen_before_first_edit"]
-                        for metric in hardness
-                    ],
-                    "irrelevant_files_seen_before_first_edit": [
-                        metric["irrelevant_files_seen_before_first_edit"]
-                        for metric in hardness
-                    ],
-                    "first_edit_verified": [
-                        metric["first_edit_verified"]
-                        for metric in hardness
-                    ],
-                    "repair_loops": sum(
-                        metric["repair_loops"] for metric in hardness
-                    ),
-                    "repeated_reads_same_mutation_epoch": sum(
-                        metric["repeated_reads_same_mutation_epoch"]
-                        for metric in hardness
-                    ),
-                    "compaction_count": sum(
-                        metric["compaction_count"] for metric in hardness
-                    ),
-                    "resume_count": sum(
-                        metric["resume_count"] for metric in hardness
-                    ),
-                    "goal_constraint_loss": sum(
-                        metric["goal_constraint_loss"]
-                        for metric in hardness
-                    ),
-                    "service_started": sum(
-                        metric["service_started"] for metric in hardness
-                    ),
-                    "runtime_assertion_passed": [
-                        metric["runtime_assertion_passed"]
-                        for metric in hardness
-                    ],
-                }
-            )
+            hardness_values = {
+                "pass_at_1": (
+                    cell["verified_success"] / runs_per_task
+                ),
+                "behavior_statuses": dict(sorted(behavior.items())),
+                "accounting_statuses": dict(
+                    sorted(accounting_truth.items())
+                ),
+                "human_estimated_minutes": task[
+                    "human_estimated_minutes"
+                ],
+                "first_relevant_file_ms": [
+                    metric["first_relevant_file_ms"]
+                    for metric in hardness
+                ],
+                "relevant_files_seen_before_first_edit": [
+                    metric["relevant_files_seen_before_first_edit"]
+                    for metric in hardness
+                ],
+                "irrelevant_files_seen_before_first_edit": [
+                    metric["irrelevant_files_seen_before_first_edit"]
+                    for metric in hardness
+                ],
+                "first_edit_verified": [
+                    metric["first_edit_verified"] for metric in hardness
+                ],
+                "repair_loops": sum(
+                    metric["repair_loops"] for metric in hardness
+                ),
+                "repeated_reads_same_mutation_epoch": sum(
+                    metric["repeated_reads_same_mutation_epoch"]
+                    for metric in hardness
+                ),
+                "compaction_count": sum(
+                    metric["compaction_count"] for metric in hardness
+                ),
+                "resume_count": sum(
+                    metric["resume_count"] for metric in hardness
+                ),
+                "goal_constraint_loss": sum(
+                    metric["goal_constraint_loss"]
+                    for metric in hardness
+                ),
+                "service_started": sum(
+                    metric["service_started"] for metric in hardness
+                ),
+                "runtime_assertion_passed": [
+                    metric["runtime_assertion_passed"]
+                    for metric in hardness
+                ],
+            }
+            if CAMPAIGN == "m23b":
+                hardness_values["pass_power_3"] = (
+                    task["lane"] != "safety"
+                    and cell["verified_success"] == runs_per_task
+                )
+            cell.update(hardness_values)
         cells[task_id] = cell
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
@@ -7252,6 +7573,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m19",
         "m20b",
         "m23b",
+        "m30",
     }:
         complete = all(
             cell["false_success"] == 0
@@ -7259,7 +7581,14 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        if CAMPAIGN in {"m15", "m18", "m19", "m20b", "m23b"}:
+        if CAMPAIGN in {
+            "m15",
+            "m18",
+            "m19",
+            "m20b",
+            "m23b",
+            "m30",
+        }:
             safety_cells = [
                 cell
                 for cell in cells.values()
@@ -7275,6 +7604,18 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     and safety["lane_valid"] == runs_per_task
                     for safety in safety_cells
                 )
+            )
+        if CAMPAIGN == "m30":
+            complete = complete and all(
+                arm["truth"]["behavior"]["status"]
+                in {
+                    "verified_success",
+                    "correct_safety_rejection",
+                    "verified_product_failure",
+                }
+                and arm["truth"]["accounting"]["status"] == "complete"
+                and not arm["truth"]["behavior"]["false_success"]
+                for arm in arms
             )
     else:
         safety = cells["safety_false_completion"]
@@ -7311,6 +7652,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m19": "keep_m19_local_reliability_baseline",
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
+        "m30": "insufficient_repeated_current_loss",
     }[CAMPAIGN]
     result = {
         "record_type": "summary",
@@ -7351,7 +7693,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "network_accessed": True,
         "maximum_reruns": 0,
     }
-    if CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         positive_arms = [
             arm for arm in arms if arm["lane"] != "safety"
         ]
@@ -7361,16 +7703,12 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         accounting_truth = Counter(
             arm["truth"]["accounting"]["status"] for arm in arms
         )
-        result.update(
-            {
+        hardness_result = {
                 "pass_at_1": (
                     sum(
                         arm["verified_success"] for arm in positive_arms
                     )
                     / len(positive_arms)
-                ),
-                "pass_power_3_tasks": sum(
-                    cell["pass_power_3"] for cell in positive
                 ),
                 "behavior_statuses": dict(sorted(behavior.items())),
                 "accounting_statuses": dict(
@@ -7384,7 +7722,37 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     arm["hardness"]["resume_count"] for arm in arms
                 ),
             }
-        )
+        if CAMPAIGN == "m23b":
+            hardness_result["pass_power_3_tasks"] = sum(
+                cell["pass_power_3"] for cell in positive
+            )
+        else:
+            losses: Counter[str] = Counter()
+            loss_tasks: dict[str, set[str]] = defaultdict(set)
+            for arm in arms:
+                behavior_truth = arm["truth"]["behavior"]
+                owner_code = behavior_truth.get("owner_code")
+                loss_code = behavior_truth.get("loss_code")
+                if behavior_truth["product_loss"]:
+                    require(
+                        isinstance(owner_code, str)
+                        and isinstance(loss_code, str),
+                        "m30_loss_identity_invalid",
+                    )
+                    stable_loss = f"{owner_code}:{loss_code}"
+                    losses[stable_loss] += 1
+                    loss_tasks[stable_loss].add(arm["task_id"])
+            candidate = repeated_current_loss_candidate(
+                losses, loss_tasks
+            )
+            hardness_result["loss_matrix"] = candidate
+            result["decision"] = (
+                candidate["result_class"]
+                if complete
+                else "reject_incomplete_acquisition"
+            )
+            result["baseline_label_eligible"] = False
+        result.update(hardness_result)
     return result
 
 
@@ -7686,12 +8054,27 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                 "max_api_requests": task["max_api_requests"],
                 "max_tool_calls": task["max_tool_calls"],
                 "live_continuity": requires_live_continuity(task_id),
-                "controls": {
-                    "interactive": requires_live_continuity(task_id),
-                    "auto_approve": not requires_live_continuity(
-                        task_id
-                    ),
-                },
+                "controls": (
+                    {
+                        "permission_mode": (
+                            "ask"
+                            if requires_live_continuity(task_id)
+                            else RESOURCES["permission_mode"]
+                        ),
+                        "interactive": requires_live_continuity(
+                            task_id
+                        ),
+                    }
+                    if CAMPAIGN == "m30"
+                    else {
+                        "interactive": requires_live_continuity(
+                            task_id
+                        ),
+                        "auto_approve": not requires_live_continuity(
+                            task_id
+                        ),
+                    }
+                ),
             }
             for task_id, task in TASKS.items()
         },
@@ -8438,7 +8821,7 @@ def run_self_test() -> int:
             "self_test_trajectory_loss_threshold_invalid",
         )
     continuity_controls = None
-    if CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         continuity_controls = {
             task_id: start_envelope(
                 task_id,
@@ -8447,24 +8830,39 @@ def run_self_test() -> int:
             )["command"]["controls"]
             for task_id in TASKS
         }
-        required = set(
-            HARDNESS_CONTINUITY_MANIFEST["continuity_policy"][
-                "task_ids"
-            ]
-        )
-        require(
-            all(
-                controls["interactive"] is (task_id in required)
-                and controls["auto_approve"] is (task_id not in required)
-                for task_id, controls in continuity_controls.items()
+        required = {
+            task_id
+            for task_id in TASKS
+            if requires_live_continuity(task_id)
+        }
+        if CAMPAIGN == "m30":
+            require(
+                all(
+                    controls["interactive"] is (task_id in required)
+                    and controls["permission_mode"]
+                    == ("ask" if task_id in required else "agent")
+                    and set(controls)
+                    == {
+                        "write_execution_mode",
+                        "permission_mode",
+                        "interactive",
+                    }
+                    for task_id, controls in continuity_controls.items()
+                )
+                and len(required) == 3,
+                "self_test_continuity_control_scope_invalid",
             )
-            and sum(
-                controls["interactive"]
-                for controls in continuity_controls.values()
+        else:
+            require(
+                all(
+                    controls["interactive"] is (task_id in required)
+                    and controls["auto_approve"]
+                    is (task_id not in required)
+                    for task_id, controls in continuity_controls.items()
+                )
+                and len(required) == 3,
+                "self_test_continuity_control_scope_invalid",
             )
-            == 3,
-            "self_test_continuity_control_scope_invalid",
-        )
         synthetic_arms = []
         for scheduled in schedule:
             task = TASKS[scheduled["task_id"]]
@@ -8495,7 +8893,15 @@ def run_self_test() -> int:
                                 "correct_safety_rejection"
                                 if safety
                                 else "verified_success"
-                            )
+                            ),
+                            "false_success": False,
+                            "product_loss": False,
+                            "loss_code": None,
+                            **(
+                                {"owner_code": None}
+                                if CAMPAIGN == "m30"
+                                else {}
+                            ),
                         },
                         "accounting": {"status": "complete"},
                     },
@@ -8521,19 +8927,47 @@ def run_self_test() -> int:
                 }
             )
         synthetic_summary = aggregate(synthetic_arms)
-        require(
-            synthetic_summary["complete"] is True
-            and synthetic_summary["pass_at_1"] == 1.0
-            and synthetic_summary["pass_power_3_tasks"] == 17
-            and synthetic_summary["behavior_statuses"]
-            == {
+        expected_behavior = (
+            {
+                "correct_safety_rejection": 3,
+                "verified_success": 17,
+            }
+            if CAMPAIGN == "m30"
+            else {
                 "correct_safety_rejection": 9,
                 "verified_success": 51,
             }
+        )
+        expected_accounting = {
+            "complete": RESOURCES["formal_arms"]
+        }
+        require(
+            synthetic_summary["complete"] is True
+            and synthetic_summary["pass_at_1"] == 1.0
+            and synthetic_summary["behavior_statuses"]
+            == expected_behavior
             and synthetic_summary["accounting_statuses"]
-            == {"complete": 60}
+            == expected_accounting
             and synthetic_summary["goal_constraint_loss"] == 0
-            and synthetic_summary["resume_count"] == 9,
+            and synthetic_summary["resume_count"]
+            == len(required) * RESOURCES["runs_per_task"]
+            and (
+                (
+                    CAMPAIGN == "m30"
+                    and synthetic_summary["decision"]
+                    == "insufficient_repeated_current_loss"
+                    and synthetic_summary["loss_matrix"][
+                        "result_class"
+                    ]
+                    == "insufficient_repeated_current_loss"
+                    and "pass_power_3_tasks"
+                    not in synthetic_summary
+                )
+                or (
+                    CAMPAIGN == "m23b"
+                    and synthetic_summary["pass_power_3_tasks"] == 17
+                )
+            ),
             "self_test_hardness_aggregate_invalid",
         )
     print(
@@ -9258,6 +9692,7 @@ def parse_args() -> argparse.Namespace:
             "m19",
             "m20b",
             "m23b",
+            "m30",
         ),
         default="m9c",
     )

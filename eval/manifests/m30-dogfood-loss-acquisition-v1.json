@@ -36,7 +36,7 @@
       "reuse the frozen 20-task Hardness fixture and verifier facts without copying a second task corpus",
       "run one breadth-first position-1 arm per independent task on one current immutable binary",
       "derive behavior truth independently from accounting truth using canonical Store, latest-revision Host receipt and external verifier facts",
-      "preserve fixed actor route, current three-mode permission policy, exact reopen and one continuity restart for tasks that require it",
+      "preserve fixed actor route, current three-mode permission policy, exact reopen and one typed user-input continuity restart for tasks that require it",
       "stop before the next arm on false success, identity mismatch, observer ambiguity, unsafe evidence, unknown billing, incomplete usage or a cost ceiling",
       "require the same stable owner and cause across at least two independent task IDs before any production candidate audit",
       "return insufficient_repeated_current_loss when the threshold is not met"
@@ -103,7 +103,7 @@
     "permission_mode": "ask",
     "interactive": true,
     "checkpoint_kind": "interaction_requested",
-    "interaction_kind": "approval",
+    "interaction_kind": "user_input",
     "process_stop": "sigkill_process_group",
     "restarts_per_arm": 1,
     "physical_requests_added_at_reopen": 0,
@@ -182,8 +182,15 @@
     "push": false,
     "release": false
   },
-  "authority_identity": {
-    "freeze_after_offline_gates": true,
-    "live_admission_exists": false
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:17736c9e8093cf49289359cda0cb7e7df69b44c2997e233c5f3abb2b5314d683",
+    "evaluation": "sha256:12804576086d9a07ad83d17bf8e4888e100d3c48a0d4116ef9cc4a99f295c356",
+    "current_architecture": "sha256:f64999c46acec94fed1a39a18ccf21beac53bb8cf08e10922808347a6562a283"
+  },
+  "live_admission": {
+    "exists": false,
+    "credential_authorized": false,
+    "official_model_request_authorized": false
   }
 }

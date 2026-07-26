@@ -3647,7 +3647,7 @@ M30 不是 M23 continuation，也不是 M29 机制结果的质量外推。它从
 | schedule | one position-1 arm per task；20 arms；no mate |
 | production identity | current Run API v13 / RuntimeEvent v20 / State v26 / exec stream v4 |
 | model | root/Writer `deepseek-v4-pro` + high；ordinary read-only actor profile Flash/high |
-| permission | headless Agent；three continuity cases Ask + interactive reopen |
+| permission | headless Agent；three continuity cases Ask + typed user-input reopen |
 | verifier | per-task external deterministic verifier + latest-revision Host receipt |
 | retry | `maximum_reruns=0`；transport/runtime retry 0 |
 | cost ceiling | `$0.50/arm`、`$10.00/suite` |
@@ -3658,8 +3658,8 @@ Offline acceptance:
 1. inherited manifest/file/tree/reference hashes and all 20 fail-before/pass-after or safety
    counterexamples reproduce;
 2. current Run API permission envelope, fixed actor routes and task/lane scopes are exact;
-3. three continuity tasks commit interaction, SIGKILL, reopen and resolve once with no additional
-   physical model request or side effect;
+3. three continuity tasks commit one typed user-input interaction, SIGKILL, reopen and answer once
+   with no additional physical model request or side effect at reopen;
 4. behavior/accounting truth remain orthogonal and deterministic;
 5. journal remains ignored 0600, exclusive, fsynced and hash-chained;
 6. self-test, dry-run, production loopback, focused/full repository gates and exact-source identity
@@ -3686,6 +3686,30 @@ stop_invalid_identity_or_observation
 `next_candidate_audit_required` only opens one minimum owner audit; it is not automatic
 implementation. Until a repeated loss exists, production delta and product metric claim are both
 zero.
+
+#### M30 offline mechanism result
+
+`--campaign m30` 已在同一个 corrected Harness 中闭合：
+
+- task/fixture/reference inheritance hash 有效；20 个独立 Git workspace 可重复物化；
+- initial verifier 20/20 按预期失败，17 个正向 reference 17/17 通过，3 个 safety
+  counterexample 3/3 保持失败；
+- schedule 为 20×1，`runs_per_task=1`、`maximum_reruns=0`，不生成 pass³；
+- current controls 只含 `write_execution_mode/permission_mode/interactive`；root/Writer/
+  read-only lane profile 与 current product 一致；
+- 三个 continuity task 使用 runtime-owned `request_user_input` 建立 durable checkpoint；
+  真实进程 SIGKILL/reopen 保持 event prefix 与 physical request `1 -> 1`，回答后恰好一次
+  workspace side effect，最终 3 个 loopback requests、一个 terminal，terminal reopen
+  exact；
+- journal 四个 crash window、behavior/accounting truth、Hardness metric observer、M23B
+  historical self-test 与 M9C self-test 均通过；
+- offline 阶段 Key/API/model network 为 0。
+
+冻结的 schedule hash 为
+`sha256:621efff3ea6f5cc2ea34dc946145044f754dc87b5bbe51c79af2d5477a7e72a1`，
+task-contract hash 为
+`sha256:7d71a8597adc1d628987e6eb1ee588c48c150f228322aec05658c663cd135c99`。
+这仍不是 current DeepSeek loss 或质量结论；live credential-front 尚未准入。
 
 ## 10. 结果与决策记录
 

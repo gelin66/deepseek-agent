@@ -5283,7 +5283,7 @@ release 均为 0。完整结果见
 
 ## 28. M30：current production dogfood loss acquisition
 
-- 状态：**合同已冻结；credential-front 尚未准入**
+- 状态：**offline Harness/current continuity 已闭合；credential-front 尚未准入**
 - 基线：M29 clean checkpoint `1b7f92a97`
 - owner：唯一 corrected Harness
   `scripts/eval-m9b-fixed-pro-regression.py`
@@ -5309,8 +5309,9 @@ repository、独立 SQLite Store/verifier HOME、同一 immutable current binary
 `maximum_reruns=0`、canonical tools、external verifier 和 Host latest-revision receipt。
 root 与显式 Writer 固定 Pro/high，普通 read-only child 按现有 actor profile 固定
 Flash/high；这不是 Auto。普通 headless run 使用 `permission_mode=agent`；需要 durable
-restart 的三个任务使用 Ask/interactive，在 interaction commit 后 SIGKILL，reopen 后才
-resolve，且不得增加 physical model request。
+restart 的三个任务使用 Ask/interactive 与 canonical `request_user_input`，在 user-input
+interaction commit 后 SIGKILL，reopen 后才 answer，且 reopen 本身不得增加 physical
+model request。普通 workspace edit/test 在 Ask 下仍保持 prompt=0。
 
 这是一组 current loss observations，不是 pass³、A/B 或 release quality score。每条轨迹
 分别派生 behavior truth 与 accounting truth；任一 false success、identity/observer/
@@ -5333,3 +5334,29 @@ accounting/identity 停止，则只记录精确停止事实，不从部分样本
 current production loopback、crash/reopen、route/permission parity 与全仓门禁闭合前不
 读取 Key、不调用 official API；credential-front 还必须取得本 Goal 的明确授权和冻结
 $0.50/arm、$10/suite 上界。全程不访问 GitHub、不 push、不 release。
+
+### 28.4 Offline Harness checkpoint
+
+唯一 corrected Harness 已增加 `--campaign m30`，通过 hash 读取 M23 的四段任务物料，
+不复制 task corpus、verifier 或 failure classifier。M30 使用 current Run API v13
+controls；20 个 start envelope 都只含
+`write_execution_mode/permission_mode/interactive`，没有旧
+`auto_approve/trust/sandbox/elevation` reader。三个 continuity task 的 root catalog
+显式加入已有 runtime builtin `request_user_input`；这不是新工具 owner。
+
+credential-free self-test 实际物化 20 个 fresh Git repository，证明 20/20 初始状态、
+17/17 reference solution 和 3/3 safety counterexample，并覆盖 journal before/mid/
+unfsynced/after-write fault window。current app-server/process-test loopback 又证明：
+
+```text
+user-input checkpoint physical requests = 1
+SIGKILL + SQLite reopen requests        = 1
+answer + one apply_patch + completion   = 3
+interaction requested/resolved          = 1 / 1
+workspace side effects                   = 1
+terminal reopen exact                    = true
+```
+
+M23B 与 M9C self-test、M23 truth/hardness observer regression 均继续通过。该 checkpoint
+只准入 current offline acquisition mechanism；没有 live admission、Key、official model
+request 或 loss matrix。

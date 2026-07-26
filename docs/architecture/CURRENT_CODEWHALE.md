@@ -2626,8 +2626,15 @@ journal 或 raw。
 计划中的 current acquisition 是 20 个独立任务各一次的 breadth-first loss collector，
 不是 pass³ 或 treatment A/B。当前 fixed actor route、三档 permission、唯一
 AgentApplication/AgentRuntime/RunStore、canonical tools 与 latest-revision Host completion
-都保持不变。离线 Harness/current caller/reopen 门和本 Goal 的 credential 授权尚未闭合，
-因此没有读取 Key、没有 model API request，也没有 current loss 或候选结论。
+都保持不变。
+
+当前唯一 corrected Harness 已有 `--campaign m30` 的 credential-free caller。它使用
+current 三字段 permission controls；三个 long-horizon task 通过 runtime-owned
+`request_user_input` 形成 durable checkpoint，真实 app-server SIGKILL/SQLite reopen 在
+answer 前不增加物理请求，answer 后只执行一次 workspace side effect。20-task
+fail-before/reference-proof、journal crash windows、M23 truth/hardness observer 与历史
+M23B/M9C self-test 都通过。live admission 与本 Goal 的 credential 授权仍未闭合，因此
+没有读取 Key、没有 official model API request，也没有 current loss 或候选结论。
 
 ## 8. 明确非结论
 
