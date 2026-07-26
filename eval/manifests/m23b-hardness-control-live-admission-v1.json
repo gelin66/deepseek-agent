@@ -1,0 +1,138 @@
+{
+  "schema": "dse.eval.m23b-hardness-control-live-admission.v1",
+  "admitted_at_utc": "2026-07-26T09:16:15Z",
+  "contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "hardness_continuity_manifest": "eval/manifests/m23b-hardness-live-continuity-v1.json",
+  "hardness_continuity_manifest_sha256": "sha256:4dd5909ba826672bd8ee8df95ae756c1d10787857c1de5f469da7900f7230079",
+  "candidate_revision": "e68d215c300f4b5eda8ab4f8bd96c61bf7cff11d",
+  "candidate_tree": "9443a2029c996cf12343d8cd418a06a2c96e90c0",
+  "candidate_binary": "/private/tmp/dse-m23b4-target/release/dse",
+  "candidate_binary_sha256": "sha256:f38dc426223b99035ba0bb0015aaa1d08f5826a3209fee08b8b59cf78f717ab8",
+  "candidate_binary_size_bytes": 14272112,
+  "candidate_binary_version": "dse 0.8.68 (e68d215c300f)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:f91cbc688730eea016177167bf7c6840a24c33bdfdda04c046ef0faeb4687c74",
+  "schedule_sha256": "sha256:e8f67f51e2d692e0423b545c16f9f8624a87ac7fb3bdcea53ac40b58397ea3a6",
+  "task_contracts_sha256": "sha256:363426bdc5a952222f839fd2242c4c040120e0556c51f0e28fb0f49cbf86e12b",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:2f59f31b9a7503479589332d0ec845fbdad09d4b3f39d53dcfa5198e19471846",
+  "freeze_report_sha256": "sha256:c8d17e8dd371530311cfd743bc9e9b92926056533077d96ecf75e4d8e889cac5",
+  "dry_run_sha256": "sha256:b68be3345143e1a575ebd5f08c507e7e48bde23a2d74ec2d345e62ea4f6c1e0f",
+  "continuity_process_report_sha256": "sha256:f80b91bf904873fd9d6512250278ba5be702325f188b1c99684faf5628921636",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:1dd36f57db89f999ffef77a861a264f7ae74183b81e8b6cdf945e2f9eaa0b78e",
+  "truth_conformance_sha256": "sha256:15dfe0741f5cd9eeddf49f08180901aaf07792251a4a659842ee4641a02311e2",
+  "hardness_conformance_sha256": "sha256:b13e6724bd33ea5903735fb62020fc38b6a9a37e6d3531e5b68b43bd26d7b27c",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new position-1 20-task by 3-round current Hardness fixed-Pro/high control-only loss acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "20-task monorepo fixture, three balanced rounds, reference solutions, resource identity, hash-chain journal and four SIGKILL write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M23-B2 Hardness metrics observer and M23-B3 real durable-approval process continuity caller regenerate byte-identically",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M14 typed trajectory, M16 acceptance-equivalence and M23-A behavior/accounting truth conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary, Harness self-test, freeze report and credential-free dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, targeted approval SIGKILL recovery, fmt, strict workspace clippy/test and git diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, V4 release, ChatCompletions, Thinking, Tool Calls and pricing revalidated on 2026-07-26",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "go_health_api": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_jsonl_runtime": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_component_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_service_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_event_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_line_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_registry_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_router_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_export_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_tenant_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_dom_ui": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_forwarded_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_request_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_retry_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_route_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_policy_migration": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 20,
+    "runs_per_task": 3,
+    "formal_arms": 60,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 30.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "output": "eval/results/m23b-hardness-control-e68d215c300f-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "current fixed-Pro/high control-only Hardness acquisition under the frozen USD 30.00 suite ceiling"
+  },
+  "official_protocol_revalidated_on": "2026-07-26",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
