@@ -386,13 +386,11 @@ fn spacer_rows_between(current: &CachedCell, next: &CachedCell) -> usize {
         return 0;
     }
 
-    if current.is_conversational && next.is_conversational {
-        1
-    } else if current.is_system_or_tool || next.is_system_or_tool {
-        1
-    } else {
-        0
-    }
+    usize::from(
+        (current.is_conversational && next.is_conversational)
+            || current.is_system_or_tool
+            || next.is_system_or_tool,
+    )
 }
 
 fn tool_group_rail(

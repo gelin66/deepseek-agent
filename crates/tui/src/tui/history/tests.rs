@@ -249,7 +249,6 @@ fn reasoning_chrome_is_chinese_and_preserves_model_text() {
         TranscriptRenderOptions {
             show_thinking: false,
             low_motion: true,
-            ..TranscriptRenderOptions::default()
         },
     );
     assert!(
@@ -317,7 +316,6 @@ fn render_hidden_streaming_thinking_shows_activity_without_content() {
         TranscriptRenderOptions {
             show_thinking: false,
             low_motion: true,
-            ..TranscriptRenderOptions::default()
         },
     );
     let text = lines_text(&lines);
