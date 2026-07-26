@@ -1,9 +1,7 @@
 mod renderable;
-mod status_indicator;
 pub mod tool_card;
 
 pub use renderable::Renderable;
-pub use status_indicator::header_status_indicator_frame;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -12,7 +10,6 @@ use crate::palette;
 use crate::tui::app::{App, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
-use crate::tui::underwater::ShellPhase;
 use dse_localization::{MessageId, tr};
 use ratatui::{
     buffer::Buffer,
@@ -39,14 +36,6 @@ pub struct ChatWidget {
     scrollbar: Option<TranscriptScrollbar>,
     jump_to_latest_button: Option<Rect>,
     background: Color,
-    ocean_column: Option<crate::tui::ocean::OceanColumn>,
-    /// Ink for idle fish/bubbles. Present for every underwater treatment —
-    /// flat and Terminal-owned keep ambient life without the ombre field.
-    ambient_inks: Option<(Color, Color)>,
-    ocean_elapsed_ms: u128,
-    ocean_animated: bool,
-    fish_flee_elapsed_ms: Option<u128>,
-    ambient_life: bool,
     scroll_track: Color,
     scroll_thumb: Color,
     jump_border: Color,
@@ -64,39 +53,7 @@ impl ChatWidget {
     pub fn new(app: &mut App, area: Rect) -> Self {
         let content_area = area;
         let background = app.ui_theme.surface_bg;
-        let ocean_ramp = app
-            .ocean_treatment
-            .is_ombre()
-            .then(|| crate::tui::ocean::OceanRamp::for_theme(&app.ui_theme))
-            .flatten();
-        let ambient_inks = Some(crate::tui::ocean::ambient_inks(&app.ui_theme));
-        let ocean_elapsed_ms = app.ocean_started_at.elapsed().as_millis();
         let render_empty_state = should_render_empty_state(app);
-        let phase = ShellPhase::from_app(app);
-        // Keep the water alive while a turn is doing work, even after the
-        // transcript exists. Previously motion was limited to a pristine
-        // empty composer, so typing or receiving the first message made the
-        // fish appear to die.
-        let underwater_motion_enabled =
-            !app.low_motion && app.fancy_animations && !app.attention_hold_active();
-        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
-        let ocean_animated = underwater_motion_enabled
-            && (render_empty_state || browsing_history || phase == ShellPhase::Working);
-        let ocean_column = ocean_ramp.map(|ramp| {
-            crate::tui::ocean::OceanColumn::new(
-                ramp,
-                content_area,
-                ocean_elapsed_ms,
-                phase,
-                ocean_animated,
-            )
-        });
-        let fish_flee_elapsed_ms = underwater_motion_enabled
-            .then_some(())
-            .and(app.turn_started_at)
-            .map(|started| started.elapsed().as_millis())
-            .filter(|elapsed| *elapsed < 800)
-            .filter(|_| phase == ShellPhase::Working);
         let scroll_track = app.ui_theme.border;
         let scroll_thumb = app.ui_theme.status_working;
         let jump_border = app.ui_theme.border;
@@ -118,18 +75,6 @@ impl ChatWidget {
                 scrollbar: None,
                 jump_to_latest_button: None,
                 background,
-                ocean_column,
-                ambient_inks,
-                ocean_elapsed_ms,
-                ocean_animated,
-                fish_flee_elapsed_ms,
-                // Reduced-motion users still get the quiet, static scene;
-                // only movement itself is opt-in.
-                ambient_life: !app.attention_hold_active()
-                    && matches!(
-                        phase,
-                        ShellPhase::Idle | ShellPhase::Typing | ShellPhase::Working
-                    ),
                 scroll_track,
                 scroll_thumb,
                 jump_border,
@@ -325,37 +270,11 @@ impl ChatWidget {
             scrollbar,
             jump_to_latest_button,
             background,
-            ocean_column,
-            ambient_inks,
-            ocean_elapsed_ms,
-            ocean_animated,
-            fish_flee_elapsed_ms,
-            // Fish also accompany intentional transcript browsing. They only
-            // occupy blank cells and are collision-checked, so history stays
-            // legible while the ocean remains playful when scrolling upward.
-            ambient_life: !app.attention_hold_active()
-                && (browsing_history || phase == ShellPhase::Working),
             scroll_track,
             scroll_thumb,
             jump_border,
             jump_arrow,
         }
-    }
-
-    /// Sample the water field against the full terminal instead of restarting
-    /// it at the transcript's first row. Standalone widget callers keep the
-    /// local column, which is useful for previews and focused tests.
-    #[must_use]
-    pub(crate) fn with_ocean_viewport(mut self, viewport: Rect) -> Self {
-        self.ocean_column = self
-            .ocean_column
-            .map(|column| column.with_viewport(viewport));
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn ocean_column(&self) -> Option<crate::tui::ocean::OceanColumn> {
-        self.ocean_column
     }
 }
 
@@ -410,8 +329,6 @@ impl Renderable for ChatWidget {
             Paragraph::new(self.lines.clone()).style(Style::default().bg(self.background));
         paragraph.render(area, buf);
 
-        self.render_underwater_field(area, buf);
-
         // Link targets travel beside the wrapped lines, never inside Span
         // content. Convert relative line columns to absolute viewport regions
         // for the backend; clip the final column when a scrollbar owns it.
@@ -453,277 +370,6 @@ impl Renderable for ChatWidget {
     fn desired_height(&self, _width: u16) -> u16 {
         1
     }
-}
-
-impl ChatWidget {
-    /// Paint the underwater field. The water column belongs to ombre;
-    /// ambient life belongs to every underwater treatment. Flat keeps the
-    /// theme surface and Terminal keeps its inherited background, but
-    /// neither means a lifeless ocean.
-    fn render_underwater_field(&self, area: Rect, buf: &mut Buffer) {
-        if let Some(column) = self.ocean_column {
-            for local_y in 0..area.height {
-                let protected = self
-                    .lines
-                    .get(usize::from(local_y))
-                    .and_then(occupied_text_bounds);
-                let row_bg = column.color_at_y(area.y.saturating_add(local_y));
-                for local_x in 0..area.width {
-                    let is_protected = protected.is_some_and(|(start, end)| {
-                        usize::from(local_x) >= start && usize::from(local_x) < end
-                    });
-                    let cell = &mut buf[(area.x + local_x, area.y + local_y)];
-                    // Plain transcript text participates in the water column;
-                    // explicit semantic surfaces (selection, code, warnings)
-                    // retain their own background.
-                    if !is_protected || cell.bg == self.background {
-                        cell.set_bg(row_bg);
-                    }
-                }
-            }
-        }
-
-        if self.ambient_life
-            && let Some(inks) = self.ambient_inks
-        {
-            render_ambient_life(
-                area,
-                buf,
-                inks,
-                &self.lines,
-                self.ocean_elapsed_ms,
-                self.ocean_animated,
-                self.fish_flee_elapsed_ms,
-            );
-        }
-    }
-}
-
-fn occupied_text_bounds(line: &Line<'_>) -> Option<(usize, usize)> {
-    let text = line
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-    if text.trim().is_empty() {
-        return None;
-    }
-
-    let leading = text
-        .chars()
-        .take_while(|ch| ch.is_whitespace())
-        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
-        .sum::<usize>();
-    let total = UnicodeWidthStr::width(text.as_str());
-    let trailing = text
-        .chars()
-        .rev()
-        .take_while(|ch| ch.is_whitespace())
-        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
-        .sum::<usize>();
-    Some((leading, total.saturating_sub(trailing)))
-}
-
-fn render_ambient_life(
-    area: Rect,
-    buf: &mut Buffer,
-    inks: (Color, Color),
-    lines: &[Line<'static>],
-    elapsed_ms: u128,
-    animated: bool,
-    fish_flee_elapsed_ms: Option<u128>,
-) {
-    if area.width < crate::tui::ocean::AMBIENT_MIN_WIDTH
-        || area.height < crate::tui::ocean::AMBIENT_MIN_HEIGHT
-    {
-        return;
-    }
-
-    let span_a = (area.width / 6).clamp(10, 24);
-    let span_b = (area.width / 7).clamp(8, 20);
-    let span_c = (area.width / 8).clamp(7, 18);
-    let (drift_a, fish_a_forward) = if animated {
-        ambient_ping_pong(elapsed_ms, 480, span_a, 0)
-    } else {
-        (0, true)
-    };
-    let (drift_b, fish_b_forward) = if animated {
-        ambient_ping_pong(elapsed_ms, 560, span_b, 1_900)
-    } else {
-        (0, false)
-    };
-    let (drift_c, fish_c_forward) = if animated {
-        ambient_ping_pong(elapsed_ms, 640, span_c, 3_700)
-    } else {
-        (0, true)
-    };
-    let heading_sample_ms = u128::from(crate::tui::ui::UI_UNDERWATER_ANIMATION_MS);
-    let previous_elapsed_ms = elapsed_ms.saturating_sub(heading_sample_ms);
-    let next_elapsed_ms = elapsed_ms.saturating_add(heading_sample_ms);
-    let previous_drift_a = if animated {
-        ambient_ping_pong(previous_elapsed_ms, 480, span_a, 0).0
-    } else {
-        drift_a
-    };
-    let next_drift_a = if animated {
-        ambient_ping_pong(next_elapsed_ms, 480, span_a, 0).0
-    } else {
-        drift_a
-    };
-    let previous_drift_b = if animated {
-        ambient_ping_pong(previous_elapsed_ms, 560, span_b, 1_900).0
-    } else {
-        drift_b
-    };
-    let next_drift_b = if animated {
-        ambient_ping_pong(next_elapsed_ms, 560, span_b, 1_900).0
-    } else {
-        drift_b
-    };
-    let previous_drift_c = if animated {
-        ambient_ping_pong(previous_elapsed_ms, 640, span_c, 3_700).0
-    } else {
-        drift_c
-    };
-    let next_drift_c = if animated {
-        ambient_ping_pong(next_elapsed_ms, 640, span_c, 3_700).0
-    } else {
-        drift_c
-    };
-    let rise = if animated {
-        u16::try_from((elapsed_ms / 720) % 5).unwrap_or(0)
-    } else {
-        0
-    };
-    let bubble = if animated {
-        ["·", "˚", "°", "˚"][(elapsed_ms / 300) as usize % 4]
-    } else {
-        "°"
-    };
-    let flee = fish_flee_elapsed_ms.map_or(0, fish_flee_offset);
-    let previous_flee = fish_flee_elapsed_ms
-        .map(|elapsed| fish_flee_offset(elapsed.saturating_sub(heading_sample_ms)))
-        .unwrap_or(flee);
-    let next_flee = fish_flee_elapsed_ms
-        .map(|elapsed| fish_flee_offset(elapsed.saturating_add(heading_sample_ms)))
-        .unwrap_or(flee);
-    let max_fish_x = area.width.saturating_sub(3);
-    let fish_a_x = (area.width / 12 + drift_a)
-        .saturating_sub(flee)
-        .min(max_fish_x);
-    let fish_a_previous_x = (area.width / 12 + previous_drift_a)
-        .saturating_sub(previous_flee)
-        .min(max_fish_x);
-    let fish_a_next_x = (area.width / 12 + next_drift_a)
-        .saturating_sub(next_flee)
-        .min(max_fish_x);
-    let fish_b_x = (area.width * 5 / 6)
-        .saturating_sub(drift_b)
-        .saturating_add(flee)
-        .min(max_fish_x);
-    let fish_b_previous_x = (area.width * 5 / 6)
-        .saturating_sub(previous_drift_b)
-        .saturating_add(previous_flee)
-        .min(max_fish_x);
-    let fish_b_next_x = (area.width * 5 / 6)
-        .saturating_sub(next_drift_b)
-        .saturating_add(next_flee)
-        .min(max_fish_x);
-    let fish_c_x = (area.width / 3 + drift_c)
-        .saturating_sub(flee / 2)
-        .min(max_fish_x);
-    let fish_c_previous_x = (area.width / 3 + previous_drift_c)
-        .saturating_sub(previous_flee / 2)
-        .min(max_fish_x);
-    let fish_c_next_x = (area.width / 3 + next_drift_c)
-        .saturating_sub(next_flee / 2)
-        .min(max_fish_x);
-    let fish_a_faces_right =
-        fish_heading(fish_a_previous_x, fish_a_x, fish_a_next_x, fish_a_forward);
-    let fish_b_faces_right =
-        fish_heading(fish_b_previous_x, fish_b_x, fish_b_next_x, !fish_b_forward);
-    let fish_c_faces_right =
-        fish_heading(fish_c_previous_x, fish_c_x, fish_c_next_x, fish_c_forward);
-    let marks = [
-        (fish_a_x, area.height * 3 / 4, fish_mark(fish_a_faces_right)),
-        (fish_b_x, area.height * 3 / 8, fish_mark(fish_b_faces_right)),
-        (fish_c_x, area.height / 6, fish_mark(fish_c_faces_right)),
-        (
-            area.width * 3 / 4,
-            (area.height / 4).saturating_sub(rise),
-            bubble,
-        ),
-    ];
-    for (index, (local_x, local_y, mark)) in marks.into_iter().enumerate() {
-        let protected = lines
-            .get(usize::from(local_y))
-            .and_then(occupied_text_bounds);
-        let mark_width = UnicodeWidthStr::width(mark);
-        // A one-cell gap on either side keeps life from visually attaching
-        // to occupied text, not merely from overlapping it.
-        let collides = protected.is_some_and(|(start, end)| {
-            usize::from(local_x) < end.saturating_add(1)
-                && usize::from(local_x) + mark_width > start.saturating_sub(1)
-        });
-        if collides || local_x.saturating_add(mark_width as u16) > area.width {
-            continue;
-        }
-        for (offset, ch) in mark.chars().enumerate() {
-            buf[(area.x + local_x + offset as u16, area.y + local_y)]
-                .set_symbol(&ch.to_string())
-                .set_fg(if index == 1 { inks.1 } else { inks.0 });
-        }
-    }
-}
-
-/// One-shot flee arc: fish leave their ambient positions, peak halfway, then
-/// return to the same stable positions. The deterministic 800 ms envelope is
-/// keyed to the typed Working transition and never loops.
-fn fish_flee_offset(elapsed_ms: u128) -> u16 {
-    let progress = elapsed_ms.min(800) as f32 / 800.0;
-    let excursion = (progress * std::f32::consts::PI).sin() * 9.0;
-    excursion.round().clamp(0.0, 9.0) as u16
-}
-
-#[must_use]
-fn fish_mark(facing_right: bool) -> &'static str {
-    if facing_right { "><>" } else { "<><" }
-}
-
-/// Prefer the next visible displacement, then the most recent displacement.
-/// The fallback matters only while easing leaves the fish in the same terminal
-/// cell for several frames. Crucially, callers pass the fallback in screen-x
-/// coordinates, so mirrored paths cannot accidentally swim backwards.
-#[must_use]
-fn fish_heading(previous_x: u16, current_x: u16, next_x: u16, fallback_right: bool) -> bool {
-    if next_x != current_x {
-        next_x > current_x
-    } else if current_x != previous_x {
-        current_x > previous_x
-    } else {
-        fallback_right
-    }
-}
-
-/// A cosine-eased ping-pong path keeps the fish continuous and lets it settle
-/// gently before turning. The event loop supplies the shared underwater
-/// cadence; this function only maps elapsed time and never requests frames.
-fn ambient_ping_pong(elapsed_ms: u128, step_ms: u128, span: u16, phase_ms: u128) -> (u16, bool) {
-    if span == 0 || step_ms == 0 {
-        return (0, true);
-    }
-    let leg_ms = step_ms.saturating_mul(u128::from(span));
-    let period_ms = leg_ms.saturating_mul(2);
-    let phase = (elapsed_ms.saturating_add(phase_ms)) % period_ms;
-    let (leg_elapsed, forward) = if phase <= leg_ms {
-        (phase, true)
-    } else {
-        (phase.saturating_sub(leg_ms), false)
-    };
-    let progress = leg_elapsed as f64 / leg_ms as f64;
-    let eased = (1.0 - (progress * std::f64::consts::PI).cos()) * 0.5;
-    let position = if forward { eased } else { 1.0 - eased };
-    ((position * f64::from(span)).round() as u16, forward)
 }
 
 fn jump_to_latest_button_rect(area: Rect, has_scrollbar: bool) -> Option<Rect> {
@@ -1997,7 +1643,7 @@ fn should_render_empty_state(app: &App) -> bool {
 }
 
 fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
-    crate::tui::underwater::empty_state_lines(app, area)
+    crate::tui::shell::empty_state_lines(app, area)
 }
 
 pub fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
@@ -2234,11 +1880,11 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER, ChatWidget, ComposerWidget,
-        Renderable, SlashMenuEntry, ambient_ping_pong, build_empty_state_lines,
-        composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
-        composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
-        fish_flee_offset, fish_heading, fish_mark, layout_input, layout_input_with_scroll,
-        placeholder_visual_lines, should_render_empty_state, wrap_input_lines, wrap_text,
+        Renderable, SlashMenuEntry, build_empty_state_lines, composer_content_geometry,
+        composer_empty_hint_text, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, cursor_row_col, empty_composer_visual_rows, layout_input,
+        layout_input_with_scroll, placeholder_visual_lines, should_render_empty_state,
+        wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -2247,10 +1893,7 @@ mod tests {
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use crate::tui::scrolling::TranscriptScroll;
     use ratatui::{buffer::Buffer, layout::Rect, style::Color};
-    use std::{
-        path::PathBuf,
-        time::{Duration, Instant},
-    };
+    use std::path::PathBuf;
     use unicode_width::UnicodeWidthStr;
 
     fn create_test_app() -> App {
@@ -2992,7 +2635,7 @@ mod tests {
     }
 
     #[test]
-    fn underwater_empty_state_is_visibly_deep_and_preserves_text_cells() {
+    fn empty_state_uses_one_still_terminal_surface() {
         let mut app = create_test_app();
         app.workspace = PathBuf::from("/tmp/dse-test-workspace");
         app.model = "deepseek-v4-pro".to_string();
@@ -3002,32 +2645,19 @@ mod tests {
         let mut buf = Buffer::empty(area);
         ChatWidget::new(&mut app, area).render(area, &mut buf);
 
-        assert_ne!(buf[(0, 0)].bg, buf[(0, 19)].bg);
+        assert!(
+            (0..area.height).all(|y| (0..area.width).all(|x| buf[(x, y)].bg == base)),
+            "the main transcript must not paint decorative depth"
+        );
         let rendered = buffer_text(&buf, area);
-        let fish_count = rendered.matches("><>").count() + rendered.matches("<><").count();
-        assert_eq!(
-            fish_count, 3,
-            "wide idle water should contain three fish:\n{rendered}"
-        );
-
-        let context = "dse · 工作区：/tmp/dse-test-workspace · mcp 0";
-        let context_x = ((100usize - UnicodeWidthStr::width(context)) / 2) as u16;
-        let context_cell = (0..area.height)
-            .find_map(|y| (buf[(context_x, y)].symbol() == "d").then_some((context_x, y)))
-            .expect("context line");
-        assert_eq!(
-            buf[context_cell].bg,
-            buf[(0, context_cell.1)].bg,
-            "ordinary transcript text must share its row's water color"
-        );
-        assert_ne!(
-            buf[context_cell].bg, base,
-            "the water column should continue behind ordinary text"
-        );
+        assert!(rendered.contains("工作区：/tmp/dse-test-workspace"));
+        for retired in ["><>", "<><", "°", "████   █████  █████"] {
+            assert!(!rendered.contains(retired), "retired decoration: {retired}");
+        }
     }
 
     #[test]
-    fn compact_empty_state_omits_fake_commands_and_ambient_clutter() {
+    fn compact_empty_state_omits_fake_commands_and_decoration() {
         let app = create_test_app();
         let rendered = build_empty_state_lines(&app, Rect::new(0, 0, 40, 12))
             .iter()
@@ -3052,73 +2682,35 @@ mod tests {
             assert!(rendered.contains("dse"));
             assert!(!rendered.contains("/fleet"));
             assert!(!rendered.contains("▗▄▄▄▄▄▄▄▄▄▄▄▄▄▖"));
-            if height >= 14 && width >= 28 {
-                assert!(
-                    rendered.contains("████   █████  █████"),
-                    "wide DSE shell must render the DSE wordmark at {width}x{height}"
-                );
-            } else {
-                assert!(
-                    !rendered.contains("████   █████  █████"),
-                    "the DSE wordmark must yield at {width}x{height}"
-                );
-            }
+            assert!(!rendered.contains("████   █████  █████"));
         }
     }
 
     #[test]
-    fn flat_treatment_keeps_theme_surface_and_ambient_life() {
-        let mut app = create_test_app();
-        app.ocean_treatment = crate::tui::ocean::OceanTreatment::Flat;
-        app.low_motion = false;
-        app.fancy_animations = true;
-        let area = Rect::new(0, 0, 100, 20);
-        let base = app.ui_theme.surface_bg;
-        let mut buf = Buffer::empty(area);
-        ChatWidget::new(&mut app, area).render(area, &mut buf);
-
-        assert_eq!(buf[(0, 0)].bg, base);
-        assert_eq!(buf[(0, 19)].bg, base, "flat keeps the plain theme surface");
-        let rendered = buffer_text(&buf, area);
-        assert!(
-            rendered.contains("><>") || rendered.contains("<><"),
-            "flat means a plain surface, not a lifeless ocean — idle fish must survive:\n{rendered}"
-        );
-        assert!(!rendered.contains("/fleet"));
-    }
-
-    #[test]
-    fn terminal_owned_background_still_carries_foreground_life() {
+    fn terminal_owned_background_remains_unpainted_and_still() {
         let mut app = create_test_app();
         app.ui_theme = crate::palette::TERMINAL_UI_THEME;
-        app.low_motion = false;
-        app.fancy_animations = true;
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);
         ChatWidget::new(&mut app, area).render(area, &mut buf);
 
         assert!(
             (0..area.height).all(|y| (0..area.width).all(|x| buf[(x, y)].bg == Color::Reset)),
-            "the Terminal treatment must never paint a background"
+            "the terminal-native surface must never paint a background"
         );
         let rendered = buffer_text(&buf, area);
-        assert!(
-            rendered.contains("><>") || rendered.contains("<><"),
-            "Terminal keeps foreground ambient life without owning the background:\n{rendered}"
-        );
+        assert!(!rendered.contains("><>"));
+        assert!(!rendered.contains("<><"));
     }
 
     /// #4208: `DSE_ASCII_SAFE=1` must narrow every DSE-authored
-    /// decorative glyph — DSE mark, fish, bubble, context meter, borders,
-    /// braille state markers — across real rendered surfaces, not a
-    /// hand-picked symbol list.
+    /// semantic glyph across real rendered surfaces, not a hand-picked list.
     #[test]
     fn ascii_safe_tier_covers_whole_rendered_surfaces() {
         let mut app = create_test_app();
         app.low_motion = false;
-        app.fancy_animations = true;
 
-        // Idle empty water at a size that earns the DSE mark, fish, and bubble.
+        // Idle transcript plus canonical header and phase line.
         let transcript_area = Rect::new(0, 0, 100, 32);
         let mut transcript = Buffer::empty(transcript_area);
         ChatWidget::new(&mut app, transcript_area).render(transcript_area, &mut transcript);
@@ -3126,13 +2718,13 @@ mod tests {
         // Header owns the route facts and the block context meter.
         let header_area = Rect::new(0, 0, 100, 2);
         let mut header = Buffer::empty(header_area);
-        crate::tui::underwater::render_header(header_area, &mut header, &app);
+        crate::tui::shell::render_header(header_area, &mut header, &app);
 
-        // Footer while working carries the braille state marker.
+        // Footer while working carries the semantic activity marker.
         app.is_loading = true;
         let footer_area = Rect::new(0, 0, 100, 1);
         let mut footer = Buffer::empty(footer_area);
-        crate::tui::underwater::render_footer(footer_area, &mut footer, &mut app);
+        crate::tui::shell::render_footer(footer_area, &mut footer, &mut app);
         app.is_loading = false;
 
         for (surface, buf, rect) in [
@@ -3181,86 +2773,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn reduced_motion_freezes_the_ocean_without_removing_depth() {
-        let mut app = create_test_app();
-        app.low_motion = true;
-        app.fancy_animations = true;
-        let area = Rect::new(0, 0, 100, 20);
-        app.ocean_started_at = Instant::now() - Duration::from_secs(2);
-        let mut first = Buffer::empty(area);
-        ChatWidget::new(&mut app, area).render(area, &mut first);
-
-        app.ocean_started_at = Instant::now() - Duration::from_secs(11);
-        let mut second = Buffer::empty(area);
-        ChatWidget::new(&mut app, area).render(area, &mut second);
-
-        assert_ne!(first[(0, 0)].bg, first[(0, 19)].bg);
-        assert_eq!(first[(0, 0)].bg, second[(0, 0)].bg);
-        assert_eq!(first[(11, 14)].symbol(), second[(11, 14)].symbol());
-    }
-
-    #[test]
-    fn ambient_path_reverses_without_teleporting() {
-        let step = 620;
-        let span = 11;
-        assert_eq!(ambient_ping_pong(0, step, span, 0), (0, true));
-        assert_eq!(ambient_ping_pong(step * 11, step, span, 0), (11, true));
-        let after_turn = ambient_ping_pong(step * 12, step, span, 0);
-        assert!(!after_turn.1);
-        assert!(
-            after_turn.0 >= 10,
-            "the eased turn must not jump: {after_turn:?}"
-        );
-        let near_origin = ambient_ping_pong(step * 21, step, span, 0);
-        assert!(!near_origin.1);
-        assert!(
-            near_origin.0 <= 1,
-            "the eased return should settle: {near_origin:?}"
-        );
-        assert_eq!(ambient_ping_pong(step * 22, step, span, 0), (0, true));
-    }
-
-    #[test]
-    fn fish_glyph_always_matches_screen_direction() {
-        assert_eq!(fish_mark(true), "><>");
-        assert_eq!(fish_mark(false), "<><");
-        assert!(fish_heading(8, 9, 10, false));
-        assert!(!fish_heading(10, 9, 8, true));
-        assert!(fish_heading(8, 9, 9, false));
-        assert!(!fish_heading(10, 9, 9, true));
-
-        // Mirrored tracks are the regression case: a forward path flag can
-        // correspond to decreasing screen x. Heading follows x, not the flag.
-        assert!(!fish_heading(74, 73, 72, true));
-    }
-
-    #[test]
-    fn browsing_history_keeps_fish_in_available_water() {
-        let mut app = create_test_app();
-        app.low_motion = false;
-        app.fancy_animations = true;
-        for index in 0..30 {
-            app.add_message(HistoryCell::Assistant {
-                content: format!("history row {index}"),
-                streaming: false,
-            });
-        }
-        app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
-        let area = Rect::new(0, 0, 100, 20);
-        let widget = ChatWidget::new(&mut app, area);
-        assert!(widget.ambient_life);
-        assert!(widget.ocean_animated);
-
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert!(
-            rendered.contains("><>") || rendered.contains("<><"),
-            "scrollback should keep fish in collision-free cells:\n{rendered}"
-        );
     }
 
     /// Probe: confirm `cell.lines_with_motion` returns no Line whose total
@@ -3365,34 +2877,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn chat_widget_uses_configured_surface_background() {
-        let mut app = create_test_app();
-        let custom = ratatui::style::Color::Rgb(26, 27, 38);
-        app.ui_theme = app.ui_theme.with_background_color(custom);
-        app.ocean_treatment = crate::tui::ocean::OceanTreatment::Flat;
-        app.add_message(HistoryCell::Assistant {
-            content: "ready".to_string(),
-            streaming: false,
-        });
-
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 30,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-
-        assert_eq!(buf[(area.x, area.y)].bg, custom);
-        assert_eq!(
-            buf[(area.x + area.width - 1, area.y + area.height - 1)].bg,
-            custom
-        );
-    }
-
     /// Regression: when the transcript scrollbar is visible, the rightmost
     /// content column must remain readable (the scrollbar gets its own
     /// 1-column gutter rather than overdrawing chat content).
@@ -3472,9 +2956,8 @@ mod tests {
     }
 
     #[test]
-    fn chat_widget_uses_light_theme_scroll_chrome() {
+    fn chat_widget_uses_native_tokens_for_scroll_chrome() {
         let mut app = create_test_app();
-        app.ui_theme = palette::LIGHT_UI_THEME;
         app.use_mouse_capture = true;
         for i in 0..120 {
             app.add_message(HistoryCell::User {
@@ -3500,11 +2983,11 @@ mod tests {
             match cell.symbol() {
                 "│" => {
                     saw_track = true;
-                    assert_eq!(cell.fg, palette::LIGHT_UI_THEME.border);
+                    assert_eq!(cell.fg, palette::TERMINAL_UI_THEME.border);
                 }
                 "┃" => {
                     saw_thumb = true;
-                    assert_eq!(cell.fg, palette::LIGHT_UI_THEME.status_working);
+                    assert_eq!(cell.fg, palette::TERMINAL_UI_THEME.status_working);
                 }
                 _ => {}
             }
@@ -3518,7 +3001,7 @@ mod tests {
             .expect("button appears when transcript is not at tail");
         assert_eq!(
             buf[(button.x + 1, button.y + 1)].fg,
-            palette::LIGHT_UI_THEME.status_working
+            palette::TERMINAL_UI_THEME.status_working
         );
     }
 
@@ -3984,13 +3467,5 @@ mod tests {
             narrow_total_lines > wide_total_lines,
             "narrow render should produce more wrapped lines (got {narrow_total_lines}, wide={wide_total_lines})"
         );
-    }
-
-    #[test]
-    fn fish_flee_is_one_shot_and_returns_to_ambient_origin() {
-        assert_eq!(fish_flee_offset(0), 0);
-        assert!(fish_flee_offset(400) >= 8);
-        assert_eq!(fish_flee_offset(800), 0);
-        assert_eq!(fish_flee_offset(8_000), 0);
     }
 }

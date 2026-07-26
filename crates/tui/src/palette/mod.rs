@@ -10,7 +10,6 @@
 //!    delegate to the current Dark palette constants.
 
 mod adapt;
-mod detect;
 mod themes;
 mod tokens;
 
@@ -19,8 +18,6 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use adapt::*;
-#[allow(unused_imports)]
-pub use detect::*;
 #[allow(unused_imports)]
 pub use themes::*;
 pub use tokens::*;

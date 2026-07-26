@@ -634,40 +634,13 @@ fn assistant_wrapped_code_lines_keep_no_rail() {
 }
 
 #[test]
-fn assistant_glyph_holds_full_brightness_when_idle() {
-    // Idle (streaming=false) and low_motion both pin the colour to the
-    // source sky — pulse only fires when actively streaming.
+fn assistant_glyph_is_stable_for_idle_streaming_and_low_motion() {
     let idle = assistant_label_style_for(false, false);
+    let streaming = assistant_label_style_for(true, false);
     let low_motion = assistant_label_style_for(true, true);
     assert_eq!(idle.fg, Some(palette::DSE_INFO));
+    assert_eq!(streaming.fg, idle.fg);
     assert_eq!(low_motion.fg, Some(palette::DSE_INFO));
-}
-
-#[test]
-fn assistant_glyph_pulses_when_streaming_and_motion_allowed() {
-    // The streaming path runs through `pulse_brightness`, which yields
-    // an RGB colour scaled within 30%..100% of the source. Sample twice
-    // — at least one of the samples must fall below 100% brightness, or
-    // the test wouldn't be exercising the pulse at all. (We can't pin
-    // the value because the function reads SystemTime::now().)
-    use ratatui::style::Color;
-    let mut saw_dimmed = false;
-    for _ in 0..50 {
-        if let Some(Color::Rgb(_, _, b)) = assistant_label_style_for(true, false).fg {
-            let Color::Rgb(_, _, src_b) = palette::DSE_INFO else {
-                panic!("DSE_INFO must be RGB");
-            };
-            if b < src_b {
-                saw_dimmed = true;
-                break;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(
-        saw_dimmed,
-        "expected the streaming pulse to dip below source brightness at least once",
-    );
 }
 
 // === Tool-card verb-glyph tests (v0.6.6 UI redesign) ===

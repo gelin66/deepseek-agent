@@ -242,7 +242,27 @@ fn type_and_submit(harness: &mut Harness, text: &str) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn underwater_footer_moves_from_working_through_one_shot_completion() -> Result<()> {
+async fn idle_native_surface_emits_no_periodic_frames_for_five_seconds() -> Result<()> {
+    let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
+    let ws = make_sealed_workspace()?;
+    let mut tui = common_tui_builder(&ws)
+        .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
+        .spawn()?;
+    enter_launch_session(&mut tui)?;
+
+    // A quiet initial frame must remain byte-still. Any old Ocean cadence,
+    // spinner timer, or unconditional redraw writes PTY bytes and resets this
+    // five-second observation window.
+    tui.wait_for_idle(Duration::from_secs(5), Duration::from_secs(7))?;
+
+    let _ = tui.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_phase_line_tracks_working_through_completion() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server, &[DEEPSEEK_TEST_MODEL]).await;
@@ -263,7 +283,7 @@ async fn underwater_footer_moves_from_working_through_one_shot_completion() -> R
         .spawn()?;
     enter_launch_session(&mut tui)?;
 
-    type_and_submit(&mut tui, "show the underwater phase transition")?;
+    type_and_submit(&mut tui, "show the canonical phase transition")?;
     // Live canonical phases render on the strip ABOVE the composer. This
     // response has no tools, so its exact pre-terminal phase is Thinking.
     // The mock reply and prompt contain none of these phase words.
@@ -279,25 +299,15 @@ async fn underwater_footer_moves_from_working_through_one_shot_completion() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn underwater_configured_themes_emit_each_palette_to_the_terminal() -> Result<()> {
+async fn native_shell_uses_one_terminal_token_resolution() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
     let ws = make_sealed_workspace()?;
-    let themes = [
-        "system",
-        "terminal",
-        "dark",
-        "light",
-        "grayscale",
-        "catppuccin-mocha",
-        "tokyo-night",
-        "dracula",
-        "gruvbox-dark",
-        "claude",
-        "matrix",
-        "solarized-light",
-    ];
+    // M28-B fixes one terminal-native production token owner. Retired theme
+    // settings are removed at M28-E; while the reader still exists during
+    // cutover, it must not create a second rendered palette.
+    let themes = ["dark", "light", "tokyo-night"];
     let mut previous_signature = None;
-    for (index, theme) in themes.iter().enumerate() {
+    for theme in themes {
         std::fs::write(
             ws.home().join(".dse").join("settings.toml"),
             format!("theme = \"{theme}\"\n"),
@@ -320,11 +330,9 @@ async fn underwater_configured_themes_emit_each_palette_to_the_terminal() -> Res
                 .expect("composer prompt cell"),
         );
         if let Some(previous) = previous_signature {
-            assert_ne!(
-                signature,
-                previous,
-                "configured ANSI palette did not change from {} to {theme}",
-                themes[index - 1]
+            assert_eq!(
+                signature, previous,
+                "retired theme input created a second production palette: {theme}"
             );
         }
         previous_signature = Some(signature);

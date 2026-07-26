@@ -16,7 +16,7 @@ use ratatui::{
     layout::{Position, Size},
 };
 
-use crate::palette::{self, ColorDepth, PaletteMode, ThemeId, UiTheme};
+use crate::palette::{self, ColorDepth, ThemeId, UiTheme};
 
 const RENDER_DEBUG_ENV: &str = "DSE_TUI_DEBUG";
 const ASCII_SAFE_ENV: &str = "DSE_ASCII_SAFE";
@@ -26,42 +26,25 @@ const RENDER_DEBUG_SAMPLE_LIMIT: usize = 24;
 pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
-    palette_mode: PaletteMode,
-    /// Currently active named theme. `System`/`Dark`/`Light` make the
-    /// theme remap a no-op (those rely on the dark/light pipeline); the
-    /// community presets (Catppuccin, Tokyo Night, Dracula, Gruvbox) trigger
-    /// a per-cell rewrite of dark-palette constants → preset slots.
+    /// Fixed native surface identity.
     theme_id: ThemeId,
-    /// Resolved active `UiTheme`, *including* any user `background_color`
-    /// override (`UiTheme::with_background_color`). The cell remap reads
-    /// target slots from this struct, not from `theme_id.ui_theme()`, so
-    /// `theme = "tokyo-night"` + `background_color = "#000000"` lands as a
-    /// pure-black surface instead of being overwritten back to
-    /// tokyo-night's `#16161e` by the remap.
+    /// Fixed terminal-native roles used while the last direct palette readers
+    /// are migrated.
     active_ui_theme: UiTheme,
     render_debug: Option<RenderDebugLog>,
     ascii_safe: bool,
 }
 
 impl<W: Write> ColorCompatBackend<W> {
-    pub(crate) fn new(writer: W, depth: ColorDepth, palette_mode: PaletteMode) -> Self {
+    pub(crate) fn new(writer: W, depth: ColorDepth) -> Self {
         Self {
             inner: CrosstermBackend::new(writer),
             depth,
-            palette_mode,
-            theme_id: ThemeId::System,
-            // Default to whatever System resolves to right now — it stays a
-            // no-op for the remap since `theme_id` is also System, so this
-            // initial value only matters once `set_theme` flips both fields
-            // to a community preset.
-            active_ui_theme: UiTheme::detect(),
+            theme_id: ThemeId::Terminal,
+            active_ui_theme: palette::TERMINAL_UI_THEME,
             render_debug: RenderDebugLog::from_env(),
             ascii_safe: env_flag_enabled(std::env::var(ASCII_SAFE_ENV).ok().as_deref()),
         }
-    }
-
-    pub(crate) fn set_palette_mode(&mut self, palette_mode: PaletteMode) {
-        self.palette_mode = palette_mode;
     }
 
     pub(crate) fn set_theme(&mut self, theme_id: ThemeId, ui_theme: UiTheme) {
@@ -90,13 +73,7 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         let adapted = content
             .map(|(x, y, cell)| {
                 let mut cell = cell.clone();
-                adapt_cell_colors(
-                    &mut cell,
-                    self.depth,
-                    self.palette_mode,
-                    self.theme_id,
-                    &self.active_ui_theme,
-                );
+                adapt_cell_colors(&mut cell, self.depth, self.theme_id, &self.active_ui_theme);
                 if self.ascii_safe {
                     adapt_cell_symbol_for_ascii(&mut cell);
                 }
@@ -348,25 +325,11 @@ fn render_debug_line(
     line
 }
 
-fn adapt_cell_colors(
-    cell: &mut Cell,
-    depth: ColorDepth,
-    palette_mode: PaletteMode,
-    theme_id: ThemeId,
-    ui_theme: &UiTheme,
-) {
-    // Stage 1: community-theme remap (dark palette → preset slots). No-op
-    // for System / Dark / Light so canonical dark/light flows are
-    // untouched. Runs *before* the palette-mode remap so a light terminal
-    // running e.g. Catppuccin still routes the preset colors through the
-    // light adaptation below (rare combo, but the sequencing is the same).
+fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth, theme_id: ThemeId, ui_theme: &UiTheme) {
+    // Stage 1: direct legacy palette → fixed terminal-native roles.
     cell.fg = palette::adapt_fg_for_theme(cell.fg, theme_id, ui_theme);
     cell.bg = palette::adapt_bg_for_theme(cell.bg, theme_id, ui_theme);
-    // Stage 2: legacy dark↔light remap.
-    let original_bg = cell.bg;
-    cell.fg = palette::adapt_fg_for_palette_mode(cell.fg, original_bg, palette_mode);
-    cell.bg = palette::adapt_bg_for_palette_mode(cell.bg, palette_mode);
-    // Stage 3: depth (truecolor / 256 / 16) downsampling.
+    // Stage 2: depth (truecolor / 256 / 16) downsampling.
     cell.fg = palette::adapt_color(cell.fg, depth);
     cell.bg = palette::adapt_bg(cell.bg, depth);
 }
@@ -430,9 +393,8 @@ mod tests {
         adapt_cell_colors(
             &mut cell,
             ColorDepth::Ansi256,
-            PaletteMode::Dark,
-            ThemeId::System,
-            &palette::UI_THEME,
+            ThemeId::Terminal,
+            &palette::TERMINAL_UI_THEME,
         );
 
         assert!(matches!(cell.fg, Color::Indexed(_)));
@@ -448,9 +410,8 @@ mod tests {
         adapt_cell_colors(
             &mut cell,
             ColorDepth::TrueColor,
-            PaletteMode::Dark,
-            ThemeId::System,
-            &palette::UI_THEME,
+            ThemeId::Terminal,
+            &palette::TERMINAL_UI_THEME,
         );
 
         assert_eq!(cell.fg, Color::Rgb(53, 120, 229));
@@ -480,7 +441,7 @@ mod tests {
     fn ansi256_backend_output_does_not_emit_truecolor_sgr() {
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::Ansi256, PaletteMode::Dark);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::Ansi256);
         let mut cell = Cell::default();
         cell.set_symbol("x")
             .set_fg(Color::Rgb(53, 120, 229))
@@ -494,71 +455,20 @@ mod tests {
     }
 
     #[test]
-    fn light_palette_maps_dark_cells_before_depth_adaptation() {
+    fn native_tokens_replace_direct_legacy_surface_colors() {
         let mut cell = Cell::default();
-        cell.set_fg(Color::White);
         cell.set_bg(palette::DSE_BG);
-
-        adapt_cell_colors(
-            &mut cell,
-            ColorDepth::TrueColor,
-            PaletteMode::Light,
-            ThemeId::Light,
-            &palette::LIGHT_UI_THEME,
-        );
-
-        assert_eq!(cell.fg, palette::LIGHT_TEXT_BODY);
-        assert_eq!(cell.bg, palette::LIGHT_SURFACE);
-    }
-
-    #[test]
-    fn grayscale_palette_maps_hued_cells_before_depth_adaptation() {
-        let mut cell = Cell::default();
         cell.set_fg(palette::DSE_INFO);
-        cell.set_bg(palette::DSE_BG);
 
         adapt_cell_colors(
             &mut cell,
             ColorDepth::TrueColor,
-            PaletteMode::Grayscale,
-            ThemeId::Grayscale,
-            &palette::GRAYSCALE_UI_THEME,
+            ThemeId::Terminal,
+            &palette::TERMINAL_UI_THEME,
         );
 
-        assert_eq!(cell.fg, palette::GRAYSCALE_TEXT_SOFT);
-        assert_eq!(cell.bg, palette::GRAYSCALE_SURFACE);
-    }
-
-    #[test]
-    fn community_theme_remap_honors_background_color_override() {
-        // Tokyo Night + a custom black surface: the remap must rewrite
-        // `palette::DSE_BG` to the *active* UiTheme's overridden
-        // surface, not to tokyo-night's default surface.
-        let active = palette::TOKYO_NIGHT_UI_THEME.with_background_color(Color::Rgb(0, 0, 0));
-        let mut cell = Cell::default();
-        cell.set_bg(palette::DSE_BG);
-
-        adapt_cell_colors(
-            &mut cell,
-            ColorDepth::TrueColor,
-            PaletteMode::Dark,
-            ThemeId::TokyoNight,
-            &active,
-        );
-
-        assert_eq!(cell.bg, Color::Rgb(0, 0, 0));
-    }
-
-    #[test]
-    fn backend_palette_mode_can_follow_runtime_theme_changes() {
-        let writer = SharedWriter::default();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
-
-        assert_eq!(backend.palette_mode, PaletteMode::Dark);
-        backend.set_palette_mode(PaletteMode::Light);
-        assert_eq!(backend.palette_mode, PaletteMode::Light);
-        backend.set_palette_mode(PaletteMode::Grayscale);
-        assert_eq!(backend.palette_mode, PaletteMode::Grayscale);
+        assert_eq!(cell.bg, Color::Reset);
+        assert_eq!(cell.fg, Color::Cyan);
     }
 
     #[test]
@@ -599,7 +509,7 @@ mod tests {
         }
 
         let writer = SharedWriter::default();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor);
         let mut cell = Cell::default();
         cell.set_symbol("x");
         backend.draw(std::iter::once((3, 4, &cell))).unwrap();
@@ -632,8 +542,7 @@ mod tests {
         // Baseline: identical cells, no link regions.
         let baseline_writer = SharedWriter::default();
         let baseline_capture = baseline_writer.0.clone();
-        let mut baseline =
-            ColorCompatBackend::new(baseline_writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut baseline = ColorCompatBackend::new(baseline_writer, ColorDepth::TrueColor);
         let cells = row_cells("ABCDE");
         baseline
             .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
@@ -649,7 +558,7 @@ mod tests {
         }]);
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor);
         let cells = row_cells("ABCDE");
         backend
             .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
@@ -706,7 +615,7 @@ mod tests {
         ]);
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor);
         let cells = row_cells("ABZCD");
         backend
             .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
@@ -811,8 +720,7 @@ mod tests {
         let _ = osc8::take_frame_links();
         let baseline_writer = SharedWriter::default();
         let baseline_capture = baseline_writer.0.clone();
-        let mut baseline =
-            ColorCompatBackend::new(baseline_writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut baseline = ColorCompatBackend::new(baseline_writer, ColorDepth::TrueColor);
         baseline
             .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
             .unwrap();
@@ -820,7 +728,7 @@ mod tests {
         osc8::set_frame_links(regions);
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor);
         backend
             .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
             .unwrap();

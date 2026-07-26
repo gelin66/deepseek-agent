@@ -195,22 +195,10 @@ pub(super) fn user_body_style() -> Style {
     Style::default().fg(palette::USER_BODY)
 }
 
-/// Style for the assistant glyph (`●`). When the cell is streaming and
-/// motion is allowed, the foreground pulses on a 2s cycle between 30% and
-/// 100% brightness — the only deliberately animated element in a calm
-/// transcript. When idle (or low_motion is on) it sits at the full DeepSeek
-/// sky color so finished turns read as solid rather than dim.
-pub(super) fn assistant_label_style_for(streaming: bool, low_motion: bool) -> Style {
-    let color = if streaming && !low_motion {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        palette::pulse_brightness(palette::DSE_INFO, now_ms)
-    } else {
-        palette::DSE_INFO
-    };
-    Style::default().fg(color)
+/// Stable assistant glyph style. Streaming cadence is represented by actual
+/// upstream deltas, never by a presentation timer.
+pub(super) fn assistant_label_style_for(_streaming: bool, _low_motion: bool) -> Style {
+    Style::default().fg(palette::DSE_INFO)
 }
 
 pub(super) fn system_label_style() -> Style {

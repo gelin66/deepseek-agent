@@ -63,8 +63,8 @@ fn spawn_minimal(
         // never escape
         // the box. 127.0.0.1:1 will refuse instantly.
         .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        // PTY scenarios assert state transitions, not animation cadence.
-        // Freeze ambient motion so visible-state assertions stay deterministic.
+        // Keep the terminal capability fallback exercised even though the
+        // native idle surface itself is event-driven and still.
         .env("NO_ANIMATIONS", "1")
         .env("RUST_LOG", "warn")
         .args([

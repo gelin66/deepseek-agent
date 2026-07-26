@@ -829,12 +829,6 @@ pub struct App {
     pub workspace_follow_symlinks: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
-    pub ocean_started_at: Instant,
-    /// Enables the authored underwater phase and ambient motion system.
-    pub fancy_animations: bool,
-    /// Typed appearance treatment; appearance is independent from motion
-    /// settings, and every underwater treatment keeps ambient life.
-    pub ocean_treatment: crate::tui::ocean::OceanTreatment,
     /// Whether the renderer should wrap each frame in DEC mode 2026
     /// synchronized output. Resolved from `Settings::synchronized_output`
     /// at construction; `auto`/`on` → `true`, `off` → `false`. The Ptyxis
@@ -843,10 +837,6 @@ pub struct App {
     /// the draw loop the decision is already made. See the
     /// `Settings::synchronized_output` doc for the user-facing knob.
     pub synchronized_output_enabled: bool,
-    /// Header status-indicator chip mode. `"dse"` is the static default;
-    /// `"dots"` preserves an animated activity mark, while `"off"` hides the
-    /// chip. Other values fall back to the static DSE mark.
-    pub status_indicator: String,
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub cost_currency: CostCurrency,
@@ -986,12 +976,9 @@ impl App {
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
-        let fancy_animations = settings.fancy_animations;
-        let ocean_treatment = crate::tui::ocean::OceanTreatment::parse(&settings.ocean_treatment);
         let work_surface_placement =
             crate::tui::work_surface::WorkSurfacePlacement::parse(&settings.work_surface_placement);
         let synchronized_output_enabled = settings.synchronized_output_enabled();
-        let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let cost_currency =
@@ -999,19 +986,13 @@ impl App {
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
-        // Resolve the named theme from settings; unknown values were already
-        // normalised to "system" in Settings::load. The background_color
-        // setting still overlays on top.
-        let theme_id =
-            palette::ThemeId::from_name(&settings.theme).unwrap_or(palette::ThemeId::System);
-        let mut ui_theme = theme_id.ui_theme();
-        if let Some(background) = settings
-            .background_color
-            .as_deref()
-            .and_then(palette::parse_hex_rgb_color)
-        {
-            ui_theme = ui_theme.with_background_color(background);
-        }
+        // ADR-0013 fixes one terminal-native token owner. The backend still
+        // remaps direct legacy palette constants during the M28 cutover, but
+        // every production frame resolves to this same terminal-owned theme.
+        // The adapter and obsolete theme settings are deleted in M28-E after
+        // the remaining secondary renderers consume `ui_theme` directly.
+        let theme_id = palette::ThemeId::Terminal;
+        let ui_theme = palette::TERMINAL_UI_THEME;
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1098,11 +1079,7 @@ impl App {
             use_mouse_capture,
             calm_mode,
             low_motion,
-            ocean_started_at: Instant::now(),
-            fancy_animations,
-            ocean_treatment,
             synchronized_output_enabled,
-            status_indicator,
             show_thinking,
             show_tool_details,
             cost_currency,

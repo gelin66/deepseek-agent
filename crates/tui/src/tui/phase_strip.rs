@@ -1,4 +1,4 @@
-//! Live phase band for the underwater shell.
+//! Live phase band for the canonical DSE shell.
 //!
 //! The HTML reference attaches activity to the transcript and leaves the
 //! composer as the final stable object. That means live phases
@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::tui::{
     app::App,
-    underwater::{ShellPhase, ShellTier, phase_marker},
+    shell::{ShellPhase, ShellTier, phase_marker},
 };
 
 /// Where the phase band sits relative to the composer.
@@ -260,13 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn working_marker_uses_the_live_seafoam_role() {
+    fn working_marker_uses_the_fixed_live_status_role() {
         let app = test_app();
         assert_eq!(
             ShellPhase::Working.color(&app),
             app.ui_theme.accent_secondary
         );
-        assert_ne!(ShellPhase::Working.color(&app), app.ui_theme.info);
+        assert_eq!(ShellPhase::Working.color(&app), app.ui_theme.status_working);
     }
 
     #[test]

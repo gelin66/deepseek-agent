@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use dse_app::AgentApplication;
@@ -80,11 +80,6 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
 const UI_ACTIVE_POLL_MS: u64 = 24;
-/// Ambient fish and the completion wake need a smoother cadence than the
-/// deliberately legible status spinner. This remains modest enough for a
-/// terminal renderer while avoiding the five-frame-per-second "jump" seen
-/// whenever live status motion and ocean motion overlap.
-pub(crate) const UI_UNDERWATER_ANIMATION_MS: u64 = 80;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
@@ -384,13 +379,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         defused: false,
     };
     let color_depth = palette::ColorDepth::detect();
-    let palette_mode = palette::PaletteMode::detect();
-    tracing::debug!(
-        ?color_depth,
-        ?palette_mode,
-        "terminal color profile detected"
-    );
-    let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
+    tracing::debug!(?color_depth, "terminal color depth detected");
+    let backend = ColorCompatBackend::new(stdout, color_depth);
     let mut terminal = Terminal::new(backend)?;
     // At this point Settings hasn't loaded yet, so we can't read the
     // user's `synchronized_output` knob. Use the same env-based terminal
@@ -725,10 +715,6 @@ async fn run_canonical_event_loop(
     let mut projection = CanonicalRunProjection::new();
     let mut presented_interaction_id = None;
     let mut exit_after_terminal = false;
-    let mut last_frame = Instant::now()
-        .checked_sub(Duration::from_secs(1))
-        .unwrap_or_else(Instant::now);
-
     loop {
         while let Ok(stored) = run_events.try_recv() {
             for effect in projection
@@ -742,20 +728,14 @@ async fn run_canonical_event_loop(
             app.needs_redraw = true;
         }
 
-        let now = Instant::now();
-
         let snapshot = run_client.snapshot().await;
         if exit_after_terminal && snapshot.current_active_root.is_none() && !app.is_loading {
             return Ok(());
         }
 
-        if app.needs_redraw
-            || now.saturating_duration_since(last_frame)
-                >= Duration::from_millis(UI_UNDERWATER_ANIMATION_MS)
-        {
+        if app.needs_redraw {
             draw_app_frame_inner(terminal, app, false)?;
             app.needs_redraw = false;
-            last_frame = now;
         }
 
         let Some(event) = input.recv_timeout(Duration::from_millis(UI_ACTIVE_POLL_MS))? else {
@@ -1375,10 +1355,10 @@ fn render(f: &mut Frame, app: &mut App) {
         composer_widget.desired_height(size.width)
     };
 
-    // Ocean live phases put the phase strip above the composer so activity
-    // stays attached to the transcript and the prompt is the final bottom
-    // object. Idle/typing keep a quiet phase under the prompt.
-    let phase = crate::tui::underwater::ShellPhase::from_app(app);
+    // Live phases sit above the composer so activity stays attached to the
+    // transcript and the prompt is the final bottom object. Idle/typing keep
+    // a quiet phase under the prompt.
+    let phase = crate::tui::shell::ShellPhase::from_app(app);
     let phase_above =
         crate::tui::phase_strip::PhaseStripPlacement::for_phase(phase).is_above_composer();
     let (composer_slot, footer_slot, tail_constraints) = if phase_above {
@@ -1420,13 +1400,13 @@ fn render(f: &mut Frame, app: &mut App) {
         super::work_surface::render(f, work_area, app);
     }
 
-    crate::tui::underwater::render_header(header_area, f.buffer_mut(), app);
+    crate::tui::shell::render_header(header_area, f.buffer_mut(), app);
 
     // Render the transcript. The canonical work surface owns task and worker
     // facts, canonical child runs own Agent activity, and dense context owns its inspector.
-    let shell_ocean;
     {
-        // Defensive backstop (#400): fill the entire body area with ink
+        // Defensive backstop (#400): fill the entire body area with the
+        // resolved terminal surface
         // background before any sub-widgets render, so cells that end up
         // uncovered by layout splits after a resize don't retain stale content
         // from a previous frame.
@@ -1434,8 +1414,7 @@ fn render(f: &mut Frame, app: &mut App) {
             .style(Style::default().bg(app.ui_theme.surface_bg))
             .render(work_chat_area, f.buffer_mut());
 
-        let chat_widget = ChatWidget::new(app, work_chat_area).with_ocean_viewport(size);
-        shell_ocean = chat_widget.ocean_column();
+        let chat_widget = ChatWidget::new(app, work_chat_area);
         let buf = f.buffer_mut();
         chat_widget.render(work_chat_area, buf);
     }
@@ -1456,35 +1435,8 @@ fn render(f: &mut Frame, app: &mut App) {
         f.set_cursor_position(cursor_pos);
     }
 
-    crate::tui::underwater::render_footer(body_chunks[footer_slot], f.buffer_mut(), app);
+    crate::tui::shell::render_footer(body_chunks[footer_slot], f.buffer_mut(), app);
 
-    // The underwater shell is one water column, not a stack of independently
-    // shaded panels. Continue the transcript's absolute-row ramp through each
-    // ordinary shell surface after its foreground has rendered. Semantic
-    // backgrounds such as selection, hover, errors, and code blocks do not
-    // match these base colors and therefore remain intact.
-    if let Some(column) = shell_ocean {
-        column.paint_matching(header_area, f.buffer_mut(), app.ui_theme.header_bg);
-        if top_work_strip_height > 0 {
-            column.paint_matching(body_chunks[0], f.buffer_mut(), app.ui_theme.surface_bg);
-        }
-        if let Some(side_area) = side_work_area {
-            column.paint_matching(side_area, f.buffer_mut(), app.ui_theme.surface_bg);
-        }
-        column.paint_matching(work_chat_area, f.buffer_mut(), app.ui_theme.surface_bg);
-        column.paint_matching(body_chunks[2], f.buffer_mut(), app.ui_theme.surface_bg);
-        column.paint_matching(body_chunks[3], f.buffer_mut(), app.ui_theme.surface_bg);
-        column.paint_matching(
-            body_chunks[composer_slot],
-            f.buffer_mut(),
-            app.ui_theme.composer_bg,
-        );
-        column.paint_matching(
-            body_chunks[footer_slot],
-            f.buffer_mut(),
-            app.ui_theme.footer_bg,
-        );
-    }
     if !app.view_stack.is_empty() {
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
@@ -1506,7 +1458,6 @@ fn draw_app_frame_inner(
     app: &mut App,
     full_repaint: bool,
 ) -> Result<()> {
-    terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the

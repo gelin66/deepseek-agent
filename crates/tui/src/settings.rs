@@ -20,12 +20,6 @@ pub struct Settings {
     /// Reduce decorative motion. This must never synthesize model text speed;
     /// streaming follows upstream deltas in both modes.
     pub low_motion: bool,
-    /// Enable expressive live-state motion. This affects chrome and state
-    /// affordances only; model text always follows upstream stream deltas.
-    pub fancy_animations: bool,
-    /// Background treatment: `ombre` paints the terminal-native water column;
-    /// `flat` preserves all state marks on the theme's plain surface.
-    pub ocean_treatment: String,
     /// Ocean Tasks / Runs / Workers rail placement: top, left, or right.
     /// The lower edge remains owned by the composer and phase footer.
     pub work_surface_placement: String,
@@ -66,13 +60,6 @@ pub struct Settings {
     /// Default reasoning effort selected from the TUI model picker.
     /// `None` falls back to `config.toml` and then the runtime default.
     pub reasoning_effort: Option<String>,
-    /// Header status indicator next to the effort chip. Cycles through a
-    /// per-turn animation keyed off `App::turn_started_at`:
-    /// - `"dse"` (default): static typographic DSE mark.
-    /// - `"dots"`: the 6-frame geometric sequence (`◍ ◉ ◌ ◌ ◉ ◍`) that
-    ///   shows turn activity without carrying a retired product identity.
-    /// - `"off"`: hide the indicator entirely.
-    pub status_indicator: String,
     /// Whether to wrap each draw in DEC mode 2026 synchronized output
     /// (`\x1b[?2026h` … `\x1b[?2026l`). Synchronized output asks the
     /// terminal to defer rendering until the whole frame is staged so
@@ -123,8 +110,6 @@ impl Default for Settings {
             calm_mode: true,
             tool_collapse_mode: "compact".to_string(),
             low_motion: false,
-            fancy_animations: true,
-            ocean_treatment: "ombre".to_string(),
             work_surface_placement: "right".to_string(),
             bracketed_paste: true,
             mention_menu_limit: 128,
@@ -141,19 +126,10 @@ impl Default for Settings {
             transcript_spacing: "comfortable".to_string(),
             cost_currency: "usd".to_string(),
             reasoning_effort: None,
-            status_indicator: "dse".to_string(),
             synchronized_output: "auto".to_string(),
             prefer_external_pdftotext: false,
             workspace_follow_symlinks: false,
         }
-    }
-}
-
-fn normalize_ocean_treatment(value: &str) -> &'static str {
-    if value.trim().eq_ignore_ascii_case("flat") {
-        "flat"
-    } else {
-        "ombre"
     }
 }
 
@@ -202,8 +178,6 @@ impl Settings {
                     normalize_transcript_spacing(&s.transcript_spacing).to_string();
                 s.tool_collapse_mode =
                     normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
-                s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
-                s.ocean_treatment = normalize_ocean_treatment(&s.ocean_treatment).to_string();
                 s.work_surface_placement =
                     normalize_work_surface_placement(&s.work_surface_placement).to_string();
                 s.synchronized_output =
@@ -236,7 +210,6 @@ impl Settings {
     pub fn apply_env_overrides(&mut self) {
         if env_truthy("NO_ANIMATIONS") {
             self.low_motion = true;
-            self.fancy_animations = false;
         }
         // Termius (TERM_PROGRAM=Termius) and SSH sessions exhibit the
         // same 120-FPS flicker class as VS Code — the SSH round-trip
@@ -254,7 +227,6 @@ impl Settings {
             || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty());
         if term_is_termius || in_ssh_session {
             self.low_motion = true;
-            self.fancy_animations = false;
         }
 
         // Plain Windows PowerShell / cmd.exe under legacy ConHost exposes none
@@ -263,7 +235,6 @@ impl Settings {
         // synchronized-output wrapping unless the user explicitly forced it on.
         if detected_legacy_windows_console_host() {
             self.low_motion = true;
-            self.fancy_animations = false;
             if self.synchronized_output.eq_ignore_ascii_case("auto") {
                 self.synchronized_output = "off".to_string();
             }
@@ -361,19 +332,6 @@ fn normalize_tool_collapse_mode(value: &str) -> &str {
         "compact" | "collapsed" | "collapse" | "default" | "on" | "true" => "compact",
         "expanded" | "expand" | "off" | "none" | "false" => "expanded",
         "calm" | "calm_mode" | "calm-mode" | "calm_only" | "calm-only" => "calm",
-        _ => value,
-    }
-}
-
-/// Normalize the `status_indicator` header chip setting. Accepts the
-/// canonical names plus common aliases ("none"/"hidden" → "off",
-/// "dot" → "dots"). Unknown values fall through unchanged so the parser
-/// in `update_setting` can surface a clear error.
-fn normalize_status_indicator(value: &str) -> &str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "dse" | "mark" | "text" => "dse",
-        "dots" | "dot" => "dots",
-        "off" | "none" | "hidden" | "false" => "off",
         _ => value,
     }
 }
@@ -486,12 +444,11 @@ fn env_truthy(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Explicit animated baseline for env-force tests (#4095 flipped defaults to calm).
-    fn animated_settings() -> Settings {
+    /// Explicit ordinary-terminal baseline for env-force tests.
+    fn ordinary_settings() -> Settings {
         Settings {
             calm_mode: false,
             low_motion: false,
-            fancy_animations: true,
             show_tool_details: true,
             transcript_spacing: "comfortable".to_string(),
             ..Settings::default()
@@ -504,23 +461,10 @@ mod tests {
         assert!(settings.calm_mode);
         assert!(!settings.show_tool_details);
         assert!(!settings.low_motion);
-        assert!(settings.fancy_animations);
         assert_eq!(settings.transcript_spacing, "comfortable");
         assert_eq!(settings.tool_collapse_mode, "compact");
-        assert_eq!(settings.status_indicator, "dse");
         // Thinking is opt-in so the transcript stays focused on the chat.
         assert!(!settings.show_thinking);
-    }
-
-    #[test]
-    fn default_settings_show_footer_water_strip() {
-        let settings = Settings::default();
-        assert!(
-            settings.fancy_animations,
-            "underwater presentation is the default"
-        );
-        assert!(!settings.low_motion);
-        assert_eq!(settings.transcript_spacing, "comfortable");
     }
 
     /// Tests that mutate process-global `NO_ANIMATIONS` serialise
@@ -541,39 +485,10 @@ mod tests {
         unsafe {
             std::env::set_var("NO_ANIMATIONS", "1");
         }
-        let mut settings = animated_settings();
-        assert!(!settings.low_motion, "default is animated");
-        assert!(settings.fancy_animations, "default shows the water strip");
+        let mut settings = ordinary_settings();
+        assert!(!settings.low_motion, "ordinary terminal allows motion");
         settings.apply_env_overrides();
         assert!(settings.low_motion, "NO_ANIMATIONS=1 forces low_motion");
-        assert!(
-            !settings.fancy_animations,
-            "NO_ANIMATIONS=1 keeps fancy off"
-        );
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            std::env::remove_var("NO_ANIMATIONS");
-        }
-    }
-
-    #[test]
-    fn no_animations_env_overrides_user_opt_in() {
-        let _g = no_animations_test_guard();
-        // SAFETY: serialised by the guard.
-        unsafe {
-            std::env::set_var("NO_ANIMATIONS", "true");
-        }
-        // User had explicitly opted into fancy animations on disk.
-        let mut settings = Settings {
-            fancy_animations: true,
-            ..Settings::default()
-        };
-        settings.apply_env_overrides();
-        assert!(
-            !settings.fancy_animations,
-            "platform NO_ANIMATIONS overrides user-opt-in fancy_animations"
-        );
-        assert!(settings.low_motion);
         // SAFETY: cleanup under the guard.
         unsafe {
             std::env::remove_var("NO_ANIMATIONS");
@@ -607,7 +522,7 @@ mod tests {
             unsafe {
                 std::env::set_var("NO_ANIMATIONS", truthy);
             }
-            let mut s = animated_settings();
+            let mut s = ordinary_settings();
             s.apply_env_overrides();
             assert!(s.low_motion, "{truthy:?} should be truthy");
         }
@@ -616,7 +531,7 @@ mod tests {
             unsafe {
                 std::env::set_var("NO_ANIMATIONS", falsy);
             }
-            let mut s = animated_settings();
+            let mut s = ordinary_settings();
             s.apply_env_overrides();
             assert!(!s.low_motion, "{falsy:?} should be falsy");
         }
@@ -671,7 +586,7 @@ mod tests {
             unsafe {
                 std::env::set_var("TERM_PROGRAM", program);
             }
-            let mut s = animated_settings();
+            let mut s = ordinary_settings();
             s.apply_env_overrides();
             assert!(
                 !s.low_motion,
@@ -701,16 +616,12 @@ mod tests {
         unsafe {
             std::env::set_var("TERM_PROGRAM", "Termius");
         }
-        let mut settings = animated_settings();
-        assert!(!settings.low_motion, "default is animated");
+        let mut settings = ordinary_settings();
+        assert!(!settings.low_motion, "ordinary terminal allows motion");
         settings.apply_env_overrides();
         assert!(
             settings.low_motion,
             "TERM_PROGRAM=Termius must enable low_motion to prevent flickering (#1433)"
-        );
-        assert!(
-            !settings.fancy_animations,
-            "TERM_PROGRAM=Termius must disable fancy_animations"
         );
         // SAFETY: cleanup under the guard.
         unsafe {
@@ -789,13 +700,11 @@ mod tests {
             }
         }
 
-        let mut settings = animated_settings();
-        assert!(!settings.low_motion, "default is animated");
-        assert!(settings.fancy_animations, "default shows the water strip");
+        let mut settings = ordinary_settings();
+        assert!(!settings.low_motion, "ordinary terminal allows motion");
         assert_eq!(settings.synchronized_output, "auto");
         settings.apply_env_overrides();
         assert!(settings.low_motion);
-        assert!(!settings.fancy_animations);
         assert!(
             settings.bracketed_paste,
             "env-only conhost fallback must not persistently mutate bracketed_paste (#1102)"
@@ -843,10 +752,6 @@ mod tests {
             assert!(
                 s.low_motion,
                 "{var}={val:?} must enable low_motion to prevent flickering in SSH sessions (#1433)"
-            );
-            assert!(
-                !s.fancy_animations,
-                "{var}={val:?} must disable fancy_animations in SSH sessions (#1433)"
             );
         }
         // SAFETY: cleanup under the guard.

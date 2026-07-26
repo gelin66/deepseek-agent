@@ -1,151 +1,12 @@
-//! Color adaptation for palette mode, community themes, and terminal depth.
+//! Color adaptation for terminal palette modes and the fixed native token set.
 
 use ratatui::style::Color;
 
-use super::detect::PaletteMode;
 use super::themes::{ThemeId, UiTheme};
 use super::tokens::*;
 
-#[must_use]
-pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) -> Color {
-    match mode {
-        PaletteMode::Dark => color,
-        PaletteMode::Light => adapt_fg_for_light_palette(color),
-        PaletteMode::Grayscale => adapt_fg_for_grayscale_palette(color),
-        PaletteMode::SolarizedLight => adapt_fg_for_solarized_light_palette(color),
-    }
-}
-
-#[must_use]
-pub fn adapt_bg_for_palette_mode(color: Color, mode: PaletteMode) -> Color {
-    match mode {
-        PaletteMode::Dark => color,
-        PaletteMode::Light => adapt_bg_for_light_palette(color),
-        PaletteMode::Grayscale => adapt_bg_for_grayscale_palette(color),
-        PaletteMode::SolarizedLight => adapt_bg_for_solarized_light_palette(color),
-    }
-}
-
-fn adapt_fg_for_light_palette(color: Color) -> Color {
-    if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
-        LIGHT_TEXT_BODY
-    } else if color == TEXT_SECONDARY || color == TEXT_MUTED {
-        LIGHT_TEXT_MUTED
-    } else if color == TEXT_HINT || color == TEXT_DIM {
-        LIGHT_TEXT_HINT
-    } else if color == TEXT_SOFT || color == TEXT_TOOL_OUTPUT {
-        LIGHT_TEXT_SOFT
-    } else if color == BORDER_COLOR {
-        LIGHT_BORDER
-    } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
-        DSE_ACCENT_PRIMARY
-    } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
-        Color::Rgb(146, 64, 14)
-    } else if color == ACCENT_TOOL_ISSUE {
-        Color::Rgb(159, 18, 57)
-    } else if color == DIFF_ADDED {
-        Color::Rgb(22, 101, 52)
-    } else if color == USER_BODY {
-        LIGHT_USER_BODY
-    } else {
-        color
-    }
-}
-
-fn adapt_bg_for_light_palette(color: Color) -> Color {
-    if color == DSE_BG || color == BACKGROUND_DARK {
-        LIGHT_SURFACE
-    } else if color == DSE_PANEL
-        || color == COMPOSER_BG
-        || color == SURFACE_PANEL
-        || color == SURFACE_TOOL
-    {
-        LIGHT_PANEL
-    } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
-        LIGHT_ELEVATED
-    } else if color == SURFACE_REASONING
-        || color == SURFACE_REASONING_TINT
-        || color == SURFACE_REASONING_ACTIVE
-    {
-        LIGHT_REASONING
-    } else if color == SURFACE_SUCCESS {
-        LIGHT_SUCCESS
-    } else if color == SURFACE_ERROR {
-        LIGHT_ERROR
-    } else if color == DIFF_ADDED_BG {
-        LIGHT_SUCCESS
-    } else if color == DIFF_DELETED_BG {
-        LIGHT_ERROR
-    } else if color == SELECTION_BG {
-        LIGHT_SELECTION_BG
-    } else {
-        color
-    }
-}
-
-fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
-    if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
-        SOLARIZED_TEXT_BODY
-    } else if color == TEXT_SECONDARY || color == TEXT_MUTED {
-        SOLARIZED_TEXT_MUTED
-    } else if color == TEXT_HINT || color == TEXT_DIM {
-        SOLARIZED_TEXT_HINT
-    } else if color == TEXT_SOFT || color == TEXT_TOOL_OUTPUT {
-        SOLARIZED_TEXT_SOFT
-    } else if color == BORDER_COLOR {
-        SOLARIZED_BORDER
-    } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
-        SOLARIZED_BLUE
-    } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
-        SOLARIZED_ORANGE
-    } else if color == ACCENT_TOOL_ISSUE {
-        SOLARIZED_RED
-    } else if color == DIFF_ADDED || color == USER_BODY {
-        SOLARIZED_GREEN
-    } else {
-        color
-    }
-}
-
-fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
-    if color == DSE_BG || color == BACKGROUND_DARK {
-        SOLARIZED_SURFACE
-    } else if color == DSE_PANEL
-        || color == COMPOSER_BG
-        || color == SURFACE_PANEL
-        || color == SURFACE_TOOL
-    {
-        SOLARIZED_PANEL
-    } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
-        SOLARIZED_ELEVATED
-    } else if color == SURFACE_REASONING
-        || color == SURFACE_REASONING_TINT
-        || color == SURFACE_REASONING_ACTIVE
-    {
-        SOLARIZED_PANEL
-    } else if color == SURFACE_SUCCESS || color == DIFF_ADDED_BG {
-        SOLARIZED_DIFF_ADDED_BG
-    } else if color == SURFACE_ERROR {
-        SOLARIZED_ERROR_SURFACE
-    } else if color == DIFF_DELETED_BG {
-        SOLARIZED_DIFF_DELETED_BG
-    } else if color == SELECTION_BG {
-        SOLARIZED_SELECT_BG
-    } else {
-        color
-    }
-}
-
-// === Community-theme remap ===
-//
-// The vast majority of render sites in this crate reach for `palette::TEXT_*`,
-// `palette::DSE_BG`, `palette::BORDER_COLOR`, etc. directly rather than
-// looking up `app.ui_theme`. To make community theme presets (Catppuccin,
-// Tokyo Night, …) actually move the needle visually we intercept colors at
-// the backend layer (see `tui::color_compat::ColorCompatBackend`) and remap
-// every well-known dark-palette constant to the equivalent UiTheme slot for
-// the active preset. For `System`, `Dark`, and `Light` the remap is a
-// no-op — the existing dark/light pipeline handles those.
+// M28 uses one terminal-native token set. Direct legacy palette constants are
+// remapped here while their remaining render callers are migrated in M28-D/E.
 
 /// Per-preset green accent used for things that semantically *should* stay
 /// green even after theming (diff "+" lines, user-input body). Now delegates
@@ -167,42 +28,10 @@ const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
     ui.diff_deleted_bg
 }
 
-/// Returns `true` if the preset participates in the cell-level remap. The
-/// default dark/light and System themes pass through unchanged so this whole
-/// stage compiles down to a single load+compare on the hot path.
-#[inline]
+/// Remap a foreground color from the retired direct palette to the fixed
+/// terminal-native roles.
 #[must_use]
-pub const fn theme_remap_active(theme: ThemeId) -> bool {
-    matches!(
-        theme,
-        ThemeId::Terminal
-            | ThemeId::CatppuccinMocha
-            | ThemeId::TokyoNight
-            | ThemeId::Dracula
-            | ThemeId::GruvboxDark
-            | ThemeId::Claude
-            | ThemeId::Matrix
-            | ThemeId::SolarizedLight
-    )
-}
-
-/// Remap a foreground color for a community theme preset. Mirrors the
-/// structure of [`adapt_fg_for_palette_mode`] — same source set, different
-/// destinations sourced from the preset's [`UiTheme`].
-///
-/// The `ui` argument is the *active* UiTheme as carried on `App` —
-/// `ThemeId.ui_theme()` with the user's `background_color` override
-/// already applied. Passing it through (rather than re-resolving from
-/// `theme` inside this function) preserves that override; otherwise a
-/// user combining `background_color = "#..."` with a community theme
-/// would see their override silently overwritten by the preset's
-/// surface_bg on every cell remap.
-#[must_use]
-pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
-    if !theme_remap_active(theme) {
-        return color;
-    }
-
+pub fn adapt_fg_for_theme(color: Color, _theme: ThemeId, ui: &UiTheme) -> Color {
     if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
         ui.text_body
     } else if color == TEXT_SECONDARY || color == TEXT_MUTED {
@@ -216,11 +45,7 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     } else if color == TEXT_ACCENT || color == DSE_INFO || color == ACCENT_TOOL_LIVE {
         ui.status_working
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
-        if theme == ThemeId::Matrix {
-            Color::Rgb(0x00, 0x55, 0x00) // #005500
-        } else {
-            ui.mode_plan
-        }
+        ui.mode_plan
     } else if color == ACCENT_TOOL_ISSUE {
         ui.mode_yolo
     } else if color == STATUS_WARNING {
@@ -236,14 +61,10 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     }
 }
 
-/// Remap a background color for a community theme preset. See the
-/// `ui` note on [`adapt_fg_for_theme`] — same contract here.
+/// Remap a background color from the retired direct palette to the fixed
+/// terminal-native roles.
 #[must_use]
-pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
-    if !theme_remap_active(theme) {
-        return color;
-    }
-
+pub fn adapt_bg_for_theme(color: Color, _theme: ThemeId, ui: &UiTheme) -> Color {
     if color == DSE_BG || color == BACKGROUND_DARK {
         ui.surface_bg
     } else if color == DSE_PANEL
@@ -274,150 +95,7 @@ pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     }
 }
 
-fn adapt_fg_for_grayscale_palette(color: Color) -> Color {
-    if color == Color::Reset {
-        return color;
-    }
-    if color == TEXT_BODY
-        || color == SELECTION_TEXT
-        || color == LIGHT_TEXT_BODY
-        || color == Color::White
-        || color == DSE_ERROR
-        || color == STATUS_ERROR
-        || color == MODE_YOLO
-    {
-        GRAYSCALE_TEXT_BODY
-    } else if color == TEXT_SOFT
-        || color == TEXT_TOOL_OUTPUT
-        || color == LIGHT_TEXT_SOFT
-        || color == TEXT_ACCENT
-        || color == DSE_INFO
-        || color == DSE_ACCENT_PRIMARY
-        || color == ACCENT_TOOL_LIVE
-        || color == STATUS_SUCCESS
-        || color == STATUS_INFO
-        || color == MODE_AGENT
-    {
-        GRAYSCALE_TEXT_SOFT
-    } else if color == TEXT_SECONDARY
-        || color == TEXT_MUTED
-        || color == LIGHT_TEXT_MUTED
-        || color == TEXT_REASONING
-        || color == ACCENT_REASONING_LIVE
-        || color == STATUS_WARNING
-        || color == MODE_PLAN
-        || color == USER_BODY
-        || color == LIGHT_USER_BODY
-        || color == DIFF_ADDED
-    {
-        GRAYSCALE_TEXT_MUTED
-    } else if color == TEXT_HINT
-        || color == TEXT_DIM
-        || color == LIGHT_TEXT_HINT
-        || color == BORDER_COLOR
-        || color == LIGHT_BORDER
-        || color == ACCENT_TOOL_ISSUE
-    {
-        GRAYSCALE_TEXT_HINT
-    } else {
-        match color {
-            Color::Black => GRAYSCALE_TEXT_BODY,
-            Color::Gray | Color::DarkGray => GRAYSCALE_TEXT_HINT,
-            Color::Red
-            | Color::LightRed
-            | Color::Green
-            | Color::LightGreen
-            | Color::Yellow
-            | Color::LightYellow
-            | Color::Blue
-            | Color::LightBlue
-            | Color::Magenta
-            | Color::LightMagenta
-            | Color::Cyan
-            | Color::LightCyan => GRAYSCALE_TEXT_SOFT,
-            Color::Rgb(r, g, b) => grayscale_fg_from_luma(luma(r, g, b)),
-            Color::Indexed(_) => color,
-            _ => color,
-        }
-    }
-}
-
-fn adapt_bg_for_grayscale_palette(color: Color) -> Color {
-    if color == Color::Reset {
-        return color;
-    }
-    if color == DSE_BG || color == BACKGROUND_DARK || color == LIGHT_SURFACE {
-        GRAYSCALE_SURFACE
-    } else if color == DSE_PANEL
-        || color == COMPOSER_BG
-        || color == SURFACE_PANEL
-        || color == SURFACE_TOOL
-        || color == LIGHT_PANEL
-    {
-        GRAYSCALE_PANEL
-    } else if color == SURFACE_ELEVATED
-        || color == SURFACE_TOOL_ACTIVE
-        || color == LIGHT_ELEVATED
-        || color == SELECTION_BG
-        || color == LIGHT_SELECTION_BG
-    {
-        GRAYSCALE_ELEVATED
-    } else if color == SURFACE_REASONING
-        || color == SURFACE_REASONING_TINT
-        || color == SURFACE_REASONING_ACTIVE
-        || color == LIGHT_REASONING
-    {
-        GRAYSCALE_REASONING
-    } else if color == SURFACE_SUCCESS || color == DIFF_ADDED_BG || color == LIGHT_SUCCESS {
-        GRAYSCALE_SUCCESS
-    } else if color == SURFACE_ERROR || color == DIFF_DELETED_BG || color == LIGHT_ERROR {
-        GRAYSCALE_ERROR
-    } else {
-        match color {
-            Color::Black => GRAYSCALE_SURFACE,
-            Color::White | Color::Gray => GRAYSCALE_ELEVATED,
-            Color::DarkGray => GRAYSCALE_PANEL,
-            Color::Red
-            | Color::LightRed
-            | Color::Green
-            | Color::LightGreen
-            | Color::Yellow
-            | Color::LightYellow
-            | Color::Blue
-            | Color::LightBlue
-            | Color::Magenta
-            | Color::LightMagenta
-            | Color::Cyan
-            | Color::LightCyan => GRAYSCALE_ELEVATED,
-            Color::Rgb(r, g, b) => grayscale_bg_from_luma(luma(r, g, b)),
-            Color::Indexed(_) => color,
-            _ => color,
-        }
-    }
-}
-
-fn grayscale_fg_from_luma(luma: u8) -> Color {
-    match luma {
-        0..=95 => GRAYSCALE_TEXT_HINT,
-        96..=155 => GRAYSCALE_TEXT_MUTED,
-        156..=215 => GRAYSCALE_TEXT_SOFT,
-        _ => GRAYSCALE_TEXT_BODY,
-    }
-}
-
-fn grayscale_bg_from_luma(luma: u8) -> Color {
-    match luma {
-        0..=28 => GRAYSCALE_SURFACE,
-        29..=95 => GRAYSCALE_PANEL,
-        96..=185 => GRAYSCALE_ELEVATED,
-        _ => GRAYSCALE_REASONING,
-    }
-}
-
-pub(crate) fn luma(r: u8, g: u8, b: u8) -> u8 {
-    ((u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 + 500) / 1000) as u8
-}
-// === Color depth + brightness helpers (v0.6.6 UI redesign) ===
+// === Terminal color-depth helpers ===
 
 /// Terminal color depth, used to gate truecolor surfaces (e.g. reasoning bg
 /// tints) on terminals that can't render them faithfully.
@@ -511,25 +189,6 @@ pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     match depth {
         ColorDepth::Ansi16 => None,
         _ => Some(adapt_bg(SURFACE_REASONING_TINT, depth)),
-    }
-}
-
-/// Pulse `color` between 30% and 100% brightness on a 2s cycle keyed off
-/// `now_ms` (epoch ms). The minimum keeps the glyph readable at trough; the
-/// maximum is the source color verbatim. Linear interpolation between them
-/// reads as a slow heartbeat.
-#[must_use]
-pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
-    // 2 s = 2000 ms full cycle; sin gives a smooth 0..1..0 swing.
-    let phase = (now_ms % 2000) as f32 / 2000.0;
-    let t = (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5; // 0..1
-    let alpha = 0.30 + t * 0.70; // 30%..100%
-    match color {
-        Color::Rgb(r, g, b) => {
-            let s = |c: u8| -> u8 { ((f32::from(c)) * alpha).round().clamp(0.0, 255.0) as u8 };
-            Color::Rgb(s(r), s(g), s(b))
-        }
-        other => other,
     }
 }
 

@@ -1,4 +1,4 @@
-//! Coherent shell grammar for the underwater TUI.
+//! Canonical terminal-native grammar for the DSE main work surface.
 //!
 //! This module owns phase, responsive density, the empty-state composition,
 //! and the compact header/footer fact budget. Product data still belongs to
@@ -54,8 +54,9 @@ impl ShellTier {
     }
 }
 
-/// Perceptual session phase. Every treatment reads from this same enum so a
-/// footer cannot say `idle` while the transcript is asking for approval.
+/// Perceptual session phase derived from canonical presentation and bounded
+/// local interaction state. A footer cannot say `idle` while the transcript
+/// is asking for approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellPhase {
     Idle,
@@ -65,8 +66,6 @@ pub enum ShellPhase {
     Done,
     Failed,
 }
-
-const WORKING_BUBBLE_FRAMES: [&str; 8] = ["⠀", "⢀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣿"];
 
 impl ShellPhase {
     #[must_use]
@@ -136,19 +135,7 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
     match phase {
         ShellPhase::Idle => ("·", label),
         ShellPhase::Typing => ("›", label),
-        ShellPhase::Working => {
-            let frame = if app.low_motion || !app.fancy_animations {
-                WORKING_BUBBLE_FRAMES[4]
-            } else {
-                let elapsed = app.turn_started_at.map_or_else(
-                    || app.ocean_started_at.elapsed(),
-                    |started| started.elapsed(),
-                );
-                let index = (elapsed.as_millis() / 300) as usize % WORKING_BUBBLE_FRAMES.len();
-                WORKING_BUBBLE_FRAMES[index]
-            };
-            (frame, label)
-        }
+        ShellPhase::Working => ("●", label),
         ShellPhase::Approval => ("◆", label),
         ShellPhase::Done => ("✓", label),
         ShellPhase::Failed => ("✕", label),
@@ -236,25 +223,6 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     ];
     let mut permission_hitbox = None;
     if tier != ShellTier::Compact {
-        // The shell header owns the selected status mark.
-        // "DSE" is already the leading brand mark; the other choices deserve
-        // their visible indicator beside it.
-        if let Some(indicator) = crate::tui::widgets::header_status_indicator_frame(
-            (!app.low_motion && app.fancy_animations)
-                .then_some(app.turn_started_at)
-                .flatten(),
-            &app.status_indicator,
-        )
-        .filter(|indicator| *indicator != "DSE")
-        {
-            left.push(Span::raw(" "));
-            left.push(Span::styled(
-                indicator,
-                Style::default()
-                    .fg(app.ui_theme.info)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
         left.push(Span::styled(
             " · ",
             Style::default().fg(app.ui_theme.text_dim),
@@ -348,47 +316,16 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, app: &mut App) {
     crate::tui::phase_strip::render(area, buf, app);
 }
 
-/// Build the idle composition: one DSE wordmark and one context line.
-/// Commands are discovered only through the canonical composer menu.
+/// Build the quiet idle composition. Commands remain discoverable through the
+/// canonical composer menu; the empty transcript carries no illustration or
+/// invented repository state.
 pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
     }
     let width = usize::from(area.width);
     let tier = ShellTier::for_area(area);
-    let mut lines = vec![Line::from(""); usize::from(area.height / 4)];
-    if tier != ShellTier::Compact && area.height >= 14 && area.width >= 28 {
-        let mark = [
-            vec![Span::styled(
-                "████   █████  █████",
-                Style::default().fg(app.ui_theme.accent_primary),
-            )],
-            vec![Span::styled(
-                "█   █  █      █",
-                Style::default().fg(app.ui_theme.accent_primary),
-            )],
-            vec![Span::styled(
-                "█   █  ████   ████",
-                Style::default().fg(app.ui_theme.accent_primary),
-            )],
-            vec![Span::styled(
-                "█   █      █  █",
-                Style::default().fg(app.ui_theme.accent_primary),
-            )],
-            vec![Span::styled(
-                "████   █████  █████",
-                Style::default().fg(app.ui_theme.accent_primary),
-            )],
-        ];
-        for row in mark {
-            let row_width = span_width(&row);
-            let inset = " ".repeat(width.saturating_sub(row_width) / 2);
-            let mut spans = vec![Span::raw(inset)];
-            spans.extend(row);
-            lines.push(Line::from(spans));
-        }
-        lines.push(Line::from(""));
-    }
+    let mut lines = vec![Line::from(""); usize::from(area.height / 3)];
 
     let workspace = crate::utils::display_path(&app.workspace);
     let workspace = format!("{}：{workspace}", tr(MessageId::FooterWorkspacePrefix));
@@ -526,15 +463,12 @@ mod tests {
         app.is_loading = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_millis(1_250));
         let (working, label) = phase_marker(&app, ShellPhase::from_app(&app));
-        assert_eq!(working, WORKING_BUBBLE_FRAMES[4]);
+        assert_eq!(working, "●");
         assert_eq!(label, "工作中");
 
         app.low_motion = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(9));
-        assert_eq!(
-            phase_marker(&app, ShellPhase::Working).0,
-            WORKING_BUBBLE_FRAMES[4]
-        );
+        assert_eq!(phase_marker(&app, ShellPhase::Working).0, "●");
 
         app.is_loading = false;
         let (marker, label) = phase_marker(&app, ShellPhase::Failed);
