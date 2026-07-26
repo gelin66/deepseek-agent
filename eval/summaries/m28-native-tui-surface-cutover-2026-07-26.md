@@ -75,7 +75,7 @@ TUI/localization；protocol、runtime、state、deepseek、tools 没有 M28 sema
 | TUI unit/integration | 765/765，2 个预注册 ignored；删除了只数矩阵维度的空洞自测 |
 | localization/color | key/placeholder parity；ANSI-16/256/truecolor/reset semantic gate |
 | repository gates | focused、fmt、strict Clippy、workspace test、public checker、diff check |
-| installed lifecycle | `8fc40ac6f` locked/offline package、install、verify、binary smoke、uninstall |
+| installed lifecycle | `1c4bf9406` locked/offline package、install、verify、binary smoke、uninstall |
 
 全量套件最初暴露一个测试自相干扰：raw SSE fixture 同时把 transport chunk/open guard 和
 model-event idle guard 设为 1 秒；并发负载下前者会先失败，使测试进入错误的 transport
