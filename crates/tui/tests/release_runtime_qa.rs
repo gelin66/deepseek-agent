@@ -288,6 +288,17 @@ async fn native_phase_line_tracks_working_through_completion() -> Result<()> {
     // response has no tools, so its exact pre-terminal phase is Thinking.
     // The mock reply and prompt contain none of these phase words.
     tui.wait_for(|frame| frame.contains("思考中"), INTERACTION_TIMEOUT)?;
+    tui.resize(12, 48)?;
+    tui.wait_for(
+        |frame| {
+            frame.rows() == 12
+                && frame.cols() == 48
+                && frame.contains("思考中")
+                && frame.any_visible_text()
+        },
+        INTERACTION_TIMEOUT,
+    )?;
+    tui.resize(40, 140)?;
     tui.wait_for(
         |frame| frame.contains("收尾中") || frame.contains("✓ 完成"),
         INTERACTION_TIMEOUT,

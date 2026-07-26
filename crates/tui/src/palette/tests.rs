@@ -1,14 +1,20 @@
 use ratatui::style::Color;
 
 use super::{
-    ColorDepth, DIFF_ADDED, DIFF_ADDED_BG, DSE_BG, DSE_INFO, STATUS_ERROR, STATUS_SUCCESS,
-    STATUS_WARNING, TEXT_BODY, adapt_bg, adapt_color, reasoning_surface_tint,
+    BORDER_COLOR, ColorDepth, DIFF_ADDED, DIFF_ADDED_BG, DSE_BG, DSE_INFO, STATUS_ERROR,
+    STATUS_SUCCESS, STATUS_WARNING, TEXT_BODY, TEXT_HINT, TEXT_SECONDARY, adapt_bg, adapt_color,
+    reasoning_surface_tint,
 };
 
 #[test]
 fn fixed_tokens_are_the_only_native_surface_owner() {
     assert_eq!(DSE_BG, Color::Reset);
     assert_eq!(TEXT_BODY, Color::Reset);
+    assert_eq!(TEXT_SECONDARY, Color::Gray);
+    assert_eq!(TEXT_HINT, Color::DarkGray);
+    assert_eq!(BORDER_COLOR, Color::DarkGray);
+    assert_ne!(TEXT_BODY, TEXT_SECONDARY);
+    assert_ne!(TEXT_SECONDARY, TEXT_HINT);
     assert_eq!(DIFF_ADDED_BG, Color::Reset);
     assert_eq!(DSE_INFO, Color::Cyan);
     assert_eq!(DIFF_ADDED, Color::Green);

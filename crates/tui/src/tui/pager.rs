@@ -28,8 +28,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_full_screen_room,
-    render_modal_footer, render_panel_scroll_rail,
+    ActionHint, SecondarySurface, SecondarySurfaceKind, ViewAction, ViewEvent,
+    render_action_footer, render_full_screen_room, render_panel_scroll_rail,
 };
 
 pub struct PagerView {
@@ -114,7 +114,7 @@ impl PagerView {
     /// content the user sees, including any width-based wrapping that
     /// `from_text` introduced — copying the visible text is the expected
     /// affordance when the user can't reach terminal-native selection inside
-    /// the modal (#1354).
+    /// the reading room (#1354).
     pub fn body_text(&self) -> String {
         self.plain_lines.join("\n")
     }
@@ -206,9 +206,9 @@ impl PagerView {
     }
 }
 
-impl ModalView for PagerView {
-    fn kind(&self) -> ModalKind {
-        ModalKind::Pager
+impl SecondarySurface for PagerView {
+    fn kind(&self) -> SecondarySurfaceKind {
+        SecondarySurfaceKind::Pager
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -421,7 +421,7 @@ impl ModalView for PagerView {
             ActionHint::new("/", tr_in(self.language, MessageId::PagerSearch)),
             ActionHint::new("c", tr_in(self.language, MessageId::PagerCopy)),
         ];
-        let content = render_modal_footer(inner, buf, &hints);
+        let content = render_action_footer(inner, buf, &hints);
         let footer = Rect {
             x: inner.x,
             y: content.bottom(),
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn footer_hint_includes_new_bindings() {
         // The rendered pager must surface the new vim-style bindings to the
-        // user. The footer is now a wrapping ActionHint row inside the modal
+        // user. The footer is now a wrapping ActionHint row inside the room
         // body (not the bottom border), so assert against the rendered buffer.
         let p = make_pager(5);
         let area = Rect::new(0, 0, 100, 16);
@@ -897,7 +897,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 10);
         let mut buf = Buffer::empty(area);
         p.render(area, &mut buf);
-        // The footer is now anchored to the bottom of the modal body (above the
+        // The footer is now anchored to the bottom of the room body (above the
         // padding/border) rather than painted on the border, so scan the whole
         // frame for the action labels.
         let mut text = String::new();
@@ -1147,7 +1147,7 @@ mod tests {
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
                 palette::DSE_BG,
-                "{w}x{h}: modal interior must be opaque"
+                "{w}x{h}: reading-room interior must be opaque"
             );
 
             // No horizontal overflow.

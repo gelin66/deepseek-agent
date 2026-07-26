@@ -1,7 +1,7 @@
 //! Application state for the `DeepSeek` TUI.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -779,13 +779,19 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
+    /// Exact primary/secondary onboarding action regions from the latest frame.
+    pub onboarding_primary_hitbox: Cell<Option<Rect>>,
+    pub onboarding_secondary_hitbox: Cell<Option<Rect>>,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     /// Canonical permission preset used for the next new Run.
     pub permission_mode: RunPermissionMode,
     /// Exact permission-chip hitbox from the latest rendered frame.
     pub permission_chip_hitbox: Cell<Option<Rect>>,
-    // Modal view stack (approval/help/etc.)
+    /// Exact visible composer-menu rows from the latest frame.
+    pub slash_menu_hitboxes: RefCell<Vec<(Rect, usize)>>,
+    pub mention_menu_hitboxes: RefCell<Vec<(Rect, usize)>>,
+    // Secondary surface stack (approval/help/etc.)
     pub view_stack: ViewStack,
     /// Whether the onboarding workspace-trust gate was accepted.
     ///
@@ -989,6 +995,8 @@ impl App {
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
+            onboarding_primary_hitbox: Cell::new(None),
+            onboarding_secondary_hitbox: Cell::new(None),
             clipboard: ClipboardHandler::new(),
             permission_mode: if yolo {
                 RunPermissionMode::FullAccess
@@ -996,6 +1004,8 @@ impl App {
                 RunPermissionMode::Ask
             },
             permission_chip_hitbox: Cell::new(None),
+            slash_menu_hitboxes: RefCell::new(Vec::new()),
+            mention_menu_hitboxes: RefCell::new(Vec::new()),
             view_stack: ViewStack::new(),
             workspace_trust_accepted: yolo,
             // Read the MCP config once at boot to know how many servers the

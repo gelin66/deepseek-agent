@@ -188,7 +188,7 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
     assert!(
         handle_canonical_local_view_event(&mut app, events.into_iter().next().unwrap()).is_none()
     );
-    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Pager));
+    assert_eq!(app.view_stack.top_kind(), Some(SecondarySurfaceKind::Pager));
 
     let copy_events = app
         .view_stack
@@ -213,7 +213,10 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
         .view_stack
         .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(close_events.is_empty());
-    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Approval));
+    assert_eq!(
+        app.view_stack.top_kind(),
+        Some(SecondarySurfaceKind::Approval)
+    );
 }
 
 #[test]
@@ -335,6 +338,94 @@ fn canonical_mouse_without_modal_keeps_transcript_scroll_behavior() {
         actual.viewport.transcript_scroll,
         expected.viewport.transcript_scroll
     );
+}
+
+#[test]
+fn onboarding_primary_mouse_action_matches_keyboard_transition() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::Welcome;
+    app.onboarding_needs_api_key = false;
+    app.workspace_trust_accepted = true;
+    app.onboarding_primary_hitbox
+        .set(Some(Rect::new(4, 6, 20, 1)));
+    let mut config = Config::default();
+
+    let should_exit = route_onboarding_mouse_event(
+        &mut app,
+        &mut config,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 8,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        },
+    )
+    .expect("route onboarding click");
+
+    assert!(!should_exit);
+    assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
+}
+
+#[test]
+fn slash_menu_mouse_row_applies_the_same_selection_as_keyboard() {
+    let mut app = create_test_app();
+    app.input = "/he".to_string();
+    app.cursor_position = app.input.chars().count();
+    let entries = visible_slash_menu_entries(&app, SLASH_MENU_LIMIT);
+    let index = entries
+        .iter()
+        .position(|entry| entry.name == "/help")
+        .expect("help entry");
+    app.slash_menu_hitboxes
+        .borrow_mut()
+        .push((Rect::new(2, 10, 32, 1), index));
+
+    let events = route_canonical_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.input, "/help");
+    assert!(app.slash_menu_hitboxes.borrow().is_empty());
+}
+
+#[test]
+fn mention_menu_mouse_row_applies_the_same_selection_as_keyboard() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("README.md"), "# DSE").expect("fixture file");
+    let mut app = create_test_app();
+    app.workspace = workspace.path().to_path_buf();
+    app.input = "@REA".to_string();
+    app.cursor_position = app.input.chars().count();
+    let mention_limit = app.mention_menu_limit;
+    let entries = crate::tui::file_mention::visible_mention_menu_entries(&mut app, mention_limit);
+    let index = entries
+        .iter()
+        .position(|entry| entry == "README.md")
+        .expect("README mention entry");
+    app.mention_menu_hitboxes
+        .borrow_mut()
+        .push((Rect::new(3, 11, 40, 1), index));
+
+    let events = route_canonical_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.input, "@README.md");
+    assert!(app.mention_menu_hitboxes.borrow().is_empty());
 }
 
 #[test]

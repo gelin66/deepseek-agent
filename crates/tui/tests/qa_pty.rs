@@ -211,6 +211,37 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
 }
 
 #[test]
+fn onboarding_primary_action_is_mouse_reachable() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    let ws = make_sealed_workspace()?;
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(ws.workspace())
+        .clear_env()
+        .seal_home(ws.home())
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "en",
+            "--no-project-config",
+            "--mouse-capture",
+        ])
+        .size(40, 140)
+        .spawn()?;
+    h.wait_for_text("Press Enter to continue.", BOOT_TIMEOUT)?;
+    // The frozen 140x40 room places the primary action on row 12; clicking
+    // inside that exact rendered hitbox must advance through the same helper
+    // as Enter.
+    h.send(keys::mouse::click(12, 2))?;
+    h.wait_for_text("Connect your API key", KEY_TIMEOUT)?;
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+#[test]
 fn frozen_language_and_size_matrix_preserves_native_composer_focus() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     for (language, ready, stress) in [
@@ -466,6 +497,71 @@ fn permission_selector_english_mouse_selects_full_access() -> anyhow::Result<()>
             // omit the visual space inside the header label.
             frame.row(0).replace(' ', "").contains("Fullaccess")
                 && !frame.contains("Choose the permission preset for the next run")
+        },
+        KEY_TIMEOUT,
+    )?;
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+#[test]
+fn composer_slash_and_mention_rows_are_mouse_reachable() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    let ws = make_sealed_workspace()?;
+    std::fs::write(ws.workspace().join("README.md"), "# DSE\n")?;
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(ws.workspace())
+        .clear_env()
+        .seal_home(ws.home())
+        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "en",
+            "--no-project-config",
+            "--skip-onboarding",
+            "--mouse-capture",
+        ])
+        .size(32, 100)
+        .spawn()?;
+    h.wait_for_text(ENGLISH_COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+
+    h.send(keys::key::text("/he"))?;
+    h.wait_for_text(
+        "Understand concepts, commands, and keybindings",
+        KEY_TIMEOUT,
+    )?;
+    let (row, col) = h
+        .frame()
+        .find_text("Understand concepts, commands, and keybindings")
+        .context("locate rendered /help row")?;
+    h.send(keys::mouse::click(row, col))?;
+    h.wait_for(
+        |frame| {
+            let (cursor_row, _) = frame.cursor();
+            frame.row(cursor_row).contains("/help") && !frame.row(cursor_row).contains("/he ")
+        },
+        KEY_TIMEOUT,
+    )?;
+
+    h.send(keys::key::esc())?;
+    h.wait_for_text(ENGLISH_COMPOSER_READY_TEXT, KEY_TIMEOUT)?;
+    h.send(keys::key::text("@REA"))?;
+    h.wait_for_text("@README.md", KEY_TIMEOUT)?;
+    let (row, col) = h
+        .frame()
+        .find_text("@README.md")
+        .context("locate rendered README mention row")?;
+    h.send(keys::mouse::click(row, col))?;
+    h.wait_for(
+        |frame| {
+            let (cursor_row, _) = frame.cursor();
+            frame.row(cursor_row).contains("@README.md") && !frame.row(cursor_row).contains("@REA ")
         },
         KEY_TIMEOUT,
     )?;

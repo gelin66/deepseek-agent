@@ -45,6 +45,7 @@ const ONBOARDING_KEY: &str = "sk-offline-canonical-onboarding-key";
 const RECOVERY_CREATION_ID: &str = "pty-recover-explicit-creation";
 const RECOVERY_RESERVED_RUN_ID: &str = "pty-reserved-explicit-run";
 const RECOVERY_PROMPT: &str = "恢复中断的显式创建，不得生成第二个 run。";
+const FROZEN_NATIVE_SIZES: [(u16, u16); 5] = [(12, 48), (16, 60), (24, 80), (32, 100), (40, 140)];
 
 #[test]
 fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow::Result<()> {
@@ -147,8 +148,22 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         },
         RUN_TIMEOUT,
     )?;
+    for (rows, cols) in FROZEN_NATIVE_SIZES {
+        tui.resize(rows, cols)?;
+        tui.wait_for(
+            |frame| {
+                frame.rows() == rows
+                    && frame.cols() == cols
+                    && frame.contains(COMPLETION_MARKER)
+                    && frame.contains("状态 · 完成")
+                    && frame.contains("变更 ·")
+                    && frame.contains("验证 · 1/1 通过")
+            },
+            RUN_TIMEOUT,
+        )?;
+    }
     tui.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
-    let live_terminal_frame = tui.frame().visible_cells();
+    let live_terminal_frame = tui.frame().presentation();
 
     tui.send(b"\x04")?; // Ctrl+D exits only after the canonical Terminal event.
     assert_eq!(
@@ -213,9 +228,9 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     )?;
     reopened.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
     assert_eq!(
-        reopened.frame().visible_cells(),
+        reopened.frame().presentation(),
         live_terminal_frame,
-        "visible terminal-cell projection changed after credential-free RunStore reopen"
+        "semantic terminal presentation changed after credential-free RunStore reopen"
     );
     reopened.send(b"\x04")?;
     assert_eq!(
@@ -270,6 +285,32 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
         |frame| frame.contains("Status · done") && frame.contains("RunStore · recoverable"),
         RUN_TIMEOUT,
     )?;
+    for (rows, cols) in FROZEN_NATIVE_SIZES {
+        tui.resize(rows, cols)?;
+        tui.wait_for(
+            |frame| {
+                frame.rows() == rows
+                    && frame.cols() == cols
+                    && frame.contains(COMPLETION_MARKER)
+                    && frame.contains("Status · done")
+                    && frame.contains("Changes ·")
+                    && frame.contains("Verification · 1/1 passed")
+            },
+            RUN_TIMEOUT,
+        )?;
+    }
+    tui.resize(28, 80)?;
+    tui.wait_for(
+        |frame| {
+            frame.rows() == 28
+                && frame.cols() == 80
+                && frame.contains(COMPLETION_MARKER)
+                && frame.contains("Status · done")
+        },
+        RUN_TIMEOUT,
+    )?;
+    tui.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    let live_terminal_frame = tui.frame().presentation();
 
     tui.send(b"\x04")?;
     assert_eq!(
@@ -293,6 +334,49 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
     assert_canonical_sqlite_truth(&state_path, &canonical_workspace, ENGLISH_PROMPT)?;
     assert_no_legacy_execution_json(isolated.home());
     assert_no_legacy_execution_json(isolated.workspace());
+
+    let mut reopened = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("DSE_HOME", dse_home.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "offline-reopen-must-not-send")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--language",
+            "en",
+            "--resume",
+            "latest",
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(28, 80)
+        .spawn()?;
+    reopened.wait_for_text(COMPLETION_MARKER, BOOT_TIMEOUT)?;
+    reopened.wait_for(
+        |frame| frame.contains("Status · done") && frame.contains("RunStore · recoverable"),
+        BOOT_TIMEOUT,
+    )?;
+    reopened.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    assert_eq!(
+        reopened.frame().presentation(),
+        live_terminal_frame,
+        "English semantic terminal presentation changed after credential-free RunStore reopen"
+    );
+    reopened.send(b"\x04")?;
+    assert_eq!(
+        reopened.wait_for_exit(EXIT_TIMEOUT),
+        Some(0),
+        "reopened English terminal run did not exit cleanly:\n{}",
+        reopened.debug_dump()
+    );
     Ok(())
 }
 

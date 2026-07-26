@@ -5,7 +5,7 @@
 //! with their canonical owners and are merely projected into one of the four
 //! containers accepted by ADR-0013.
 
-use super::{app::OnboardingState, views::ModalKind};
+use super::{app::OnboardingState, views::SecondarySurfaceKind};
 
 /// The complete container grammar accepted by ADR-0013.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,12 +156,12 @@ fn contract(surface: ProductionSurface) -> &'static SurfaceContract {
         .expect("every production surface has one topology contract")
 }
 
-pub(crate) fn for_modal(kind: ModalKind) -> &'static SurfaceContract {
+pub(crate) fn for_secondary_surface(kind: SecondarySurfaceKind) -> &'static SurfaceContract {
     contract(match kind {
-        ModalKind::Approval => ProductionSurface::Approval,
-        ModalKind::Permission => ProductionSurface::PermissionSelector,
-        ModalKind::UserInput => ProductionSurface::UserInput,
-        ModalKind::Pager => ProductionSurface::Pager,
+        SecondarySurfaceKind::Approval => ProductionSurface::Approval,
+        SecondarySurfaceKind::Permission => ProductionSurface::PermissionSelector,
+        SecondarySurfaceKind::UserInput => ProductionSurface::UserInput,
+        SecondarySurfaceKind::Pager => ProductionSurface::Pager,
     })
 }
 
@@ -218,21 +218,21 @@ mod tests {
     }
 
     #[test]
-    fn modal_and_onboarding_variants_are_exhaustively_reachable() {
+    fn secondary_surface_and_onboarding_variants_are_exhaustively_reachable() {
         assert_eq!(
-            for_modal(ModalKind::Approval).surface,
+            for_secondary_surface(SecondarySurfaceKind::Approval).surface,
             ProductionSurface::Approval
         );
         assert_eq!(
-            for_modal(ModalKind::Permission).surface,
+            for_secondary_surface(SecondarySurfaceKind::Permission).surface,
             ProductionSurface::PermissionSelector
         );
         assert_eq!(
-            for_modal(ModalKind::UserInput).surface,
+            for_secondary_surface(SecondarySurfaceKind::UserInput).surface,
             ProductionSurface::UserInput
         );
         assert_eq!(
-            for_modal(ModalKind::Pager).surface,
+            for_secondary_surface(SecondarySurfaceKind::Pager).surface,
             ProductionSurface::Pager
         );
 
@@ -282,25 +282,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn fixed_surface_matrix_covers_language_size_input_and_reopen_axes() {
-        let languages = ["en", "zh-Hans"];
-        let sizes = [(48, 12), (60, 16), (80, 24), (100, 32), (140, 40)];
-        let input_modes = ["keyboard", "mouse", "paste"];
-        let lifecycles = ["live", "resume", "sqlite-reopen"];
-        let color_depths = ["ansi16", "truecolor", "terminal-reset"];
-
-        assert_eq!(languages.len(), 2);
-        assert_eq!(sizes.len(), 5);
-        assert!(
-            sizes
-                .iter()
-                .all(|(width, height)| *width > 0 && *height > 0)
-        );
-        assert_eq!(input_modes.len(), 3);
-        assert_eq!(lifecycles.len(), 3);
-        assert_eq!(color_depths.len(), 3);
     }
 }

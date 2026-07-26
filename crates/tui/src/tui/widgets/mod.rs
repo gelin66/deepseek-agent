@@ -138,7 +138,7 @@ impl ChatWidget {
             let summary_cells: Vec<(usize, HistoryCell)> = tool_runs
                 .iter()
                 .filter(|run| collapsed_run_starts.contains(&run.start))
-                .map(|run| (run.start, tool_run_summary_cell(run)))
+                .map(|run| (run.start, tool_run_summary_cell(run, app.language)))
                 .collect();
             let summary_cell_for = |idx: usize| -> Option<&HistoryCell> {
                 summary_cells
@@ -306,11 +306,14 @@ impl ChatWidget {
     }
 }
 
-fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
+fn tool_run_summary_cell(
+    run: &ToolRun,
+    language: dse_localization::ProductLanguage,
+) -> HistoryCell {
     HistoryCell::Tool(GenericToolCell {
         name: "activity_group".to_string(),
         status: ToolStatus::Success,
-        input_summary: Some(crate::tui::history::tool_run_summary(run)),
+        input_summary: Some(crate::tui::history::tool_run_summary(run, language)),
         output: None,
         prompts: None,
         output_summary: None,
@@ -583,6 +586,8 @@ impl<'a> ComposerWidget<'a> {
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.app.slash_menu_hitboxes.borrow_mut().clear();
+        self.app.mention_menu_hitboxes.borrow_mut().clear();
         let background = Style::default().bg(palette::COMPOSER_BG);
         let has_panel = self.has_panel(area);
         let inner_area = self.inner_area(area);
@@ -631,7 +636,7 @@ impl Renderable for ComposerWidget<'_> {
                 .style(background);
             if is_draft_mode {
                 block = block.title(Line::from(Span::styled(
-                    "Draft",
+                    self.app.tr(MessageId::PhaseDraft),
                     Style::default().fg(palette::TEXT_MUTED),
                 )));
             }
@@ -720,6 +725,15 @@ impl Renderable for ComposerWidget<'_> {
                 .take(menu_bottom)
                 .skip(menu_top)
             {
+                let row = inner_area.y.saturating_add(
+                    u16::try_from(lines.len())
+                        .unwrap_or(u16::MAX)
+                        .min(inner_area.height.saturating_sub(1)),
+                );
+                self.app
+                    .mention_menu_hitboxes
+                    .borrow_mut()
+                    .push((Rect::new(inner_area.x, row, inner_area.width, 1), idx));
                 let is_selected = idx == selected;
                 let style = if is_selected {
                     Style::default()
@@ -787,6 +801,15 @@ impl Renderable for ComposerWidget<'_> {
                 .take(menu_bottom)
                 .skip(menu_top)
             {
+                let row = inner_area.y.saturating_add(
+                    u16::try_from(lines.len())
+                        .unwrap_or(u16::MAX)
+                        .min(inner_area.height.saturating_sub(1)),
+                );
+                self.app
+                    .slash_menu_hitboxes
+                    .borrow_mut()
+                    .push((Rect::new(inner_area.x, row, inner_area.width, 1), idx));
                 let is_selected = idx == selected;
                 let sel_style = if is_selected {
                     Style::default()
@@ -2016,10 +2039,7 @@ mod tests {
         let rendered = buffer_text(&buf, area);
 
         assert_eq!(app.collapsed_cell_map, vec![0]);
-        assert!(
-            rendered.contains("Explored 2 files, 1 search"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("已探索 2 个文件，1 次搜索"), "{rendered}");
         assert!(!rendered.contains("activity_group"), "{rendered}");
         assert!(
             !rendered.contains("full output from list_dir"),
@@ -2097,7 +2117,7 @@ mod tests {
         assert_eq!(first, second, "collapse path is frame-stable");
         assert_eq!(first_map, app.collapsed_cell_map);
         assert_eq!(first_total, app.viewport.last_transcript_total);
-        assert!(first.contains("Explored 2 files, 1 search"), "{first}");
+        assert!(first.contains("已探索 2 个文件，1 次搜索"), "{first}");
         assert!(first.contains("trailing prompt"), "{first}");
     }
 
@@ -2446,7 +2466,7 @@ mod tests {
         normal_widget.render(area, &mut normal_buf);
         let normal_rendered = buffer_text(&normal_buf, area);
         assert!(!normal_rendered.contains("Composer"));
-        assert!(!normal_rendered.contains("Draft"));
+        assert!(!normal_rendered.contains("草稿"));
 
         let mut draft_app = create_test_app();
         draft_app.insert_str("first line\nsecond line");
@@ -2454,7 +2474,7 @@ mod tests {
             ComposerWidget::new(&draft_app, 5, &slash_menu_entries, &mention_menu_entries);
         let mut draft_buf = Buffer::empty(area);
         draft_widget.render(area, &mut draft_buf);
-        assert!(buffer_text(&draft_buf, area).contains("Draft"));
+        assert!(buffer_text(&draft_buf, area).contains("草稿"));
     }
 
     #[test]
@@ -3304,7 +3324,7 @@ mod tests {
         assert!(rendered.contains("+ fn main() {"), "{rendered}");
         assert!(
             rendered.contains("visible before approval"),
-            "approval modal should show proposed file content before approval:\n{rendered}"
+            "approval surface should show proposed file content before approval:\n{rendered}"
         );
     }
 
@@ -3381,7 +3401,7 @@ mod tests {
 
         assert!(
             !rendered.contains("Built-in safety gate requires approval"),
-            "policy internals should not be the modal summary:\n{rendered}"
+            "policy internals should not be the approval summary:\n{rendered}"
         );
         assert!(
             !rendered.contains("Impact: Command"),

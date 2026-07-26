@@ -6,6 +6,30 @@
 
 use std::time::Instant;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationCell {
+    pub row: u16,
+    pub col: u16,
+    pub contents: String,
+    pub foreground: vt100::Color,
+    pub background: vt100::Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+/// Stable semantic terminal presentation after normalizing equivalent blank
+/// encodings produced by clear-versus-overwrite paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationFrame {
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor: (u16, u16),
+    pub cursor_hidden: bool,
+    pub cells: Vec<PresentationCell>,
+}
+
 pub struct Frame {
     parser: vt100::Parser,
     captured_at: Option<Instant>,
@@ -80,14 +104,14 @@ impl Frame {
         None
     }
 
-    /// Exact visible glyph cells, excluding terminal-default blank cells.
+    /// Exact semantic presentation, excluding terminal-default blank cells.
     ///
     /// A live frame may reach the same visual result by overwriting prior
     /// cells with spaces while a freshly reopened frame reaches it through a
     /// clear. Comparing non-blank cells preserves glyph identity and terminal
     /// coordinates without treating those equivalent blank encodings as a
     /// presentation difference.
-    pub fn visible_cells(&self) -> Vec<(u16, u16, String)> {
+    pub fn presentation(&self) -> PresentationFrame {
         let mut cells = Vec::new();
         for row in 0..self.rows() {
             for col in 0..self.cols() {
@@ -96,11 +120,27 @@ impl Frame {
                 };
                 let contents = cell.contents();
                 if !contents.is_empty() && !contents.chars().all(char::is_whitespace) {
-                    cells.push((row, col, contents.to_owned()));
+                    cells.push(PresentationCell {
+                        row,
+                        col,
+                        contents: contents.to_owned(),
+                        foreground: cell.fgcolor(),
+                        background: cell.bgcolor(),
+                        bold: cell.bold(),
+                        italic: cell.italic(),
+                        underline: cell.underline(),
+                        inverse: cell.inverse(),
+                    });
                 }
             }
         }
-        cells
+        PresentationFrame {
+            rows: self.rows(),
+            cols: self.cols(),
+            cursor: self.cursor(),
+            cursor_hidden: self.parser.screen().hide_cursor(),
+            cells,
+        }
     }
 
     /// Foreground/background colors for one terminal cell. Theme QA uses the

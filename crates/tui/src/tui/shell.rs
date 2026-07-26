@@ -18,7 +18,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
-use crate::tui::{app::App, run_presentation::RunPresentationPhase, views::ModalKind};
+use crate::tui::{app::App, run_presentation::RunPresentationPhase, views::SecondarySurfaceKind};
 use dse_localization::{MessageId, tr};
 use dse_protocol::agent_runtime::RunPermissionMode;
 
@@ -73,7 +73,7 @@ impl ShellPhase {
     pub fn from_app(app: &App) -> Self {
         if matches!(
             app.view_stack.top_kind(),
-            Some(ModalKind::Approval | ModalKind::UserInput)
+            Some(SecondarySurfaceKind::Approval | SecondarySurfaceKind::UserInput)
         ) {
             return Self::Approval;
         }

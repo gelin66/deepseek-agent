@@ -188,7 +188,7 @@ pub fn append_frame_links(links: Vec<LinkRegion>) {
 
 /// Replace the portion of the current frame-link map covered by an opaque
 /// overlay, preserving (and clipping) regions that remain visible around it.
-/// This prevents a transcript URL underneath a modal from making unrelated
+/// This prevents a transcript URL underneath a secondary surface from making unrelated
 /// popup text clickable when both widgets paint in the same terminal frame.
 pub fn overlay_frame_links(area: ratatui::layout::Rect, links: Vec<LinkRegion>) {
     if area.width == 0 || area.height == 0 {
@@ -499,7 +499,7 @@ mod tests {
                 row: 4,
                 col_start: 7,
                 col_end: 8,
-                target: "modal".to_string(),
+                target: "secondary-surface".to_string(),
             }],
         );
 
@@ -522,7 +522,7 @@ mod tests {
                     row: 4,
                     col_start: 7,
                     col_end: 8,
-                    target: "modal".to_string(),
+                    target: "secondary-surface".to_string(),
                 },
             ]
         );

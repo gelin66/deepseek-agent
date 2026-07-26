@@ -15,8 +15,8 @@ use ratatui::{
 
 use crate::palette;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, bottom_sheet_rect,
-    render_bottom_sheet, render_modal_footer,
+    ActionHint, SecondarySurface, SecondarySurfaceKind, ViewAction, ViewEvent, bottom_sheet_rect,
+    render_action_footer, render_bottom_sheet,
 };
 
 const MODES: [RunPermissionMode; 3] = [
@@ -61,9 +61,9 @@ impl PermissionSelector {
     }
 }
 
-impl ModalView for PermissionSelector {
-    fn kind(&self) -> ModalKind {
-        ModalKind::Permission
+impl SecondarySurface for PermissionSelector {
+    fn kind(&self) -> SecondarySurfaceKind {
+        SecondarySurfaceKind::Permission
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -118,7 +118,7 @@ impl ModalView for PermissionSelector {
             sheet.height,
             tr(MessageId::PermissionSelectorTitle),
         );
-        inner = render_modal_footer(
+        inner = render_action_footer(
             inner,
             buf,
             &[

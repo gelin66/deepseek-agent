@@ -16,7 +16,7 @@ use crate::palette;
 use crate::tui::approval::ReviewDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModalKind {
+pub enum SecondarySurfaceKind {
     Approval,
     Permission,
     UserInput,
@@ -140,7 +140,7 @@ pub(crate) fn render_panel_scroll_rail(
     }
 }
 
-fn render_modal_backdrop(area: Rect, buf: &mut Buffer) {
+fn render_surface_backdrop(area: Rect, buf: &mut Buffer) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             buf[(x, y)]
@@ -150,11 +150,11 @@ fn render_modal_backdrop(area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// A single key/label hint shown in a modal's action footer.
+/// A single key/label hint shown in a secondary surface's action footer.
 ///
 /// Footers built from `ActionHint`s are laid out by [`action_footer_lines`],
 /// which wraps to additional rows instead of letting an action run off the
-/// right edge of the modal — the core overflow bug behind #3732. Use this for
+/// right edge of the surface — the core overflow bug behind #3732. Use this for
 /// action/navigation hints; truncate only identifiers/paths/hashes elsewhere.
 pub(crate) struct ActionHint {
     key: Cow<'static, str>,
@@ -199,7 +199,7 @@ impl ActionHint {
 /// Hints are packed greedily; when the next hint would overflow the current row
 /// the layout starts a new row rather than truncating. No action is ever
 /// dropped or clipped (a single hint wider than `width` is emitted alone, which
-/// only happens at degenerate widths below the modal minimums). This is the
+/// only happens at degenerate widths below the surface minimums). This is the
 /// shared replacement for the single-line `title_bottom` footers that silently
 /// pushed actions off-screen.
 pub(crate) fn action_footer_lines(hints: &[ActionHint], width: u16) -> Vec<Line<'static>> {
@@ -237,7 +237,7 @@ pub(crate) fn action_footer_lines(hints: &[ActionHint], width: u16) -> Vec<Line<
 
 /// Reserve `lines` worth of rows at the bottom of `inner`, paint them, and
 /// return the content area that remains above. Shared by the action-hint and
-/// free-text modal footers.
+/// free-text surface footers.
 fn place_footer_lines(inner: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) -> Rect {
     if lines.is_empty() || inner.height == 0 {
         return inner;
@@ -263,11 +263,11 @@ fn place_footer_lines(inner: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) 
 /// Render a wrapping action footer anchored to the bottom of `inner` and
 /// return the content area that remains above it.
 ///
-/// Modals call this after painting their block so the footer reserves exactly
+/// Secondary surfaces call this after painting their block so the footer reserves exactly
 /// as many rows as it needs (bounded by the available height) and the body
-/// fills the rest. Centralizing it keeps every modal's action row visible and
+/// fills the rest. Centralizing it keeps every action row visible and
 /// reachable at narrow widths.
-pub(crate) fn render_modal_footer(inner: Rect, buf: &mut Buffer, hints: &[ActionHint]) -> Rect {
+pub(crate) fn render_action_footer(inner: Rect, buf: &mut Buffer, hints: &[ActionHint]) -> Rect {
     let lines = action_footer_lines(hints, inner.width);
     place_footer_lines(inner, buf, lines)
 }
@@ -291,7 +291,7 @@ pub enum ViewEvent {
     },
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
-    /// status message — modal views cannot reach `app` directly. `label` is
+    /// status message — secondary surfaces cannot reach `app` directly. `label` is
     /// the noun shown in the success / failure status.
     CopyToClipboard {
         text: String,
@@ -310,13 +310,13 @@ pub enum ViewAction {
     EmitAndClose(ViewEvent),
 }
 
-pub trait ModalView {
-    fn kind(&self) -> ModalKind;
+pub trait SecondarySurface {
+    fn kind(&self) -> SecondarySurfaceKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
-    /// Returns `true` if the modal consumed the paste; `false` to let the
-    /// host route the text elsewhere (e.g. drop it because a modal is open,
-    /// or insert it into the composer when no modal wants it). The default
-    /// is `false` so modals that don't care about paste don't silently
+    /// Returns `true` if the surface consumed the paste; `false` to let the
+    /// host route the text elsewhere (e.g. drop it because a secondary surface is open,
+    /// or insert it into the composer when no surface wants it). The default
+    /// is `false` so surfaces that don't care about paste don't silently
     /// swallow Cmd-V.
     fn handle_paste(&mut self, _text: &str) -> bool {
         false
@@ -325,11 +325,11 @@ pub trait ModalView {
         ViewAction::None
     }
     fn render(&self, area: Rect, buf: &mut Buffer);
-    /// The region this modal actually paints within the full frame `area`.
+    /// The region this secondary surface actually paints within the full frame `area`.
     ///
     /// Defaults to the whole frame for full-screen rooms. Inline interruptions
     /// and bottom sheets override this so the transcript above stays visible.
-    /// The returned rect MUST match the region the modal renders into, or the
+    /// The returned rect MUST match the region the surface renders into, or the
     /// dim and the painted content will disagree.
     fn occupied_region(&self, area: Rect) -> Rect {
         area
@@ -338,7 +338,7 @@ pub trait ModalView {
 
 #[derive(Default)]
 pub struct ViewStack {
-    views: Vec<Box<dyn ModalView>>,
+    views: Vec<Box<dyn SecondarySurface>>,
 }
 
 impl ViewStack {
@@ -350,13 +350,13 @@ impl ViewStack {
         self.views.is_empty()
     }
 
-    pub fn top_kind(&self) -> Option<ModalKind> {
+    pub fn top_kind(&self) -> Option<SecondarySurfaceKind> {
         self.views.last().map(|view| view.kind())
     }
 
-    pub fn push<V: ModalView + 'static>(&mut self, view: V) {
+    pub fn push<V: SecondarySurface + 'static>(&mut self, view: V) {
         let kind = view.kind();
-        let contract = crate::tui::surface_system::for_modal(kind);
+        let contract = crate::tui::surface_system::for_secondary_surface(kind);
         self.views.push(Box::new(view));
         tracing::debug!(
             target: "dse_tui::view_stack",
@@ -373,7 +373,7 @@ impl ViewStack {
         );
     }
 
-    pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {
+    pub fn pop(&mut self) -> Option<Box<dyn SecondarySurface>> {
         let popped = self.views.pop();
         if let Some(view) = popped.as_ref() {
             tracing::debug!(target: "dse_tui::view_stack", action = "pop", kind = ?view.kind(), depth = self.views.len(), "view popped");
@@ -383,14 +383,14 @@ impl ViewStack {
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         // Dim each view's own occupied region rather than the whole frame, so
-        // an inline modal (the approval prompt) leaves the transcript above it
-        // visible instead of blacking out the screen. Full-screen modals keep
+        // an inline surface (the approval prompt) leaves the transcript above it
+        // visible instead of blacking out the screen. Full-screen rooms keep
         // the default `occupied_region` of the entire frame, so their backdrop
         // is unchanged.
         for view in &self.views {
             let region = view.occupied_region(area);
             crate::tui::osc8::overlay_frame_links(region, Vec::new());
-            render_modal_backdrop(region, buf);
+            render_surface_backdrop(region, buf);
             view.render(area, buf);
         }
     }
@@ -455,8 +455,8 @@ impl fmt::Debug for ViewStack {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionHint, ModalKind, ModalView, ViewAction, ViewStack, action_footer_lines,
-        render_full_screen_room, render_modal_footer,
+        ActionHint, SecondarySurface, SecondarySurfaceKind, ViewAction, ViewStack,
+        action_footer_lines, render_action_footer, render_full_screen_room,
     };
     use crate::palette;
     use crossterm::event::KeyEvent;
@@ -503,14 +503,14 @@ mod tests {
     }
 
     #[test]
-    fn render_modal_footer_reserves_rows_and_returns_body() {
+    fn render_action_footer_reserves_rows_and_returns_body() {
         let inner = Rect::new(2, 2, 40, 10);
         let mut buf = Buffer::empty(Rect::new(0, 0, 44, 14));
         let hints = [
             ActionHint::new("Enter", "save"),
             ActionHint::new("Esc", "cancel"),
         ];
-        let body = render_modal_footer(inner, &mut buf, &hints);
+        let body = render_action_footer(inner, &mut buf, &hints);
         // The footer (a single row at this width) is reserved off the bottom and
         // the body fills the rows above it.
         assert_eq!(body.y, inner.y);
@@ -532,23 +532,23 @@ mod tests {
         );
     }
 
-    /// A modal that doesn't override `handle_paste` must report
+    /// A secondary surface that doesn't override `handle_paste` must report
     /// "not consumed" so the host can fall through to the composer.
     /// Regression: views/mod.rs previously inverted the boolean, swallowing
-    /// every Cmd-V while any modal was on top.
+    /// every Cmd-V while any surface was on top.
     #[test]
-    fn default_modal_does_not_consume_paste() {
+    fn default_secondary_surface_does_not_consume_paste() {
         let mut stack = ViewStack::new();
-        stack.push(BareModal);
+        stack.push(BareSurface);
         assert!(!stack.handle_paste("hello"));
-        assert_eq!(stack.top_kind(), Some(ModalKind::Pager));
+        assert_eq!(stack.top_kind(), Some(SecondarySurfaceKind::Pager));
     }
 
-    struct BareModal;
+    struct BareSurface;
 
-    impl ModalView for BareModal {
-        fn kind(&self) -> ModalKind {
-            ModalKind::Pager
+    impl SecondarySurface for BareSurface {
+        fn kind(&self) -> SecondarySurfaceKind {
+            SecondarySurfaceKind::Pager
         }
 
         fn handle_key(&mut self, _key: KeyEvent) -> ViewAction {
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn view_stack_paints_opaque_backdrop_before_modal() {
+    fn view_stack_paints_opaque_backdrop_before_surface() {
         let area = Rect::new(0, 0, 24, 8);
         let modal_x = area.x + area.width / 2;
         let modal_y = area.y + area.height / 2;
@@ -579,7 +579,7 @@ mod tests {
         }
 
         let mut stack = ViewStack::new();
-        stack.push(BareModal);
+        stack.push(BareSurface);
         stack.render(area, &mut buf);
 
         assert_eq!(buf[(modal_x, modal_y)].symbol(), "M");
@@ -604,16 +604,16 @@ mod tests {
     }
 
     #[test]
-    fn view_stack_masks_links_behind_opaque_modals() {
+    fn view_stack_masks_links_behind_opaque_surfaces() {
         let area = Rect::new(0, 0, 24, 8);
         crate::tui::osc8::set_frame_links(vec![crate::tui::osc8::LinkRegion {
             row: 3,
             col_start: 2,
             col_end: 18,
-            target: "https://example.invalid/under-modal".to_string(),
+            target: "https://example.invalid/under-surface".to_string(),
         }]);
         let mut stack = ViewStack::new();
-        stack.push(BareModal);
+        stack.push(BareSurface);
         stack.render(area, &mut Buffer::empty(area));
         assert!(crate::tui::osc8::take_frame_links().is_empty());
     }

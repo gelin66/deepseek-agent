@@ -1,4 +1,4 @@
-//! Modal for request_user_input tool prompts.
+//! Secondary surface for request_user_input tool prompts.
 
 use std::cell::RefCell;
 
@@ -16,8 +16,8 @@ use dse_protocol::agent_runtime::{
 
 use crate::palette;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, bottom_sheet_rect,
-    render_bottom_sheet, render_full_screen_room, render_modal_footer, render_panel_scroll_rail,
+    ActionHint, SecondarySurface, SecondarySurfaceKind, ViewAction, ViewEvent, bottom_sheet_rect,
+    render_action_footer, render_bottom_sheet, render_full_screen_room, render_panel_scroll_rail,
 };
 
 fn push_option_lines(
@@ -357,9 +357,9 @@ impl UserInputView {
     }
 }
 
-impl ModalView for UserInputView {
-    fn kind(&self) -> ModalKind {
-        ModalKind::UserInput
+impl SecondarySurface for UserInputView {
+    fn kind(&self) -> SecondarySurfaceKind {
+        SecondarySurfaceKind::UserInput
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -543,7 +543,7 @@ impl ModalView for UserInputView {
                 ]
             }
         };
-        inner = render_modal_footer(inner, buf, &hints);
+        inner = render_action_footer(inner, buf, &hints);
         let visible_rows = usize::from(inner.height);
         let selected_line = selectable_lines
             .iter()

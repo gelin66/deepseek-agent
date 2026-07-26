@@ -34,7 +34,7 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
     style::Style,
     widgets::Block,
@@ -65,7 +65,7 @@ use super::history::HistoryCell;
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
-use super::views::{ModalKind, ViewEvent};
+use super::views::{SecondarySurfaceKind, ViewEvent};
 use super::widgets::{ChatWidget, ComposerWidget, Renderable};
 
 // === Constants ===
@@ -562,6 +562,78 @@ async fn recover_creation_at_startup(
     }
 }
 
+fn complete_api_key_onboarding(app: &mut App, config: &mut Config) -> Result<()> {
+    let key = app.api_key_input.trim().to_owned();
+    match onboarding::validate_api_key_for_onboarding(&key) {
+        onboarding::ApiKeyValidation::Reject(message) => {
+            app.status_message = Some(message);
+        }
+        onboarding::ApiKeyValidation::Accept { warning } => {
+            let config_path = app.config_path.as_deref();
+            crate::config_persistence::persist_root_string_key(config_path, "api_key", &key)?;
+            config.api_key = Some(key);
+            app.api_key_input.clear();
+            app.api_key_cursor = 0;
+            app.onboarding_needs_api_key = false;
+            app.api_key_env_only = false;
+            app.status_message = warning;
+            onboarding::advance_onboarding_after_api_key(app);
+        }
+    }
+    Ok(())
+}
+
+fn handle_onboarding_primary_action(app: &mut App, config: &mut Config) -> Result<()> {
+    match app.onboarding {
+        OnboardingState::Welcome => onboarding::advance_onboarding_from_welcome(app),
+        OnboardingState::ApiKey => complete_api_key_onboarding(app, config)?,
+        OnboardingState::TrustDirectory => {
+            if let Err(error) = complete_trust_directory_onboarding(app) {
+                app.status_message = Some(
+                    app.tr(MessageId::OnboardTrustSaveFailed)
+                        .replace("{error}", &error),
+                );
+            }
+        }
+        OnboardingState::Tips => app.finish_onboarding_without_feature_intro(),
+        OnboardingState::None => {}
+    }
+    Ok(())
+}
+
+fn point_in_rect(column: u16, row: u16, rect: Rect) -> bool {
+    column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+}
+
+fn route_onboarding_mouse_event(
+    app: &mut App,
+    config: &mut Config,
+    mouse: MouseEvent,
+) -> Result<bool> {
+    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return Ok(false);
+    }
+    if app
+        .onboarding_primary_hitbox
+        .get()
+        .is_some_and(|rect| point_in_rect(mouse.column, mouse.row, rect))
+    {
+        handle_onboarding_primary_action(app, config)?;
+        return Ok(false);
+    }
+    if app
+        .onboarding_secondary_hitbox
+        .get()
+        .is_some_and(|rect| point_in_rect(mouse.column, mouse.row, rect))
+    {
+        return Ok(matches!(
+            app.onboarding,
+            OnboardingState::Welcome | OnboardingState::TrustDirectory
+        ));
+    }
+    Ok(false)
+}
+
 /// Complete first-run setup before constructing the sole production
 /// `AgentApplication`.
 ///
@@ -596,51 +668,18 @@ async fn run_deepseek_onboarding_loop(
                     KeyCode::Esc if app.onboarding == OnboardingState::TrustDirectory => {
                         return Ok(true);
                     }
-                    KeyCode::Enter => match app.onboarding {
-                        OnboardingState::Welcome => {
-                            onboarding::advance_onboarding_from_welcome(app);
-                        }
-                        OnboardingState::ApiKey => {
-                            let key = app.api_key_input.trim().to_owned();
-                            match onboarding::validate_api_key_for_onboarding(&key) {
-                                onboarding::ApiKeyValidation::Reject(message) => {
-                                    app.status_message = Some(message);
-                                }
-                                onboarding::ApiKeyValidation::Accept { warning } => {
-                                    let config_path = app.config_path.as_deref();
-                                    crate::config_persistence::persist_root_string_key(
-                                        config_path,
-                                        "api_key",
-                                        &key,
-                                    )?;
-                                    config.api_key = Some(key);
-                                    app.api_key_input.clear();
-                                    app.api_key_cursor = 0;
-                                    app.onboarding_needs_api_key = false;
-                                    app.api_key_env_only = false;
-                                    app.status_message = warning;
-                                    onboarding::advance_onboarding_after_api_key(app);
-                                }
-                            }
-                        }
-                        OnboardingState::TrustDirectory => {
+                    KeyCode::Enter => {
+                        if app.onboarding == OnboardingState::TrustDirectory {
                             app.status_message =
                                 Some(app.tr(MessageId::OnboardTrustConfirmHint).into_owned());
+                        } else {
+                            handle_onboarding_primary_action(app, config)?;
                         }
-                        OnboardingState::Tips => {
-                            app.finish_onboarding_without_feature_intro();
-                        }
-                        OnboardingState::None => {}
-                    },
+                    }
                     KeyCode::Char('y' | 'Y' | '1')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
-                        if let Err(error) = complete_trust_directory_onboarding(app) {
-                            app.status_message = Some(
-                                app.tr(MessageId::OnboardTrustSaveFailed)
-                                    .replace("{error}", &error),
-                            );
-                        }
+                        handle_onboarding_primary_action(app, config)?;
                     }
                     KeyCode::Char('n' | 'N' | '2')
                         if app.onboarding == OnboardingState::TrustDirectory =>
@@ -659,6 +698,11 @@ async fn run_deepseek_onboarding_loop(
                         onboarding::sync_api_key_validation_status(app, false);
                     }
                     _ => {}
+                }
+            }
+            Event::Mouse(mouse) => {
+                if route_onboarding_mouse_event(app, config, mouse)? {
+                    return Ok(true);
                 }
             }
             Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {}
@@ -791,6 +835,44 @@ fn route_canonical_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEven
     {
         open_permission_selector(app);
         return Vec::new();
+    }
+
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        let slash_index = app
+            .slash_menu_hitboxes
+            .borrow()
+            .iter()
+            .find_map(|(rect, index)| {
+                point_in_rect(mouse.column, mouse.row, *rect).then_some(*index)
+            });
+        if let Some(index) = slash_index {
+            let entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
+            if index < entries.len() {
+                app.slash_menu_selected = index;
+                let _ = apply_slash_menu_selection(app, &entries);
+                app.slash_menu_hidden = true;
+            }
+            app.slash_menu_hitboxes.borrow_mut().clear();
+            return Vec::new();
+        }
+
+        let mention_index = app
+            .mention_menu_hitboxes
+            .borrow()
+            .iter()
+            .find_map(|(rect, index)| {
+                point_in_rect(mouse.column, mouse.row, *rect).then_some(*index)
+            });
+        if let Some(index) = mention_index {
+            let entries =
+                crate::tui::file_mention::visible_mention_menu_entries(app, app.mention_menu_limit);
+            if index < entries.len() {
+                app.mention_menu_selected = index;
+                let _ = crate::tui::file_mention::apply_mention_menu_selection(app, &entries);
+            }
+            app.mention_menu_hitboxes.borrow_mut().clear();
+            return Vec::new();
+        }
     }
 
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -1115,7 +1197,7 @@ async fn handle_canonical_view_events(
     Ok(())
 }
 
-/// Handle modal events that only affect the local TUI projection. These do
+/// Handle secondary-surface events that only affect the local TUI projection. These do
 /// not create Runtime events or durable state; approval remains pending while
 /// its full arguments are inspected in the pager.
 fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<ViewEvent> {
@@ -1219,7 +1301,7 @@ fn apply_presenter_action(
             *presented_interaction_id = None;
             if matches!(
                 app.view_stack.top_kind(),
-                Some(ModalKind::Approval | ModalKind::UserInput)
+                Some(SecondarySurfaceKind::Approval | SecondarySurfaceKind::UserInput)
             ) {
                 let _ = app.view_stack.pop();
             }
@@ -1313,6 +1395,10 @@ impl Drop for TerminalCleanupGuard {
 
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
+    app.onboarding_primary_hitbox.set(None);
+    app.onboarding_secondary_hitbox.set(None);
+    app.slash_menu_hitboxes.borrow_mut().clear();
+    app.mention_menu_hitboxes.borrow_mut().clear();
 
     // Clear entire area with the configured app background.
     let background = Block::default().style(Style::default().bg(palette::DSE_BG));

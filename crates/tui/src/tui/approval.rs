@@ -18,7 +18,7 @@
 //! outcome. It is constructed only for a durable Runtime Ask decision and
 //! never derives or bypasses the active permission mode.
 
-use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use crate::tui::views::{SecondarySurface, SecondarySurfaceKind, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use dse_localization::{MessageId, tr};
@@ -819,7 +819,7 @@ impl ApprovalOption {
     }
 }
 
-/// Approval overlay state managed by the modal view stack
+/// Approval overlay state managed by the secondary surface stack.
 #[derive(Debug, Clone)]
 pub struct ApprovalView {
     request: ApprovalRequest,
@@ -875,7 +875,7 @@ impl ApprovalView {
         self.request.stakes
     }
 
-    /// Commit the given option and close the approval modal.
+    /// Commit the given option and close the approval surface.
     fn commit_option(&mut self, option: ApprovalOption) -> ViewAction {
         self.selected = option.index_for(&self.request.tool_name);
         self.emit_decision(option.decision())
@@ -918,9 +918,9 @@ impl ApprovalView {
     }
 }
 
-impl ModalView for ApprovalView {
-    fn kind(&self) -> ModalKind {
-        ModalKind::Approval
+impl SecondarySurface for ApprovalView {
+    fn kind(&self) -> SecondarySurfaceKind {
+        SecondarySurfaceKind::Approval
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -1829,7 +1829,7 @@ mod tests {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
-        ModalView::render(view, Rect::new(0, 0, w, h), &mut buf);
+        SecondarySurface::render(view, Rect::new(0, 0, w, h), &mut buf);
         (0..buf.area.height)
             .map(|row| {
                 (0..buf.area.width)
@@ -1921,7 +1921,7 @@ mod tests {
     fn approval_footer_hints_use_muted_contrast_tier() {
         // #3380: the footer key hints ("v：完整参数 · Esc：终止") must
         // render one contrast tier above TEXT_HINT — TEXT_MUTED, the same
-        // color the app-wide ActionHint modal footers use for labels.
+        // color the app-wide ActionHint surface footers use for labels.
         use crate::palette;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
@@ -1929,7 +1929,7 @@ mod tests {
         let view = ApprovalView::new(benign_request());
         let (w, h) = (100u16, 40u16);
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
-        ModalView::render(&view, Rect::new(0, 0, w, h), &mut buf);
+        SecondarySurface::render(&view, Rect::new(0, 0, w, h), &mut buf);
 
         let mut found = None;
         for y in 0..h {

@@ -1373,7 +1373,7 @@ fn detect_tool_runs_summarizes_safe_command_tools() {
         vec!["run_tests", "run_verifiers", "validate_data"]
     );
     assert_eq!(
-        super::tool_run_summary(&runs[0]),
+        super::tool_run_summary(&runs[0], dse_localization::ProductLanguage::English,),
         "Ran 3 commands: run_tests, run_verifiers, validate_data"
     );
 }
@@ -1391,7 +1391,7 @@ fn tool_run_summary_reports_compact_success_group() {
         },
     };
 
-    let summary = super::tool_run_summary(&run);
+    let summary = super::tool_run_summary(&run, dse_localization::ProductLanguage::English);
 
     assert_eq!(summary, "Explored 4 files, 1 search: read_file, list_dir");
 }
@@ -1409,7 +1409,7 @@ fn tool_run_summary_keeps_git_history_tools_visible() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].activity.files, 3);
     assert_eq!(
-        super::tool_run_summary(&runs[0]),
+        super::tool_run_summary(&runs[0], dse_localization::ProductLanguage::English,),
         "Explored 3 files: git_log, git_show, git_blame"
     );
 }
@@ -1432,7 +1432,7 @@ fn tool_run_summary_lists_only_command_families_for_command_clause() {
     };
 
     assert_eq!(
-        super::tool_run_summary(&run),
+        super::tool_run_summary(&run, dse_localization::ProductLanguage::English),
         "Explored 2 files: read_file, ran 2 commands: run_tests, validate_data"
     );
 }
@@ -1449,7 +1449,10 @@ fn tool_run_summary_uses_metadata_fallback_for_unknown_groups() {
         },
     };
 
-    assert_eq!(super::tool_run_summary(&run), "Updated metadata");
+    assert_eq!(
+        super::tool_run_summary(&run, dse_localization::ProductLanguage::English),
+        "Updated metadata"
+    );
 }
 
 // ---- #4112 / dogfood A5: transcript noise ----

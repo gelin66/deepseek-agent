@@ -16,17 +16,17 @@ pub const DSE_PANEL: Color = Color::Reset;
 pub const DSE_ERROR: Color = Color::Red;
 
 pub const TEXT_BODY: Color = Color::Reset;
-pub const TEXT_SECONDARY: Color = Color::Reset;
-pub const TEXT_HINT: Color = Color::Reset;
+pub const TEXT_SECONDARY: Color = Color::Gray;
+pub const TEXT_HINT: Color = Color::DarkGray;
 pub const SELECTION_TEXT: Color = Color::White;
-pub const TEXT_SOFT: Color = Color::Reset;
+pub const TEXT_SOFT: Color = Color::Gray;
 pub const TEXT_REASONING: Color = Color::Magenta;
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
 pub const TEXT_MUTED: Color = TEXT_SECONDARY;
 pub const TEXT_DIM: Color = TEXT_HINT;
 pub const USER_BODY: Color = Color::Green;
 
-pub const BORDER_COLOR: Color = Color::Reset;
+pub const BORDER_COLOR: Color = Color::DarkGray;
 pub const SURFACE_ELEVATED: Color = Color::Reset;
 pub const SURFACE_REASONING_TINT: Color = Color::Reset;
 pub const DIFF_ADDED_BG: Color = Color::Reset;

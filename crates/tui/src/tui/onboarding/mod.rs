@@ -22,6 +22,8 @@ use dse_localization::{MessageId, tr};
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
+    app.onboarding_primary_hitbox.set(None);
+    app.onboarding_secondary_hitbox.set(None);
     let surface_contract = crate::tui::surface_system::for_onboarding(app.onboarding)
         .expect("onboarding renderer requires a reachable onboarding state");
     debug_assert!(
@@ -58,6 +60,49 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
         let inner =
             render_full_screen_room(area, f.buffer_mut(), app.tr(MessageId::OnboardPanelTitle));
+        let action_row = |line_index: usize| {
+            inner.y.saturating_add(
+                u16::try_from(line_index)
+                    .unwrap_or(u16::MAX)
+                    .min(inner.height.saturating_sub(1)),
+            )
+        };
+        match app.onboarding {
+            OnboardingState::Welcome => {
+                let primary_row = action_row(lines.len().saturating_sub(2));
+                app.onboarding_primary_hitbox.set(Some(Rect::new(
+                    inner.x,
+                    primary_row,
+                    inner.width,
+                    1,
+                )));
+                let secondary_row = action_row(lines.len().saturating_sub(1));
+                app.onboarding_secondary_hitbox.set(Some(Rect::new(
+                    inner.x,
+                    secondary_row,
+                    inner.width,
+                    1,
+                )));
+            }
+            OnboardingState::ApiKey | OnboardingState::Tips => {
+                let row = action_row(lines.len().saturating_sub(1));
+                app.onboarding_primary_hitbox
+                    .set(Some(Rect::new(inner.x, row, inner.width, 1)));
+            }
+            OnboardingState::TrustDirectory => {
+                let row = action_row(lines.len().saturating_sub(1));
+                let primary_width = inner.width.div_ceil(2);
+                app.onboarding_primary_hitbox
+                    .set(Some(Rect::new(inner.x, row, primary_width, 1)));
+                app.onboarding_secondary_hitbox.set(Some(Rect::new(
+                    inner.x.saturating_add(primary_width),
+                    row,
+                    inner.width.saturating_sub(primary_width),
+                    1,
+                )));
+            }
+            OnboardingState::None => {}
+        }
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         f.render_widget(paragraph, inner);
     }

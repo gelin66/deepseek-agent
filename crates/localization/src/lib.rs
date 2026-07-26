@@ -534,14 +534,14 @@ pub enum MessageId {
     // Approval header labels.
     ApprovalLabelAbout,
     ApprovalLabelImpact,
-    // Underwater shell phase words (footer status band).
+    // Native shell phase words.
     PhaseIdle,
     PhaseDraft,
     PhaseWorking,
     PhaseWaitingOnYou,
     PhaseDone,
     PhaseFailed,
-    // Underwater header chips: mode and permission words.
+    // Native header chips: mode and permission words.
     ChipPermissionAsk,
     ChipPermissionAgent,
     ChipPermissionFullAccess,
@@ -567,7 +567,7 @@ pub enum MessageId {
     PagerSearch,
     PagerCopy,
     PagerContentLabel,
-    // Underwater post-launch empty state.
+    // Native post-launch empty state.
     EmptyStateMcpLabel,
     SidebarWorkersLabel,
     // Sidebar work strip.
@@ -582,6 +582,19 @@ pub enum MessageId {
     HistoryReasoningStatusDone,
     HistorySystemNoteLabel,
     HistoryArchivedFoldSummary,
+    ToolRunExplored,
+    ToolRunRan,
+    ToolRunEdited,
+    ToolRunDelegated,
+    ToolRunUpdatedMetadata,
+    ToolRunFileSingular,
+    ToolRunFilePlural,
+    ToolRunSearchSingular,
+    ToolRunSearchPlural,
+    ToolRunCommandSingular,
+    ToolRunCommandPlural,
+    ToolRunTaskSingular,
+    ToolRunTaskPlural,
     // Canonical exec terminal summaries.
     ExecModelRequestBudgetExhausted,
     ExecApiRequestBudgetExhausted,
@@ -1402,6 +1415,19 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HistoryReasoningStatusDone,
     MessageId::HistorySystemNoteLabel,
     MessageId::HistoryArchivedFoldSummary,
+    MessageId::ToolRunExplored,
+    MessageId::ToolRunRan,
+    MessageId::ToolRunEdited,
+    MessageId::ToolRunDelegated,
+    MessageId::ToolRunUpdatedMetadata,
+    MessageId::ToolRunFileSingular,
+    MessageId::ToolRunFilePlural,
+    MessageId::ToolRunSearchSingular,
+    MessageId::ToolRunSearchPlural,
+    MessageId::ToolRunCommandSingular,
+    MessageId::ToolRunCommandPlural,
+    MessageId::ToolRunTaskSingular,
+    MessageId::ToolRunTaskPlural,
     MessageId::ExecModelRequestBudgetExhausted,
     MessageId::ExecApiRequestBudgetExhausted,
     MessageId::ExecTurnBudgetExhausted,

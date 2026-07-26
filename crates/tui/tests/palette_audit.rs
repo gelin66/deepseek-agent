@@ -7,13 +7,17 @@ use ratatui::style::Color;
 mod palette;
 
 #[test]
-fn terminal_owns_base_surfaces_and_inherited_text() {
+fn terminal_owns_base_surfaces_and_fixed_text_hierarchy() {
     assert_eq!(palette::DSE_BG, Color::Reset);
     assert_eq!(palette::DSE_PANEL, Color::Reset);
     assert_eq!(palette::SURFACE_ELEVATED, Color::Reset);
     assert_eq!(palette::COMPOSER_BG, Color::Reset);
     assert_eq!(palette::TEXT_BODY, Color::Reset);
-    assert_eq!(palette::TEXT_MUTED, Color::Reset);
+    assert_eq!(palette::TEXT_MUTED, Color::Gray);
+    assert_eq!(palette::TEXT_DIM, Color::DarkGray);
+    assert_eq!(palette::BORDER_COLOR, Color::DarkGray);
+    assert_ne!(palette::TEXT_BODY, palette::TEXT_MUTED);
+    assert_ne!(palette::TEXT_MUTED, palette::TEXT_DIM);
 }
 
 #[test]
