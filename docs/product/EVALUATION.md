@@ -3140,6 +3140,46 @@ M23B formal 入口在读取 credential 前以
 不授权付费采集、high/max 或 production candidate。完整身份与门禁见
 [M23-B2 Hardness metric observer](../../eval/summaries/m23-b2-hardness-metrics-observer-2026-07-26.md)。
 
+### M23-B3 Hardness live continuity caller
+
+M23-B3 保持 production delta、official Key/API、external network 和历史 raw 为 0，
+把 B2 observer 接入正式 caller 所需的真实 process lifecycle。3 个冻结长任务独占
+`interactive=true`、`auto_approve=false` 覆盖；其余 57 个 arm 的 fixed-Pro/high
+输入、工具、预算和 controls 不变。
+
+credential-free process self-test 使用现有 app-server external-process test child 与
+loopback official ChatCompletions SSE，实际经过唯一 AgentApplication、AgentRuntime、
+production tools 和 SQLite RunStore：
+
+```text
+report regeneration                    byte-identical
+durable interaction requested/resolved 1 / 1
+physical request before / at reopen     1 / 1
+physical request final                  2
+process restart                         1
+applied tool side effect                1
+terminal credential-free reopen         exact
+official Key / API / external network   0 / 0 / 0
+```
+
+caller 在 `interaction_requested` 后 SIGKILL 整个 app-server process group；新进程必须
+拥有不同 PID、byte-exact event prefix 和不增长的 physical request count，之后才可
+resume 同一 root 并解析既有 approval。任何 user-input interaction、多个并发 pending
+interaction、prefix/request count 差异或重复副作用都 fail closed。后续 approval 只在
+重开进程内解析，不制造第二次 restart。
+
+measurement-valid arm 新增 B2 metrics 与 ADR-0011 behavior/accounting truth；aggregate
+新增 `pass_at_1`、严格连续三次的 `pass_power_3`、goal constraint、resume、定位、
+首改、repair、compaction、service/runtime 指标。60-arm 合成门证明 3 个长任务的
+3 round 恰有 9 次 resume；普通 task 不获得交互或重启行为。
+
+结论为 `keep_live_continuity_caller_control_not_acquired`。正式入口已删除旧的
+`m23b_live_continuity_not_implemented` 空实现 guard，但仍需要独立、hash-bound live
+admission、clean immutable binary、费用确认与显式 Key；本切片没有创建 admission 或
+results，不建立 success、false-success 或 loss matrix，也不授权 high/max 或四个
+production candidate。完整身份、门禁与非结论见
+[M23-B3 live continuity caller](../../eval/summaries/m23-b3-hardness-live-continuity-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

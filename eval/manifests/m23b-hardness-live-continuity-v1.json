@@ -1,0 +1,88 @@
+{
+  "schema": "dse.eval.m23b-hardness-live-continuity.v1",
+  "suite_id": "m23b-hardness-live-continuity-v1",
+  "frozen_at_utc": "2026-07-26T00:00:00Z",
+  "source_identity": {
+    "baseline_revision": "ab992121a97ff3a51558f0855997f138debaac9e",
+    "baseline_tree": "4349851e213dca88ee51e5625f796ffcbcf4af3f",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "dependencies": {
+    "hardness_control_manifest": {
+      "path": "eval/manifests/m23b-hardness-control-v1.json",
+      "file_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04"
+    },
+    "metric_observer_manifest": {
+      "path": "eval/manifests/m23b-hardness-metrics-observer-v1.json",
+      "file_sha256": "sha256:dd5c29d556e61a7fad7511c4cd6f592955b16c63d94049be70abaf61889548ec"
+    },
+    "metric_observer_corpus": {
+      "path": "eval/fixtures/m23b-hardness-metrics-observer-v1.json",
+      "file_sha256": "sha256:0cb5372c93a3751864a7d94ab4fdd3f6a5a3117053da2922147d40d556302ed0"
+    }
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:2173e154f2d76212d60e21bc20bf0e26bdd0695045008f2e3e8c567d3e97bf89",
+    "roadmap": "sha256:1a9832c7d715c82e8a8b3b9a193dfcd521549af8155918917756d9002d23fca1",
+    "evaluation": "sha256:3bdc4f231862f16195ca9c4e32dfd20148b265ace1f9d809c8544a83c2cb8504",
+    "current_architecture": "sha256:74ded955ca8926e0bd84c0690d46c22b96e114eb19a16466dc4f40274f98728c"
+  },
+  "slice_contract": {
+    "real_problem": "The formal Hardness caller only performs a terminal credential-free Store audit, so it cannot prove that a long-horizon task survives a real process loss and continues without duplicating a physical model request or tool side effect.",
+    "acceptance": [
+      "only the three frozen required-continuity tasks run interactive with auto_approve disabled; every other arm preserves the frozen control request",
+      "wait for one durable approval interaction, capture the exact canonical event prefix and physical-request count, SIGKILL the app-server process, then reopen the same RunStore",
+      "require a different process identity, byte-exact event prefix, and unchanged physical-request count before resume or interaction resolution",
+      "resume the same root, resolve the already-durable approval only after reopen, and finish without a second restart or duplicated side effect",
+      "project the M23-B2 metrics and orthogonal behavior/accounting labels into each arm and aggregate",
+      "prove the lifecycle against a loopback official ChatCompletions fixture without credential, official API, external network, production Rust, protocol, Store, route, prompt, or tool changes"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py",
+    "old_path_replaced": "post-terminal sqlite_reopen_snapshot as the only M23B continuity observation",
+    "cutover_deletion": [
+      "m23b_live_continuity_not_implemented formal guard",
+      "metric-less M23B arm and aggregate records"
+    ],
+    "failed_candidate_deletion": "delete this manifest, loopback self-test mode, lifecycle caller and arm metric wiring; retain the frozen M23-B1 task set and M23-B2 credential-free observer"
+  },
+  "continuity_policy": {
+    "task_ids": [
+      "rust_line_recovery_resume",
+      "rust_netstring_recovery_resume",
+      "typescript_retry_resume"
+    ],
+    "checkpoint_kind": "interaction_requested",
+    "interaction_kind": "approval",
+    "process_stop": "sigkill_process_group",
+    "restarts_per_arm": 1,
+    "physical_requests_added_at_reopen": 0,
+    "resolve_only_after_reopen": true,
+    "additional_approvals_after_reopen": "same_process_only",
+    "terminal_snapshot_is_resume": false
+  },
+  "offline_conformance": {
+    "fixture_transport": "loopback_official_chat_completions_sse",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "first_response": "apply_patch_requires_approval",
+    "second_response": "host_completion",
+    "expected_model_requests": 2,
+    "expected_applied_side_effects": 1,
+    "expected_process_restarts": 1,
+    "credential_required": false,
+    "official_api_required": false,
+    "external_network_required": false
+  },
+  "live_boundary": {
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "key_access_authorized_by_this_slice": false,
+    "official_api_access_authorized_by_this_slice": false,
+    "control_baseline_acquired": false,
+    "high_max_authorized_by_this_slice": false,
+    "production_candidate_authorized_by_this_slice": false
+  }
+}

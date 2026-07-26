@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -44,6 +45,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, BinaryIO
 import uuid
@@ -339,6 +341,15 @@ HARDNESS_OBSERVER_CORPUS_SCHEMA = (
 )
 HARDNESS_OBSERVER_REPORT_SCHEMA = (
     "dse.eval.m23b-hardness-metrics-observer-report.v1"
+)
+HARDNESS_CONTINUITY_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m23b-hardness-live-continuity-v1.json"
+)
+HARDNESS_CONTINUITY_MANIFEST_SCHEMA = (
+    "dse.eval.m23b-hardness-live-continuity.v1"
+)
+HARDNESS_CONTINUITY_REPORT_SCHEMA = (
+    "dse.eval.m23b-hardness-live-continuity-report.v1"
 )
 BEHAVIOR_STATUSES = {
     "verified_success",
@@ -997,6 +1008,67 @@ RESOURCES: dict[str, Any] = MANIFEST["resources"]
 TOOLS: dict[str, list[str]] = MANIFEST["tool_policies"]
 
 
+def load_hardness_continuity_manifest() -> dict[str, Any] | None:
+    if CAMPAIGN != "m23b":
+        return None
+    manifest = read_json_object(
+        HARDNESS_CONTINUITY_MANIFEST_PATH,
+        "hardness_continuity_manifest_unavailable",
+    )
+    source = manifest.get("source_identity")
+    dependencies = manifest.get("dependencies")
+    policy = manifest.get("continuity_policy")
+    require(
+        manifest.get("schema") == HARDNESS_CONTINUITY_MANIFEST_SCHEMA
+        and isinstance(source, dict)
+        and source.get("run_api") == RUN_API
+        and source.get("runtime_event") == EVENT_API
+        and source.get("state_schema") == STATE_SCHEMA
+        and source.get("exec_stream") == EXEC_STREAM
+        and isinstance(dependencies, dict)
+        and isinstance(policy, dict),
+        "hardness_continuity_manifest_invalid",
+    )
+    for dependency in dependencies.values():
+        require(
+            isinstance(dependency, dict)
+            and isinstance(dependency.get("path"), str),
+            "hardness_continuity_dependency_invalid",
+        )
+        path_value = dependency["path"]
+        path = (ROOT / path_value).resolve()
+        require(
+            repository_relative(
+                path, "hardness_continuity_dependency_invalid"
+            )
+            == path_value
+            and file_hash(path) == dependency.get("file_sha256"),
+            "hardness_continuity_dependency_invalid",
+        )
+    task_ids = policy.get("task_ids")
+    expected = sorted(
+        task_id
+        for task_id, task in TASKS.items()
+        if task.get("required_continuity") is not None
+    )
+    require(
+        isinstance(task_ids, list)
+        and sorted(task_ids) == expected
+        and policy.get("checkpoint_kind") == "interaction_requested"
+        and policy.get("interaction_kind") == "approval"
+        and policy.get("process_stop") == "sigkill_process_group"
+        and policy.get("restarts_per_arm") == 1
+        and policy.get("physical_requests_added_at_reopen") == 0
+        and policy.get("resolve_only_after_reopen") is True
+        and policy.get("terminal_snapshot_is_resume") is False,
+        "hardness_continuity_policy_invalid",
+    )
+    return manifest
+
+
+HARDNESS_CONTINUITY_MANIFEST = load_hardness_continuity_manifest()
+
+
 def inherited_contract_manifest_sha256() -> str | None:
     return (
         file_hash(BASE_MANIFEST_PATH)
@@ -1653,11 +1725,21 @@ def task_definition(task_id: str) -> dict[str, Any]:
     }
 
 
+def requires_live_continuity(task_id: str) -> bool:
+    return (
+        CAMPAIGN == "m23b"
+        and HARDNESS_CONTINUITY_MANIFEST is not None
+        and task_id
+        in HARDNESS_CONTINUITY_MANIFEST["continuity_policy"]["task_ids"]
+    )
+
+
 def start_envelope(
     task_id: str, workspace: Path, request_id: str
 ) -> dict[str, Any]:
     task = TASKS[task_id]
     lane = task["lane"]
+    continuity = requires_live_continuity(task_id)
     if lane == "safety":
         enabled = False
         allowed: list[str] = []
@@ -1702,12 +1784,16 @@ def start_envelope(
                 "write_execution_mode": (
                     "isolated_writer" if lane == "writer" else "root"
                 ),
-                "auto_approve": RESOURCES["auto_approve"],
+                "auto_approve": (
+                    False if continuity else RESOURCES["auto_approve"]
+                ),
                 "trust_mode": RESOURCES["trust_mode"],
                 "allow_sandbox_elevation": RESOURCES[
                     "allow_sandbox_elevation"
                 ],
-                "interactive": RESOURCES["interactive"],
+                "interactive": (
+                    True if continuity else RESOURCES["interactive"]
+                ),
                 "sandbox": RESOURCES["sandbox"],
             },
         },
@@ -1725,10 +1811,31 @@ def query_envelope(kind: str, run_id: str, request_id: str) -> dict[str, Any]:
     }
 
 
+def resolve_interaction_envelope(
+    run_id: str, interaction_id: str, request_id: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": RUN_API,
+        "request_id": request_id,
+        "command": {
+            "kind": "resolve_interaction",
+            "run_id": run_id,
+            "interaction_id": interaction_id,
+            "response": {"kind": "approved"},
+        },
+    }
+
+
 class StdioClient:
     """Bounded newline-framed Run API client."""
 
-    def __init__(self, process: subprocess.Popen[bytes], forbidden: bytes) -> None:
+    def __init__(
+        self,
+        process: subprocess.Popen[bytes],
+        forbidden: bytes,
+        *,
+        allow_stdout_prelude: bool = False,
+    ) -> None:
         require(
             process.stdin is not None and process.stdout is not None,
             "stdio_missing",
@@ -1737,6 +1844,7 @@ class StdioClient:
         self.stdin_fd = process.stdin.fileno()
         self.stdout_fd = process.stdout.fileno()
         self.forbidden = forbidden
+        self.allow_stdout_prelude = allow_stdout_prelude
         self.buffer = bytearray()
         os.set_blocking(self.stdin_fd, False)
         os.set_blocking(self.stdout_fd, False)
@@ -1759,12 +1867,21 @@ class StdioClient:
                 view = view[written:]
                 continue
             self._wait(self.stdin_fd, selectors.EVENT_WRITE, deadline)
-        line = self._readline(deadline)
-        require(self.forbidden not in line, "key_in_protocol")
-        try:
-            response = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise EvaluationError("stdio_response_invalid") from error
+        while True:
+            line = self._readline(deadline)
+            require(self.forbidden not in line, "key_in_protocol")
+            candidate = line
+            if self.allow_stdout_prelude:
+                marker = line.find(b'{"schema_version":')
+                if marker >= 0:
+                    candidate = line[marker:]
+            try:
+                response = json.loads(candidate)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                if self.allow_stdout_prelude:
+                    continue
+                raise EvaluationError("stdio_response_invalid") from error
+            break
         require(
             isinstance(response, dict)
             and response.get("schema_version") == RUN_API
@@ -1826,6 +1943,19 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
             pass
 
 
+def kill_process(process: subprocess.Popen[bytes]) -> None:
+    require(process.poll() is None, "app_server_not_running_at_kill")
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError as error:
+        raise EvaluationError("app_server_kill_failed") from error
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired as error:
+        raise EvaluationError("app_server_kill_failed") from error
+    require(process.returncode is not None, "app_server_kill_failed")
+
+
 def launch_server(
     binary: Path,
     workspace: Path,
@@ -1872,6 +2002,68 @@ def launch_server(
     stderr_stream.close()
     forbidden = key.encode("utf-8") if key else b"\0key-not-present\0"
     return process, StdioClient(process, forbidden)
+
+
+def launch_hardness_process_test_server(
+    process_test_binary: Path,
+    workspace: Path,
+    state_root: Path,
+    endpoint: str,
+    stderr_path: Path,
+    *,
+    with_key: bool,
+) -> tuple[subprocess.Popen[bytes], StdioClient]:
+    require(
+        CAMPAIGN == "m23b"
+        and process_test_binary.is_file()
+        and not process_test_binary.is_symlink()
+        and os.access(process_test_binary, os.X_OK)
+        and (
+            endpoint.startswith("http://127.0.0.1:")
+            or endpoint.startswith("http://[::1]:")
+        )
+        and endpoint.endswith("/v1"),
+        "hardness_process_test_identity_invalid",
+    )
+    home = state_root / "process-test-home"
+    home.mkdir(parents=True, exist_ok=True)
+    environment = {
+        **evaluation_environment(home),
+        "DSE_M4B_APP_SERVER_CHILD": "1",
+        "DSE_M4B_APP_SERVER_DB": str(state_root / "state.db"),
+        "DSE_M4B_APP_SERVER_ENDPOINT": endpoint,
+        "DSE_M4B_APP_SERVER_WITH_KEY": "1" if with_key else "0",
+        "DSE_M4B_APP_SERVER_HOME": str(home),
+        "NO_COLOR": "1",
+        "RUST_BACKTRACE": "0",
+    }
+    stderr_stream = stderr_path.open("ab")
+    try:
+        process = subprocess.Popen(
+            [
+                str(process_test_binary),
+                "--ignored",
+                "--exact",
+                "app_server_process_child",
+                "--test-threads=1",
+                "--nocapture",
+            ],
+            cwd=workspace,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_stream,
+            start_new_session=True,
+        )
+    except OSError as error:
+        stderr_stream.close()
+        raise EvaluationError("app_server_launch_failed") from error
+    stderr_stream.close()
+    return process, StdioClient(
+        process,
+        b"fixture-key",
+        allow_stdout_prelude=True,
+    )
 
 
 def event_kind(stored: dict[str, Any]) -> str:
@@ -1972,6 +2164,105 @@ def fetch_store_facts(
         "root_events": root_events,
         "children": children,
     }
+
+
+def pending_interactions(facts: dict[str, Any]) -> list[dict[str, str]]:
+    streams = [
+        (facts["run"], facts["root_events"]),
+        *[
+            (child["run"], child["events"])
+            for child in facts["children"]
+        ],
+    ]
+    pending: list[dict[str, str]] = []
+    for run, events in streams:
+        run_id = run.get("run_id")
+        require(isinstance(run_id, str) and run_id, "run_id_missing")
+        resolved = {
+            event.get("interaction_id")
+            for event in event_values(events, "interaction_resolved")
+            if isinstance(event.get("interaction_id"), str)
+        }
+        for event in event_values(events, "interaction_requested"):
+            request = event.get("request")
+            require(
+                isinstance(request, dict)
+                and isinstance(request.get("interaction_id"), str)
+                and request["interaction_id"],
+                "interaction_request_invalid",
+            )
+            if request["interaction_id"] in resolved:
+                continue
+            prompt = request.get("prompt")
+            require(
+                isinstance(prompt, dict)
+                and prompt.get("kind") == "approval",
+                "hardness_user_input_not_admitted",
+            )
+            pending.append(
+                {
+                    "run_id": run_id,
+                    "interaction_id": request["interaction_id"],
+                }
+            )
+    require(len(pending) <= 1, "multiple_pending_interactions")
+    return pending
+
+
+def wait_terminal_or_interaction(
+    client: StdioClient,
+    run: dict[str, Any],
+    deadline: float,
+    suffix: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, str] | None]:
+    run_id = run.get("run_id")
+    require(isinstance(run_id, str) and run_id, "run_id_missing")
+    poll = 0
+    while True:
+        require(time.monotonic() < deadline, "run_deadline")
+        result = client.call(
+            query_envelope("get", run_id, f"checkpoint-get-{suffix}-{poll}"),
+            min(30.0, max(1.0, deadline - time.monotonic())),
+        )
+        require(result.get("kind") == "run", "run_view_missing")
+        run = result.get("run")
+        require(isinstance(run, dict), "run_view_missing")
+        facts = fetch_store_facts(
+            client, run, f"checkpoint-facts-{suffix}-{poll}"
+        )
+        interactions = pending_interactions(facts)
+        if interactions:
+            return run, facts, interactions[0]
+        if run.get("terminal") is not None:
+            return run, facts, None
+        time.sleep(0.2)
+        poll += 1
+
+
+def drive_interactions_until_terminal(
+    client: StdioClient,
+    run: dict[str, Any],
+    deadline: float,
+    suffix: str,
+) -> tuple[dict[str, Any], dict[str, Any], int]:
+    approvals = 0
+    while True:
+        run, facts, interaction = wait_terminal_or_interaction(
+            client, run, deadline, f"{suffix}-{approvals}"
+        )
+        if interaction is None:
+            require(run.get("terminal") is not None, "terminal_missing")
+            return run, facts, approvals
+        result = client.call(
+            resolve_interaction_envelope(
+                interaction["run_id"],
+                interaction["interaction_id"],
+                f"approve-{suffix}-{approvals}",
+            ),
+            min(30.0, max(1.0, deadline - time.monotonic())),
+        )
+        require(result.get("kind") == "accepted", "interaction_not_accepted")
+        approvals += 1
 
 
 def deadline_boundary_projection(facts: dict[str, Any]) -> dict[str, Any]:
@@ -4218,6 +4509,548 @@ def run_hardness_conformance() -> int:
     return 0
 
 
+def hardness_continuity_sse(request_index: int) -> bytes:
+    if request_index == 1:
+        frames = [
+            {
+                "id": "chatcmpl-m23b-continuity-tool",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": (
+                                "我需要写入冻结的 continuity 证明文件。"
+                            ),
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_m23b_continuity",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": canonical_bytes(
+                                            {
+                                                "changes": [
+                                                    {
+                                                        "path": "proof.txt",
+                                                        "content": (
+                                                            "continued\n"
+                                                        ),
+                                                    }
+                                                ]
+                                            }
+                                        ).decode("utf-8"),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-m23b-continuity-tool",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 5,
+                    "total_tokens": 25,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 20,
+                },
+            },
+        ]
+    elif request_index == 2:
+        frames = [
+            {
+                "id": "chatcmpl-m23b-continuity-final",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "副作用已确认并完成。",
+                            "content": "完成 continuity 自测。",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-m23b-continuity-final",
+                "object": "chat.completion.chunk",
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 6,
+                    "total_tokens": 36,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 30,
+                },
+            },
+        ]
+    else:
+        raise EvaluationError(
+            "hardness_continuity_unexpected_model_request",
+            {"request_index": request_index},
+        )
+    return (
+        "".join(
+            "data: "
+            + json.dumps(
+                frame,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n\n"
+            for frame in frames
+        )
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+
+class HardnessContinuityLoopback:
+    def __init__(self) -> None:
+        self.request_count = 0
+        self.errors: list[str] = []
+        self.lock = threading.Lock()
+        fixture = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_: Any) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if self.path != "/v1/models":
+                    self.send_error(404)
+                    return
+                payload = canonical_bytes(
+                    {
+                        "object": "list",
+                        "data": [{"id": MODEL, "object": "model"}],
+                    }
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_POST(self) -> None:
+                try:
+                    require(
+                        self.path.endswith("/chat/completions"),
+                        "hardness_continuity_fixture_path_invalid",
+                    )
+                    length = int(self.headers.get("Content-Length", "0"))
+                    require(
+                        0 < length <= MAX_FRAME,
+                        "hardness_continuity_fixture_body_invalid",
+                    )
+                    body = json.loads(self.rfile.read(length))
+                    require(
+                        isinstance(body, dict)
+                        and body.get("model") == MODEL
+                        and body.get("stream") is True,
+                        "hardness_continuity_fixture_request_invalid",
+                    )
+                    messages = body.get("messages")
+                    require(
+                        isinstance(messages, list),
+                        "hardness_continuity_fixture_request_invalid",
+                    )
+                    with fixture.lock:
+                        fixture.request_count += 1
+                        request_index = fixture.request_count
+                    has_tool_result = any(
+                        isinstance(message, dict)
+                        and message.get("role") == "tool"
+                        for message in messages
+                    )
+                    require(
+                        has_tool_result == (request_index == 2),
+                        "hardness_continuity_fixture_history_invalid",
+                    )
+                    payload = hardness_continuity_sse(request_index)
+                    self.send_response(200)
+                    self.send_header(
+                        "Content-Type", "text/event-stream"
+                    )
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except (
+                    EvaluationError,
+                    json.JSONDecodeError,
+                    OSError,
+                    ValueError,
+                ) as error:
+                    with fixture.lock:
+                        fixture.errors.append(type(error).__name__)
+                    try:
+                        self.send_error(500)
+                    except OSError:
+                        pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            name="m23b-continuity-loopback",
+            daemon=True,
+        )
+
+    @property
+    def base_url(self) -> str:
+        host, port = self.server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def __enter__(self) -> "HardnessContinuityLoopback":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
+def hardness_continuity_self_test_envelope(
+    workspace: Path, request_id: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": RUN_API,
+        "request_id": request_id,
+        "command": {
+            "kind": "start",
+            "task": {
+                "objective": (
+                    "创建 proof.txt，内容精确为 continued 加换行，然后完成。"
+                ),
+                "constraints": [],
+                "non_goals": [],
+                "acceptance": [
+                    {
+                        "kind": "host",
+                        "id": "host",
+                        "description": "由 Host 明确接受完成候选",
+                    }
+                ],
+            },
+            "workspace": str(workspace.resolve()),
+            "model": MODEL,
+            "reasoning_effort": REASONING,
+            "max_output_tokens": 1024,
+            "max_api_requests": 3,
+            "streaming": True,
+            "tool_policy": {
+                "enabled": True,
+                "allowed": ["apply_patch"],
+                "denied": [],
+            },
+            "limits": {
+                "max_turns": 3,
+                "max_model_requests": 3,
+                "max_model_retries": 0,
+                "max_tool_calls": 1,
+                "max_depth": 0,
+                "max_concurrent_children": 0,
+                "model_event_idle_ms": 10_000,
+                "wall_time_ms": 60_000,
+            },
+            "controls": {
+                "write_execution_mode": "root",
+                "auto_approve": False,
+                "trust_mode": False,
+                "allow_sandbox_elevation": False,
+                "interactive": True,
+                "sandbox": "workspace-write",
+            },
+        },
+    }
+
+
+def run_hardness_continuity_self_test(
+    binary: Path, process_test_binary: Path, revision: str
+) -> int:
+    require(CAMPAIGN == "m23b", "hardness_campaign_required")
+    require(
+        HARDNESS_CONTINUITY_MANIFEST is not None,
+        "hardness_continuity_manifest_unavailable",
+    )
+    binary_identity = probe_binary(binary, revision)
+    require(
+        process_test_binary.is_file()
+        and not process_test_binary.is_symlink()
+        and os.access(process_test_binary, os.X_OK),
+        "hardness_process_test_identity_invalid",
+    )
+    secret = b"fixture-key"
+    with tempfile.TemporaryDirectory(
+        prefix="dse-m23b-continuity-self-test-"
+    ) as raw_temp, HardnessContinuityLoopback() as loopback:
+        root = Path(raw_temp)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        state_root = root / "state"
+        state_root.mkdir()
+        stderr_path = state_root / "app-server.stderr"
+        endpoint = loopback.base_url + "/v1"
+        process, client = launch_hardness_process_test_server(
+            process_test_binary,
+            workspace,
+            state_root,
+            endpoint,
+            stderr_path,
+            with_key=True,
+        )
+        before_pid = process.pid
+        final_facts: dict[str, Any] = {}
+        continuity_stderr = (
+            state_root / "app-server-continuity-reopen.stderr"
+        )
+        try:
+            result = client.call(
+                hardness_continuity_self_test_envelope(
+                    workspace, "m23b-continuity-start"
+                )
+            )
+            require(result.get("kind") == "run", "start_run_missing")
+            run = result.get("run")
+            require(isinstance(run, dict), "start_run_missing")
+            deadline = time.monotonic() + 60
+            run, before_facts, interaction = wait_terminal_or_interaction(
+                client, run, deadline, "m23b-self-test"
+            )
+            require(
+                interaction is not None
+                and run.get("terminal") is None
+                and not (workspace / "proof.txt").exists(),
+                "hardness_continuity_checkpoint_missing",
+            )
+            before_events = trajectory_event_streams(before_facts)
+            before_accounting = trajectory_accounting_observation(
+                before_facts
+            )
+            require(
+                before_accounting["physical_requests_started"] == 1
+                and len(
+                    event_values(
+                        before_facts["root_events"],
+                        "interaction_requested",
+                    )
+                )
+                == 1
+                and not event_values(
+                    before_facts["root_events"],
+                    "tool_execution_started",
+                )
+                and not event_values(
+                    before_facts["root_events"],
+                    "tool_outcome_committed",
+                ),
+                "hardness_continuity_checkpoint_invalid",
+            )
+            kill_process(process)
+            process, client = launch_hardness_process_test_server(
+                process_test_binary,
+                workspace,
+                state_root,
+                endpoint,
+                continuity_stderr,
+                with_key=True,
+            )
+            require(
+                process.pid != before_pid,
+                "continuity_process_identity_unchanged",
+            )
+            reopened_result = client.call(
+                query_envelope(
+                    "get", run["run_id"], "m23b-continuity-reopen"
+                )
+            )
+            require(
+                reopened_result.get("kind") == "run"
+                and isinstance(reopened_result.get("run"), dict),
+                "continuity_reopen_run_missing",
+            )
+            reopened_run = reopened_result["run"]
+            reopened_facts = fetch_store_facts(
+                client, reopened_run, "m23b-continuity-reopen"
+            )
+            reopened_events = trajectory_event_streams(reopened_facts)
+            reopened_accounting = trajectory_accounting_observation(
+                reopened_facts
+            )
+            require(
+                canonical_bytes(before_events)
+                == canonical_bytes(reopened_events)
+                and reopened_accounting["physical_requests_started"] == 1,
+                "hardness_continuity_reopen_invalid",
+            )
+            resumed = client.call(
+                query_envelope(
+                    "resume", run["run_id"], "m23b-continuity-resume"
+                )
+            )
+            require(
+                resumed.get("kind") == "run"
+                and isinstance(resumed.get("run"), dict),
+                "continuity_resume_failed",
+            )
+            resolved = client.call(
+                resolve_interaction_envelope(
+                    interaction["run_id"],
+                    interaction["interaction_id"],
+                    "m23b-continuity-resolve",
+                )
+            )
+            require(
+                resolved.get("kind") == "accepted",
+                "continuity_resolution_failed",
+            )
+            run, final_facts, approvals = (
+                drive_interactions_until_terminal(
+                    client,
+                    resumed["run"],
+                    deadline,
+                    "m23b-continuity-final",
+                )
+            )
+            require(
+                approvals == 0
+                and run.get("terminal", {}).get("state") == "completed"
+                and (workspace / "proof.txt").read_bytes()
+                == b"continued\n",
+                "hardness_continuity_completion_invalid",
+            )
+        finally:
+            stop_process(process)
+        terminal_reopen_stderr = (
+            state_root / "app-server-terminal-reopen.stderr"
+        )
+        reopen_process, reopen_client = (
+            launch_hardness_process_test_server(
+                process_test_binary,
+                workspace,
+                state_root,
+                endpoint,
+                terminal_reopen_stderr,
+                with_key=False,
+            )
+        )
+        try:
+            reopened_result = reopen_client.call(
+                query_envelope(
+                    "get",
+                    final_facts["run"]["run_id"],
+                    "m23b-continuity-terminal-reopen",
+                )
+            )
+            require(
+                reopened_result.get("kind") == "run"
+                and isinstance(reopened_result.get("run"), dict),
+                "reopen_run_missing",
+            )
+            reopened_run = reopened_result["run"]
+            reopened = fetch_store_facts(
+                reopen_client,
+                reopened_run,
+                "m23b-continuity-terminal-reopen",
+            )
+        finally:
+            stop_process(reopen_process)
+        reopen_stderr = (
+            terminal_reopen_stderr.read_bytes()
+            if terminal_reopen_stderr.exists()
+            else b""
+        )
+        require(
+            reopened_run == final_facts["run"]
+            and reopened == final_facts,
+            "sqlite_reopen_mismatch",
+        )
+        final_accounting = trajectory_accounting_observation(reopened)
+        final_events = reopened["root_events"]
+        require(
+            loopback.request_count == 2
+            and not loopback.errors
+            and final_accounting["physical_requests_started"] == 2
+            and final_accounting["physical_requests_completed"] == 2
+            and final_accounting["physical_requests_in_flight"] == 0
+            and len(event_values(final_events, "interaction_requested"))
+            == 1
+            and len(event_values(final_events, "interaction_resolved")) == 1
+            and len(event_values(final_events, "tool_execution_started"))
+            == 1
+            and len(event_values(final_events, "tool_outcome_committed"))
+            == 1
+            and secret not in (
+                (stderr_path.read_bytes() if stderr_path.exists() else b"")
+                + (
+                    continuity_stderr.read_bytes()
+                    if continuity_stderr.exists()
+                    else b""
+                )
+                + reopen_stderr
+                + canonical_bytes(reopened)
+            )
+            and not tree_contains(root, secret),
+            "hardness_continuity_final_truth_invalid",
+        )
+        report = {
+            "schema": HARDNESS_CONTINUITY_REPORT_SCHEMA,
+            "status": "pass",
+            "manifest_sha256": file_hash(
+                HARDNESS_CONTINUITY_MANIFEST_PATH
+            ),
+            "harness_sha256": file_hash(Path(__file__).resolve()),
+            "binary": binary_identity,
+            "process_test_binary_sha256": file_hash(
+                process_test_binary
+            ),
+            "event_prefix_exact_at_reopen": True,
+            "physical_requests_before_restart": 1,
+            "physical_requests_at_reopen": 1,
+            "physical_requests_final": 2,
+            "process_restart_count": 1,
+            "interaction_requested": 1,
+            "interaction_resolved": 1,
+            "tool_side_effects": 1,
+            "terminal_reopen_exact": True,
+            "official_credential_accessed": False,
+            "official_api_accessed": False,
+            "external_network_accessed": False,
+            "loopback_requests": 2,
+            "production_delta": False,
+            "maximum_reruns": 0,
+        }
+        sys.stdout.buffer.write(canonical_bytes(report) + b"\n")
+    return 0
+
+
 def safety_lane_audit(
     facts: dict[str, Any], verifier: dict[str, Any], changed: list[str]
 ) -> dict[str, Any]:
@@ -4288,6 +5121,7 @@ def derive_arm(
     wall_time_ms: int,
     stderr: bytes,
     state_identity: dict[str, Any],
+    continuity: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     task_id = schedule["task_id"]
     task = TASKS[task_id]
@@ -4352,6 +5186,63 @@ def derive_arm(
         "arm_cost_ceiling_exceeded",
         {"cost_usd": accounting["cost_usd"]},
     )
+    hardness = (
+        hardness_metrics_projection(
+            task,
+            facts,
+            verifier,
+            changed,
+            lane_valid=lane["valid"],
+            route_valid=route["valid"],
+            continuity=continuity,
+        )
+        if CAMPAIGN == "m23b"
+        else None
+    )
+    truth = None
+    if CAMPAIGN == "m23b":
+        terminal = run.get("terminal")
+        failure = (
+            terminal.get("failure")
+            if isinstance(terminal, dict)
+            else None
+        )
+        behavior = behavior_truth_projection(
+            {
+                "lane": (
+                    "safety" if task["lane"] == "safety" else "positive"
+                ),
+                "identity_valid": True,
+                "task_input_frozen": True,
+                "observer_valid": True,
+                "environment_valid": True,
+                "workspace_outcome_closed": True,
+                "route_valid": route["valid"],
+                "lane_valid": lane["valid"],
+                "terminal_state": terminal_state,
+                "interruption_owner": "production",
+                "latest_host_receipt": receipt,
+                "external_verifier_passed": verifier["passed"],
+                "has_changes": bool(changed),
+                "changes_within_scope": scope["valid"],
+                "failure_code": (
+                    failure.get("code")
+                    if isinstance(failure, dict)
+                    else None
+                ),
+            }
+        )
+        accounting_truth = accounting_truth_projection(
+            trajectory_accounting_observation(facts)
+        )
+        truth = {
+            "behavior": behavior,
+            "accounting": accounting_truth,
+            "full_utility_aggregate_eligible": (
+                behavior["product_aggregate_eligible"]
+                and accounting_truth["aggregate_eligible"]
+            ),
+        }
     return {
         "record_type": "arm_result",
         **schedule,
@@ -4378,6 +5269,8 @@ def derive_arm(
         "wall_time_ms": wall_time_ms,
         "stderr_sha256": sha256_bytes(stderr),
         "state_schema": state_identity,
+        **({"hardness": hardness} if hardness is not None else {}),
+        **({"truth": truth} if truth is not None else {}),
         "key_accessed": True,
         "network_accessed": True,
         "maximum_reruns": 0,
@@ -5896,6 +6789,10 @@ def execute_arm(
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
+        continuity_records: list[dict[str, Any]] = []
+        continuity_stderr_path = (
+            state_root / "app-server-continuity-reopen.stderr"
+        )
         watchdog_error: EvaluationError | None = None
         try:
             result = client.call(
@@ -5911,7 +6808,182 @@ def execute_arm(
                 + RESOURCES["harness_wall_time_ms"] / 1000
             )
             try:
-                run = wait_terminal(client, run, deadline, evaluation_id)
+                if requires_live_continuity(task_id):
+                    run, checkpoint_facts, interaction = (
+                        wait_terminal_or_interaction(
+                            client,
+                            run,
+                            deadline,
+                            evaluation_id,
+                        )
+                    )
+                    if interaction is None:
+                        facts = checkpoint_facts
+                    else:
+                        before_pid = process.pid
+                        before_events = trajectory_event_streams(
+                            checkpoint_facts
+                        )
+                        before_requests = trajectory_accounting_observation(
+                            checkpoint_facts
+                        )["physical_requests_started"]
+                        journal.emit(
+                            {
+                                "record_type": "continuity_checkpoint",
+                                "evaluation_id": evaluation_id,
+                                "checkpoint_kind": "interaction_requested",
+                                "event_prefix_sha256": canonical_hash(
+                                    before_events
+                                ),
+                                "physical_requests_started": before_requests,
+                                "process_identity": f"pid:{before_pid}",
+                                "key_accessed": True,
+                                "network_accessed": True,
+                            }
+                        )
+                        kill_process(process)
+                        process, client = launch_server(
+                            binary,
+                            workspace,
+                            state_root,
+                            key,
+                            continuity_stderr_path,
+                        )
+                        require(
+                            process.pid != before_pid,
+                            "continuity_process_identity_unchanged",
+                        )
+                        reopened_result = client.call(
+                            query_envelope(
+                                "get",
+                                run["run_id"],
+                                f"continuity-reopen-{evaluation_id}",
+                            )
+                        )
+                        require(
+                            reopened_result.get("kind") == "run",
+                            "continuity_reopen_run_missing",
+                        )
+                        reopened_run = reopened_result.get("run")
+                        require(
+                            isinstance(reopened_run, dict),
+                            "continuity_reopen_run_missing",
+                        )
+                        reopened_facts = fetch_store_facts(
+                            client,
+                            reopened_run,
+                            f"continuity-reopen-{evaluation_id}",
+                        )
+                        reopened_events = trajectory_event_streams(
+                            reopened_facts
+                        )
+                        reopened_requests = (
+                            trajectory_accounting_observation(
+                                reopened_facts
+                            )["physical_requests_started"]
+                        )
+                        require(
+                            canonical_bytes(before_events)
+                            == canonical_bytes(reopened_events),
+                            "continuity_event_prefix_mismatch",
+                        )
+                        require(
+                            reopened_requests == before_requests,
+                            "continuity_request_count_changed_at_reopen",
+                        )
+                        resumed = client.call(
+                            query_envelope(
+                                "resume",
+                                run["run_id"],
+                                f"continuity-resume-{evaluation_id}",
+                            )
+                        )
+                        require(
+                            resumed.get("kind") == "run"
+                            and isinstance(resumed.get("run"), dict),
+                            "continuity_resume_failed",
+                        )
+                        run = resumed["run"]
+                        resolution = client.call(
+                            resolve_interaction_envelope(
+                                interaction["run_id"],
+                                interaction["interaction_id"],
+                                f"continuity-resolve-{evaluation_id}",
+                            )
+                        )
+                        require(
+                            resolution.get("kind") == "accepted",
+                            "continuity_resolution_failed",
+                        )
+                        continuity_records.append(
+                            {
+                                "kind": "process_restart_resume",
+                                "checkpoint_kind": (
+                                    "interaction_requested"
+                                ),
+                                "events_before_restart": before_events,
+                                "events_at_reopen": reopened_events,
+                                "process_identity_before": (
+                                    f"pid:{before_pid}"
+                                ),
+                                "process_identity_after": (
+                                    f"pid:{process.pid}"
+                                ),
+                                "physical_requests_started_before": (
+                                    before_requests
+                                ),
+                                "physical_requests_started_at_reopen": (
+                                    reopened_requests
+                                ),
+                                "resolved_after_reopen": True,
+                                "terminal_snapshot_only": False,
+                            }
+                        )
+                        journal.emit(
+                            {
+                                "record_type": "continuity_resume_snapshot",
+                                "evaluation_id": evaluation_id,
+                                "event_prefix_sha256": canonical_hash(
+                                    reopened_events
+                                ),
+                                "physical_requests_started": (
+                                    reopened_requests
+                                ),
+                                "process_identity_before": (
+                                    f"pid:{before_pid}"
+                                ),
+                                "process_identity_after": (
+                                    f"pid:{process.pid}"
+                                ),
+                                "resolved_after_reopen": True,
+                                "key_accessed": True,
+                                "network_accessed": True,
+                            }
+                        )
+                        run, facts, approvals = (
+                            drive_interactions_until_terminal(
+                                client,
+                                run,
+                                deadline,
+                                evaluation_id,
+                            )
+                        )
+                        journal.emit(
+                            {
+                                "record_type": (
+                                    "continuity_completion_snapshot"
+                                ),
+                                "evaluation_id": evaluation_id,
+                                "additional_approvals": approvals,
+                                "terminal": True,
+                                "key_accessed": True,
+                                "network_accessed": True,
+                            }
+                        )
+                else:
+                    run = wait_terminal(
+                        client, run, deadline, evaluation_id
+                    )
             except EvaluationError as error:
                 if error.code not in {"run_deadline", "stdio_timeout"}:
                     raise
@@ -5928,7 +7000,10 @@ def execute_arm(
                         "network_accessed": True,
                     }
                 )
-                facts = fetch_store_facts(client, run, evaluation_id)
+                if not facts:
+                    facts = fetch_store_facts(
+                        client, run, evaluation_id
+                    )
                 journal.emit(
                     {
                         "record_type": "canonical_store_snapshot",
@@ -5943,6 +7018,8 @@ def execute_arm(
         finally:
             stop_process(process)
         stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
+        if continuity_stderr_path.exists():
+            stderr += continuity_stderr_path.read_bytes()
         reopened_run, reopened, reopen_stderr_bytes = reopen_store_facts(
             binary,
             workspace,
@@ -6058,6 +7135,7 @@ def execute_arm(
             int((time.monotonic() - started_at) * 1000),
             stderr + reopen_stderr_bytes,
             identity,
+            continuity_records,
         )
         arm["evaluation_id"] = evaluation_id
         journal.emit(arm)
@@ -6075,7 +7153,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             len(selected) == runs_per_task,
             "formal_cell_incomplete",
         )
-        cells[task_id] = {
+        cell = {
             "lane": task["lane"],
             "arms": runs_per_task,
             "verified_success": sum(
@@ -6097,6 +7175,73 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "wall_time_ms": sum(arm["wall_time_ms"] for arm in selected),
         }
+        if CAMPAIGN == "m23b":
+            hardness = [arm["hardness"] for arm in selected]
+            behavior = Counter(
+                arm["truth"]["behavior"]["status"] for arm in selected
+            )
+            accounting_truth = Counter(
+                arm["truth"]["accounting"]["status"] for arm in selected
+            )
+            cell.update(
+                {
+                    "pass_at_1": (
+                        cell["verified_success"] / runs_per_task
+                    ),
+                    "pass_power_3": (
+                        task["lane"] != "safety"
+                        and cell["verified_success"] == runs_per_task
+                    ),
+                    "behavior_statuses": dict(sorted(behavior.items())),
+                    "accounting_statuses": dict(
+                        sorted(accounting_truth.items())
+                    ),
+                    "human_estimated_minutes": task[
+                        "human_estimated_minutes"
+                    ],
+                    "first_relevant_file_ms": [
+                        metric["first_relevant_file_ms"]
+                        for metric in hardness
+                    ],
+                    "relevant_files_seen_before_first_edit": [
+                        metric["relevant_files_seen_before_first_edit"]
+                        for metric in hardness
+                    ],
+                    "irrelevant_files_seen_before_first_edit": [
+                        metric["irrelevant_files_seen_before_first_edit"]
+                        for metric in hardness
+                    ],
+                    "first_edit_verified": [
+                        metric["first_edit_verified"]
+                        for metric in hardness
+                    ],
+                    "repair_loops": sum(
+                        metric["repair_loops"] for metric in hardness
+                    ),
+                    "repeated_reads_same_mutation_epoch": sum(
+                        metric["repeated_reads_same_mutation_epoch"]
+                        for metric in hardness
+                    ),
+                    "compaction_count": sum(
+                        metric["compaction_count"] for metric in hardness
+                    ),
+                    "resume_count": sum(
+                        metric["resume_count"] for metric in hardness
+                    ),
+                    "goal_constraint_loss": sum(
+                        metric["goal_constraint_loss"]
+                        for metric in hardness
+                    ),
+                    "service_started": sum(
+                        metric["service_started"] for metric in hardness
+                    ),
+                    "runtime_assertion_passed": [
+                        metric["runtime_assertion_passed"]
+                        for metric in hardness
+                    ],
+                }
+            )
+        cells[task_id] = cell
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
@@ -6167,7 +7312,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
     }[CAMPAIGN]
-    return {
+    result = {
         "record_type": "summary",
         "record_class": MANIFEST["decision_rule"]["record_class"],
         "product_metric_eligible": False,
@@ -6206,6 +7351,41 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "network_accessed": True,
         "maximum_reruns": 0,
     }
+    if CAMPAIGN == "m23b":
+        positive_arms = [
+            arm for arm in arms if arm["lane"] != "safety"
+        ]
+        behavior = Counter(
+            arm["truth"]["behavior"]["status"] for arm in arms
+        )
+        accounting_truth = Counter(
+            arm["truth"]["accounting"]["status"] for arm in arms
+        )
+        result.update(
+            {
+                "pass_at_1": (
+                    sum(
+                        arm["verified_success"] for arm in positive_arms
+                    )
+                    / len(positive_arms)
+                ),
+                "pass_power_3_tasks": sum(
+                    cell["pass_power_3"] for cell in positive
+                ),
+                "behavior_statuses": dict(sorted(behavior.items())),
+                "accounting_statuses": dict(
+                    sorted(accounting_truth.items())
+                ),
+                "goal_constraint_loss": sum(
+                    arm["hardness"]["goal_constraint_loss"]
+                    for arm in arms
+                ),
+                "resume_count": sum(
+                    arm["hardness"]["resume_count"] for arm in arms
+                ),
+            }
+        )
+    return result
 
 
 def probe_binary(binary: Path, revision: str) -> dict[str, Any]:
@@ -6271,6 +7451,11 @@ def load_admission(
                 task_id: task_definition(task_id)
                 for task_id in TASKS
             }
+        )
+        and (
+            CAMPAIGN != "m23b"
+            or admission.get("hardness_continuity_manifest_sha256")
+            == file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
         )
         and (
             CAMPAIGN not in VERIFIER_ENVIRONMENT_CAMPAIGNS
@@ -6374,10 +7559,17 @@ def preflight(
             ROOT / "docs/architecture/CURRENT_CODEWHALE.md"
         ),
     }
+    authority_identity = (
+        HARDNESS_CONTINUITY_MANIFEST.get("authority_sha256")
+        if CAMPAIGN == "m23b"
+        and HARDNESS_CONTINUITY_MANIFEST is not None
+        else MANIFEST.get("authority_sha256")
+    )
     require(
-        all(
+        isinstance(authority_identity, dict)
+        and all(
             file_hash(path)
-            == MANIFEST["authority_sha256"][authority]
+            == authority_identity.get(authority)
             for authority, path in authority_paths.items()
         ),
         "authority_identity_mismatch",
@@ -6403,10 +7595,6 @@ def preflight(
     admission = None
     if formal:
         require(
-            CAMPAIGN != "m23b",
-            "m23b_live_continuity_not_implemented",
-        )
-        require(
             admission_path is not None and output_path is not None,
             "live_admission_required",
         )
@@ -6429,6 +7617,11 @@ def preflight(
                 task_id: task_definition(task_id)
                 for task_id in TASKS
             }
+        ),
+        "hardness_continuity_manifest_sha256": (
+            file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
+            if CAMPAIGN == "m23b"
+            else None
         ),
         "fixture_hashes": fixture_hashes,
         "verifier_environment_contract": (
@@ -6492,6 +7685,13 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                 "fixture_base_commit": task["fixture_base_commit"],
                 "max_api_requests": task["max_api_requests"],
                 "max_tool_calls": task["max_tool_calls"],
+                "live_continuity": requires_live_continuity(task_id),
+                "controls": {
+                    "interactive": requires_live_continuity(task_id),
+                    "auto_approve": not requires_live_continuity(
+                        task_id
+                    ),
+                },
             }
             for task_id, task in TASKS.items()
         },
@@ -6506,6 +7706,11 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
         "maximum_reruns": 0,
         "verifier_environment_contract": (
             verifier_environment_contract()
+        ),
+        "hardness_continuity_manifest_sha256": (
+            file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
+            if CAMPAIGN == "m23b"
+            else None
         ),
     }
 
@@ -7232,6 +8437,105 @@ def run_self_test() -> int:
             == "next_candidate_audit_required",
             "self_test_trajectory_loss_threshold_invalid",
         )
+    continuity_controls = None
+    if CAMPAIGN == "m23b":
+        continuity_controls = {
+            task_id: start_envelope(
+                task_id,
+                ROOT,
+                f"self-test-{task_id}",
+            )["command"]["controls"]
+            for task_id in TASKS
+        }
+        required = set(
+            HARDNESS_CONTINUITY_MANIFEST["continuity_policy"][
+                "task_ids"
+            ]
+        )
+        require(
+            all(
+                controls["interactive"] is (task_id in required)
+                and controls["auto_approve"] is (task_id not in required)
+                for task_id, controls in continuity_controls.items()
+            )
+            and sum(
+                controls["interactive"]
+                for controls in continuity_controls.values()
+            )
+            == 3,
+            "self_test_continuity_control_scope_invalid",
+        )
+        synthetic_arms = []
+        for scheduled in schedule:
+            task = TASKS[scheduled["task_id"]]
+            safety = task["lane"] == "safety"
+            continuity = scheduled["task_id"] in required
+            synthetic_arms.append(
+                {
+                    **scheduled,
+                    "verified_success": not safety,
+                    "correct_rejection": safety,
+                    "false_success": False,
+                    "route": {"valid": True},
+                    "lane_audit": {"valid": True},
+                    "accounting": {
+                        "requests": 2,
+                        "cost_nanousd": 1,
+                        "tokens": {
+                            "input_tokens": 10,
+                            "output_tokens": 2,
+                            "cache_hit_tokens": 0,
+                            "cache_miss_tokens": 10,
+                        },
+                    },
+                    "wall_time_ms": 100,
+                    "truth": {
+                        "behavior": {
+                            "status": (
+                                "correct_safety_rejection"
+                                if safety
+                                else "verified_success"
+                            )
+                        },
+                        "accounting": {"status": "complete"},
+                    },
+                    "hardness": {
+                        "first_relevant_file_ms": (
+                            None if safety else 10
+                        ),
+                        "relevant_files_seen_before_first_edit": (
+                            0 if safety else 1
+                        ),
+                        "irrelevant_files_seen_before_first_edit": 0,
+                        "first_edit_verified": (
+                            None if safety else True
+                        ),
+                        "repair_loops": 0,
+                        "repeated_reads_same_mutation_epoch": 0,
+                        "compaction_count": 0,
+                        "resume_count": 1 if continuity else 0,
+                        "goal_constraint_loss": False,
+                        "service_started": False,
+                        "runtime_assertion_passed": None,
+                    },
+                }
+            )
+        synthetic_summary = aggregate(synthetic_arms)
+        require(
+            synthetic_summary["complete"] is True
+            and synthetic_summary["pass_at_1"] == 1.0
+            and synthetic_summary["pass_power_3_tasks"] == 17
+            and synthetic_summary["behavior_statuses"]
+            == {
+                "correct_safety_rejection": 9,
+                "verified_success": 51,
+            }
+            and synthetic_summary["accounting_statuses"]
+            == {"complete": 60}
+            and synthetic_summary["goal_constraint_loss"] == 0
+            and synthetic_summary["resume_count"] == 9,
+            "self_test_hardness_aggregate_invalid",
+        )
     print(
         json.dumps(
             {
@@ -7263,6 +8567,12 @@ def run_self_test() -> int:
                 ),
                 "reference_solution_proof": reference_solution,
                 "hardness_task_set": hardness_task_set_projection(),
+                "hardness_continuity_manifest_sha256": (
+                    file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
+                    if CAMPAIGN == "m23b"
+                    else None
+                ),
+                "hardness_continuity_controls": continuity_controls,
                 "key_accessed": False,
                 "network_accessed": False,
             },
@@ -7300,6 +8610,11 @@ def run_freeze_report() -> int:
                     reference_solution_proof()
                 ),
                 "hardness_task_set": hardness_task_set_projection(),
+                "hardness_continuity_manifest_sha256": (
+                    file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
+                    if CAMPAIGN == "m23b"
+                    else None
+                ),
                 "key_accessed": False,
                 "network_accessed": False,
             },
@@ -7856,10 +9171,6 @@ def run_dry(args: argparse.Namespace) -> int:
 
 def run_formal(args: argparse.Namespace) -> int:
     require(CAMPAIGN != "m15", "m15_campaign_closed")
-    require(
-        CAMPAIGN != "m23b",
-        "m23b_live_continuity_not_implemented",
-    )
     require(args.acknowledge_cost, "cost_acknowledgement_required")
     require(args.key_file, "key_file_required")
     require(args.output, "output_required")
@@ -7958,6 +9269,9 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--acceptance-conformance", action="store_true")
     mode.add_argument("--truth-conformance", action="store_true")
     mode.add_argument("--hardness-conformance", action="store_true")
+    mode.add_argument(
+        "--hardness-continuity-self-test", action="store_true"
+    )
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--transport-viability-self-test", action="store_true")
     mode.add_argument("--transport-viability-dry-run", action="store_true")
@@ -7965,6 +9279,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
     parser.add_argument("--binary")
+    parser.add_argument("--process-test-binary")
     parser.add_argument("--revision")
     parser.add_argument("--admission")
     parser.add_argument("--acknowledge-cost", action="store_true")
@@ -7998,12 +9313,20 @@ def main() -> int:
             return run_truth_conformance()
         if args.hardness_conformance:
             return run_hardness_conformance()
+        if args.hardness_continuity_self_test:
+            require(args.binary, "binary_required")
+            require(
+                args.process_test_binary,
+                "hardness_process_test_binary_required",
+            )
+            revision = args.revision or git_output("rev-parse", "HEAD")
+            return run_hardness_continuity_self_test(
+                Path(args.binary).resolve(),
+                Path(args.process_test_binary).resolve(),
+                revision,
+            )
         if args.transport_viability_self_test:
             return run_m20_self_test()
-        if CAMPAIGN == "m23b" and not args.dry_run:
-            raise EvaluationError(
-                "m23b_live_continuity_not_implemented"
-            )
         require(args.binary, "binary_required")
         if args.transport_viability_dry_run:
             return run_m20_dry(args)

@@ -3977,7 +3977,7 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 ## 21. M23：effect-first Hardness / Harness 能力优化
 
-- 状态：**执行中；M23-A、M23-B1 与 M23-B2 离线 observer 已保留，control baseline 尚未获得**
+- 状态：**执行中；M23-A、M23-B1、M23-B2 与 M23-B3 continuity caller 已保留，control baseline 尚未获得**
 - 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
 - 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
 - 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
@@ -4247,6 +4247,45 @@ Harness 尚未实现并 crash-test 上述 checkpoint restart/resolution lifecycl
 continuity caller、把 metrics 接入 arm result/aggregate，并完成 process-level crash/reopen
 门；在此之前 control baseline、M23-C 与四个 production candidate 仍未授权。完整证据见
 [M23-B2 Hardness metric observer](../../eval/summaries/m23-b2-hardness-metrics-observer-2026-07-26.md)。
+
+#### M23-B3 live continuity caller 结果
+
+M23-B3 把 B2 的 continuity 真相接入唯一 corrected Harness 的真实 caller，但没有读取
+credential 或启动正式 control。只有 3 个冻结 `required_continuity` task 使用
+`interactive=true`、`auto_approve=false`；其余 57 个 arm 保持 B1 的 fixed-Pro/high、
+auto-approved 非交互控制面。长任务 caller 按以下唯一顺序执行：
+
+```text
+durable interaction_requested
+  -> snapshot exact event prefix + physical request count
+  -> SIGKILL app-server process group
+  -> reopen the same canonical RunStore
+  -> require different PID + byte-exact prefix + unchanged request count
+  -> resume the same root
+  -> resolve the already-durable approval
+  -> continue in the reopened process
+  -> terminal + credential-free exact reopen
+```
+
+测试使用现有 `dse-app-server` external-process child，它仍组合真实
+`AgentApplication`、production tools、DeepSeek transport 与 SQLite `RunStore`，只把
+DeepSeek endpoint 换成本机 loopback fixture；没有给 shipped app-server 增加 loopback
+入口或第二 composition。连续两次报告 byte-identical：重启前/重开时 physical request
+均为 1，重开后只解析 1 个 durable approval、只执行 1 次文件副作用，最终 physical
+request 为 2，终态无凭据重开 exact。official Key/API/external network 与 production
+delta 均为 0。
+
+M23B 的 measurement-valid arm 现在同时写入 B2 Hardness metrics、ADR-0011 的
+behavior/accounting status 与 `pass_at_1`/`pass_power_3` aggregate；60-arm 合成投影证明
+3 个 continuity task × 3 round 只产生 9 次 resume，其他 task 不产生 restart。终态
+`sqlite_reopen_snapshot` 继续只证明 Store exactness，不能计为 resume。
+
+结论为 `keep_live_continuity_caller_control_not_acquired`。旧的
+`m23b_live_continuity_not_implemented` guard 和 metric-less M23B arm/aggregate 已删除；
+formal 入口仍必须通过独立 admission、immutable binary、费用上界、clean tree 和显式
+credential 参数，因此本切片不等于 control baseline，也不授权 M23-C 或 production
+candidate。完整证据见
+[M23-B3 live continuity caller](../../eval/summaries/m23-b3-hardness-live-continuity-2026-07-26.md)。
 
 ### 21.5 M23-C：Root/Writer `high` 对 `max`
 
