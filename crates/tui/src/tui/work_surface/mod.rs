@@ -5,7 +5,7 @@ mod live_projection;
 mod model;
 mod render;
 
-pub use model::{WorkSurfacePlacement, WorkSurfaceState};
+pub use model::WorkSurfaceState;
 pub use render::{height, render, split_chat};
 
 #[cfg(test)]
@@ -190,53 +190,102 @@ mod tests {
     }
 
     #[test]
-    fn left_and_right_placements_reserve_a_side_rail() {
-        for (placement, expected_chat_x, expected_rail_x) in [
-            (super::WorkSurfacePlacement::Left, 30, 0),
-            (super::WorkSurfacePlacement::Right, 0, 70),
-        ] {
-            let mut app = app();
-            start_child(&mut app, "rail");
-            app.work_surface.placement = placement;
-            assert_eq!(super::height(&mut app, 100, 24), 0);
+    fn wide_layout_always_reserves_the_fixed_right_rail() {
+        let mut app = app();
+        start_child(&mut app, "rail");
+        assert_eq!(super::height(&mut app, 140, 40), 0);
 
-            let area = ratatui::layout::Rect::new(0, 0, 100, 12);
-            let (chat, rail) = super::split_chat(&mut app, area);
-            let rail = rail.expect("side rail");
-            assert_eq!(chat.x, expected_chat_x);
-            assert_eq!(chat.width, 70);
-            assert_eq!(rail.x, expected_rail_x);
-            assert_eq!(rail.width, 30);
+        let area = ratatui::layout::Rect::new(0, 0, 140, 20);
+        let (chat, rail) = super::split_chat(&mut app, area);
+        let rail = rail.expect("right rail");
+        assert_eq!(chat.x, 0);
+        assert_eq!(chat.width, 100);
+        assert_eq!(rail.x, 100);
+        assert_eq!(rail.width, 40);
 
-            let backend = TestBackend::new(100, 12);
-            let mut terminal = Terminal::new(backend).expect("terminal");
-            terminal
-                .draw(|frame| super::render(frame, rail, &mut app))
-                .expect("draw");
-            let divider_x = if placement == super::WorkSurfacePlacement::Left {
-                rail.right().saturating_sub(1)
-            } else {
-                rail.x
-            };
-            assert_eq!(terminal.backend().buffer()[(divider_x, 0)].symbol(), "│");
-        }
+        let backend = TestBackend::new(140, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render(frame, rail, &mut app))
+            .expect("draw");
+        assert_eq!(terminal.backend().buffer()[(rail.x, 0)].symbol(), "│");
     }
 
     #[test]
-    fn narrow_layout_keeps_the_existing_top_surface() {
+    fn medium_and_narrow_layouts_use_the_same_top_strip() {
         let mut app = app();
         start_child(&mut app, "top");
-        app.work_surface.placement = super::WorkSurfacePlacement::Right;
+
+        assert_eq!(super::height(&mut app, 100, 32), 8);
+        let medium = ratatui::layout::Rect::new(0, 0, 100, 12);
+        let (medium_chat, medium_rail) = super::split_chat(&mut app, medium);
+        assert_eq!(medium_chat, medium);
+        assert!(medium_rail.is_none());
 
         assert_eq!(super::height(&mut app, 60, 16), 5);
         let narrow = ratatui::layout::Rect::new(0, 0, 60, 8);
         let (chat, rail) = super::split_chat(&mut app, narrow);
         assert_eq!(chat, narrow);
         assert!(rail.is_none());
-        assert_eq!(
-            app.work_surface.placement,
-            super::WorkSurfacePlacement::Right,
-            "responsive fallback must not overwrite the saved preference"
-        );
+
+        assert_eq!(super::height(&mut app, 48, 12), 5);
+    }
+
+    #[test]
+    fn short_surface_keeps_the_acceptance_loop_visible() {
+        let mut app = app();
+        start_root(&mut app);
+        assert_eq!(super::height(&mut app, 48, 12), 5);
+
+        let backend = TestBackend::new(48, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &mut app))
+            .expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        for fact in [
+            "任务 · 修复解析器",
+            "状态 · 思考中",
+            "变更 · 尚未确认",
+            "验证 · 未开始",
+        ] {
+            assert!(text.contains(fact), "missing {fact:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn resize_changes_layout_without_changing_canonical_facts() {
+        let mut app = app();
+        start_root(&mut app);
+        start_child(&mut app, "stable-child");
+
+        let mut identities = Vec::new();
+        for (width, height) in [(140, 40), (100, 32), (60, 16), (48, 12)] {
+            let surface_height = super::height(&mut app, width, height);
+            let area = if surface_height == 0 {
+                let host = ratatui::layout::Rect::new(0, 0, width, height);
+                super::split_chat(&mut app, host)
+                    .1
+                    .expect("wide layout rail")
+            } else {
+                ratatui::layout::Rect::new(0, 0, width, surface_height)
+            };
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| super::render(frame, area, &mut app))
+                .expect("draw");
+            identities.push(
+                app.work_surface
+                    .latest_rows
+                    .iter()
+                    .map(|row| row.id.clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        assert!(identities.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(identities[0].iter().any(|id| id == "task:verification"));
+        assert!(identities[0].iter().any(|id| id == "worker:stable-child"));
     }
 }

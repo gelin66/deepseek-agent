@@ -394,7 +394,10 @@ fn permission_selector_english_mouse_selects_full_access() -> anyhow::Result<()>
     h.send(keys::mouse::click(row, col))?;
     h.wait_for(
         |frame| {
-            frame.row(0).contains("Full access")
+            // Ratatui may advance across unchanged blank cells instead of
+            // repainting them, so vt100's cell-by-cell row projection can
+            // omit the visual space inside the header label.
+            frame.row(0).replace(' ', "").contains("Fullaccess")
                 && !frame.contains("Choose the permission preset for the next run")
         },
         KEY_TIMEOUT,

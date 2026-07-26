@@ -12,18 +12,19 @@ use crate::tui::app::App;
 use crate::tui::ui_text::truncate_line_to_width;
 use dse_localization::MessageId;
 
-use super::model::{WorkRow, WorkSurfacePlacement, WorkTone, project};
+use super::model::{WorkRow, WorkSurfaceLayout, WorkTone, project};
 
-const SIDE_RAIL_MIN_HOST_WIDTH: u16 = 72;
+const SIDE_RAIL_MIN_HOST_WIDTH: u16 = 110;
+const SIDE_RAIL_MIN_HOST_HEIGHT: u16 = 20;
 const SIDE_RAIL_MIN_WIDTH: u16 = 26;
 const SIDE_RAIL_MAX_WIDTH: u16 = 40;
 const SIDE_RAIL_MIN_CHAT_WIDTH: u16 = 40;
 
-fn effective_placement(configured: WorkSurfacePlacement, host_width: u16) -> WorkSurfacePlacement {
-    if host_width < SIDE_RAIL_MIN_HOST_WIDTH {
-        WorkSurfacePlacement::Top
+fn responsive_layout(host_width: u16, host_height: u16) -> WorkSurfaceLayout {
+    if host_width >= SIDE_RAIL_MIN_HOST_WIDTH && host_height >= SIDE_RAIL_MIN_HOST_HEIGHT {
+        WorkSurfaceLayout::RightRail
     } else {
-        configured
+        WorkSurfaceLayout::TopStrip
     }
 }
 
@@ -33,13 +34,12 @@ pub fn height(app: &mut App, width: u16, terminal_height: u16) -> u16 {
         app.work_surface.latest_rows.clear();
         return 0;
     }
-    app.work_surface.effective_placement = effective_placement(app.work_surface.placement, width);
-    if app.work_surface.effective_placement != WorkSurfacePlacement::Top {
+    app.work_surface.layout = responsive_layout(width, terminal_height);
+    if app.work_surface.layout == WorkSurfaceLayout::RightRail {
         return 0;
     }
     match terminal_height {
-        0..=12 => 3,
-        13..=16 => 5,
+        0..=16 => 5,
         17..=23 => 6,
         _ => 8,
     }
@@ -48,9 +48,9 @@ pub fn height(app: &mut App, width: u16, terminal_height: u16) -> u16 {
 /// Split the transcript slot for a side rail. Top placement consumes its own
 /// vertical row before this point, so it returns the chat area unchanged.
 pub fn split_chat(app: &mut App, area: Rect) -> (Rect, Option<Rect>) {
-    let placement = effective_placement(app.work_surface.placement, area.width);
-    app.work_surface.effective_placement = placement;
-    if app.work_surface.latest_rows.is_empty() || placement == WorkSurfacePlacement::Top {
+    if app.work_surface.latest_rows.is_empty()
+        || app.work_surface.layout == WorkSurfaceLayout::TopStrip
+    {
         return (area, None);
     }
 
@@ -59,36 +59,22 @@ pub fn split_chat(app: &mut App, area: Rect) -> (Rect, Option<Rect>) {
         .clamp(SIDE_RAIL_MIN_WIDTH, SIDE_RAIL_MAX_WIDTH)
         .min(area.width.saturating_sub(SIDE_RAIL_MIN_CHAT_WIDTH));
     if rail_width < SIDE_RAIL_MIN_WIDTH {
-        app.work_surface.effective_placement = WorkSurfacePlacement::Top;
+        app.work_surface.layout = WorkSurfaceLayout::TopStrip;
         return (area, None);
     }
 
     let chat_width = area.width.saturating_sub(rail_width);
-    match placement {
-        WorkSurfacePlacement::Left => (
-            Rect {
-                x: area.x.saturating_add(rail_width),
-                width: chat_width,
-                ..area
-            },
-            Some(Rect {
-                width: rail_width,
-                ..area
-            }),
-        ),
-        WorkSurfacePlacement::Right => (
-            Rect {
-                width: chat_width,
-                ..area
-            },
-            Some(Rect {
-                x: area.x.saturating_add(chat_width),
-                width: rail_width,
-                ..area
-            }),
-        ),
-        WorkSurfacePlacement::Top => (area, None),
-    }
+    (
+        Rect {
+            width: chat_width,
+            ..area
+        },
+        Some(Rect {
+            x: area.x.saturating_add(chat_width),
+            width: rail_width,
+            ..area
+        }),
+    )
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -96,17 +82,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let placement = app.work_surface.effective_placement;
-    let body_area = match placement {
-        WorkSurfacePlacement::Top => Rect {
+    let layout = app.work_surface.layout;
+    let body_area = match layout {
+        WorkSurfaceLayout::TopStrip => Rect {
             height: area.height.saturating_sub(1),
             ..area
         },
-        WorkSurfacePlacement::Left => Rect {
-            width: area.width.saturating_sub(1),
-            ..area
-        },
-        WorkSurfacePlacement::Right => Rect {
+        WorkSurfaceLayout::RightRail => Rect {
             x: area.x.saturating_add(1),
             width: area.width.saturating_sub(1),
             ..area
@@ -114,15 +96,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let mut rows = project(app);
-    if body_area.height <= 2 {
-        // On a two-row surface, prefer actual work over section headings.
+    if body_area.height <= 4 {
+        // A short terminal still shows the acceptance loop before optional
+        // worker, permission, and persistence diagnostics.
         let mut compact = Vec::new();
-        for prefix in ["task:", "worker:"] {
-            if let Some(row) = rows.iter().find(|row| row.id.starts_with(prefix)) {
+        for id in [
+            "section:task",
+            "task:status",
+            "task:changes",
+            "task:verification",
+        ] {
+            if let Some(row) = rows.iter().find(|row| row.id == id) {
                 compact.push(row.clone());
             }
         }
         for row in rows.iter().filter(|row| row.tone != WorkTone::Heading) {
+            if compact.len() >= usize::from(body_area.height) {
+                break;
+            }
             if !compact.iter().any(|candidate| candidate.id == row.id) {
                 compact.push(row.clone());
             }
@@ -146,7 +137,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .take(usize::from(body_area.height))
         .map(|row| {
-            let compact_owner = if body_area.height <= 2 {
+            let compact_owner = if body_area.height <= 4 {
                 row.id
                     .split_once(':')
                     .map(|(kind, _)| match kind {
@@ -175,7 +166,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect::<Vec<_>>();
 
     Paragraph::new(lines).render(content_area, frame.buffer_mut());
-    render_divider(frame, area, placement, app);
+    render_divider(frame, area, layout, app);
 }
 
 fn row_style(app: &App, row: &WorkRow) -> Style {
@@ -195,9 +186,9 @@ fn row_style(app: &App, row: &WorkRow) -> Style {
     }
 }
 
-fn render_divider(frame: &mut Frame, area: Rect, placement: WorkSurfacePlacement, app: &App) {
-    match placement {
-        WorkSurfacePlacement::Top => {
+fn render_divider(frame: &mut Frame, area: Rect, layout: WorkSurfaceLayout, app: &App) {
+    match layout {
+        WorkSurfaceLayout::TopStrip => {
             let y = area.bottom().saturating_sub(1);
             for x in area.left()..area.right() {
                 frame.buffer_mut()[(x, y)]
@@ -206,12 +197,8 @@ fn render_divider(frame: &mut Frame, area: Rect, placement: WorkSurfacePlacement
                     .set_bg(app.ui_theme.surface_bg);
             }
         }
-        WorkSurfacePlacement::Left | WorkSurfacePlacement::Right => {
-            let x = if placement == WorkSurfacePlacement::Left {
-                area.right().saturating_sub(1)
-            } else {
-                area.left()
-            };
+        WorkSurfaceLayout::RightRail => {
+            let x = area.left();
             for y in area.top()..area.bottom() {
                 frame.buffer_mut()[(x, y)]
                     .set_symbol("│")

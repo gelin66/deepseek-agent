@@ -7,7 +7,6 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
-use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
 use dse_localization::{MessageId, tr};
 
@@ -98,7 +97,6 @@ pub struct TranscriptRenderOptions {
     pub show_tool_details: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
-    pub spacing: TranscriptSpacing,
 }
 
 impl Default for TranscriptRenderOptions {
@@ -108,7 +106,6 @@ impl Default for TranscriptRenderOptions {
             show_tool_details: true,
             calm_mode: false,
             low_motion: false,
-            spacing: TranscriptSpacing::Comfortable,
         }
     }
 }

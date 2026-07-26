@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::palette;
-use crate::tui::app::{App, ComposerDensity};
+use crate::tui::app::App;
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use dse_localization::{MessageId, tr};
@@ -529,8 +529,7 @@ impl<'a> ComposerWidget<'a> {
     }
 
     fn wants_enclosed_panel(&self) -> bool {
-        self.app.composer_border
-            && (self.app.input.contains('\n') || self.active_menu_row_count() > 0)
+        self.app.input.contains('\n') || self.active_menu_row_count() > 0
     }
 
     pub(crate) fn has_panel(&self, area: Rect) -> bool {
@@ -550,7 +549,7 @@ impl<'a> ComposerWidget<'a> {
     }
 
     fn max_height_cap(&self) -> u16 {
-        composer_max_height(self.app.composer_density)
+        composer_max_height()
     }
 }
 
@@ -885,7 +884,6 @@ impl Renderable for ComposerWidget<'_> {
             width.saturating_sub(2),
             self.max_height.min(self.max_height_cap()),
             self.active_menu_reserved_rows(),
-            self.app.composer_density,
             self.wants_enclosed_panel(),
         )
     }
@@ -1682,12 +1680,12 @@ pub(crate) fn empty_composer_visual_rows(
 }
 
 #[cfg(test)]
-fn composer_min_input_rows(density: ComposerDensity) -> usize {
-    crate::tui::composer_chrome::ComposerChrome::for_density(density, false).min_content_rows
+fn composer_min_input_rows() -> usize {
+    crate::tui::composer_chrome::ComposerChrome::native(false).min_content_rows
 }
 
-fn composer_max_height(density: ComposerDensity) -> u16 {
-    crate::tui::composer_chrome::ComposerChrome::for_density(density, false).max_total_rows
+fn composer_max_height() -> u16 {
+    crate::tui::composer_chrome::ComposerChrome::native(false).max_total_rows
 }
 
 fn composer_height(
@@ -1695,7 +1693,6 @@ fn composer_height(
     width: u16,
     available_height: u16,
     extra_lines: usize,
-    density: ComposerDensity,
     show_panel: bool,
 ) -> u16 {
     let has_panel = show_panel && available_height >= 3 && width >= 12;
@@ -1708,7 +1705,6 @@ fn composer_height(
         line_count,
         extra_lines,
         available_height,
-        density,
         has_panel,
     )
 }
@@ -1888,7 +1884,7 @@ mod tests {
     };
     use crate::config::Config;
     use crate::palette;
-    use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
+    use crate::tui::app::{App, ToolCollapseMode, TuiOptions};
     use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use crate::tui::scrolling::TranscriptScroll;
@@ -2188,14 +2184,7 @@ mod tests {
         let available_height = 6;
         let menu_lines = 2;
 
-        let height = composer_height(
-            input,
-            width,
-            available_height,
-            menu_lines,
-            ComposerDensity::Comfortable,
-            true,
-        );
+        let height = composer_height(input, width, available_height, menu_lines, true);
         let has_panel = available_height >= 3 && width >= 12;
         let chrome_height = if has_panel {
             usize::from(COMPOSER_PANEL_HEIGHT)
@@ -2227,14 +2216,14 @@ mod tests {
 
     #[test]
     fn composer_height_prefers_panel_shape_when_space_allows() {
-        let height = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, true);
+        let height = composer_height("", 40, 8, 0, true);
         assert_eq!(height, 5);
     }
 
     #[test]
     fn composer_height_uses_quiet_rule_when_panel_is_not_needed() {
-        let with_border = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, true);
-        let without_border = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, false);
+        let with_border = composer_height("", 40, 8, 0, true);
+        let without_border = composer_height("", 40, 8, 0, false);
 
         // Quiet composer keeps a single top rule but still reserves the
         // density baseline (3 content rows) so it never collapses to a
@@ -2245,13 +2234,9 @@ mod tests {
     }
 
     #[test]
-    fn composer_density_changes_min_rows_and_height_cap() {
-        assert_eq!(composer_min_input_rows(ComposerDensity::Compact), 2);
-        assert_eq!(composer_min_input_rows(ComposerDensity::Spacious), 4);
-        assert!(
-            composer_max_height(ComposerDensity::Spacious)
-                > composer_max_height(ComposerDensity::Compact)
-        );
+    fn composer_uses_one_native_row_budget() {
+        assert_eq!(composer_min_input_rows(), 3);
+        assert_eq!(composer_max_height(), 9);
     }
 
     #[test]
@@ -2285,9 +2270,7 @@ mod tests {
 
     #[test]
     fn empty_composer_keeps_prompt_and_hint_on_one_row() {
-        let mut app = create_test_app();
-        // Pin density so the test is independent of any loaded user settings.
-        app.composer_density = ComposerDensity::Comfortable;
+        let app = create_test_app();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
@@ -2300,8 +2283,8 @@ mod tests {
             height: 5,
         };
 
-        // Normal one-line composition uses only the top rule, preserving the
-        // reference's continuous water field instead of drawing a full box.
+        // Normal one-line composition uses only the top rule so transcript
+        // and composer remain one continuous terminal-native surface.
         // inner_area: {x:0, y:1, w:40, h:4}
         // input_rows_budget = 4
         // The prompt and hint share one quiet row.
@@ -2314,8 +2297,7 @@ mod tests {
 
     #[test]
     fn empty_composer_cursor_accounts_for_wrapped_placeholder_hint() {
-        let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
+        let app = create_test_app();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
@@ -2343,8 +2325,7 @@ mod tests {
 
     #[test]
     fn empty_composer_renders_prompt_and_hint_on_cursor_row() {
-        let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
+        let app = create_test_app();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
@@ -2383,7 +2364,6 @@ mod tests {
     #[test]
     fn composer_keeps_prompt_anchored_after_first_keystroke() {
         let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
         app.input = "hello".to_string();
         app.cursor_position = app.input.len();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
@@ -2403,7 +2383,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_border_only_titles_multiline_drafts() {
+    fn native_composer_only_titles_multiline_drafts() {
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let area = Rect {
@@ -2413,8 +2393,7 @@ mod tests {
             height: 5,
         };
 
-        let mut normal_app = create_test_app();
-        normal_app.composer_density = ComposerDensity::Comfortable;
+        let normal_app = create_test_app();
         let normal_widget =
             ComposerWidget::new(&normal_app, 5, &slash_menu_entries, &mention_menu_entries);
         let mut normal_buf = Buffer::empty(area);
@@ -2424,7 +2403,6 @@ mod tests {
         assert!(!normal_rendered.contains("Draft"));
 
         let mut draft_app = create_test_app();
-        draft_app.composer_density = ComposerDensity::Comfortable;
         draft_app.insert_str("first line\nsecond line");
         let draft_widget =
             ComposerWidget::new(&draft_app, 5, &slash_menu_entries, &mention_menu_entries);
@@ -2443,7 +2421,6 @@ mod tests {
         // for a 5-match menu and a 1-match menu must be identical so
         // the layout stays stable for the lifetime of the slash session.
         let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
         app.input = "/skill".to_string();
 
         let many_matches: Vec<SlashMenuEntry> = (0..5)
@@ -2485,10 +2462,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_composer_cursor_follows_idle_prompt_when_border_disabled() {
-        let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
-        app.composer_border = false;
+    fn empty_composer_cursor_follows_the_native_quiet_rule() {
+        let app = create_test_app();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 3, &slash_menu_entries, &mention_menu_entries);
@@ -2505,8 +2480,7 @@ mod tests {
 
     #[test]
     fn simplified_chinese_composer_placeholder_renders_at_narrow_width() {
-        let mut app = create_test_app();
-        app.composer_density = ComposerDensity::Comfortable;
+        let app = create_test_app();
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);

@@ -1,10 +1,8 @@
-//! Ocean composer chrome policy.
+//! Fixed native composer chrome policy.
 //!
 //! Keeps the prompt roomy by default and sheds padding before content when
 //! the terminal is short. Content-driven growth still wins once the user
 //! types past the baseline.
-
-use crate::tui::app::ComposerDensity;
 
 /// Top/bottom chrome rows for the quiet rule (TOP border only) or the
 /// enclosed panel (TOP + BOTTOM).
@@ -16,26 +14,15 @@ pub struct ComposerChrome {
 }
 
 impl ComposerChrome {
-    /// Baseline for the given density. Panel shape gets both borders;
-    /// quiet shape keeps a single top rule so the prompt still has a
-    /// clear ledge without reading as a card.
+    /// Panel shape gets both borders; quiet shape keeps a single top rule so
+    /// the prompt still has a clear ledge without reading as a card.
     #[must_use]
-    pub fn for_density(density: ComposerDensity, enclosed_panel: bool) -> Self {
+    pub fn native(enclosed_panel: bool) -> Self {
         let border_rows = if enclosed_panel { 2 } else { 1 };
-        let min_content_rows = match density {
-            ComposerDensity::Compact => 2,
-            ComposerDensity::Comfortable => 3,
-            ComposerDensity::Spacious => 4,
-        };
-        let max_total_rows = match density {
-            ComposerDensity::Compact => 7,
-            ComposerDensity::Comfortable => 9,
-            ComposerDensity::Spacious => 12,
-        };
         Self {
             border_rows,
-            min_content_rows,
-            max_total_rows,
+            min_content_rows: 3,
+            max_total_rows: 9,
         }
     }
 
@@ -62,10 +49,9 @@ pub fn desired_height(
     content_lines: usize,
     extra_menu_lines: usize,
     available_height: u16,
-    density: ComposerDensity,
     enclosed_panel: bool,
 ) -> u16 {
-    let chrome = ComposerChrome::for_density(density, enclosed_panel);
+    let chrome = ComposerChrome::native(enclosed_panel);
     let available = available_height.max(1);
     let content = content_lines.max(1);
     let wants_panel = enclosed_panel && available >= 3;
@@ -107,8 +93,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comfortable_empty_composer_keeps_multi_line_baseline() {
-        let height = desired_height(1, 0, 8, ComposerDensity::Comfortable, false);
+    fn empty_composer_keeps_the_native_multi_line_baseline() {
+        let height = desired_height(1, 0, 8, false);
         assert!(
             height >= 4,
             "expected roomy baseline, got {height} (1 border + 3 content)"
@@ -119,13 +105,13 @@ mod tests {
     fn compact_height_sheds_padding_before_content() {
         // Only two rows available: keep a border + one content row rather
         // than forcing the comfortable 3-line baseline.
-        let height = desired_height(1, 0, 2, ComposerDensity::Comfortable, false);
+        let height = desired_height(1, 0, 2, false);
         assert_eq!(height, 2);
     }
 
     #[test]
     fn content_growth_still_expands_past_baseline() {
-        let height = desired_height(6, 0, 12, ComposerDensity::Comfortable, false);
+        let height = desired_height(6, 0, 12, false);
         assert!(
             height >= 7,
             "typed content must grow the composer: {height}"
@@ -133,11 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn spacious_panel_keeps_four_content_rows() {
-        let height = desired_height(1, 0, 12, ComposerDensity::Spacious, true);
+    fn native_panel_keeps_three_content_rows() {
+        let height = desired_height(1, 0, 12, true);
         assert!(
-            height >= 6,
-            "spacious panel = 2 borders + 4 content, got {height}"
+            height >= 5,
+            "native panel = 2 borders + 3 content, got {height}"
         );
     }
 }

@@ -23,7 +23,6 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::tui::app::TranscriptSpacing;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptLineMeta;
 
@@ -261,15 +260,15 @@ impl TranscriptViewCache {
         } else {
             first_dirty.unwrap_or(0).saturating_sub(1)
         };
-        self.flatten_from(options.spacing, rebuild_from);
+        self.flatten_from(rebuild_from);
     }
 
     /// Reassemble flat `lines` / `line_meta` from `per_cell` plus spacers.
-    fn flatten(&mut self, spacing: TranscriptSpacing) {
+    fn flatten(&mut self) {
         self.lines.clear();
         self.line_links.clear();
         self.line_meta.clear();
-        self.append_flattened_cells(spacing, 0);
+        self.append_flattened_cells(0);
     }
 
     /// Reassemble only the suffix starting at `first_cell`.
@@ -277,9 +276,9 @@ impl TranscriptViewCache {
     /// Streaming usually mutates the active tail cell. Rebuilding from the
     /// previous cell preserves spacer correctness while avoiding a full
     /// O(total transcript lines) flatten on every token chunk.
-    fn flatten_from(&mut self, spacing: TranscriptSpacing, first_cell: usize) {
+    fn flatten_from(&mut self, first_cell: usize) {
         if first_cell == 0 || self.lines.is_empty() || self.line_meta.is_empty() {
-            self.flatten(spacing);
+            self.flatten();
             return;
         }
 
@@ -294,10 +293,10 @@ impl TranscriptViewCache {
         self.lines.truncate(truncate_at);
         self.line_links.truncate(truncate_at);
         self.line_meta.truncate(truncate_at);
-        self.append_flattened_cells(spacing, first_cell);
+        self.append_flattened_cells(first_cell);
     }
 
-    fn append_flattened_cells(&mut self, spacing: TranscriptSpacing, start_cell: usize) {
+    fn append_flattened_cells(&mut self, start_cell: usize) {
         for (cell_index, cached) in self.per_cell.iter().enumerate().skip(start_cell) {
             if cached.is_empty {
                 continue;
@@ -328,7 +327,7 @@ impl TranscriptViewCache {
             }
 
             if let Some(next) = self.per_cell.get(cell_index + 1) {
-                let spacer_rows = spacer_rows_between(cached, next, spacing);
+                let spacer_rows = spacer_rows_between(cached, next);
                 for _ in 0..spacer_rows {
                     self.lines.push(Line::from(""));
                     self.line_links.push(Vec::new());
@@ -378,11 +377,7 @@ fn strip_cell_local_tool_rail(line: &mut Line<'static>) {
     }
 }
 
-fn spacer_rows_between(
-    current: &CachedCell,
-    next: &CachedCell,
-    spacing: TranscriptSpacing,
-) -> usize {
+fn spacer_rows_between(current: &CachedCell, next: &CachedCell) -> usize {
     if current.is_stream_continuation {
         return 0;
     }
@@ -391,20 +386,10 @@ fn spacer_rows_between(
         return 0;
     }
 
-    let conversational_gap = match spacing {
-        TranscriptSpacing::Compact => 0,
-        TranscriptSpacing::Comfortable => 1,
-        TranscriptSpacing::Spacious => 2,
-    };
-    let secondary_gap = match spacing {
-        TranscriptSpacing::Compact => 0,
-        TranscriptSpacing::Comfortable | TranscriptSpacing::Spacious => 1,
-    };
-
     if current.is_conversational && next.is_conversational {
-        conversational_gap
+        1
     } else if current.is_system_or_tool || next.is_system_or_tool {
-        secondary_gap
+        1
     } else {
         0
     }

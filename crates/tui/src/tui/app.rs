@@ -126,42 +126,6 @@ impl ReasoningEffort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComposerDensity {
-    Compact,
-    Comfortable,
-    Spacious,
-}
-
-impl ComposerDensity {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "compact" | "tight" => Self::Compact,
-            "spacious" | "loose" => Self::Spacious,
-            _ => Self::Comfortable,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranscriptSpacing {
-    Compact,
-    Comfortable,
-    Spacious,
-}
-
-impl TranscriptSpacing {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "compact" | "tight" => Self::Compact,
-            "spacious" | "loose" => Self::Spacious,
-            _ => Self::Comfortable,
-        }
-    }
-}
-
 /// Controls how dense tool-call runs are collapsed in the transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCollapseMode {
@@ -840,9 +804,6 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub cost_currency: CostCurrency,
-    pub composer_density: ComposerDensity,
-    pub composer_border: bool,
-    pub transcript_spacing: TranscriptSpacing,
     /// Minimum number of consecutive safe tool cells needed for auto-collapse.
     pub tool_collapse_threshold: usize,
     /// Current dense tool-run collapse behavior.
@@ -976,16 +937,11 @@ impl App {
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
-        let work_surface_placement =
-            crate::tui::work_surface::WorkSurfacePlacement::parse(&settings.work_surface_placement);
         let synchronized_output_enabled = settings.synchronized_output_enabled();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let cost_currency =
             CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
-        let composer_density = ComposerDensity::from_setting(&settings.composer_density);
-        let composer_border = settings.composer_border;
-        let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         // ADR-0013 fixes one terminal-native token owner. The backend still
         // remaps direct legacy palette constants during the M28 cutover, but
         // every production frame resolves to this same terminal-owned theme.
@@ -1056,9 +1012,7 @@ impl App {
                 mention_candidate_cache: None,
             },
             viewport: ViewportState::default(),
-            work_surface: crate::tui::work_surface::WorkSurfaceState::with_placement(
-                work_surface_placement,
-            ),
+            work_surface: crate::tui::work_surface::WorkSurfaceState::default(),
             run_presentation: crate::tui::run_presentation::CanonicalRunPresentation::default(),
             session: SessionState::default(),
             history: Vec::new(),
@@ -1083,9 +1037,6 @@ impl App {
             show_thinking,
             show_tool_details,
             cost_currency,
-            composer_density,
-            composer_border,
-            transcript_spacing,
             tool_collapse_threshold: 3,
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             allow_shell,
@@ -1498,7 +1449,6 @@ impl App {
             show_tool_details: self.show_tool_details,
             calm_mode: self.calm_mode,
             low_motion: self.low_motion,
-            spacing: self.transcript_spacing,
         }
     }
 

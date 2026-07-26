@@ -20,9 +20,6 @@ pub struct Settings {
     /// Reduce decorative motion. This must never synthesize model text speed;
     /// streaming follows upstream deltas in both modes.
     pub low_motion: bool,
-    /// Ocean Tasks / Runs / Workers rail placement: top, left, or right.
-    /// The lower edge remains owned by the composer and phase footer.
-    pub work_surface_placement: String,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
     /// terminals over SSH+screen multiplex without the cap).
@@ -49,12 +46,6 @@ pub struct Settings {
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
-    /// Composer layout density: compact, comfortable, spacious
-    pub composer_density: String,
-    /// Show a border around the composer input area
-    pub composer_border: bool,
-    /// Transcript spacing rhythm: compact, comfortable, spacious
-    pub transcript_spacing: String,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,
     /// Default reasoning effort selected from the TUI model picker.
@@ -110,7 +101,6 @@ impl Default for Settings {
             calm_mode: true,
             tool_collapse_mode: "compact".to_string(),
             low_motion: false,
-            work_surface_placement: "right".to_string(),
             bracketed_paste: true,
             mention_menu_limit: 128,
             mention_walk_depth: 10,
@@ -121,23 +111,12 @@ impl Default for Settings {
             show_tool_details: false,
             theme: "system".to_string(),
             background_color: None,
-            composer_density: "comfortable".to_string(),
-            composer_border: true,
-            transcript_spacing: "comfortable".to_string(),
             cost_currency: "usd".to_string(),
             reasoning_effort: None,
             synchronized_output: "auto".to_string(),
             prefer_external_pdftotext: false,
             workspace_follow_symlinks: false,
         }
-    }
-}
-
-fn normalize_work_surface_placement(value: &str) -> &'static str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "left" => "left",
-        "right" => "right",
-        _ => "top",
     }
 }
 
@@ -173,13 +152,8 @@ impl Settings {
         let settings = match source.deserialize::<Settings>() {
             Ok(None) => Self::default(),
             Ok(Some(mut s)) => {
-                s.composer_density = normalize_composer_density(&s.composer_density).to_string();
-                s.transcript_spacing =
-                    normalize_transcript_spacing(&s.transcript_spacing).to_string();
                 s.tool_collapse_mode =
                     normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
-                s.work_surface_placement =
-                    normalize_work_surface_placement(&s.work_surface_placement).to_string();
                 s.synchronized_output =
                     normalize_synchronized_output(&s.synchronized_output).to_string();
                 s.background_color =
@@ -309,24 +283,6 @@ fn normalize_reasoning_effort_setting(value: &str) -> Result<Option<String>> {
     Ok(Some(normalized.to_string()))
 }
 
-fn normalize_composer_density(value: &str) -> &str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "compact" | "tight" => "compact",
-        "comfortable" | "default" | "normal" => "comfortable",
-        "spacious" | "loose" => "spacious",
-        _ => value,
-    }
-}
-
-fn normalize_transcript_spacing(value: &str) -> &str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "compact" | "tight" => "compact",
-        "comfortable" | "default" | "normal" => "comfortable",
-        "spacious" | "loose" => "spacious",
-        _ => value,
-    }
-}
-
 fn normalize_tool_collapse_mode(value: &str) -> &str {
     match value.trim().to_ascii_lowercase().as_str() {
         "compact" | "collapsed" | "collapse" | "default" | "on" | "true" => "compact",
@@ -450,18 +406,16 @@ mod tests {
             calm_mode: false,
             low_motion: false,
             show_tool_details: true,
-            transcript_spacing: "comfortable".to_string(),
             ..Settings::default()
         }
     }
 
     #[test]
-    fn default_settings_use_comfortable_transcript_spacing() {
+    fn default_settings_keep_the_transcript_quiet() {
         let settings = Settings::default();
         assert!(settings.calm_mode);
         assert!(!settings.show_tool_details);
         assert!(!settings.low_motion);
-        assert_eq!(settings.transcript_spacing, "comfortable");
         assert_eq!(settings.tool_collapse_mode, "compact");
         // Thinking is opt-in so the transcript stays focused on the chat.
         assert!(!settings.show_thinking);
@@ -1073,7 +1027,7 @@ mod tests {
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
         std::fs::write(
             legacy_dir.join("settings.toml"),
-            "theme = \"dracula\"\ncomposer_density = \"spacious\"\n",
+            "theme = \"dracula\"\nlow_motion = true\n",
         )
         .expect("legacy settings");
         let _config_override = EnvVarRestore::remove("DSE_CONFIG_PATH");
@@ -1086,8 +1040,8 @@ mod tests {
             loaded.theme, "system",
             "explicit DSE_HOME must not inherit ambient legacy settings"
         );
-        assert_eq!(
-            loaded.composer_density, "comfortable",
+        assert!(
+            !loaded.low_motion,
             "explicit DSE_HOME must not inherit ambient legacy settings"
         );
         assert!(

@@ -4,25 +4,11 @@ use dse_protocol::agent_runtime::RunPermissionMode;
 
 use crate::tui::run_presentation::{RunPresentationPhase, VerificationPresentation};
 
-/// Persisted work-surface placement. Bottom is deliberately absent: the
-/// composer and phase footer own the shell's lower edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum WorkSurfacePlacement {
-    Top,
-    Left,
+pub(super) enum WorkSurfaceLayout {
     #[default]
-    Right,
-}
-
-impl WorkSurfacePlacement {
-    #[must_use]
-    pub fn parse(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "left" => Self::Left,
-            "right" => Self::Right,
-            _ => Self::Top,
-        }
-    }
+    TopStrip,
+    RightRail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,23 +33,14 @@ pub(super) struct WorkRow {
 /// facts displayed here.
 #[derive(Debug, Clone)]
 pub struct WorkSurfaceState {
-    pub placement: WorkSurfacePlacement,
-    pub(super) effective_placement: WorkSurfacePlacement,
+    pub(super) layout: WorkSurfaceLayout,
     pub(super) latest_rows: Vec<WorkRow>,
 }
 
 impl Default for WorkSurfaceState {
     fn default() -> Self {
-        Self::with_placement(WorkSurfacePlacement::Right)
-    }
-}
-
-impl WorkSurfaceState {
-    #[must_use]
-    pub fn with_placement(placement: WorkSurfacePlacement) -> Self {
         Self {
-            placement,
-            effective_placement: placement,
+            layout: WorkSurfaceLayout::TopStrip,
             latest_rows: Vec::new(),
         }
     }
