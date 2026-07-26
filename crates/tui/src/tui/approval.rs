@@ -1767,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn destructive_unrelated_key_keeps_modal_open() {
+    fn destructive_unrelated_key_keeps_approval_open() {
         let mut view = ApprovalView::new(elevated_request());
 
         let action = view.handle_key(create_key_event(KeyCode::Char('q')));

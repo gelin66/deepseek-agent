@@ -3303,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_file_write_modal_renders_proposed_change_preview() {
+    fn approval_file_write_surface_renders_proposed_change_preview() {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "write_file",
@@ -3380,7 +3380,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_shell_modal_stays_useful_on_short_terminals() {
+    fn approval_shell_surface_stays_useful_on_short_terminals() {
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",

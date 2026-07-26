@@ -147,7 +147,7 @@ struct Cli {
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling, scrollbar dragging,
-    /// and supported modal interactions
+    /// and supported secondary-surface interactions
     /// (default off on Windows)
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
@@ -1183,9 +1183,9 @@ fn run_main() -> Result<()> {
     }));
 
     // The interactive runtime intentionally carries a large state machine:
-    // terminal rendering, modal dispatch, DeepSeek authentication, and Agent execution
+    // terminal rendering, secondary-surface dispatch, DeepSeek authentication, and Agent execution
     // events all share one async owner. Debug builds retain enough stack
-    // temporaries that nesting a modal event over the TUI loop can exceed the
+    // temporaries that nesting a secondary-surface event over the TUI loop can exceed the
     // platform main-thread default (8 MiB on macOS). Give that owner an
     // explicit stack while keeping process hardening and the global panic hook
     // above this boundary, before Tokio or any worker thread exists.

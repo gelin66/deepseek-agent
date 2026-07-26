@@ -278,7 +278,7 @@ fn canonical_mouse_click_on_approval_emits_decision() {
 }
 
 #[test]
-fn canonical_mouse_wheel_is_consumed_by_active_modal() {
+fn canonical_mouse_wheel_is_consumed_by_active_secondary_surface() {
     use crate::tui::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
@@ -316,7 +316,7 @@ fn canonical_mouse_wheel_is_consumed_by_active_modal() {
 }
 
 #[test]
-fn canonical_mouse_without_modal_keeps_transcript_scroll_behavior() {
+fn canonical_mouse_without_secondary_surface_keeps_transcript_scroll_behavior() {
     use crate::tui::scrolling::TranscriptScroll;
 
     let mouse = MouseEvent {

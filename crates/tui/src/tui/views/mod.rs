@@ -567,8 +567,8 @@ mod tests {
     #[test]
     fn view_stack_paints_opaque_backdrop_before_surface() {
         let area = Rect::new(0, 0, 24, 8);
-        let modal_x = area.x + area.width / 2;
-        let modal_y = area.y + area.height / 2;
+        let surface_x = area.x + area.width / 2;
+        let surface_y = area.y + area.height / 2;
         let mut buf = Buffer::empty(area);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -582,10 +582,10 @@ mod tests {
         stack.push(BareSurface);
         stack.render(area, &mut buf);
 
-        assert_eq!(buf[(modal_x, modal_y)].symbol(), "M");
+        assert_eq!(buf[(surface_x, surface_y)].symbol(), "M");
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
-                if x == modal_x && y == modal_y {
+                if x == surface_x && y == surface_y {
                     continue;
                 }
                 let cell = &buf[(x, y)];
