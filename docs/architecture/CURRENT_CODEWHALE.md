@@ -2642,6 +2642,24 @@ failed-write-pass lineage；Stop Gate 的拒绝仍是正确行为。production d
 事实见
 [M30 current dogfood loss acquisition](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
 
+M30 随后的 description-only named-verifier ACI treatment 已正式
+`reject_and_delete`。candidate `d0d509b6e` 没有改变 schema、resolver、RuntimeEvent、
+State 或 Store，只明确 `verifier_id` 应为 TaskContract acceptance ID。两个原 loss
+task 都完成 fixed-Pro/high、Ask continuity SIGKILL/reopen、external verifier 和完整
+accounting，false success 仍为 0；但 verified success 为 0/2。18/18 次模型调用已使用
+正确 acceptance ID，随后 18/18 次在 operation 启动前被 current Host permission
+policy typed fail-closed，因为执行后端不能证明一次性 external-path authority。两项
+workspace 最终均通过 external verifier，但仍无 canonical Host receipt，Stop Gate 正确
+保持 blocked。
+
+ACI 文字、对应测试与临时 `m30t` Harness consumer 已物理删除，当前 production
+named-verifier description/schema/resolver、三档 permission policy、唯一 Runtime/Store
+与 failed-write-pass gate 均恢复 treatment 前事实。frozen manifest/admission、ignored
+0600 raw、Git 历史和
+[M30 treatment summary](../../eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md)
+仅用于审计；它们没有 production consumer。本结果只暴露一个未来需独立冻结的
+permission/verifier integration owner，不授权在 M30 内叠加第二修复。
+
 ## 8. 明确非结论
 
 当前源码不证明：

@@ -3764,6 +3764,52 @@ full_utility_observations      12
 完整事实见
 [M30 current dogfood loss acquisition](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
 
+#### M30 named-verifier ACI treatment 结果
+
+candidate `d0d509b6e` 保持 `verifier_id` schema、exact resolver、Host-expanded frozen
+parameters、RuntimeEvent 与 State/Store replay 不变，只澄清模型可见说明：
+`verifier_id` 是 TaskContract acceptance ID，不是 `run_verifiers` 工具名。两项原 loss
+task 使用同一 fixed Pro/high、fixture、TaskContract、external verifier、Ask
+continuity、immutable binary 和 `maximum_reruns=0`；总费用上限从 acquisition 的 `$10`
+进一步缩为 `$1`。
+
+正式结果：
+
+| gate | result |
+|---|---|
+| complete arms | 2 / 2 |
+| verified success | 0 / 2 |
+| verified product failure | 2 / 2 |
+| false success | 0 |
+| external verifier pass | 2 / 2 |
+| route / lane valid | 2 / 2 |
+| SIGKILL continuity + SQLite reopen | 2 / 2 |
+| accounting complete | 2 / 2 |
+| physical requests | 35 |
+| input / output tokens | 684,104 / 25,322 |
+| cache hit / miss | 598,528 / 85,576 |
+| known cost | USD 0.061425364 |
+| decision | `reject_and_delete_named_verifier_aci` |
+
+结构化 event 审计证明 treatment 产生真实、但不足以完成任务的 surface delta：18/18 次
+named-verifier 调用都逐字使用 frozen acceptance ID，未再把工具名当参数；随后 18/18
+次均由 existing Host permission policy 在 operation 启动前以 typed
+`invocation_rejected` fail-closed，原因是执行后端不能证明一次性 external-path
+authority。最终 workspace 仍由其他编辑路径修好且 external verifier 通过，但缺少
+canonical fail→mutation→pass receipt，所以 Stop Gate 的
+`verified_workspace_without_terminal_receipt` 拒绝正确。
+
+这不是 permission treatment 的成功或失败结论：M30 只预注册了 ACI 单变量，不能在观察
+到第二 owner 后改用 FullAccess、增加 approval 特例、放宽 external path、导入 Host
+external failure 或建立第二 verifier path。ACI production 变更和临时 `m30t` Harness
+consumer 已删除；原 named-verifier、permission、Stop Gate、Runtime/Store 保持不变。
+frozen manifest/admission、ignored 0600 raw 与新 summary 只作审计证据。
+
+raw 为 21-record、无 partial tail、0600 hash-chain journal，SHA-256
+`9453bed41dbe09c7f19ae532eacf75d2a9a99aaa8c7483c86fa8845bc7094b13`；
+末记录为 summary。完整决定见
+[M30 named-verifier ACI treatment](../../eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -5283,7 +5283,7 @@ release 均为 0。完整结果见
 
 ## 28. M30：current production dogfood loss acquisition
 
-- 状态：**live acquisition 已按 accounting 合同停止；重复 Host completion loss 已准入一个最小 named-verifier ACI 审计**
+- 状态：**live acquisition 已按 accounting 合同停止；named-verifier ACI treatment 已正式 reject-and-delete，production 恢复零 delta**
 - 基线：M29 clean checkpoint `1b7f92a97`
 - owner：唯一 corrected Harness
   `scripts/eval-m9b-fixed-pro-regression.py`
@@ -5405,7 +5405,7 @@ owner/cause 均为
 20-task baseline、release quality 或自动 treatment admission。完整身份与指标见
 [M30 summary](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
 
-### 28.6 唯一候选：named-verifier ACI
+### 28.6 已执行候选：named-verifier ACI
 
 1. **真实问题**：两个 loss task 的 canonical 时间线共出现九次 contract-bound verifier
    调用，全部在执行前被 named-verifier binding 拒绝；最终 Host exact verifier 通过，
@@ -5424,3 +5424,52 @@ owner/cause 均为
 6. **cutover/deletion**：若 treatment 通过，删除模糊描述与失去消费者的测试；若任一
    behavior、receipt、false-success、replay 或 accounting 门失败，完整删除 treatment，
    保留当前 Stop Gate 与 summary。
+
+### 28.7 Treatment 结果与删除
+
+description-only candidate `d0d509b6e` 只把 model-visible `verifier_id` 说明收敛为
+TaskContract acceptance ID，并明确它不是 `run_verifiers` 工具名；schema enum、exact
+resolver、Host parameter expansion、RuntimeEvent、State 和 Store replay 全部未改。
+targeted red/green、focused、strict Clippy、workspace test、root/read-only/Writer、
+app-server/exec SIGKILL、surface parity 与双语 PTY 均通过。独立 treatment manifest 与
+admission 冻结两个原 loss task、同 fixed Pro/high、同 TaskContract/fixture/verifier、
+Ask continuity、`maximum_reruns=0`、`$0.50/arm` 和 `$1.00/suite`。
+
+正式两臂都完成 accounting、external verifier、canonical Store、SQLite reopen 和
+continuity，但都没有 Host terminal receipt：
+
+```text
+verified success             0 / 2
+verified product failure     2 / 2
+false success                0
+behavior owner/cause         host_completion:
+                             verified_workspace_without_terminal_receipt
+accounting complete          2 / 2
+physical requests            35
+known cost                   USD 0.061425364
+decision                     reject_and_delete_named_verifier_aci
+```
+
+本次结构化时间线把 acquisition 审计继续向前推进了一层：18/18 个 treatment
+`run_verifiers` 调用都只带 frozen acceptance ID，说明 ACI 歧义已被消除；但 18/18 又在
+operation 启动前被 current Host permission policy fail-closed，因为执行后端不能证明
+一次性 external-path authority。不能把这个第二 owner/cause 静默塞进同一变量
+treatment，也不能通过 FullAccess、兼容别名、raw 参数、第二 verifier path 或弱化
+`failed_write_pass` 取得成功。
+
+因此按预注册 gate：
+
+- ACI description 与其测试已从 production 物理删除；
+- `m30t` 临时 Harness campaign 已删除，唯一 corrected Harness 恢复 acquisition 前
+  SHA-256；
+- frozen treatment manifest、live admission、ignored 0600 hash-chain raw、Git 历史和
+  decision summary 保留审计；
+- production named-verifier schema/resolver、permission policy、Stop Gate、Runtime 和
+  Store 保持原样。
+
+M30 最终以 `reject_and_delete_named_verifier_aci` 收口，不继续开发第二候选。后续只有
+新的独立 Goal 先把“contract-bound Host verifier 在 fixed permission profile 下如何
+获得可证明的最小执行 authority”冻结为 typed owner/cause，并证明不扩大 ordinary tool
+authority，才允许审计 permission/verifier integration；本次 raw 不授权重跑或叠加修复。
+完整结果见
+[M30 named-verifier ACI treatment](../../eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md)。
