@@ -1,0 +1,106 @@
+{
+  "schema": "dse.eval.m20b-fixed-pro-reliability-live-admission.v1",
+  "admitted_at_utc": "2026-07-26T03:37:22Z",
+  "contract_manifest": "eval/manifests/m20b-fixed-pro-reliability-v1.json",
+  "contract_manifest_sha256": "sha256:407ac536631485f51bd457c43ba640e214e2e3ea0eb8c7083adc5961cf6ca49a",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "candidate_revision": "7797ec9d7aaa6de13ce7a4af25787b249175aeeb",
+  "candidate_tree": "d9cc7562d45ac0eefad8f9314893d11d06d9bb29",
+  "candidate_binary": "/private/tmp/dse-m20-target/release/dse",
+  "candidate_binary_sha256": "sha256:89e69ffbbd3ddeed66caa850826e183e4f7320fc9252bb74e472ec59229222f1",
+  "candidate_binary_size_bytes": 15595184,
+  "candidate_binary_version": "dse 0.8.68 (7797ec9d7aaa)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:299b554cdc76346df8273c86530ecd47298fa8067f3b839a9ed20c1f7d239bb4",
+  "schedule_sha256": "sha256:fee6ec6e291349e208cb195a6b19dae22cc59e7eb2b2c015abcdb913fd0333c5",
+  "task_contracts_sha256": "sha256:46b78571ad422a83d9f893999eaec96bd1c1bdba1753339c09a29e973d924495",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "reference_solution_patch_sha256": "sha256:c4dbb2f1e19f23b351aaa050483fce1043f7b0b0b098c7212c625f109c37c607",
+  "harness_self_test_sha256": "sha256:e786e12a8fcc3f3a54403dc6c8962ca74bb6f930a2b34646c17397344032aa34",
+  "freeze_report_sha256": "sha256:8c0ad1425e45bb1da62a17c5671341d102ef6207ab83d7454ef6742dad770e3d",
+  "dry_run_sha256": "sha256:6bea0fa5e342a60593d3440399354eda87a908e9f1a84bb0798e57fd9b39ddcf",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:7e5d18294b66efb81d073b9861d59d3f85ba952bfb8308785d389f280e78fcdc",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "new post-viability position-1 9-arm fixed-Pro coding reliability acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "M20B fixture, schedule, task-contract, hash-chain, environment parity and four SIGKILL Harness windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "all three initial verifiers fail without tree mutation; isolated reference patch makes both positive tasks pass while safety remains failing",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M14 typed observer conformance 12/12 and M16 acceptance conformance 18/18",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary build and credential-free M20B Harness dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "M20 Doctor production cutover focused, fmt, strict workspace clippy/test and current production loopback",
+      "result": "pass"
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass"
+    }
+  ],
+  "fixture_hashes": {
+    "python_scope_token_recovery": "sha256:cbbd74ba27daeefd9864bc8f2484220638a20cc0dae6c91ef0c3c88e43fb477e",
+    "typescript_request_budget_recovery": "sha256:ad47a5160bfe08a9c853370adcd6e6ad221a9ae887ebc688e39c8a35163b759b",
+    "safety_false_completion": "sha256:7003baf10f1abc20f1cfa8f2f48da9e64456b065c054e1576323d0b41033c771"
+  },
+  "live_contract": {
+    "formal_tasks": 3,
+    "runs_per_task": 3,
+    "formal_arms": 9,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.18,
+    "suite_known_cost_ceiling_usd": 1.62,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "output": "eval/results/m20b-fixed-pro-reliability-7797ec9d7aaa-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-26",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
