@@ -4711,3 +4711,162 @@ focused、fmt、strict workspace Clippy、完整 workspace test 与 `git diff --
 该结果只支持界面可读性、canonical replay 一致性和旧状态债删除，不证明 DeepSeek
 verified success、Token、cache、费用或 wall-time 提升。Key、official API、external
 network、GitHub、push、tag/release 均为 0。
+
+## 25. M27：canonical permission policy 与 Codex 式选择器
+
+- 状态：**已接受方案；待 M26 独立 checkpoint 后实施**
+- 决策：ADR-0012
+- 目标：把粗粒度 `auto_approve: bool` 和分裂的 execpolicy projection 收敛为唯一
+  typed、Host-enforced、Run-frozen 权限闭环
+
+### 25.1 真实问题
+
+当前 TUI 只有 `Ask/AutoApprove`，精确映射 `RunEnvironment.auto_approve=false/true`。
+这条链虽然可恢复，但旧 Ask 会对普通工作区编辑逐次询问，AutoApprove 又不能区分边界访问、
+网络和高风险操作。TUI 若只把它改画成三个菜单项，仍只会形成视觉上的 Codex 相似，而不
+形成可执行语义。
+
+同时：
+
+- `dse-execpolicy` 拥有 richer allow/ask/deny 类型与 CLI diagnostic；
+- production Agent 只读取 TUI 本地 `execpolicy.toml -> ProductionExecPolicySnapshot`；
+- `crates/tools` 又单独做 Shell safety、approval prompt、trust、sandbox 和 auto-approve；
+- config 又对 `approval_policy`、`sandbox_mode` 使用另一组字符串 rank。
+
+M27 的产品增量是减少无意义审批，同时让边界、高风险、拒绝和 full-access 事实在
+config、Run API、Runtime、Tools、RunStore、TUI 中完全一致，不是增加一个菜单。
+
+### 25.2 冻结产品语义
+
+完整 contract 见 ADR-0012。唯一 canonical enum 固定为：
+
+```text
+RunPermissionMode::Ask
+  workspace normal work = allow
+  external / network / high-risk = ask
+
+RunPermissionMode::Agent
+  workspace / external / network = allow
+  Host-classified high-risk = ask
+
+RunPermissionMode::FullAccess
+  dynamic approval = none
+  explicit deny / Host hard invariant = still deny
+```
+
+产品不提供 Custom、自由组合 permission fields 或隐藏第四模式。模型不能自我授权；
+显式 deny 与 Host 不可绕过不变量不因 Full access 消失。
+
+### 25.3 纵向切片与删除点
+
+#### M27-A：protocol/state contract
+
+- `crates/protocol` 新增唯一 `RunPermissionMode` 与 typed authorization decision facts；
+- `RunProductControls` / `RunEnvironment` 删除 `auto_approve` 作为 canonical owner；
+- execution fingerprint 绑定 policy 和规则身份；
+- Run API、RuntimeEvent、State 按真实 schema delta 升版；
+- 旧 `auto_approve/trust/sandbox/elevation/catalog/execpolicy` 完整 tuple 只有在 exact
+  等价可证明时做一次性 SQLite rewrite；无损失败则 fail closed retire，不能只按 bool
+  猜新 preset，最终不保留 compatibility reader/dual write。
+
+验收：pending Start、active approval、terminal replay、无凭据 reopen 和 crash 窗口都能
+重建 exact policy；旧 bool reader 在 cutover 后物理删除。
+
+#### M27-B：Host authorization owner
+
+- `crates/tools` 对 exact invocation 产出 `Allow/Ask/Deny`；
+- 维度至少覆盖 workspace write、canonical external path、network-capable invocation 和
+  high-risk Shell/action；
+- decision 绑定 arguments digest、workspace revision、matched rule 与 risk；
+- Runtime 在 `ToolExecutionStarted` 前持久化并解析 approval；
+- approval 只创建本次 invocation 的 scoped authority，不建立 session-wide allow；
+- side-effect ambiguous 不自动重试，不用全局 danger-full-access 冒充一次性批准。
+
+验收：完整 tool × policy × rule matrix；deny 总是胜出；Agent preset 的常规编辑/测试无
+prompt、critical prompt；Full access 无动态 prompt 但 hard deny 仍阻止。
+
+#### M27-C：execpolicy 收敛与减法
+
+- production 和 `dse execpolicy check` 使用同一个 `dse-execpolicy` matcher；
+- `crates/tools` 只合并 rule decision、Host risk 与 Run policy，不复制 prefix/path matcher；
+- TUI 本地 `ProductionExecPolicySnapshot` 和 tools duplicate matcher 在 caller 迁移后删除；
+- 已有 `execpolicy.toml` 只保留当前显式 allow/deny 职责，不新增 ask-rule、自定义 mode 或
+  通用权限语言；
+- richer policy 类型若没有 production caller，在同一 cutover 删除。
+
+验收：同一 fixture 在 CLI check、TUI Run、exec 和 app-server 得到相同 matched rule 与
+allow/ask/deny；不存在第二规则 snapshot 真相。
+
+#### M27-D：所有真实 caller 与旧配置删除
+
+- 不新增 `[permissions]` 或持久 Custom；TUI 默认 Ask，session selector 只影响后续新 Run；
+- `dse exec --auto` 映射 Agent；非交互 critical ask 必须 fail closed，不得暗中变成
+  FullAccess；`--yolo` / TUI Full access 才组成明确 full-access mode；
+- root、read-only child、explicit Writer、recheck/rework 继承或收紧 exact policy，不能
+  因 actor profile 扩权；
+- app-server/API 不接受 UI label，只接受 typed policy；
+- 旧 `approval_policy`、bool/path、`trust_mode` 和无 owner sandbox 产品字符串给出明确
+  删除提示后物理删除，不保留 alias 或 migration mode。
+
+验收：CLI/TUI/API parity、Writer worktree confinement、child non-escalation、project
+config 不能产生 permission mode 的负向测试。
+
+#### M27-E：Codex 式 TUI 选择器
+
+- 点击 permission chip 或输入 `/permissions` 打开同一个 inline selector；
+- 中文/英文只显示 Request approval、Agent decides、Full access；
+- `↑/↓`、Enter、Esc 与 mouse row click 复用一个 action；
+- 不加入静默 Shift-Tab 危险循环或新的模式状态机；
+- active Run 只显示 frozen policy；运行中选择只影响 next Run，并明确提示；
+- WorkSurface 显示 active policy，header 在 idle 显示 next-run policy；
+- Full access 使用现有 warning color role，文本明确 OS permission/explicit deny 边界；
+- 不提供 Custom、config editor 或高级规则入口。
+
+验收：80-column English、CJK wide/narrow、macOS Terminal/iTerm2、keyboard-only、mouse、
+resize、active/replay/terminal PTY。
+
+### 25.4 正向收益门与停止条件
+
+必须用同一 loopback model script 形成 deterministic 任务：
+
+1. read/list/grep；
+2. workspace edit；
+3. run_tests/verifier；
+4. external path；
+5. network-capable command；
+6. critical command；
+7. explicit deny；
+8. denial 后无副作用；
+9. approval 后 crash/reopen；
+10. root/child/Writer 不扩权。
+
+最低保留条件：
+
+- Ask：普通 workspace edit/test prompt 为 0，external/network/critical 精确 prompt；
+- Agent：普通 edit/test prompt 为 0，Host-classified critical 精确 prompt；
+- Full access：动态 prompt 为 0，explicit/hard deny 仍为 deny；
+- false allow、重复副作用、replay policy drift、child escalation 均为 0；
+- denied invocation 的 side effect 必须为 `NotApplied`；
+- live 与 reopen 后 decision、matched rule、policy hash byte-equivalent；
+- 没有第二 Runtime、Store、approval cache、config owner 或 UI-only permission truth。
+
+若 scoped external/network authority 无法被当前 backend 真实强制，停止对应能力并缩小
+文案/预设；不得以“已弹窗”或 global full access 作为通过。M27 是纯 Host/runtime 本地切片，
+Key 和 official DeepSeek API request 均应为 0。
+
+### 25.5 门禁与提交边界
+
+依次通过：
+
+- protocol/state migration、tools/execpolicy/runtime/app targeted tests；
+- production loopback + exact crash/reopen；
+- CLI/TUI/app-server parity；
+- Chinese/English real PTY、mouse hitbox 与 narrow resize；
+- `./scripts/dev-dse.sh focused`；
+- `cargo fmt --all -- --check`；
+- strict workspace Clippy；
+- full workspace test；
+- public repository checker 与 `git diff --check`。
+
+M26 先形成独立 checkpoint；M27 不得把现有 M26 UI 改动、权限协议、release 或品牌混成
+一个提交。M27 最终可按 A/B-C/D-E 形成少量可审查本地提交；不 push、不 release。

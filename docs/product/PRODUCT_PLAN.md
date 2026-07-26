@@ -78,6 +78,8 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 13. 面向人的产品界面只支持 `en` 与 `zh-Hans`，由一个 localization owner 在进程级
     确定性解析；机器协议和技术标识保持稳定。
 14. UI 消息目录与模型提示词组合是两个独立层次，不能用界面文案替代 Agent 提示词调优。
+15. 每个 Run 的权限策略必须类型化、冻结、可重放并由 Host 在副作用前强制；TUI、CLI 和
+    API 只选择或投影该策略，模型不能批准自己的工具调用。
 
 ## 4. 第一性原理运行链
 
@@ -101,6 +103,20 @@ TaskContract
 
 计划、任务板、工作流、多 Agent 和 UI 都只能是这条链路的投影或编排，不能产生
 另一套事实系统。
+
+权限也遵守同一原则：
+
+```text
+typed Run permission
+  -> Host tool authorization decision
+  -> durable approval / allow / deny
+  -> ToolOutcome
+  -> RunStore replay
+```
+
+V1 只提供“请求批准 / 替我审批 / 完全访问权限”三个权限档位，不提供 Custom、自由组合
+权限字段或第二套规则编辑 UI。档位不是 TUI 私有模式；完整语义、owner、迁移和删除约束
+见 [ADR-0012](../decisions/0012-canonical-permission-policy.md)。
 
 ## 5. 目标架构
 

@@ -3330,6 +3330,83 @@ model、prompt、tools 和 accounting delta 为 0；Key、official API、externa
 diff check 全部通过。该切片不建立 verified-success、Token、cache、cost 或 wall-time
 结论。
 
+### M27 canonical permission policy
+
+M27 是 Host authorization 与 TUI projection 的本地纵向切片，不是 DeepSeek 模型能力
+A/B。其反事实是当前 `auto_approve=false/true` 粗粒度链；候选必须同时减少无意义审批并
+保持所有边界、deny、副作用与 replay truth。
+
+#### 冻结评测矩阵
+
+同一 immutable loopback binary、同一 tool-call script、同一 workspace revision 依次覆盖：
+
+| case | Ask | Agent decides | Full access |
+|---|---|---|---|
+| read/list/grep | allow | allow | allow |
+| workspace edit | allow | allow | allow |
+| run_tests/verifier | allow | allow | allow |
+| external canonical path | ask | allow unless high-risk | allow |
+| network-capable invocation | ask | allow unless high-risk | allow |
+| Host-classified critical | ask | ask | allow |
+| explicit execpolicy deny | deny | deny | deny |
+| invalid/path escape/hard invariant | deny | deny | deny |
+
+每个 case 同时断言：
+
+```text
+frozen RunPermissionMode
+matched dimensions and execpolicy rule
+ToolAuthorizationDecision
+approval interaction count and exact arguments digest
+ToolPrepared / ToolExecutionStarted / ToolOutcome order
+side_effect status
+workspace revision
+credential-free RunStore reopen projection
+TUI localized label
+```
+
+#### 必须为零
+
+- model self-approval；
+- UI label 与 Run policy 不一致；
+- denied/未批准 invocation 的副作用；
+- approval 后 arguments 或 workspace revision 偷换；
+- crash/reopen 重复执行；
+- root -> child / Writer 权限升级；
+- config/project file 产生隐藏 permission mode；
+- Full access 绕过 explicit deny 或 Host hard invariant；
+- TUI/exec/app-server 同输入不同决策；
+- compatibility reader、dual write、second approval cache 或 second policy snapshot。
+
+#### 机制与产品门
+
+机制通过要求所有 policy × tool × rule 单测、State migration、process SIGKILL/reopen、
+English/Chinese PTY、keyboard/mouse/resize 与全仓门禁闭合。
+
+产品保留要求：
+
+1. Ask 的普通 workspace edit/test approval count 从旧基线的逐次 prompt 降为 0；
+2. external/network/critical 在 Ask 下仍 100% 进入 exact durable approval 或 fail closed；
+3. Agent decides 只跳过 Host 已分类为非 critical 的调用，critical prompt 召回为 100%；
+4. Full access prompt 为 0，但 explicit deny/hard invariant 拦截率为 100%；
+5. denial、cancel、approval、SIGKILL 后的 side-effect/replay truth 无回归；
+6. 代码只保留一个 production matcher 和一个 final authorization owner。
+
+若 external/network scoped authority 在当前平台不可强制，该单元不得计为 allow；候选应
+缩为 fail-closed，并同步缩小 UI 文案。弹窗出现不是 enforcement evidence。
+
+M27 不读取 Key、不调用 official DeepSeek API，不产生 Token/cache/cost/quality 结论。
+最终结论只能是：
+
+```text
+keep_typed_permission_loop
+shrink_to_enforceable_permission_subset
+reject_and_delete_permission_candidate
+```
+
+完整架构与实施合同见
+[ADR-0012](../decisions/0012-canonical-permission-policy.md) 和 ROADMAP M27。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

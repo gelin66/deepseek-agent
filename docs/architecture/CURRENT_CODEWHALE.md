@@ -1065,6 +1065,12 @@ M4-C foreground 切换后还已物理删除：
   `Config.approval_policy`，只接受 `on-request|auto`。旧 `Settings.permission_posture`、兼容别名、
   managed-lock UI 镜像和 saved-posture project baseline 已删除；这两个审批状态不改变
   `trust_mode`、Shell catalog、sandbox、execpolicy deny 或 durable RunStore 语义。
+- 当前尚无 Codex 式 permission selector，也没有可表达 Ask/Agent/FullAccess 三个稳定语义
+  的 canonical mode。`dse-execpolicy` 的 richer rule engine 只服务 CLI
+  diagnostic；production Agent 使用 TUI 本地 `execpolicy.toml` parser 生成
+  `ProductionExecPolicySnapshot`，再由 `crates/tools` 单独处理 Shell allow/deny、安全分类和
+  approval prompt。该分裂是 M27/ADR-0012 的待替换基线；在 M27 cutover 前不能把界面三行
+  选项描述为已实现权限。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有
