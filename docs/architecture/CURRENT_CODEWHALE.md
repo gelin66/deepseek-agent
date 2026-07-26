@@ -2328,6 +2328,27 @@ snapshot 前达到 frozen `run_deadline`，因此只计为 measurement interrupt
 当前 fixed actor routes、唯一 AgentRuntime/RunStore、canonical tools 和 official
 DeepSeek ChatCompletions 保持不变。GitHub 与远端 CI 不属于 M18 gate。
 
+M19 当前只在 corrected fixed-Pro Harness 和新冻结 fixture/manifest 上建立候选，不改变
+production crate：
+
+- 新 campaign 使用 Run API v12、RuntimeEvent v19、State v25、exec-stream v4 和
+  official DeepSeek OpenAI-format `/chat/completions`；
+- root 与 explicit Writer 都显式 `deepseek-v4-pro/high`；没有 Auto、classifier、
+  dynamic route 或额外模型请求；
+- outer watchdog 不再先销毁 active per-arm State。它先停止 credential-bearing
+  app-server，再无 credential 重开同一 SQLite Store，投影 terminal presence、physical
+  started/completed/in-flight、usage/sealed/billing_unknown；
+- nonterminal deadline snapshot 固定为 measurement/product-loss ineligible，in-flight
+  不推断 billed/unbilled，`maximum_reruns=0`；
+- 新任务是两个独立 TypeScript verifier recovery、一个 Rust cross-file debug、一个显式
+  isolated Writer 四文件迁移与一个安全反例；每项三次，使用一个 immutable binary；
+- production Runtime typed deadline、RunStore、ToolOutcome、sender/parser/accounting、
+  prompt、工具目录和 actor profiles 当前均无 delta。只有同一 stable loss 跨两个独立
+  task ID 重复并完成 owner audit，才允许后续最小 vertical fix。
+
+M19 是全新 position-1 acquisition；M18 manifest/raw/15 条完整轨迹和 deadline interruption
+保持冻结，不续跑、不补 mate、不拼接。GitHub 与远端 CI 不属于 M19 gate。
+
 ## 7. 明确非结论
 
 当前源码不证明：
@@ -2335,6 +2356,9 @@ DeepSeek ChatCompletions 保持不变。GitHub 与远端 CI 不属于 M18 gate�
 - M18 已建立完整 18-arm current reliability aggregate，或一个 TypeScript verifier loss
   已跨独立 task 重复；15 条完整轨迹之外的 Writer deadline arm 只是测量中断，不能被
   补算为 product outcome、verified failure 或计费事实；
+- M19 的 offline watchdog/fixture contract 已证明新的 stable product loss 或准入任何
+  production fix；只有完整或 fail-closed 的新 live acquisition 才能形成 current loss
+  结论；
 - hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
   可靠性保留，不支持这些效率结论；
 - 中文 Agent prompt A/B 已获得收益；M8-C 只完成 fixed `zh-Hans` Host 产品界面和

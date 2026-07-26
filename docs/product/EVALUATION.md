@@ -2780,6 +2780,68 @@ typed Pro-max recheck、唯一 Runtime/Store 与 canonical tools 保持不变。
 删除和非结论见
 [M18 DSE local first-day and reliability baseline](../../eval/summaries/m18-local-first-day-and-reliability-2026-07-26.md)。
 
+### M19 local coding reliability acquisition
+
+M19 使用全新 position-1 identity，不续跑、补 mate 或拼接 M18。唯一 evaluator 仍是
+corrected `scripts/eval-m9b-fixed-pro-regression.py`；production 仍固定
+`deepseek-v4-pro/high`、official OpenAI-format ChatCompletions、唯一
+AgentRuntime/RunStore 与 canonical tools。
+
+Credential 前必须同时满足：
+
+- 五个全新 fixture 初态 external verifier 全部 fail 且 tree byte-stable；
+- reference patch 使两个独立 TypeScript recovery、Rust cross-file debug 和 explicit
+  Writer 四个正向任务 pass，安全反例仍 fail；
+- 五个 TaskContract、allowed scope、deterministic Git base、三轮 schedule、tool policy、
+  runtime 720 秒、outer watchdog 840 秒与 `maximum_reruns=0` 固定；
+- deadline projection 的 in-flight、known complete、billing unknown 与 no-attempt
+  分类自测通过；journal 顺序固定为
+  `arm_started -> deadline_interruption_snapshot -> abort`；
+- M14 observer、M16 acceptance equivalence、四个 journal SIGKILL window、SQLite
+  reopen、root/Writer/safety lane、focused、fmt、strict Clippy 和 workspace test 通过；
+- immutable release binary、manifest/harness/task/schedule hash、official endpoint/model/
+  price fixture和 no-Key dry-run一致。
+
+每个完整 arm 的唯一观察顺序仍是：
+
+```text
+terminal snapshot
+  -> canonical Store snapshot
+  -> stop credential-bearing process
+  -> credential-free SQLite reopen snapshot
+  -> external verifier
+  -> changed scope / route / lane / receipt
+  -> accounting-complete arm label
+```
+
+outer watchdog 例外顺序为：
+
+```text
+stop credential-bearing process
+  -> credential-free same-Store reopen
+  -> durable deadline_interruption_snapshot
+  -> one run_deadline abort
+  -> no next arm
+```
+
+deadline snapshot 只报告 canonical facts：terminal 是否存在、physical
+started/completed/in-flight、usage complete、sealed、billing_unknown。只要没有可完整推导
+arm label，它就固定为 measurement/product-loss ineligible；in-flight 不猜测 billed 或
+unbilled。若无 Key 重开观察到 durable terminal，可补齐同一物理 arm 的 terminal/Store
+snapshot，这只是 observer recovery，不是 rerun；仍须通过 exact reopen 与完整 accounting
+门。
+
+正式矩阵为五类任务 × 三次 = 15 arms：两个独立 TypeScript `failed_write_pass`、一个
+Rust cross-file debug、一个 explicit long Writer、一个安全拒绝。完整 acquisition 必须
+15/15 measurement-valid、false success 0、route/lane/reopen/accounting exact。任何
+unknown billing、incomplete usage、unpriced response、retry、nonterminal watchdog、
+observer ambiguity、identity mismatch 或费用越界在下一 arm 前停止。
+
+production candidate 的最低触发条件不是失败总数，而是同一 stable loss 经 canonical
+trajectory 归因后跨至少两个独立 task ID 重复。只出现一个独立任务、不同 owner、evaluation
+scope/environment mismatch 或 measurement interruption 时，必须
+`insufficient_repeated_current_loss` 并保持 production 不变。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

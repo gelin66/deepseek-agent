@@ -8,6 +8,8 @@ and ``--campaign m12`` selects the corrected terminal-convergence reproduction.
 acquisition after M14 observer conformance.
 ``--campaign m18`` selects the first DSE-native position-1 local reliability
 baseline after the bilingual identity cutover.
+``--campaign m19`` selects the fresh DSE local coding-reliability acquisition
+whose outer watchdog preserves a credential-free Store/accounting boundary.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
 equivalence corpus. Live campaigns exercise temporary Git repositories through
@@ -59,6 +61,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m12",
         "m15",
         "m18",
+        "m19",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -67,9 +70,23 @@ def selected_campaign(arguments: list[str]) -> str:
 
 
 CAMPAIGN = selected_campaign(sys.argv[1:])
-CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15", "m18"}
-VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15", "m18"}
-if CAMPAIGN == "m18":
+CURRENT_LOSS_CAMPAIGNS = {"m11", "m12", "m15", "m18", "m19"}
+VERIFIER_ENVIRONMENT_CAMPAIGNS = {"m12", "m15", "m18", "m19"}
+DSE_CAMPAIGNS = {"m18", "m19"}
+if CAMPAIGN == "m19":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m19-local-reliability-baseline-v1.json"
+    )
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = "dse.eval.m19-local-reliability-baseline.v1"
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = "dse.eval.m19-local-reliability-journal.v1"
+    ADMISSION_SCHEMA = "dse.eval.m19-local-reliability-live-admission.v1"
+    RUN_API = 12
+    EVENT_API = 19
+    STATE_SCHEMA = 25
+    EXEC_STREAM = 4
+elif CAMPAIGN == "m18":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m18-local-reliability-baseline-v1.json"
     )
@@ -147,7 +164,15 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m18":
+if CAMPAIGN == "m19":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m19-local-reliability-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m19-local-reliability-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = "dse.eval.m19-local-reliability-report.v1"
+elif CAMPAIGN == "m18":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m18-local-reliability-analysis-v1.json"
     )
@@ -218,6 +243,9 @@ M15_REFERENCE_PATCH_PATH = (
 M18_REFERENCE_PATCH_PATH = (
     ROOT / "eval/fixtures/m18-local-reliability-reference.patch"
 )
+M19_REFERENCE_PATCH_PATH = (
+    ROOT / "eval/fixtures/m19-local-reliability-reference.patch"
+)
 STABLE_TOOL_OUTCOME_FIELDS = (
     "failure_code",
     "invocation",
@@ -230,7 +258,6 @@ MODEL = "deepseek-v4-pro"
 REASONING = "high"
 ZERO_HASH = "sha256:" + ("0" * 64)
 MAX_FRAME = 16 * 1024 * 1024
-HARNESS_GRACE_SECONDS = 30
 WRITER_LIFECYCLE = (
     "agent_task_prepared",
     "agent_workspace_created",
@@ -352,7 +379,7 @@ def read_json_object(path: Path, failure_code: str) -> dict[str, Any]:
 
 def load_manifest() -> dict[str, Any]:
     require(
-        CAMPAIGN in {"m9c", "m11", "m12", "m15", "m18"},
+        CAMPAIGN in {"m9c", "m11", "m12", "m15", "m18", "m19"},
         "campaign_invalid",
     )
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
@@ -372,7 +399,15 @@ def load_manifest() -> dict[str, Any]:
             and source.get("exec_stream") == EXEC_STREAM,
             "protocol_identity_invalid",
         )
-        if CAMPAIGN == "m18":
+        if CAMPAIGN == "m19":
+            expected_tasks = [
+                "typescript_forwarded_chain_recovery",
+                "typescript_retry_window_recovery",
+                "rust_registry_debug",
+                "writer_policy_bundle",
+                "safety_false_completion",
+            ]
+        elif CAMPAIGN == "m18":
             expected_tasks = [
                 "rust_scoped_event_id",
                 "typescript_request_id",
@@ -419,6 +454,13 @@ def load_manifest() -> dict[str, Any]:
             "resource_identity_invalid",
         )
         require(
+            isinstance(resources.get("runtime_wall_time_ms"), int)
+            and isinstance(resources.get("harness_wall_time_ms"), int)
+            and resources["harness_wall_time_ms"]
+            >= resources["runtime_wall_time_ms"] + 30_000,
+            "deadline_resource_identity_invalid",
+        )
+        require(
             isinstance(tasks, dict) and list(tasks) == expected_tasks,
             "task_identity_invalid",
         )
@@ -437,11 +479,15 @@ def load_manifest() -> dict[str, Any]:
             ),
             "schedule_identity_invalid",
         )
-        if CAMPAIGN in {"m15", "m18"}:
+        if CAMPAIGN in {"m15", "m18", "m19"}:
             reference_path = (
-                M18_REFERENCE_PATCH_PATH
-                if CAMPAIGN == "m18"
-                else M15_REFERENCE_PATCH_PATH
+                M19_REFERENCE_PATCH_PATH
+                if CAMPAIGN == "m19"
+                else (
+                    M18_REFERENCE_PATCH_PATH
+                    if CAMPAIGN == "m18"
+                    else M15_REFERENCE_PATCH_PATH
+                )
             )
             reference = manifest.get("reference_solution_proof", {})
             require(
@@ -747,13 +793,17 @@ def external_verifier(
 
 
 def reference_solution_proof() -> dict[str, Any] | None:
-    if CAMPAIGN not in {"m15", "m18"}:
+    if CAMPAIGN not in {"m15", "m18", "m19"}:
         return None
     reference = MANIFEST["reference_solution_proof"]
     reference_path = (
-        M18_REFERENCE_PATCH_PATH
-        if CAMPAIGN == "m18"
-        else M15_REFERENCE_PATCH_PATH
+        M19_REFERENCE_PATCH_PATH
+        if CAMPAIGN == "m19"
+        else (
+            M18_REFERENCE_PATCH_PATH
+            if CAMPAIGN == "m18"
+            else M15_REFERENCE_PATCH_PATH
+        )
     )
     require(
         reference_path.is_file()
@@ -866,10 +916,11 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         "m12-2026-07-25",
         "m15-2026-07-25",
         "m18-2026-07-26",
+        "m19-2026-07-26",
     }:
         date = (
             "2026-07-26T00:00:00Z"
-            if profile == "m18-2026-07-26"
+            if profile in {"m18-2026-07-26", "m19-2026-07-26"}
             else "2026-07-25T00:00:00Z"
         )
         milestone = profile.split("-", maxsplit=1)[0].upper()
@@ -881,7 +932,9 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         )
     environment["GIT_AUTHOR_DATE"] = date
     environment["GIT_COMMITTER_DATE"] = date
-    evaluator_name = "DSE Eval" if CAMPAIGN == "m18" else "CodeWhale Eval"
+    evaluator_name = (
+        "DSE Eval" if CAMPAIGN in DSE_CAMPAIGNS else "CodeWhale Eval"
+    )
     commands = (
         init,
         ["git", "add", "--", "."],
@@ -964,6 +1017,14 @@ def verifier_spec(task_id: str) -> dict[str, Any]:
 
 def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
     task = TASKS[task_id]
+    child_wall_time_secs = task.get("child_wall_time_secs", 180)
+    require(
+        isinstance(child_wall_time_secs, int)
+        and not isinstance(child_wall_time_secs, bool)
+        and child_wall_time_secs > 0,
+        "child_wall_time_invalid",
+        {"task_id": task_id},
+    )
     if task["lane"] == "read_only":
         return {
             "type": "explore",
@@ -972,7 +1033,7 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
             "allowed_tools": TOOLS["read_only_child_tools"],
             "max_steps": 5,
             "max_depth": 0,
-            "wall_time_secs": 180,
+            "wall_time_secs": child_wall_time_secs,
         }
     if task["lane"] == "writer":
         return {
@@ -983,7 +1044,7 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
             "allowed_tools": TOOLS["writer_child_tools"],
             "max_steps": 7,
             "max_depth": 0,
-            "wall_time_secs": 180,
+            "wall_time_secs": child_wall_time_secs,
             "expected_artifact": task["expected_artifact"],
         }
     return None
@@ -1207,7 +1268,9 @@ def launch_server(
     stderr_path: Path,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
-    product_home = state_root / ("dse" if CAMPAIGN == "m18" else "codewhale")
+    product_home = state_root / (
+        "dse" if CAMPAIGN in DSE_CAMPAIGNS else "codewhale"
+    )
     xdg = state_root / "xdg"
     for directory in (state_root, product_home, xdg):
         directory.mkdir(parents=True, exist_ok=True)
@@ -1216,7 +1279,7 @@ def launch_server(
         "XDG_CONFIG_HOME": str(xdg),
     }
     environment[
-        "DSE_HOME" if CAMPAIGN == "m18" else "CODEWHALE_HOME"
+        "DSE_HOME" if CAMPAIGN in DSE_CAMPAIGNS else "CODEWHALE_HOME"
     ] = str(product_home)
     if key is not None:
         environment["DEEPSEEK_API_KEY"] = key
@@ -1343,6 +1406,125 @@ def fetch_store_facts(
         "root_events": root_events,
         "children": children,
     }
+
+
+def deadline_boundary_projection(facts: dict[str, Any]) -> dict[str, Any]:
+    """Project only durable deadline/accounting facts without billing guesses."""
+
+    run = facts.get("run")
+    require(isinstance(run, dict), "deadline_run_missing")
+    accounting = run.get("accounting")
+    require(isinstance(accounting, dict), "deadline_accounting_missing")
+    root = accounting.get("root")
+    child = accounting.get("child")
+    require(
+        isinstance(root, dict) and isinstance(child, dict),
+        "deadline_accounting_missing",
+    )
+
+    def count(bucket: dict[str, Any], field: str) -> int:
+        value = bucket.get(field)
+        require(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0,
+            "deadline_accounting_invalid",
+            {"field": field},
+        )
+        return value
+
+    started = count(root, "started") + count(child, "started")
+    completed = count(root, "completed") + count(child, "completed")
+    in_flight = count(root, "in_flight") + count(child, "in_flight")
+    billing_unknown_attempts = accounting.get("billing_unknown_attempts")
+    require(
+        isinstance(billing_unknown_attempts, int)
+        and not isinstance(billing_unknown_attempts, bool)
+        and billing_unknown_attempts >= 0,
+        "deadline_accounting_invalid",
+        {"field": "billing_unknown_attempts"},
+    )
+    billing_unknown = accounting.get("billing_unknown")
+    complete = accounting.get("complete")
+    sealed = accounting.get("sealed")
+    usage_complete = accounting.get("usage_complete")
+    require(
+        all(
+            isinstance(value, bool)
+            for value in (
+                billing_unknown,
+                complete,
+                sealed,
+                usage_complete,
+            )
+        ),
+        "deadline_accounting_invalid",
+    )
+    terminal = run.get("terminal")
+    terminal_state = (
+        terminal.get("state") if isinstance(terminal, dict) else None
+    )
+    if billing_unknown or billing_unknown_attempts:
+        disposition = "billing_unknown"
+    elif in_flight:
+        disposition = "physical_attempt_in_flight_unresolved"
+    elif started == 0:
+        disposition = "no_physical_attempt_observed"
+    elif complete and usage_complete and completed == started:
+        disposition = "known_complete_usage"
+    else:
+        disposition = "incomplete_accounting"
+    return {
+        "terminal_present": isinstance(terminal, dict),
+        "terminal_state": terminal_state,
+        "accounting_sealed": sealed,
+        "accounting_complete": complete,
+        "usage_complete": usage_complete,
+        "billing_unknown": billing_unknown,
+        "billing_unknown_attempts": billing_unknown_attempts,
+        "physical_requests_started": started,
+        "physical_requests_completed": completed,
+        "physical_requests_in_flight": in_flight,
+        "billing_disposition": disposition,
+        "measurement_valid": False,
+        "product_loss_eligible": False,
+    }
+
+
+def reopen_store_facts(
+    binary: Path,
+    workspace: Path,
+    state_root: Path,
+    run: dict[str, Any],
+    suffix: str,
+) -> tuple[dict[str, Any], dict[str, Any], bytes]:
+    reopen_stderr = state_root / f"app-server-reopen-{suffix}.stderr"
+    reopen_process, reopen_client = launch_server(
+        binary, workspace, state_root, None, reopen_stderr
+    )
+    try:
+        run_id = run.get("run_id")
+        require(isinstance(run_id, str) and run_id, "run_id_missing")
+        reopened_result = reopen_client.call(
+            query_envelope("get", run_id, f"reopen-{suffix}")
+        )
+        require(
+            reopened_result.get("kind") == "run",
+            "reopen_run_missing",
+        )
+        reopened_run = reopened_result.get("run")
+        require(isinstance(reopened_run, dict), "reopen_run_missing")
+        reopened = fetch_store_facts(
+            reopen_client,
+            reopened_run,
+            f"reopen-{suffix}",
+        )
+    finally:
+        stop_process(reopen_process)
+    reopen_stderr_bytes = (
+        reopen_stderr.read_bytes() if reopen_stderr.exists() else b""
+    )
+    return reopened_run, reopened, reopen_stderr_bytes
 
 
 def state_schema(product_home: Path) -> dict[str, Any]:
@@ -3449,6 +3631,7 @@ def aggregate_trajectory_loss(
     completed_arm_results = 0
     trajectories = 0
     acquisition_aborts = 0
+    deadline_interruption_snapshots = 0
     duplicate_trajectories = 0
     control_duplicate_trajectories = 0
     control_campaigns_with_visible_read_duplicates: set[str] = set()
@@ -3460,6 +3643,9 @@ def aggregate_trajectory_loss(
 
     for campaign in campaigns:
         acquisition_aborts += campaign["accounting_aborts"]
+        deadline_interruption_snapshots += campaign.get(
+            "deadline_interruption_snapshots", 0
+        )
         if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
             sum_counter_values(
                 measurement_interruptions,
@@ -3575,12 +3761,16 @@ def aggregate_trajectory_loss(
         and completed_arm_results
         == expected_shape.get("completed_arm_results")
         and acquisition_aborts
-        == expected_shape.get("accounting_abort_records"),
+        == expected_shape.get("accounting_abort_records")
+        and deadline_interruption_snapshots
+        == expected_shape.get("deadline_interruption_snapshots", 0),
         "trajectory_input_shape_mismatch",
         {
             "canonical_store_snapshots": trajectories,
             "completed_arm_results": completed_arm_results,
             "accounting_abort_records": acquisition_aborts,
+            "deadline_interruption_snapshots":
+                deadline_interruption_snapshots,
         },
     )
     control_visible_reads = control_visible_duplicates.get("read_file", 0)
@@ -3627,6 +3817,8 @@ def aggregate_trajectory_loss(
         "trajectories": trajectories,
         "completed_arm_results": completed_arm_results,
         "accounting_aborts": acquisition_aborts,
+        "deadline_interruption_snapshots":
+            deadline_interruption_snapshots,
         "model_requests": model_requests,
         "task_strata": {
             key: dict(sorted(value.items()))
@@ -3731,6 +3923,7 @@ def build_trajectory_report() -> dict[str, Any]:
         payloads = [record["payload"] for record in audit["records"]]
         starts: dict[str, dict[str, Any]] = {}
         snapshots: dict[str, dict[str, Any]] = {}
+        interruptions: dict[str, dict[str, Any]] = {}
         results: dict[str, dict[str, Any]] = {}
         aborts = []
         for payload in payloads:
@@ -3738,6 +3931,7 @@ def build_trajectory_report() -> dict[str, Any]:
             if record_type in {
                 "arm_started",
                 "canonical_store_snapshot",
+                "deadline_interruption_snapshot",
                 "arm_result",
             }:
                 evaluation_id = payload.get("evaluation_id")
@@ -3748,6 +3942,7 @@ def build_trajectory_report() -> dict[str, Any]:
                 target = {
                     "arm_started": starts,
                     "canonical_store_snapshot": snapshots,
+                    "deadline_interruption_snapshot": interruptions,
                     "arm_result": results,
                 }[record_type]
                 require(
@@ -3764,12 +3959,37 @@ def build_trajectory_report() -> dict[str, Any]:
                 aborts.append(payload)
         require(
             set(snapshots).issubset(starts)
+            and set(interruptions).issubset(starts)
             and set(results).issubset(snapshots)
             and len(starts) - len(snapshots)
             == expected_shape.get("started_without_snapshot", 0),
             "trajectory_join_invalid",
             {"campaign": item["campaign"]},
         )
+        require(
+            len(interruptions)
+            == expected_shape.get("deadline_interruption_snapshots", 0),
+            "trajectory_deadline_boundary_mismatch",
+            {"campaign": item["campaign"]},
+        )
+        for interruption in interruptions.values():
+            boundary = interruption.get("boundary")
+            require(
+                isinstance(boundary, dict)
+                and boundary.get("measurement_valid") is False
+                and boundary.get("product_loss_eligible") is False
+                and boundary.get("billing_disposition")
+                in {
+                    "billing_unknown",
+                    "physical_attempt_in_flight_unresolved",
+                    "no_physical_attempt_observed",
+                    "known_complete_usage",
+                    "incomplete_accounting",
+                }
+                and interruption.get("reopened_without_credential") is True
+                and interruption.get("maximum_reruns") == 0,
+                "trajectory_deadline_boundary_invalid",
+            )
         started_without_snapshot = Counter(
             starts[evaluation_id].get("task_id")
             for evaluation_id in set(starts) - set(snapshots)
@@ -3825,6 +4045,7 @@ def build_trajectory_report() -> dict[str, Any]:
             {
                 "campaign": item["campaign"],
                 "accounting_aborts": len(aborts),
+                "deadline_interruption_snapshots": len(interruptions),
                 "started_without_snapshot": dict(
                     sorted(started_without_snapshot.items())
                 ),
@@ -3903,6 +4124,7 @@ def execute_arm(
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
+        watchdog_error: EvaluationError | None = None
         try:
             result = client.call(
                 start_envelope(
@@ -3914,66 +4136,108 @@ def execute_arm(
             require(isinstance(run, dict), "start_run_missing")
             deadline = (
                 time.monotonic()
-                + RESOURCES["runtime_wall_time_ms"] / 1000
-                + HARNESS_GRACE_SECONDS
+                + RESOURCES["harness_wall_time_ms"] / 1000
             )
-            run = wait_terminal(client, run, deadline, evaluation_id)
+            try:
+                run = wait_terminal(client, run, deadline, evaluation_id)
+            except EvaluationError as error:
+                if error.code not in {"run_deadline", "stdio_timeout"}:
+                    raise
+                watchdog_error = error
+            if watchdog_error is None:
+                journal.emit(
+                    {
+                        "record_type": "terminal_snapshot",
+                        "evaluation_id": evaluation_id,
+                        "source": "live_process",
+                        "run": run,
+                        "run_sha256": canonical_hash(run),
+                        "key_accessed": True,
+                        "network_accessed": True,
+                    }
+                )
+                facts = fetch_store_facts(client, run, evaluation_id)
+                journal.emit(
+                    {
+                        "record_type": "canonical_store_snapshot",
+                        "evaluation_id": evaluation_id,
+                        "source": "live_process",
+                        "facts": facts,
+                        "facts_sha256": canonical_hash(facts),
+                        "key_accessed": True,
+                        "network_accessed": True,
+                    }
+                )
+        finally:
+            stop_process(process)
+        stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
+        reopened_run, reopened, reopen_stderr_bytes = reopen_store_facts(
+            binary,
+            workspace,
+            state_root,
+            run,
+            evaluation_id,
+        )
+        require(secret not in stderr, "key_in_stderr")
+        require(secret not in reopen_stderr_bytes, "key_in_reopen_stderr")
+        require(secret not in canonical_bytes(reopened), "key_in_store_facts")
+        require(not tree_contains(arm_root, secret), "key_in_local_artifact")
+
+        if watchdog_error is not None:
+            boundary = deadline_boundary_projection(reopened)
+            journal.emit(
+                {
+                    "record_type": "deadline_interruption_snapshot",
+                    "evaluation_id": evaluation_id,
+                    "watchdog_code": watchdog_error.code,
+                    "facts": reopened,
+                    "facts_sha256": canonical_hash(reopened),
+                    "boundary": boundary,
+                    "reopened_without_credential": True,
+                    "key_accessed": True,
+                    "network_accessed": True,
+                    "maximum_reruns": 0,
+                }
+            )
+            if not boundary["terminal_present"]:
+                raise EvaluationError(
+                    "run_deadline",
+                    {
+                        "deadline_boundary": boundary,
+                        "store_snapshot_preserved": True,
+                    },
+                )
+            run = reopened_run
+            facts = reopened
             journal.emit(
                 {
                     "record_type": "terminal_snapshot",
                     "evaluation_id": evaluation_id,
+                    "source": "credential_free_deadline_reopen",
                     "run": run,
                     "run_sha256": canonical_hash(run),
                     "key_accessed": True,
                     "network_accessed": True,
                 }
             )
-            facts = fetch_store_facts(client, run, evaluation_id)
             journal.emit(
                 {
                     "record_type": "canonical_store_snapshot",
                     "evaluation_id": evaluation_id,
+                    "source": "credential_free_deadline_reopen",
                     "facts": facts,
                     "facts_sha256": canonical_hash(facts),
                     "key_accessed": True,
                     "network_accessed": True,
                 }
             )
-        finally:
-            stop_process(process)
-        stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
-        require(secret not in stderr, "key_in_stderr")
-        require(secret not in canonical_bytes(facts), "key_in_store_facts")
-        require(not tree_contains(arm_root, secret), "key_in_local_artifact")
+        else:
+            require(facts == reopened, "sqlite_reopen_mismatch")
 
-        reopen_stderr = state_root / "app-server-reopen.stderr"
-        reopen_process, reopen_client = launch_server(
-            binary, workspace, state_root, None, reopen_stderr
+        require(
+            secret not in canonical_bytes(facts),
+            "key_in_store_facts",
         )
-        try:
-            run_id = run.get("run_id")
-            require(isinstance(run_id, str), "run_id_missing")
-            reopened_result = reopen_client.call(
-                query_envelope("get", run_id, f"reopen-{evaluation_id}")
-            )
-            require(
-                reopened_result.get("kind") == "run",
-                "reopen_run_missing",
-            )
-            reopened_run = reopened_result.get("run")
-            require(isinstance(reopened_run, dict), "reopen_run_missing")
-            reopened = fetch_store_facts(
-                reopen_client,
-                reopened_run,
-                f"reopen-{evaluation_id}",
-            )
-        finally:
-            stop_process(reopen_process)
-        reopen_stderr_bytes = (
-            reopen_stderr.read_bytes() if reopen_stderr.exists() else b""
-        )
-        require(secret not in reopen_stderr_bytes, "key_in_reopen_stderr")
-        require(facts == reopened, "sqlite_reopen_mismatch")
         journal.emit(
             {
                 "record_type": "sqlite_reopen_snapshot",
@@ -4008,7 +4272,8 @@ def execute_arm(
             }
         )
         identity = state_schema(
-            state_root / ("dse" if CAMPAIGN == "m18" else "codewhale")
+            state_root
+            / ("dse" if CAMPAIGN in DSE_CAMPAIGNS else "codewhale")
         )
         arm = derive_arm(
             schedule,
@@ -4063,14 +4328,14 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    if CAMPAIGN in {"m12", "m15", "m18"}:
+    if CAMPAIGN in {"m12", "m15", "m18", "m19"}:
         complete = all(
             cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
             and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
-        if CAMPAIGN in {"m15", "m18"}:
+        if CAMPAIGN in {"m15", "m18", "m19"}:
             safety = cells["safety_false_completion"]
             complete = (
                 complete
@@ -4111,6 +4376,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m12": "keep_m12_terminal_convergence_reproduction",
         "m15": "keep_m15_current_product_loss_acquisition",
         "m18": "keep_m18_local_reliability_baseline",
+        "m19": "keep_m19_local_reliability_baseline",
     }[CAMPAIGN]
     return {
         "record_type": "summary",
@@ -4703,6 +4969,7 @@ def run_self_test() -> int:
         "after_terminal",
     )
     fault_results = []
+    deadline_boundary_order: list[str] = []
     with tempfile.TemporaryDirectory(
         prefix=f"codewhale-{CAMPAIGN}-journal-test-"
     ) as raw_temp:
@@ -4797,6 +5064,80 @@ def run_self_test() -> int:
             )
         else:
             raise EvaluationError("journal_tamper_accepted")
+        deadline_journal = directory / "deadline-boundary.jsonl"
+        with Journal.claim(
+            deadline_journal, enforce_results_scope=False
+        ) as journal:
+            journal.emit(
+                {
+                    "record_type": "arm_started",
+                    "evaluation_id": "deadline-self-test",
+                    "maximum_reruns": 0,
+                    "key_accessed": False,
+                    "network_accessed": False,
+                }
+            )
+            journal.emit(
+                {
+                    "record_type": "deadline_interruption_snapshot",
+                    "evaluation_id": "deadline-self-test",
+                    "boundary": deadline_boundary_projection(
+                        {
+                            "run": {
+                                "terminal": None,
+                                "accounting": {
+                                    "root": {
+                                        "started": 1,
+                                        "completed": 0,
+                                        "in_flight": 1,
+                                        "retries": 0,
+                                    },
+                                    "child": {
+                                        "started": 0,
+                                        "completed": 0,
+                                        "in_flight": 0,
+                                        "retries": 0,
+                                    },
+                                    "billing_unknown": False,
+                                    "billing_unknown_attempts": 0,
+                                    "complete": False,
+                                    "sealed": False,
+                                    "usage_complete": False,
+                                },
+                            }
+                        }
+                    ),
+                    "reopened_without_credential": True,
+                    "maximum_reruns": 0,
+                    "key_accessed": False,
+                    "network_accessed": False,
+                }
+            )
+            journal.emit(
+                {
+                    "record_type": "abort",
+                    "error_code": "run_deadline",
+                    "maximum_reruns": 0,
+                    "key_accessed": False,
+                    "network_accessed": False,
+                }
+            )
+        deadline_audit = read_journal(
+            deadline_journal, allow_partial_tail=False
+        )
+        deadline_boundary_order = [
+            record["payload"]["record_type"]
+            for record in deadline_audit["records"]
+        ]
+        require(
+            deadline_boundary_order
+            == [
+                "arm_started",
+                "deadline_interruption_snapshot",
+                "abort",
+            ],
+            "deadline_boundary_order_invalid",
+        )
     secret_argument = "sk-trajectory-self-test-do-not-output"
     request = {
         "messages": [],
@@ -4961,6 +5302,39 @@ def run_self_test() -> int:
         "self_test_trajectory_secret_exposed",
     )
     if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
+        deadline_boundary = deadline_boundary_projection(
+            {
+                "run": {
+                    "terminal": None,
+                    "accounting": {
+                        "root": {
+                            "started": 1,
+                            "completed": 0,
+                            "in_flight": 1,
+                            "retries": 0,
+                        },
+                        "child": {
+                            "started": 0,
+                            "completed": 0,
+                            "in_flight": 0,
+                            "retries": 0,
+                        },
+                        "billing_unknown": False,
+                        "billing_unknown_attempts": 0,
+                        "complete": False,
+                        "sealed": False,
+                        "usage_complete": False,
+                    },
+                }
+            }
+        )
+        require(
+            deadline_boundary["billing_disposition"]
+            == "physical_attempt_in_flight_unresolved"
+            and deadline_boundary["measurement_valid"] is False
+            and deadline_boundary["product_loss_eligible"] is False,
+            "self_test_deadline_boundary_invalid",
+        )
         verified_without_receipt = trajectory_loss_projection(
             "root",
             {
@@ -5109,6 +5483,7 @@ def run_self_test() -> int:
                 ),
                 "materialized_base_commits": materialized,
                 "fault_results": fault_results,
+                "deadline_boundary_order": deadline_boundary_order,
                 "trajectory_projection": {
                     "exact_duplicate_reads": 1,
                     "visible_exact_duplicate_reads": 1,
@@ -5213,7 +5588,7 @@ def run_formal(args: argparse.Namespace) -> int:
             tempfile.mkdtemp(prefix=f"codewhale-{CAMPAIGN}-binary-")
         )
         frozen_binary = frozen_root / (
-            "dse" if CAMPAIGN == "m18" else "codewhale"
+            "dse" if CAMPAIGN in DSE_CAMPAIGNS else "codewhale"
         )
         arms: list[dict[str, Any]] = []
         try:
@@ -5263,7 +5638,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--campaign",
-        choices=("m9c", "m11", "m12", "m15", "m18"),
+        choices=("m9c", "m11", "m12", "m15", "m18", "m19"),
         default="m9c",
     )
     mode = parser.add_mutually_exclusive_group()

@@ -3759,7 +3759,68 @@ actor routes、唯一 Runtime/Store 与 canonical tools 保持不变。ignored `
 只读 canonical projection 保留审计；临时 target/package/workspace 精确删除。完整证据见
 [M18 DSE local first-day and reliability baseline](../../eval/summaries/m18-local-first-day-and-reliability-2026-07-26.md)。
 
-## 15. 当前源码迁移表
+## 15. M19：纯本地 fixed-Pro 编码可靠性采集
+
+M19 不补跑 M18。它从新的 position 1 建立独立 identity，先修正评测观察边界，再采集
+新的真实任务轨迹；只有同一 stable loss 跨至少两个独立 task ID 重复，才允许审计一个
+现有 production owner。
+
+### 15.1 deadline / terminal / accounting 边界
+
+- **真实问题**：M18 的 outer `run_deadline` 到点后直接离开 per-arm 临时目录，活动
+  Writer 的 SQLite Store 在无 Key 重开前被清理；因此只能诚实记录
+  started-without-snapshot，不能区分 Runtime 已提交终态、仍有 physical attempt in-flight
+  或 accounting 已完整；
+- **唯一 owner**：现有 corrected
+  `scripts/eval-m9b-fixed-pro-regression.py`；
+- **验收**：production wall deadline 先于 Harness watchdog；watchdog 停止带 credential
+  的 app-server 后，在清理前用同一 binary、同一 Store、无 credential 重开，保存
+  terminal presence、physical started/completed/in-flight、usage complete、sealed、
+  billing_unknown 与 exact event facts；
+- **安全边界**：nonterminal watchdog snapshot 永远
+  `measurement_valid=false / product_loss_eligible=false`，in-flight 不推断 billed 或
+  unbilled，随后只写一个 `run_deadline` abort 且不启动下一 arm；
+- **旧路删除**：超时后先清空 per-arm State、只留下无 Store 事实 abort 的路径；
+- **production delta**：无。Runtime 自身 typed deadline、RunStore、sender 与 accounting
+  不改。
+
+### 15.2 新任务与准入
+
+冻结五类任务、每类三个 repetition、`maximum_reruns=0`：
+
+1. 两个互不复用 fixture/acceptance 的 TypeScript `failed_write_pass` 恢复任务；
+2. 一个 Rust resolver/registry 跨文件调试任务；
+3. 一个显式单 Writer 的四文件 policy-bundle 迁移，child deadline 为 360 秒；
+4. 一个 no-tool false-completion 安全反例。
+
+所有 arm 使用同一 immutable `dse`、official DeepSeek OpenAI-format
+`/chat/completions`、`deepseek-v4-pro/high`、canonical tools、AgentRuntime、RunStore 和
+冻结 external verifier。runtime wall 为 720 秒，Harness watchdog 为 840 秒。每个 fixture
+初态必须 fail 且 tree 不变；仓库外 reference patch 必须让四个正向任务 pass，安全反例
+继续 fail。
+
+执行顺序：
+
+```text
+contract + watchdog self-test
+  -> fixture/reference/base identity
+  -> M14/M16/journal/SIGKILL
+  -> focused + full local Rust gates
+  -> immutable release binary + no-Key dry-run
+  -> local credentialed acquisition from position 1
+  -> read-only trajectory decision
+```
+
+完整 acquisition 要求 15/15 measurement-valid、false success 0、route/lane/reopen/
+accounting exact。unknown billing、incomplete usage、nonterminal watchdog、observer
+歧义、identity drift 或费用越界立即停止。一个 task loss 不开发；相同 coarse code 也必须
+经过 canonical trajectory 证明同一 owner，且覆盖至少两个独立 task ID，才进入一个最小
+vertical fix。否则结论为 `insufficient_repeated_current_loss`，production 不变。
+
+GitHub、远端 CI、push、Auto、FIM、第二 Provider/Runtime/Store、multi-Writer 与 M18
+mate 均不属于 M19。
+
+## 16. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
@@ -3773,7 +3834,7 @@ actor routes、唯一 Runtime/Store 与 canonical tools 保持不变。ignored `
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
-## 16. 调整机制
+## 17. 调整机制
 
 里程碑结束时只允许三种结论：
 
