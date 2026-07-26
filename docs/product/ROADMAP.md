@@ -3820,6 +3820,32 @@ vertical fix。否则结论为 `insufficient_repeated_current_loss`，production
 GitHub、远端 CI、push、Auto、FIM、第二 Provider/Runtime/Store、multi-Writer 与 M18
 mate 均不属于 M19。
 
+### 15.3 结果：首请求 accounting stop，无 production candidate
+
+本地候选 `93e3ee34d`、15-arm schedule、五个 TaskContract、immutable release binary
+和 no-Key dry-run 全部通过后，正式 acquisition 从 position 1 开始。第一个
+`typescript_forwarded_chain_recovery` arm 的唯一物理请求在 response headers、finish、
+usage、内容和 reasoning 前发生 typed `deepseek_transport`。Runtime 没有重试；canonical
+Store 提交 failed terminal，credential-free reopen byte-exact，accounting 为
+`started=1 / completed=1 / in_flight=0 / sealed=true / billing_unknown=true /
+complete=false`。
+
+Harness 因此在 0 个完整 arm 后写入唯一 `accounting_incomplete` abort，未启动后 14 个
+arm，也未重跑或补 mate。ignored `0600` journal 共 8 条记录、67,073 bytes、无 partial
+tail；只读 report 两次 byte-identical，只得到一个
+`typescript_forwarded_chain_recovery` measurement interruption，product loss 与
+independent repeated task 均为空。
+
+acquisition 决策为 `stop_incomplete_accounting`；product 决策为
+`insufficient_repeated_current_loss`。没有 production 修复、重试策略、工具、prompt、
+Runtime、Store 或 route delta。watchdog 的 credential-free Store snapshot 由唯一
+corrected Harness 保留；它解决观察证据丢失，不改变产品执行。
+
+后续不得机械重跑 M19。若继续真实采集，先用独立、有限、credential-safe 的本地
+transport viability 切片区分 DNS/TLS/auth/connectivity 与 inference，且不得新增 sender
+或弱化 `billing_unknown -> stop`。完整证据见
+[M19 DSE local coding reliability acquisition](../../eval/summaries/m19-local-coding-reliability-2026-07-26.md)。
+
 ## 16. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |

@@ -1,0 +1,99 @@
+{
+  "schema": "dse.eval.m19-local-reliability-analysis.v1",
+  "frozen_at": "2026-07-26",
+  "source_identity": {
+    "candidate_revision": "93e3ee34dbcbe297666388498c43e081f32c8787",
+    "candidate_tree": "4e00b3048491e9a414fa3a5a6a03ec017ccde5cd",
+    "live_admission_revision": "2fc945798",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:f937e10ed8ffcc84872f3971ebaf1c269437eea243403e8782c452562efa1339",
+    "analysis_harness_sha256": "sha256:f937e10ed8ffcc84872f3971ebaf1c269437eea243403e8782c452562efa1339",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M19 stopped on the first scheduled arm after one physical request failed before response headers, finish, usage or actionable output. The typed terminal and exact Store reopen must be classified without treating billing_unknown, the external verifier snapshot or the 14 unexecuted arms as product evidence.",
+    "acceptance": [
+      "validate one exact 0600 regular non-symlink 8-record hash-chained journal with no partial tail",
+      "derive exactly one canonical Store trajectory and zero complete arm labels while preserving the accounting_incomplete abort",
+      "classify the first trajectory as measurement_incomplete because billing_unknown prevents a complete label",
+      "keep all unexecuted schedule arms and the initial failing external verifier outside product-loss labels",
+      "require one identical stable loss code across at least two distinct task IDs before returning an owner audit",
+      "expose only canonical counts, stable failure codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection or treating a pre-header transport/accounting stop as a coding outcome",
+    "cutover": "retain immutable raw identity and one read-only report; do not implement a production treatment from this interrupted acquisition"
+  },
+  "inputs": [
+    {
+      "campaign": "m19-local-reliability-baseline",
+      "path": "eval/results/m19-local-reliability-93e3ee34dbcb-v1.jsonl",
+      "journal_schema": "dse.eval.m19-local-reliability-journal.v1",
+      "file_sha256": "sha256:78f8d770a7eec8ec78219b36e0f176d49442872888bc4715cce2e5a08c890656",
+      "size_bytes": 67073,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 1,
+    "completed_arm_results": 0,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only; M19 produced none before the accounting stop",
+    "acquisition_stop": "the first arm has an exact failed terminal and credential-free Store reopen, then one accounting_incomplete abort with billing_unknown=true and maximum_reruns=0",
+    "product_loss": [
+      "positive task not verified after an accounting-complete canonical trajectory",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt"
+    ],
+    "non_loss": [
+      "pre-header transport failure with billing_unknown",
+      "canonical trajectory without an arm_result",
+      "initial external verifier failure required by the frozen task",
+      "unexecuted schedule arm",
+      "measurement or evaluation environment interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable product loss_code across at least two distinct task IDs",
+    "owner_attribution_gate": "a measurement stop never authorizes a production owner audit"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "trajectory without a complete arm_result",
+      "billing_unknown or incomplete accounting",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

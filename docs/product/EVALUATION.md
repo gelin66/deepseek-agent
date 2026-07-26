@@ -2842,6 +2842,25 @@ trajectory 归因后跨至少两个独立 task ID 重复。只出现一个独立
 scope/environment mismatch 或 measurement interruption 时，必须
 `insufficient_repeated_current_loss` 并保持 production 不变。
 
+M19 的 offline gates、candidate binary 与 no-Key dry-run 全绿，但正式 position-1 arm
+的首个物理请求在 response headers/finish/usage/content/reasoning 前得到 typed
+`deepseek_transport`。canonical Store/reopen 证明
+`started=1 / completed=1 / in_flight=0 / sealed=true / billing_unknown=true /
+complete=false`，且没有 retry。Harness 在 0 个完整 arm 后唯一
+`accounting_incomplete` abort，后 14 个 arm 未执行。
+
+8-record ignored `0600` journal 无 partial tail。read-only report 两次
+byte-identical：1 个 canonical trajectory、0 个 arm result、1 个
+`typescript_forwarded_chain_recovery` measurement interruption、0 false success、0
+product loss、0 repeated independent loss。这里的 false-success 零不构成质量结论，
+因为没有 measurement-valid arm。
+
+结论为 acquisition `stop_incomplete_accounting`、product
+`insufficient_repeated_current_loss`。不得重跑、补 mate、推断 billed/unbilled 或从初始
+external verifier failure 推导 coding loss；production 保持不变。完整 identity、raw hash、
+report hash、删除和非结论见
+[M19 DSE local coding reliability acquisition](../../eval/summaries/m19-local-coding-reliability-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
