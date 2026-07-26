@@ -410,6 +410,8 @@ fn to_nano_units(value: f64) -> u64 {
 mod tests {
     use super::*;
     use dse_runtime::{AgentActor, ReasoningEffort, RunId, SystemPrompt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn official_capabilities_are_exact_and_aliases_fail_closed() {
@@ -512,5 +514,147 @@ mod tests {
             OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS
         );
         assert!(DeepSeekModelPort::plan_request(root, false, &request("deepseek-chat")).is_err());
+    }
+
+    #[tokio::test]
+    async fn m21_truncated_body_after_reasoning_matches_frozen_failure_contract() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../eval/fixtures/m21-partial-response-interruption-v1.json"
+        ))
+        .expect("M21 redacted fixture");
+        assert_eq!(
+            expected["redaction"],
+            serde_json::json!({
+                "contains_credential": false,
+                "contains_prompt": false,
+                "contains_reasoning_text": false,
+                "contains_tool_arguments": false,
+                "contains_provider_network_detail": false
+            })
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind M21 loopback fixture");
+        let address = listener.local_addr().expect("M21 fixture address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept M21 request");
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let read = socket.read(&mut chunk).await.expect("read M21 request");
+                assert!(read > 0, "M21 request ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request);
+            assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+
+            let body = b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"fixture\"}}]}\n\n";
+            let declared_length = body.len() + 64;
+            let response_headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(response_headers.as_bytes())
+                .await
+                .expect("write M21 response headers");
+            socket
+                .write_all(body)
+                .await
+                .expect("write M21 partial SSE body");
+            socket.flush().await.expect("flush M21 partial body");
+            socket.shutdown().await.expect("truncate M21 response body");
+        });
+
+        let budget = SharedApiRequestBudget::new(NonZeroU32::new(2).expect("nonzero budget"));
+        let connection = crate::DeepSeekConnectionConfig {
+            endpoint: crate::DeepSeekEndpoint::loopback_fixture(format!("http://{address}/v1"))
+                .expect("M21 loopback endpoint"),
+            strict_tools: false,
+            response_header_timeout: std::time::Duration::from_secs(1),
+            stream_idle_timeout: std::time::Duration::from_secs(1),
+            retry: crate::TransportRetryPolicy::disabled(),
+        };
+        let transport = connection
+            .bind(
+                reqwest::Client::new(),
+                crate::DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+                budget.clone(),
+            )
+            .expect("M21 transport");
+        let port = DeepSeekModelPort::new(transport, budget);
+        let mut model_request = request("deepseek-v4-pro");
+        model_request.streaming = true;
+
+        let mut stream = port.stream(model_request).await.expect("response headers");
+        let mut evidence = ModelResponseEvidence::default();
+        let mut failure = None;
+        let mut committed = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ModelStreamEvent::ResponseProgress { evidence: next }) => {
+                    evidence.merge(next);
+                }
+                Ok(ModelStreamEvent::ReasoningDelta { delta }) => {
+                    assert!(!delta.is_empty());
+                    evidence.response_headers_received = true;
+                    evidence.reasoning_observed = true;
+                }
+                Ok(ModelStreamEvent::Completed { .. }) => committed = true,
+                Ok(ModelStreamEvent::ContentDelta { .. }) => {
+                    panic!("M21 fixture must not emit content")
+                }
+                Err(error) => {
+                    evidence.merge(error.response);
+                    failure = Some(error);
+                }
+            }
+        }
+        server.await.expect("M21 fixture server");
+
+        let failure = failure.expect("truncated response must fail");
+        assert_eq!(
+            failure.code,
+            expected["deterministic_replay"]["must_observe"]["error_code"]
+                .as_str()
+                .expect("expected error code")
+        );
+        assert_eq!(failure.category, ModelErrorCategory::Transport);
+        assert!(failure.retryable);
+        assert!(!committed);
+        assert!(evidence.response_headers_received);
+        assert!(evidence.reasoning_observed);
+        assert!(!evidence.content_observed);
+        assert!(!evidence.tool_call_observed);
+        assert!(!evidence.finish_reason_observed);
+        assert!(!evidence.finish_reason_trusted);
+        assert!(!evidence.usage_received);
+        assert!(!evidence.stream_done_received);
+        assert!(evidence.actionable_output());
+        assert!(!evidence.replay_safe());
+
+        let accounting = port
+            .accounting_snapshot(false)
+            .await
+            .expect("M21 accounting");
+        assert_eq!(accounting.root.started, 1);
+        assert_eq!(accounting.root.completed, 1);
+        assert_eq!(accounting.root.in_flight, 0);
+        assert_eq!(accounting.transport_retries, 0);
+        assert_eq!(accounting.runtime_retries, 0);
+        assert_eq!(accounting.incomplete_responses, 1);
+        assert_eq!(accounting.billing_unknown_attempts, 0);
+        assert_eq!(accounting.usage_responses, 0);
+        assert!(accounting.usage_incomplete);
+        assert!(!accounting.usage_complete);
+        assert!(!accounting.billing_unknown);
+        assert!(!accounting.complete);
+        assert_eq!(accounting.surface_usage.len(), 1);
+        assert_eq!(accounting.surface_usage[0].response_count, 1);
+        assert_eq!(accounting.surface_usage[0].usage_response_count, 0);
     }
 }

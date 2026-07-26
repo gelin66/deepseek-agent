@@ -1,0 +1,101 @@
+{
+  "schema": "dse.eval.m21-partial-response-owner-audit.v1",
+  "suite_id": "m21-partial-response-owner-audit-v1",
+  "frozen_on": "2026-07-26",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "e90a35e3d98f3b5f4aaeb341daf05d655dd67ef3",
+    "starting_tree": "063a3ea52dacda57f825b60e6210f475d08aed41",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4,
+    "cargo_lock_sha256": "sha256:33d367336b9e5bc32afe4cf3fb1694193036f288a623bc04b51ef8a2b9a05cf7",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:2173e154f2d76212d60e21bc20bf0e26bdd0695045008f2e3e8c567d3e97bf89",
+    "roadmap": "sha256:72650d2f37581ded0ef49cdb39d374850f33c8d8099a9f6237ca252969b35e4f",
+    "evaluation": "sha256:2cd4680102891702757f307fc84a83442544daf3fe980bd83afabd009ef6f781",
+    "current_architecture": "sha256:5ded583f932210a286fa3afa1ed94ff3bdbd3d34e0a658d33bc420c2ba0b185e"
+  },
+  "input_evidence": {
+    "m20b_raw_path": "eval/results/m20b-fixed-pro-reliability-7797ec9d7aaa-v1.jsonl",
+    "m20b_raw_mode": "0600",
+    "m20b_raw_bytes": 5875259,
+    "m20b_raw_sha256": "sha256:cf25d9412fcfb8db3b50f1d5cfda0cf82d8a0d0786daa63fdd0469c468c639b7",
+    "safe_fixture": "eval/fixtures/m21-partial-response-interruption-v1.json",
+    "historical_raw_is_read_only": true
+  },
+  "slice_contract": {
+    "real_problem": "M20B reached an externally verifier-passing TypeScript workspace, then its sixth official ChatCompletions response received headers and one reasoning delta before the response body failed as typed deepseek_transport. No finish reason, DONE or usage arrived; accounting was usage_incomplete but not pre-header billing_unknown. The local owner must be distinguished from an upstream body interruption without rerunning the paid campaign.",
+    "acceptance": [
+      "derive only redacted typed facts from the immutable M20B canonical Store snapshot",
+      "reproduce the observed response phase with a loopback HTTP server that emits one valid reasoning SSE frame and then truncates a declared response body",
+      "exercise the existing reqwest byte stream, DeepSeek SSE parser, model-port error projection, Runtime retry decision, accounting and Store reopen owners rather than copying their logic",
+      "prove partial reasoning makes replay unsafe and causes exactly one stop with no committed model response",
+      "prove response-started interruption increments incomplete response accounting without fabricating usage or a pre-header billing-unknown attempt",
+      "prove an external verifier pass alone cannot create a completed terminal or EvidenceReceipt",
+      "make no production change unless a deterministic failing test attributes the mismatch to one existing local owner"
+    ],
+    "single_owners": {
+      "wire_and_sse": "crates/deepseek/src/transport.rs",
+      "error_projection_and_accounting": "crates/deepseek/src/model_port.rs and crates/deepseek/src/accounting.rs",
+      "retry_and_completion": "crates/runtime/src/agent.rs",
+      "exact_reopen": "crates/state"
+    },
+    "old_path_replaced_after_cutover": "none unless a local defect is proven; the existing fail-closed path is retained when replay matches the frozen observation",
+    "tests_and_evidence": [
+      "real loopback truncated-body fixture through DeepSeekTransport and DeepSeekModelPort",
+      "Runtime no-retry after actionable reasoning evidence",
+      "typed incomplete response SQLite reopen exactness",
+      "process crash/reopen no-request-reissue conformance",
+      "M20B safe event-window fixture exactness"
+    ],
+    "cutover_deletion": "if a local defect is found, delete only the replaced branch after the real caller uses the corrected owner; otherwise add no production branch and record the upstream interruption boundary",
+    "failed_treatment_deletion": "any test-only diagnostic adapter that duplicates parser, accounting, Runtime or Store truth must be deleted before completion"
+  },
+  "forbidden": [
+    "read /Users/gelin/Desktop/codewhale/key.txt",
+    "official DeepSeek API or any external network request",
+    "M20B rerun, mate completion, paid resampling or historical raw splice",
+    "blind retry, verifier-pass auto-completion or fabricated usage",
+    "GitHub, push, remote CI, release, Auto, FIM, Anthropic, multi-Writer, second sender, Provider, Runtime, Store or tool catalog"
+  ],
+  "deterministic_matrix": [
+    "M20B redacted event window and accounting fixture",
+    "truncated Content-Length after response headers and one reasoning frame",
+    "abnormal EOF after finish without DONE",
+    "usage observed before disconnect remains exact but incomplete",
+    "idle stall remains distinct from body network failure",
+    "partial content/reasoning/tool-call evidence forbids replay",
+    "zero-output retryable transport remains the only replay-safe retry class",
+    "SQLite reopen preserves failure/evidence/retry/accounting exactly",
+    "process crash never reissues an in-flight model request",
+    "external verifier pass without latest Host receipt remains non-completed"
+  ],
+  "decision_rule": {
+    "fix": "only a deterministic failing test that disagrees with the frozen expected local contract and identifies one current owner permits a minimal production correction",
+    "no_local_defect": "if the loopback replay matches M20B's typed evidence, retry, accounting and completion behavior, retain the current production path and classify the unobserved remainder as an upstream response-body interruption that the official contract cannot reconstruct",
+    "paid_successor": "not admitted by M21",
+    "product_metric_eligible": false,
+    "maximum_reruns": 0
+  },
+  "local_gates": {
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m21-target",
+    "commands": [
+      "./scripts/dev-dse.sh focused",
+      "cargo fmt --all -- --check",
+      "cargo test -p dse-deepseek --locked",
+      "cargo check -p dse-deepseek --locked",
+      "cargo test -p dse-runtime --locked",
+      "cargo test -p dse-state --locked typed_incomplete_response_failure_and_accounting_survive_store_reopen_exactly",
+      "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "cargo test --workspace --locked",
+      "git diff --check"
+    ]
+  }
+}

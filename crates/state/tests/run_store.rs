@@ -946,6 +946,131 @@ async fn typed_incomplete_response_failure_and_accounting_survive_store_reopen_e
 }
 
 #[tokio::test]
+async fn m21_partial_reasoning_transport_failure_survives_store_reopen_exactly() {
+    let path = temp_state_path("m21_partial_reasoning_transport_reopen");
+    let store = StateStore::open(Some(path.clone())).expect("open sqlite store");
+    let created = store
+        .create(request(
+            "m21-partial-reasoning",
+            "/tmp/m21-partial-reasoning",
+        ))
+        .await
+        .expect("create run");
+    let attempt_id = AttemptId("m21-partial-reasoning-attempt".to_owned());
+    for event in [
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId("m21-prepared".to_owned()),
+            event: RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(model_request(&created)),
+            },
+        },
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId("m21-in-flight".to_owned()),
+            event: RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        },
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId("m21-reasoning".to_owned()),
+            event: RuntimeEventKind::ReasoningDelta {
+                attempt_id: attempt_id.clone(),
+                index: 1,
+                delta: "fixture".to_owned(),
+            },
+        },
+    ] {
+        store
+            .append(&created.lease, event)
+            .await
+            .expect("append M21 event");
+    }
+
+    let response = ModelResponseEvidence {
+        response_headers_received: true,
+        reasoning_observed: true,
+        ..ModelResponseEvidence::default()
+    };
+    let failure = ModelAttemptFailure {
+        code: "deepseek_transport".to_owned(),
+        category: ModelErrorCategory::Transport,
+        message: "DeepSeek 网络传输失败".to_owned(),
+        retryable: true,
+        retry_safe: false,
+        actionable_output: true,
+        response,
+    };
+    let accounting = ModelAccounting {
+        hard_request_limit: Some(4),
+        root: ActorRequestAccounting {
+            started: 1,
+            completed: 1,
+            in_flight: 0,
+            retries: 0,
+        },
+        complete: false,
+        usage_complete: false,
+        usage_incomplete: true,
+        incomplete_responses: 1,
+        surface_usage: vec![SurfaceUsage {
+            surface: ApiSurface::StandardChat,
+            model: "deepseek-v4-pro".to_owned(),
+            response_count: 1,
+            usage_response_count: 0,
+            usage: Usage::default(),
+            cost_nanousd: 0,
+            cost_nanocny: 0,
+        }],
+        ..ModelAccounting::default()
+    };
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("m21-failed".to_owned()),
+                event: RuntimeEventKind::ModelRequestFailed {
+                    attempt_id,
+                    failure: failure.clone(),
+                    accounting: Box::new(accounting.clone()),
+                    retry: ModelRetryDecision::Stop {
+                        reason: ModelRetryStopReason::ActionableOutput,
+                    },
+                },
+            },
+        )
+        .await
+        .expect("append M21 failure");
+    drop(store);
+
+    let reopened = StateStore::open(Some(path)).expect("reopen sqlite store");
+    let replay = reopened
+        .load(&created.lease.run_id)
+        .await
+        .expect("load reopened run")
+        .expect("M21 run remains available");
+    assert_eq!(replay.snapshot.accounting, accounting);
+    assert!(replay.snapshot.pending_model.is_none());
+    assert_eq!(
+        replay.snapshot.last_model_failure,
+        Some(dse_runtime::StoppedModelFailure {
+            failure: failure.clone(),
+            reason: ModelRetryStopReason::ActionableOutput,
+        })
+    );
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ModelRequestFailed {
+            failure: persisted_failure,
+            accounting: persisted_accounting,
+            retry: ModelRetryDecision::Stop {
+                reason: ModelRetryStopReason::ActionableOutput,
+            },
+            ..
+        } if persisted_failure == &failure && persisted_accounting.as_ref() == &accounting
+    )));
+}
+
+#[tokio::test]
 async fn sqlite_replay_matches_memory_and_survives_reopen() {
     let path = temp_state_path("replay_parity");
     let sqlite = StateStore::open(Some(path.clone())).expect("open sqlite store");

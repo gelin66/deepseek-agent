@@ -3887,7 +3887,35 @@ non-inference Doctor cutover 和唯一 corrected Harness；不开发 production 
 push 和 release 不属于 M20，本地门禁通过即提交。完整证据见
 [M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
 
-## 17. 当前源码迁移表
+## 17. M21：partial-response owner audit
+
+M21 只审计 M20B 的唯一 measurement interruption，不重跑或补齐付费矩阵。冻结的
+canonical 事件窗口证明第六个 response 已收到 headers 和一个 reasoning delta，随后在
+56 ms 内提交 typed `deepseek_transport`；没有 finish、`[DONE]` 或 usage。该间隔远低于
+Harness 的 120 s model-event idle 与 production 的 900 s stream idle，因此不是本地
+idle timeout。
+
+一个 credential-free loopback HTTP fixture 通过真实 reqwest byte stream 和现有
+DeepSeek SSE transport 发送一个有效 reasoning frame，再在小于已声明
+`Content-Length` 的位置关闭响应体。现有 production owner 精确得到：
+
+- `deepseek_transport / transport / retryable=true`；
+- headers/reasoning 已观察，finish、`[DONE]`、usage 未观察；
+- actionable partial output 令 replay unsafe，Runtime 即使有 retry budget 也只执行一次；
+- response count 增加，usage response 不增加，`incomplete_responses=1`、
+  `billing_unknown=false / usage_incomplete=true`；
+- 不提交 `ModelResponseCommitted` 或 `CompletionProposed`；
+- SQLite reopen 精确保留 failure/evidence/retry/accounting。
+
+因此结论为 `no_local_defect_reproduced / keep_fail_closed_stream_accounting`。未观察的
+response remainder 无法由本地 parser、Runtime 或 Store 重建；官方 ChatCompletions
+协议也没有为 partial reasoning response 提供安全续传、缺失 usage 重建或 request-level
+reconciliation。production sender/parser/retry/completion 路径保持不变，没有 Key、
+官方 API、外部网络或付费 successor。只保留 redacted fixture、三层回归和审计结论；
+没有 diagnostic adapter、第二 sender 或无消费者 treatment 需要保留。完整证据见
+[M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
+
+## 18. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
@@ -3901,7 +3929,7 @@ push 和 release 不属于 M20，本地门禁通过即提交。完整证据见
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
-## 18. 调整机制
+## 19. 调整机制
 
 里程碑结束时只允许三种结论：
 

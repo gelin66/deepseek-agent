@@ -2397,10 +2397,32 @@ loss 与 0 repeated independent loss。当前事实因此是
 完整证据见
 [M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
 
+M21 对 M20B 的 partial-response interruption 做了纯本地 owner audit。冻结事件证明第六个
+response 在 headers 和一个 reasoning delta 后 56 ms 即失败，不是 Harness 120 s 或
+production 900 s idle timeout。真实 loopback HTTP fixture 通过 canonical reqwest byte
+stream 和 DeepSeek SSE transport，在一个合法 reasoning frame 后截断 declared body，
+逐项复现：
+
+- typed `deepseek_transport`、transport category、retryable；
+- actionable reasoning 令 replay unsafe，因此没有 Runtime/transport retry；
+- finish、`[DONE]`、usage 与 committed model response 均不存在；
+- response count 增加而 usage response 不增加，
+  `incomplete_responses=1 / billing_unknown=false / usage_incomplete=true`；
+- Runtime 不发出 `CompletionProposed`，external verifier pass 不能代替 Host completion；
+- State schema v25 在 SQLite reopen 后精确保留 failure/evidence/retry/accounting。
+
+该 replay 没有暴露本地 transport/parser/accounting/retry/completion 缺陷，production
+代码保持不变。当前可证边界是 response body 在 partial reasoning 后中断；未收到的 finish、
+`[DONE]`、usage 和余下内容不可重建，也不能安全盲重放。M21 没有读取 Key、调用官方 API、
+访问外部网络、创建第二 sender/Runtime/Store 或启动付费 successor。完整证据见
+[M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
+- M21 已识别是 DeepSeek provider、代理、OS 或其他网络组件关闭了 M20B response body；
+  它只排除当前 deterministic local owner mismatch 和 idle timeout；
 - M20 的 3/3 account reachability 等于 Chat inference、Agent completion 或单 request
   billing 可证；M20B 只有一个完整 arm，不能形成 9-arm quality/cost baseline；
 - M18 已建立完整 18-arm current reliability aggregate，或一个 TypeScript verifier loss

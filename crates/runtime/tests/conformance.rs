@@ -2868,6 +2868,75 @@ async fn retryable_transport_reopens_only_without_output_and_preserves_first_fai
 }
 
 #[tokio::test]
+async fn m21_partial_reasoning_transport_failure_stops_without_retry_or_completion() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let model = Arc::new(MockModel::incomplete(move |_| {
+        script_calls.fetch_add(1, Ordering::AcqRel);
+        ScriptResponse::Events(vec![
+            StreamStep::now(ModelStreamEvent::ResponseProgress {
+                evidence: ModelResponseEvidence {
+                    response_headers_received: true,
+                    ..ModelResponseEvidence::default()
+                },
+            }),
+            StreamStep::now(ModelStreamEvent::ReasoningDelta {
+                delta: "fixture".into(),
+            }),
+            StreamStep::error(ModelPortError::new(
+                "deepseek_transport",
+                ModelErrorCategory::Transport,
+                "redacted response-body interruption",
+                true,
+            )),
+        ])
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut request = request("M21 partial reasoning transport interruption");
+    request.limits.max_model_retries = 3;
+    let outcome = runtime.start(request).wait().await.unwrap();
+
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "actionable reasoning must forbid replay"
+    );
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Failed {
+            failure: RuntimeFailure::Model {
+                ref code,
+                category: ModelErrorCategory::Transport,
+                ..
+            }
+        } if code == "deepseek_transport"
+    ));
+    assert!(outcome.accounting.usage_incomplete);
+    assert!(!outcome.accounting.usage_complete);
+    assert!(!sink.events().iter().any(|event| matches!(
+        event.event,
+        RuntimeEventKind::ModelResponseCommitted { .. }
+            | RuntimeEventKind::CompletionProposed { .. }
+    )));
+    assert!(sink.events().iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ModelRequestFailed {
+            failure,
+            retry: ModelRetryDecision::Stop {
+                reason: ModelRetryStopReason::ActionableOutput,
+            },
+            ..
+        } if failure.code == "deepseek_transport"
+            && failure.response.response_headers_received
+            && failure.response.reasoning_observed
+            && !failure.response.content_observed
+            && !failure.response.usage_received
+            && failure.actionable_output
+            && !failure.retry_safe
+    )));
+}
+
+#[tokio::test]
 async fn root_and_read_only_child_share_the_same_unsafe_replay_contract() {
     let evidence = ModelResponseEvidence {
         response_headers_received: true,

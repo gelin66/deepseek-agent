@@ -2899,6 +2899,39 @@ inference side effect 而保留。详细 frozen identity、raw/report hash、官
 非结论见
 [M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
 
+### M21 partial-response owner audit
+
+M21 的评测对象是 M20B 第六个 physical response 的本地 owner，不是模型能力、产品质量
+或成本。它禁止 Key、官方 API、external network、付费重采、mate 和历史 raw 拼接。
+唯一输入是 immutable M20B journal 的 redacted typed facts，以及独立提交的安全 fixture。
+
+冻结事件顺序为 prepared 2989、in-flight 2990、reasoning delta 2991、failed 2992、
+terminal 2993。failure 在 reasoning delta 后 56 ms 提交；这排除了 120 s Harness
+model-event idle 和 900 s production stream idle。external verifier 已通过，但没有
+ModelResponseCommitted、CompletionProposed 或最新 Host completion receipt，因此仍是
+failed terminal。
+
+credential-free deterministic matrix 覆盖：
+
+- 真实 loopback HTTP response 在一个合法 reasoning SSE frame 后截断 declared body；
+- DeepSeek transport/parser/error projection/accounting 的完整调用链；
+- Runtime 在 actionable partial output 后禁止 replay，即使 retry budget 大于零；
+- incomplete response 与 pre-header billing-unknown 的区分；
+- SQLite failure/evidence/retry/accounting exact reopen；
+- 现有 in-flight process recovery 不重新发出 request。
+
+三层新增回归全部通过，且 replay 与 frozen contract 逐项一致。M21 因此没有 production
+fix eligibility；结论为
+`no_local_defect_reproduced / keep_fail_closed_stream_accounting /
+upstream_response_body_interruption_not_reconstructible`。这不识别是 provider、代理还是
+网络中的哪个组件关闭了 body，只把可观察 owner 边界固定在 response-body stream。没有
+usage 时继续 fail closed，partial reasoning 后继续不盲重试，external verifier pass
+继续不能自动伪完成。
+
+M21 不授权重跑 M19/M20B、恢复未收到的 usage、增加 sender/retry/controller，也不形成
+fixed-Pro quality aggregate。完整 fixture、manifest、raw identity、命令与非结论见
+[M21 partial-response owner audit](../../eval/summaries/m21-partial-response-owner-audit-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

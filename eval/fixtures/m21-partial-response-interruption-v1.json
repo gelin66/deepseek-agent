@@ -1,0 +1,77 @@
+{
+  "schema": "dse.eval.m21-partial-response-interruption.v1",
+  "source_observation": {
+    "suite": "m20b-fixed-pro-reliability-v1",
+    "task": "typescript_request_budget_recovery",
+    "raw_sha256": "sha256:cf25d9412fcfb8db3b50f1d5cfda0cf82d8a0d0786daa63fdd0469c468c639b7",
+    "event_window": {
+      "model_request_prepared_sequence": 2989,
+      "model_request_in_flight_sequence": 2990,
+      "first_reasoning_delta_sequence": 2991,
+      "model_request_failed_sequence": 2992,
+      "terminal_sequence": 2993
+    },
+    "failure": {
+      "code": "deepseek_transport",
+      "category": "transport",
+      "retryable": true,
+      "retry_safe": false,
+      "response": {
+        "response_headers_received": true,
+        "content_observed": false,
+        "reasoning_observed": true,
+        "tool_call_observed": false,
+        "tool_call_id_observed": false,
+        "tool_call_name_observed": false,
+        "tool_call_arguments_observed": false,
+        "finish_reason_observed": false,
+        "finish_reason_trusted": false,
+        "usage_received": false,
+        "stream_done_received": false
+      },
+      "retry_decision": "stop",
+      "retry_stop_reason": "actionable_output"
+    },
+    "accounting": {
+      "root_started": 6,
+      "root_completed": 6,
+      "root_in_flight": 0,
+      "runtime_retries": 0,
+      "transport_retries": 0,
+      "response_count": 6,
+      "usage_response_count": 5,
+      "incomplete_responses": 1,
+      "billing_unknown": false,
+      "usage_complete": false,
+      "usage_incomplete": true,
+      "sealed_at_terminal": true
+    },
+    "external_verifier_passed": true,
+    "terminal_completed": false
+  },
+  "deterministic_replay": {
+    "wire_prefix": "one valid reasoning_content SSE data frame",
+    "wire_failure": "HTTP response body terminates before its declared Content-Length",
+    "must_observe": {
+      "error_code": "deepseek_transport",
+      "error_category": "transport",
+      "response_headers_received": true,
+      "reasoning_observed": true,
+      "usage_received": false,
+      "finish_reason_observed": false,
+      "stream_done_received": false,
+      "retry_safe": false,
+      "retry_stop_reason": "actionable_output",
+      "incomplete_responses": 1,
+      "billing_unknown_attempts": 0,
+      "committed_model_response": false
+    }
+  },
+  "redaction": {
+    "contains_credential": false,
+    "contains_prompt": false,
+    "contains_reasoning_text": false,
+    "contains_tool_arguments": false,
+    "contains_provider_network_detail": false
+  }
+}
