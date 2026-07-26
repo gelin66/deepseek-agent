@@ -290,7 +290,7 @@ fn frozen_language_and_size_matrix_preserves_native_composer_focus() -> anyhow::
                 },
                 KEY_TIMEOUT,
             )?;
-            let frame = h.frame();
+            let frame = h.observed_frame();
             assert_viewport_starts_at_top(frame);
             let (cursor_row, cursor_col) = frame.cursor();
             assert!(

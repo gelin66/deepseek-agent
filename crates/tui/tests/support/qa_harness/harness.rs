@@ -161,6 +161,13 @@ impl Harness {
         &self.frame
     }
 
+    /// Return the exact frame observed by the preceding wait without pumping
+    /// another PTY chunk. This keeps a resize assertion bound to the frame that
+    /// satisfied its predicate instead of racing a clear/redraw pair.
+    pub fn observed_frame(&self) -> &Frame {
+        &self.frame
+    }
+
     /// Block (briefly sleeping) until `predicate(frame)` is true or `timeout`
     /// elapses. Pumps the PTY on each tick.
     pub fn wait_for<F>(&mut self, mut predicate: F, timeout: Duration) -> Result<()>
