@@ -147,6 +147,8 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         },
         RUN_TIMEOUT,
     )?;
+    tui.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    let live_terminal_frame = tui.frame().visible_cells();
 
     tui.send(b"\x04")?; // Ctrl+D exits only after the canonical Terminal event.
     assert_eq!(
@@ -175,6 +177,53 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     assert_canonical_sqlite_truth(&state_path, &canonical_workspace, PROMPT)?;
     assert_no_legacy_execution_json(isolated.home());
     assert_no_legacy_execution_json(isolated.workspace());
+
+    let mut reopened = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("DSE_HOME", dse_home.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "offline-reopen-must-not-send")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--language",
+            "zh-Hans",
+            "--resume",
+            "latest",
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(40, 140)
+        .spawn()?;
+    reopened.wait_for_text(COMPLETION_MARKER, BOOT_TIMEOUT)?;
+    reopened.wait_for(
+        |frame| {
+            frame.contains("状态 · 完成")
+                && frame.contains("验证 · 1/1 通过")
+                && frame.contains("RunStore · 可恢复")
+        },
+        BOOT_TIMEOUT,
+    )?;
+    reopened.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    assert_eq!(
+        reopened.frame().visible_cells(),
+        live_terminal_frame,
+        "visible terminal-cell projection changed after credential-free RunStore reopen"
+    );
+    reopened.send(b"\x04")?;
+    assert_eq!(
+        reopened.wait_for_exit(EXIT_TIMEOUT),
+        Some(0),
+        "reopened terminal run did not exit cleanly:\n{}",
+        reopened.debug_dump()
+    );
     Ok(())
 }
 

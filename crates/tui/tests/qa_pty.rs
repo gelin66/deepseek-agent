@@ -26,6 +26,7 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEY_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
 const ENGLISH_COMPOSER_READY_TEXT: &str = "Write a task or use /.";
+const FROZEN_NATIVE_SIZES: [(u16, u16); 5] = [(12, 48), (16, 60), (24, 80), (32, 100), (40, 140)];
 static QA_PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn qa_pty_test_lock() -> MutexGuard<'static, ()> {
@@ -206,6 +207,72 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
     );
 
     let _ = h.shutdown();
+    Ok(())
+}
+
+#[test]
+fn frozen_language_and_size_matrix_preserves_native_composer_focus() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    for (language, ready, stress) in [
+        (
+            "en",
+            ENGLISH_COMPOSER_READY_TEXT,
+            "path src/very-long-directory/combining-e\u{301}/emoji-🧭-M28END",
+        ),
+        (
+            "zh-Hans",
+            COMPOSER_READY_TEXT,
+            "路径 src/非常长的目录/组合-e\u{301}/emoji-🧭-M28END",
+        ),
+    ] {
+        let ws = make_sealed_workspace()?;
+        let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
+            .cwd(ws.workspace())
+            .clear_env()
+            .seal_home(ws.home())
+            .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+            .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+            .env("NO_ANIMATIONS", "1")
+            .env("RUST_LOG", "warn")
+            .args([
+                "--workspace",
+                ws.workspace().to_str().expect("utf-8 workspace path"),
+                "--language",
+                language,
+                "--no-project-config",
+                "--skip-onboarding",
+            ])
+            .size(FROZEN_NATIVE_SIZES[0].0, FROZEN_NATIVE_SIZES[0].1)
+            .spawn()?;
+        h.wait_for_text(ready, BOOT_TIMEOUT)?;
+        h.paste(stress)?;
+        h.wait_for_text("M28END", KEY_TIMEOUT)?;
+
+        for (rows, cols) in FROZEN_NATIVE_SIZES {
+            h.resize(rows, cols)?;
+            h.wait_for(
+                |frame| {
+                    frame.rows() == rows
+                        && frame.cols() == cols
+                        && frame.contains("M28END")
+                        && frame.any_visible_text()
+                },
+                KEY_TIMEOUT,
+            )?;
+            let frame = h.frame();
+            assert_viewport_starts_at_top(frame);
+            let (cursor_row, cursor_col) = frame.cursor();
+            assert!(
+                cursor_row < rows && cursor_col < cols,
+                "{language} composer cursor escaped {cols}x{rows}:\n{}",
+                frame.debug_dump()
+            );
+        }
+
+        h.send(keys::key::text("-K"))?;
+        h.wait_for_text("M28END-K", KEY_TIMEOUT)?;
+        let _ = h.shutdown();
+    }
     Ok(())
 }
 

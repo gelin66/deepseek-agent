@@ -80,6 +80,29 @@ impl Frame {
         None
     }
 
+    /// Exact visible glyph cells, excluding terminal-default blank cells.
+    ///
+    /// A live frame may reach the same visual result by overwriting prior
+    /// cells with spaces while a freshly reopened frame reaches it through a
+    /// clear. Comparing non-blank cells preserves glyph identity and terminal
+    /// coordinates without treating those equivalent blank encodings as a
+    /// presentation difference.
+    pub fn visible_cells(&self) -> Vec<(u16, u16, String)> {
+        let mut cells = Vec::new();
+        for row in 0..self.rows() {
+            for col in 0..self.cols() {
+                let Some(cell) = self.parser.screen().cell(row, col) else {
+                    continue;
+                };
+                let contents = cell.contents();
+                if !contents.is_empty() && !contents.chars().all(char::is_whitespace) {
+                    cells.push((row, col, contents.to_owned()));
+                }
+            }
+        }
+        cells
+    }
+
     /// Foreground/background colors for one terminal cell. Theme QA uses the
     /// parsed ANSI result rather than trusting a screenshot renderer's own
     /// palette or accessibility environment.
