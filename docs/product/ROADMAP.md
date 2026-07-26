@@ -3977,7 +3977,7 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 ## 21. M23：effect-first Hardness / Harness 能力优化
 
-- 状态：**计划中；在 M22 完整收口并提交后开始**
+- 状态：**执行中；M23-A 已通过离线门并保留，下一步 M23-B**
 - 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
 - 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
 - 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
@@ -4090,6 +4090,21 @@ accounting_status:
 - focused、Harness self-test、crash/reopen 和 `git diff --check` 通过；
 - 删除旧 analyzer 中把所有 accounting stop 无差别折叠为同一产品结论的分支；不保留双写
   或 compatibility reader。
+
+#### 结果
+
+ADR-0011 已接受。现有 corrected Harness 新增 10-case credential-free corpus，并直接从
+canonical Store、无凭据 SQLite reopen、verifier snapshot 与 terminal 派生两个轴。10/10
+通过且 report 连续两次 byte-identical；behavior 分布为 success 3、correct rejection 1、
+product failure 4、measurement interruption 1、invalid 1，fixture 内显式 false success
+为 1；accounting 分布为 complete 5、usage incomplete 2、billing unknown 2、unpriced 1。
+
+旧 `arm_result is None -> measurement_incomplete` product-loss 分支已物理删除。当前
+analyzer 的 owner/cause key 阻止 root 与 Writer 的不同失败被粗粒度合并。M11/M12/M15/
+M18/M19/M20B frozen journal 可重复读取，但 raw、manifest、summary 与历史 admission
+decision 未改写。M23-A 决定为
+`keep_orthogonal_behavior_accounting_truth`；production delta、Key、API 与 network 为
+0。它不授权 high/max 或任何 M23-D candidate。
 
 ### 21.4 M23-B：current Hardness 私有任务集
 

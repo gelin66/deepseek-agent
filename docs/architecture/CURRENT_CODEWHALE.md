@@ -2442,6 +2442,28 @@ CLI/TUI/app-server conformance 保持通过。决策为
 或 release。完整证据见
 [M22 canonical streaming-delta convergence](../../eval/summaries/m22-streaming-delta-convergence-2026-07-26.md)。
 
+M23-A 只改变现有 corrected Harness/analyzer 的派生规则，不改变 production：
+
+- ADR-0011 将 `behavior_status` 与 `accounting_status` 冻结为两个正交轴；
+- behavior 只由冻结 task identity、workspace outcome、external verifier、production
+  terminal、latest-revision Host receipt、route/lane 与 observer 决定；
+- accounting 只由 canonical physical request/usage/pricing/seal ledger 决定，非
+  complete 状态继续停止下一付费 request，且不能进入 cost/Token/full-utility aggregate；
+- 10-case offline corpus 覆盖 complete、partial、pre-header、deadline、observer、
+  receipt、unpriced 与 false-success 窗口，10/10 通过且 report byte-identical；
+- analyzer 连接 canonical Store、credential-free SQLite reopen 与 verifier snapshot；
+  旧 `arm_result=None -> measurement_incomplete` product-loss 分支已删除；
+- M11/M12/M15/M18/M19/M20B frozen journal 可按新规则重算，但 frozen raw、manifest、
+  summary 和历史 admission decision 不改写；
+- production 仍是 Run API v12、RuntimeEvent v19、State v25、exec-stream v4、唯一
+  AgentRuntime/RunStore、fixed actor route、canonical tools 与 official DeepSeek
+  ChatCompletions。Key/API/network 为 0。
+
+M23-A 结论为 `keep_orthogonal_behavior_accounting_truth`。它没有建立 Hardness baseline、
+没有授权 high/max A/B，也没有形成 ApplicationProbe、symbol localization、
+VerifiedMilestone 或 Tool ACI candidate。完整证据见
+[M23-A behavior/accounting truth](../../eval/summaries/m23-a-behavior-accounting-truth-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

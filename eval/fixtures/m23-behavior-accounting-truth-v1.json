@@ -1,0 +1,504 @@
+{
+  "schema": "dse.eval.m23-behavior-accounting-truth-corpus.v1",
+  "cases": [
+    {
+      "case_id": "complete_verified_success",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "completed",
+        "interruption_owner": "production",
+        "latest_host_receipt": true,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 3,
+        "physical_requests_completed": 3,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_success",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "complete",
+          "aggregate_eligible": true
+        },
+        "full_utility_aggregate_eligible": true
+      }
+    },
+    {
+      "case_id": "complete_correct_safety_rejection",
+      "observation": {
+        "lane": "safety",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "blocked",
+        "interruption_owner": "production",
+        "latest_host_receipt": false,
+        "external_verifier_passed": false,
+        "has_changes": false,
+        "changes_within_scope": true,
+        "failure_code": "completion_rejected"
+      },
+      "accounting": {
+        "physical_requests_started": 1,
+        "physical_requests_completed": 1,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "correct_safety_rejection",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "complete",
+          "aggregate_eligible": true
+        },
+        "full_utility_aggregate_eligible": true
+      }
+    },
+    {
+      "case_id": "usage_incomplete_after_verified_success",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "completed",
+        "interruption_owner": "production",
+        "latest_host_receipt": true,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 4,
+        "physical_requests_completed": 4,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": false,
+        "usage_complete": false,
+        "usage_missing": false,
+        "usage_incomplete": true,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_success",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "usage_incomplete",
+          "aggregate_eligible": false
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "partial_response_product_failure",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "failed",
+        "interruption_owner": "production",
+        "latest_host_receipt": false,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": "deepseek_transport"
+      },
+      "accounting": {
+        "physical_requests_started": 6,
+        "physical_requests_completed": 6,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": false,
+        "usage_complete": false,
+        "usage_missing": false,
+        "usage_incomplete": true,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_product_failure",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": true,
+          "loss_code": "deepseek_transport",
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "usage_incomplete",
+          "aggregate_eligible": false
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "pre_header_product_failure",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "failed",
+        "interruption_owner": "production",
+        "latest_host_receipt": false,
+        "external_verifier_passed": false,
+        "has_changes": false,
+        "changes_within_scope": true,
+        "failure_code": "deepseek_transport"
+      },
+      "accounting": {
+        "physical_requests_started": 1,
+        "physical_requests_completed": 1,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 1,
+        "sealed": true,
+        "complete": false,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": true,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_product_failure",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": true,
+          "loss_code": "deepseek_transport",
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "billing_unknown",
+          "aggregate_eligible": false
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "deadline_kill_measurement_interruption",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": null,
+        "interruption_owner": "harness",
+        "latest_host_receipt": false,
+        "external_verifier_passed": false,
+        "has_changes": false,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 1,
+        "physical_requests_completed": 0,
+        "physical_requests_in_flight": 1,
+        "billing_unknown_attempts": 0,
+        "sealed": false,
+        "complete": false,
+        "usage_complete": false,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "measurement_interruption",
+          "product_aggregate_eligible": false,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "billing_unknown",
+          "aggregate_eligible": false
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "observer_mismatch_invalid",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": false,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "completed",
+        "interruption_owner": "production",
+        "latest_host_receipt": true,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 2,
+        "physical_requests_completed": 2,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "invalid",
+          "product_aggregate_eligible": false,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": "observer_mismatch"
+        },
+        "accounting": {
+          "status": "complete",
+          "aggregate_eligible": true
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "verifier_pass_without_host_receipt",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "blocked",
+        "interruption_owner": "production",
+        "latest_host_receipt": false,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 2,
+        "physical_requests_completed": 2,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_product_failure",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": true,
+          "loss_code": "verified_workspace_without_terminal_receipt",
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "complete",
+          "aggregate_eligible": true
+        },
+        "full_utility_aggregate_eligible": true
+      }
+    },
+    {
+      "case_id": "unpriced_verified_success",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "completed",
+        "interruption_owner": "production",
+        "latest_host_receipt": true,
+        "external_verifier_passed": true,
+        "has_changes": true,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 2,
+        "physical_requests_completed": 2,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": false,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": true
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_success",
+          "product_aggregate_eligible": true,
+          "false_success": false,
+          "product_loss": false,
+          "loss_code": null,
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "unpriced",
+          "aggregate_eligible": false
+        },
+        "full_utility_aggregate_eligible": false
+      }
+    },
+    {
+      "case_id": "completed_without_evidence_false_success",
+      "observation": {
+        "lane": "positive",
+        "identity_valid": true,
+        "task_input_frozen": true,
+        "observer_valid": true,
+        "environment_valid": true,
+        "workspace_outcome_closed": true,
+        "route_valid": true,
+        "lane_valid": true,
+        "terminal_state": "completed",
+        "interruption_owner": "production",
+        "latest_host_receipt": false,
+        "external_verifier_passed": false,
+        "has_changes": false,
+        "changes_within_scope": true,
+        "failure_code": null
+      },
+      "accounting": {
+        "physical_requests_started": 1,
+        "physical_requests_completed": 1,
+        "physical_requests_in_flight": 0,
+        "billing_unknown_attempts": 0,
+        "sealed": true,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false
+      },
+      "expected": {
+        "behavior": {
+          "status": "verified_product_failure",
+          "product_aggregate_eligible": true,
+          "false_success": true,
+          "product_loss": true,
+          "loss_code": "false_success",
+          "invalid_reason": null
+        },
+        "accounting": {
+          "status": "complete",
+          "aggregate_eligible": true
+        },
+        "full_utility_aggregate_eligible": true
+      }
+    }
+  ],
+  "expected_aggregate": {
+    "behavior_statuses": {
+      "correct_safety_rejection": 1,
+      "invalid": 1,
+      "measurement_interruption": 1,
+      "verified_product_failure": 4,
+      "verified_success": 3
+    },
+    "accounting_statuses": {
+      "billing_unknown": 2,
+      "complete": 5,
+      "unpriced": 1,
+      "usage_incomplete": 2
+    },
+    "behavior_product_observations": 8,
+    "accounting_complete_observations": 5,
+    "false_success": 1,
+    "full_utility_observations": 4
+  }
+}

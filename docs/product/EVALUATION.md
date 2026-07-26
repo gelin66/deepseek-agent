@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-24
+- 上次更新：2026-07-26
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -242,6 +242,42 @@ evidence
   差值；
 - usage/cost 不完整、cell 未跑完、缺 baseline 或样本少于 3 次时，
   `product_metric_eligible=false`。
+
+### 5.2 行为真相与 accounting 真相
+
+自 ADR-0011 起，正式 Harness 必须从同一 canonical observation 分别派生
+`behavior_status` 与 `accounting_status`：
+
+```text
+behavior_status:
+  verified_success
+  correct_safety_rejection
+  verified_product_failure
+  measurement_interruption
+  invalid
+
+accounting_status:
+  complete
+  usage_incomplete
+  billing_unknown
+  unpriced
+```
+
+行为标签要求冻结 identity/task、workspace outcome、external verifier、production
+terminal、latest-revision Host receipt、route/lane 与 observer 全部闭合。typed production
+failure/blocked 且缺最新 receipt 是 `verified_product_failure`；Harness、机器或基础设施
+中断且没有 production outcome 才是 `measurement_interruption`；任何 evaluator、
+identity、environment、workspace、route、evidence 或 observer 歧义都是 `invalid`。
+
+accounting 标签只来自 physical request/usage/pricing/seal ledger。非 `complete` 状态继续
+停止下一付费 request，不能进入 Token、费用、效率或完整 utility aggregate，也不能把未知
+费用记为零。行为 aggregate 可独立保留闭合的前三种 behavior status，但
+`measurement_interruption`/`invalid` 不得进入；任何 production treatment 的最终准入仍
+要求 false success 为零、预注册质量矩阵完成且 accounting 完整。
+
+旧 `product_metric_eligible=false` 仍表示不具备完整产品 utility/cost 结论，不再表示同一
+observation 必然没有行为真相。`maximum_reruns=0`、不补 mate、不选择性续跑、不拼接旧 raw
+保持不变。
 
 compaction 的协议、replay、lineage 或恢复测试通过，只证明机制可用，不能证明产品收益。
 M5-B 已完成同任务、同模型、同预算、同工具面和每 cell 至少 3 次的 compaction on/off
@@ -2984,6 +3020,54 @@ surface parity、focused、fmt、strict Clippy 与 workspace test 是保留门�
 网络每个 chunk 都有同样收敛率，也不形成 fixed-Pro coding quality/cost aggregate。完整
 identity、raw hash、命令、删除和非结论见
 [M22 canonical streaming-delta convergence](../../eval/summaries/m22-streaming-delta-convergence-2026-07-26.md)。
+
+### M23-A behavior/accounting truth orthogonality
+
+M23-A 接受 ADR-0011，只改变现有 corrected Harness/analyzer 的派生规则，不改变
+production Runtime、Store、transport、protocol、工具、route 或 completion owner。
+
+提交的 10-case offline corpus 覆盖 complete success、正确安全拒绝、行为成功但 usage
+不完整、partial response、pre-header failure、deadline kill、observer mismatch、
+external verifier pass 但无 Host receipt、unpriced 和 false success。结果为 10/10，
+连续两次 canonical report byte-identical：
+
+```text
+behavior:
+  verified_success = 3
+  correct_safety_rejection = 1
+  verified_product_failure = 4
+  measurement_interruption = 1
+  invalid = 1
+  false_success = 1
+
+accounting:
+  complete = 5
+  usage_incomplete = 2
+  billing_unknown = 2
+  unpriced = 1
+```
+
+这组 case 故意不是产品成功率样本；它只证明两个轴互不覆盖。尤其：
+
+- completed + latest Host receipt + verifier pass 在 usage incomplete 时仍保留
+  `verified_success`，但不得进入 cost/full-utility aggregate；
+- typed failed terminal 在 partial/pre-header accounting 中断时仍是
+  `verified_product_failure`；
+- 没有 production terminal 的 deadline kill 仍是 `measurement_interruption`；
+- external verifier pass 没有 latest Host receipt 仍是 product failure，不是成功；
+- observer/environment ambiguity 仍为 `invalid`。
+
+旧 `trajectory_loss_projection(arm_result=None) -> measurement_incomplete` 分支已删除。
+current analyzer 现在把 canonical Store、无凭据 SQLite reopen、verifier snapshot 与
+terminal 连接后分别输出 behavior/accounting aggregate；frozen raw、manifest、summary
+和历史 admission decision 不改写。M11/M12/M15/M18/M19/M20B journal 均可重算，M15 的
+reference-file 假阳性在新 behavior truth 中保持 false success 0，不同 actor owner 的失败
+不会被粗粒度合并为重复损失。
+
+M23-A 决定为 `keep_orthogonal_behavior_accounting_truth`。Key/API/network 为 0。
+该结果不建立 Hardness baseline、不授权 high/max A/B，也不授权四个 production candidate；
+下一步仍是 M23-B 的全新 18–24 task control-only contract。完整身份、删除和门禁见
+[M23-A behavior/accounting truth](../../eval/summaries/m23-a-behavior-accounting-truth-2026-07-26.md)。
 
 ## 10. 结果与决策记录
 

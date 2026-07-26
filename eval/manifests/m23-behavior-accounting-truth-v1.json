@@ -1,0 +1,69 @@
+{
+  "schema": "dse.eval.m23-behavior-accounting-truth.v1",
+  "slice": "M23-A",
+  "status": "offline_contract",
+  "real_problem": "The corrected Harness stops paid acquisition on billing_unknown or usage_incomplete, but its trajectory analyzer also treated every missing arm_result as measurement_incomplete. That collapses a cost-evidence stop into a behavior conclusion even when the canonical terminal, latest-revision Host evidence, workspace outcome and external verifier independently close the task outcome.",
+  "acceptance": [
+    "behavior_status and accounting_status are derived independently from one immutable observation",
+    "billing_unknown and usage_incomplete remain hard stops for token, cost and full-utility aggregates",
+    "a production failed or blocked terminal with closed task evidence remains a verified_product_failure even when accounting is incomplete",
+    "a Harness or infrastructure interruption without a production terminal remains measurement_interruption",
+    "identity, evaluator, workspace, environment, route or observer ambiguity remains invalid",
+    "false_success remains an explicit zero-tolerance behavior fact",
+    "the conformance report is byte-identical across repeated derivation",
+    "no credential, network, production schema, Runtime, Store or tool surface is used"
+  ],
+  "owner": {
+    "normative": "docs/product/EVALUATION.md",
+    "executable": "scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": false
+  },
+  "old_path_replaced": "trajectory_loss_projection(arm_result=None) -> measurement_incomplete and the resulting single mixed loss aggregate",
+  "cutover_deletion": [
+    "delete trajectory_loss_projection and its arm_result-missing accounting proxy",
+    "do not add a second evaluator, compatibility writer or duplicate journal truth",
+    "keep frozen journals, manifests, summaries and historical decisions byte-unchanged"
+  ],
+  "corpus": {
+    "path": "eval/fixtures/m23-behavior-accounting-truth-v1.json",
+    "schema": "dse.eval.m23-behavior-accounting-truth-corpus.v1",
+    "file_sha256": "sha256:a942c74e77494ab9ce3412e6f9daf82d7a747ea17369a6a2fb7cd95529a3b753",
+    "size_bytes": 15284,
+    "case_count": 10,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "required_windows": [
+    "complete verified success",
+    "complete correct safety rejection",
+    "verified success with usage incomplete",
+    "partial response with failed production terminal",
+    "pre-header failed production terminal",
+    "deadline kill without production terminal",
+    "observer mismatch",
+    "external verifier pass without latest Host receipt",
+    "unpriced complete behavior",
+    "completed terminal without evidence"
+  ],
+  "aggregate_contract": {
+    "behavior_product_statuses": [
+      "verified_success",
+      "correct_safety_rejection",
+      "verified_product_failure"
+    ],
+    "behavior_non_product_statuses": [
+      "measurement_interruption",
+      "invalid"
+    ],
+    "accounting_aggregate_status": "complete",
+    "full_utility_requires_both_axes": true,
+    "maximum_reruns": 0
+  },
+  "security": {
+    "key_accessed": false,
+    "network_accessed": false,
+    "historical_raw_read": false,
+    "output_contains_prompt_or_reasoning": false
+  }
+}
