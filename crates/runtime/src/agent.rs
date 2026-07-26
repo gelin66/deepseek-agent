@@ -4594,9 +4594,11 @@ fn named_verifier_tool_definition(
     mut definition: ToolDefinition,
     acceptance_id: &AcceptanceId,
 ) -> ToolDefinition {
+    let tool_name = definition.name.clone();
     definition.description = format!(
-        "运行 TaskContract 中冻结的确定性 verifier `{}`；完整参数与执行计划由 Host 展开。",
-        acceptance_id.0
+        "运行 TaskContract acceptance `{}` 绑定的确定性 verifier；参数 `verifier_id` \
+         必须逐字填写 acceptance ID `{}`，不是工具名 `{}`；完整参数与执行计划由 Host 展开。",
+        acceptance_id.0, acceptance_id.0, tool_name
     );
     definition.input_schema = json!({
         "type": "object",
@@ -4604,7 +4606,10 @@ fn named_verifier_tool_definition(
             "verifier_id": {
                 "type": "string",
                 "enum": [acceptance_id.0],
-                "description": "TaskContract 中冻结的 verifier acceptance ID。"
+                "description": format!(
+                    "逐字复制 TaskContract acceptance ID `{}`；不要填写工具名 `{}`。",
+                    acceptance_id.0, tool_name
+                )
             }
         },
         "required": ["verifier_id"],
@@ -5882,6 +5887,17 @@ mod actor_capability_tests {
         assert_eq!(
             definition.input_schema["properties"]["verifier_id"]["enum"],
             json!(["frozen-check"])
+        );
+        assert_eq!(
+            definition.description,
+            "运行 TaskContract acceptance `frozen-check` 绑定的确定性 verifier；参数 \
+             `verifier_id` 必须逐字填写 acceptance ID `frozen-check`，不是工具名 \
+             `run_verifiers`；完整参数与执行计划由 Host 展开。"
+        );
+        assert_eq!(
+            definition.input_schema["properties"]["verifier_id"]["description"],
+            "逐字复制 TaskContract acceptance ID `frozen-check`；不要填写工具名 \
+             `run_verifiers`。"
         );
 
         let invocation = ToolInvocation {
