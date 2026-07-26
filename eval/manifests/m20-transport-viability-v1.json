@@ -1,0 +1,154 @@
+{
+  "schema": "dse.eval.m20-transport-viability.v1",
+  "suite_id": "m20-transport-viability-v1",
+  "frozen_on": "2026-07-26",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "7fe8bcd5446933a4cbf4e4e5de3deb2eab0b756f",
+    "starting_tree": "e79bf1673931a68059f457ff2b980601a219227f",
+    "required_clean_start": true,
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.14.6",
+    "cargo_lock_sha256": "sha256:33d367336b9e5bc32afe4cf3fb1694193036f288a623bc04b51ef8a2b9a05cf7",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:2173e154f2d76212d60e21bc20bf0e26bdd0695045008f2e3e8c567d3e97bf89",
+    "roadmap": "sha256:8e1e77a6a92b43e4331399e4b7b73919587148d631a7d3a37590cbeecac3cf57",
+    "evaluation": "sha256:07b48651b9fc824b09652345f0e5013dd7e4b89b01d5fc4ea605358c8e6231c7",
+    "current_architecture": "sha256:f4cdea023fbb281c310090cd971c8c4a41af9b1b519556640e967a81fa3adc0d"
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-26",
+    "sources": [
+      "https://api-docs.deepseek.com/api/deepseek-api",
+      "https://api-docs.deepseek.com/api/get-user-balance/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/quick_start/error_codes/",
+      "https://api-docs.deepseek.com/quick_start/rate_limit/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/"
+    ],
+    "frozen_facts": {
+      "official_base_url": "https://api.deepseek.com",
+      "account_probe_method": "GET",
+      "account_probe_endpoint": "/user/balance",
+      "account_probe_is_model_inference": false,
+      "chat_endpoint": "/chat/completions",
+      "current_pro_model": "deepseek-v4-pro",
+      "legacy_aliases_retired_after_2026_07_24_1559_utc": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "chat_completions_retired": false,
+      "documented_account_probe_success_fields": [
+        "is_available",
+        "balance_infos"
+      ],
+      "documented_http_statuses": [
+        200,
+        400,
+        401,
+        402,
+        422,
+        429,
+        500,
+        503
+      ],
+      "request_level_billing_reconciliation_documented": false,
+      "pre_header_attempt_settlement_bound_documented": false,
+      "health_endpoint_documented": false
+    }
+  },
+  "slice_contract": {
+    "real_problem": "M19's first fixed-Pro physical request failed before response headers with typed deepseek_transport and billing_unknown. The retained human dse doctor connectivity check also sends a real one-token Chat inference outside AgentRuntime, RunStore and terminal accounting, so it cannot safely establish transport viability.",
+    "acceptance": [
+      "replace the Doctor one-token Chat inference with one authenticated non-inference GET /user/balance request owned by the existing DeepSeek transport",
+      "use the same resolved endpoint, reqwest client, TLS policy, credential wrapper, response-header timeout, DSE User-Agent and error sanitation as production",
+      "never expose or persist balance amounts; validate only the documented response shape",
+      "never reserve, mutate, seal or project the physical model request/usage ledger for the account probe",
+      "perform no retry; one Doctor invocation causes at most one account probe",
+      "cover success, authorization rejection, malformed response, timeout and loopback endpoint ownership offline",
+      "make the Doctor projection state that success proves official host/auth reachability only, not Chat inference, usage, billing reconciliation or Agent correctness",
+      "after all local gates pass, execute exactly three separately planned official probes and stop on the first failure"
+    ],
+    "single_owner": "crates/deepseek/src/transport.rs owns the official and loopback HTTP request; crates/tui Doctor is the sole migrated human caller",
+    "old_path_replaced_after_cutover": [
+      "Doctor ChatPlanInput with content hi, max_tokens=1, reasoning off and non-streaming completion",
+      "Doctor-local SharedApiRequestBudget whose inference and usage facts disappear after the command"
+    ],
+    "preserve": [
+      "the unique official DeepSeek ChatCompletions production sender and parser",
+      "canonical AgentRuntime, RunStore, model request ledger, usage accounting and billing_unknown -> formal campaign stop",
+      "fixed root and Writer deepseek-v4-pro/high, fixed read-only child deepseek-v4-flash/high and typed recheck deepseek-v4-pro/max",
+      "M19 immutable manifest, ignored 0600 raw, exact Store evidence and stop decision"
+    ],
+    "forbidden": [
+      "M19 rerun, mate completion, request retry, balance-delta billing inference or coding product conclusion from an account probe",
+      "printing, logging, serializing or storing credential or balance values",
+      "a second sender, Provider, Runtime, Store, tool catalog, health service, Auto, FIM, Anthropic, GitHub or remote CI"
+    ]
+  },
+  "offline_gates": {
+    "transport_tests": [
+      "GET path and bearer/User-Agent identity",
+      "documented response shape",
+      "401 and bounded sanitized body",
+      "malformed JSON",
+      "response-header timeout",
+      "zero physical model request and usage accounting delta",
+      "single attempt with transport retries configured"
+    ],
+    "repository": [
+      "./scripts/dev-dse.sh focused",
+      "cargo fmt --all -- --check",
+      "cargo test -p dse-deepseek --locked",
+      "cargo check -p dse-deepseek --locked",
+      "cargo check -p dse-tui --locked",
+      "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "cargo test --workspace --locked",
+      "git diff --check"
+    ],
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m20-target"
+  },
+  "formal_viability": {
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_access_after_offline_gates_only": true,
+    "planned_probes": 3,
+    "maximum_reruns": 0,
+    "stop_on_first_failure": true,
+    "model_requests": 0,
+    "maximum_known_api_cost_usd": "0.00",
+    "raw_path_template": "eval/results/m20-transport-viability-<candidate12>-v1.jsonl",
+    "raw_ignored": true,
+    "raw_mode": "0600",
+    "raw_contains_stdout_or_stderr": false,
+    "raw_contains_credential_or_balance": false,
+    "recorded_facts": [
+      "candidate revision/tree and immutable binary SHA-256",
+      "probe ordinal, process exit, duration and sanitized outcome class",
+      "DNS/TCP/TLS/HTTP/auth collectively proven only by a successful authenticated HTTPS response",
+      "Chat inference and inference accounting explicitly not tested",
+      "pre-header billing reconciliation explicitly unresolved by the official contract"
+    ]
+  },
+  "decision_rule": {
+    "viable": "all three planned probes receive and validate one authenticated official 200 response without retry, credential exposure, balance exposure or model-accounting mutation",
+    "not_viable": "any probe fails endpoint validation, DNS/TCP/TLS reachability, response-header deadline, HTTP/authentication or documented response-shape validation; stop without a model request",
+    "next_acquisition": "only a viable result permits freezing a new immutable position-1 fixed-Pro reliability acquisition that is not an M19 rerun or mate",
+    "non_conclusions": [
+      "a successful account probe does not prove Chat inference success, model quality, response usage completeness or billed/unbilled status of M19",
+      "a failed account probe is a local transport/account viability result, not a coding product loss",
+      "this slice cannot weaken billing_unknown -> formal campaign stop or admit a retry"
+    ]
+  }
+}
