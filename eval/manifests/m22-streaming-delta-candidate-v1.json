@@ -1,0 +1,50 @@
+{
+  "schema": "dse.eval.m22-streaming-delta-candidate.v1",
+  "suite_id": "m22-streaming-delta-candidate-v1",
+  "frozen_on": "2026-07-26",
+  "baseline": {
+    "manifest": "eval/manifests/m22-streaming-delta-baseline-v1.json",
+    "fixture": "eval/fixtures/m22-streaming-delta-baseline-v1.json",
+    "baseline_commit": "c7a77045746970a48c31314a09efdf98bb3fd86d",
+    "baseline_tree": "d88132a17f9bd545f52a968f99a8dc3a70c215c7",
+    "result": "eval/results/m22-streaming-delta-baseline-c7a770457469-v1.json"
+  },
+  "candidate": {
+    "single_owner": "crates/deepseek/src/transport.rs",
+    "production_delta": "Converge adjacent content or reasoning SSE deltas only while parsing complete frames already present in one received HTTP body chunk. Evidence, finish, usage, tool fragments and errors remain flush barriers.",
+    "added_wait": false,
+    "schema_change": false,
+    "state_migration": false,
+    "user_surface": false,
+    "credential_read": false,
+    "official_api_requests": 0,
+    "external_network": false,
+    "warmups_per_profile": 1,
+    "measured_repetitions_per_profile": 5,
+    "maximum_reruns": 0
+  },
+  "quality_gate": [
+    "complete responses preserve byte-identical concatenated reasoning and content plus finish and usage",
+    "a malformed or incomplete frame flushes already received actionable deltas before the typed failure",
+    "no completion is committed without the existing finish, DONE and usage contract",
+    "no retry, side effect, RuntimeEvent schema, Store truth, client reducer or user mode is added",
+    "StateStore exact reopen, process SIGKILL recovery and CLI/TUI/API projections remain conformant"
+  ],
+  "thresholds": {
+    "event_count_reduction_minimum": 0.5,
+    "sqlite_reduction_minimum": 0.5,
+    "material_wall_improvement_minimum": 0.2,
+    "wall_time_regression_maximum": 0.1
+  },
+  "cutover": {
+    "if_pass": "Keep the same-chunk convergence in the sole official DeepSeek streaming sender; the per-frame production emission path is physically replaced and no compatibility branch remains.",
+    "if_fail": "Delete the transport convergence and candidate-only benchmark extension; retain the frozen baseline and reject result.",
+    "non_goals": [
+      "timer-based batching",
+      "waiting for a later network chunk",
+      "Store compaction or event mutation",
+      "journal rewriting",
+      "GitHub, remote CI, Key access, official API or model call"
+    ]
+  }
+}

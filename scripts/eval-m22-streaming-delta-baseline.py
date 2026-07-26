@@ -17,8 +17,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "eval/manifests/m22-streaming-delta-baseline-v1.json"
+CANDIDATE_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m22-streaming-delta-candidate-v1.json"
+)
 FIXTURE_PATH = ROOT / "eval/fixtures/m22-streaming-delta-baseline-v1.json"
-MARKER = "M22_BENCHMARK_JSON="
+BENCHMARK_MARKER = "M22_BENCHMARK_JSON="
+TRANSPORT_MARKER = "M22_CANDIDATE_TRANSPORT_JSON="
 WALL_METRICS = (
     "delta_append_us",
     "credential_free_reopen_us",
@@ -74,8 +78,9 @@ def git(*arguments: str) -> str:
     return completed.stdout.strip()
 
 
-def validate_contract() -> tuple[dict[str, Any], dict[str, Any]]:
+def validate_contract() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     manifest = load_json(MANIFEST_PATH)
+    candidate_manifest = load_json(CANDIDATE_MANIFEST_PATH)
     fixture = load_json(FIXTURE_PATH)
     require(
         manifest.get("schema") == "dse.eval.m22-streaming-delta-baseline.v1",
@@ -85,6 +90,18 @@ def validate_contract() -> tuple[dict[str, Any], dict[str, Any]]:
         fixture.get("schema")
         == "dse.eval.m22-streaming-delta-baseline-fixture.v1",
         "fixture_schema_invalid",
+    )
+    require(
+        candidate_manifest.get("schema")
+        == "dse.eval.m22-streaming-delta-candidate.v1",
+        "candidate_manifest_schema_invalid",
+    )
+    require(
+        candidate_manifest["baseline"]["baseline_commit"]
+        == "c7a77045746970a48c31314a09efdf98bb3fd86d"
+        and candidate_manifest["baseline"]["baseline_tree"]
+        == "d88132a17f9bd545f52a968f99a8dc3a70c215c7",
+        "candidate_baseline_identity_invalid",
     )
     benchmark = manifest.get("benchmark", {})
     require(benchmark.get("maximum_reruns") == 0, "maximum_reruns_invalid")
@@ -121,26 +138,14 @@ def validate_contract() -> tuple[dict[str, Any], dict[str, Any]]:
         f"sha256:{sha256(raw)}" == source["journal_sha256"],
         "m20b_raw_hash_invalid",
     )
-    return manifest, fixture
+    return manifest, fixture, candidate_manifest
 
 
 def aggregate_profile(
     profile: dict[str, Any], thresholds: dict[str, Any]
 ) -> dict[str, Any]:
     samples = profile["samples"]
-    require(len(samples) == 5, f"sample_count_invalid:{profile['id']}")
-    metrics: dict[str, Any] = {}
-    for metric in (*WALL_METRICS, BYTE_METRIC):
-        values = [int(sample[metric]) for sample in samples]
-        require(all(value >= 0 for value in values), f"negative_metric:{metric}")
-        median = int(statistics.median(values))
-        metrics[metric] = {
-            "samples": values,
-            "minimum": min(values),
-            "median": median,
-            "maximum": max(values),
-        }
-
+    metrics = aggregate_metrics(samples, profile["id"])
     observed_total = (
         profile["reasoning_delta_events"] + profile["content_delta_events"]
     )
@@ -188,8 +193,120 @@ def aggregate_profile(
     }
 
 
+def aggregate_metrics(
+    samples: list[dict[str, Any]], profile_id: str
+) -> dict[str, Any]:
+    require(len(samples) == 5, f"sample_count_invalid:{profile_id}")
+    metrics: dict[str, Any] = {}
+    for metric in (*WALL_METRICS, BYTE_METRIC):
+        values = [int(sample[metric]) for sample in samples]
+        require(all(value >= 0 for value in values), f"negative_metric:{metric}")
+        median = int(statistics.median(values))
+        metrics[metric] = {
+            "samples": values,
+            "minimum": min(values),
+            "median": median,
+            "maximum": max(values),
+        }
+    return metrics
+
+
+def marker_json(output: str, marker: str, code: str) -> dict[str, Any]:
+    lines = [
+        line.split(marker, maxsplit=1)[1]
+        for line in output.splitlines()
+        if marker in line
+    ]
+    require(len(lines) == 1, code)
+    value = json.loads(lines[0])
+    require(isinstance(value, dict), f"{code}_not_object")
+    return value
+
+
+def transport_candidate(
+    environment: dict[str, str], fixture: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    command = [
+        "cargo",
+        "test",
+        "-p",
+        "dse-deepseek",
+        "--locked",
+        "m22_same_chunk_delta_convergence_benchmark",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stdout)
+        raise EvaluationError("transport_candidate_failed")
+    report = marker_json(
+        completed.stdout,
+        TRANSPORT_MARKER,
+        "transport_candidate_marker_invalid",
+    )
+    require(
+        report.get("schema")
+        == "dse.eval.m22-streaming-delta-transport-candidate.v1",
+        "transport_candidate_schema_invalid",
+    )
+    require(
+        report.get("warmups_per_profile") == 1
+        and report.get("measured_repetitions_per_profile") == 5,
+        "transport_candidate_repetitions_invalid",
+    )
+    fixture_by_id = {profile["id"]: profile for profile in fixture["profiles"]}
+    require(
+        {profile["id"] for profile in report["profiles"]} == set(fixture_by_id),
+        "transport_candidate_profiles_invalid",
+    )
+    selected = []
+    for profile in report["profiles"]:
+        expected = fixture_by_id[profile["id"]]
+        require(
+            profile["baseline_reasoning_delta_events"]
+            == expected["observed_reasoning_delta_events"]
+            and profile["baseline_content_delta_events"]
+            == expected["observed_content_delta_events"],
+            f"transport_candidate_baseline_invalid:{profile['id']}",
+        )
+        samples = profile["samples"]
+        require(
+            isinstance(samples, list) and len(samples) == 5,
+            f"transport_candidate_sample_count_invalid:{profile['id']}",
+        )
+        reasoning = [int(sample["reasoning_delta_events"]) for sample in samples]
+        content = [int(sample["content_delta_events"]) for sample in samples]
+        require(
+            all(value > 0 for value in (*reasoning, *content)),
+            f"transport_candidate_zero_count:{profile['id']}",
+        )
+        selected.append(
+            {
+                "id": profile["id"],
+                "reasoning_delta_events": max(reasoning),
+                "content_delta_events": max(content),
+            }
+        )
+    counts = {
+        "schema": "dse.eval.m22-streaming-delta-candidate-counts.v1",
+        "profiles": selected,
+    }
+    return report, counts
+
+
 def benchmark(output: Path) -> dict[str, Any]:
-    manifest, fixture = validate_contract()
+    manifest, fixture, candidate_manifest = validate_contract()
     require(git("branch", "--show-current") == "deepseek-agent", "branch_invalid")
     baseline = manifest["baseline"]["commit"]
     subprocess.run(
@@ -214,6 +331,10 @@ def benchmark(output: Path) -> dict[str, Any]:
             "CARGO_NET_OFFLINE": "true",
             "CARGO_TARGET_DIR": "/private/tmp/dse-m22-target",
         }
+    )
+    transport_report, candidate_counts = transport_candidate(environment, fixture)
+    environment["DSE_M22_CANDIDATE_COUNTS_JSON"] = json.dumps(
+        candidate_counts, sort_keys=True, separators=(",", ":")
     )
     command = [
         "cargo",
@@ -241,16 +362,12 @@ def benchmark(output: Path) -> dict[str, Any]:
     if completed.returncode != 0:
         sys.stderr.write(completed.stdout)
         raise EvaluationError("rust_benchmark_failed")
-    lines = [
-        line.split(MARKER, maxsplit=1)[1]
-        for line in completed.stdout.splitlines()
-        if MARKER in line
-    ]
-    require(len(lines) == 1, "benchmark_marker_invalid")
-    rust_report = json.loads(lines[0])
+    rust_report = marker_json(
+        completed.stdout, BENCHMARK_MARKER, "benchmark_marker_invalid"
+    )
     require(
         rust_report.get("schema")
-        == "dse.eval.m22-streaming-delta-rust-benchmark.v1",
+        == "dse.eval.m22-streaming-delta-rust-benchmark.v2",
         "rust_report_schema_invalid",
     )
     require(
@@ -279,19 +396,125 @@ def benchmark(output: Path) -> dict[str, Any]:
             == expected["synthetic_total_events"],
             f"rust_profile_identity_invalid:{profile['id']}",
         )
+        selected = next(
+            candidate
+            for candidate in candidate_counts["profiles"]
+            if candidate["id"] == profile["id"]
+        )
+        require(
+            profile["candidate_reasoning_delta_events"]
+            == selected["reasoning_delta_events"]
+            and profile["candidate_content_delta_events"]
+            == selected["content_delta_events"]
+            and profile["candidate_synthetic_total_events"]
+            == selected["reasoning_delta_events"]
+            + selected["content_delta_events"]
+            + 3,
+            f"rust_candidate_identity_invalid:{profile['id']}",
+        )
 
     profiles = [
         aggregate_profile(profile, manifest["material_loss_gate"])
         for profile in rust_report["profiles"]
     ]
     material = any(profile["material_triggers"] for profile in profiles)
+    candidate_thresholds = candidate_manifest["thresholds"]
+    candidates = []
+    for profile, baseline in zip(rust_report["profiles"], profiles, strict=True):
+        candidate_metrics = aggregate_metrics(
+            profile["candidate_samples"], profile["id"]
+        )
+        baseline_delta_events = (
+            profile["reasoning_delta_events"] + profile["content_delta_events"]
+        )
+        candidate_delta_events = (
+            profile["candidate_reasoning_delta_events"]
+            + profile["candidate_content_delta_events"]
+        )
+        event_reduction = 1.0 - candidate_delta_events / baseline_delta_events
+        sqlite_reduction = 1.0 - (
+            candidate_metrics[BYTE_METRIC]["median"]
+            / baseline["metrics"][BYTE_METRIC]["median"]
+        )
+        wall_changes = {
+            metric: (
+                baseline["metrics"][metric]["median"]
+                - candidate_metrics[metric]["median"]
+            )
+            / baseline["metrics"][metric]["median"]
+            for metric in WALL_METRICS
+        }
+        material_wall_improvements = [
+            {
+                "metric": trigger["metric"],
+                "improvement": wall_changes[trigger["metric"]],
+            }
+            for trigger in baseline["material_triggers"]
+            if trigger["metric"] in wall_changes
+        ]
+        candidate_samples = profile["candidate_samples"]
+        candidates.append(
+            {
+                "id": profile["id"],
+                "reasoning_delta_events": profile[
+                    "candidate_reasoning_delta_events"
+                ],
+                "content_delta_events": profile["candidate_content_delta_events"],
+                "synthetic_total_events": profile[
+                    "candidate_synthetic_total_events"
+                ],
+                "event_count_reduction": event_reduction,
+                "sqlite_reduction": sqlite_reduction,
+                "wall_time_improvements": wall_changes,
+                "material_wall_improvements": material_wall_improvements,
+                "metrics": candidate_metrics,
+                "canonical_json_bytes": [
+                    int(sample["canonical_json_bytes"])
+                    for sample in candidate_samples
+                ],
+                "projected_effects": [
+                    int(sample["projected_effects"]) for sample in candidate_samples
+                ],
+                "headless_bytes": [
+                    int(sample["headless_bytes"]) for sample in candidate_samples
+                ],
+            }
+        )
+    candidate_pass = material and all(
+        candidate["event_count_reduction"]
+        >= float(candidate_thresholds["event_count_reduction_minimum"])
+        and candidate["sqlite_reduction"]
+        >= float(candidate_thresholds["sqlite_reduction_minimum"])
+        and all(
+            improvement
+            >= -float(candidate_thresholds["wall_time_regression_maximum"])
+            for improvement in candidate["wall_time_improvements"].values()
+        )
+        for candidate in candidates
+    )
+    material_profiles = [
+        candidate
+        for candidate in candidates
+        if candidate["material_wall_improvements"]
+    ]
+    candidate_pass = candidate_pass and bool(material_profiles) and all(
+        any(
+            item["improvement"]
+            >= float(candidate_thresholds["material_wall_improvement_minimum"])
+            for item in candidate["material_wall_improvements"]
+        )
+        for candidate in material_profiles
+    )
     result = {
-        "schema": "dse.eval.m22-streaming-delta-baseline-result.v1",
-        "suite_id": manifest["suite_id"],
+        "schema": "dse.eval.m22-streaming-delta-baseline-result.v2",
+        "suite_id": candidate_manifest["suite_id"],
         "source_identity": {
             "commit": git("rev-parse", "HEAD"),
             "tree": git("rev-parse", "HEAD^{tree}"),
             "manifest_sha256": f"sha256:{sha256(MANIFEST_PATH)}",
+            "candidate_manifest_sha256": (
+                f"sha256:{sha256(CANDIDATE_MANIFEST_PATH)}"
+            ),
             "fixture_sha256": f"sha256:{sha256(FIXTURE_PATH)}",
             "harness_sha256": f"sha256:{sha256(Path(__file__))}",
         },
@@ -299,12 +522,19 @@ def benchmark(output: Path) -> dict[str, Any]:
         "official_api_requests": 0,
         "external_network": False,
         "maximum_reruns": 0,
+        "transport_candidate": transport_report,
         "profiles": profiles,
+        "candidate_profiles": candidates,
         "baseline_material_loss": material,
+        "candidate_gate_passed": candidate_pass,
         "decision": (
-            "baseline_material_loss_observed_candidate_audit_required"
-            if material
-            else "reject_no_material_production_streaming_delta_loss"
+            "keep_minimal_streaming_delta_convergence"
+            if candidate_pass
+            else (
+                "reject_no_stable_net_efficiency"
+                if material
+                else "reject_no_material_production_streaming_delta_loss"
+            )
         ),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -327,9 +557,13 @@ def benchmark(output: Path) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    manifest, fixture = validate_contract()
+    manifest, fixture, candidate_manifest = validate_contract()
     require(len(fixture["profiles"]) == 2, "self_test_profiles_invalid")
     thresholds = manifest["material_loss_gate"]
+    require(
+        candidate_manifest["thresholds"]["event_count_reduction_minimum"] == 0.5,
+        "self_test_candidate_threshold_invalid",
+    )
     synthetic = {
         "id": "self-test",
         "reasoning_delta_events": 90,

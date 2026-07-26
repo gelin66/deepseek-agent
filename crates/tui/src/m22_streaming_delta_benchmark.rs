@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use crate::tui::run_projection::CanonicalRunProjection;
 use crate::{ExecStreamEvent, exec_stream_line};
 
 const FIXTURE: &str = include_str!("../../../eval/fixtures/m22-streaming-delta-baseline-v1.json");
+const CANDIDATE_COUNTS_ENV: &str = "DSE_M22_CANDIDATE_COUNTS_JSON";
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
@@ -35,6 +37,19 @@ struct Profile {
     observed_content_delta_events: usize,
     observed_content_delta_utf8_bytes: usize,
     synthetic_total_events: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct CandidateCountsInput {
+    schema: String,
+    profiles: Vec<CandidateProfileCounts>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CandidateProfileCounts {
+    id: String,
+    reasoning_delta_events: usize,
+    content_delta_events: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +69,10 @@ struct ProfileReport {
     content_delta_utf8_bytes: usize,
     synthetic_total_events: usize,
     samples: Vec<Sample>,
+    candidate_reasoning_delta_events: usize,
+    candidate_content_delta_events: usize,
+    candidate_synthetic_total_events: usize,
+    candidate_samples: Vec<Sample>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,16 +92,37 @@ struct Sample {
 #[ignore = "M22 deterministic local benchmark; run through scripts/eval-m22-streaming-delta-baseline.py"]
 async fn canonical_m22_streaming_delta_baseline() {
     let fixture: Fixture = serde_json::from_str(FIXTURE).expect("M22 fixture must decode");
+    let candidate_counts = candidate_counts();
     let warmups = 1;
     let repetitions = 5;
     let mut profiles = Vec::new();
 
     for profile in fixture.profiles {
         let mut samples = Vec::new();
+        let mut candidate_samples = Vec::new();
+        let candidate = candidate_counts
+            .get(&profile.id)
+            .expect("M22 candidate profile must match fixture");
         for repetition in 0..(warmups + repetitions) {
-            let sample = benchmark_profile(&profile, repetition).await;
+            let sample = benchmark_profile(
+                &profile,
+                repetition,
+                "baseline",
+                profile.observed_reasoning_delta_events,
+                profile.observed_content_delta_events,
+            )
+            .await;
+            let candidate_sample = benchmark_profile(
+                &profile,
+                repetition,
+                "candidate",
+                candidate.reasoning_delta_events,
+                candidate.content_delta_events,
+            )
+            .await;
             if repetition >= warmups {
                 samples.push(sample);
+                candidate_samples.push(candidate_sample);
             }
         }
         profiles.push(ProfileReport {
@@ -93,11 +133,18 @@ async fn canonical_m22_streaming_delta_baseline() {
             content_delta_utf8_bytes: profile.observed_content_delta_utf8_bytes,
             synthetic_total_events: profile.synthetic_total_events,
             samples,
+            candidate_reasoning_delta_events: candidate.reasoning_delta_events,
+            candidate_content_delta_events: candidate.content_delta_events,
+            candidate_synthetic_total_events: candidate
+                .reasoning_delta_events
+                .saturating_add(candidate.content_delta_events)
+                .saturating_add(3),
+            candidate_samples,
         });
     }
 
     let report = BenchmarkReport {
-        schema: "dse.eval.m22-streaming-delta-rust-benchmark.v1",
+        schema: "dse.eval.m22-streaming-delta-rust-benchmark.v2",
         warmups_per_profile: warmups,
         measured_repetitions_per_profile: repetitions,
         profiles,
@@ -108,17 +155,43 @@ async fn canonical_m22_streaming_delta_baseline() {
     );
 }
 
-async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
+fn candidate_counts() -> BTreeMap<String, CandidateProfileCounts> {
+    let raw = std::env::var(CANDIDATE_COUNTS_ENV)
+        .expect("M22 harness must provide candidate transport counts");
+    let input: CandidateCountsInput =
+        serde_json::from_str(&raw).expect("M22 candidate counts must decode");
+    assert_eq!(
+        input.schema,
+        "dse.eval.m22-streaming-delta-candidate-counts.v1"
+    );
+    input
+        .profiles
+        .into_iter()
+        .map(|profile| {
+            assert!(profile.reasoning_delta_events > 0);
+            assert!(profile.content_delta_events > 0);
+            (profile.id.clone(), profile)
+        })
+        .collect()
+}
+
+async fn benchmark_profile(
+    profile: &Profile,
+    repetition: usize,
+    variant: &str,
+    reasoning_delta_events: usize,
+    content_delta_events: usize,
+) -> Sample {
     let temp = TempDir::new().expect("M22 benchmark temp dir");
-    let db_path = temp.path().join(format!("state-{repetition}.db"));
+    let db_path = temp.path().join(format!("state-{variant}-{repetition}.db"));
     let workspace = temp
         .path()
         .canonicalize()
         .expect("canonical M22 workspace")
         .to_string_lossy()
         .into_owned();
-    let run_id = RunId::from(format!("m22-{}-{repetition}", profile.id));
-    let attempt_id = AttemptId(format!("attempt-{}-{repetition}", profile.id));
+    let run_id = RunId::from(format!("m22-{variant}-{}-{repetition}", profile.id));
+    let attempt_id = AttemptId(format!("attempt-{variant}-{}-{repetition}", profile.id));
     let store = StateStore::open(Some(db_path.clone())).expect("open M22 StateStore");
     let created = store
         .create(run_request(&run_id, &workspace))
@@ -156,7 +229,7 @@ async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
         &created.lease,
         &attempt_id,
         "reasoning",
-        profile.observed_reasoning_delta_events,
+        reasoning_delta_events,
         profile.observed_reasoning_delta_utf8_bytes,
         true,
     )
@@ -166,7 +239,7 @@ async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
         &created.lease,
         &attempt_id,
         "content",
-        profile.observed_content_delta_events,
+        content_delta_events,
         profile.observed_content_delta_utf8_bytes,
         false,
     )
@@ -178,8 +251,16 @@ async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
         .await
         .expect("load M22 run")
         .expect("M22 run must exist");
-    assert_eq!(replay.events.len(), profile.synthetic_total_events);
-    assert_delta_identity(&replay.events, profile);
+    let synthetic_total_events = reasoning_delta_events
+        .saturating_add(content_delta_events)
+        .saturating_add(3);
+    assert_eq!(replay.events.len(), synthetic_total_events);
+    assert_delta_identity(
+        &replay.events,
+        profile,
+        reasoning_delta_events,
+        content_delta_events,
+    );
     drop(replay);
     drop(store);
 
@@ -192,8 +273,13 @@ async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
         .expect("load reopened M22 run")
         .expect("reopened M22 run must exist");
     let credential_free_reopen_us = elapsed_us(reopen_started);
-    assert_eq!(replay.events.len(), profile.synthetic_total_events);
-    assert_delta_identity(&replay.events, profile);
+    assert_eq!(replay.events.len(), synthetic_total_events);
+    assert_delta_identity(
+        &replay.events,
+        profile,
+        reasoning_delta_events,
+        content_delta_events,
+    );
 
     let tui_started = Instant::now();
     let mut projection = CanonicalRunProjection::new();
@@ -243,7 +329,7 @@ async fn benchmark_profile(profile: &Profile, repetition: usize) -> Sample {
     let canonical_json =
         serde_json::to_vec(&response).expect("canonical Run API response must serialize");
     let run_api_events_json_us = elapsed_us(api_started);
-    assert_eq!(event_count, profile.synthetic_total_events);
+    assert_eq!(event_count, synthetic_total_events);
 
     Sample {
         delta_append_us,
@@ -381,6 +467,8 @@ fn model_request(created: &CreatedRun) -> ModelRequest {
 fn assert_delta_identity(
     events: &[dse_protocol::agent_runtime::StoredRuntimeEvent],
     profile: &Profile,
+    expected_reasoning_events: usize,
+    expected_content_events: usize,
 ) {
     let mut reasoning_count = 0;
     let mut reasoning_bytes = 0;
@@ -403,9 +491,9 @@ fn assert_delta_identity(
             _ => {}
         }
     }
-    assert_eq!(reasoning_count, profile.observed_reasoning_delta_events);
+    assert_eq!(reasoning_count, expected_reasoning_events);
     assert_eq!(reasoning_bytes, profile.observed_reasoning_delta_utf8_bytes);
-    assert_eq!(content_count, profile.observed_content_delta_events);
+    assert_eq!(content_count, expected_content_events);
     assert_eq!(content_bytes, profile.observed_content_delta_utf8_bytes);
     assert_eq!(reasoning.len(), reasoning_bytes);
     assert_eq!(content.len(), content_bytes);

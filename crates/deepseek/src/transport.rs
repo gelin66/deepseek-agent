@@ -425,22 +425,38 @@ impl DeepSeekTransport {
                     break;
                 }
 
+                let mut chunk_events = Vec::new();
+                let mut chunk_progress_pending = false;
                 while let Some(frame) = take_sse_frame(&mut buffer) {
+                    let evidence_before = parser.failure_evidence();
                     let parsed = parser.push_frame(&frame);
-                    if let Some(wire_usage) = parser.wire_usage.as_ref() {
-                        accounting.observe(&parser.usage, Some(wire_usage));
-                    }
                     match parsed {
                         Ok(events) => {
                             for event in events {
-                                yield Ok(event);
+                                push_converged_delta(&mut chunk_events, event);
                             }
-                            yield Ok(ModelStreamEvent::ResponseProgress {
-                                evidence: parser.failure_evidence(),
-                            });
+                            chunk_progress_pending = true;
+                            if parser.failure_evidence() != evidence_before {
+                                for event in chunk_events.drain(..) {
+                                    yield Ok(event);
+                                }
+                                if let Some(wire_usage) = parser.wire_usage.as_ref() {
+                                    accounting.observe(&parser.usage, Some(wire_usage));
+                                }
+                                yield Ok(ModelStreamEvent::ResponseProgress {
+                                    evidence: parser.failure_evidence(),
+                                });
+                                chunk_progress_pending = false;
+                            }
                         }
                         Err(error) => {
                             failed = true;
+                            for event in chunk_events.drain(..) {
+                                yield Ok(event);
+                            }
+                            if let Some(wire_usage) = parser.wire_usage.as_ref() {
+                                accounting.observe(&parser.usage, Some(wire_usage));
+                            }
                             yield Ok(ModelStreamEvent::ResponseProgress {
                                 evidence: parser.failure_evidence(),
                             });
@@ -448,6 +464,17 @@ impl DeepSeekTransport {
                             break;
                         }
                     }
+                }
+                if !failed && chunk_progress_pending {
+                    for event in chunk_events.drain(..) {
+                        yield Ok(event);
+                    }
+                    if let Some(wire_usage) = parser.wire_usage.as_ref() {
+                        accounting.observe(&parser.usage, Some(wire_usage));
+                    }
+                    yield Ok(ModelStreamEvent::ResponseProgress {
+                        evidence: parser.failure_evidence(),
+                    });
                 }
                 if failed || parser.saw_done {
                     break;
@@ -854,6 +881,20 @@ fn parse_usage(value: Option<&Value>) -> Usage {
         cache_write_tokens: 0,
         reasoning_tokens,
         reasoning_replay_tokens: 0,
+    }
+}
+
+fn push_converged_delta(events: &mut Vec<ModelStreamEvent>, event: ModelStreamEvent) {
+    match (events.last_mut(), event) {
+        (
+            Some(ModelStreamEvent::ContentDelta { delta: current }),
+            ModelStreamEvent::ContentDelta { delta },
+        )
+        | (
+            Some(ModelStreamEvent::ReasoningDelta { delta: current }),
+            ModelStreamEvent::ReasoningDelta { delta },
+        ) => current.push_str(&delta),
+        (_, event) => events.push(event),
     }
 }
 
@@ -1390,6 +1431,45 @@ mod tests {
     }
 
     #[test]
+    fn same_chunk_delta_convergence_preserves_order_and_kind_boundaries() {
+        let mut events = Vec::new();
+        for event in [
+            ModelStreamEvent::ReasoningDelta {
+                delta: "推".to_owned(),
+            },
+            ModelStreamEvent::ReasoningDelta {
+                delta: "理".to_owned(),
+            },
+            ModelStreamEvent::ContentDelta {
+                delta: "正".to_owned(),
+            },
+            ModelStreamEvent::ContentDelta {
+                delta: "文".to_owned(),
+            },
+            ModelStreamEvent::ReasoningDelta {
+                delta: "复查".to_owned(),
+            },
+        ] {
+            push_converged_delta(&mut events, event);
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                ModelStreamEvent::ReasoningDelta {
+                    delta: "推理".to_owned(),
+                },
+                ModelStreamEvent::ContentDelta {
+                    delta: "正文".to_owned(),
+                },
+                ModelStreamEvent::ReasoningDelta {
+                    delta: "复查".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn parser_preserves_reasoning_raw_arguments_usage_and_finish_reason() {
         let response = parse_chat_response(&json!({
             "id": "chat-1",
@@ -1718,6 +1798,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_frame_flushes_already_received_deltas_before_typed_failure() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"证据\"}}]}\n\n",
+            "data: {not-json}\n\n",
+        );
+        let (transport, budget, root, server) = fixture_stream_transport(body);
+        let mut stream = transport
+            .stream(stream_plan(&root))
+            .await
+            .expect("response headers");
+        let mut reasoning = String::new();
+        let mut evidence = ModelResponseEvidence::default();
+        let mut failure = None;
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ModelStreamEvent::ReasoningDelta { delta }) => reasoning.push_str(&delta),
+                Ok(ModelStreamEvent::ResponseProgress { evidence: next }) => evidence.merge(next),
+                Ok(ModelStreamEvent::Completed { .. }) => completed = true,
+                Ok(ModelStreamEvent::ContentDelta { .. }) => {
+                    panic!("malformed reasoning fixture must not emit content")
+                }
+                Err(error) => failure = Some(error),
+            }
+        }
+        server.join().expect("fixture server");
+
+        assert_eq!(reasoning, "先证据");
+        assert!(evidence.reasoning_observed);
+        assert!(evidence.actionable_output());
+        assert!(!completed);
+        assert!(matches!(
+            failure,
+            Some(DeepSeekTransportError::InvalidJson(_))
+        ));
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.incomplete_responses, 1);
+        assert_eq!(usage.usage_responses, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "M22 local transport benchmark; run through the frozen evaluation harness"]
+    async fn m22_same_chunk_delta_convergence_benchmark() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../eval/fixtures/m22-streaming-delta-baseline-v1.json"
+        ))
+        .expect("M22 fixture must decode");
+        let profiles = fixture["profiles"]
+            .as_array()
+            .expect("M22 fixture profiles");
+        let mut reports = Vec::new();
+
+        for profile in profiles {
+            let id = profile["id"].as_str().expect("M22 profile id");
+            let reasoning_events = usize::try_from(
+                profile["observed_reasoning_delta_events"]
+                    .as_u64()
+                    .expect("M22 reasoning count"),
+            )
+            .expect("M22 reasoning count fits usize");
+            let reasoning_bytes = usize::try_from(
+                profile["observed_reasoning_delta_utf8_bytes"]
+                    .as_u64()
+                    .expect("M22 reasoning bytes"),
+            )
+            .expect("M22 reasoning bytes fit usize");
+            let content_events = usize::try_from(
+                profile["observed_content_delta_events"]
+                    .as_u64()
+                    .expect("M22 content count"),
+            )
+            .expect("M22 content count fits usize");
+            let content_bytes = usize::try_from(
+                profile["observed_content_delta_utf8_bytes"]
+                    .as_u64()
+                    .expect("M22 content bytes"),
+            )
+            .expect("M22 content bytes fit usize");
+            let body = m22_stream_body(
+                reasoning_events,
+                reasoning_bytes,
+                content_events,
+                content_bytes,
+            );
+            let mut samples = Vec::new();
+
+            for repetition in 0..6 {
+                let (transport, budget, root, server) =
+                    fixture_owned_stream_transport(body.clone());
+                let mut stream = transport
+                    .stream(stream_plan(&root))
+                    .await
+                    .expect("M22 response headers");
+                let mut reasoning = String::new();
+                let mut content = String::new();
+                let mut converged_reasoning_events = 0;
+                let mut converged_content_events = 0;
+                let mut completed = None;
+                while let Some(event) = stream.next().await {
+                    match event.expect("M22 candidate stream must succeed") {
+                        ModelStreamEvent::ReasoningDelta { delta } => {
+                            converged_reasoning_events += 1;
+                            reasoning.push_str(&delta);
+                        }
+                        ModelStreamEvent::ContentDelta { delta } => {
+                            converged_content_events += 1;
+                            content.push_str(&delta);
+                        }
+                        ModelStreamEvent::Completed { output } => completed = Some(output),
+                        ModelStreamEvent::ResponseProgress { .. } => {}
+                    }
+                }
+                server.join().expect("M22 fixture server");
+
+                let completed = completed.expect("M22 candidate must complete");
+                assert_eq!(reasoning.len(), reasoning_bytes);
+                assert_eq!(content.len(), content_bytes);
+                assert_eq!(
+                    completed.reasoning_content.as_deref(),
+                    Some(reasoning.as_str())
+                );
+                assert_eq!(completed.content, content);
+                let accounting = budget.usage_snapshot();
+                assert_eq!(accounting.usage_responses, 1);
+                assert_eq!(accounting.incomplete_responses, 0);
+                assert_eq!(accounting.responses_missing_usage, 0);
+                assert_eq!(accounting.usage.input_tokens, 100);
+                assert_eq!(accounting.usage.output_tokens, 10);
+                if repetition > 0 {
+                    samples.push(json!({
+                        "reasoning_delta_events": converged_reasoning_events,
+                        "content_delta_events": converged_content_events,
+                    }));
+                }
+            }
+
+            reports.push(json!({
+                "id": id,
+                "baseline_reasoning_delta_events": reasoning_events,
+                "baseline_content_delta_events": content_events,
+                "samples": samples,
+            }));
+        }
+
+        println!(
+            "M22_CANDIDATE_TRANSPORT_JSON={}",
+            json!({
+                "schema": "dse.eval.m22-streaming-delta-transport-candidate.v1",
+                "warmups_per_profile": 1,
+                "measured_repetitions_per_profile": 5,
+                "profiles": reports,
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn trusted_finish_without_usage_commits_output_but_marks_usage_missing() {
         let body = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"完成\"},\"finish_reason\":\"stop\"}]}\n\n",
@@ -1920,6 +2157,100 @@ mod tests {
         )
         .expect("fixture transport");
         (transport, budget, root, server)
+    }
+
+    fn fixture_owned_stream_transport(
+        body: String,
+    ) -> (
+        DeepSeekTransport,
+        SharedApiRequestBudget,
+        String,
+        thread::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind owned stream fixture");
+        let address = listener.local_addr().expect("owned fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept owned stream request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).expect("read owned request");
+                assert!(read > 0, "owned request ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("write owned stream fixture");
+            stream.flush().expect("flush owned stream fixture");
+        });
+        let budget = SharedApiRequestBudget::new(NonZeroU32::new(2).expect("nonzero budget"));
+        let root = format!("http://{address}/v1");
+        let transport = DeepSeekConnectionConfig {
+            endpoint: DeepSeekEndpoint::loopback_fixture(&root).expect("owned loopback root"),
+            strict_tools: false,
+            response_header_timeout: Duration::from_secs(1),
+            stream_idle_timeout: Duration::from_secs(1),
+            retry: TransportRetryPolicy::disabled(),
+        }
+        .bind(
+            reqwest::Client::new(),
+            DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            budget.clone(),
+        )
+        .expect("owned fixture transport");
+        (transport, budget, root, server)
+    }
+
+    fn m22_stream_body(
+        reasoning_events: usize,
+        reasoning_bytes: usize,
+        content_events: usize,
+        content_bytes: usize,
+    ) -> String {
+        let mut body = String::new();
+        append_m22_frames(
+            &mut body,
+            "reasoning_content",
+            "r",
+            reasoning_events,
+            reasoning_bytes,
+        );
+        append_m22_frames(&mut body, "content", "c", content_events, content_bytes);
+        body.push_str(
+            "data: {\"id\":\"m22-loopback\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        body.push_str(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110,\"prompt_cache_hit_tokens\":50,\"prompt_cache_miss_tokens\":50,\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+        );
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    fn append_m22_frames(
+        body: &mut String,
+        field: &str,
+        byte: &str,
+        count: usize,
+        total_bytes: usize,
+    ) {
+        assert!(count > 0);
+        assert!(total_bytes >= count);
+        let base = total_bytes / count;
+        let remainder = total_bytes % count;
+        for offset in 0..count {
+            let length = base + usize::from(offset < remainder);
+            let delta = serde_json::to_string(&byte.repeat(length)).expect("M22 delta JSON");
+            body.push_str(&format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"{field}\":{delta}}}}}]}}\n\n"
+            ));
+        }
     }
 
     fn stream_plan(root: &str) -> RequestPlan {
