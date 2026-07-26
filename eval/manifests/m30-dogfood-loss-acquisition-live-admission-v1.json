@@ -1,0 +1,142 @@
+{
+  "schema": "dse.eval.m30-dogfood-loss-acquisition-live-admission.v1",
+  "admitted_at_utc": "2026-07-26T19:04:33Z",
+  "contract_manifest": "eval/manifests/m30-dogfood-loss-acquisition-v1.json",
+  "contract_manifest_sha256": "sha256:60ae20a289da072764b6f93f3b4578877c46504d1968c25008aa56775aa6c1a0",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "f74804a08bd169d027c16db5761593125301bcae",
+  "candidate_tree": "dd6e7793d7f0261b3e6992bb2a2ff964a3ee02f8",
+  "candidate_binary": "/private/tmp/dse-m30-target/release/dse",
+  "candidate_binary_sha256": "sha256:4eb6fe0fd339831963133d97136dd42348220b9bdcf9d7e592728aa363425334",
+  "candidate_binary_size_bytes": 14321744,
+  "candidate_binary_version": "dse 0.8.68 (f74804a08bd1)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:e214dd1cd9af555728b614344720c170b99dbd37dfec90f81bf68de8c71886a6",
+  "schedule_sha256": "sha256:621efff3ea6f5cc2ea34dc946145044f754dc87b5bbe51c79af2d5477a7e72a1",
+  "task_contracts_sha256": "sha256:7d71a8597adc1d628987e6eb1ee588c48c150f228322aec05658c663cd135c99",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:849446b67c7ed072ae83145a0fabe9362f9b4e9ead72a0bd628ccc03a0cbb512",
+  "freeze_report_sha256": "sha256:fa632a53b9832f23432a51eda1f734fa67757f0745cbad4260321acf90749e26",
+  "dry_run_sha256": "sha256:14b6e4cb8d58ae694eb176be5181ca82bfad57974a18fccccbe7a0243cde1aca",
+  "continuity_process_report_sha256": "sha256:f8c2dc913a08ef1bce9c1e1cb59b81dddab340b2c21694991dc809b5d53bc7e2",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:3a139177c4b6108fa9ff411ff2353edbc609773d735af4e85f6cc4c2b4b9e8c5",
+  "truth_conformance_sha256": "sha256:5574a71eb584121a1effdd3cc5b6c05fcf63d5d3775c95fb119453dad5a1ba4b",
+  "hardness_conformance_sha256": "sha256:d88804e6a16f8d0df1d6ec8b2a368f729a881a3c8e788988b30f51ddcc65d5ea",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "fresh position-1 20-task one-arm-per-task current DSE dogfood loss acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "20-task current fixture, reference solutions, safety counterexamples, hash-chain journal and four SIGKILL write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary, credential-free dry-run and real request_user_input SIGKILL/reopen continuity",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "typed trajectory, acceptance equivalence, behavior/accounting truth and Hardness observer conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace clippy/test, public repository checker and git diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, V4 release, ChatCompletions, Thinking, Tool Calls and pricing revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "go_health_api": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_jsonl_runtime": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_component_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_service_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_event_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_line_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_registry_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_router_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_export_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_tenant_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_dom_ui": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_forwarded_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_request_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_retry_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_route_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_policy_migration": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 20,
+    "runs_per_task": 1,
+    "formal_arms": 20,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 10.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m30-dogfood-loss-f74804a08bd1-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized current fixed-Pro/high dogfood loss acquisition under the frozen USD 10.00 suite ceiling"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 10.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
