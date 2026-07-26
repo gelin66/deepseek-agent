@@ -33,7 +33,7 @@ run_public_repository_gate() {
 
 run_focused_tests() {
   local filters=(
-    "m8a_deepseek_only_entry_tests::taskgraph_cutover"
+    "m8a_deepseek_only_entry_tests::canonical_cli_has_no_fleet_or_direct_sandbox_shell"
     "tui::canonical_commands::tests"
     "tui::run_client::tests"
     "tui::run_projection::tests"

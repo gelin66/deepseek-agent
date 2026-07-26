@@ -10,13 +10,14 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
-    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent,
-    TerminalState, ToolPolicy, Usage, UserInteractionResponse, WriteExecutionMode,
+    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, RunPermissionMode,
+    StoredRuntimeEvent, TerminalState, ToolPolicy, Usage, UserInteractionResponse,
+    WriteExecutionMode,
 };
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 12;
+pub const RUN_API_SCHEMA_VERSION: u32 = 13;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -33,16 +34,10 @@ pub struct RunProductControls {
     #[serde(default)]
     pub write_execution_mode: WriteExecutionMode,
     #[serde(default)]
-    pub auto_approve: bool,
-    #[serde(default)]
-    pub trust_mode: bool,
-    #[serde(default)]
-    pub allow_sandbox_elevation: bool,
+    pub permission_mode: RunPermissionMode,
     /// Whether the caller can resolve durable approval and user-input events.
     #[serde(default)]
     pub interactive: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<String>,
 }
 
 /// User-controlled input for a new root run.
@@ -357,11 +352,8 @@ mod tests {
             },
             controls: RunProductControls {
                 write_execution_mode: Default::default(),
-                auto_approve: true,
-                trust_mode: false,
-                allow_sandbox_elevation: false,
+                permission_mode: RunPermissionMode::Agent,
                 interactive: true,
-                sandbox: Some("workspace_write".to_owned()),
             },
         }
     }
@@ -404,7 +396,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 12,
+                "schema_version": 13,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -441,11 +433,8 @@ mod tests {
                     },
                     "controls": {
                         "write_execution_mode": "root",
-                        "auto_approve": true,
-                        "trust_mode": false,
-                        "allow_sandbox_elevation": false,
-                        "interactive": true,
-                        "sandbox": "workspace_write"
+                        "permission_mode": "agent",
+                        "interactive": true
                     }
                 }
             })
@@ -500,6 +489,35 @@ mod tests {
         )
         .expect("deserialize explicit Writer mode");
         assert_eq!(round_trip, explicit);
+    }
+
+    #[test]
+    fn permission_contract_accepts_only_three_modes_and_no_legacy_controls() {
+        for (wire, expected) in [
+            ("ask", RunPermissionMode::Ask),
+            ("agent", RunPermissionMode::Agent),
+            ("full_access", RunPermissionMode::FullAccess),
+        ] {
+            let mut encoded = serde_json::to_value(start_command()).expect("serialize command");
+            encoded["controls"]["permission_mode"] = json!(wire);
+            let decoded: StartRunCommand =
+                serde_json::from_value(encoded).expect("decode canonical permission mode");
+            assert_eq!(decoded.controls.permission_mode, expected);
+        }
+
+        let mut custom = serde_json::to_value(start_command()).expect("serialize command");
+        custom["controls"]["permission_mode"] = json!("custom");
+        assert!(
+            serde_json::from_value::<StartRunCommand>(custom).is_err(),
+            "a hidden fourth permission mode must fail closed"
+        );
+
+        let mut legacy = serde_json::to_value(start_command()).expect("serialize command");
+        legacy["controls"]["auto_approve"] = json!(true);
+        assert!(
+            serde_json::from_value::<StartRunCommand>(legacy).is_err(),
+            "legacy bool controls must not become a compatibility reader"
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ DSE 刻意保持边界收敛：
 - 原子、workspace-scoped 工具返回 typed outcome，以及 retry/side-effect 事实；
 - `en` 与 `zh-Hans` 人类界面完整覆盖，不增加语言分类请求或翻译模型。
 
-当前协议身份为 Run API v12、RuntimeEvent v19、State schema v25、exec-stream v4。
+当前协议身份为 Run API v13、RuntimeEvent v20、State schema v26、exec-stream v4。
 
 ## 固定模型 profile
 
@@ -39,8 +39,10 @@ DSE 刻意保持边界收敛：
 产品没有模型 Auto 模式、prompt classifier、dynamic router、fallback Provider 或额外的
 routing request。用户显式选择的 Pro/Flash 与 reasoning 仍是可精确 replay 的输入。
 
-`dse exec --auto` 是另一个 CLI 概念：它启用非交互工具 Agent loop，**不会**自动选择
-模型，也不会授予 sandbox 之外的访问权。
+`dse exec --auto` 是另一个 CLI 概念：它启用非交互工具 Agent loop，并使用“替我审批”
+权限档位；Host 判定高风险的调用仍需批准，因此在 headless 中安全拒绝。交互 TUI 默认
+“请求批准”，只有显式 process-local `--yolo` 选择“完全访问权限”。产品没有 Custom
+权限模式或持久权限配置。
 
 DeepSeek 已于 2026-07-24 下线旧的 `deepseek-chat` 与 `deepseek-reasoner` alias。
 DSE 使用当前的 `deepseek-v4-pro`、`deepseek-v4-flash` 模型 ID，官方 base URL 不变。

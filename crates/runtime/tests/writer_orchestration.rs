@@ -944,7 +944,7 @@ impl RuntimeEventSink for CollectSink {
     }
 }
 
-fn root_request(exact_verifier: bool, auto_approve: bool) -> RunRequest {
+fn root_request(exact_verifier: bool, agent_permission: bool) -> RunRequest {
     let run_id = RunId::new();
     let definition = if exact_verifier {
         TaskDefinition {
@@ -971,7 +971,11 @@ fn root_request(exact_verifier: bool, auto_approve: bool) -> RunRequest {
     request.run_id = Some(run_id);
     request.environment.workspace = ROOT_WORKSPACE.to_owned();
     request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
-    request.environment.auto_approve = auto_approve;
+    request.environment.permission_mode = if agent_permission {
+        RunPermissionMode::Agent
+    } else {
+        RunPermissionMode::Ask
+    };
     request.context_policy.hard_input_tokens = 900_000;
     request.limits.max_model_requests = 32;
     request.limits.max_turns = 16;
@@ -1499,11 +1503,8 @@ fn recovery_child_request(task: &AgentTask, accounting_baseline: ModelAccounting
     request.limits = task.limits;
     request.environment.workspace = task.workspace.execution_workspace().to_owned();
     request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
-    request.environment.auto_approve = true;
-    request.environment.trust_mode = false;
-    request.environment.allow_sandbox_elevation = false;
+    request.environment.permission_mode = RunPermissionMode::Agent;
     request.environment.interactive = false;
-    request.environment.sandbox = Some("isolated_writer".to_owned());
     request.context_policy.hard_input_tokens = 900_000;
     request.accounting_baseline = accounting_baseline;
     request
@@ -2206,34 +2207,30 @@ async fn isolated_writer_requires_explicit_product_admission() {
 }
 
 #[tokio::test]
-async fn isolated_writer_requires_auto_approve_and_one_exact_verifier() {
-    for (exact, auto_approve, expected_message) in
-        [(true, false, "自动批准"), (false, true, "exact Verifier")]
-    {
-        let RuntimeFixture {
-            runtime,
-            orchestrator,
-            store,
-            ..
-        } = runtime_fixture(ModelScript::RejectWriter);
-        let outcome = runtime
-            .start(root_request(exact, auto_approve))
-            .wait()
-            .await
-            .unwrap();
-        assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-        let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
-        assert!(replay.snapshot.agent_tasks.is_empty());
-        assert_eq!(orchestrator.prepare_calls.load(Ordering::Acquire), 0);
-        assert!(replay.events.iter().any(|event| matches!(
-            &event.event,
-            RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
-                if outcome.content.contains(expected_message)
-                    && outcome.invocation == ToolInvocationStatus::Rejected
-                    && outcome.side_effect == ToolSideEffectStatus::NotApplied
-                    && outcome.failure_code == Some(ToolFailureCode::InvocationRejected)
-        )));
-    }
+async fn isolated_writer_requires_one_exact_verifier() {
+    let RuntimeFixture {
+        runtime,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::RejectWriter);
+    let outcome = runtime
+        .start(root_request(false, false))
+        .wait()
+        .await
+        .unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert!(replay.snapshot.agent_tasks.is_empty());
+    assert_eq!(orchestrator.prepare_calls.load(Ordering::Acquire), 0);
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+            if outcome.content.contains("exact Verifier")
+                && outcome.invocation == ToolInvocationStatus::Rejected
+                && outcome.side_effect == ToolSideEffectStatus::NotApplied
+                && outcome.failure_code == Some(ToolFailureCode::InvocationRejected)
+    )));
 }
 
 #[tokio::test]
@@ -3110,11 +3107,9 @@ async fn assert_resume_reuses_frozen_identity(checkpoint: RecoveryCheckpoint) {
         task.workspace.execution_workspace()
     );
     assert!(!child_request.environment.interactive);
-    assert!(!child_request.environment.trust_mode);
-    assert!(!child_request.environment.allow_sandbox_elevation);
     assert_eq!(
-        child_request.environment.sandbox.as_deref(),
-        Some("isolated_writer")
+        child_request.environment.permission_mode,
+        RunPermissionMode::Agent
     );
     assert!(child_request.transcript.entries.is_empty());
     assert!(child_request.context_projection.is_none());

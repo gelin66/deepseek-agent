@@ -17,9 +17,8 @@
 //!   warning badge and impact summary.
 //!
 //! The view emits only the canonical interaction identity and the selected
-//! outcome. Auto-approve / YOLO bypasses happen *before* the view is
-//! constructed (see `tui/ui.rs`); this module always assumes the user is
-//! being asked.
+//! outcome. It is constructed only for a durable Runtime Ask decision and
+//! never derives or bypasses the active permission mode.
 
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
@@ -33,26 +32,6 @@ use std::cell::RefCell;
 pub mod policy;
 
 pub use policy::{ApprovalStakes, ToolCategory, get_tool_category};
-
-/// Determines when tool executions require user approval
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApprovalMode {
-    /// Ask before tool calls whose canonical preflight requires approval.
-    #[default]
-    Ask,
-    /// Execute approval-gated tool calls without prompting.
-    AutoApprove,
-}
-
-impl ApprovalMode {
-    pub fn from_config_value(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "on-request" => Some(ApprovalMode::Ask),
-            "auto" => Some(ApprovalMode::AutoApprove),
-            _ => None,
-        }
-    }
-}
 
 /// User's decision for a pending approval
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2109,33 +2088,5 @@ mod tests {
             widest >= 80,
             "takeover card too narrow: widest row = {widest} cells"
         );
-    }
-
-    // ========================================================================
-    // ApprovalMode Tests
-    // ========================================================================
-
-    #[test]
-    fn approval_mode_accepts_only_the_two_canonical_config_values() {
-        assert_eq!(
-            ApprovalMode::from_config_value("auto"),
-            Some(ApprovalMode::AutoApprove)
-        );
-        assert_eq!(
-            ApprovalMode::from_config_value("on-request"),
-            Some(ApprovalMode::Ask)
-        );
-        for removed in [
-            "ask",
-            "suggest",
-            "untrusted",
-            "never",
-            "auto-review",
-            "full-access",
-            "bypass",
-            "yolo",
-        ] {
-            assert_eq!(ApprovalMode::from_config_value(removed), None, "{removed}");
-        }
     }
 }

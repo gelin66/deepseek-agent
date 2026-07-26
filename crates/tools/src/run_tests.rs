@@ -311,6 +311,7 @@ mod tests {
     use super::*;
     use crate::shell::{ShellPolicy, new_shared_shell_manager};
     use dse_protocol::agent_runtime::ToolEvidenceStatus;
+    use std::path::PathBuf;
 
     fn rust_workspace(with_test: bool) -> tempfile::TempDir {
         let workspace = tempfile::tempdir().unwrap();
@@ -361,6 +362,22 @@ mod tests {
         )
     }
 
+    fn isolated_cargo_args(workspace: &Path, extra: &[&str]) -> Vec<String> {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .map(|root| {
+                root.join("dse-tools-run-tests")
+                    .join(workspace.file_name().expect("fixture directory name"))
+            })
+            .unwrap_or_else(|| workspace.join("target"));
+        let mut args = vec![
+            "--target-dir".to_owned(),
+            target.to_string_lossy().into_owned(),
+        ];
+        args.extend(extra.iter().map(|value| (*value).to_owned()));
+        args
+    }
+
     #[test]
     fn parses_cargo_test_evidence_deterministically() {
         let evidence = parse_cargo_test_evidence(
@@ -399,13 +416,10 @@ mod tests {
     async fn real_cargo_success_produces_revision_bound_artifact() {
         let workspace = rust_workspace(true);
         let context = ProductionToolContext::new(workspace.path());
-        let outcome = execute_run_tests(
-            json!({"args": ["--locked"]}),
-            &context,
-            &shell(workspace.path()),
-        )
-        .await
-        .unwrap();
+        let args = isolated_cargo_args(workspace.path(), &["--locked"]);
+        let outcome = execute_run_tests(json!({"args": args}), &context, &shell(workspace.path()))
+            .await
+            .unwrap();
         assert!(outcome.is_success(), "{}", outcome.content);
         assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
         assert_eq!(outcome.artifacts.len(), 1);
@@ -417,12 +431,11 @@ mod tests {
         assert_eq!(observation.spec.verifier_id, "run_tests");
         assert_eq!(
             observation.spec.parameters,
-            json!({"all_features": false, "args": ["--locked"]})
+            json!({"all_features": false, "args": args})
         );
-        assert_eq!(
-            observation.spec.plan.steps[0].args,
-            vec!["test", "--locked"]
-        );
+        let mut expected_plan_args = vec!["test".to_owned()];
+        expected_plan_args.extend(args);
+        assert_eq!(observation.spec.plan.steps[0].args, expected_plan_args);
     }
 
     #[tokio::test]
@@ -434,13 +447,10 @@ mod tests {
         )
         .unwrap();
         let context = ProductionToolContext::new(workspace.path());
-        let outcome = execute_run_tests(
-            json!({"args": ["--locked"]}),
-            &context,
-            &shell(workspace.path()),
-        )
-        .await
-        .unwrap();
+        let args = isolated_cargo_args(workspace.path(), &["--locked"]);
+        let outcome = execute_run_tests(json!({"args": args}), &context, &shell(workspace.path()))
+            .await
+            .unwrap();
 
         assert!(!outcome.is_success());
         assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
@@ -459,7 +469,8 @@ mod tests {
     async fn zero_tests_are_not_usable_evidence() {
         let workspace = rust_workspace(false);
         let context = ProductionToolContext::new(workspace.path());
-        let outcome = execute_run_tests(json!({}), &context, &shell(workspace.path()))
+        let args = isolated_cargo_args(workspace.path(), &[]);
+        let outcome = execute_run_tests(json!({"args": args}), &context, &shell(workspace.path()))
             .await
             .unwrap();
         assert!(outcome.is_success());

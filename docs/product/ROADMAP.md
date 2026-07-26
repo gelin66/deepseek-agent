@@ -1160,8 +1160,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除不控制任何生产能力的 `shell_tool`/`web_search`/`apply_patch`/`mcp`
   假 feature flag、Doctor 假 MCP 开关和 lifecycle metadata，并删除文档中不存在的内建
   browsing/compatibility alias 承诺。`[features]` 现只保留有真实 caller 的 `subagents` 和
-  `exec_policy`：前者控制 canonical `agent` 目录与 depth/concurrency，后者控制 Shell
-  policy snapshot 加载；Shell、patch 与 MCP CLI 仍由各自真实 owner 控制，不通过假开关。
+  `exec_policy`：前者控制 canonical `agent` 目录与 depth/concurrency，后者在当时控制
+  Shell policy snapshot 加载；Shell、patch 与 MCP CLI 仍由各自真实 owner 控制。M27
+  cutover 后 `exec_policy` 已成为所有 production caller 必须一致消费的 canonical matcher，
+  因此该 feature toggle 也随平行 snapshot 一起删除；`[features]` 当前只剩 `subagents`。
 - M4-C 已物理删除整条无生产 reader 的 Notes 配置投影：`Config.notes_path`、环境与项目
   overlay、默认/旧路径解析和从主入口传入后立即丢弃的 `TuiOptions.notes_path`，并同步
   删除“model-visible note tool”的错误文档承诺。评测 Harness 独立创建和读取的
@@ -4694,9 +4696,9 @@ Runtime、Store、task plan 或 terminal truth。
 以 `"in_progress"` 猜 root transcript 所有权的分支已物理删除。root ownership 现在按
 canonical `RunId` 判断。
 
-本切片没有修改 RuntimeEvent、Run API、State schema、DeepSeek prompt/model/tool
-行为或 permission protocol。权限仍只有现有 `Ask/AutoApprove` canonical 控制；Codex
-式可配置审批档位属于后续独立协议切片，不能伪装成当前 UI 选项。
+本切片 checkpoint 当时没有修改 RuntimeEvent、Run API、State schema、DeepSeek
+prompt/model/tool 行为或 permission protocol；其只读投影仍对应当时的
+`Ask/AutoApprove`。后续 M27 已独立替换该权限协议，M26 不拥有或保留旧权限路径。
 
 ### 24.3 验证与非结论
 
@@ -4714,14 +4716,15 @@ network、GitHub、push、tag/release 均为 0。
 
 ## 25. M27：canonical permission policy 与 Codex 式选择器
 
-- 状态：**已接受方案；待 M26 独立 checkpoint 后实施**
-- 决策：ADR-0012
+- 状态：**实现完成；按可强制边界收缩保留**
+- 决策：`shrink_to_enforceable_permission_subset`（架构合同：ADR-0012）
 - 目标：把粗粒度 `auto_approve: bool` 和分裂的 execpolicy projection 收敛为唯一
   typed、Host-enforced、Run-frozen 权限闭环
 
 ### 25.1 真实问题
 
-当前 TUI 只有 `Ask/AutoApprove`，精确映射 `RunEnvironment.auto_approve=false/true`。
+M27 开始前的 TUI 只有 `Ask/AutoApprove`，精确映射
+`RunEnvironment.auto_approve=false/true`。
 这条链虽然可恢复，但旧 Ask 会对普通工作区编辑逐次询问，AutoApprove 又不能区分边界访问、
 网络和高风险操作。TUI 若只把它改画成三个菜单项，仍只会形成视觉上的 Codex 相似，而不
 形成可执行语义。
@@ -4870,3 +4873,47 @@ Key 和 official DeepSeek API request 均应为 0。
 
 M26 先形成独立 checkpoint；M27 不得把现有 M26 UI 改动、权限协议、release 或品牌混成
 一个提交。M27 最终可按 A/B-C/D-E 形成少量可审查本地提交；不 push、不 release。
+
+### 25.6 结果、删除与边界
+
+Run API v13、RuntimeEvent v20、State schema v26 现只接受
+`RunPermissionMode::{Ask, Agent, FullAccess}`。每次 executable tool 在 start 前提交唯一
+`ToolAuthorizationDecision`，绑定 exact tool、arguments SHA、workspace state、risk、
+matched rule 与 disposition；Ask approval 的 arguments 或 revision 在启动前变化时以
+`authorization_stale` fail closed。Runtime 只排序 durable interaction/start/outcome，
+最终分类仍由 `crates/tools` 拥有。
+
+确定性矩阵结果：
+
+```text
+Ask workspace edit/test prompts             0
+Ask typed path/network authority            fail closed
+Agent ordinary external/network             allow
+Agent Host-critical                         exact Ask
+FullAccess dynamic prompts                   0
+explicit deny / hard invariant bypasses      0
+denied/stale side effects                    0
+reopen decision drift / duplicate execution  0
+child or Writer permission escalation        0
+```
+
+当前 macOS/Linux composition 没有能证明一次性外部路径或网络 grant 范围的 backend，
+所以 Ask 对 canonical path-bearing tool、显式 Shell cwd 与可识别 network 调用不伪装成
+可批准后执行，而是 typed deny。任意子进程内部 I/O 仍只有 OS sandbox 基线，DSE 不宣称
+能从 Shell 字符串完整推导；这是 `shrink_to_enforceable_permission_subset`，不是完整
+scoped-authority keep。
+
+Cutover 已物理删除旧 bool/trust/sandbox/elevation reader、持久 permission config、
+TUI 私有 execpolicy parser/snapshot、tools duplicate matcher、richer ask/session/network
+policy engine、`bash_arity`、Starlark/multimap 依赖，以及无写入 owner 的
+`workspace-trust.json` 外部路径 reader。绕开 canonical Run/RunStore、可自由组合
+policy/network/writable roots 的 `dse-tui sandbox run` 直接执行旁路及其专属文案也已删除。
+会使 TUI 忽略规则而 app-server 继续执行的 `[features].exec_policy` 分叉开关也已删除。
+`execpolicy.toml` 只剩 production 与
+`dse execpolicy check` 共用的 TOML allow/deny matcher；Host critical 不能被 allow rule
+降级。`[projects].trust_level` 继续只拥有项目配置/MCP onboarding 信任。
+
+`Custom`、`[permissions]`、隐藏第四模式、自由组合字段和 compatibility reader 均不存在。
+旧字段字符串只保留在显式拒绝测试、State v26 一次性 retirement fixture 和 frozen 历史
+证据中，不是 production reader。完整证据见
+[M27 canonical permission policy](../../eval/summaries/m27-canonical-permission-policy-2026-07-26.md)。

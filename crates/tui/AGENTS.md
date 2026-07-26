@@ -19,7 +19,7 @@ The default shell is the underwater system (`src/tui/underwater.rs`,
 - **Phase is typed.** `ShellPhase::from_app` derives idle/typing/working/
   waiting/approval/done/failed from real app state. Never invent state in a
   renderer; never compare English strings to detect state (use the enums —
-  the permission chip maps from `ApprovalMode` for exactly this reason).
+  the permission chip maps from canonical `RunPermissionMode`).
 - **Treatment is typed.** `OceanTreatment` (ombre/flat) parses once
   from settings. Every underwater treatment keeps ambient life; appearance
   and motion (`low_motion`, `fancy_animations`) are independent axes.

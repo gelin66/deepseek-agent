@@ -25,8 +25,9 @@ use dse_protocol::run_api::{
 use dse_protocol::task::TaskDefinition;
 use dse_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
-    ReasoningEffort, RunId, RunLimits, RuntimeEventKind, RuntimeFailure, RuntimeTimeoutPhase,
-    StoredRuntimeEvent, TerminalState, ToolOutcome, ToolPolicy, TranscriptEntry,
+    ReasoningEffort, RunId, RunLimits, RunPermissionMode, RuntimeEventKind, RuntimeFailure,
+    RuntimeTimeoutPhase, StoredRuntimeEvent, TerminalState, ToolOutcome, ToolPolicy,
+    TranscriptEntry,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -58,6 +59,13 @@ fn protocol_label(value: &impl Serialize) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+const fn permission_sandbox_posture(mode: RunPermissionMode) -> &'static str {
+    match mode {
+        RunPermissionMode::Ask => "workspace-write",
+        RunPermissionMode::Agent | RunPermissionMode::FullAccess => "danger-full-access",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,10 +139,7 @@ pub(crate) async fn run_exec_runtime(
     prompt: &str,
     workspace: PathBuf,
     max_subagents: usize,
-    auto_approve: bool,
-    allow_sandbox_elevation: bool,
-    explicit_sandbox: Option<&str>,
-    trust_mode: bool,
+    permission_mode: RunPermissionMode,
     tool_mode: bool,
     json_output: bool,
     launch: ExecRunLaunch,
@@ -180,9 +185,8 @@ pub(crate) async fn run_exec_runtime(
             config,
             &workspace,
             &settings,
-            auto_approve || config.allow_shell(),
-            auto_approve,
-            trust_mode,
+            tool_mode || config.allow_shell(),
+            permission_mode,
             append_system_prompt,
         )?;
         startup_failure = ExecStartupFailure::RunStore;
@@ -310,13 +314,8 @@ pub(crate) async fn run_exec_runtime(
                 ),
                 controls: RunProductControls {
                     write_execution_mode: Default::default(),
-                    auto_approve,
-                    trust_mode,
-                    allow_sandbox_elevation,
+                    permission_mode,
                     interactive: false,
-                    sandbox: explicit_sandbox
-                        .map(str::to_owned)
-                        .or_else(|| config.sandbox_mode.clone()),
                 },
             }),
         };
@@ -367,8 +366,7 @@ pub(crate) async fn run_exec_runtime(
                             prompt,
                             &workspace,
                             started,
-                            auto_approve,
-                            explicit_sandbox,
+                            permission_mode,
                             "runtime_failure",
                             "run_store_resume",
                             error.run_id.as_ref(),
@@ -398,10 +396,7 @@ pub(crate) async fn run_exec_runtime(
         let root_run_id = run.run_id.clone();
         let mut effective_model = run.model;
         let mut effective_prompt = prompt.to_owned();
-        let mut effective_auto_approve = auto_approve;
-        let mut effective_sandbox = explicit_sandbox
-            .map(str::to_owned)
-            .or_else(|| config.sandbox_mode.clone());
+        let mut effective_permission_mode = permission_mode;
         let mut run_provider = "deepseek".to_owned();
         let mut run_workspace = workspace.clone();
         let mut tool_catalog_sha256 = None;
@@ -525,8 +520,7 @@ pub(crate) async fn run_exec_runtime(
                         .as_ref()
                         .map(|contract| contract.definition.objective.clone())
                         .unwrap_or_default();
-                    effective_auto_approve = request.environment.auto_approve;
-                    effective_sandbox.clone_from(&request.environment.sandbox);
+                    effective_permission_mode = request.environment.permission_mode;
                     run_provider.clone_from(&request.environment.provider);
                     run_workspace = PathBuf::from(&request.environment.workspace);
                     tool_catalog_sha256.clone_from(&request.environment.tool_catalog_sha256);
@@ -653,14 +647,8 @@ pub(crate) async fn run_exec_runtime(
                     model: &effective_model,
                     route_source,
                     started,
-                    approval_posture: if effective_auto_approve {
-                        "auto_tools"
-                    } else {
-                        "ask"
-                    },
-                    sandbox_posture: effective_sandbox
-                        .as_deref()
-                        .unwrap_or("configured_default"),
+                    approval_posture: effective_permission_mode.as_str(),
+                    sandbox_posture: permission_sandbox_posture(effective_permission_mode),
                     prompt: &effective_prompt,
                     tool_catalog_sha256,
                     workspace: &run_workspace,
@@ -725,8 +713,7 @@ pub(crate) async fn run_exec_runtime(
             prompt,
             &workspace,
             started,
-            auto_approve,
-            explicit_sandbox,
+            permission_mode,
             "startup_failure",
             "startup",
             None,
@@ -743,13 +730,12 @@ pub(crate) async fn run_exec_runtime(
 
 #[allow(clippy::too_many_arguments)]
 async fn emit_exec_stream_failure(
-    config: &Config,
+    _config: &Config,
     model: &str,
     prompt: &str,
     workspace: &Path,
     started: Instant,
-    auto_approve: bool,
-    explicit_sandbox: Option<&str>,
+    permission_mode: RunPermissionMode,
     receipt_kind: &'static str,
     route_source: &str,
     run_id: Option<&RunId>,
@@ -768,11 +754,8 @@ async fn emit_exec_stream_failure(
         route_source: route_source.to_owned(),
         accounting: ExecAccountingReceipt::default(),
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        approval_posture: if auto_approve { "auto_tools" } else { "ask" }.to_owned(),
-        sandbox_posture: explicit_sandbox
-            .or(config.sandbox_mode.as_deref())
-            .unwrap_or("configured_default")
-            .to_owned(),
+        approval_posture: permission_mode.as_str().to_owned(),
+        sandbox_posture: permission_sandbox_posture(permission_mode).to_owned(),
         binary_sha256: current_binary_sha256(),
         config_sha256: None,
         prompt_sha256: format!("sha256:{}", crate::hashing::sha256_hex(prompt.as_bytes())),
@@ -889,8 +872,7 @@ pub(crate) fn production_application_config(
     workspace: &Path,
     settings: &crate::settings::Settings,
     allow_shell: bool,
-    auto_approve: bool,
-    trust_mode: bool,
+    permission_mode: RunPermissionMode,
     append_system_prompt: Option<String>,
 ) -> Result<ProductionApplicationConfig> {
     let connection = deepseek_connection_config(config)?;
@@ -918,30 +900,20 @@ pub(crate) fn production_application_config(
             .to_owned(),
     };
 
-    let trusted = crate::workspace_trust::WorkspaceTrust::load_for(workspace);
     let shell_policy = if allow_shell {
         ShellPolicy::Full
     } else {
         ShellPolicy::None
     };
     let mut tools = ProductionToolConfig::new(workspace.to_path_buf())
-        .with_trust_mode(trust_mode)
-        .with_trusted_external_paths(trusted.paths().to_vec())
         .with_follow_symlinks(settings.workspace_follow_symlinks)
-        .with_auto_approve(auto_approve)
+        .with_permission_mode(permission_mode)
         .with_shell_policy(shell_policy)
         .with_prefer_external_pdftotext(settings.prefer_external_pdftotext);
     if let Some(backend) = crate::sandbox_backend::create_backend(config)? {
         tools = tools.with_sandbox_backend(Arc::from(backend));
     }
-    let exec_policy = if config
-        .features()
-        .enabled(crate::features::Feature::ExecPolicy)
-    {
-        crate::execpolicy::load_default_policy()?.map(|policy| policy.production_snapshot())
-    } else {
-        None
-    };
+    let exec_policy = crate::execpolicy::load_default_policy()?;
     tools = tools.with_exec_policy(exec_policy);
 
     let mut application = ProductionApplicationConfig::official()
@@ -1287,6 +1259,7 @@ impl<'a> RuntimeEventProjection<'a> {
             }
             RuntimeEventKind::InteractionRequested { .. }
             | RuntimeEventKind::InteractionResolved { .. }
+            | RuntimeEventKind::ToolAuthorizationCommitted { .. }
             | RuntimeEventKind::WorkspaceObserved { .. }
             | RuntimeEventKind::CompletionProposed { .. }
             | RuntimeEventKind::HostVerificationPrepared { .. }

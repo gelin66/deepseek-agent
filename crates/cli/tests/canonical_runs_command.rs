@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use dse_protocol::agent_runtime::{
     AgentActor, AgentActorKind, AgentTask, AgentTaskId, AgentWorkspaceAccess,
-    AgentWorkspaceAssignment, ReasoningEffort, RunId, RunLimits, RunRequest, ToolPolicy,
+    AgentWorkspaceAssignment, ReasoningEffort, RunId, RunLimits, RunPermissionMode, RunRequest,
+    ToolPolicy,
 };
 use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -232,9 +233,8 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
                 ..RunLimits::default()
             },
             controls: RunProductControls {
-                auto_approve: true,
+                permission_mode: RunPermissionMode::Agent,
                 interactive: false,
-                sandbox: Some("workspace-write".to_owned()),
                 ..RunProductControls::default()
             },
         }),

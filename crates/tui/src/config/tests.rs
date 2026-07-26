@@ -59,6 +59,22 @@ fn retired_m10a_project_context_pack_setting_is_rejected() {
 }
 
 #[test]
+fn retired_permission_inputs_and_execpolicy_feature_fork_are_rejected() {
+    for raw in [
+        "permission_mode = \"full_access\"\n",
+        "[permissions]\nmode = \"custom\"\n",
+        "[features]\nexec_policy = false\n",
+    ] {
+        let parsed: ConfigFile = toml::from_str(raw).expect("parse retired permission input");
+        let config = apply_profile(parsed, None).expect("merge config");
+        assert!(
+            config.validate().is_err(),
+            "config must not create a hidden permission or caller fork: {raw}"
+        );
+    }
+}
+
+#[test]
 fn m8a_retired_provider_key_is_rejected_even_when_named_deepseek() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("config.toml");

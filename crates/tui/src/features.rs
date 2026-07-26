@@ -11,8 +11,6 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 pub enum Feature {
     /// Enable background sub-agent tooling.
     Subagents,
-    /// Enable execpolicy integration/tooling.
-    ExecPolicy,
 }
 
 /// Holds the effective set of enabled features.
@@ -135,18 +133,11 @@ struct FeatureSpec {
     default_enabled: bool,
 }
 
-const FEATURES: &[FeatureSpec] = &[
-    FeatureSpec {
-        id: Feature::Subagents,
-        key: "subagents",
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::ExecPolicy,
-        key: "exec_policy",
-        default_enabled: true,
-    },
-];
+const FEATURES: &[FeatureSpec] = &[FeatureSpec {
+    id: Feature::Subagents,
+    key: "subagents",
+    default_enabled: true,
+}];
 
 #[cfg(test)]
 mod tests {
@@ -163,7 +154,6 @@ mod tests {
         features.apply_map(&entries);
 
         assert!(!features.enabled(Feature::Subagents));
-        assert!(features.enabled(Feature::ExecPolicy));
         assert_eq!(feature_from_key("not_real"), None);
     }
 
@@ -177,6 +167,5 @@ mod tests {
 
         assert_eq!(lines.first(), Some(&"功能\t启用"));
         assert!(lines.contains(&"subagents\tfalse"));
-        assert!(lines.contains(&"exec_policy\ttrue"));
     }
 }

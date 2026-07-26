@@ -75,7 +75,7 @@ fn m17d_app_projects_both_languages_without_changing_machine_facts() {
     );
     assert_eq!(english.model, chinese.model);
     assert_eq!(english.workspace, chinese.workspace);
-    assert_eq!(english.approval_mode, chinese.approval_mode);
+    assert_eq!(english.permission_mode, chinese.permission_mode);
 }
 
 #[test]
@@ -987,29 +987,20 @@ fn obsolete_default_mode_yolo_cannot_grant_authority() {
     let app = App::new(options, &Config::default());
 
     assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Ask);
+    assert!(!app.workspace_trust_accepted);
+    assert_eq!(app.permission_mode, RunPermissionMode::Ask);
 }
 
 #[test]
-fn default_approval_policy_requires_approval() {
+fn default_permission_mode_requests_approval() {
     let app = App::new(test_options(false), &Config::default());
-    assert_eq!(app.approval_mode, ApprovalMode::Ask);
+    assert_eq!(app.permission_mode, RunPermissionMode::Ask);
 }
 
 #[test]
-fn configured_approval_policy_initializes_each_live_behavior() {
-    for (policy, expected) in [
-        ("on-request", ApprovalMode::Ask),
-        ("auto", ApprovalMode::AutoApprove),
-    ] {
-        let config = Config {
-            approval_policy: Some(policy.to_string()),
-            ..Default::default()
-        };
-        let app = App::new(test_options(false), &config);
-        assert_eq!(app.approval_mode, expected, "{policy}");
-    }
+fn yolo_is_the_only_startup_full_access_override() {
+    let app = App::new(test_options(true), &Config::default());
+    assert_eq!(app.permission_mode, RunPermissionMode::FullAccess);
 }
 
 #[test]

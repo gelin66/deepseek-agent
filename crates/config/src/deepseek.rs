@@ -60,6 +60,13 @@ const RETIRED_ROOT_KEYS: &[&str] = &[
     "model_catalog",
     "models",
     "fleet",
+    "approval_policy",
+    "sandbox_mode",
+    "auto_approve",
+    "trust_mode",
+    "allow_sandbox_elevation",
+    "permission_mode",
+    "permissions",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -81,10 +88,6 @@ pub struct ConfigToml {
     pub log_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsToml>,
     /// Human-facing product projection. This never enters model requests,
@@ -129,16 +132,6 @@ impl ConfigToml {
         if project.log_level.is_some() {
             self.log_level = project.log_level;
         }
-        if let Some(policy) = project.approval_policy
-            && project_approval_policy_is_allowed(self.approval_policy.as_deref(), &policy)
-        {
-            self.approval_policy = Some(policy);
-        }
-        if let Some(mode) = project.sandbox_mode
-            && project_sandbox_mode_is_allowed(self.sandbox_mode.as_deref(), &mode)
-        {
-            self.sandbox_mode = Some(mode);
-        }
         if project.tools.is_some() {
             self.tools = project.tools;
         }
@@ -154,8 +147,6 @@ impl ConfigToml {
             "verbosity" => self.verbosity.clone(),
             "log_level" => self.log_level.clone(),
             "telemetry" => self.telemetry.map(|value| value.to_string()),
-            "approval_policy" => self.approval_policy.clone(),
-            "sandbox_mode" => self.sandbox_mode.clone(),
             "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
             "ui.language" => self
                 .ui
@@ -203,8 +194,6 @@ impl ConfigToml {
             "verbosity" => self.verbosity = Some(value.to_string()),
             "log_level" => self.log_level = Some(value.to_string()),
             "telemetry" => self.telemetry = Some(parse_bool(value)?),
-            "approval_policy" => self.approval_policy = Some(value.to_string()),
-            "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
             "tools.always_load" => {
                 let values = value
                     .split(',')
@@ -238,8 +227,6 @@ impl ConfigToml {
             "verbosity" => self.verbosity = None,
             "log_level" => self.log_level = None,
             "telemetry" => self.telemetry = None,
-            "approval_policy" => self.approval_policy = None,
-            "sandbox_mode" => self.sandbox_mode = None,
             "tools.always_load" => {
                 if let Some(tools) = self.tools.as_mut() {
                     tools.always_load.clear();
@@ -271,8 +258,6 @@ impl ConfigToml {
             "verbosity",
             "log_level",
             "telemetry",
-            "approval_policy",
-            "sandbox_mode",
             "tools.always_load",
             "ui.language",
         ] {
@@ -391,17 +376,6 @@ impl ConfigToml {
                 .or(env.telemetry)
                 .or(self.telemetry)
                 .unwrap_or(false),
-            approval_policy: cli
-                .approval_policy
-                .clone()
-                .or(env.approval_policy)
-                .or_else(|| self.approval_policy.clone()),
-            sandbox_mode: cli
-                .sandbox_mode
-                .clone()
-                .or(env.sandbox_mode)
-                .or_else(|| self.sandbox_mode.clone()),
-            yolo: cli.yolo.or(env.yolo),
             verbosity: cli
                 .verbosity
                 .clone()
@@ -419,9 +393,6 @@ pub struct CliRuntimeOverrides {
     pub output_mode: Option<String>,
     pub log_level: Option<String>,
     pub telemetry: Option<bool>,
-    pub approval_policy: Option<String>,
-    pub sandbox_mode: Option<String>,
-    pub yolo: Option<bool>,
     pub verbosity: Option<String>,
 }
 
@@ -454,9 +425,6 @@ pub struct ResolvedRuntimeOptions {
     pub output_mode: Option<String>,
     pub log_level: Option<String>,
     pub telemetry: bool,
-    pub approval_policy: Option<String>,
-    pub sandbox_mode: Option<String>,
-    pub yolo: Option<bool>,
     pub verbosity: Option<String>,
 }
 
@@ -529,24 +497,6 @@ impl ConfigStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
-}
-
-pub fn project_approval_policy_is_allowed(current: Option<&str>, project: &str) -> bool {
-    let Some(project_rank) = approval_policy_rank(project) else {
-        return false;
-    };
-    current
-        .and_then(approval_policy_rank)
-        .is_none_or(|current_rank| project_rank >= current_rank)
-}
-
-pub fn project_sandbox_mode_is_allowed(current: Option<&str>, project: &str) -> bool {
-    let Some(project_rank) = sandbox_mode_rank(project) else {
-        return false;
-    };
-    current
-        .and_then(sandbox_mode_rank)
-        .is_none_or(|current_rank| project_rank <= current_rank)
 }
 
 pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
@@ -725,24 +675,6 @@ fn reject_retired_config_key(key: &str) -> Result<()> {
         bail!("配置项 '{key}' 已删除；请使用 api_key、base_url 或 default_text_model");
     }
     Ok(())
-}
-
-fn approval_policy_rank(value: &str) -> Option<u8> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "never" | "auto" => Some(0),
-        "on-request" | "on-failure" => Some(1),
-        "untrusted" => Some(2),
-        _ => None,
-    }
-}
-
-fn sandbox_mode_rank(value: &str) -> Option<u8> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read-only" => Some(0),
-        "workspace-write" => Some(1),
-        "danger-full-access" | "external-sandbox" => Some(2),
-        _ => None,
-    }
 }
 
 fn parse_bool(raw: &str) -> Result<bool> {
@@ -969,9 +901,6 @@ struct EnvRuntimeOverrides {
     output_mode: Option<String>,
     log_level: Option<String>,
     telemetry: Option<bool>,
-    approval_policy: Option<String>,
-    sandbox_mode: Option<String>,
-    yolo: Option<bool>,
     verbosity: Option<String>,
 }
 
@@ -982,6 +911,13 @@ impl EnvRuntimeOverrides {
                 && !value.trim().is_empty()
             {
                 bail!("环境变量 {name} 已删除；DSE 固定使用官方 DeepSeek，请移除该变量");
+            }
+        }
+        for name in ["DSE_APPROVAL_POLICY", "DSE_SANDBOX_MODE"] {
+            if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
+                bail!(
+                    "环境变量 {name} 已删除；请通过 TUI 三档选择器、dse exec --auto 或 --yolo 选择权限"
+                );
             }
         }
         let model = first_env(&["DSE_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_DEFAULT_TEXT_MODEL"]);
@@ -998,9 +934,6 @@ impl EnvRuntimeOverrides {
             output_mode: first_env(&["DSE_OUTPUT_MODE"]),
             log_level: first_env(&["DSE_LOG_LEVEL"]),
             telemetry: parse_optional_bool_env("DSE_TELEMETRY")?,
-            approval_policy: first_env(&["DSE_APPROVAL_POLICY"]),
-            sandbox_mode: first_env(&["DSE_SANDBOX_MODE"]),
-            yolo: parse_optional_bool_env("DSE_YOLO")?,
             verbosity: first_env(&["DSE_VERBOSITY"]),
         })
     }

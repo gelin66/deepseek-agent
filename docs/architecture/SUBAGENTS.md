@@ -56,7 +56,7 @@ Agent 时会：
 - `expected_artifact`：要求 child 返回的产物或证据。
 
 默认仍为 read-only。角色标签不会获得写权限；只有显式 `isolated_write`、非空
-`allowed_paths`、Host exact verifier、auto-approve 和唯一 Orchestrator 的 clean-Git/base
+`allowed_paths`、Host exact verifier、冻结的 Run permission 和唯一 Orchestrator 的 clean-Git/base
 预检同时满足时，Host 才分配独立 worktree。Writer receipt 不能直接完成 root，集成后必须
 在最新根 revision 重新签发 EvidenceReceipt。
 

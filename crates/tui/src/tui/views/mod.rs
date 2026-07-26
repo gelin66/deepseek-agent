@@ -18,6 +18,7 @@ use crate::tui::approval::ReviewDecision;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Approval,
+    Permission,
     UserInput,
     Pager,
 }
@@ -304,6 +305,9 @@ pub enum ViewEvent {
     CopyToClipboard {
         text: String,
         label: String,
+    },
+    PermissionSelected {
+        mode: dse_protocol::agent_runtime::RunPermissionMode,
     },
 }
 

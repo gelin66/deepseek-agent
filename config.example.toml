@@ -19,10 +19,7 @@ output_mode = "text"
 verbosity = "normal"
 log_level = "info"
 telemetry = false
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
 allow_shell = true
-yolo = false
 
 # Optional local paths. MCP server definitions live in the JSON file named by
 # `mcp_config_path`; MCP OAuth is transport auth, not model-provider auth.
@@ -39,7 +36,6 @@ exponential_base = 2.0
 
 [features]
 subagents = true
-exec_policy = true
 
 [tui]
 alternate_screen = "auto"
@@ -71,6 +67,6 @@ provider = "duckduckgo"
 verbosity = "concise"
 allow_shell = false
 
-# Project-local `.dse/config.toml` is untrusted. It may tighten approval
-# and sandbox posture and set safe local tool values, but cannot change
+# Project-local `.dse/config.toml` is untrusted. It may set safe local tool and
+# presentation values, but cannot select a Run permission mode or change
 # credentials, endpoint, model, telemetry, or provider identity.

@@ -17,10 +17,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::{
-    app::App, approval::ApprovalMode, run_presentation::RunPresentationPhase, views::ModalKind,
-};
+use crate::tui::{app::App, run_presentation::RunPresentationPhase, views::ModalKind};
 use dse_localization::{MessageId, tr};
+use dse_protocol::agent_runtime::RunPermissionMode;
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.
@@ -156,12 +155,17 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
     }
 }
 
-/// Permission chip words map directly from the typed [`ApprovalMode`] state,
+/// Permission chip words map directly from the canonical typed permission state,
 /// so rewording the localized labels cannot change approval behavior.
 fn permission_label(app: &App) -> Cow<'static, str> {
-    match app.approval_mode {
-        ApprovalMode::Ask => tr(MessageId::ChipPermissionAsk),
-        ApprovalMode::AutoApprove => tr(MessageId::ChipPermissionAutoApprove),
+    let mode = app
+        .run_presentation
+        .permission_mode()
+        .unwrap_or(app.permission_mode);
+    match mode {
+        RunPermissionMode::Ask => tr(MessageId::ChipPermissionAsk),
+        RunPermissionMode::Agent => tr(MessageId::ChipPermissionAgent),
+        RunPermissionMode::FullAccess => tr(MessageId::ChipPermissionFullAccess),
     }
 }
 
@@ -206,6 +210,7 @@ fn compact_tokens(tokens: i64) -> String {
 /// Render the one-line shell header. Route, permission, active-agent
 /// count, and context each have exactly one owner here.
 pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
+    app.permission_chip_hitbox.set(None);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -229,6 +234,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         Span::raw("  "),
         Span::styled(route_label, Style::default().fg(app.ui_theme.text_muted)),
     ];
+    let mut permission_hitbox = None;
     if tier != ShellTier::Compact {
         // The shell header owns the selected status mark.
         // "DSE" is already the leading brand mark; the other choices deserve
@@ -253,8 +259,16 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             " · ",
             Style::default().fg(app.ui_theme.text_dim),
         ));
+        let permission = permission_label(app);
+        let permission_x = area
+            .x
+            .saturating_add(u16::try_from(span_width(&left)).unwrap_or(u16::MAX));
+        let permission_width =
+            u16::try_from(unicode_width::UnicodeWidthStr::width(permission.as_ref()))
+                .unwrap_or(u16::MAX);
+        permission_hitbox = Some(Rect::new(permission_x, area.y, permission_width, 1));
         left.push(Span::styled(
-            permission_label(app),
+            permission,
             Style::default().fg(app.ui_theme.text_muted),
         ));
     }
@@ -290,6 +304,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     let right_width = span_width(&right);
     let left_budget = available.saturating_sub(right_width + usize::from(right_width > 0));
     if span_width(&left) > left_budget {
+        permission_hitbox = None;
         left = vec![
             Span::styled(
                 "DSE",
@@ -310,6 +325,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     left.extend(right);
     let title_area = Rect { height: 1, ..area };
     Paragraph::new(Line::from(left)).render(title_area, buf);
+    app.permission_chip_hitbox.set(permission_hitbox);
     if area.height > 1 {
         let rule_area = Rect {
             y: area.y.saturating_add(1),

@@ -18,6 +18,7 @@ use std::net::TcpListener;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use qa_harness::harness::{Harness, make_sealed_workspace};
 use qa_harness::keys;
 
@@ -114,7 +115,7 @@ fn spawn_approval_fixture_server() -> anyhow::Result<(String, std::thread::JoinH
                                 "index":0,
                                 "id":"call_approval_pty",
                                 "type":"function",
-                                "function":{"name":"apply_patch","arguments":"{\"changes\":[{\"path\":\"approval-proof.txt\",\"content\":\"must-not-write\"}]}"}
+                                "function":{"name":"exec_shell","arguments":"{\"command\":\"python3 -c \\\"open('approval-proof.txt','w').write('must-not-write')\\\"\"}"}
                             }]},"finish_reason":null}]
                         })
                     ),
@@ -354,6 +355,81 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
 }
 
 #[test]
+fn permission_selector_chinese_keyboard_selects_the_next_run_mode() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    let ws = make_sealed_workspace()?;
+    let mut h = spawn_permission_selector(&ws, "zh-Hans")?;
+    h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+
+    h.paste("/permissions")?;
+    h.send(keys::key::enter())?;
+    h.wait_for_text("选择下一次运行使用的权限档位", KEY_TIMEOUT)?;
+    h.send(b"\x1b[B")?; // Down selects the second canonical row.
+    h.send(keys::key::enter())?;
+    h.wait_for(
+        |frame| {
+            frame.row(0).contains("替我审批") && !frame.contains("选择下一次运行使用的权限档位")
+        },
+        KEY_TIMEOUT,
+    )?;
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+#[test]
+fn permission_selector_english_mouse_selects_full_access() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    let ws = make_sealed_workspace()?;
+    let mut h = spawn_permission_selector(&ws, "en")?;
+    h.wait_for_text(ENGLISH_COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+
+    h.paste("/permissions")?;
+    h.send(keys::key::enter())?;
+    h.wait_for_text("Choose the permission preset for the next run", KEY_TIMEOUT)?;
+    let (row, col) = h
+        .frame()
+        .find_text("Full access")
+        .context("locate the rendered Full access selector row")?;
+    h.send(keys::mouse::click(row, col))?;
+    h.wait_for(
+        |frame| {
+            frame.row(0).contains("Full access")
+                && !frame.contains("Choose the permission preset for the next run")
+        },
+        KEY_TIMEOUT,
+    )?;
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+fn spawn_permission_selector(
+    ws: &qa_harness::harness::SealedWorkspace,
+    language: &str,
+) -> anyhow::Result<Harness> {
+    Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(ws.workspace())
+        .clear_env()
+        .seal_home(ws.home())
+        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            language,
+            "--no-project-config",
+            "--skip-onboarding",
+            "--mouse-capture",
+        ])
+        .size(32, 100)
+        .spawn()
+}
+
+#[test]
 fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow::Result<()> {
     run_canonical_approval_denial("zh-Hans", COMPOSER_READY_TEXT, "仅本次批准", "拒绝本次调用")
 }
@@ -399,7 +475,7 @@ fn run_canonical_approval_denial(
     h.wait_for_text(composer_ready, BOOT_TIMEOUT)?;
 
     h.send(keys::key::text(
-        "Request the fixture apply_patch call; do not change its arguments.",
+        "Request the fixture elevated shell call; do not change its arguments.",
     ))?;
     h.send(keys::key::enter())?;
     h.wait_for_text(approve_once, Duration::from_secs(10))?;
@@ -429,7 +505,7 @@ fn run_canonical_approval_denial(
     }
     assert!(
         !denied_path.exists(),
-        "denied approval executed its write_file side effect: {}",
+        "denied approval executed its shell side effect: {}",
         denied_path.display()
     );
 

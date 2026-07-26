@@ -28,8 +28,8 @@ DSE is deliberately narrow:
 - complete `en` and `zh-Hans` human interfaces without a language-classifier
   request or translation model.
 
-The current protocol identities are Run API v12, RuntimeEvent v19,
-State schema v25, and exec-stream v4.
+The current protocol identities are Run API v13, RuntimeEvent v20,
+State schema v26, and exec-stream v4.
 
 ## Fixed model profiles
 
@@ -48,8 +48,11 @@ provider, or extra routing request. Explicit Pro/Flash and reasoning choices
 remain replayable user inputs.
 
 `dse exec --auto` has an unrelated CLI meaning: it enables the non-interactive
-tool-agent loop. It does **not** choose a model automatically or grant access
-outside the configured sandbox.
+tool-agent loop with the Agent decides permission preset. Host-classified
+critical calls still require approval and therefore fail closed headlessly.
+The interactive TUI defaults to Ask for approval; only explicit process-local
+`--yolo` selects Full access. There is no Custom permission mode or persistent
+permission configuration.
 
 DeepSeek retired the old `deepseek-chat` and `deepseek-reasoner` aliases on
 2026-07-24. DSE uses the current `deepseek-v4-pro` and

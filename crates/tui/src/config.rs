@@ -146,11 +146,6 @@ pub struct Config {
     pub mcp_oauth_callback_url: Option<String>,
     pub instructions: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
-    #[serde(alias = "approvalPolicy")]
-    pub approval_policy: Option<String>,
-    #[serde(alias = "sandboxMode")]
-    pub sandbox_mode: Option<String>,
-    pub yolo: Option<bool>,
     pub verbosity: Option<String>,
     #[serde(alias = "sandboxBackend")]
     pub sandbox_backend: Option<String>,
@@ -209,6 +204,11 @@ impl Config {
                 );
             }
         }
+        for name in ["DSE_APPROVAL_POLICY", "DSE_SANDBOX_MODE"] {
+            if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
+                anyhow::bail!("{}", tr(MessageId::ConfigRetiredKey).replace("{key}", name));
+            }
+        }
         apply_env_overrides(&mut config);
         config.validate()?;
         Ok(config)
@@ -238,6 +238,16 @@ impl Config {
             "harness_profiles",
             "fleet",
             "context",
+            "approval_policy",
+            "approvalPolicy",
+            "sandbox_mode",
+            "sandboxMode",
+            "auto_approve",
+            "trust_mode",
+            "allow_sandbox_elevation",
+            "permission_mode",
+            "permissions",
+            "yolo",
         ] {
             if self.extra.contains_key(retired) {
                 if retired == "context" {
@@ -286,17 +296,6 @@ impl Config {
                 }
             }
         }
-        if let Some(policy) = self.approval_policy.as_deref()
-            && !matches!(
-                policy.trim().to_ascii_lowercase().as_str(),
-                "on-request" | "auto"
-            )
-        {
-            anyhow::bail!(
-                "{}",
-                tr(MessageId::ConfigInvalidApproval).replace("{value}", policy)
-            );
-        }
         if let Some(verbosity) = self.verbosity.as_deref()
             && !matches!(
                 verbosity.trim().to_ascii_lowercase().as_str(),
@@ -306,17 +305,6 @@ impl Config {
             anyhow::bail!(
                 "{}",
                 tr(MessageId::ConfigInvalidVerbosity).replace("{value}", verbosity)
-            );
-        }
-        if let Some(mode) = self.sandbox_mode.as_deref()
-            && !matches!(
-                mode.trim().to_ascii_lowercase().as_str(),
-                "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox"
-            )
-        {
-            anyhow::bail!(
-                "{}",
-                tr(MessageId::ConfigInvalidSandbox).replace("{value}", mode)
             );
         }
         if let Some(tui) = &self.tui
@@ -673,9 +661,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
             .or(base.mcp_oauth_callback_url),
         instructions: selected.instructions.or(base.instructions),
         allow_shell: selected.allow_shell.or(base.allow_shell),
-        approval_policy: selected.approval_policy.or(base.approval_policy),
-        sandbox_mode: selected.sandbox_mode.or(base.sandbox_mode),
-        yolo: selected.yolo.or(base.yolo),
         verbosity: selected.verbosity.or(base.verbosity),
         sandbox_backend: selected.sandbox_backend.or(base.sandbox_backend),
         sandbox_url: selected.sandbox_url.or(base.sandbox_url),
@@ -726,15 +711,6 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Some(value) = dse_env("DSE_ALLOW_SHELL") {
         config.allow_shell = Some(env_truthy(&value));
-    }
-    if let Some(value) = dse_env("DSE_APPROVAL_POLICY") {
-        config.approval_policy = Some(value);
-    }
-    if let Some(value) = dse_env("DSE_SANDBOX_MODE") {
-        config.sandbox_mode = Some(value);
-    }
-    if let Some(value) = dse_env("DSE_YOLO") {
-        config.yolo = Some(env_truthy(&value));
     }
     if let Some(value) = dse_env("DSE_VERBOSITY") {
         config.verbosity = Some(value);

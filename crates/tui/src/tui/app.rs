@@ -1,6 +1,7 @@
 //! Application state for the `DeepSeek` TUI.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -11,7 +12,6 @@ use crate::config::{Config, has_api_key};
 use crate::palette::{self, UiTheme};
 use crate::pricing::CostCurrency;
 use crate::settings::Settings;
-use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
@@ -19,6 +19,7 @@ use crate::tui::scrolling::TranscriptScroll;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 use dse_localization::{MessageId, ProductLanguage, tr, tr_in};
+use dse_protocol::agent_runtime::RunPermissionMode;
 
 // === Types ===
 
@@ -634,7 +635,7 @@ pub struct TuiOptions {
     pub mcp_config_path: PathBuf,
     /// Skip onboarding screens
     pub skip_onboarding: bool,
-    /// Auto-approve tool executions (yolo mode)
+    /// Select FullAccess for future Runs in this process.
     pub yolo: bool,
     /// Resume a previous session by ID
     pub resume_session_id: Option<String>,
@@ -875,11 +876,16 @@ pub struct App {
     pub api_key_cursor: usize,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
-    pub approval_mode: ApprovalMode,
+    /// Canonical permission preset used for the next new Run.
+    pub permission_mode: RunPermissionMode,
+    /// Exact permission-chip hitbox from the latest rendered frame.
+    pub permission_chip_hitbox: Cell<Option<Rect>>,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
-    /// Trust mode - allow access outside workspace
-    pub trust_mode: bool,
+    /// Whether the onboarding workspace-trust gate was accepted.
+    ///
+    /// This is UI state only and never grants tool authority.
+    pub workspace_trust_accepted: bool,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by passive UI projections; `0` hides the MCP status.
     pub mcp_configured_count: usize,
@@ -1028,14 +1034,6 @@ impl App {
             needs_workspace_trust,
         );
 
-        // Approval has one persistent owner (`Config::approval_policy`) and
-        // exactly two canonical behaviors. `--yolo` is an explicit startup
-        // override; trust and shell authority remain independent controls.
-        let configured_approval_mode = config
-            .approval_policy
-            .as_deref()
-            .and_then(ApprovalMode::from_config_value)
-            .unwrap_or_default();
         let allow_shell = allow_shell || yolo;
 
         let skills_scan_dse_only = config.skills_config().scan_dse_only();
@@ -1125,13 +1123,14 @@ impl App {
             api_key_input: String::new(),
             api_key_cursor: 0,
             clipboard: ClipboardHandler::new(),
-            approval_mode: if yolo {
-                ApprovalMode::AutoApprove
+            permission_mode: if yolo {
+                RunPermissionMode::FullAccess
             } else {
-                configured_approval_mode
+                RunPermissionMode::Ask
             },
+            permission_chip_hitbox: Cell::new(None),
             view_stack: ViewStack::new(),
-            trust_mode: yolo,
+            workspace_trust_accepted: yolo,
             // Read the MCP config once at boot to know how many servers the
             // user declared. Errors fall through to zero so a missing or
             // malformed config simply hides the passive UI projections.

@@ -62,7 +62,7 @@ fn welcome_step_labels(app: &App) -> Vec<String> {
     if app.onboarding_needs_api_key {
         steps.push(app.tr(MessageId::OnboardWelcomeStepApiKey).to_string());
     }
-    if !app.trust_mode && super::needs_trust(&app.workspace) {
+    if !app.workspace_trust_accepted && super::needs_trust(&app.workspace) {
         steps.push(app.tr(MessageId::OnboardWelcomeStepTrust).to_string());
     }
     steps.push(app.tr(MessageId::OnboardWelcomeStepTips).to_string());
@@ -114,7 +114,7 @@ mod tests {
     fn welcome_copy_describes_the_real_first_run_flow() {
         let mut app = test_app();
         app.onboarding_needs_api_key = false;
-        app.trust_mode = true;
+        app.workspace_trust_accepted = true;
         let body = body(&app);
 
         assert!(body.contains("面向 DeepSeek 的本地编码 Agent"));
@@ -138,7 +138,7 @@ mod tests {
         let mut app = test_app();
         app.workspace = tmp.path().to_path_buf();
         app.onboarding_needs_api_key = true;
-        app.trust_mode = false;
+        app.workspace_trust_accepted = false;
 
         let body = body(&app);
 
@@ -149,7 +149,7 @@ mod tests {
     fn welcome_copy_uses_simplified_chinese_registry() {
         let mut app = test_app();
         app.onboarding_needs_api_key = false;
-        app.trust_mode = true;
+        app.workspace_trust_accepted = true;
 
         let body = body(&app);
 

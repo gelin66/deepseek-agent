@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use dse_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
 use dse_app_server::{
@@ -16,9 +16,9 @@ use dse_app_server::{
 };
 use dse_config::{
     CliRuntimeOverrides, ConfigStore, ResolvedRuntimeOptions, RuntimeApiKeySource,
-    canonical_deepseek_model, is_official_deepseek_base_url, load_prompt_preferences,
+    canonical_deepseek_model, dse_home, is_official_deepseek_base_url, load_prompt_preferences,
 };
-use dse_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use dse_execpolicy::ExecPolicy;
 use dse_localization::{
     MessageId, ProductLanguage, process_language, resolve_product_language, set_process_language,
     tr, tr_in,
@@ -28,6 +28,7 @@ use dse_protocol::run_api::{
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
 };
 use dse_secrets::Secrets;
+use dse_tools::{ProductionToolConfig, shell::ShellPolicy};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -58,10 +59,6 @@ struct Cli {
     #[arg(long)]
     telemetry: Option<bool>,
     #[arg(long)]
-    approval_policy: Option<String>,
-    #[arg(long)]
-    sandbox_mode: Option<String>,
-    #[arg(long)]
     api_key: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
@@ -76,7 +73,7 @@ struct Cli {
     no_mouse_capture: bool,
     #[arg(long = "skip-onboarding")]
     skip_onboarding: bool,
-    /// Explicit startup override: enable Shell, automatic approval, and workspace-external trust.
+    /// Explicit startup override: use Full access for future Runs in this process.
     #[arg(long, hide = true)]
     yolo: bool,
     /// Continue the most recent interactive session for this workspace.
@@ -110,7 +107,7 @@ Examples:
   dse exec --auto --output-format stream-json \"fix the failing test\"
 
 Common forwarded flags:
-  --auto                           Enable tool-backed agent mode with auto-approvals
+  --auto                           Enable tools with the Agent decides permission preset
   --json                           Emit summary JSON
   --resume <RUN_ID>                Resume one canonical Agent run
   --continue                       Continue the latest root run for this workspace
@@ -119,12 +116,14 @@ Common forwarded flags:
   --max-runtime-secs <SECONDS>     Hard wall-clock cap for the Headless Agent
 
 Plain `dse exec` is a one-shot model response. Use `--auto` for
-non-interactive filesystem/shell tool use, matching the supported automation
-path used by stream-json wrappers.
+non-interactive filesystem/shell tool use. Host-classified critical calls
+still require approval and therefore fail closed in headless execution.
 ")]
     Exec(TuiPassthroughArgs),
     /// Manage TUI MCP servers.
     Mcp(TuiPassthroughArgs),
+    /// Evaluate the same explicit allow/deny matcher used by production.
+    Execpolicy(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
     Features(TuiPassthroughArgs),
     /// Generate shell completions for the TUI binary.
@@ -139,8 +138,6 @@ path used by stream-json wrappers.
     Config(ConfigArgs),
     /// 查看或设置 DeepSeek 模型。
     Model(ModelArgs),
-    /// Evaluate sandbox/approval policy decisions.
-    Sandbox(SandboxArgs),
     /// Run the canonical local Run API over HTTP/SSE or stdio.
     #[command(after_help = "\
 Transports:
@@ -275,40 +272,6 @@ enum ModelCommand {
 }
 
 #[derive(Debug, Args)]
-struct SandboxArgs {
-    #[command(subcommand)]
-    command: SandboxCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum SandboxCommand {
-    Check {
-        command: String,
-        #[arg(long, value_enum, default_value_t = ApprovalModeArg::OnRequest)]
-        ask: ApprovalModeArg,
-    },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ApprovalModeArg {
-    UnlessTrusted,
-    OnFailure,
-    OnRequest,
-    Never,
-}
-
-impl From<ApprovalModeArg> for AskForApproval {
-    fn from(value: ApprovalModeArg) -> Self {
-        match value {
-            ApprovalModeArg::UnlessTrusted => AskForApproval::UnlessTrusted,
-            ApprovalModeArg::OnFailure => AskForApproval::OnFailure,
-            ApprovalModeArg::OnRequest => AskForApproval::OnRequest,
-            ApprovalModeArg::Never => AskForApproval::Never,
-        }
-    }
-}
-
-#[derive(Debug, Args)]
 struct AppServerArgs {
     /// Run the same canonical newline Run API over stdio instead of HTTP/SSE.
     #[arg(
@@ -416,6 +379,7 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
         "setup" => MessageId::CliCommandSetup,
         "exec" => MessageId::CliCommandExec,
         "mcp" => MessageId::CliCommandMcp,
+        "execpolicy" => MessageId::CliCommandExecPolicy,
         "features" => MessageId::CliCommandFeatures,
         "completions" => MessageId::CliCommandCompletions,
         "login" => MessageId::CliCommandLogin,
@@ -423,7 +387,6 @@ fn cli_command_message(name: &str) -> Option<MessageId> {
         "auth" => MessageId::CliCommandAuth,
         "config" => MessageId::CliCommandConfig,
         "model" => MessageId::CliCommandModel,
-        "sandbox" => MessageId::CliCommandSandbox,
         "app-server" => MessageId::CliCommandAppServer,
         "completion" => MessageId::CliCommandCompletion,
         _ => return None,
@@ -520,8 +483,6 @@ fn localize_cli_command_with_parent(
         ("output_mode", MessageId::CliArgOutputMode),
         ("log_level", MessageId::CliArgLogLevel),
         ("telemetry", MessageId::CliArgTelemetry),
-        ("approval_policy", MessageId::CliArgApprovalPolicy),
-        ("sandbox_mode", MessageId::CliArgSandboxMode),
         ("base_url", MessageId::CliArgBaseUrl),
         ("mouse_capture", MessageId::CliArgMouseCapture),
         ("no_mouse_capture", MessageId::CliArgNoMouseCapture),
@@ -651,9 +612,6 @@ fn run() -> Result<()> {
         output_mode: cli.output_mode.clone(),
         log_level: cli.log_level.clone(),
         telemetry: cli.telemetry,
-        approval_policy: cli.approval_policy.clone(),
-        sandbox_mode: cli.sandbox_mode.clone(),
-        yolo: Some(cli.yolo),
         verbosity: cli.verbosity.clone(),
     };
     match command {
@@ -685,6 +643,10 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
         }
+        Some(Commands::Execpolicy(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("execpolicy", args))
+        }
         Some(Commands::Features(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
@@ -698,7 +660,6 @@ fn run() -> Result<()> {
         Some(Commands::Auth(args)) => run_auth_command(&mut store, args.command),
         Some(Commands::Config(args)) => run_config_command(&mut store, args.command),
         Some(Commands::Model(args)) => run_model_command(&mut store, args.command),
-        Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides)?;
             run_app_server_command(&resolved_runtime, args)
@@ -1110,25 +1071,6 @@ fn run_model_command(store: &mut ConfigStore, command: ModelCommand) -> Result<(
     }
 }
 
-fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
-    match command {
-        SandboxCommand::Check { command, ask } => {
-            let engine = ExecPolicyEngine::new(Vec::new(), vec!["rm -rf".to_string()]);
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let decision = engine.check(ExecPolicyContext {
-                command: &command,
-                cwd: &cwd.display().to_string(),
-                tool: Some("exec_shell"),
-                path: None,
-                ask_for_approval: ask.into(),
-                sandbox_mode: Some("workspace-write"),
-            })?;
-            println!("{}", serde_json::to_string_pretty(&decision)?);
-            Ok(())
-        }
-    }
-}
-
 fn parse_run_list_limit(raw: &str) -> std::result::Result<u32, String> {
     let range_error =
         || tr(MessageId::CliLimitRange).replace("{max}", &MAX_RUN_LIST_LIMIT.to_string());
@@ -1328,7 +1270,13 @@ fn production_application_config(
         verbosity: resolved_runtime.verbosity.clone(),
         ..ProductionPromptConfig::default()
     };
-    let mut config = ProductionApplicationConfig::official().with_prompt(prompt);
+    let exec_policy = ExecPolicy::from_optional_path(&dse_home()?.join("execpolicy.toml"))?;
+    let tools = ProductionToolConfig::new(".")
+        .with_shell_policy(ShellPolicy::Full)
+        .with_exec_policy(exec_policy);
+    let mut config = ProductionApplicationConfig::official()
+        .with_tool_config(tools)
+        .with_prompt(prompt);
     if let Some(max_retries) = transport_max_retries {
         config = config.with_transport_max_retries(max_retries);
     }
@@ -1441,6 +1389,9 @@ fn build_tui_command_with_paths(
     if cli.skip_onboarding {
         cmd.arg("--skip-onboarding");
     }
+    if cli.yolo {
+        cmd.arg("--yolo");
+    }
     cmd.args(passthrough);
 
     let keyring_bridge_api_key = resolved_runtime.api_key.as_ref();
@@ -1466,22 +1417,12 @@ fn build_tui_command_with_paths(
     }
     if let Some(v) = verbosity.as_ref() {
         cmd.env("DSE_VERBOSITY", v);
-        cmd.env("DSE_VERBOSITY", v);
     }
     if let Some(log_level) = cli.log_level.as_ref() {
         cmd.env("DSE_LOG_LEVEL", log_level);
     }
     if let Some(telemetry) = cli.telemetry {
         cmd.env("DSE_TELEMETRY", telemetry.to_string());
-    }
-    if let Some(policy) = cli.approval_policy.as_ref() {
-        cmd.env("DSE_APPROVAL_POLICY", policy);
-    }
-    if let Some(mode) = cli.sandbox_mode.as_ref() {
-        cmd.env("DSE_SANDBOX_MODE", mode);
-    }
-    if cli.yolo {
-        cmd.env("DSE_YOLO", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
         // Carry the explicit DeepSeek secret through the source-marked slot so
@@ -1679,7 +1620,15 @@ mod tests {
     #[test]
     fn m8a_cli_help_is_deepseek_only() {
         let help = help_for(&["dse", "--help"]);
-        for retained in ["doctor", "exec", "app-server", "login", "auth", "model"] {
+        for retained in [
+            "doctor",
+            "exec",
+            "execpolicy",
+            "app-server",
+            "login",
+            "auth",
+            "model",
+        ] {
             assert!(help.contains(retained), "{retained}");
         }
         assert!(!help.contains("--provider"));
@@ -1720,7 +1669,28 @@ mod tests {
             .filter(|command| !command.is_hide_set())
             .map(|command| command.get_name().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(commands.len(), 17, "{commands:?}");
+        assert_eq!(
+            commands,
+            vec![
+                "doctor",
+                "runs",
+                "resume",
+                "init",
+                "setup",
+                "exec",
+                "mcp",
+                "execpolicy",
+                "features",
+                "completions",
+                "login",
+                "logout",
+                "auth",
+                "config",
+                "model",
+                "app-server",
+                "completion",
+            ]
+        );
         assert!(!commands.iter().any(|command| command == "fleet"));
         assert!(!commands.iter().any(|command| command == "lane"));
         assert!(!commands.iter().any(|command| command == "thread"));
@@ -1911,6 +1881,7 @@ mod tests {
             "explicit-secret",
             "--model",
             "deepseek-v4-pro",
+            "--yolo",
             "doctor",
         ]);
         let mut store = ConfigStore::load(Some(directory.path().join("config.toml"))).unwrap();
@@ -1945,6 +1916,11 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["--language", "zh-Hans"])
         );
+        assert!(
+            command.get_args().any(|argument| argument == "--yolo"),
+            "explicit Full access must be forwarded as the canonical process argument"
+        );
+        assert!(command_env(&command, "DSE_YOLO").is_none());
         assert!(command_env(&command, "DEEPSEEK_PROVIDER").is_none());
         assert!(command_env(&command, "OPENAI_API_KEY").is_none());
         assert!(command_env(&command, "XAI_API_KEY").is_none());

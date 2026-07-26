@@ -27,8 +27,9 @@ Resolution is:
 ambient product state from another home directory.
 
 The canonical SQLite RunStore is `~/.dse/state.db`, or
-`$DSE_HOME/state.db` when `DSE_HOME` is set. TUI settings, permissions, setup
-state, and optional extension files live under the same resolved DSE home.
+`$DSE_HOME/state.db` when `DSE_HOME` is set. TUI settings, setup state, and
+optional extension files live under the same resolved DSE home. Permission
+selection is process-local and frozen into each Run; it is not a config file.
 
 ## Official DeepSeek identity
 
@@ -154,10 +155,7 @@ output_mode = "text"
 verbosity = "normal"
 log_level = "info"
 telemetry = false
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
 allow_shell = true
-yolo = false
 reasoning_effort = "max"
 ```
 
@@ -168,14 +166,30 @@ DSE_OUTPUT_MODE
 DSE_VERBOSITY
 DSE_LOG_LEVEL
 DSE_TELEMETRY
-DSE_APPROVAL_POLICY
-DSE_SANDBOX_MODE
 DSE_ALLOW_SHELL
-DSE_YOLO
 ```
 
-`DSE_YOLO=true` changes local approval posture. It does not change the model
-backend, workspace scope, or Host completion evidence.
+### Run permissions
+
+DSE has exactly three Run-frozen presets:
+
+| Interactive label | Protocol value | Behavior |
+| --- | --- | --- |
+| Ask for approval | `ask` | Workspace work proceeds; typed external-path/recognized-network calls fail closed and elevated calls ask. |
+| Agent decides | `agent` | External/network work may proceed; Host-classified critical calls ask. |
+| Full access | `full_access` | No dynamic prompt; explicit deny and hard safety invariants still apply. |
+
+The interactive TUI starts at Ask. `/permissions` or the permission chip
+changes only future Runs in the current process. `dse exec --auto` selects
+Agent decides; a required approval fails closed in headless execution.
+The explicit process-only `--yolo` override selects Full access and is never
+persisted.
+
+There is no `[permissions]` table, Custom preset, free-form permission
+combination, or config editor. Retired `approval_policy`, `sandbox_mode`,
+`auto_approve`, `trust_mode`, and `allow_sandbox_elevation` inputs fail closed.
+Permission choice does not change the DeepSeek model, prompt, or Host
+completion evidence.
 
 ## Retry policy
 
@@ -257,7 +271,6 @@ backend. See [MCP.md](MCP.md).
 ```toml
 [features]
 subagents = true
-exec_policy = true
 
 [subagents]
 enabled = true
@@ -300,11 +313,11 @@ A trusted workspace may contain:
 $WORKSPACE/.dse/config.toml
 ```
 
-Project-local configuration is untrusted input. It may tighten approval and
-sandbox posture and set safe local tool values. It cannot change credentials,
+Project-local configuration is untrusted input. It may set safe local tool and
+presentation values. It cannot select a permission mode or change credentials,
 the DeepSeek endpoint, model identity, telemetry, UI language, or global
-extension paths. A value that would weaken the current posture is ignored or
-rejected.
+extension paths. A permission key is rejected rather than treated as a hidden
+fourth mode.
 
 ## Deleted and rejected keys
 
@@ -324,6 +337,12 @@ harness_profiles
 model_catalog
 models
 fleet
+approval_policy
+sandbox_mode
+auto_approve
+trust_mode
+allow_sandbox_elevation
+permissions
 ```
 
 Replaced camel-case spellings such as `apiKey`, `baseUrl`, and

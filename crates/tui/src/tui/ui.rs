@@ -27,7 +27,7 @@ use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseEvent, MouseEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -51,6 +51,7 @@ use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::key_shortcuts;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
+use crate::tui::permission_selector::PermissionSelector;
 use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
@@ -58,7 +59,7 @@ use crate::tui::user_input::UserInputView;
 use dse_localization::{MessageId, tr};
 
 use super::app::{App, OnboardingState, ReasoningEffort, StatusToastLevel, TuiOptions};
-use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
+use super::approval::{ApprovalRequest, ApprovalView, ReviewDecision};
 use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
 use super::history::HistoryCell;
 use super::slash_menu::{
@@ -85,10 +86,6 @@ const UI_ACTIVE_POLL_MS: u64 = 24;
 /// whenever live status motion and ocean motion overlap.
 pub(crate) const UI_UNDERWATER_ANIMATION_MS: u64 = 80;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
-
-fn app_auto_approve_enabled(app: &App) -> bool {
-    app.approval_mode == ApprovalMode::AutoApprove
-}
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
@@ -198,7 +195,7 @@ fn complete_trust_directory_onboarding(app: &mut App) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     // Workspace trust permits loading and operating in this repository. It
     // does not silently grant unrestricted access outside the workspace.
-    app.trust_mode = false;
+    app.workspace_trust_accepted = false;
     app.status_message = None;
     if app.onboarding_workspace_trust_gate {
         app.onboarding_workspace_trust_gate = false;
@@ -433,8 +430,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         &app.workspace,
         &settings,
         app.allow_shell,
-        app_auto_approve_enabled(&app),
-        app.trust_mode,
+        app.permission_mode,
         None,
     )?;
     let application = Arc::new(AgentApplication::production(application_config)?);
@@ -711,11 +707,8 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         limits,
         controls: RunProductControls {
             write_execution_mode: Default::default(),
-            auto_approve: app_auto_approve_enabled(app),
-            trust_mode: app.trust_mode,
-            allow_sandbox_elevation: false,
+            permission_mode: app.permission_mode,
             interactive: true,
-            sandbox: config.sandbox_mode.clone(),
         },
     }
 }
@@ -806,6 +799,18 @@ async fn run_canonical_event_loop(
 fn route_canonical_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     if !app.view_stack.is_empty() {
         return app.view_stack.handle_mouse(mouse);
+    }
+
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        && app.permission_chip_hitbox.get().is_some_and(|rect| {
+            mouse.column >= rect.x
+                && mouse.column < rect.right()
+                && mouse.row >= rect.y
+                && mouse.row < rect.bottom()
+        })
+    {
+        open_permission_selector(app);
+        return Vec::new();
     }
 
     match mouse.kind {
@@ -965,6 +970,9 @@ async fn handle_canonical_key(
                         .replace("{cost}", &app.format_cost_amount_precise(total));
                     app.add_message(HistoryCell::System { content });
                     app.status_message = Some(app.tr(MessageId::CanonicalCostShown).into_owned());
+                }
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Permissions) => {
+                    open_permission_selector(app);
                 }
                 CanonicalSlashParse::Error(message) => {
                     app.insert_str(&input);
@@ -1147,8 +1155,43 @@ fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<
             });
             None
         }
+        ViewEvent::PermissionSelected { mode } => {
+            app.permission_mode = mode;
+            app.status_message = Some(
+                app.tr(
+                    if app.run_presentation.has_root()
+                        && !matches!(
+                            app.run_presentation.phase(),
+                            crate::tui::run_presentation::RunPresentationPhase::Idle
+                                | crate::tui::run_presentation::RunPresentationPhase::Completed
+                                | crate::tui::run_presentation::RunPresentationPhase::Blocked
+                                | crate::tui::run_presentation::RunPresentationPhase::Failed
+                        )
+                    {
+                        MessageId::PermissionSelectorChangedNextRun
+                    } else {
+                        MessageId::PermissionSelectorChanged
+                    },
+                )
+                .into_owned(),
+            );
+            None
+        }
         event => Some(event),
     }
+}
+
+fn open_permission_selector(app: &mut App) {
+    let active_run = app.run_presentation.has_root()
+        && !matches!(
+            app.run_presentation.phase(),
+            crate::tui::run_presentation::RunPresentationPhase::Idle
+                | crate::tui::run_presentation::RunPresentationPhase::Completed
+                | crate::tui::run_presentation::RunPresentationPhase::Blocked
+                | crate::tui::run_presentation::RunPresentationPhase::Failed
+        );
+    app.view_stack
+        .push(PermissionSelector::new(app.permission_mode, active_run));
 }
 
 fn apply_presenter_action(

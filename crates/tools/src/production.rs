@@ -3,28 +3,29 @@
 //! This is the sole model-visible tool owner. It intentionally uses direct
 //! exact-name dispatch instead of a second registry or handler abstraction.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use dse_execpolicy::{ExecPolicy, ExecPolicyDisposition};
 use dse_protocol::agent_runtime::{
-    ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolFailureCode, ToolOperationStatus,
+    ApprovalRisk, RunPermissionMode, ToolApprovalPrompt, ToolAuthorizationDecision,
+    ToolAuthorizationDisposition, ToolDefinition, ToolFailureCode, ToolOperationStatus,
     ToolRetryDisposition, ToolSideEffectStatus, WorkspaceAccess,
 };
-use dse_protocol::task::VerifierSpec;
+use dse_protocol::task::{VerifierSpec, WorkspaceState};
 use dse_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
-use crate::command_safety::command_is_high_impact;
+use crate::command_safety::{SafetyLevel, analyze_command, command_is_high_impact};
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
-    exec_shell_input_is_parallel_readonly, execute_exec_shell, new_shared_shell_manager,
+    command_likely_needs_network, execute_exec_shell, new_shared_shell_manager,
     preflight_exec_shell,
 };
 use crate::{
@@ -54,62 +55,20 @@ pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
 #[derive(Clone)]
 pub struct ProductionToolConfig {
     workspace: PathBuf,
-    trust_mode: bool,
-    trusted_external_paths: Vec<PathBuf>,
+    allow_external_paths: bool,
     follow_symlinks: bool,
-    auto_approve: bool,
+    permission_mode: RunPermissionMode,
     shell_policy: ShellPolicy,
     elevated_sandbox_policy: Option<ExecutionSandboxPolicy>,
     shell_network_denied_hint: Option<String>,
     sandbox_backend: Option<Arc<dyn SandboxBackend>>,
     prefer_external_pdftotext: bool,
-    exec_policy: Option<ProductionExecPolicySnapshot>,
-}
-
-/// Serializable snapshot of the legacy exec-policy file used by the fixed
-/// runtime. Loading/parsing remains a composition concern; evaluation is
-/// tools-owned so app and CLI enforce the same deny/allow decision.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProductionExecPolicySnapshot {
-    #[serde(default)]
-    pub rules: BTreeMap<String, ProductionExecPolicyRuleSet>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProductionExecPolicyRuleSet {
-    #[serde(default)]
-    pub allow: Vec<String>,
-    #[serde(default)]
-    pub deny: Vec<String>,
-}
-
-impl ProductionExecPolicySnapshot {
-    fn evaluate(&self, command: &str) -> ExecShellPolicyDecision {
-        for (group, rules) in &self.rules {
-            for pattern in &rules.deny {
-                if exec_policy_pattern_matches(pattern, command) {
-                    return ExecShellPolicyDecision::Deny(format!(
-                        "execpolicy denied by {group}: {pattern}"
-                    ));
-                }
-            }
-        }
-        for rules in self.rules.values() {
-            for pattern in &rules.allow {
-                if crate::command_safety::prefix_allow_matches(pattern, command)
-                    || exec_policy_pattern_matches(pattern, command)
-                {
-                    return ExecShellPolicyDecision::Allow;
-                }
-            }
-        }
-        ExecShellPolicyDecision::AskUser("execpolicy: no matching allow rule".to_string())
-    }
+    exec_policy: Option<ExecPolicy>,
 }
 
 #[derive(Clone)]
 struct ProductionExecShellHost {
-    exec_policy: Option<ProductionExecPolicySnapshot>,
+    exec_policy: Option<ExecPolicy>,
 }
 
 impl ExecShellHost for ProductionExecShellHost {
@@ -117,10 +76,15 @@ impl ExecShellHost for ProductionExecShellHost {
         &self,
         command: &str,
     ) -> Result<Option<ExecShellPolicyDecision>, ToolError> {
-        Ok(self
-            .exec_policy
-            .as_ref()
-            .map(|policy| policy.evaluate(command)))
+        Ok(self.exec_policy.as_ref().and_then(|policy| {
+            policy.evaluate(command).map(|matched| {
+                let label = matched.rule_label();
+                match matched.disposition {
+                    ExecPolicyDisposition::Allow => ExecShellPolicyDecision::Allow(label),
+                    ExecPolicyDisposition::Deny => ExecShellPolicyDecision::Deny(label),
+                }
+            })
+        }))
     }
 }
 
@@ -129,10 +93,9 @@ impl ExecShellHost for ProductionExecShellHost {
 pub struct ProductionToolExecutionIdentity {
     pub schema: u32,
     pub workspace: String,
-    pub trust_mode: bool,
-    pub trusted_external_paths: Vec<String>,
+    pub allow_external_paths: bool,
     pub follow_symlinks: bool,
-    pub auto_approve: bool,
+    pub permission_mode: RunPermissionMode,
     pub shell_policy: ShellPolicy,
     pub elevated_sandbox_policy: Option<ExecutionSandboxPolicy>,
     pub sandbox_backend: Option<SandboxBackendIdentity>,
@@ -147,10 +110,9 @@ impl ProductionToolConfig {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
-            trust_mode: false,
-            trusted_external_paths: Vec::new(),
+            allow_external_paths: false,
             follow_symlinks: false,
-            auto_approve: false,
+            permission_mode: RunPermissionMode::Ask,
             shell_policy: ShellPolicy::None,
             elevated_sandbox_policy: None,
             shell_network_denied_hint: None,
@@ -180,26 +142,13 @@ impl ProductionToolConfig {
         let workspace = workspace.into();
         let mut rebound = self.clone();
         rebound.workspace = workspace.clone();
-        rebound.trust_mode = false;
-        rebound.trusted_external_paths.clear();
+        rebound.allow_external_paths = false;
         rebound.follow_symlinks = false;
-        rebound.auto_approve = true;
+        rebound.permission_mode = self.permission_mode;
         rebound.elevated_sandbox_policy = Some(ExecutionSandboxPolicy::isolated_writer(workspace));
         rebound.shell_network_denied_hint = Some("隔离 Writer Agent 禁止访问网络".to_owned());
         rebound.sandbox_backend = None;
         rebound
-    }
-
-    #[must_use]
-    pub fn with_trust_mode(mut self, trust_mode: bool) -> Self {
-        self.trust_mode = trust_mode;
-        self
-    }
-
-    #[must_use]
-    pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.trusted_external_paths = paths;
-        self
     }
 
     #[must_use]
@@ -209,8 +158,12 @@ impl ProductionToolConfig {
     }
 
     #[must_use]
-    pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
-        self.auto_approve = auto_approve;
+    pub fn with_permission_mode(mut self, permission_mode: RunPermissionMode) -> Self {
+        self.permission_mode = permission_mode;
+        self.allow_external_paths = matches!(
+            permission_mode,
+            RunPermissionMode::Agent | RunPermissionMode::FullAccess
+        );
         self
     }
 
@@ -245,7 +198,7 @@ impl ProductionToolConfig {
     }
 
     #[must_use]
-    pub fn with_exec_policy(mut self, policy: Option<ProductionExecPolicySnapshot>) -> Self {
+    pub fn with_exec_policy(mut self, policy: Option<ExecPolicy>) -> Self {
         self.exec_policy = policy;
         self
     }
@@ -254,20 +207,12 @@ impl ProductionToolConfig {
     /// fingerprint material. Live executor state is intentionally absent.
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
-        let mut trusted_external_paths = self
-            .trusted_external_paths
-            .iter()
-            .map(|path| stable_path_identity(path))
-            .collect::<Vec<_>>();
-        trusted_external_paths.sort();
-        trusted_external_paths.dedup();
         ProductionToolExecutionIdentity {
             schema: 1,
             workspace: stable_path_identity(&self.workspace),
-            trust_mode: self.trust_mode,
-            trusted_external_paths,
+            allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
-            auto_approve: self.auto_approve,
+            permission_mode: self.permission_mode,
             shell_policy: self.shell_policy,
             elevated_sandbox_policy: self.elevated_sandbox_policy.clone(),
             sandbox_backend: self
@@ -316,67 +261,74 @@ fn non_secret_sha256_bytes(value: &[u8]) -> String {
     format!("sha256:{digest}")
 }
 
-fn exec_policy_pattern_matches(pattern: &str, command: &str) -> bool {
-    let pattern = normalize_exec_policy_command(pattern);
-    let command = normalize_exec_policy_command(command);
-    if pattern == "*" {
-        return true;
-    }
-    let escaped = regex::escape(&pattern).replace("\\*", ".*");
-    regex::Regex::new(&format!("^{escaped}$")).is_ok_and(|expression| expression.is_match(&command))
+struct AuthorizationDecisionBuilder<'a> {
+    mode: RunPermissionMode,
+    invocation: &'a ToolInvocation,
+    workspace_state: &'a WorkspaceState,
 }
 
-fn normalize_exec_policy_command(command: &str) -> String {
-    let stripped = strip_exec_policy_heredoc_bodies(command);
-    shlex::split(&stripped).map_or_else(
-        || {
-            stripped
-                .split_whitespace()
-                .filter(|token| !token.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        },
-        |tokens| tokens.join(" "),
-    )
+impl AuthorizationDecisionBuilder<'_> {
+    fn build(
+        &self,
+        disposition: ToolAuthorizationDisposition,
+        risk: ApprovalRisk,
+        matched_rule: Option<String>,
+        reason: impl Into<String>,
+        prompt: Option<ToolApprovalPrompt>,
+    ) -> ToolAuthorizationDecision {
+        ToolAuthorizationDecision {
+            mode: self.mode,
+            tool_name: self.invocation.name.clone(),
+            arguments_sha256: self.invocation.arguments_sha256(),
+            workspace_state: self.workspace_state.clone(),
+            disposition,
+            risk,
+            matched_rule,
+            reason: reason.into(),
+            prompt,
+        }
+    }
 }
 
-fn strip_exec_policy_heredoc_bodies(command: &str) -> String {
-    if !command.contains("<<") {
-        return command.to_string();
-    }
-    const HERESTRING_PLACEHOLDER: &str = "\u{0001}HERESTRING\u{0001}";
-    let command = command.replace("<<<", HERESTRING_PLACEHOLDER);
-    static HEREDOC_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let expression = HEREDOC_RE.get_or_init(|| {
-        regex::Regex::new(r#"<<-?\s*(?:['"]?)([A-Za-z_][A-Za-z0-9_]*)(?:['"]?)"#)
-            .expect("heredoc regex compiles")
-    });
-    let mut output = String::with_capacity(command.len());
-    let mut lines = command.lines();
-    while let Some(line) = lines.next() {
-        let mut delimiter = None;
-        let mut redacted = line.to_string();
-        for captures in expression.captures_iter(line) {
-            redacted = redacted.replace(captures.get(0).map_or("", |value| value.as_str()), "");
-            delimiter = captures.get(1).map(|value| value.as_str().to_string());
-        }
-        output.push_str(
-            &redacted
-                .split_whitespace()
-                .filter(|token| !token.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-        output.push('\n');
-        if let Some(delimiter) = delimiter {
-            for body_line in lines.by_ref() {
-                if body_line.trim() == delimiter {
-                    break;
-                }
-            }
-        }
-    }
-    output.replace(HERESTRING_PLACEHOLDER, "<<<")
+fn invocation_has_external_path(
+    tool_name: &str,
+    input: &Value,
+    context: &ProductionToolContext,
+) -> bool {
+    let direct = ["path", "cwd"]
+        .into_iter()
+        .filter_map(|key| input.get(key).and_then(Value::as_str));
+    let changes = input
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|change| change.get("path").and_then(Value::as_str));
+    let command_cwds = input
+        .get("commands")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|command| command.get("cwd").and_then(Value::as_str))
+        .filter(|cwd| !cwd.is_empty());
+    let command_programs = input
+        .get("commands")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|command| command.get("program").and_then(Value::as_str))
+        .filter(|program| !program.is_empty());
+    let mut patch_paths = (tool_name == "apply_patch")
+        .then(|| preflight_apply_patch(input).ok())
+        .flatten()
+        .into_iter()
+        .flat_map(|preflight| preflight.touched_files);
+    direct
+        .chain(changes)
+        .chain(command_cwds)
+        .chain(command_programs)
+        .any(|path| context.path_is_external(path))
+        || patch_paths.any(|path| context.path_is_external(&path))
 }
 
 /// Direct executor for the fixed eleven-tool production surface.
@@ -390,7 +342,7 @@ pub struct ProductionToolExecutor {
 impl ProductionToolExecutor {
     /// Construct one isolated run executor. The concrete shell host preserves
     /// the resolved exec-policy snapshot; built-in command safety, shell
-    /// policy, auto-approval posture and sandbox enforcement remain inside
+    /// policy, frozen permission mode and sandbox enforcement remain inside
     /// `execute_exec_shell`. A no-op host is therefore never used at the
     /// production cutover boundary.
     #[must_use]
@@ -400,10 +352,9 @@ impl ProductionToolExecutor {
             _ => None,
         };
         let mut context = ProductionToolContext::new(config.workspace.clone())
-            .with_trust_mode(config.trust_mode)
-            .with_trusted_external_paths(config.trusted_external_paths)
+            .with_external_path_authority(config.allow_external_paths)
             .with_follow_symlinks(config.follow_symlinks)
-            .with_auto_approve(config.auto_approve);
+            .with_permission_mode(config.permission_mode);
         if let Some(workspace) = isolated_writer_workspace {
             context = context.with_isolated_writer_write_guard(workspace);
         }
@@ -613,7 +564,7 @@ impl ToolExecutor for ProductionToolExecutor {
             return Some(Self::preflight_error_outcome(error));
         }
         if invocation.name == "exec_shell" {
-            return match preflight_exec_shell(input, &self.context, &self.shell, &self.shell_host) {
+            return match preflight_exec_shell(input, &self.shell) {
                 Ok(outcome) => outcome,
                 Err(error) => Some(Self::preflight_error_outcome(error)),
             };
@@ -627,47 +578,164 @@ impl ToolExecutor for ProductionToolExecutor {
             .map_err(|message| ToolExecutionError::new("workspace_revision_unavailable", message))
     }
 
-    fn approval_prompt(
+    fn authorize(
         &self,
+        mode: RunPermissionMode,
         invocation: &ToolInvocation,
-    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
-        if self.context.auto_approve() {
-            return Ok(None);
+        workspace_state: &WorkspaceState,
+    ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
+        if mode != self.context.permission_mode() {
+            return Err(ToolExecutionError::new(
+                "permission_mode_mismatch",
+                "tool executor permission mode differs from the frozen Run",
+            ));
         }
-        let input = invocation.arguments.parsed.as_ref();
-        let prompt = match invocation.name.as_str() {
-            "apply_patch" | "edit_file" => Some(ToolApprovalPrompt {
-                title: "确认修改工作区文件".to_owned(),
-                description: format!(
-                    "工具 {} 将修改当前工作区；确认后才会产生文件副作用。",
-                    invocation.name
-                ),
-                risk: ApprovalRisk::Elevated,
-            }),
-            "exec_shell"
-                if self.shell.shell_policy == ShellPolicy::Full
-                    && input.is_some_and(|input| !exec_shell_input_is_parallel_readonly(input)) =>
-            {
-                Some(ToolApprovalPrompt {
-                    title: "确认执行 Shell 命令".to_owned(),
-                    description: "该命令可能修改文件、启动进程或访问外部资源。".to_owned(),
-                    risk: input
-                        .and_then(|input| input.get("command"))
-                        .and_then(Value::as_str)
-                        .filter(|command| command_is_high_impact(command))
-                        .map_or(ApprovalRisk::Elevated, |_| ApprovalRisk::Critical),
-                })
-            }
-            "run_tests" | "run_verifiers" if self.shell.shell_policy == ShellPolicy::Full => {
-                Some(ToolApprovalPrompt {
-                    title: "确认执行项目代码".to_owned(),
-                    description: format!("工具 {} 会运行仓库中的命令或测试代码。", invocation.name),
-                    risk: ApprovalRisk::Elevated,
-                })
-            }
-            _ => None,
+        let input = invocation.arguments.parsed.as_ref().ok_or_else(|| {
+            ToolExecutionError::new(
+                "authorization_arguments_missing",
+                "tool authorization requires parsed arguments",
+            )
+        })?;
+        let decision = AuthorizationDecisionBuilder {
+            mode,
+            invocation,
+            workspace_state,
         };
-        Ok(prompt)
+
+        if invocation_has_external_path(&invocation.name, input, &self.context)
+            && !self.context.allows_external_paths()
+        {
+            return Ok(decision.build(
+                ToolAuthorizationDisposition::Deny,
+                ApprovalRisk::Elevated,
+                Some(if mode == RunPermissionMode::Ask {
+                    "ask_external_path_fail_closed".to_owned()
+                } else {
+                    "actor_external_path_denied".to_owned()
+                }),
+                if mode == RunPermissionMode::Ask {
+                    "当前执行后端不能证明一次性外部路径授权范围，已安全拒绝"
+                } else {
+                    "当前 actor 的冻结执行边界禁止外部路径访问"
+                },
+                None,
+            ));
+        }
+
+        if invocation.name == "exec_shell" {
+            let command = input
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolExecutionError::new(
+                        "authorization_command_missing",
+                        "exec_shell authorization requires command",
+                    )
+                })?;
+            let explicit_rule = self
+                .shell_host
+                .evaluate_exec_policy(command)
+                .map_err(|error| {
+                    ToolExecutionError::new("execpolicy_evaluation_failed", error.to_string())
+                })?;
+            if let Some(ExecShellPolicyDecision::Deny(reason)) = explicit_rule.as_ref() {
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Deny,
+                    ApprovalRisk::Critical,
+                    Some(reason.clone()),
+                    "explicit execpolicy deny",
+                    None,
+                ));
+            }
+            let safety = analyze_command(command);
+            if safety.level == SafetyLevel::Dangerous {
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Deny,
+                    ApprovalRisk::Critical,
+                    Some("host_hard_invariant".to_owned()),
+                    format!("内建安全不变量拒绝该命令：{}", safety.reasons.join("; ")),
+                    None,
+                ));
+            }
+            let high_risk = command_is_high_impact(command);
+            let needs_network = command_likely_needs_network(command);
+            let sandbox_denies_network = self
+                .shell
+                .elevated_sandbox_policy
+                .as_ref()
+                .is_some_and(|policy| !policy.has_network_access());
+            if needs_network && (mode == RunPermissionMode::Ask || sandbox_denies_network) {
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Deny,
+                    ApprovalRisk::Elevated,
+                    Some(if mode == RunPermissionMode::Ask {
+                        "ask_network_fail_closed".to_owned()
+                    } else {
+                        "sandbox_network_denied".to_owned()
+                    }),
+                    if mode == RunPermissionMode::Ask {
+                        "当前执行后端不能证明一次性网络授权范围，已安全拒绝"
+                    } else {
+                        "当前 actor 的冻结执行边界禁止网络访问"
+                    },
+                    None,
+                ));
+            }
+            let needs_approval = match mode {
+                RunPermissionMode::Ask => {
+                    high_risk || safety.level == SafetyLevel::RequiresApproval
+                }
+                RunPermissionMode::Agent => high_risk,
+                RunPermissionMode::FullAccess => false,
+            };
+            if let Some(ExecShellPolicyDecision::Allow(rule)) = explicit_rule.as_ref()
+                && (!high_risk || mode == RunPermissionMode::FullAccess)
+            {
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Allow,
+                    if high_risk {
+                        ApprovalRisk::Critical
+                    } else {
+                        ApprovalRisk::Routine
+                    },
+                    Some(rule.clone()),
+                    "explicit execpolicy allow",
+                    None,
+                ));
+            }
+            if needs_approval {
+                let risk = if high_risk {
+                    ApprovalRisk::Critical
+                } else {
+                    ApprovalRisk::Elevated
+                };
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Ask,
+                    risk,
+                    Some(if high_risk {
+                        "host_high_risk".to_owned()
+                    } else {
+                        "host_elevated_shell".to_owned()
+                    }),
+                    "Host 工具分类要求本次调用获得明确批准",
+                    Some(ToolApprovalPrompt {
+                        title: "确认执行高风险命令".to_owned(),
+                        description:
+                            "批准仅绑定本次命令参数与当前工作区 revision；后续调用不会继承。"
+                                .to_owned(),
+                        risk,
+                    }),
+                ));
+            }
+        }
+
+        Ok(decision.build(
+            ToolAuthorizationDisposition::Allow,
+            ApprovalRisk::Routine,
+            Some("permission_mode_allow".to_owned()),
+            "frozen Run permission allows this invocation",
+            None,
+        ))
     }
 
     async fn execute(
@@ -1020,10 +1088,13 @@ fn run_verifiers_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use dse_protocol::agent_runtime::{
         RunId, ToolArguments, ToolInvocationStatus, ToolTransportStatus,
     };
+    use dse_protocol::task::WorkspaceRevision;
 
     fn invocation(name: &str, value: Value) -> ToolInvocation {
         ToolInvocation {
@@ -1031,6 +1102,15 @@ mod tests {
             call_id: "call-1".to_string(),
             name: name.to_string(),
             arguments: ToolArguments::from_value(value),
+        }
+    }
+
+    fn workspace_state() -> WorkspaceState {
+        WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "fixture-revision".to_owned(),
+            },
         }
     }
 
@@ -1085,30 +1165,18 @@ mod tests {
     fn execution_identity_is_sorted_stable_and_contains_no_live_state() {
         let workspace = tempfile::tempdir().unwrap();
         let first = ProductionToolConfig::new(workspace.path())
-            .with_trust_mode(true)
+            .with_permission_mode(RunPermissionMode::Agent)
             .with_follow_symlinks(true)
-            .with_auto_approve(true)
             .with_shell_policy(ShellPolicy::ReadOnly)
-            .with_trusted_external_paths(vec![
-                workspace.path().join("z"),
-                workspace.path().join("a"),
-                workspace.path().join("z"),
-            ])
             .with_prefer_external_pdftotext(true)
             .execution_identity();
         let second = ProductionToolConfig::new(workspace.path())
-            .with_trust_mode(true)
+            .with_permission_mode(RunPermissionMode::Agent)
             .with_follow_symlinks(true)
-            .with_auto_approve(true)
             .with_shell_policy(ShellPolicy::ReadOnly)
-            .with_trusted_external_paths(vec![
-                workspace.path().join("a"),
-                workspace.path().join("z"),
-            ])
             .with_prefer_external_pdftotext(true)
             .execution_identity();
         assert_eq!(first, second);
-        assert_eq!(first.trusted_external_paths.len(), 2);
         let serialized = serde_json::to_string(&first).unwrap();
         for forbidden in ["cancel", "shell_manager", "read_tracker", "api_key"] {
             assert!(!serialized.contains(forbidden));
@@ -1150,62 +1218,161 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_asks_only_for_real_write_or_code_execution() {
+    fn production_authorization_matrix_is_host_owned_and_mode_bound() {
         let workspace = tempfile::tempdir().unwrap();
-        let executor = ProductionToolExecutor::new(
-            ProductionToolConfig::new(workspace.path()).with_shell_policy(ShellPolicy::Full),
+        let authorize = |mode, name, input| {
+            let invocation = invocation(name, input);
+            ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path())
+                    .with_permission_mode(mode)
+                    .with_shell_policy(ShellPolicy::Full),
+            )
+            .authorize(mode, &invocation, &workspace_state())
+            .unwrap()
+        };
+
+        for mode in [
+            RunPermissionMode::Ask,
+            RunPermissionMode::Agent,
+            RunPermissionMode::FullAccess,
+        ] {
+            assert_eq!(
+                authorize(mode, "apply_patch", json!({"patch": "x"})).disposition,
+                ToolAuthorizationDisposition::Allow
+            );
+            assert_eq!(
+                authorize(mode, "run_tests", json!({})).disposition,
+                ToolAuthorizationDisposition::Allow
+            );
+            assert_eq!(
+                authorize(mode, "exec_shell", json!({"command": "rm -rf $HOME"})).disposition,
+                ToolAuthorizationDisposition::Deny
+            );
+        }
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "read_file",
+                json!({"path": "/tmp/external"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
         );
-        assert!(
-            executor
-                .approval_prompt(&invocation("apply_patch", json!({"patch": "x"})))
-                .unwrap()
-                .is_some()
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "apply_patch",
+                json!({
+                    "patch": "--- /tmp/external\n+++ /tmp/external\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+                })
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
         );
-        assert!(
-            executor
-                .approval_prompt(&invocation("read_file", json!({"path": "src/lib.rs"})))
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "exec_shell",
+                json!({"command": "pwd", "cwd": "/tmp"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
         );
-        assert!(
-            executor
-                .approval_prompt(&invocation(
-                    "exec_shell",
-                    json!({"command": "git status --short"})
-                ))
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "run_verifiers",
+                json!({
+                    "commands": [{
+                        "name": "external",
+                        "program": "/tmp/external-verifier",
+                        "args": []
+                    }]
+                })
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
         );
-        assert!(
-            executor
-                .approval_prompt(&invocation(
-                    "exec_shell",
-                    json!({"command": "touch changed"})
-                ))
-                .unwrap()
-                .is_some()
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "exec_shell",
+                json!({"command": "curl https://example.invalid"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
         );
-        assert!(
-            executor
-                .approval_prompt(&invocation("run_tests", json!({})))
-                .unwrap()
-                .is_some()
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Ask,
+                "exec_shell",
+                json!({"command": "git push origin main"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Deny
+        );
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Agent,
+                "exec_shell",
+                json!({"command": "git push origin main"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Ask
+        );
+        assert_eq!(
+            authorize(
+                RunPermissionMode::Agent,
+                "exec_shell",
+                json!({"command": "curl https://example.invalid"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        assert_eq!(
+            authorize(
+                RunPermissionMode::FullAccess,
+                "exec_shell",
+                json!({"command": "git push origin main"})
+            )
+            .disposition,
+            ToolAuthorizationDisposition::Allow
         );
 
-        let automatic = ProductionToolExecutor::new(
-            ProductionToolConfig::new(workspace.path())
-                .with_shell_policy(ShellPolicy::Full)
-                .with_auto_approve(true),
-        );
-        assert!(
-            automatic
-                .approval_prompt(&invocation(
-                    "exec_shell",
-                    json!({"command": "touch changed"})
-                ))
-                .unwrap()
-                .is_none()
-        );
+        let high_risk_allow = ExecPolicy::parse_toml(
+            r#"
+[rules.release]
+allow = ["git push"]
+"#,
+        )
+        .unwrap();
+        for (mode, expected, expected_rule) in [
+            (
+                RunPermissionMode::Ask,
+                ToolAuthorizationDisposition::Deny,
+                "ask_network_fail_closed",
+            ),
+            (
+                RunPermissionMode::Agent,
+                ToolAuthorizationDisposition::Ask,
+                "host_high_risk",
+            ),
+        ] {
+            let invocation = invocation("exec_shell", json!({"command": "git push origin main"}));
+            let decision = ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path())
+                    .with_permission_mode(mode)
+                    .with_shell_policy(ShellPolicy::Full)
+                    .with_exec_policy(Some(high_risk_allow.clone())),
+            )
+            .authorize(mode, &invocation, &workspace_state())
+            .unwrap();
+            assert_eq!(
+                decision.disposition, expected,
+                "execpolicy allow must not override Host critical classification"
+            );
+            assert_eq!(decision.matched_rule.as_deref(), Some(expected_rule));
+        }
     }
 
     #[test]
@@ -1231,38 +1398,6 @@ mod tests {
             executor.workspace_access(&invocation("read_file", json!({"path":"src/lib.rs"}))),
             WorkspaceAccess::ReadOnly
         );
-    }
-
-    #[test]
-    fn shell_preflight_reports_canonical_critical_and_elevated_risk() {
-        let workspace = tempfile::tempdir().unwrap();
-        let executor = ProductionToolExecutor::new(
-            ProductionToolConfig::new(workspace.path()).with_shell_policy(ShellPolicy::Full),
-        );
-
-        for command in [
-            "rm -rf /tmp/dse-critical-test",
-            "git push origin main",
-            "npm publish",
-            "cargo publish",
-            "gh release create v1.0.0",
-            "git tag v1.0.0",
-            "git tag --delete v1.0.0",
-        ] {
-            let prompt = executor
-                .approval_prompt(&invocation("exec_shell", json!({"command": command})))
-                .unwrap()
-                .unwrap();
-            assert_eq!(prompt.risk, ApprovalRisk::Critical, "{command}");
-        }
-
-        for command in ["cargo test --workspace", "touch changed", "git tag --list"] {
-            let prompt = executor
-                .approval_prompt(&invocation("exec_shell", json!({"command": command})))
-                .unwrap()
-                .unwrap();
-            assert_eq!(prompt.risk, ApprovalRisk::Elevated, "{command}");
-        }
     }
 
     #[tokio::test]
@@ -1781,10 +1916,8 @@ mod tests {
         std::fs::write(root.path().join("owned.txt"), "root\n").unwrap();
         std::fs::write(writer.path().join("owned.txt"), "writer\n").unwrap();
         let base = ProductionToolConfig::new(root.path())
-            .with_trust_mode(true)
-            .with_trusted_external_paths(vec![root.path().join("external")])
+            .with_permission_mode(RunPermissionMode::Agent)
             .with_follow_symlinks(true)
-            .with_auto_approve(false)
             .with_shell_policy(ShellPolicy::Full)
             .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
         let root_executor = ProductionToolExecutor::new(base.clone());
@@ -1794,10 +1927,9 @@ mod tests {
             identity.workspace,
             writer.path().canonicalize().unwrap().display().to_string()
         );
-        assert!(!identity.trust_mode);
-        assert!(identity.trusted_external_paths.is_empty());
+        assert!(!identity.allow_external_paths);
         assert!(!identity.follow_symlinks);
-        assert!(identity.auto_approve);
+        assert_eq!(identity.permission_mode, RunPermissionMode::Agent);
         assert_eq!(identity.sandbox_backend, None);
         assert!(matches!(
             identity.elevated_sandbox_policy,
@@ -1806,6 +1938,19 @@ mod tests {
         ));
 
         let writer_executor = ProductionToolExecutor::new(writer_config);
+        for invocation in [
+            invocation("read_file", json!({"path": root.path().join("owned.txt")})),
+            invocation("exec_shell", json!({"command": "pwd", "cwd": root.path()})),
+            invocation(
+                "exec_shell",
+                json!({"command": "curl https://example.invalid"}),
+            ),
+        ] {
+            let decision = writer_executor
+                .authorize(RunPermissionMode::Agent, &invocation, &workspace_state())
+                .unwrap();
+            assert_eq!(decision.disposition, ToolAuthorizationDisposition::Deny);
+        }
         let read = root_executor
             .execute(
                 invocation("read_file", json!({"path":"owned.txt"})),
@@ -2087,7 +2232,7 @@ mod tests {
         let marker = temp.path().join("must-not-exist");
         let executor = Arc::new(ProductionToolExecutor::new(
             ProductionToolConfig::new(temp.path())
-                .with_auto_approve(true)
+                .with_permission_mode(RunPermissionMode::FullAccess)
                 .with_shell_policy(ShellPolicy::Full),
         ));
         let cancellation = CancellationToken::default();
@@ -2115,13 +2260,13 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_policy_deny_is_rejected_preflight_and_safe_after_start() {
+    async fn exec_policy_deny_is_a_durable_authorization_and_safe_after_start() {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("blocked");
-        let policy = ProductionExecPolicySnapshot {
+        let policy = ExecPolicy {
             rules: BTreeMap::from([(
                 "writes".to_string(),
-                ProductionExecPolicyRuleSet {
+                dse_execpolicy::ExecPolicyRuleSet {
                     allow: Vec::new(),
                     deny: vec!["touch *".to_string()],
                 },
@@ -2129,7 +2274,7 @@ mod tests {
         };
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(temp.path())
-                .with_auto_approve(true)
+                .with_permission_mode(RunPermissionMode::FullAccess)
                 .with_shell_policy(ShellPolicy::Full)
                 .with_exec_policy(Some(policy)),
         );
@@ -2137,16 +2282,24 @@ mod tests {
             "exec_shell",
             json!({"command": format!("touch {}", marker.display())}),
         );
-        let rejected = executor
-            .preflight(&invocation)
-            .expect("policy must reject before execution starts");
-        assert_eq!(rejected.invocation, ToolInvocationStatus::Rejected);
-        assert_eq!(rejected.retry, ToolRetryDisposition::NotRetryable);
+        assert!(executor.preflight(&invocation).is_none());
+        let decision = executor
+            .authorize(
+                RunPermissionMode::FullAccess,
+                &invocation,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(decision.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("writes:deny:touch *")
+        );
         assert!(!marker.exists());
 
-        // Direct execution models a dynamic policy change after Runtime's
-        // preflight. It must remain side-effect free without claiming the
-        // impossible Rejected/NotStarted lifecycle after a start event.
+        // Direct execution models a caller that bypassed Runtime's durable
+        // Deny. The operation layer defensively rechecks and remains
+        // side-effect free without claiming a preflight lifecycle.
         let outcome = executor
             .execute(invocation, CancellationToken::default())
             .await

@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-25
+- 快照日期：2026-07-26
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -232,7 +232,7 @@
   M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
   Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
   Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
-- 当前协议：Run API v12、RuntimeEvent v18、State schema v24、exec-stream v3。产品默认
+- 当前协议：Run API v13、RuntimeEvent v20、State schema v26、exec-stream v4。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 ## 1. 当前结论
@@ -291,7 +291,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v18 与 State schema v24 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v20 与 State schema v26 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -309,10 +309,11 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 其专属 View event 已删除。底层 `StatusItem` 与 footer 状态投影仍由现有真实调用方拥有；
 没有执行语义的 `AppMode/default_mode` 启动标签链也已物理删除。
 
-Headless `exec --auto` 现在只控制工具启用与自动批准，不再同时设置 `trust_mode`；因此 Fleet
-worker 固定使用该参数也不会仅凭 `--auto` 获得任意工作区外路径访问。canonical API 的显式
-`trust_mode`、当前显式 yolo 输入、workspace-scoped trusted roots 与持久 Run 恢复仍保持原
-owner。surface parity 已验证真实 exec request 为 `auto_approve=true`、`trust_mode=false`。
+Headless `exec --auto` 现在选择 canonical `RunPermissionMode::Agent` 并启用工具；Host
+判定 critical 的调用仍会产生 Ask，而非交互执行会 fail closed。普通交互 TUI 默认 Ask，
+只有显式 process-local `--yolo` 选择 FullAccess。权限在 Run 创建时冻结并随
+execution fingerprint/RunStore 重放；旧 `auto_approve`、`trust_mode`、sandbox/elevation
+配置不再是 reader 或并列真相。
 
 旧 `ConfigView` 同样没有生产构造、打开入口或 canonical 命令；其 2,000 余行编辑/筛选/
 渲染岛和专属消息已删除。底层配置仍从文件和环境加载，Doctor 指向实际配置文件。
@@ -400,7 +401,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v18 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+当前 RuntimeEvent v20 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
 Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -475,7 +476,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v18 / State v24 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v20 / State v26 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -589,6 +590,10 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - v24 退休包含 Auto route/reasoning 语义的全部 v23 materialized run，因为 omitted
   reasoning wire 不能无损映射为 high/max；只保留能直接按 RuntimeEvent v18 命令反序列化
   的 pending Start，并以中性 explicit/fixed-actor profile 保存 actual route audit；
+- v25 在 DSE identity 硬切换后退休无法无损重写 active identity 的 exact transcript，
+  同时保留 replay-safe pending Start；
+- v26 删除无法无损映射到三档 `RunPermissionMode` 的旧 materialized Run 和 pending Start；
+  旧 bool/trust/sandbox/elevation tuple 不被猜成新 preset，迁移后只有 v20 reader/writer；
 - no-key terminal replay。
 
 旧 `codewhale thread`、SQLite `threads` metadata 表与 `session_index.jsonl` 已删除；
@@ -616,9 +621,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v12 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v13 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v18；
+  writer/reader 为 v20；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -801,7 +806,8 @@ M4-C foreground 切换后还已物理删除：
 - 只有自身测试的旧 `/models` 英文消息 formatter；TUI canonical 命令面没有模型列表或
   picker，运行模型仍由 DeepSeek 配置进入 canonical Run 请求。
 - 从未被生产构造、没有事件 handler 的旧 `ElevationView`/widget/event 整岛；真实审批与
-  结构化提问仍由 canonical interaction 承担，Run 级 `allow_sandbox_elevation` 策略保留。
+  结构化提问仍由 canonical interaction 承担。旧 Run 级
+  `allow_sandbox_elevation` 已由 M27 删除；sandbox 拒绝不会借兼容 flag 扩权重试。
 - 未注册且零执行调用方的旧 TUI `RequestUserInputTool`/parser 与 prompt shadow；保留的
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 - 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
@@ -976,11 +982,11 @@ M4-C foreground 切换后还已物理删除：
   `install_system_skills`、版本 marker、local skill discovery 与 prompt
   注入继续工作；仅宣称不存在 `/skill install/update/trust/uninstall` 的 bundled
   `skill-installer` 不再进入新安装，既有用户目录不会被程序主动删除。
-- 旧 `workspace-trust.json` 外部路径快照的 `add/remove` 及原子写入只有自身测试调用，
-  现已物理删除。保留的 production 路径只用 `WorkspaceTrust::load_for` 读取已有文件，
-  再把 canonical paths 交给 `ProductionToolConfig`；`permits` 只保留为读取契约测试。这与
-  onboarding/MCP 仍在真实读写的 `[projects].trust_level` 是两条独立路径，后者及
-  approval、Runtime 权限、project trust 均未改变；既有用户 trust 文件不会被自动清理。
+- 旧 `workspace-trust.json` 外部路径快照的 `add/remove` 及原子写入先因零调用方删除；
+  M27 三档权限 cutover 又删除了最后一个 `WorkspaceTrust::load_for` reader、tools trusted
+  path 字段和 fingerprint truth。Ask 不会从历史文件获得隐藏外部路径授权，Agent/FullAccess
+  也不需要第四种 trust 来源。onboarding/MCP 仍真实读写的 `[projects].trust_level` 是不同
+  owner，继续只控制项目配置与 MCP 信任；程序不会主动删除既有历史文件。
 - TUI startup version checker 及 `[update]` schema。`spawn_startup_version_check` 在全仓只有
   定义，既没有启动调用，也没有 task join、toast 或 renderer 消费者；其余 release JSON、
   asset completeness 和自制 semver helper 只由这条死链及自身测试引用。删除因此没有运行时
@@ -1056,21 +1062,32 @@ M4-C foreground 切换后还已物理删除：
   producer；`set_mode`、Tab/Shift-Tab cycle、Agent baseline、policy-lock UI mirror 和对应设置
   写入只在自测内闭环，现已物理删除。后续调用图又证明 `AppMode/default_mode` 只剩启动标签、
   颜色和错误的 Plan“只读”提示，因此连同 legacy YOLO 设置迁移、Doctor 字段和渲染分支一起
-  删除；旧 `default_mode` 现在被忽略且不能授予权限。真实显式 `--yolo` 输入仍直接投影为
-  shell、自动批准和工作区外访问控制，不经过模式标签。`ApprovalRequest` 不再重复保存无人
+  删除；旧 `default_mode` 现在被忽略且不能授予权限。真实显式 `--yolo` 输入只在当前进程
+  为后续新 Run 选择 FullAccess 并启用 shell，不经过模式标签。`ApprovalRequest` 不再重复保存无人
   读取的英文 impact 列表；保留的简体中文 `impacts()` 只是 TUI 展示摘要，canonical risk
   仍只来自 `crates/tools`。
-- TUI 审批状态现在只有 `Ask/AutoApprove`，分别精确投影 canonical
-  `auto_approve=false/true`；footer/header 显示“需要审批/自动批准”。持久配置唯一 owner 是
-  `Config.approval_policy`，只接受 `on-request|auto`。旧 `Settings.permission_posture`、兼容别名、
-  managed-lock UI 镜像和 saved-posture project baseline 已删除；这两个审批状态不改变
-  `trust_mode`、Shell catalog、sandbox、execpolicy deny 或 durable RunStore 语义。
-- 当前尚无 Codex 式 permission selector，也没有可表达 Ask/Agent/FullAccess 三个稳定语义
-  的 canonical mode。`dse-execpolicy` 的 richer rule engine 只服务 CLI
-  diagnostic；production Agent 使用 TUI 本地 `execpolicy.toml` parser 生成
-  `ProductionExecPolicySnapshot`，再由 `crates/tools` 单独处理 Shell allow/deny、安全分类和
-  approval prompt。该分裂是 M27/ADR-0012 的待替换基线；在 M27 cutover 前不能把界面三行
-  选项描述为已实现权限。
+- M27 建立了唯一 `RunPermissionMode::{Ask, Agent, FullAccess}`。TUI 只显示“请求批准 /
+  替我审批 / 完全访问权限”三行；默认 Ask，session 选择只影响后续新 Run，active Run 继续
+  投影冻结值。`dse exec --auto` 映射 Agent，显式 `--yolo` 映射 FullAccess；没有 Custom、
+  `[permissions]`、config editor、隐藏第四模式或自由组合字段。
+- `crates/tools` 在副作用前生成唯一 typed `ToolAuthorizationDecision`，绑定 exact tool、
+  arguments digest、workspace revision、matched rule 与 risk；Runtime 只持久化
+  decision、排序 durable approval/start/outcome 并在 reopen 时复用。Ask 的普通工作区
+  edit/test prompt 为 0；当前 backend 无法证明一次性网络/外部路径授权，因此 canonical
+  path-bearing tool、显式 Shell cwd 与可识别 network 调用在 Ask 下 fail closed。任意
+  子进程内部 I/O 只声明 OS sandbox 基线，不从 Shell 字符串伪推导。Agent 的
+  Host-critical 调用仍 Ask，FullAccess 无动态 prompt，但 explicit execpolicy deny 与
+  hard invariant 始终优先。
+- `dse-execpolicy` 已收缩为 production 与 `execpolicy check` 共用的 TOML allow/deny
+  matcher。TUI 私有 snapshot/parser、tools duplicate matcher、richer ask/session/network
+  amendment 类型和旧 bool/trust/sandbox/elevation reader 已物理删除。Run API v13、
+  RuntimeEvent v20、State schema v26；v26 不猜旧 tuple，无法无损映射的旧 materialized
+  Run 与 pending Start 一次性 fail-closed retirement，之后只保留新 reader/writer。
+- 可自由组合 policy/network/writable roots、且不产生 canonical Run/authorization/RunStore
+  事实的 `dse-tui sandbox run` 直接执行旁路及其专属 parser/双语文案已删除；底层 sandbox
+  backend 继续仅由 canonical tools 与 isolated Writer 消费。
+- `[features].exec_policy` 曾只让 TUI 忽略规则、不能同步 app-server，形成 caller 分叉；
+  M27 已删除该开关，所有 production surface 都读取同一可选 `execpolicy.toml`。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

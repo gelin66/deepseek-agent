@@ -53,6 +53,58 @@ pub fn canonical_tool_catalog_sha256(catalog: &[ToolDefinition]) -> String {
     format!("sha256:{digest}")
 }
 
+pub(crate) fn named_verifier_acceptance(
+    task: &TaskDefinition,
+) -> Option<(&AcceptanceId, &VerifierSpec)> {
+    task.acceptance
+        .iter()
+        .find_map(|acceptance| match acceptance {
+            TaskAcceptance::Verifier { id, verifier, .. } => Some((id, verifier)),
+            TaskAcceptance::Host { .. } => None,
+        })
+}
+
+/// Resolve the model-visible named-verifier handle into the exact frozen Host
+/// invocation. Both authorization and execution use this one derivation so
+/// the durable decision cannot bind only the abbreviated model arguments.
+pub(crate) fn resolve_named_verifier_invocation(
+    contract: Option<&TaskContract>,
+    invocation: &ToolInvocation,
+) -> Result<ToolInvocation, String> {
+    let Some((acceptance_id, verifier)) = contract
+        .map(|contract| &contract.definition)
+        .and_then(named_verifier_acceptance)
+    else {
+        return Ok(invocation.clone());
+    };
+    if invocation.name != verifier.verifier_id {
+        return Ok(invocation.clone());
+    }
+    let arguments = invocation
+        .arguments
+        .parsed
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "冻结 verifier 只接受包含 verifier_id 的 JSON 对象".to_owned())?;
+    if arguments.len() != 1
+        || arguments
+            .get("verifier_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(acceptance_id.0.as_str())
+    {
+        return Err(format!(
+            "只接受冻结 verifier ID '{}'，不得提交或覆盖完整 verifier 参数",
+            acceptance_id.0
+        ));
+    }
+    Ok(ToolInvocation {
+        run_id: invocation.run_id.clone(),
+        call_id: invocation.call_id.clone(),
+        name: verifier.verifier_id.clone(),
+        arguments: ToolArguments::from_value(verifier.parameters.clone()),
+    })
+}
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("model error {code}: {message}")]
 pub struct ModelPortError {
@@ -250,14 +302,26 @@ pub trait ToolExecutor: Send + Sync {
         ))
     }
 
-    /// Return a host-owned approval prompt for this exact invocation.
-    /// Concrete tool implementations remain the only owner of their risk and
-    /// policy rules; the runtime only persists and enforces the handshake.
-    fn approval_prompt(
+    /// Return the Host-owned authorization decision for this exact invocation
+    /// and workspace state. Runtime persists the decision before any approval
+    /// interaction or side effect and never reclassifies it after reopen.
+    fn authorize(
         &self,
-        _invocation: &ToolInvocation,
-    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
-        Ok(None)
+        mode: RunPermissionMode,
+        invocation: &ToolInvocation,
+        workspace_state: &WorkspaceState,
+    ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
+        Ok(ToolAuthorizationDecision {
+            mode,
+            tool_name: invocation.name.clone(),
+            arguments_sha256: invocation.arguments_sha256(),
+            workspace_state: workspace_state.clone(),
+            disposition: ToolAuthorizationDisposition::Allow,
+            risk: ApprovalRisk::Routine,
+            matched_rule: Some("executor_default".to_owned()),
+            reason: "tool executor allows this invocation".to_owned(),
+            prompt: None,
+        })
     }
 
     async fn execute(

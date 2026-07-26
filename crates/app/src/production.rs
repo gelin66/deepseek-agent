@@ -17,8 +17,8 @@ use dse_orchestrator::ProductionAgentOrchestrator;
 use dse_protocol::agent_runtime::{
     ActorRequestAccounting, AgentActor, AgentActorKind, AgentTask, AgentWorkspaceAccess,
     CanonicalTranscript, ContextPolicy, InheritedRunFacts, ModelAccounting, ModelRouteAudit,
-    ModelRouteProfile, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
-    SystemPrompt, TranscriptEntry, Usage,
+    ModelRouteProfile, ReasoningEffort, RunEnvironment, RunId, RunPermissionMode, RunRequest,
+    SurfaceUsage, SystemPrompt, TranscriptEntry, Usage,
 };
 use dse_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunApiErrorReason, RunProductControls, StartRunCommand,
@@ -108,10 +108,9 @@ impl ProductionApplicationConfig {
 
     /// Construct the official DeepSeek application defaults.
     ///
-    /// The workspace placeholder is rebound for every run. Shell remains
-    /// useful under the Full capability policy while dangerous commands stay
-    /// blocked unless the run explicitly enables auto approval. The per-run
-    /// workspace-write sandbox is applied by the composition.
+    /// The workspace placeholder is rebound for every run. Shell availability
+    /// and the frozen three-preset permission mode remain separate inputs;
+    /// Host authorization and the per-run sandbox are applied by composition.
     #[must_use]
     pub fn official() -> Self {
         Self::new(
@@ -666,11 +665,8 @@ impl RunComposition for ProductionComposition {
                 tool_catalog_sha256: Some(tool_catalog_sha256),
                 execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
                 write_execution_mode: command.controls.write_execution_mode,
-                auto_approve: command.controls.auto_approve,
-                trust_mode: command.controls.trust_mode,
-                allow_sandbox_elevation: command.controls.allow_sandbox_elevation,
+                permission_mode: command.controls.permission_mode,
                 interactive: command.controls.interactive,
-                sandbox: command.controls.sandbox,
             },
             context_policy: route.context_policy,
             context_projection: None,
@@ -933,11 +929,8 @@ impl RunComposition for ProductionComposition {
                 tool_catalog_sha256: Some(tool_catalog_sha256),
                 execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
                 write_execution_mode: controls.write_execution_mode,
-                auto_approve: controls.auto_approve,
-                trust_mode: controls.trust_mode,
-                allow_sandbox_elevation: controls.allow_sandbox_elevation,
+                permission_mode: controls.permission_mode,
                 interactive: controls.interactive,
-                sandbox: controls.sandbox,
             },
             context_policy: route.context_policy,
             context_projection: source.snapshot.context_projection.clone(),
@@ -1220,11 +1213,8 @@ fn prepare_production_start_command(
 fn controls_from_environment(environment: &RunEnvironment) -> RunProductControls {
     RunProductControls {
         write_execution_mode: environment.write_execution_mode,
-        auto_approve: environment.auto_approve,
-        trust_mode: environment.trust_mode,
-        allow_sandbox_elevation: environment.allow_sandbox_elevation,
+        permission_mode: environment.permission_mode,
         interactive: environment.interactive,
-        sandbox: environment.sandbox.clone(),
     }
 }
 
@@ -1283,39 +1273,17 @@ fn tool_config_for_run(
     let mut config = base
         .clone()
         .with_workspace(workspace.to_path_buf())
-        .with_trust_mode(controls.trust_mode)
-        .with_auto_approve(controls.auto_approve);
-    if controls.allow_sandbox_elevation {
-        config = config.with_elevated_sandbox_policy(SandboxPolicy::DangerFullAccess);
-    } else {
-        let policy = match controls.sandbox.as_deref() {
-            None => SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![workspace.to_path_buf()],
-                network_access: true,
-                exclude_tmpdir: false,
-                exclude_slash_tmp: false,
-            },
-            Some(sandbox) => match sandbox {
-                "read-only" => SandboxPolicy::ReadOnly,
-                "workspace-write" => SandboxPolicy::WorkspaceWrite {
-                    writable_roots: vec![workspace.to_path_buf()],
-                    network_access: true,
-                    exclude_tmpdir: false,
-                    exclude_slash_tmp: false,
-                },
-                "danger-full-access" => SandboxPolicy::DangerFullAccess,
-                "external-sandbox" => SandboxPolicy::ExternalSandbox {
-                    network_access: true,
-                },
-                other => {
-                    return Err(invalid_request(format!(
-                        "sandbox_invalid：不支持的 sandbox '{other}'"
-                    )));
-                }
-            },
-        };
-        config = config.with_elevated_sandbox_policy(policy);
-    }
+        .with_permission_mode(controls.permission_mode);
+    let policy = match controls.permission_mode {
+        RunPermissionMode::Ask => SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: false,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        },
+        RunPermissionMode::Agent | RunPermissionMode::FullAccess => SandboxPolicy::DangerFullAccess,
+    };
+    config = config.with_elevated_sandbox_policy(policy);
     Ok(config)
 }
 
@@ -1406,11 +1374,12 @@ mod tests {
     };
     use dse_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
-        AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, ModelAccounting,
+        AgentWorkspaceAccess, AgentWorkspaceAssignment, ApprovalRisk, AttemptId, ModelAccounting,
         ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
         ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
-        RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolDefinition, ToolFailureCode,
-        ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
+        RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolAuthorizationDecision,
+        ToolAuthorizationDisposition, ToolDefinition, ToolFailureCode, ToolInvocation, ToolOutcome,
+        ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -1813,11 +1782,8 @@ mod tests {
             },
             controls: RunProductControls {
                 write_execution_mode: Default::default(),
-                auto_approve: true,
-                trust_mode: false,
-                allow_sandbox_elevation: false,
+                permission_mode: RunPermissionMode::Agent,
                 interactive: false,
-                sandbox: Some("workspace-write".to_owned()),
             },
         }
     }
@@ -1943,11 +1909,8 @@ mod tests {
         let workspace = workspace.canonicalize().expect("canonical workspace");
         let controls = RunProductControls {
             write_execution_mode,
-            auto_approve: true,
-            trust_mode: false,
-            allow_sandbox_elevation: false,
+            permission_mode: RunPermissionMode::Agent,
             interactive: false,
-            sandbox: Some("workspace-write".to_owned()),
         };
         let mut request = test_run_request(run_id, "恢复 production Agent", "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
@@ -1962,11 +1925,8 @@ mod tests {
             workspace: stable_path(&workspace),
             provider: DEEPSEEK_PROVIDER.to_owned(),
             write_execution_mode: controls.write_execution_mode,
-            auto_approve: controls.auto_approve,
-            trust_mode: controls.trust_mode,
-            allow_sandbox_elevation: controls.allow_sandbox_elevation,
+            permission_mode: controls.permission_mode,
             interactive: controls.interactive,
-            sandbox: controls.sandbox.clone(),
             ..RunEnvironment::default()
         };
         request.accounting_baseline = accounting;
@@ -2159,17 +2119,18 @@ mod tests {
         )
         .await;
         let operation_id = OperationId::from(format!("operation-{}", run_id.0));
+        let invocation = ToolInvocation {
+            run_id: run_id.clone(),
+            call_id,
+            name,
+            arguments,
+        };
         append_test_event(
             store,
             &created.lease,
             RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
-                invocation: ToolInvocation {
-                    run_id: run_id.clone(),
-                    call_id,
-                    name,
-                    arguments,
-                },
+                invocation: invocation.clone(),
                 workspace_access: if task.is_some() {
                     WorkspaceAccess::MayWrite
                 } else {
@@ -2178,6 +2139,27 @@ mod tests {
             },
         )
         .await;
+        if task.is_none() {
+            append_test_event(
+                store,
+                &created.lease,
+                RuntimeEventKind::ToolAuthorizationCommitted {
+                    operation_id: operation_id.clone(),
+                    decision: ToolAuthorizationDecision {
+                        mode: created.replay.snapshot.request.environment.permission_mode,
+                        tool_name: invocation.name.clone(),
+                        arguments_sha256: invocation.arguments_sha256(),
+                        workspace_state: created.replay.snapshot.workspace_state.clone(),
+                        disposition: ToolAuthorizationDisposition::Allow,
+                        risk: ApprovalRisk::Routine,
+                        matched_rule: Some("app_resume_fixture".to_owned()),
+                        reason: "deterministic app resume fixture authorization".to_owned(),
+                        prompt: None,
+                    },
+                },
+            )
+            .await;
+        }
         append_test_event(
             store,
             &created.lease,
@@ -2272,7 +2254,6 @@ mod tests {
         request.environment = parent.environment.clone();
         request.environment.workspace = task.workspace.execution_workspace().to_owned();
         request.environment.interactive = false;
-        request.environment.sandbox = Some("isolated_writer".to_owned());
         request.context_policy = task.context_policy;
         request.accounting_baseline = accounting;
         request
@@ -2848,7 +2829,7 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:0b66bd94fcfd644782ba24a37bc642e28c73b18f986a5a73101c9d275da2f1e4",
+                "sha256:3cfcefdd960febf3a51a70b3f150e94642a0b1ae0c93a1767edd24c46dde26ef",
             ),
             (
                 "read_only_child",
@@ -4138,8 +4119,7 @@ mod tests {
         command.tool_policy.allowed = Some(vec!["read_file".to_owned()]);
         command.controls.write_execution_mode =
             dse_protocol::agent_runtime::WriteExecutionMode::IsolatedWriter;
-        command.controls.trust_mode = true;
-        command.controls.sandbox = Some("workspace-write".to_owned());
+        command.controls.permission_mode = RunPermissionMode::Agent;
         command.limits.wall_time_ms = Some(60_000);
         let deadline_floor = unix_ms_now().saturating_add(59_000);
         let app = AgentApplication::production(config(
@@ -4202,11 +4182,9 @@ mod tests {
             persisted.environment.write_execution_mode,
             command.controls.write_execution_mode
         );
-        assert!(persisted.environment.auto_approve);
-        assert!(persisted.environment.trust_mode);
         assert_eq!(
-            persisted.environment.sandbox.as_deref(),
-            Some("workspace-write")
+            persisted.environment.permission_mode,
+            RunPermissionMode::Agent
         );
         assert_eq!(persisted.accounting_baseline.hard_request_limit, Some(64));
         assert_eq!(persisted.accounting_baseline.root.started, 0);
@@ -4915,7 +4893,7 @@ mod tests {
             provider: DEEPSEEK_PROVIDER.to_owned(),
             tool_catalog_sha256: Some(catalog),
             execution_fingerprint_sha256: fingerprint,
-            sandbox: Some("workspace-write".to_owned()),
+            permission_mode: RunPermissionMode::Agent,
             ..RunEnvironment::default()
         };
         let created = store.create(request).await.expect("seed resumable");
@@ -4962,7 +4940,7 @@ mod tests {
             &ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
             &temp.path().canonicalize().expect("canonical workspace"),
             &RunProductControls {
-                sandbox: Some("workspace-write".to_owned()),
+                permission_mode: RunPermissionMode::Agent,
                 ..RunProductControls::default()
             },
         )
@@ -5046,7 +5024,7 @@ mod tests {
         let connection = connection(&root, false);
         let tools = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
         let controls = RunProductControls {
-            sandbox: Some("workspace-write".to_owned()),
+            permission_mode: RunPermissionMode::Agent,
             ..RunProductControls::default()
         };
         let bound_tools =
@@ -5109,7 +5087,7 @@ mod tests {
             provider: DEEPSEEK_PROVIDER.to_owned(),
             tool_catalog_sha256: Some(catalog_sha256),
             execution_fingerprint_sha256: Some(fingerprint),
-            sandbox: controls.sandbox,
+            permission_mode: controls.permission_mode,
             ..RunEnvironment::default()
         };
         let created = store.create(request).await.expect("seed resumable run");
@@ -5152,8 +5130,7 @@ mod tests {
         let file = temp.path().join("sample.txt");
         std::fs::write(&file, "old value\n").expect("write sample");
         let controls = RunProductControls {
-            auto_approve: true,
-            sandbox: Some("workspace-write".to_owned()),
+            permission_mode: RunPermissionMode::Agent,
             ..RunProductControls::default()
         };
         let base = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
@@ -5207,5 +5184,45 @@ mod tests {
             std::fs::read_to_string(file).expect("edited"),
             "new value\n"
         );
+    }
+
+    #[test]
+    fn permission_modes_bind_one_exact_host_sandbox_profile_per_run() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workspace = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let base = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
+
+        for (mode, expected) in [
+            (
+                RunPermissionMode::Ask,
+                SandboxPolicy::WorkspaceWrite {
+                    writable_roots: vec![workspace.clone()],
+                    network_access: false,
+                    exclude_tmpdir: false,
+                    exclude_slash_tmp: false,
+                },
+            ),
+            (RunPermissionMode::Agent, SandboxPolicy::DangerFullAccess),
+            (
+                RunPermissionMode::FullAccess,
+                SandboxPolicy::DangerFullAccess,
+            ),
+        ] {
+            let config = tool_config_for_run(
+                &base,
+                &workspace,
+                &RunProductControls {
+                    permission_mode: mode,
+                    ..RunProductControls::default()
+                },
+            )
+            .expect("bind permission profile");
+            let identity = config.execution_identity();
+            assert_eq!(identity.permission_mode, mode);
+            assert_eq!(identity.elevated_sandbox_policy, Some(expected));
+        }
     }
 }

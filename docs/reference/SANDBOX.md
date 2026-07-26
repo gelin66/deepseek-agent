@@ -2,30 +2,36 @@
 
 > Category: current implementation reference.
 
-DSE classifies commands, applies the configured approval policy, and prepares
-local execution through the canonical `crates/tools` sandbox owner. A policy
-describes the requested restriction; the implementation must not claim that a
-platform enforces a restriction when no enforcing backend is wired.
+DSE classifies commands, applies the Run-frozen permission mode, and prepares
+local execution through the canonical `crates/tools` sandbox owner. Permission
+authorization decides whether an invocation may start; the Host-owned sandbox
+profile constrains the process after it starts. Neither is a free-form user
+configuration language.
 
-## Policy modes
+## Host-owned execution profiles
 
-The user-facing modes are:
+These are internal execution profiles, not user-selectable permission presets:
 
 | Mode | Meaning |
 | --- | --- |
 | `read-only` | Request local read-only execution. |
-| `workspace-write` | Request writes only in the workspace and explicitly allowed roots. This is the default. |
-| `danger-full-access` | Run without a local filesystem sandbox after the applicable approval decision. |
-| `external-sandbox` | Declare that the process is already contained by an external environment. |
+| `workspace-write` | Writes in the workspace plus execution-required temporary/cache roots. Ask uses this profile. |
+| `danger-full-access` | No local filesystem sandbox after authorization. Agent decides and Full access use this for root execution. |
+| `external-sandbox` | An explicitly configured external backend owns isolation. |
 
 The isolated Writer uses an additional Host-only `isolated-writer` policy. It
 binds writes to the admitted Git worktree, keeps its control paths protected,
 disables network access, and must fail closed when DSE cannot provide an
 enforcing local sandbox.
 
-Approval and sandboxing are separate controls. Approval decides whether a
-command may start; a sandbox constrains the process after it starts. Neither
-one turns model output into trusted code.
+The three user-facing permission modes are Ask for approval, Agent decides,
+and Full access. Ask cannot currently enforce a one-shot network or external
+filesystem grant, so canonical path-bearing tools, explicit Shell working
+directories, and recognized network invocations fail closed instead of
+receiving an unscoped global exception. Arbitrary file I/O performed inside a
+spawned program is not derivable from a Shell string and remains bounded only
+by the active OS sandbox profile; DSE does not claim otherwise. An isolated
+Writer remains worktree-only regardless of the parent mode.
 
 ## Current platform enforcement
 
@@ -58,27 +64,25 @@ for constraining each spawned command.
 DSE can route shell execution to the optional OpenSandbox adapter:
 
 ```toml
-sandbox_mode = "external-sandbox"
 sandbox_backend = "opensandbox"
 sandbox_url = "http://127.0.0.1:8080"
 # sandbox_api_key = "..."
 ```
 
-Equivalent environment overrides are `DSE_SANDBOX_MODE`,
+Equivalent environment overrides are
 `DSE_SANDBOX_BACKEND`, `DSE_SANDBOX_URL`, and
 `DSE_SANDBOX_API_KEY`. The remote service becomes part of the trust boundary;
 DSE records a non-secret endpoint fingerprint rather than the URL or
 credential in replay identity.
 
-Do not set `external-sandbox` merely to bypass local enforcement. Use it only
-when the configured external environment actually owns isolation.
+Do not configure an external backend merely to bypass local enforcement. Use
+it only when that environment actually owns isolation.
 
 ## Local configuration
 
 The canonical file is `~/.dse/config.toml`:
 
 ```toml
-sandbox_mode = "workspace-write"
 prefer_bwrap = false
 ```
 
@@ -86,15 +90,13 @@ prefer_bwrap = false
 available. It has no environment override. The isolated Writer does not depend
 on this preference: it requires an enforcing backend regardless.
 
-The non-interactive CLI can override the mode for one run:
-
-```bash
-dse exec --auto --sandbox read-only "Inspect this repository."
-dse exec --auto --sandbox workspace-write "Fix and verify the defect."
-```
-
-`--allow-sandbox-elevation` is an explicit authorization for a sandbox-rejected
-tool to retry with `danger-full-access`; it is not enabled by `--auto`.
+There is no `sandbox_mode`, `--sandbox`, or
+`--allow-sandbox-elevation` product input. `dse exec --auto` selects the
+Agent decides permission preset; only explicit process-local `--yolo` selects
+Full access. A sandbox rejection is never converted into a retry by a legacy
+elevation flag. The old `dse-tui sandbox run` direct-execution utility is also
+deleted: sandbox profiles are Host internals, not a parallel user permission
+language.
 
 ## Security expectations
 

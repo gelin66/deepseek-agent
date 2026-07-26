@@ -16,6 +16,7 @@ async-trait.workspace = true
 chrono.workspace = true
 dse-protocol = { path = "../protocol", version = "0.8.68" }
 dse-runtime = { path = "../runtime", version = "0.8.68" }
+dse-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 futures-util = "0.3.31"
 ignore = "0.4"
 pdf-extract = { version = "0.12", optional = true }

@@ -8,7 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use dse_localization::{MessageId, ProductLanguage, tr_in};
 use dse_protocol::agent_runtime::{
-    AgentTaskId, RunId, RuntimeEventKind, StoredRuntimeEvent, TerminalState, ToolSideEffectStatus,
+    AgentTaskId, RunId, RunPermissionMode, RuntimeEventKind, StoredRuntimeEvent, TerminalState,
+    ToolSideEffectStatus,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -117,7 +118,7 @@ pub struct CanonicalRunPresentation {
     workspace_change_confirmed: bool,
     changed_files: BTreeSet<String>,
     sealed_writer_files: HashMap<AgentTaskId, Vec<String>>,
-    auto_approve: Option<bool>,
+    permission_mode: Option<RunPermissionMode>,
     reworking: bool,
 }
 
@@ -144,6 +145,7 @@ impl CanonicalRunPresentation {
             | RuntimeEventKind::ReasoningDelta { .. }
             | RuntimeEventKind::SteerApplied { .. } => self.resume_model_work(),
             RuntimeEventKind::ToolPrepared { .. }
+            | RuntimeEventKind::ToolAuthorizationCommitted { .. }
             | RuntimeEventKind::ToolExecutionStarted { .. }
             | RuntimeEventKind::AgentTaskPrepared { .. }
             | RuntimeEventKind::AgentWorkspaceCreated { .. }
@@ -225,7 +227,7 @@ impl CanonicalRunPresentation {
         *self = Self::default();
         self.root_run_id = Some(run_id);
         self.phase = RunPresentationPhase::Thinking;
-        self.auto_approve = Some(request.environment.auto_approve);
+        self.permission_mode = Some(request.environment.permission_mode);
         if let Some(contract) = &request.task_contract {
             self.objective = Some(contract.definition.objective.clone());
             self.acceptance_total = contract.definition.acceptance.len();
@@ -314,8 +316,8 @@ impl CanonicalRunPresentation {
     }
 
     #[must_use]
-    pub const fn auto_approve(&self) -> Option<bool> {
-        self.auto_approve
+    pub const fn permission_mode(&self) -> Option<RunPermissionMode> {
+        self.permission_mode
     }
 }
 
@@ -334,7 +336,7 @@ mod tests {
 
     use super::*;
 
-    fn root_request(run_id: &str, auto_approve: bool) -> RunRequest {
+    fn root_request(run_id: &str, permission_mode: RunPermissionMode) -> RunRequest {
         let mut request = RunRequest::new(
             TaskContract {
                 generation_id: TaskGenerationId::from(run_id),
@@ -342,7 +344,7 @@ mod tests {
             },
             "system",
         );
-        request.environment.auto_approve = auto_approve;
+        request.environment.permission_mode = permission_mode;
         request
     }
 
@@ -374,13 +376,13 @@ mod tests {
             "root",
             1,
             RuntimeEventKind::RunCreated {
-                request: Box::new(root_request("root", false)),
+                request: Box::new(root_request("root", RunPermissionMode::Ask)),
             },
         ));
         assert_eq!(view.phase(), RunPresentationPhase::Thinking);
         assert_eq!(view.objective(), Some("repair the parser"));
         assert_eq!(view.acceptance_total(), 1);
-        assert_eq!(view.auto_approve(), Some(false));
+        assert_eq!(view.permission_mode(), Some(RunPermissionMode::Ask));
 
         view.apply(&stored(
             "root",
@@ -438,10 +440,10 @@ mod tests {
             "root",
             1,
             RuntimeEventKind::RunCreated {
-                request: Box::new(root_request("root", false)),
+                request: Box::new(root_request("root", RunPermissionMode::Ask)),
             },
         ));
-        let mut child = root_request("child", true);
+        let mut child = root_request("child", RunPermissionMode::Agent);
         child.parent_run_id = Some(RunId::from("root"));
         view.apply(&stored(
             "child",
@@ -452,7 +454,7 @@ mod tests {
         ));
         assert_eq!(view.root_run_id(), Some(&RunId::from("root")));
         assert_eq!(view.objective(), Some("repair the parser"));
-        assert_eq!(view.auto_approve(), Some(false));
+        assert_eq!(view.permission_mode(), Some(RunPermissionMode::Ask));
     }
 
     #[test]
@@ -466,7 +468,7 @@ mod tests {
             "root",
             1,
             RuntimeEventKind::RunCreated {
-                request: Box::new(root_request("root", false)),
+                request: Box::new(root_request("root", RunPermissionMode::Ask)),
             },
         ));
         view.apply(&stored(
@@ -501,7 +503,7 @@ mod tests {
             "root",
             1,
             RuntimeEventKind::RunCreated {
-                request: Box::new(root_request("root", false)),
+                request: Box::new(root_request("root", RunPermissionMode::Ask)),
             },
         ));
         view.apply(&stored(

@@ -1411,43 +1411,44 @@ impl AgentRuntime {
             self.tools
                 .workspace_access(execution_invocation.as_ref().unwrap_or(&invocation))
         };
-        let (operation_id, operation_started) = match state.recovery_tool.take() {
-            Some(pending) if pending.invocation.call_id == call.id => {
-                let started = pending.state == DurableActionState::InFlight;
-                debug_assert!(
-                    !started
-                        || (pending.invocation.name == AGENT_TOOL_NAME
-                            && state.snapshot.agent_tasks.iter().any(|lifecycle| {
-                                lifecycle.task.call_id == call.id
-                                    && writer_tool_recovery_is_safe(lifecycle)
-                            }))
-                );
-                (pending.operation_id, started)
-            }
-            Some(pending) => {
-                state.recovery_tool = Some(pending);
-                return Err(TerminalState::Failed {
-                    failure: RuntimeFailure::InvalidModelOutput {
-                        message: "persisted prepared tool does not match the next model call"
-                            .to_owned(),
-                    },
-                });
-            }
-            None => {
-                let operation_id = OperationId::new();
-                self.publish(
-                    state,
-                    RuntimeEventKind::ToolPrepared {
-                        operation_id: operation_id.clone(),
-                        invocation: invocation.clone(),
-                        workspace_access,
-                    },
-                )
-                .await
-                .map_err(store_terminal)?;
-                (operation_id, false)
-            }
-        };
+        let (operation_id, operation_started, persisted_authorization) =
+            match state.recovery_tool.take() {
+                Some(pending) if pending.invocation.call_id == call.id => {
+                    let started = pending.state == DurableActionState::InFlight;
+                    debug_assert!(
+                        !started
+                            || (pending.invocation.name == AGENT_TOOL_NAME
+                                && state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                                    lifecycle.task.call_id == call.id
+                                        && writer_tool_recovery_is_safe(lifecycle)
+                                }))
+                    );
+                    (pending.operation_id, started, pending.authorization)
+                }
+                Some(pending) => {
+                    state.recovery_tool = Some(pending);
+                    return Err(TerminalState::Failed {
+                        failure: RuntimeFailure::InvalidModelOutput {
+                            message: "persisted prepared tool does not match the next model call"
+                                .to_owned(),
+                        },
+                    });
+                }
+                None => {
+                    let operation_id = OperationId::new();
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ToolPrepared {
+                            operation_id: operation_id.clone(),
+                            invocation: invocation.clone(),
+                            workspace_access,
+                        },
+                    )
+                    .await
+                    .map_err(store_terminal)?;
+                    (operation_id, false, None)
+                }
+            };
 
         let mut terminal_after_result = None;
         let outcome = if !advertised {
@@ -1575,29 +1576,64 @@ impl AgentRuntime {
             let execution_invocation = execution_invocation
                 .as_ref()
                 .expect("named verifier resolution was checked before tool execution");
-            let approval = match self.tools.approval_prompt(execution_invocation) {
-                Ok(approval) => approval,
-                Err(error) => {
-                    return self
-                        .commit_tool_outcome(
-                            state,
-                            operation_id,
-                            &call,
-                            ToolOutcome::rejected(
-                                format!("工具授权预检失败：{}", error.message),
-                                ToolRetryDisposition::NotRetryable,
-                            ),
-                        )
-                        .await;
+            let authorization = match persisted_authorization {
+                Some(decision) => decision,
+                None => {
+                    let workspace_state = state.snapshot.workspace_state.clone();
+                    let mode = state.snapshot.request.environment.permission_mode;
+                    let decision =
+                        match self
+                            .tools
+                            .authorize(mode, execution_invocation, &workspace_state)
+                        {
+                            Ok(decision) => decision,
+                            Err(error) => {
+                                return self
+                                    .commit_tool_outcome(
+                                        state,
+                                        operation_id,
+                                        &call,
+                                        ToolOutcome::rejected(
+                                            format!("工具授权预检失败：{}", error.message),
+                                            ToolRetryDisposition::NotRetryable,
+                                        ),
+                                    )
+                                    .await;
+                            }
+                        };
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ToolAuthorizationCommitted {
+                            operation_id: operation_id.clone(),
+                            decision: decision.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(store_terminal)?;
+                    decision
                 }
             };
-            let rejected = if let Some(prompt) = approval {
-                if !state.snapshot.request.environment.interactive {
+            let rejected = match authorization.disposition {
+                ToolAuthorizationDisposition::Deny => Some(
+                    ToolOutcome::rejected(
+                        format!("工具调用被 Host 权限策略拒绝：{}", authorization.reason),
+                        ToolRetryDisposition::NotRetryable,
+                    )
+                    .with_failure_code(ToolFailureCode::InvocationRejected),
+                ),
+                ToolAuthorizationDisposition::Ask
+                    if !state.snapshot.request.environment.interactive =>
+                {
                     Some(ToolOutcome::rejected(
                         "当前非交互运行无法批准该工具调用。",
                         ToolRetryDisposition::AfterCorrection,
                     ))
-                } else {
+                }
+                ToolAuthorizationDisposition::Ask => {
+                    let prompt = authorization
+                        .prompt
+                        .clone()
+                        .expect("validated ask authorization carries a prompt");
                     match self
                         .wait_for_interaction(
                             state,
@@ -1641,8 +1677,38 @@ impl AgentRuntime {
                         }
                     }
                 }
+                ToolAuthorizationDisposition::Allow => None,
+            };
+            let rejected = if rejected.is_none() && !operation_started {
+                match (
+                    &authorization.workspace_state.revision,
+                    self.tools.observe_workspace_revision().await,
+                ) {
+                    (WorkspaceRevision::Known { sha256: authorized }, Ok(current))
+                        if authorized != &current =>
+                    {
+                        Some(
+                            ToolOutcome::rejected(
+                                "工具授权后工作区 revision 已变化；请先读取最新状态再重新调用。",
+                                ToolRetryDisposition::AfterCorrection,
+                            )
+                            .with_failure_code(ToolFailureCode::AuthorizationStale),
+                        )
+                    }
+                    (WorkspaceRevision::Known { .. }, Err(error)) => Some(
+                        ToolOutcome::rejected(
+                            format!(
+                                "工具启动前无法复核已授权的工作区 revision：{}",
+                                error.message
+                            ),
+                            ToolRetryDisposition::AfterCorrection,
+                        )
+                        .with_failure_code(ToolFailureCode::AuthorizationStale),
+                    ),
+                    _ => None,
+                }
             } else {
-                None
+                rejected
             };
             if let Some(outcome) = rejected {
                 outcome
@@ -1869,12 +1935,6 @@ impl AgentRuntime {
         {
             return Ok(ToolOutcome::rejected(
                 "每个 root run 只允许冻结一个隔离 Writer 任务。",
-                ToolRetryDisposition::NotRetryable,
-            ));
-        }
-        if writer && !state.snapshot.request.environment.auto_approve {
-            return Ok(ToolOutcome::rejected(
-                "隔离写入子 Agent 只接受 Host 已显式启用的自动批准运行。",
                 ToolRetryDisposition::NotRetryable,
             ));
         }
@@ -4456,7 +4516,7 @@ pub struct RuntimeJoinError {
 
 fn agent_tool_definition(allow_isolated_writer: bool) -> ToolDefinition {
     let description = if allow_isolated_writer {
-        "启动一个使用相同 AgentRuntime 的后台子 Agent。可创建只读 child；isolated_write 还要求显式 Writer 模式、Host exact verifier、auto-approve 与 Orchestrator clean-Git 预检。"
+        "启动一个使用相同 AgentRuntime 的后台子 Agent。可创建只读 child；isolated_write 还要求显式 Writer 模式、Host exact verifier、冻结的 Run 权限与 Orchestrator clean-Git 预检。"
     } else {
         "启动一个使用相同 AgentRuntime 的只读后台子 Agent。当前运行不授予隔离写入权限。"
     };
@@ -4530,15 +4590,6 @@ fn agent_tool_definition(allow_isolated_writer: bool) -> ToolDefinition {
     }
 }
 
-fn named_verifier_acceptance(task: &TaskDefinition) -> Option<(&AcceptanceId, &VerifierSpec)> {
-    task.acceptance
-        .iter()
-        .find_map(|acceptance| match acceptance {
-            TaskAcceptance::Verifier { id, verifier, .. } => Some((id, verifier)),
-            TaskAcceptance::Host { .. } => None,
-        })
-}
-
 fn named_verifier_tool_definition(
     mut definition: ToolDefinition,
     acceptance_id: &AcceptanceId,
@@ -4560,41 +4611,6 @@ fn named_verifier_tool_definition(
         "additionalProperties": false
     });
     definition
-}
-
-fn resolve_named_verifier_invocation(
-    contract: Option<&TaskContract>,
-    invocation: &ToolInvocation,
-) -> Result<ToolInvocation, String> {
-    let Some((acceptance_id, verifier)) = contract
-        .map(|contract| &contract.definition)
-        .and_then(named_verifier_acceptance)
-    else {
-        return Ok(invocation.clone());
-    };
-    if invocation.name != verifier.verifier_id {
-        return Ok(invocation.clone());
-    }
-    let arguments = invocation
-        .arguments
-        .parsed
-        .as_ref()
-        .and_then(Value::as_object)
-        .ok_or_else(|| "冻结 verifier 只接受包含 verifier_id 的 JSON 对象".to_owned())?;
-    if arguments.len() != 1
-        || arguments.get("verifier_id").and_then(Value::as_str) != Some(acceptance_id.0.as_str())
-    {
-        return Err(format!(
-            "只接受冻结 verifier ID '{}'，不得提交或覆盖完整 verifier 参数",
-            acceptance_id.0
-        ));
-    }
-    Ok(ToolInvocation {
-        run_id: invocation.run_id.clone(),
-        call_id: invocation.call_id.clone(),
-        name: verifier.verifier_id.clone(),
-        arguments: ToolArguments::from_value(verifier.parameters.clone()),
-    })
 }
 
 #[derive(Debug)]
@@ -5139,11 +5155,6 @@ impl AgentRuntime {
         let mut environment = state.snapshot.request.environment.clone();
         environment.workspace = task.workspace.execution_workspace().to_owned();
         environment.interactive = false;
-        if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite {
-            environment.trust_mode = false;
-            environment.allow_sandbox_elevation = false;
-            environment.sandbox = Some("isolated_writer".to_owned());
-        }
         Ok(RunRequest {
             run_id: Some(task.child_run_id.clone()),
             parent_run_id: Some(task.parent_run_id.clone()),

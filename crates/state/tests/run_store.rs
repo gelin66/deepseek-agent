@@ -19,14 +19,15 @@ use dse_protocol::task::{
     WorkspaceRevision, WorkspaceState,
 };
 use dse_runtime::{
-    ActorRequestAccounting, AgentOutcome, AgentResultDetails, ApiSurface, AttemptId, CommandId,
-    CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting, ModelAttemptFailure,
-    ModelErrorCategory, ModelFinishReason, ModelOutput, ModelRequest, ModelResponseEvidence,
-    ModelRetryDecision, ModelRetryStopReason, ModelToolCall, OperationId, PendingRuntimeEvent,
-    RecoveryAmbiguity, RecoveryAmbiguityPhase, RootRunRecord, RunId, RunLease, RunReplay,
-    RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
-    RuntimeFailure, StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolArguments, ToolArtifact,
-    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
+    ActorRequestAccounting, AgentOutcome, AgentResultDetails, ApiSurface, ApprovalRisk, AttemptId,
+    CommandId, CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting,
+    ModelAttemptFailure, ModelErrorCategory, ModelFinishReason, ModelOutput, ModelRequest,
+    ModelResponseEvidence, ModelRetryDecision, ModelRetryStopReason, ModelToolCall, OperationId,
+    PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase, RootRunRecord, RunId, RunLease,
+    RunPermissionMode, RunReplay, RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId,
+    RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SurfaceUsage, TerminalState,
+    ToolArguments, ToolArtifact, ToolArtifactStatus, ToolAuthorizationDecision,
+    ToolAuthorizationDisposition, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
     ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
     ToolSideEffectStatus, ToolTransportStatus, Usage, VerificationArtifactPayload, WorkspaceAccess,
     WriteExecutionMode, WriterArtifactState, WriterCleanupMetadataState, WriterCleanupMode,
@@ -367,6 +368,24 @@ fn terminal_event(run_id: &RunId) -> PendingRuntimeEvent {
         tool_calls: 0,
         details: Default::default(),
     })
+}
+
+fn allow_authorization(
+    mode: RunPermissionMode,
+    invocation: &ToolInvocation,
+    workspace_state: &WorkspaceState,
+) -> ToolAuthorizationDecision {
+    ToolAuthorizationDecision {
+        mode,
+        tool_name: invocation.name.clone(),
+        arguments_sha256: invocation.arguments_sha256(),
+        workspace_state: workspace_state.clone(),
+        disposition: ToolAuthorizationDisposition::Allow,
+        risk: ApprovalRisk::Routine,
+        matched_rule: Some("run_store_fixture".to_owned()),
+        reason: "deterministic run-store fixture authorization".to_owned(),
+        prompt: None,
+    }
 }
 
 fn assert_canonical_event_eq(left: &StoredRuntimeEvent, right: &StoredRuntimeEvent) {
@@ -1179,8 +1198,26 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
             event_id: RuntimeEventId("tool-prepared".to_owned()),
             event: RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
-                invocation,
+                invocation: invocation.clone(),
                 workspace_access: dse_runtime::WorkspaceAccess::MayWrite,
+            },
+        },
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId("tool-authorized".to_owned()),
+            event: RuntimeEventKind::ToolAuthorizationCommitted {
+                operation_id: operation_id.clone(),
+                decision: allow_authorization(
+                    RunPermissionMode::Ask,
+                    &invocation,
+                    &sqlite_created.replay.snapshot.workspace_state,
+                ),
             },
         },
     )
@@ -1278,8 +1315,8 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
         .expect("memory load")
         .expect("memory run");
     assert_canonical_replay_eq(&sqlite_replay, &memory_replay);
-    assert_eq!(sqlite_replay.events.len(), 8);
-    assert_eq!(sqlite_replay.snapshot.last_sequence, 8);
+    assert_eq!(sqlite_replay.events.len(), 9);
+    assert_eq!(sqlite_replay.snapshot.last_sequence, 9);
     assert_eq!(sqlite_replay.snapshot.usage, usage);
     assert_eq!(sqlite_replay.snapshot.accounting, accounting);
     assert_eq!(sqlite_replay.snapshot.last_model_output, Some(output));
@@ -1327,7 +1364,7 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
     let memory = InMemoryRunStore::default();
     let mut root_request = request("writer-parity-root", "/tmp/writer-parity-root");
     root_request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
-    root_request.environment.auto_approve = true;
+    root_request.environment.permission_mode = RunPermissionMode::Agent;
 
     let sqlite_created = sqlite
         .create(root_request.clone())
@@ -2601,7 +2638,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2693,7 +2730,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
 }
 
 #[tokio::test]
@@ -2765,7 +2802,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
 }
 
 #[tokio::test]
@@ -2809,7 +2846,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
 }
 
 #[tokio::test]
@@ -2878,7 +2915,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2961,29 +2998,28 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_pending_creati
             .is_none(),
         "v19 must retire untyped rejection rows before deserialization"
     );
-    let retained_pending = reopened
-        .creation(&pending_command_id)
-        .await
-        .expect("read retained pending creation")
-        .expect("pending Run API v9 reservation must survive RuntimeEvent cutover");
-    assert_eq!(retained_pending, pending.reservation);
-    assert_eq!(retained_pending.intent, Some(pending_intent));
-    assert!(retained_pending.intent.as_ref().is_some_and(|intent| {
-        matches!(&intent.command, RunCommand::Start(command) if command.model.is_none())
-    }));
+    assert!(pending.newly_reserved);
+    assert!(
+        reopened
+            .creation(&pending_command_id)
+            .await
+            .expect("query pre-permission pending creation")
+            .is_none(),
+        "state v26 must retire old pending Start controls rather than guess a permission mode"
+    );
     drop(reopened);
 
     let conn = Connection::open(path).expect("inspect v19 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
         })
-        .expect("count retained v19 pending creation");
-    assert_eq!(creation_count, 1);
+        .expect("count retired pre-permission creation");
+    assert_eq!(creation_count, 0);
     for table in ["agent_runs", "agent_run_events", "agent_run_snapshots"] {
         let count: i64 = conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -3045,26 +3081,28 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
             .is_none(),
         "v20 must retire rows that cannot prove response lifecycle facts"
     );
-    let retained_pending = reopened
-        .creation(&pending_command_id)
-        .await
-        .expect("read retained pending creation")
-        .expect("pending command must survive RuntimeEvent cutover");
-    assert_eq!(retained_pending, pending.reservation);
-    assert_eq!(retained_pending.intent, Some(pending_intent));
+    assert!(pending.newly_reserved);
+    assert!(
+        reopened
+            .creation(&pending_command_id)
+            .await
+            .expect("query pre-permission pending creation")
+            .is_none(),
+        "state v26 must retire old pending Start controls rather than infer Ask"
+    );
     drop(reopened);
 
     let conn = Connection::open(path).expect("inspect v20 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
         })
-        .expect("count retained pending command"),
-        1
+        .expect("count retired pending command"),
+        0
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| {
@@ -3195,13 +3233,15 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
             .expect("query retired finalized receipt")
             .is_none()
     );
-    let retained_start = reopened
-        .creation(&pending_start_id)
-        .await
-        .expect("read pending start")
-        .expect("pending start survives");
-    assert_eq!(retained_start, pending_start.reservation);
-    assert_eq!(retained_start.intent, Some(pending_start_intent));
+    assert!(pending_start.newly_reserved);
+    assert!(
+        reopened
+            .creation(&pending_start_id)
+            .await
+            .expect("query pre-permission pending start")
+            .is_none(),
+        "state v26 retires the old control tuple instead of guessing a mode"
+    );
     assert!(
         reopened
             .creation(&pending_continue_id)
@@ -3223,12 +3263,12 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     drop(reopened);
 
     let reopened = StateStore::open(Some(path.clone())).expect("repeat v21 reopen");
-    assert_eq!(
+    assert!(
         reopened
             .creation(&pending_start_id)
             .await
-            .expect("read start after second reopen"),
-        Some(retained_start)
+            .expect("read retired start after second reopen")
+            .is_none()
     );
     assert!(
         reopened
@@ -3243,7 +3283,7 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        25
+        26
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3254,8 +3294,8 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retained pending starts"),
-        1
+            .expect("count retired pending starts"),
+        0
     );
 }
 
@@ -3348,20 +3388,22 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
             .expect("query finalized route receipt")
             .is_none()
     );
-    let retained = reopened
-        .creation(&pending_start_id)
-        .await
-        .expect("read pending fixed start")
-        .expect("pending fixed start survives");
-    assert_eq!(retained, pending_start.reservation);
-    assert_eq!(retained.intent, Some(pending_start_intent));
+    assert!(pending_start.newly_reserved);
+    assert!(
+        reopened
+            .creation(&pending_start_id)
+            .await
+            .expect("query pre-permission pending fixed start")
+            .is_none(),
+        "state v26 retires pending commands whose old permission tuple is not exact"
+    );
     drop(reopened);
 
     let conn = Connection::open(path).expect("inspect current database");
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        25
+        26
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3372,8 +3414,8 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retained pending fixed starts"),
-        1
+            .expect("count retired pending fixed starts"),
+        0
     );
 }
 
@@ -3448,12 +3490,15 @@ async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pen
             .expect("query retired materialized run")
             .is_none()
     );
-    let retained = reopened
-        .creation(&safe_id)
-        .await
-        .expect("read safe pending Start")
-        .expect("safe pending Start survives");
-    assert_eq!(retained, safe.reservation);
+    assert!(safe.newly_reserved);
+    assert!(
+        reopened
+            .creation(&safe_id)
+            .await
+            .expect("query pre-permission pending Start")
+            .is_none(),
+        "a v18-safe route still lacks the exact v26 permission mode"
+    );
     assert!(
         reopened
             .creation(&incompatible_id)
@@ -3467,7 +3512,7 @@ async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pen
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        25
+        26
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3478,41 +3523,41 @@ async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pen
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retained safe pending Starts"),
-        1
+            .expect("count retired pending Starts"),
+        0
     );
 }
 
 #[tokio::test]
-async fn v25_dse_identity_cutover_retires_v18_runs_and_preserves_pending_start() {
-    let path = temp_state_path("v25_dse_identity_cutover");
-    let workspace = "/tmp/v25-dse-identity";
+async fn v26_permission_cutover_retires_old_runs_and_pending_starts_without_guessing() {
+    let path = temp_state_path("v26_permission_cutover");
+    let workspace = "/tmp/v26-permission-cutover";
     let store = StateStore::open(Some(path.clone())).expect("open current state");
 
     let created = store
-        .create(request("v18-materialized-codewhale-run", workspace))
+        .create(request("v25-materialized-permission-run", workspace))
         .await
-        .expect("create materialized pre-DSE run");
+        .expect("create materialized pre-permission run");
     let run_id = created.lease.run_id.clone();
     store
         .release(&created.lease)
         .await
-        .expect("release materialized pre-DSE run");
+        .expect("release materialized pre-permission run");
 
-    let pending_id = CommandId::from("v18-pending-dse-start");
+    let pending_id = CommandId::from("v25-pending-permission-start");
     let pending_intent = creation_intent(workspace);
     let pending = store
         .reserve_creation(
             &pending_id,
-            "sha256:v18-pending-dse-start",
-            RunId::from("v18-pending-dse-run"),
+            "sha256:v25-pending-permission-start",
+            RunId::from("v25-pending-permission-run"),
             pending_intent.clone(),
         )
         .await
-        .expect("reserve replay-safe pending Start");
+        .expect("reserve pre-permission pending Start");
     drop(store);
 
-    let conn = Connection::open(&path).expect("prepare exact v24 identity fixture");
+    let conn = Connection::open(&path).expect("prepare exact state v25 permission fixture");
     let event_json: String = conn
         .query_row(
             "SELECT event_json FROM agent_run_events WHERE run_id = ?1 AND sequence = 1",
@@ -3522,55 +3567,110 @@ async fn v25_dse_identity_cutover_retires_v18_runs_and_preserves_pending_start()
         .expect("read materialized event");
     let mut event: serde_json::Value =
         serde_json::from_str(&event_json).expect("decode materialized event");
-    event["schema_version"] = serde_json::Value::from(18);
+    event["schema_version"] = serde_json::Value::from(19);
+    let environment = event["event"]["request"]["environment"]
+        .as_object_mut()
+        .expect("RunCreated environment object");
+    environment.remove("permission_mode");
+    environment.insert("auto_approve".to_owned(), serde_json::Value::Bool(true));
+    environment.insert("trust_mode".to_owned(), serde_json::Value::Bool(false));
+    environment.insert(
+        "allow_sandbox_elevation".to_owned(),
+        serde_json::Value::Bool(false),
+    );
+    environment.insert(
+        "sandbox".to_owned(),
+        serde_json::Value::String("workspace_write".to_owned()),
+    );
     conn.execute(
         "UPDATE agent_run_events
-         SET schema_version = 18, event_json = ?1
+         SET schema_version = 19, event_json = ?1
          WHERE run_id = ?2 AND sequence = 1",
         params![
-            serde_json::to_string(&event).expect("encode v18 materialized event"),
+            serde_json::to_string(&event).expect("encode v19 materialized event"),
             &run_id.0
         ],
     )
-    .expect("write exact v18 materialized event");
-    conn.pragma_update(None, "user_version", 24)
-        .expect("mark pre-DSE state schema");
+    .expect("write exact pre-permission RunCreated event");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"v25_permission_tuple\"}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible pre-permission snapshot");
+
+    let command_json: String = conn
+        .query_row(
+            "SELECT command_json FROM agent_run_creations WHERE command_id = ?1",
+            [&pending_id.0],
+            |row| row.get(0),
+        )
+        .expect("read pending Start command");
+    let mut command: serde_json::Value =
+        serde_json::from_str(&command_json).expect("decode pending Start command");
+    let controls = command["controls"]
+        .as_object_mut()
+        .expect("pending Start controls object");
+    controls.remove("permission_mode");
+    controls.insert("auto_approve".to_owned(), serde_json::Value::Bool(false));
+    controls.insert("trust_mode".to_owned(), serde_json::Value::Bool(false));
+    controls.insert(
+        "allow_sandbox_elevation".to_owned(),
+        serde_json::Value::Bool(false),
+    );
+    controls.insert(
+        "sandbox".to_owned(),
+        serde_json::Value::String("workspace_write".to_owned()),
+    );
+    conn.execute(
+        "UPDATE agent_run_creations SET command_json = ?1 WHERE command_id = ?2",
+        params![
+            serde_json::to_string(&command).expect("encode old pending Start command"),
+            &pending_id.0
+        ],
+    )
+    .expect("write old pending Start controls");
+    conn.pragma_update(None, "user_version", 25)
+        .expect("mark exact state v25 fixture");
     drop(conn);
 
-    let reopened = StateStore::open(Some(path.clone())).expect("apply DSE identity cutover");
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v26 permission cutover");
     assert!(
         reopened
             .load(&run_id)
             .await
-            .expect("query retired pre-DSE run")
+            .expect("query retired pre-permission run")
             .is_none()
     );
-    let retained = reopened
-        .creation(&pending_id)
-        .await
-        .expect("read retained pending Start")
-        .expect("pending Start survives identity cutover");
-    assert_eq!(retained, pending.reservation);
-    assert_eq!(retained.intent, Some(pending_intent));
+    assert!(pending.newly_reserved);
+    assert!(
+        reopened
+            .creation(&pending_id)
+            .await
+            .expect("query pre-permission pending Start")
+            .is_none(),
+        "state v26 must not map only auto_approve or guess a canonical preset"
+    );
     drop(reopened);
 
-    let conn = Connection::open(path).expect("inspect DSE state cutover");
+    let conn = Connection::open(path).expect("inspect v26 permission cutover");
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        25
+        26
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retired pre-DSE runs"),
+            .expect("count retired pre-permission runs"),
         0
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
             .get::<_, i64>(0))
-            .expect("count retained pending Starts"),
-        1
+            .expect("count retired pending Starts"),
+        0
     );
 }
 
@@ -3646,7 +3746,7 @@ async fn v23_thread_deletion_and_v24_route_cutover_are_atomic_and_direct() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        25
+        26
     );
     let threads_exists: bool = conn
         .query_row(
@@ -3741,7 +3841,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     for column in [
         "creation_kind",
         "workspace",
@@ -3780,7 +3880,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
 }
 
 #[tokio::test]
@@ -3804,7 +3904,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
 }
 
 #[tokio::test]
@@ -3914,7 +4014,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -3965,7 +4065,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -4022,7 +4122,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 25);
+    assert_eq!(user_version, 26);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -4138,7 +4238,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 25);
+        assert_eq!(user_version, 26);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -4419,6 +4519,12 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     )
     .await;
     let operation_id = OperationId::from("write-after-receipt");
+    let write_invocation = ToolInvocation {
+        run_id: run_id.clone(),
+        call_id: "write-after-receipt".to_owned(),
+        name: "apply_patch".to_owned(),
+        arguments: write_arguments,
+    };
     append_to_both(
         &sqlite,
         &sqlite_created.lease,
@@ -4428,13 +4534,29 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
             "write-prepared",
             RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
-                invocation: ToolInvocation {
-                    run_id: run_id.clone(),
-                    call_id: "write-after-receipt".to_owned(),
-                    name: "apply_patch".to_owned(),
-                    arguments: write_arguments,
-                },
+                invocation: write_invocation.clone(),
                 workspace_access: WorkspaceAccess::MayWrite,
+            },
+        ),
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "write-authorized",
+            RuntimeEventKind::ToolAuthorizationCommitted {
+                operation_id: operation_id.clone(),
+                decision: allow_authorization(
+                    RunPermissionMode::Ask,
+                    &write_invocation,
+                    &WorkspaceState {
+                        generation: 3,
+                        revision: revision.clone(),
+                    },
+                ),
             },
         ),
     )
@@ -4615,21 +4737,34 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         workspace_revision: workspace.revision.clone(),
         artifact_ids: vec![artifact_id],
     });
+    let temporal_verifier_invocation = ToolInvocation {
+        run_id: sqlite_created.lease.run_id.clone(),
+        call_id: "temporal-failure".to_owned(),
+        name: "run_tests".to_owned(),
+        arguments: ToolArguments::from_value(serde_json::json!({
+            "verifier_id": "tests"
+        })),
+    };
+    let temporal_verifier_execution = ToolInvocation {
+        arguments: ToolArguments::from_value(verifier.parameters.clone()),
+        ..temporal_verifier_invocation.clone()
+    };
     let events = vec![
         RuntimeEventKind::WorkspaceObserved {
             workspace_state: workspace.clone(),
         },
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
-            invocation: ToolInvocation {
-                run_id: sqlite_created.lease.run_id.clone(),
-                call_id: "temporal-failure".to_owned(),
-                name: "run_tests".to_owned(),
-                arguments: ToolArguments::from_value(serde_json::json!({
-                    "verifier_id": "tests"
-                })),
-            },
+            invocation: temporal_verifier_invocation,
             workspace_access: WorkspaceAccess::MayWrite,
+        },
+        RuntimeEventKind::ToolAuthorizationCommitted {
+            operation_id: operation_id.clone(),
+            decision: allow_authorization(
+                RunPermissionMode::Ask,
+                &temporal_verifier_execution,
+                &workspace,
+            ),
         },
         RuntimeEventKind::ToolExecutionStarted {
             operation_id: operation_id.clone(),
@@ -4705,16 +4840,25 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
     assert_eq!(reopened_replay, sqlite_replay);
 
     let write_operation = OperationId::from("temporal-write-operation");
+    let temporal_write_invocation = ToolInvocation {
+        run_id: sqlite_created.lease.run_id.clone(),
+        call_id: "temporal-write".to_owned(),
+        name: "write".to_owned(),
+        arguments: ToolArguments::from_value(serde_json::json!({})),
+    };
     let write_events = vec![
         RuntimeEventKind::ToolPrepared {
             operation_id: write_operation.clone(),
-            invocation: ToolInvocation {
-                run_id: sqlite_created.lease.run_id.clone(),
-                call_id: "temporal-write".to_owned(),
-                name: "write".to_owned(),
-                arguments: ToolArguments::from_value(serde_json::json!({})),
-            },
+            invocation: temporal_write_invocation.clone(),
             workspace_access: WorkspaceAccess::MayWrite,
+        },
+        RuntimeEventKind::ToolAuthorizationCommitted {
+            operation_id: write_operation.clone(),
+            decision: allow_authorization(
+                RunPermissionMode::Ask,
+                &temporal_write_invocation,
+                &failed_workspace,
+            ),
         },
         RuntimeEventKind::ToolExecutionStarted {
             operation_id: write_operation.clone(),
@@ -4862,13 +5006,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 26)
+    conn.pragma_update(None, "user_version", 27)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 25")
+            .contains("newer than supported version 26")
     );
 }

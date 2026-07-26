@@ -31,9 +31,10 @@ use dse_runtime::{
     AgentWorkspaceAssignment, ApiSurface, ApprovalRisk, CancellationToken, CommandId,
     DurableActionState, ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput, ModelPort,
     ModelPortError, ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink,
-    PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RunStoreError,
-    RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage,
-    TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolDefinition, ToolEvidence,
+    PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunPermissionMode, RunRequest, RunStore,
+    RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent,
+    SurfaceUsage, TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact,
+    ToolAuthorizationDecision, ToolAuthorizationDisposition, ToolDefinition, ToolEvidence,
     ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolFailureCode, ToolInvocation,
     ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload, WorkspaceState,
     WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
@@ -951,11 +952,6 @@ impl ToolExecutor for ProcessWriterTools {
                     },
                 );
                 let revision = self.revision().to_owned();
-                if self.root && revision != WRITER_FINAL_COMMIT {
-                    return Ok(ToolOutcome::error(
-                        "root exact verifier rejected an unintegrated writer revision",
-                    ));
-                }
                 let verifier = VerifierSpec {
                     parameters: invocation
                         .arguments
@@ -966,9 +962,10 @@ impl ToolExecutor for ProcessWriterTools {
                 let workspace_revision = WorkspaceRevision::Known {
                     sha256: revision.clone(),
                 };
-                let failed = self.scenario == CrashScenario::WriterDelegatedReceiptCommitted
-                    && !self.root
-                    && marker_line_count(&self.writer_marker, "write") == 0;
+                let failed = (self.root && revision != WRITER_FINAL_COMMIT)
+                    || (self.scenario == CrashScenario::WriterDelegatedReceiptCommitted
+                        && !self.root
+                        && marker_line_count(&self.writer_marker, "write") == 0);
                 let verdict = if failed {
                     VerifierVerdict::Failed
                 } else {
@@ -1305,22 +1302,42 @@ impl ToolExecutor for MarkerTools {
         }
     }
 
-    fn approval_prompt(
+    fn authorize(
         &self,
+        mode: RunPermissionMode,
         invocation: &ToolInvocation,
-    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
-        Ok((invocation.name == TOOL_NAME
+        workspace_state: &WorkspaceState,
+    ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
+        let asks = invocation.name == TOOL_NAME
             && !self.abort_after_side_effect
             && self.cancel_control.is_none()
             && !matches!(
                 self.scenario,
                 CrashScenario::ToolPrepared | CrashScenario::ToolOutcomeCommitted
-            ))
-        .then(|| ToolApprovalPrompt {
-            title: "确认写入测试标记".to_owned(),
-            description: "验证审批恢复窗口".to_owned(),
-            risk: ApprovalRisk::Elevated,
-        }))
+            );
+        Ok(ToolAuthorizationDecision {
+            mode,
+            tool_name: invocation.name.clone(),
+            arguments_sha256: invocation.arguments_sha256(),
+            workspace_state: workspace_state.clone(),
+            disposition: if asks {
+                ToolAuthorizationDisposition::Ask
+            } else {
+                ToolAuthorizationDisposition::Allow
+            },
+            risk: if asks {
+                ApprovalRisk::Elevated
+            } else {
+                ApprovalRisk::Routine
+            },
+            matched_rule: Some("crash_fixture".to_owned()),
+            reason: "crash fixture authorization".to_owned(),
+            prompt: asks.then(|| ToolApprovalPrompt {
+                title: "确认写入测试标记".to_owned(),
+                description: "验证审批恢复窗口".to_owned(),
+                risk: ApprovalRisk::Elevated,
+            }),
+        })
     }
 
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
@@ -1763,7 +1780,7 @@ fn writer_request(scenario: CrashScenario) -> RunRequest {
     request.model = "deepseek-test".to_owned();
     request.environment.workspace = WRITER_ROOT_WORKSPACE.to_owned();
     request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
-    request.environment.auto_approve = true;
+    request.environment.permission_mode = RunPermissionMode::Agent;
     request.limits.max_turns = 12;
     request.limits.max_model_requests = 16;
     request.limits.max_tool_calls = 16;

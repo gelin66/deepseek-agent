@@ -63,9 +63,9 @@ README_IDENTIFIERS = (
     "https://api.deepseek.com/chat/completions",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
-    "Run API v12",
-    "RuntimeEvent v19",
-    "State schema v25",
+    "Run API v13",
+    "RuntimeEvent v20",
+    "State schema v26",
     "exec-stream v4",
     "dse exec --auto",
     "~/.dse/config.toml",
@@ -86,6 +86,9 @@ FORBIDDEN_CURRENT_FACTS = (
     "RuntimeEvent v16",
     "State schema v21",
     "exec-stream v2",
+    "Run API v12",
+    "RuntimeEvent v19",
+    "State schema v25",
     "DEEPSEEK_PROVIDER",
     "NVIDIA_NIM",
     "ATLASCLOUD",
@@ -319,6 +322,11 @@ def check_active_identity_allowlist() -> None:
         "crates",
     )
     for relative in source_files:
+        if not (ROOT / relative).exists():
+            # A replacement slice may delete a tracked source before the
+            # reviewable commit is staged. Missing paths have no active
+            # identity surface and disappear from git ls-files after cutover.
+            continue
         if relative.suffix not in {".json", ".md", ".rs", ".toml", ".yml", ".yaml"}:
             continue
         body = read(relative)
@@ -335,6 +343,8 @@ def check_active_identity_allowlist() -> None:
             fail(f"{relative}: superseded DSA identity remains in active source")
 
     for relative in tracked_files("crates/tui"):
+        if not (ROOT / relative).exists():
+            continue
         if relative.suffix != ".rs":
             continue
         for line_number, line in enumerate(read(relative).splitlines(), start=1):

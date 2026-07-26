@@ -506,6 +506,7 @@ mod tests {
         if !is_available() {
             return;
         }
+        let _guard = crate::test_support::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("root");
         let common_git = root.join(".git");
@@ -535,7 +536,13 @@ mod tests {
         };
 
         let inside = writer.join("allowed");
-        assert!(run(format!("touch {}", inside.display())).status.success());
+        let output = run(format!("touch {}", inside.display()));
+        assert!(
+            output.status.success(),
+            "sandbox rejected worktree write: status={:?}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(inside.is_file());
 
         let slash_tmp = PathBuf::from(format!("/tmp/dse-isolated-writer-{}", std::process::id()));

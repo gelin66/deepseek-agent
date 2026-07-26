@@ -383,7 +383,7 @@ const PARALLEL_READONLY_PREFIXES: &[&str] = &[
     "fd",
 ];
 
-/// Return `true` when a shell command is safe to auto-approve and run in a
+/// Return `true` when a shell command is safe for a Host permission policy to run in a
 /// parallel read-only chunk.
 pub fn is_parallel_readonly_command(command: &str) -> bool {
     let trimmed = command.trim();
@@ -695,7 +695,7 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
         // escalate to RequiresApproval so the user can still deny in
-        // non-trusted modes. YOLO/auto-approve flows pass through.
+        // restrictive modes. A more permissive Run mode may still pass through.
         if all_segments_known_safe(command) {
             return SafetyAnalysis::requires_approval(
                 command,

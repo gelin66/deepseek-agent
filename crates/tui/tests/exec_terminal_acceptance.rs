@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use dse_runtime::{
-    ModelRouteProfile, RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind,
-    StoredRuntimeEvent, TerminalState,
+    ModelRouteProfile, RunEnvironment, RunId, RunPermissionMode, RunRequest, RunStore,
+    RuntimeEventKind, StoredRuntimeEvent, TerminalState,
 };
 use dse_state::StateStore;
 use serde_json::{Value, json};
@@ -678,8 +678,7 @@ async fn resume_environment_mismatches_fail_closed_before_model_io() {
             workspace: canonical_workspace.display().to_string(),
             provider: "deepseek".to_owned(),
             tool_catalog_sha256: Some("sha256:deliberately-wrong-catalog".to_owned()),
-            auto_approve: true,
-            trust_mode: true,
+            permission_mode: RunPermissionMode::Agent,
             ..RunEnvironment::default()
         },
     )

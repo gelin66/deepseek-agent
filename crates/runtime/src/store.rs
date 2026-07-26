@@ -106,6 +106,8 @@ pub struct PendingToolAction {
     pub operation_id: OperationId,
     pub invocation: ToolInvocation,
     pub workspace_access: WorkspaceAccess,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<ToolAuthorizationDecision>,
     pub state: DurableActionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interaction: Option<PendingUserInteraction>,
@@ -828,9 +830,53 @@ pub fn apply_event(
                 operation_id: operation_id.clone(),
                 invocation: invocation.clone(),
                 workspace_access: *workspace_access,
+                authorization: None,
                 state: DurableActionState::Prepared,
                 interaction: None,
             });
+        }
+        RuntimeEventKind::ToolAuthorizationCommitted {
+            operation_id,
+            decision,
+        } => {
+            let workspace_state = snapshot.workspace_state.clone();
+            let permission_mode = snapshot.request.environment.permission_mode;
+            let execution_invocation = {
+                let pending = snapshot.pending_tool.as_ref().ok_or_else(|| {
+                    corrupt(
+                        &run_id,
+                        "tool authorization committed without a prepared invocation",
+                    )
+                })?;
+                resolve_named_verifier_invocation(
+                    snapshot.request.task_contract.as_ref(),
+                    &pending.invocation,
+                )
+                .map_err(|message| corrupt(&run_id, message))?
+            };
+            let pending = pending_tool_mut(snapshot, &run_id, operation_id)?;
+            if pending.state != DurableActionState::Prepared {
+                return Err(corrupt(
+                    &run_id,
+                    "tool authorization committed after execution began",
+                ));
+            }
+            if pending.authorization.is_some() {
+                return Err(corrupt(
+                    &run_id,
+                    "tool authorization committed more than once",
+                ));
+            }
+            decision
+                .validate_for(&execution_invocation, &workspace_state)
+                .map_err(|message| corrupt(&run_id, message))?;
+            if decision.mode != permission_mode {
+                return Err(corrupt(
+                    &run_id,
+                    "tool authorization mode differs from the frozen Run permission",
+                ));
+            }
+            pending.authorization = Some(decision.clone());
         }
         RuntimeEventKind::InteractionRequested { request } => {
             let interactive_root = snapshot.request.actor.kind == AgentActorKind::Root
@@ -854,7 +900,7 @@ pub fn apply_event(
                 return Err(corrupt(&run_id, "tool requested more than one interaction"));
             }
             match &request.prompt {
-                UserInteractionPrompt::Approval { arguments, .. } => {
+                UserInteractionPrompt::Approval { prompt, arguments } => {
                     if request.tool_name == REQUEST_USER_INPUT_TOOL_NAME {
                         return Err(corrupt(
                             &run_id,
@@ -865,6 +911,20 @@ pub fn apply_event(
                         return Err(corrupt(
                             &run_id,
                             "approval arguments do not match the prepared tool invocation",
+                        ));
+                    }
+                    let Some(authorization) = pending.authorization.as_ref() else {
+                        return Err(corrupt(
+                            &run_id,
+                            "approval interaction has no committed tool authorization",
+                        ));
+                    };
+                    if authorization.disposition != ToolAuthorizationDisposition::Ask
+                        || authorization.prompt.as_ref() != Some(prompt)
+                    {
+                        return Err(corrupt(
+                            &run_id,
+                            "approval interaction differs from committed authorization",
                         ));
                     }
                 }
@@ -968,6 +1028,45 @@ pub fn apply_event(
                     "tool execution began without an approved interaction",
                 ));
             }
+            if pending.invocation.name != AGENT_TOOL_NAME
+                && pending.invocation.name != REQUEST_USER_INPUT_TOOL_NAME
+            {
+                let authorization = pending.authorization.as_ref().ok_or_else(|| {
+                    corrupt(
+                        &run_id,
+                        "executable tool started without committed authorization",
+                    )
+                })?;
+                match authorization.disposition {
+                    ToolAuthorizationDisposition::Allow => {
+                        if pending.interaction.is_some() {
+                            return Err(corrupt(
+                                &run_id,
+                                "allowed tool unexpectedly carried an approval interaction",
+                            ));
+                        }
+                    }
+                    ToolAuthorizationDisposition::Ask => {
+                        if !pending.interaction.as_ref().is_some_and(|interaction| {
+                            matches!(
+                                interaction.response,
+                                Some(UserInteractionResponse::Approved)
+                            )
+                        }) {
+                            return Err(corrupt(
+                                &run_id,
+                                "ask-authorized tool started without exact approval",
+                            ));
+                        }
+                    }
+                    ToolAuthorizationDisposition::Deny => {
+                        return Err(corrupt(
+                            &run_id,
+                            "denied tool authorization reached execution start",
+                        ));
+                    }
+                }
+            }
             pending.state = DurableActionState::InFlight;
         }
         RuntimeEventKind::ToolOutcomeCommitted {
@@ -1023,7 +1122,7 @@ pub fn apply_event(
                         UserInteractionPrompt::Approval { .. },
                         Some(UserInteractionResponse::Approved),
                         DurableActionState::Prepared,
-                    ) => {
+                    ) if outcome.failure_code != Some(ToolFailureCode::AuthorizationStale) => {
                         return Err(corrupt(
                             &run_id,
                             "approved tool committed an outcome before execution began",
@@ -4348,7 +4447,12 @@ mod tests {
 
         let mut events = Vec::new();
         for kind in kinds {
-            if let RuntimeEventKind::ToolPrepared { invocation, .. } = &kind {
+            let prepared = if let RuntimeEventKind::ToolPrepared {
+                operation_id,
+                invocation,
+                ..
+            } = &kind
+            {
                 let snapshot = reduce_events(&events).expect("canonical fixture prefix");
                 let tools = vec![ToolDefinition {
                     name: invocation.name.clone(),
@@ -4404,8 +4508,40 @@ mod tests {
                         accounting: Box::new(snapshot.accounting),
                     },
                 );
-            }
+                Some((operation_id.clone(), invocation.clone()))
+            } else {
+                None
+            };
             push(&mut events, kind);
+            if let Some((operation_id, invocation)) = prepared
+                && invocation.name != AGENT_TOOL_NAME
+                && invocation.name != REQUEST_USER_INPUT_TOOL_NAME
+            {
+                let snapshot =
+                    reduce_events(&events).expect("prepared authorization fixture prefix");
+                let execution_invocation = resolve_named_verifier_invocation(
+                    snapshot.request.task_contract.as_ref(),
+                    &invocation,
+                )
+                .expect("fixture verifier resolution");
+                push(
+                    &mut events,
+                    RuntimeEventKind::ToolAuthorizationCommitted {
+                        operation_id,
+                        decision: ToolAuthorizationDecision {
+                            mode: snapshot.request.environment.permission_mode,
+                            tool_name: execution_invocation.name.clone(),
+                            arguments_sha256: execution_invocation.arguments_sha256(),
+                            workspace_state: snapshot.workspace_state,
+                            disposition: ToolAuthorizationDisposition::Allow,
+                            risk: ApprovalRisk::Routine,
+                            matched_rule: Some("runtime_store_fixture".to_owned()),
+                            reason: "deterministic store fixture authorization".to_owned(),
+                            prompt: None,
+                        },
+                    },
+                );
+            }
         }
         events
     }

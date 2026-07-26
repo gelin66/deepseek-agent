@@ -35,9 +35,8 @@ mod exec_shell;
 mod output;
 
 pub(crate) use exec_shell::{
-    ExecShellHost, ExecShellOptions, ExecShellPolicyDecision,
-    exec_shell_input_is_parallel_readonly, execute_exec_shell, execute_managed_program,
-    preflight_exec_shell,
+    ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, command_likely_needs_network,
+    execute_exec_shell, execute_managed_program, preflight_exec_shell,
 };
 
 use crate::child_env;

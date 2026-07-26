@@ -3407,6 +3407,34 @@ reject_and_delete_permission_candidate
 完整架构与实施合同见
 [ADR-0012](../decisions/0012-canonical-permission-policy.md) 和 ROADMAP M27。
 
+#### M27 result
+
+决定为 `shrink_to_enforceable_permission_subset`。
+
+- 三个且仅三个 protocol mode、Host authorization、durable approval、exact replay 与
+  双语 TUI selector 已闭合；
+- Ask 的普通 workspace edit/test prompt 为 0；
+- Ask 对 canonical path-bearing tool、显式 Shell cwd 和可识别 network 调用因当前 backend
+  无法证明 scoped authority 而 typed fail closed；任意子进程内部 I/O 不作超出 OS
+  sandbox 基线的声明；
+- Agent critical 保持 exact Ask，FullAccess prompt 为 0，explicit deny 与 hard invariant
+  仍 100% 拦截；
+- approval 后 revision 漂移产生 `authorization_stale`，start/tool call/side effect 均为 0；
+- root、read-only child、Writer、pending Start、SQLite reopen、SIGKILL 与
+  CLI/TUI/app-server projection 使用同一 frozen truth；
+- 旧 bool/config/matcher/parser/richer policy/Starlark/`workspace-trust.json` reader 和
+  无 RunStore 真相的 `dse-tui sandbox run`、仅 TUI 生效的 `exec_policy` feature
+  分叉已物理删除；拒绝 guards、v26 migration negative fixtures 与 frozen 历史证据
+  是唯一旧名称 allowlist。
+
+本地 deterministic loopback、English/`zh-Hans` keyboard/mouse PTY、focused、fmt、
+strict workspace Clippy、workspace test、public repository checker 与 diff check 构成
+最终门禁。Key、official DeepSeek API、GitHub、push 与 release 均为 0。该结论只证明
+Host 本地权限行为和历史债删除，不外推模型质量、Token、费用或 wall-time。
+
+完整结果：
+[M27 canonical permission policy](../../eval/summaries/m27-canonical-permission-policy-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

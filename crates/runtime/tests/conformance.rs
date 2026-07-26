@@ -291,6 +291,7 @@ impl RuntimeEventSink for CollectSink {
 struct MockTools {
     calls: Mutex<Vec<ToolInvocation>>,
     slow_cancelled: AtomicBool,
+    revision: Mutex<Option<String>>,
 }
 
 struct HugeCatalogTools;
@@ -502,6 +503,7 @@ impl ToolExecutor for MockTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             definition("delay"),
+            definition("denied"),
             definition("error"),
             definition("approval"),
             definition("grep"),
@@ -528,19 +530,54 @@ impl ToolExecutor for MockTools {
         self.definition_workspace_access(&invocation.name)
     }
 
-    fn approval_prompt(
+    fn authorize(
         &self,
+        mode: RunPermissionMode,
         invocation: &ToolInvocation,
-    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
-        Ok(
-            matches!(invocation.name.as_str(), "approval" | "write_approval").then(|| {
-                ToolApprovalPrompt {
-                    title: "确认测试工具".to_owned(),
-                    description: "测试工具必须在显式批准后执行。".to_owned(),
-                    risk: ApprovalRisk::Elevated,
-                }
+        workspace_state: &WorkspaceState,
+    ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
+        let asks = matches!(invocation.name.as_str(), "approval" | "write_approval");
+        let denied = invocation.name == "denied";
+        Ok(ToolAuthorizationDecision {
+            mode,
+            tool_name: invocation.name.clone(),
+            arguments_sha256: invocation.arguments_sha256(),
+            workspace_state: workspace_state.clone(),
+            disposition: if denied {
+                ToolAuthorizationDisposition::Deny
+            } else if asks {
+                ToolAuthorizationDisposition::Ask
+            } else {
+                ToolAuthorizationDisposition::Allow
+            },
+            risk: if denied {
+                ApprovalRisk::Critical
+            } else if asks {
+                ApprovalRisk::Elevated
+            } else {
+                ApprovalRisk::Routine
+            },
+            matched_rule: Some("fixture".to_owned()),
+            reason: "fixture authorization".to_owned(),
+            prompt: asks.then(|| ToolApprovalPrompt {
+                title: "确认测试工具".to_owned(),
+                description: "测试工具必须在显式批准后执行。".to_owned(),
+                risk: ApprovalRisk::Elevated,
             }),
-        )
+        })
+    }
+
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        self.revision
+            .lock()
+            .expect("revision lock")
+            .clone()
+            .ok_or_else(|| {
+                ToolExecutionError::new(
+                    "workspace_revision_unavailable",
+                    "fixture has no workspace revision",
+                )
+            })
     }
 
     async fn execute(
@@ -777,7 +814,11 @@ fn actor_failure_request(actor: ToolFailureActorCase, objective: &str) -> RunReq
     } else {
         WriteExecutionMode::Root
     };
-    child.environment.auto_approve = matches!(actor, ToolFailureActorCase::WriterChild);
+    child.environment.permission_mode = if matches!(actor, ToolFailureActorCase::WriterChild) {
+        RunPermissionMode::Agent
+    } else {
+        RunPermissionMode::Ask
+    };
     child.context_policy = ContextPolicy {
         hard_input_tokens: 900_000,
     };
@@ -943,6 +984,46 @@ async fn append_event(
         .unwrap()
 }
 
+async fn append_authorization(
+    store: &InMemoryRunStore,
+    lease: &RunLease,
+    event_id: &str,
+    operation_id: OperationId,
+    invocation: &ToolInvocation,
+    disposition: ToolAuthorizationDisposition,
+    prompt: Option<ToolApprovalPrompt>,
+) {
+    let snapshot = store
+        .load(&lease.run_id)
+        .await
+        .expect("load authorization fixture")
+        .expect("authorization fixture run exists")
+        .snapshot;
+    let risk = prompt
+        .as_ref()
+        .map_or(ApprovalRisk::Routine, |prompt| prompt.risk);
+    append_event(
+        store,
+        lease,
+        event_id,
+        RuntimeEventKind::ToolAuthorizationCommitted {
+            operation_id,
+            decision: ToolAuthorizationDecision {
+                mode: snapshot.request.environment.permission_mode,
+                tool_name: invocation.name.clone(),
+                arguments_sha256: invocation.arguments_sha256(),
+                workspace_state: snapshot.workspace_state,
+                disposition,
+                risk,
+                matched_rule: Some("conformance_fixture".to_owned()),
+                reason: "deterministic conformance authorization".to_owned(),
+                prompt,
+            },
+        },
+    )
+    .await;
+}
+
 async fn seed_committed_model_output(
     store: &InMemoryRunStore,
     created: &CreatedRun,
@@ -1097,6 +1178,17 @@ async fn seed_pending_approval(
     )
     .await;
     let operation_id = OperationId::from("approval-operation".to_owned());
+    let approval_invocation = ToolInvocation {
+        run_id: RunId::from(run_id),
+        call_id: tool_call.id,
+        name: tool_call.name,
+        arguments: tool_call.arguments,
+    };
+    let approval_prompt = ToolApprovalPrompt {
+        title: "确认测试工具".to_owned(),
+        description: "测试工具必须在显式批准后执行。".to_owned(),
+        risk: ApprovalRisk::Elevated,
+    };
     append_event(
         store,
         &created.lease,
@@ -1104,13 +1196,18 @@ async fn seed_pending_approval(
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
             workspace_access: WorkspaceAccess::ReadOnly,
-            invocation: ToolInvocation {
-                run_id: RunId::from(run_id),
-                call_id: tool_call.id,
-                name: tool_call.name,
-                arguments: tool_call.arguments,
-            },
+            invocation: approval_invocation.clone(),
         },
+    )
+    .await;
+    append_authorization(
+        store,
+        &created.lease,
+        "approval-authorized",
+        operation_id.clone(),
+        &approval_invocation,
+        ToolAuthorizationDisposition::Ask,
+        Some(approval_prompt.clone()),
     )
     .await;
     let interaction = UserInteractionRequest {
@@ -1119,11 +1216,7 @@ async fn seed_pending_approval(
         call_id: "approval-call".to_owned(),
         tool_name: "approval".to_owned(),
         prompt: UserInteractionPrompt::Approval {
-            prompt: ToolApprovalPrompt {
-                title: "确认测试工具".to_owned(),
-                description: "测试工具必须在显式批准后执行。".to_owned(),
-                risk: ApprovalRisk::Elevated,
-            },
+            prompt: approval_prompt,
             arguments: json!({"path": "src/lib.rs"}),
         },
     };
@@ -1469,20 +1562,31 @@ async fn resume_partially_settled_assistant_turn_executes_only_remaining_call() 
     )
     .await;
     let operation_id = OperationId::from("partial-operation-1".to_owned());
+    let first_invocation = ToolInvocation {
+        run_id: run_id.clone(),
+        call_id: first.id.clone(),
+        name: first.name.clone(),
+        arguments: first.arguments.clone(),
+    };
     append_event(
         store.as_ref(),
         &created.lease,
         "partial-tool-prepared",
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
-            invocation: ToolInvocation {
-                run_id: run_id.clone(),
-                call_id: first.id.clone(),
-                name: first.name.clone(),
-                arguments: first.arguments.clone(),
-            },
+            invocation: first_invocation.clone(),
             workspace_access: WorkspaceAccess::ReadOnly,
         },
+    )
+    .await;
+    append_authorization(
+        store.as_ref(),
+        &created.lease,
+        "partial-tool-authorized",
+        operation_id.clone(),
+        &first_invocation,
+        ToolAuthorizationDisposition::Allow,
+        None,
     )
     .await;
     append_event(
@@ -1618,6 +1722,143 @@ async fn approval_is_durable_and_precedes_every_tool_side_effect() {
         .expect("tool execution start");
     assert_eq!(replay.events[resolved].sequence, accepted_sequence);
     assert!(resolved < started);
+}
+
+#[tokio::test]
+async fn denied_authorization_is_durable_and_never_starts_the_tool() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let script_requests = requests.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call("denied-call", "denied", r#"{"scope":"external"}"#)],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        assert!(request.messages.iter().any(|message| {
+            matches!(message, ModelMessage::Tool { call_id, content, .. }
+                if call_id == "denied-call"
+                    && content.contains("code=invocation_rejected"))
+        }));
+        ScriptResponse::Events(vec![completed(
+            "deny observed",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, tools, _, store) = fixture(model);
+    let run = runtime.start(request("deny"));
+    let run_id = run.run_id.clone();
+    assert!(matches!(
+        run.wait().await.unwrap().terminal,
+        TerminalState::Completed { ref message, .. } if message == "deny observed"
+    ));
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let replay = store.load(&run_id).await.unwrap().unwrap();
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolAuthorizationCommitted { decision, .. }
+            if decision.disposition == ToolAuthorizationDisposition::Deny
+    )));
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+    );
+}
+
+#[tokio::test]
+async fn approval_becomes_stale_when_workspace_revision_changes_before_start() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let script_requests = requests.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call(
+                    "stale-approval-call",
+                    "approval",
+                    r#"{"path":"src/lib.rs"}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        assert!(request.messages.iter().any(|message| {
+            matches!(message, ModelMessage::Tool { call_id, content, .. }
+                if call_id == "stale-approval-call"
+                    && content.contains("code=authorization_stale"))
+        }));
+        ScriptResponse::Events(vec![completed(
+            "stale authorization rejected",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let tools = Arc::new(MockTools::default());
+    *tools.revision.lock().unwrap() = Some("sha256:before".to_owned());
+    let sink = Arc::new(CollectSink::default());
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        sink.clone(),
+        store.clone(),
+    ));
+    let mut run_request = request("stale approval");
+    run_request.environment.interactive = true;
+    let run = runtime.start(run_request);
+    let run_id = run.run_id.clone();
+    let control = run.control();
+    sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
+        .await;
+    let interaction = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::InteractionRequested { request } => Some(request),
+            _ => None,
+        })
+        .expect("approval request");
+    *tools.revision.lock().unwrap() = Some("sha256:after".to_owned());
+    control
+        .resolve_interaction(
+            CommandId::from("approve-stale-command"),
+            interaction.interaction_id,
+            UserInteractionResponse::Approved,
+        )
+        .await
+        .expect("approval response is durable");
+
+    let outcome = run.wait().await.unwrap();
+    assert!(
+        matches!(
+            outcome.terminal,
+            TerminalState::Completed { ref message, .. }
+                if message == "stale authorization rejected"
+        ),
+        "unexpected terminal: {:?}",
+        outcome.terminal
+    );
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let replay = store.load(&run_id).await.unwrap().unwrap();
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+    );
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+            if outcome.failure_code == Some(ToolFailureCode::AuthorizationStale)
+                && outcome.side_effect == ToolSideEffectStatus::NotApplied
+    )));
 }
 
 #[tokio::test]
@@ -5151,20 +5392,31 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
     )
     .await;
     let operation_id = OperationId::from("aba-write-operation");
+    let write_invocation = ToolInvocation {
+        run_id: run_id.clone(),
+        call_id: "aba-write".to_owned(),
+        name: "write".to_owned(),
+        arguments: write_arguments,
+    };
     append_event(
         &store,
         &created.lease,
         "aba-write-prepared",
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
-            invocation: ToolInvocation {
-                run_id: run_id.clone(),
-                call_id: "aba-write".to_owned(),
-                name: "write".to_owned(),
-                arguments: write_arguments,
-            },
+            invocation: write_invocation.clone(),
             workspace_access: WorkspaceAccess::MayWrite,
         },
+    )
+    .await;
+    append_authorization(
+        &store,
+        &created.lease,
+        "aba-write-authorized",
+        operation_id.clone(),
+        &write_invocation,
+        ToolAuthorizationDisposition::Allow,
+        None,
     )
     .await;
     append_event(
@@ -6364,6 +6616,12 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
         }],
     )
     .await;
+    let approval_invocation = ToolInvocation {
+        run_id: approval_run.lease.run_id.clone(),
+        call_id: "approval-call".to_owned(),
+        name: "approval".to_owned(),
+        arguments: approval_arguments,
+    };
     append_event(
         &approval_store,
         &approval_run.lease,
@@ -6371,12 +6629,7 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
             workspace_access: WorkspaceAccess::ReadOnly,
-            invocation: ToolInvocation {
-                run_id: approval_run.lease.run_id.clone(),
-                call_id: "approval-call".to_owned(),
-                name: "approval".to_owned(),
-                arguments: approval_arguments,
-            },
+            invocation: approval_invocation.clone(),
         },
     )
     .await;
@@ -6385,6 +6638,16 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
         description: "确认参数".to_owned(),
         risk: ApprovalRisk::Elevated,
     };
+    append_authorization(
+        &approval_store,
+        &approval_run.lease,
+        "approval-authorized",
+        operation_id.clone(),
+        &approval_invocation,
+        ToolAuthorizationDisposition::Ask,
+        Some(prompt.clone()),
+    )
+    .await;
     let mismatched_request = UserInteractionRequest {
         interaction_id: InteractionId::from("approval-interaction"),
         operation_id: operation_id.clone(),
@@ -7026,9 +7289,19 @@ async fn tool_commit_atomically_replays_typed_outcome_and_transcript() {
         "tool-prepared",
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
-            invocation,
+            invocation: invocation.clone(),
             workspace_access: WorkspaceAccess::ReadOnly,
         },
+    )
+    .await;
+    append_authorization(
+        &store,
+        &created.lease,
+        "tool-authorized",
+        operation_id.clone(),
+        &invocation,
+        ToolAuthorizationDisposition::Allow,
+        None,
     )
     .await;
     append_event(
@@ -7767,6 +8040,12 @@ async fn pending_cancel_does_not_hide_in_flight_tool_recovery_ambiguity() {
     )
     .await;
     let operation_id = OperationId("ambiguous-tool-operation".into());
+    let ambiguous_invocation = ToolInvocation {
+        run_id: created.lease.run_id.clone(),
+        call_id: tool_call.id,
+        name: tool_call.name,
+        arguments: tool_call.arguments,
+    };
     append_event(
         &store,
         &created.lease,
@@ -7774,13 +8053,18 @@ async fn pending_cancel_does_not_hide_in_flight_tool_recovery_ambiguity() {
         RuntimeEventKind::ToolPrepared {
             operation_id: operation_id.clone(),
             workspace_access: WorkspaceAccess::ReadOnly,
-            invocation: ToolInvocation {
-                run_id: created.lease.run_id.clone(),
-                call_id: tool_call.id,
-                name: tool_call.name,
-                arguments: tool_call.arguments,
-            },
+            invocation: ambiguous_invocation.clone(),
         },
+    )
+    .await;
+    append_authorization(
+        &store,
+        &created.lease,
+        "ambiguous-tool-authorized",
+        operation_id.clone(),
+        &ambiguous_invocation,
+        ToolAuthorizationDisposition::Allow,
+        None,
     )
     .await;
     append_event(

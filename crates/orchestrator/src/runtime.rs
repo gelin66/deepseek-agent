@@ -945,7 +945,7 @@ mod tests {
 
     use dse_runtime::{
         AgentTaskId, ContextPolicy, ModelRouteAudit, ModelRouteProfile, ReasoningEffort, RunId,
-        RunLimits, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
+        RunLimits, RunPermissionMode, TaskContract, TaskDefinition, TaskGenerationId, ToolPolicy,
     };
     use dse_tools::shell::ShellPolicy;
     use tempfile::TempDir;
@@ -1595,7 +1595,7 @@ mod tests {
         let fixture = RepositoryFixture::new();
         let root_tools = ProductionToolConfig::new(&fixture.root)
             .with_shell_policy(ShellPolicy::Full)
-            .with_auto_approve(true);
+            .with_permission_mode(RunPermissionMode::Agent);
         let orchestrator =
             ProductionAgentOrchestrator::new(&fixture.root, &fixture.managed, root_tools.clone())
                 .expect("production orchestrator");

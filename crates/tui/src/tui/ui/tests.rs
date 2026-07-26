@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::*;
+use dse_protocol::agent_runtime::RunPermissionMode;
 use ratatui::layout::Rect;
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -488,17 +489,19 @@ fn canonical_start_command_projects_exact_official_model() {
 }
 
 #[test]
-fn canonical_start_command_projects_exact_approval_behavior() {
+fn canonical_start_command_projects_all_permission_modes() {
     let config = Config::default();
     let mut app = create_test_app();
 
-    app.approval_mode = crate::tui::approval::ApprovalMode::Ask;
-    let ask = canonical_start_command(&app, &config, "检查项目".to_owned());
-    assert!(!ask.controls.auto_approve);
-
-    app.approval_mode = crate::tui::approval::ApprovalMode::AutoApprove;
-    let auto = canonical_start_command(&app, &config, "检查项目".to_owned());
-    assert!(auto.controls.auto_approve);
+    for mode in [
+        RunPermissionMode::Ask,
+        RunPermissionMode::Agent,
+        RunPermissionMode::FullAccess,
+    ] {
+        app.permission_mode = mode;
+        let command = canonical_start_command(&app, &config, "检查项目".to_owned());
+        assert_eq!(command.controls.permission_mode, mode);
+    }
 }
 
 #[test]

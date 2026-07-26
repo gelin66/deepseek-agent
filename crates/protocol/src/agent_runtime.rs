@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 19;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 19;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 20;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 20;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -609,7 +609,30 @@ pub struct ContextProjection {
 
 /// Immutable host facts required to reopen a run without silently changing
 /// its workspace or model-visible tool catalog.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPermissionMode {
+    #[default]
+    Ask,
+    Agent,
+    FullAccess,
+}
+
+impl RunPermissionMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Agent => "agent",
+            Self::FullAccess => "full_access",
+        }
+    }
+}
+
+/// Immutable host facts required to reopen a run without silently changing
+/// its workspace, permission policy, or model-visible tool catalog.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunEnvironment {
     /// Canonical absolute workspace path. Empty is reserved for unit tests and
     /// embedders that do not expose a filesystem.
@@ -620,16 +643,12 @@ pub struct RunEnvironment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_fingerprint_sha256: Option<String>,
     pub write_execution_mode: WriteExecutionMode,
-    pub auto_approve: bool,
-    pub trust_mode: bool,
-    pub allow_sandbox_elevation: bool,
+    pub permission_mode: RunPermissionMode,
     /// Whether this client can answer durable runtime interaction requests.
     /// Headless callers keep this disabled so approval-gated tools fail closed
     /// instead of leaving a run waiting for a response that can never arrive.
     #[serde(default)]
     pub interactive: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -824,6 +843,13 @@ pub struct ToolInvocation {
     pub arguments: ToolArguments,
 }
 
+impl ToolInvocation {
+    #[must_use]
+    pub fn arguments_sha256(&self) -> String {
+        format_prefixed_sha256(self.arguments.raw.as_bytes())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolInvocationStatus {
@@ -882,6 +908,7 @@ pub enum ToolFailureCode {
     MalformedArguments,
     SchemaValidation,
     InvocationRejected,
+    AuthorizationStale,
     UnknownTool,
     MissingField,
     InvalidField,
@@ -902,6 +929,7 @@ impl ToolFailureCode {
             Self::MalformedArguments => "malformed_arguments",
             Self::SchemaValidation => "schema_validation",
             Self::InvocationRejected => "invocation_rejected",
+            Self::AuthorizationStale => "authorization_stale",
             Self::UnknownTool => "unknown_tool",
             Self::MissingField => "missing_field",
             Self::InvalidField => "invalid_field",
@@ -1256,6 +1284,9 @@ impl ToolOutcome {
                 ToolRetryDisposition::AfterCorrection => "根据 Host 拒绝原因修正调用后再试。",
                 _ => "当前 Host 不接受该调用；不要原样重复。",
             },
+            ToolFailureCode::AuthorizationStale => {
+                "工作区在授权后发生变化；先读取最新状态，再重新提出调用。"
+            }
             ToolFailureCode::WorkspacePrecondition | ToolFailureCode::StaleRead => {
                 "先重新读取相关文件或工作区状态，再根据最新内容修正调用。"
             }
@@ -1331,6 +1362,7 @@ impl ToolOutcome {
                 ToolFailureCode::MalformedArguments
                     | ToolFailureCode::SchemaValidation
                     | ToolFailureCode::InvocationRejected
+                    | ToolFailureCode::AuthorizationStale
                     | ToolFailureCode::UnknownTool
                     | ToolFailureCode::MissingField
                     | ToolFailureCode::PatchParse
@@ -2533,6 +2565,69 @@ pub struct ToolApprovalPrompt {
     pub risk: ApprovalRisk,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAuthorizationDisposition {
+    Allow,
+    Ask,
+    Deny,
+}
+
+/// Host-owned authorization fact for one exact invocation.
+///
+/// The decision is committed before any approval interaction or tool side
+/// effect. It binds the active Run permission policy, exact arguments and
+/// workspace revision so crash/reopen cannot silently re-evaluate a different
+/// invocation under current process state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAuthorizationDecision {
+    pub mode: RunPermissionMode,
+    pub tool_name: String,
+    pub arguments_sha256: String,
+    pub workspace_state: WorkspaceState,
+    pub disposition: ToolAuthorizationDisposition,
+    pub risk: ApprovalRisk,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_rule: Option<String>,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<ToolApprovalPrompt>,
+}
+
+impl ToolAuthorizationDecision {
+    pub fn validate_for(
+        &self,
+        invocation: &ToolInvocation,
+        workspace_state: &WorkspaceState,
+    ) -> Result<(), String> {
+        require_agent_text("authorization tool name", &self.tool_name)?;
+        require_agent_text("authorization reason", &self.reason)?;
+        self.workspace_state.validate()?;
+        if self.tool_name != invocation.name
+            || self.arguments_sha256 != invocation.arguments_sha256()
+            || &self.workspace_state != workspace_state
+        {
+            return Err(
+                "tool authorization does not bind the exact invocation and workspace revision"
+                    .to_owned(),
+            );
+        }
+        match (self.disposition, self.prompt.as_ref()) {
+            (ToolAuthorizationDisposition::Ask, Some(_))
+            | (ToolAuthorizationDisposition::Allow | ToolAuthorizationDisposition::Deny, None) => {
+                Ok(())
+            }
+            (ToolAuthorizationDisposition::Ask, None) => {
+                Err("ask authorization requires a durable approval prompt".to_owned())
+            }
+            (ToolAuthorizationDisposition::Allow | ToolAuthorizationDisposition::Deny, Some(_)) => {
+                Err("non-ask authorization cannot carry an approval prompt".to_owned())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserInputOption {
@@ -2855,6 +2950,10 @@ pub enum RuntimeEventKind {
         operation_id: OperationId,
         invocation: ToolInvocation,
         workspace_access: WorkspaceAccess,
+    },
+    ToolAuthorizationCommitted {
+        operation_id: OperationId,
+        decision: ToolAuthorizationDecision,
     },
     ToolExecutionStarted {
         operation_id: OperationId,
@@ -3388,8 +3487,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 19);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 19);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 20);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 20);
     }
 
     #[test]
@@ -4149,6 +4248,16 @@ mod tests {
         value["model_event_idle_ms"] = Value::Null;
         let disabled: RunLimits = serde_json::from_value(value).unwrap();
         assert_eq!(disabled.model_event_idle_ms, None);
+    }
+
+    #[test]
+    fn run_environment_rejects_retired_permission_tuple_fields() {
+        let mut value = serde_json::to_value(RunEnvironment::default()).unwrap();
+        value["auto_approve"] = Value::Bool(true);
+        assert!(
+            serde_json::from_value::<RunEnvironment>(value).is_err(),
+            "RuntimeEvent v20 must not retain a hidden legacy permission reader"
+        );
     }
 
     #[test]

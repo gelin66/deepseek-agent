@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 25;
+const STATE_SCHEMA_VERSION: u32 = 26;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -322,6 +322,23 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-DSE canonical run state")?;
         }
+        if user_version < 26 {
+            // RuntimeEvent v20 replaces the bool/string permission tuple with
+            // one RunPermissionMode and a committed per-invocation
+            // authorization fact. No old materialized Run or pending Start is
+            // exactly equivalent: the new Ask mode deliberately allows
+            // ordinary workspace work while the old `auto_approve=false`
+            // prompted for it, and old `auto_approve=true` did not prove the
+            // Agent or FullAccess external/sandbox semantics. Retire both
+            // tables atomically rather than guessing or retaining a
+            // compatibility reader.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                tx.execute("DELETE FROM agent_run_creations", [])
+                    .context("failed to retire pre-permission-policy creation state")?;
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-permission-policy canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -510,6 +527,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 25)
                 .context("failed to commit DSE identity state cutover")?;
             user_version = 25;
+        }
+        if user_version < 26 {
+            tx.pragma_update(None, "user_version", 26)
+                .context("failed to commit typed permission policy state cutover")?;
+            user_version = 26;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

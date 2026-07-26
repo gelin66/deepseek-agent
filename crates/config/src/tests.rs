@@ -305,16 +305,14 @@ fn m8a_project_merge_only_applies_non_model_policy() {
         api_key: Some("global-key".to_string()),
         base_url: Some(DEFAULT_DEEPSEEK_BASE_URL.to_string()),
         default_text_model: Some("deepseek-v4-pro".to_string()),
-        approval_policy: Some("auto".to_string()),
-        sandbox_mode: Some("danger-full-access".to_string()),
+        output_mode: Some("text".to_string()),
         ..ConfigToml::default()
     };
     let project = ConfigToml {
         api_key: Some("project-key".to_string()),
         base_url: Some("http://127.0.0.1:1".to_string()),
         default_text_model: Some("deepseek-v4-flash".to_string()),
-        approval_policy: Some("on-request".to_string()),
-        sandbox_mode: Some("read-only".to_string()),
+        output_mode: Some("stream-json".to_string()),
         ..ConfigToml::default()
     };
     global.merge_project_overrides(project);
@@ -323,14 +321,17 @@ fn m8a_project_merge_only_applies_non_model_policy() {
         global.default_text_model.as_deref(),
         Some("deepseek-v4-pro")
     );
-    assert_eq!(global.approval_policy.as_deref(), Some("on-request"));
-    assert_eq!(global.sandbox_mode.as_deref(), Some("read-only"));
+    assert_eq!(global.output_mode.as_deref(), Some("stream-json"));
 }
 
 #[test]
 fn m8a_config_commands_reject_retired_keys_and_redact_secrets() {
     let mut config = ConfigToml::default();
     assert!(config.set_value("provider", "deepseek").is_err());
+    assert!(config.set_value("approval_policy", "auto").is_err());
+    assert!(config.set_value("sandbox_mode", "workspace-write").is_err());
+    assert!(config.set_value("permission_mode", "full_access").is_err());
+    assert!(config.set_value("permissions.mode", "custom").is_err());
     assert!(
         config
             .set_value("providers.deepseek.api_key", "secret")

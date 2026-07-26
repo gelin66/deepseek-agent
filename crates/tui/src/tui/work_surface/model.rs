@@ -1,10 +1,8 @@
 use crate::tui::app::App;
 use dse_localization::MessageId;
+use dse_protocol::agent_runtime::RunPermissionMode;
 
-use crate::tui::{
-    approval::ApprovalMode,
-    run_presentation::{RunPresentationPhase, VerificationPresentation},
-};
+use crate::tui::run_presentation::{RunPresentationPhase, VerificationPresentation};
 
 /// Persisted work-surface placement. Bottom is deliberately absent: the
 /// composer and phase footer own the shell's lower edge.
@@ -157,14 +155,14 @@ fn root_rows(app: &App, live: &super::live_projection::LiveWorkProjection) -> Ve
         VerificationPresentation::NotStarted => "○",
     };
 
-    let permission = if app
+    let permission = match app
         .run_presentation
-        .auto_approve()
-        .unwrap_or(matches!(app.approval_mode, ApprovalMode::AutoApprove))
+        .permission_mode()
+        .unwrap_or(app.permission_mode)
     {
-        app.tr(MessageId::ChipPermissionAutoApprove).into_owned()
-    } else {
-        app.tr(MessageId::ChipPermissionAsk).into_owned()
+        RunPermissionMode::Ask => app.tr(MessageId::ChipPermissionAsk).into_owned(),
+        RunPermissionMode::Agent => app.tr(MessageId::ChipPermissionAgent).into_owned(),
+        RunPermissionMode::FullAccess => app.tr(MessageId::ChipPermissionFullAccess).into_owned(),
     };
 
     vec![

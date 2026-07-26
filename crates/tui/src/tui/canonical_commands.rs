@@ -10,6 +10,7 @@ use dse_localization::{MessageId, tr};
 pub(crate) enum CanonicalSlashCommand {
     Help,
     Cost,
+    Permissions,
     Exit,
 }
 
@@ -33,6 +34,12 @@ const COMMANDS: &[CanonicalSlashCommandInfo] = &[
         name: "cost",
         aliases: &[],
         description_id: MessageId::CmdCostDescription,
+    },
+    CanonicalSlashCommandInfo {
+        command: CanonicalSlashCommand::Permissions,
+        name: "permissions",
+        aliases: &[],
+        description_id: MessageId::CmdPermissionsDescription,
     },
     CanonicalSlashCommandInfo {
         command: CanonicalSlashCommand::Exit,

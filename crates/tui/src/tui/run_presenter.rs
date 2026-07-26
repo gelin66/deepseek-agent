@@ -163,6 +163,7 @@ fn present_canonical_event(
             );
             None
         }
+        RuntimeEventKind::ToolAuthorizationCommitted { .. } => None,
         RuntimeEventKind::ToolExecutionStarted { operation_id } => {
             app.status_message = Some(
                 tr_in(language, MessageId::RunToolExecuting)

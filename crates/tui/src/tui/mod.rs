@@ -28,6 +28,7 @@ pub mod onboarding;
 pub mod osc8;
 pub mod output_rows_cache;
 pub mod pager;
+pub mod permission_selector;
 pub mod phase_strip;
 pub mod run_client;
 pub mod run_presentation;

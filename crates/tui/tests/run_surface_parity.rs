@@ -29,10 +29,11 @@ use dse_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AgentResultDetails,
     AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ContextPolicy,
     ModelAccounting, ModelRouteAudit, ModelRouteProfile, OperationId, ReasoningEffort, RunId,
-    RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, TerminalState, ToolArtifact,
-    ToolArtifactStatus, ToolPolicy, Usage, WriterArtifactState, WriterCleanupMode,
-    WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
-    WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState, writer_path_set_sha256,
+    RunPermissionMode, RunRequest, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
+    TerminalState, ToolArtifact, ToolArtifactStatus, ToolPolicy, Usage, WriterArtifactState,
+    WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan,
+    WriterCleanupResult, WriterCleanupScope, WriterIntegrationStatus, WriterRemovalState,
+    writer_path_set_sha256,
 };
 use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -398,8 +399,7 @@ fn production_application(
         },
     };
     let tools = ProductionToolConfig::new(workspace)
-        .with_trust_mode(false)
-        .with_auto_approve(true)
+        .with_permission_mode(RunPermissionMode::Agent)
         .with_shell_policy(ShellPolicy::Full);
     let prompt = ProductionPromptConfig {
         preferences: PromptPreferences::default(),
@@ -436,11 +436,8 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
         limits: exec.limits,
         controls: RunProductControls {
             write_execution_mode: Default::default(),
-            auto_approve: true,
-            trust_mode: false,
-            allow_sandbox_elevation: false,
+            permission_mode: RunPermissionMode::Agent,
             interactive: false,
-            sandbox: None,
         },
     }
 }
@@ -479,10 +476,10 @@ fn assert_exec_command_contract(request: &RunRequest, workspace: &Path) {
     assert_eq!(request.limits.max_model_requests, 4);
     assert_eq!(request.limits.max_depth, 0);
     assert_eq!(request.limits.max_concurrent_children, 0);
-    assert!(request.environment.auto_approve);
-    assert!(!request.environment.trust_mode);
-    assert!(!request.environment.allow_sandbox_elevation);
-    assert_eq!(request.environment.sandbox, None);
+    assert_eq!(
+        request.environment.permission_mode,
+        RunPermissionMode::Agent
+    );
 }
 
 fn transport_options() -> AppServerOptions {
@@ -743,6 +740,7 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             RuntimeEventKind::ContentDelta { .. } => "content_delta",
             RuntimeEventKind::ReasoningDelta { .. } => "reasoning_delta",
             RuntimeEventKind::ToolPrepared { .. } => "tool_prepared",
+            RuntimeEventKind::ToolAuthorizationCommitted { .. } => "tool_authorization_committed",
             RuntimeEventKind::ToolExecutionStarted { .. } => "tool_execution_started",
             RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. } => {
                 assert_eq!(name, "read_file");
@@ -786,6 +784,7 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             "reasoning_delta",
             "model_response_committed",
             "tool_prepared",
+            "tool_authorization_committed",
             "tool_execution_started",
             "tool_outcome_committed",
             "workspace_observed",

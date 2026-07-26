@@ -16,7 +16,7 @@
 //!   advisory and is never parsed as enforceable runtime policy.
 //! - **Autonomy is guidance, not control.** [`AutonomyPreference`] renders as a
 //!   recommendation explicitly labeled as not changing approval policy, sandbox,
-//!   shell, network, trust, MCP permission, or automatic approval. This module has no
+//!   shell, network, trust, MCP permission, or frozen Run permission. This module has no
 //!   path that mutates runtime config; applying posture is owned by #3406.
 //! - **Full Markdown override stays expert-only.** This module models the
 //!   guided structured form; the `prompts/constitution.md` escape hatch is

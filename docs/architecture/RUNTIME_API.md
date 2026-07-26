@@ -149,7 +149,7 @@ resolve_interaction
 - 可省略模型以使用 fixed actor profile，或显式指定官方 Pro/Flash；不存在 Auto 模式；
 - reasoning、streaming、输出和请求预算；
 - `ToolPolicy`、`RunLimits`；
-- 本地 trust、approval 和 sandbox posture；
+- 唯一 `controls.permission_mode` 与 write execution mode；
 - `controls.interactive`：允许 Runtime 发布并等待 durable approval / user-input 交互。
 
 `interactive` 默认是 `false`。`interactive=true` 表示客户端承诺持续消费并解决 durable
@@ -164,7 +164,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 11,
+  "schema_version": 13,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -192,9 +192,8 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
       "denied": []
     },
     "controls": {
-      "auto_approve": false,
-      "trust_mode": false,
-      "allow_sandbox_elevation": false,
+      "permission_mode": "ask",
+      "write_execution_mode": "root",
       "interactive": true
     }
   }
@@ -209,6 +208,11 @@ argv、workspace 内 cwd、environment 和 timeout 都是契约的一部分，�
 description 会以确定性的中文 user turn 进入 canonical transcript；精确 verifier 参数仍是
 Host typed fact，不复制进 prompt。默认 Host acceptance 只表示 Runtime policy 接受完成
 候选，不等于评测意义上的 `verified_success`。
+
+`permission_mode` 只接受 `ask`、`agent`、`full_access`。它在 Run 创建时冻结，并进入
+execution fingerprint；每次工具调用的 Host authorization decision 还绑定 exact
+tool name、arguments digest 和 workspace revision。旧 bool/trust/sandbox/elevation
+字段不是兼容输入。
 
 ### continue 与 list
 
@@ -419,7 +423,7 @@ prepared/in-flight/failed 生命周期。事件持久化精确 source projection
 
 RuntimeEvent v9 继续收缩协议：删除手动/threshold trigger、特殊 compaction ID、独立
 compaction purpose 和 compaction terminal。v10 当时直接替代 v9；当前 writer 与
-reducer/Store reader 只接受 v16，不保留旧 event schema 兼容路径。
+reducer/Store reader 只接受 v20，不保留旧 event schema 兼容路径。
 
 RuntimeEvent v10 建立唯一 Writer lifecycle：
 
@@ -454,31 +458,40 @@ fixed-profile 普通 read-only child 为 Flash/high，Writer 为 Pro/high，type
 recheck/rework 为 Pro/max；显式 Pro/Flash/reasoning 由 child 精确继承，一个 Run 内
 selection immutable。
 
+RuntimeEvent v19 完成 DSE active identity cutover。RuntimeEvent v20 新增
+`ToolAuthorizationCommitted`：每个可执行工具在 start 前必须先持久化 Host 决策；决策
+绑定冻结的 `RunPermissionMode`、exact tool/arguments digest、workspace revision、
+matched rule、risk 和 allow/ask/deny disposition。Ask 只有 exact durable interaction
+resolve 后才能 start；deny 永不 start；reopen 复用已提交 decision，不能重新匹配当前
+配置或重复副作用。
+
 M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
 持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
 `strict_tools` policy。DeepSeek surface 与 fallback reason 不重复写入 State；SQLite 重开后
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v12 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+Run API v13 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v24 复用 canonical
+事件总线或兼容 alias。State schema v26 复用 canonical
 event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
 v22 再退役缺少 route audit 的 materialized run，v23 物理删除旧 `threads` metadata 表。
 v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 materialized run，只
-保留能按 v18 command 直接反序列化的 pending Start。旧 `session_index.jsonl`
+保留能按 v18 command 直接反序列化的 pending Start；v25 完成 DSE identity retirement；
+v26 不猜旧 bool/trust/sandbox/elevation tuple，直接退休无法无损映射为三档 permission
+contract 的旧 materialized Run 与 pending Start。旧 `session_index.jsonl`
 writer/reader 已删除；没有 compatibility reader 或 dual write。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v24（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v26（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved
   run ID，不能再生成第二个 run。fixed route 在创建前没有 classifier 网络请求或未知
-  计费窗口，v18-safe pending Start 可恢复 exact reserved run。
+  计费窗口；v20 创建的新 pending Start 可恢复 exact reserved run。
 - `start`/`resume` 只有在 canonical Store 已持久创建或取得 lease 后才确认。
 - 同进程 active run 通过一个 process-local control registry 投递 steer、interrupt、cancel 和
   interaction response；registry 不是持久事实，命令回执和结果事件才是持久事实。

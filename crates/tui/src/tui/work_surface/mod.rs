@@ -109,7 +109,7 @@ mod tests {
             "变更 · 尚未确认",
             "验证 · 未开始",
             "Agent · 0/0",
-            "权限 · 需要审批",
+            "权限 · 请求批准",
             "RunStore · 可恢复",
         ] {
             assert!(text.contains(fact), "missing {fact:?}: {text}");

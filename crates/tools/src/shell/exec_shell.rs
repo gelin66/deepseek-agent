@@ -1,9 +1,8 @@
 //! Production `exec_shell` operation.
 //!
-//! The TUI remains responsible for product-surface schema, approval prompts,
-//! and legacy exec-policy loading. Command execution and its canonical
-//! structured outcome live here so every caller shares one process, sandbox,
-//! cancellation, timeout, and output contract.
+//! The canonical Runtime resolves durable approval before this operation.
+//! Command execution and its structured outcome live here so every caller
+//! shares one process, sandbox, cancellation, timeout, and output contract.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -42,9 +41,8 @@ available in the active environment. Install the declared build requirements fir
 /// this operation executes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecShellPolicyDecision {
-    Allow,
+    Allow(String),
     Deny(String),
-    AskUser(String),
 }
 
 /// Narrow composition port for behavior that intentionally remains outside
@@ -201,7 +199,7 @@ pub fn python_build_dependency_hint(command: &str, result: &ShellResult) -> Opti
     (pythonish_command || pythonish_output).then_some(PYTHON_BUILD_DEPENDENCY_HINT)
 }
 
-fn command_likely_needs_network(command: &str) -> bool {
+pub(crate) fn command_likely_needs_network(command: &str) -> bool {
     let normalized = command.to_ascii_lowercase();
     let Some(primary) = extract_primary_command(&normalized) else {
         return false;
@@ -476,24 +474,33 @@ async fn wait_for_managed_foreground(
     }
 }
 
-/// Reject policy- or safety-denied shell input before the Runtime records an
-/// execution start. Returning `None` means the command may proceed; it does
-/// not execute or otherwise mutate the workspace.
+/// Reject malformed input or a disabled Shell capability before Runtime
+/// authorization. Execpolicy and Host risk belong exclusively to
+/// `ToolExecutor::authorize`, so every allow/ask/deny decision becomes a
+/// durable canonical fact.
 pub(crate) fn preflight_exec_shell(
     input: &Value,
-    context: &ProductionToolContext,
     options: &ExecShellOptions,
-    host: &dyn ExecShellHost,
 ) -> Result<Option<ToolOutcome>, ToolError> {
-    match evaluate_exec_shell_admission(input, context, options, host)? {
-        ExecShellAdmission::Ready { .. } => Ok(None),
-        ExecShellAdmission::Rejected(outcome) => Ok(Some(*outcome)),
+    required_str(input, "command")?;
+    match options.shell_policy {
+        ShellPolicy::None => Ok(Some(ToolOutcome::rejected(
+            "当前权限配置已禁用 Shell 工具。",
+            ToolRetryDisposition::NotRetryable,
+        ))),
+        ShellPolicy::ReadOnly if !exec_shell_input_is_parallel_readonly(input) => {
+            Ok(Some(ToolOutcome::rejected(
+                "只读 Shell 策略已阻止该命令。请改用非修改型检查命令，或切换到可写模式后重试。",
+                ToolRetryDisposition::NotRetryable,
+            )))
+        }
+        ShellPolicy::ReadOnly | ShellPolicy::Full => Ok(None),
     }
 }
 
 fn evaluate_exec_shell_admission(
     input: &Value,
-    context: &ProductionToolContext,
+    _context: &ProductionToolContext,
     options: &ExecShellOptions,
     host: &dyn ExecShellHost,
 ) -> Result<ExecShellAdmission, ToolError> {
@@ -534,7 +541,7 @@ fn evaluate_exec_shell_admission(
     }
 
     let safety = analyze_command(command);
-    if !context.auto_approve() && safety.level == SafetyLevel::Dangerous {
+    if safety.level == SafetyLevel::Dangerous {
         let reasons = safety.reasons.join("; ");
         let suggestions = if safety.suggestions.is_empty() {
             String::new()
@@ -768,13 +775,12 @@ pub(crate) async fn execute_exec_shell(
                 "safety_level": format!("{:?}", safety_level),
                 "canceled": was_cancelled,
                 "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
-                    ExecShellPolicyDecision::Allow => json!({"decision": "allow"}),
+                    ExecShellPolicyDecision::Allow(rule) => json!({
+                        "decision": "allow",
+                        "rule": rule,
+                    }),
                     ExecShellPolicyDecision::Deny(reason) => json!({
                         "decision": "deny",
-                        "reason": reason,
-                    }),
-                    ExecShellPolicyDecision::AskUser(reason) => json!({
-                        "decision": "ask_user",
                         "reason": reason,
                     }),
                 }),

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use dse_protocol::agent_runtime::RunPermissionMode;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
@@ -38,16 +39,15 @@ enum WritePathGuard {
 pub struct ProductionToolContext {
     /// Workspace root used to resolve relative tool paths.
     workspace: PathBuf,
-    /// Allow paths outside the workspace without validation.
-    trust_mode: bool,
-    /// Explicit external roots that tools may access outside the workspace.
-    trusted_external_paths: Vec<PathBuf>,
+    /// Allow paths outside the workspace. This is derived from the frozen Run
+    /// permission mode and is forcibly disabled for isolated Writers.
+    allow_external_paths: bool,
     /// Allow workspace symlinks to resolve to targets outside the workspace.
     follow_symlinks: bool,
     /// Cancellation signal for the active tool execution, when present.
     cancel_token: Option<CancellationToken>,
-    /// Whether approval checks may be skipped for eligible tool operations.
-    auto_approve: bool,
+    /// Frozen permission mode for the active Run.
+    permission_mode: RunPermissionMode,
     /// Additional boundary for built-in filesystem mutations.
     write_path_guard: WritePathGuard,
     file_read_tracker: SharedFileReadTracker,
@@ -59,11 +59,10 @@ impl ProductionToolContext {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
-            trust_mode: false,
-            trusted_external_paths: Vec::new(),
+            allow_external_paths: false,
             follow_symlinks: false,
             cancel_token: None,
-            auto_approve: false,
+            permission_mode: RunPermissionMode::Ask,
             write_path_guard: WritePathGuard::Ordinary,
             file_read_tracker: Arc::new(Mutex::new(FileReadTracker::default())),
         }
@@ -75,16 +74,10 @@ impl ProductionToolContext {
         &self.workspace
     }
 
-    /// Whether unrestricted paths are enabled.
+    /// Whether external paths are enabled for this executor snapshot.
     #[must_use]
-    pub fn trust_mode(&self) -> bool {
-        self.trust_mode
-    }
-
-    /// Explicit external roots trusted by the user.
-    #[must_use]
-    pub fn trusted_external_paths(&self) -> &[PathBuf] {
-        &self.trusted_external_paths
+    pub fn allows_external_paths(&self) -> bool {
+        self.allow_external_paths
     }
 
     /// Whether workspace symlinks may resolve outside the workspace.
@@ -99,23 +92,16 @@ impl ProductionToolContext {
         self.cancel_token.as_ref()
     }
 
-    /// Whether eligible operations may bypass approval prompts.
+    /// Frozen permission mode for this context snapshot.
     #[must_use]
-    pub fn auto_approve(&self) -> bool {
-        self.auto_approve
+    pub fn permission_mode(&self) -> RunPermissionMode {
+        self.permission_mode
     }
 
-    /// Set unrestricted path access for this context snapshot.
+    /// Bind the Host-derived external-path authority for this snapshot.
     #[must_use]
-    pub fn with_trust_mode(mut self, trust_mode: bool) -> Self {
-        self.trust_mode = trust_mode;
-        self
-    }
-
-    /// Set the user-approved external roots for this context snapshot.
-    #[must_use]
-    pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.trusted_external_paths = paths;
+    pub fn with_external_path_authority(mut self, allow: bool) -> Self {
+        self.allow_external_paths = allow;
         self
     }
 
@@ -126,10 +112,10 @@ impl ProductionToolContext {
         self
     }
 
-    /// Set the approval posture for this context snapshot.
+    /// Bind the frozen Run permission mode to this context snapshot.
     #[must_use]
-    pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
-        self.auto_approve = auto_approve;
+    pub fn with_permission_mode(mut self, permission_mode: RunPermissionMode) -> Self {
+        self.permission_mode = permission_mode;
         self
     }
 
@@ -245,7 +231,7 @@ impl ProductionToolContext {
             self.workspace.join(raw)
         };
 
-        if self.trust_mode {
+        if self.allow_external_paths {
             return Ok(candidate.canonicalize().unwrap_or(candidate));
         }
 
@@ -277,10 +263,7 @@ impl ProductionToolContext {
         if !candidate_canonical.starts_with(&workspace_normalized) {
             let workspace_plain = normalize_path(&self.workspace);
             let candidate_normalized = normalize_path(&candidate);
-            if !candidate_normalized.starts_with(&workspace_plain)
-                && !self.is_trusted_external_path(&candidate_canonical)
-                && !self.is_trusted_external_path(&candidate_normalized)
-            {
+            if !candidate_normalized.starts_with(&workspace_plain) {
                 return Err(ToolError::PathEscape {
                     path: candidate_canonical,
                 });
@@ -296,9 +279,7 @@ impl ProductionToolContext {
                 ))
             })?;
 
-            if !canonical.starts_with(&workspace_canonical)
-                && !self.is_trusted_external_path(&canonical)
-            {
+            if !canonical.starts_with(&workspace_canonical) {
                 return Err(ToolError::PathEscape { path: canonical });
             }
 
@@ -306,6 +287,19 @@ impl ProductionToolContext {
         }
 
         self.resolve_nonexistent_path(candidate, &workspace_canonical)
+    }
+
+    /// Conservatively classify one path argument against the canonical
+    /// workspace without applying the mode-derived trust bypass.
+    #[must_use]
+    pub(crate) fn path_is_external(&self, raw: &str) -> bool {
+        let workspace = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_path(&self.workspace));
+        self.resolve_path(raw)
+            .map(|resolved| !normalize_path(&resolved).starts_with(workspace))
+            .unwrap_or(true)
     }
 
     /// Resolve a built-in tool mutation target and enforce its write boundary.
@@ -393,18 +387,11 @@ impl ProductionToolContext {
 
         if !canonical.starts_with(workspace_canonical)
             && !canonical.starts_with(&workspace_normalized)
-            && !self.is_trusted_external_path(&canonical)
         {
             return Err(ToolError::PathEscape { path: canonical });
         }
 
         Ok(canonical)
-    }
-
-    fn is_trusted_external_path(&self, path: &Path) -> bool {
-        self.trusted_external_paths
-            .iter()
-            .any(|trusted| path.starts_with(trusted))
     }
 }
 
@@ -513,22 +500,20 @@ mod tests {
     }
 
     #[test]
-    fn trust_modes_allow_explicit_external_paths() {
+    fn host_derived_mode_is_the_only_external_path_authority() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let outside_file = outside.path().join("notes.md");
         fs::write(&outside_file, "notes").expect("write outside file");
 
-        let explicit = ProductionToolContext::new(workspace.path())
-            .with_trusted_external_paths(vec![outside.path().canonicalize().expect("canonical")]);
-        assert_eq!(
-            explicit
-                .resolve_path(outside_file.to_str().expect("utf-8 path"))
-                .expect("trusted path"),
-            outside_file.canonicalize().expect("canonical file")
-        );
+        let restrictive = ProductionToolContext::new(workspace.path());
+        assert!(matches!(
+            restrictive.resolve_path(outside_file.to_str().expect("utf-8 path")),
+            Err(ToolError::PathEscape { .. })
+        ));
 
-        let unrestricted = ProductionToolContext::new(workspace.path()).with_trust_mode(true);
+        let unrestricted =
+            ProductionToolContext::new(workspace.path()).with_external_path_authority(true);
         assert!(
             unrestricted
                 .resolve_path(outside.path().to_str().unwrap())
@@ -553,6 +538,7 @@ mod tests {
         ));
 
         let following = restrictive.with_follow_symlinks(true);
+        assert!(following.path_is_external("linked/new.txt"));
         assert_eq!(
             following
                 .resolve_path("linked/new.txt")

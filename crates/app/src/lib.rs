@@ -47,8 +47,7 @@ pub use dse_deepseek::{
 pub use dse_tools::sandbox::SandboxPolicy;
 pub use dse_tools::shell::ShellPolicy;
 pub use dse_tools::{
-    ProductionExecPolicyRuleSet, ProductionExecPolicySnapshot, ProductionToolConfig,
-    ProductionToolExecutionIdentity, ProductionToolExecutor,
+    ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor,
 };
 
 /// Model port used only when a persisted run can be replayed or failed closed
@@ -1711,10 +1710,7 @@ mod tests {
         request.environment = RunEnvironment {
             workspace: command.workspace,
             write_execution_mode: command.controls.write_execution_mode,
-            auto_approve: command.controls.auto_approve,
-            trust_mode: command.controls.trust_mode,
-            allow_sandbox_elevation: command.controls.allow_sandbox_elevation,
-            sandbox: command.controls.sandbox,
+            permission_mode: command.controls.permission_mode,
             ..RunEnvironment::default()
         };
         request

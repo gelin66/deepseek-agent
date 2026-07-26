@@ -9,7 +9,6 @@ use std::borrow::Cow;
 use std::io::{self, IsTerminal, Read, Write};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -17,7 +16,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use dotenvy::dotenv;
-use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 use dse_context::{project_context, prompts, skills as skill_context};
@@ -25,6 +23,7 @@ use dse_localization::{
     MessageId, ProductLanguage, process_language, process_language_is_set,
     resolve_product_language, set_process_language, tr, tr_in,
 };
+use dse_protocol::agent_runtime::RunPermissionMode;
 
 mod audit;
 mod config;
@@ -60,11 +59,10 @@ mod tui;
 mod utils;
 mod working_set;
 mod workspace_discovery;
-mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
-use crate::features::{Feature, render_feature_table};
+use crate::features::render_feature_table;
 use crate::mcp::{McpPool, McpServerConfig, McpServerOAuthConfig, McpWriteStatus};
 use crate::tui::history::summarize_tool_output;
 
@@ -107,7 +105,7 @@ struct Cli {
     #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
     prompt: Vec<String>,
 
-    /// Explicit startup override: enable Shell, automatic approval, and workspace-external trust.
+    /// Explicit startup override: use Full access for future Runs in this process.
     #[arg(long, hide = true)]
     yolo: bool,
 
@@ -218,8 +216,6 @@ enum Commands {
     Execpolicy(ExecpolicyCommand),
     /// Inspect feature flags
     Features(FeaturesCli),
-    /// Run a command inside the sandbox
-    Sandbox(SandboxArgs),
     /// Resume a canonical Agent run by exact Run ID (use --last for newest)
     Resume {
         /// Exact canonical Run ID
@@ -239,10 +235,10 @@ Examples:
   dse exec --auto --output-format stream-json \"fix the failing test\"
 
 Plain `dse exec` is a one-shot model response. Use `--auto` for
-non-interactive agent-with-tools execution. `--auto` does not change the
-sandbox posture, grant access outside the workspace, or elevate a denied tool.
-Use `--sandbox danger-full-access` or `--allow-sandbox-elevation` to explicitly
-authorize sandbox elevation.
+non-interactive agent-with-tools execution with the Agent decides preset.
+Host-classified critical calls still require approval and therefore fail
+closed in headless execution. Only the explicit process-level `--yolo`
+override selects Full access.
 ")]
 struct ExecArgs {
     /// Override model for this run
@@ -261,16 +257,10 @@ struct ExecArgs {
     /// Accepted values: off, low, medium, high, max.
     #[arg(long = "reasoning-effort", value_name = "EFFORT")]
     reasoning_effort: Option<String>,
-    /// Enable agent-with-tools mode with automatic tool approvals. This does
-    /// not authorize sandbox elevation.
+    /// Enable tool-backed Agent mode. Host-classified high-risk operations
+    /// still require approval and fail closed in this headless surface.
     #[arg(long, default_value_t = false)]
     auto: bool,
-    /// Sandbox policy for this exec run; independent from --auto.
-    #[arg(long, value_name = "POLICY")]
-    sandbox: Option<String>,
-    /// Explicitly allow a denied tool to retry with danger-full-access.
-    #[arg(long, default_value_t = false)]
-    allow_sandbox_elevation: bool,
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false, conflicts_with = "output_format")]
     json: bool,
@@ -338,28 +328,29 @@ enum ExecToolSurface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExecApprovalControls {
-    auto_approve: bool,
+struct ExecPermissionControls {
+    permission_mode: RunPermissionMode,
     tool_mode: bool,
 }
 
-fn resolve_exec_approval_controls(
-    config: &Config,
+fn resolve_exec_permission_controls(
     cli_auto: bool,
     yolo: bool,
     explicit_tool_surface: bool,
-) -> ExecApprovalControls {
-    let explicit_auto = cli_auto || yolo;
-    let configured_auto = config
-        .approval_policy
-        .as_deref()
-        .is_some_and(|policy| policy.trim().eq_ignore_ascii_case("auto"));
-    ExecApprovalControls {
-        auto_approve: explicit_auto || configured_auto,
-        // Persistent approval policy never grants a tool surface. Only an
-        // explicit agent/tool request may turn a one-shot completion into a
+) -> ExecPermissionControls {
+    let permission_mode = if yolo {
+        RunPermissionMode::FullAccess
+    } else if cli_auto {
+        RunPermissionMode::Agent
+    } else {
+        RunPermissionMode::Ask
+    };
+    ExecPermissionControls {
+        permission_mode,
+        // A permission preset never grants a tool surface by itself. Only an
+        // explicit Agent/tool request may turn a one-shot completion into a
         // tool-using run.
-        tool_mode: explicit_auto || explicit_tool_surface,
+        tool_mode: cli_auto || yolo || explicit_tool_surface,
     }
 }
 
@@ -841,43 +832,6 @@ enum FeaturesSubcommand {
     List,
 }
 
-#[derive(Args, Debug, Clone)]
-struct SandboxArgs {
-    #[command(subcommand)]
-    command: SandboxCommand,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-enum SandboxCommand {
-    /// Run a command with sandboxing
-    Run {
-        /// Sandbox policy (danger-full-access, read-only, external-sandbox, workspace-write)
-        #[arg(long, default_value = "workspace-write")]
-        policy: String,
-        /// Allow outbound network access
-        #[arg(long)]
-        network: bool,
-        /// Additional writable roots (repeatable)
-        #[arg(long, value_name = "PATH")]
-        writable_root: Vec<PathBuf>,
-        /// Exclude TMPDIR from writable paths
-        #[arg(long)]
-        exclude_tmpdir: bool,
-        /// Exclude /tmp from writable paths
-        #[arg(long)]
-        exclude_slash_tmp: bool,
-        /// Command working directory
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        /// Timeout in milliseconds
-        #[arg(long, default_value_t = 60_000)]
-        timeout_ms: u64,
-        /// Command and arguments to run
-        #[arg(required = true, trailing_var_arg = true)]
-        command: Vec<String>,
-    },
-}
-
 const DSE_MAIN_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 fn tui_command_message(name: &str) -> Option<MessageId> {
@@ -894,7 +848,6 @@ fn tui_command_message(name: &str) -> Option<MessageId> {
         "mcp" => MessageId::CliCommandMcp,
         "execpolicy" => MessageId::CliCommandExecPolicy,
         "features" => MessageId::CliCommandFeatures,
-        "sandbox" => MessageId::CliCommandSandbox,
         "resume" => MessageId::CliCommandResume,
         _ => return None,
     })
@@ -966,11 +919,6 @@ fn localize_tui_command_in(command: &mut clap::Command, language: ProductLanguag
         ("model", MessageId::CliArgModel),
         ("reasoning_effort", MessageId::CliArgReasoningEffort),
         ("auto", MessageId::CliArgAuto),
-        ("sandbox", MessageId::CliArgSandbox),
-        (
-            "allow_sandbox_elevation",
-            MessageId::CliArgAllowSandboxElevation,
-        ),
         ("output_format", MessageId::CliArgOutputFormat),
         ("allowed_tools", MessageId::CliArgAllowedTools),
         ("disallowed_tools", MessageId::CliArgDisallowedTools),
@@ -1052,7 +1000,6 @@ fn initialize_process_language_from_args() {
                     | "mcp"
                     | "execpolicy"
                     | "features"
-                    | "sandbox"
             )
         )
     });
@@ -1332,10 +1279,6 @@ async fn run_async_main() -> Result<()> {
                 })?;
                 let mut config = config.clone();
                 merge_user_workspace_config(&mut config, cli.config.clone(), &workspace);
-                if let Some(sandbox) = args.sandbox.as_deref() {
-                    let _ = parse_sandbox_policy(sandbox, true, Vec::new(), false, false)?;
-                    config.sandbox_mode = Some(sandbox.to_ascii_lowercase());
-                }
                 // Honour DEEPSEEK_BASE_URL forwarded by the CLI dispatcher from --base-url.
                 if let Ok(env_url) = std::env::var("DEEPSEEK_BASE_URL") {
                     let trimmed = env_url.trim();
@@ -1354,23 +1297,19 @@ async fn run_async_main() -> Result<()> {
                 let model = resolve_exec_model(&config, args.model.as_deref());
                 let prompt = join_prompt_parts(&args.prompt);
                 let run_launch = resolve_exec_run_launch(&args)?;
-                // The DSE dispatcher forwards `--yolo` to this binary via
-                // the DSE_YOLO env var (which the config loader folds into
-                // `config.yolo`), not as a CLI flag. Honour either source.
-                let yolo = cli.yolo || config.yolo.unwrap_or(false);
+                let yolo = cli.yolo;
                 let env_tool_surface = exec_tool_surface_from_env();
                 let max_subagents = cli.max_subagents.map_or_else(
                     || config.max_subagents(),
                     |value| value.clamp(1, MAX_SUBAGENTS),
                 );
-                let trust_mode = yolo;
                 // Positive authority enables tools; a deny-list can only
                 // narrow an already-authorized surface and must never turn a
                 // plain one-shot request into a filesystem-writing agent.
                 let explicit_tool_surface =
                     args.allowed_tools.is_some() || env_tool_surface.is_some();
-                let approval_controls =
-                    resolve_exec_approval_controls(&config, args.auto, yolo, explicit_tool_surface);
+                let permission_controls =
+                    resolve_exec_permission_controls(args.auto, yolo, explicit_tool_surface);
                 let max_turns = args.max_turns.unwrap_or(100);
                 let allowed_tools =
                     resolve_exec_allowed_tools(args.allowed_tools.as_deref(), env_tool_surface);
@@ -1384,11 +1323,8 @@ async fn run_async_main() -> Result<()> {
                     &prompt,
                     workspace,
                     max_subagents,
-                    approval_controls.auto_approve,
-                    args.allow_sandbox_elevation,
-                    args.sandbox.as_deref(),
-                    trust_mode,
-                    approval_controls.tool_mode,
+                    permission_controls.permission_mode,
+                    permission_controls.tool_mode,
                     args.json,
                     run_launch,
                     args.output_format,
@@ -1415,18 +1351,11 @@ async fn run_async_main() -> Result<()> {
                 let workspace = resolve_workspace(&cli);
                 run_mcp_command(&config, &workspace, command).await
             }
-            Commands::Execpolicy(command) => {
-                let config = load_config_from_cli(&cli)?;
-                if !config.features().enabled(Feature::ExecPolicy) {
-                    bail!("{}", tr(MessageId::MainExecPolicyDisabled));
-                }
-                run_execpolicy_command(command)
-            }
+            Commands::Execpolicy(command) => run_execpolicy_command(command),
             Commands::Features(command) => {
                 let config = load_config_from_cli(&cli)?;
                 run_features_command(&config, command)
             }
-            Commands::Sandbox(args) => run_sandbox_command(args),
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let resume_id = if last {
@@ -1457,7 +1386,7 @@ async fn run_async_main() -> Result<()> {
     };
 
     // Default: Interactive TUI
-    // --yolo starts in YOLO mode (auto-approve; shell enabled)
+    // --yolo starts the interactive process with Full access and Shell enabled.
     run_interactive(&cli, &config, resume_session_id, None).await
 }
 
@@ -3005,23 +2934,11 @@ fn localized_autonomy_preference(preference: dse_config::AutonomyPreference) -> 
 }
 
 fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
-    let approval = config.approval_policy.as_deref().unwrap_or("on-request");
-    let approval_source = if config.approval_policy.is_some() {
-        tr(MessageId::DoctorSourceConfig)
-    } else {
-        tr(MessageId::DoctorSourceDefault)
-    };
     let allow_shell = config.interactive_allow_shell();
     let allow_shell_source = if config.allow_shell.is_some() {
         tr(MessageId::DoctorSourceConfig)
     } else {
         tr(MessageId::DoctorSourceInteractiveDefault)
-    };
-    let sandbox = config.sandbox_mode.as_deref().unwrap_or("workspace-write");
-    let sandbox_source = if config.sandbox_mode.is_some() {
-        tr(MessageId::DoctorSourceConfig)
-    } else {
-        tr(MessageId::DoctorSourceDefault)
     };
     let trust = if crate::tui::onboarding::needs_trust(workspace) {
         tr(MessageId::DoctorWorkspaceNotTrusted)
@@ -3030,7 +2947,8 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     };
 
     format!(
-        "approval_policy={approval} ({approval_source}), allow_shell={allow_shell} ({allow_shell_source}), sandbox={sandbox} ({sandbox_source}), trust={trust}"
+        "permission=ask ({}), allow_shell={allow_shell} ({allow_shell_source}), workspace_trust={trust}",
+        tr(MessageId::DoctorSourceDefault)
     )
 }
 
@@ -3113,23 +3031,11 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
     use serde_json::json;
 
     let (state, source) = doctor_setup_state(config, workspace);
-    let approval_policy = config.approval_policy.as_deref().unwrap_or("on-request");
-    let approval_policy_source = if config.approval_policy.is_some() {
-        "config"
-    } else {
-        "default"
-    };
     let allow_shell = config.interactive_allow_shell();
     let allow_shell_source = if config.allow_shell.is_some() {
         "config"
     } else {
         "interactive_default"
-    };
-    let sandbox_mode = config.sandbox_mode.as_deref().unwrap_or("workspace-write");
-    let sandbox_mode_source = if config.sandbox_mode.is_some() {
-        "config"
-    } else {
-        "default"
     };
     let workspace_trusted = !crate::tui::onboarding::needs_trust(workspace);
     let steps: Vec<_> = dse_config::SetupStep::ALL
@@ -3165,17 +3071,10 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "runtime_posture_source": runtime_posture_source_id(state.runtime_posture_source),
         "runtime_posture": {
             "source": runtime_posture_source_id(state.runtime_posture_source),
-            "approval_policy": {
-                "value": approval_policy,
-                "source": approval_policy_source,
-            },
+            "permission": {"value": "ask", "source": "default"},
             "allow_shell": {
                 "value": allow_shell,
                 "source": allow_shell_source,
-            },
-            "sandbox_mode": {
-                "value": sandbox_mode,
-                "source": sandbox_mode_source,
             },
             "workspace_trust": {
                 "trusted": workspace_trusted,
@@ -4435,144 +4334,6 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     McpServerDoctorStatus::Ok(tr(MessageId::DoctorMcpStdioServer).replace("{command}", &command))
 }
 
-fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
-    use dse_tools::sandbox::{CommandSpec, SandboxManager};
-
-    let SandboxCommand::Run {
-        policy,
-        network,
-        writable_root,
-        exclude_tmpdir,
-        exclude_slash_tmp,
-        cwd,
-        timeout_ms,
-        command,
-    } = args.command;
-
-    let policy = parse_sandbox_policy(
-        &policy,
-        network,
-        writable_root,
-        exclude_tmpdir,
-        exclude_slash_tmp,
-    )?;
-    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let timeout = Duration::from_millis(timeout_ms.clamp(1000, 600_000));
-
-    let (program, args) = command
-        .split_first()
-        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxCommandRequired)))?;
-    let spec =
-        CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
-    let manager = SandboxManager::new();
-    let exec_env = manager.prepare(&spec);
-
-    let mut cmd = Command::new(exec_env.program());
-    cmd.args(exec_env.args())
-        .current_dir(&exec_env.cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    dse_tools::child_env::apply_to_command(
-        &mut cmd,
-        dse_tools::child_env::string_map_env(&exec_env.env),
-    );
-
-    let mut child = cmd.spawn().map_err(|error| {
-        anyhow::anyhow!(
-            "{}",
-            tr(MessageId::MainSandboxRunFailed).replace("{error}", &error.to_string())
-        )
-    })?;
-    let stdout_handle = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxStdoutUnavailable)))?;
-    let stderr_handle = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("{}", tr(MessageId::MainSandboxStderrUnavailable)))?;
-
-    let timeout = exec_env.timeout;
-    let stdout_thread = std::thread::spawn(move || {
-        let mut reader = stdout_handle;
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_thread = std::thread::spawn(move || {
-        let mut reader = stderr_handle;
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        buf
-    });
-
-    if let Some(status) = child.wait_timeout(timeout)? {
-        let stdout = stdout_thread.join().unwrap_or_default();
-        let stderr = stderr_thread.join().unwrap_or_default();
-        let stderr_str = String::from_utf8_lossy(&stderr);
-        let exit_code = status.code().unwrap_or(-1);
-        let sandbox_type = exec_env.sandbox_type;
-        let sandbox_denied = SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
-
-        if !stdout.is_empty() {
-            print!("{}", String::from_utf8_lossy(&stdout));
-        }
-        if !stderr.is_empty() {
-            eprint!("{stderr_str}");
-        }
-        if sandbox_denied {
-            eprintln!(
-                "{}",
-                SandboxManager::denial_message(sandbox_type, &stderr_str)
-            );
-        }
-
-        if !status.success() {
-            bail!(
-                "{}",
-                tr(MessageId::MainSandboxExitFailed).replace("{exit_code}", &exit_code.to_string())
-            );
-        }
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        bail!(
-            "{}",
-            tr(MessageId::MainSandboxTimedOut)
-                .replace("{timeout_ms}", &timeout.as_millis().to_string())
-        );
-    }
-    Ok(())
-}
-
-fn parse_sandbox_policy(
-    policy: &str,
-    network: bool,
-    writable_root: Vec<PathBuf>,
-    exclude_tmpdir: bool,
-    exclude_slash_tmp: bool,
-) -> Result<dse_tools::sandbox::SandboxPolicy> {
-    use dse_tools::sandbox::SandboxPolicy;
-
-    match policy {
-        "danger-full-access" => Ok(SandboxPolicy::DangerFullAccess),
-        "read-only" => Ok(SandboxPolicy::ReadOnly),
-        "external-sandbox" => Ok(SandboxPolicy::ExternalSandbox {
-            network_access: network,
-        }),
-        "workspace-write" => Ok(SandboxPolicy::WorkspaceWrite {
-            writable_roots: writable_root,
-            network_access: network,
-            exclude_tmpdir,
-            exclude_slash_tmp,
-        }),
-        other => bail!(
-            "{}",
-            tr(MessageId::MainSandboxUnknownPolicy).replace("{policy}", other)
-        ),
-    }
-}
-
 fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
     true
 }
@@ -4640,9 +4401,8 @@ fn default_mouse_capture_enabled(
     true
 }
 
-/// Apply project config while evaluating approval tightening against the
-/// user's canonical `Config::approval_policy` baseline.
-fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &Path) {
+/// Apply the remaining non-authority project configuration.
+fn merge_project_config(config: &mut Config, workspace: &Path) {
     // When the workspace is the user's home directory, the project-scope
     // config file is also the global config file. Skip the merge to avoid
     // redundant processing and a misleading "project-scope config key
@@ -4720,35 +4480,6 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
             && !v.is_empty()
         {
             *field = Some(v.to_string());
-        }
-    }
-
-    if let Some(v) = table.get("approval_policy").and_then(toml::Value::as_str)
-        && !v.is_empty()
-    {
-        let approval_baseline = config.approval_policy.as_deref();
-        if dse_config::project_approval_policy_is_allowed(approval_baseline, v) {
-            config.approval_policy = Some(v.to_string());
-        } else {
-            eprintln!(
-                "warning: project-scope `approval_policy = \"{v}\"` is ignored — \
-                 project config can only tighten the user's approval policy. \
-                 (See #417.)"
-            );
-        }
-    }
-
-    if let Some(v) = table.get("sandbox_mode").and_then(toml::Value::as_str)
-        && !v.is_empty()
-    {
-        if dse_config::project_sandbox_mode_is_allowed(config.sandbox_mode.as_deref(), v) {
-            config.sandbox_mode = Some(v.to_string());
-        } else {
-            eprintln!(
-                "warning: project-scope `sandbox_mode = \"{v}\"` is ignored — \
-                 project config can only tighten the user's sandbox mode. \
-                 (See #417.)"
-            );
         }
     }
 
@@ -4914,7 +4645,7 @@ async fn run_interactive(
     let mut merged_config = config.clone();
     merge_user_workspace_config(&mut merged_config, cli.config.clone(), &workspace);
     if !cli.no_project_config {
-        merge_project_config_with_approval_baseline(&mut merged_config, &workspace);
+        merge_project_config(&mut merged_config, &workspace);
     }
     let config = &merged_config;
 
@@ -4949,9 +4680,7 @@ async fn run_interactive(
 
     startup_trace::mark("interactive_config");
 
-    // The `deepseek` launcher forwards `--yolo` to this binary via the
-    // DSE_YOLO env var (config.yolo), not as a CLI flag. Honour either.
-    let yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let yolo = cli.yolo;
 
     tui::run_tui(
         config,
@@ -4970,7 +4699,7 @@ async fn run_interactive(
             skills_dir,
             mcp_config_path: config.mcp_config_path(),
             skip_onboarding: cli.skip_onboarding,
-            yolo, // YOLO mode auto-approves all tool executions
+            yolo, // Explicit process-local Full access; never persisted.
             resume_session_id,
             initial_input,
             max_subagents,
@@ -5292,13 +5021,14 @@ mod m8a_deepseek_only_entry_tests {
     }
 
     #[test]
-    fn taskgraph_cutover_removes_direct_fleet_shell() {
+    fn canonical_cli_has_no_fleet_or_direct_sandbox_shell() {
         let commands = Cli::command()
             .get_subcommands()
             .map(|command| command.get_name().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(commands.len(), 14, "{commands:?}");
+        assert_eq!(commands.len(), 13, "{commands:?}");
         assert!(!commands.iter().any(|command| command == "fleet"));
+        assert!(!commands.iter().any(|command| command == "sandbox"));
     }
 }
 

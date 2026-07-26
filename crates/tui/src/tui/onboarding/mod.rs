@@ -106,7 +106,8 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
 
     let commands_line = app
         .tr(MessageId::OnboardTipsLine2)
-        .replace("{help}", "/help");
+        .replace("{help}", "/help")
+        .replace("{permissions}", "/permissions");
     let cost_line = app
         .tr(MessageId::OnboardTipsLine3)
         .replace("{cost}", "/cost");
@@ -346,8 +347,9 @@ mod tests {
 
     #[test]
     fn visible_permission_labels_are_simplified_chinese() {
-        assert_eq!(tr(MessageId::ChipPermissionAsk), "需要审批");
-        assert_eq!(tr(MessageId::ChipPermissionAutoApprove), "自动批准");
+        assert_eq!(tr(MessageId::ChipPermissionAsk), "请求批准");
+        assert_eq!(tr(MessageId::ChipPermissionAgent), "替我审批");
+        assert_eq!(tr(MessageId::ChipPermissionFullAccess), "完全访问权限");
     }
 
     #[test]
