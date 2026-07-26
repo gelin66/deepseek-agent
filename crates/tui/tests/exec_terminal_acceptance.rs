@@ -1797,7 +1797,7 @@ async fn established_sse_without_events_hits_typed_stream_stall() {
         &server.uri(),
         20,
         "exercise the SSE idle timeout",
-        "[tui]\nstream_chunk_timeout_secs = 1\n",
+        "[tui]\nstream_chunk_timeout_secs = 5\n",
         Some(1),
     );
 
@@ -1858,7 +1858,7 @@ async fn stream_stall_remains_primary_when_retry_open_fails() {
         &server.uri(),
         20,
         "exercise primary SSE stall retention",
-        "[tui]\nstream_chunk_timeout_secs = 1\n",
+        "[tui]\nstream_chunk_timeout_secs = 5\n",
         Some(1),
     );
 
