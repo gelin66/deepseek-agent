@@ -1,0 +1,111 @@
+{
+  "schema": "dse.eval.m20-transport-viability-live-admission.v1",
+  "admitted_at_utc": "2026-07-26T03:21:47Z",
+  "contract_manifest": "eval/manifests/m20-transport-viability-v1.json",
+  "contract_manifest_sha256": "sha256:c470b85b4dee10668a3df7fe1e814221ef09f599269843fab712f68eecdd109d",
+  "candidate_revision": "698e41a912d1aa23ec9c7bf897e9b53f8b900ef5",
+  "candidate_tree": "64072898beeb5052b7d7446fefbd351cd2b72d07",
+  "candidate_binary": "/private/tmp/dse-m20-target/release/dse-tui",
+  "candidate_binary_sha256": "sha256:ee07cf3d1e5486f16b0792bc0e0e97910042513bb1202062c4ebbba926daaffa",
+  "candidate_binary_size_bytes": 21696016,
+  "candidate_binary_version": "dse-tui 0.8.68 (698e41a912d1)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:2b7fdbd38c4ef0e1156c39134451d919f5e6e80b9d9e4af0f4152adffcd7f193",
+  "harness_self_test_sha256": "sha256:01648788c52d75f5457d2f0f978b841fbfad1750de430c253a3337b9b0cc062a",
+  "transport_self_test_sha256": "sha256:ccef078fbc008389aff923c28913acc985452669a2465d55f912480d8fc5212f",
+  "surface_identity": {
+    "owner": "crates/deepseek/src/transport.rs",
+    "caller": "dse-tui doctor",
+    "base_url": "https://api.deepseek.com",
+    "method": "GET",
+    "endpoint": "/user/balance",
+    "model_inference": false,
+    "model_request_ledger_delta": false,
+    "retry": false,
+    "balance_values_retained": false
+  },
+  "offline_gates": [
+    {
+      "gate": "M20 manifest JSON, Python syntax, transport self-test and preflight dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "DeepSeek account-probe loopback GET/auth/User-Agent, 401 redaction, malformed response, header timeout and single-attempt tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "cargo test/check dse-deepseek, cargo check dse-tui and bilingual localization tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "./scripts/dev-dse.sh focused",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "cargo fmt --all -- --check",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "cargo test --workspace --locked",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable local release dse-tui build and exact revision/hash dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "git diff --check and clean candidate worktree",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "live_contract": {
+    "output": "eval/results/m20-transport-viability-698e41a912d1-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "planned_probes": 3,
+    "maximum_reruns": 0,
+    "stop_on_first_failure": true,
+    "model_requests": 0,
+    "known_api_cost_usd": 0.0,
+    "stdout_or_stderr_retained": false,
+    "credential_or_balance_retained": false,
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0
+  },
+  "official_protocol_revalidated_on": "2026-07-26",
+  "official_sources": [
+    "https://api-docs.deepseek.com/api/deepseek-api",
+    "https://api-docs.deepseek.com/api/get-user-balance/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/quick_start/error_codes/",
+    "https://api-docs.deepseek.com/quick_start/rate_limit/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
