@@ -2362,10 +2362,47 @@ interruption、0 product loss 和 0 repeated independent loss。M19 因此是
 candidate。watchdog 的 credential-free reopen 路径保留在唯一 corrected Harness；
 Runtime、Store、sender、accounting、prompt、tools 与 fixed actor profiles 均未改变。
 
+M20 把本地 Doctor 从 production accounting 外的 one-token Chat inference 改为一个
+bounded non-inference account probe：
+
+- 唯一实现为 `crates/deepseek::DeepSeekConnectionConfig::probe_account`；
+- 使用 canonical endpoint config/client/TLS/Bearer/User-Agent/header timeout；
+- 只发送一次 official `GET /user/balance`，无 retry、无 model request budget 或 usage
+  ledger；
+- 只接受 `is_available: bool` 与 `balance_infos: array` 的 response shape，不返回或保存
+  balance；
+- CLI/TUI 的 en/zh-Hans projection 明确其只证明 official host/credential
+  reachability，不证明 Chat、billing 或 Agent success；
+- 当前 production coding sender 仍唯一指向 official
+  `https://api.deepseek.com/chat/completions`，使用 V4 model IDs。
+
+immutable `dse-tui` 的三个正式本地 account probe 全部 reachable，0 model request、
+0 known API cost。它 collectively 证明当时 DNS/TCP/TLS/HTTP/auth 可达，但不增加
+health/billing owner，也不解决 request-level/pre-header billing truth。
+
+该 viability 随后只授权一个全新 M20B fixed-Pro acquisition。M20B candidate
+`7797ec9d7aaa` 和 admission `00a10a196` 使用新 Python/TypeScript/safety tasks、
+fixed Pro/high、同一 canonical Runtime/Store/tools 与 `maximum_reruns=0`。首个 Python
+arm 在 8 个 usage-complete response 后 verified；第二个 TypeScript arm 已通过 external
+verifier，但第六个 response 发生 typed `deepseek_transport`，六个 response 只有五个
+usage。Store 与 credential-free reopen 一致保存
+`started/completed=6/6 / in_flight=0 / billing_unknown=false /
+usage_complete=false / sealed=true`。
+
+Harness 在 1 个完整 arm 后停止，后 7 arm 未启动。read-only projection 得到 2 个
+trajectory、1 verified arm、1 measurement interruption、false success 0、0 product
+loss 与 0 repeated independent loss。当前事实因此是
+`stop_incomplete_accounting / insufficient_repeated_current_loss`，不是完整 baseline，
+也没有 production recovery、retry、prompt、tool、route、Runtime 或 Store candidate。
+完整证据见
+[M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
+- M20 的 3/3 account reachability 等于 Chat inference、Agent completion 或单 request
+  billing 可证；M20B 只有一个完整 arm，不能形成 9-arm quality/cost baseline；
 - M18 已建立完整 18-arm current reliability aggregate，或一个 TypeScript verifier loss
   已跨独立 task 重复；15 条完整轨迹之外的 Writer deadline arm 只是测量中断，不能被
   补算为 product outcome、verified failure 或计费事实；

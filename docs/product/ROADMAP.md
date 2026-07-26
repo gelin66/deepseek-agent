@@ -3846,7 +3846,48 @@ transport viability 切片区分 DNS/TLS/auth/connectivity 与 inference，且�
 或弱化 `billing_unknown -> stop`。完整证据见
 [M19 DSE local coding reliability acquisition](../../eval/summaries/m19-local-coding-reliability-2026-07-26.md)。
 
-## 16. 当前源码迁移表
+## 16. M20：官方 transport viability 与 fresh fixed-Pro successor
+
+M20 不重跑 M19。它先删除 `dse doctor` 中绕过 AgentRuntime/RunStore/accounting 的
+one-token Chat 探针，改为同一 DeepSeek connection config 上的一次 authenticated
+`GET /user/balance`。该 Host 诊断没有 inference、model request budget、usage ledger
+或 retry，只验证官方 host/credential reachability，并明确不声称 Chat、Agent 或账单
+可用。
+
+离线 focused、fmt、targeted、strict Clippy/workspace test 与 no-retry/timeout/redaction
+fixture 全绿后，同一 corrected Harness 用 immutable `dse-tui` 做了三个正式本地探针：
+3/3 `reachable`，554/384/387 ms，0 model request、0 known API cost、
+`maximum_reruns=0`。因此只得到 collective DNS/TCP/TLS/HTTP/auth viability；没有
+DeepSeek 官方 health endpoint，也没有 request-level/pre-header billing reconciliation
+contract。
+
+该有限 viability 只授权一个全新 M20B identity，不补 M19 mate。M20B 冻结 Python
+recovery、TypeScript recovery 与 no-tool safety 三个新任务，每项三次，固定
+`deepseek-v4-pro/high`、同一 immutable binary、deterministic verifier、exact Store
+reopen 和 `maximum_reruns=0`。
+
+正式结果：
+
+- 首个 Python arm verified，false success 0；8/8 physical response 都有 usage，
+  accounting 完整，known cost USD 0.015759093；
+- 第二个 TypeScript arm 已产生正确 diff 且 external verifier pass，但第六个 physical
+  response 以 typed `deepseek_transport` 结束；`started/completed=6/6`、usage
+  responses 5、incomplete response 1、`billing_unknown=false`、
+  `usage_complete=false`；
+- Harness 在 1 个完整 arm 后 `accounting_incomplete` abort；后 7 个 arm 未启动，没有
+  retry、补 mate 或 raw 拼接；
+- read-only report 两次 byte-identical：2 个 canonical trajectory、1 个完整 verified
+  result、1 个 measurement interruption、false success 0、0 product loss、0 repeated
+  independent loss。
+
+结论为 transport `viable_for_bounded_successor`、acquisition
+`stop_incomplete_accounting`、product `insufficient_repeated_current_loss`。保留
+non-inference Doctor cutover 和唯一 corrected Harness；不开发 production treatment。
+后续付费采集不得机械重跑 M19/M20B，必须先有不同且有界的证据问题。GitHub、remote CI、
+push 和 release 不属于 M20，本地门禁通过即提交。完整证据见
+[M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
+
+## 17. 当前源码迁移表
 
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
@@ -3860,7 +3901,7 @@ transport viability 切片区分 DNS/TLS/auth/connectivity 与 inference，且�
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
-## 17. 调整机制
+## 18. 调整机制
 
 里程碑结束时只允许三种结论：
 

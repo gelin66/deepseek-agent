@@ -2861,6 +2861,44 @@ external verifier failure 推导 coding loss；production 保持不变。完整 
 report hash、删除和非结论见
 [M19 DSE local coding reliability acquisition](../../eval/summaries/m19-local-coding-reliability-2026-07-26.md)。
 
+### M20 transport viability and fresh fixed-Pro successor
+
+M20 的第一项评测对象不是模型能力，而是当前本地 transport 证据边界。审计发现旧
+`dse doctor` 会在 canonical Runtime/Store/accounting 外发送 one-token Chat request。
+cutover 后它只通过 production connection config 发送一次 authenticated
+`GET /user/balance`，不 inference、不重试、不进入 model request ledger，也不保留余额。
+
+正式 viability 合同要求同一 immutable binary 连续三个探针、`maximum_reruns=0`、
+0 model request、0 known API cost；任一 DNS/connect/TLS/HTTP/auth/shape failure 都停止。
+结果为 3/3 `reachable`，耗时 554/384/387 ms。该证据只 collectively 证明当时的官方
+host/credential reachability，不证明 Chat inference、Agent completion、单 request
+billing 或 pre-header reconciliation。
+
+viability 通过后才冻结新的 M20B position-1 acquisition。M20B 不输入 M19 raw、不续跑
+M19，也不复用任务；它固定三个新 task × 三次、fixed Pro/high、同一 binary、external
+verifier、Store reopen 与零 rerun。
+
+正式 acquisition：
+
+- `python_scope_token_recovery` verified，false success 0，8 个 physical response 的
+  usage/accounting 完整；
+- `typescript_request_budget_recovery` 的 external verifier pass，但第六个 response
+  typed `deepseek_transport`；六个 response 只有五个 usage，
+  `billing_unknown=false / usage_incomplete=true / sealed=true`；
+- 只完成 1 个 measurement-valid arm，随后一个 `accounting_incomplete` abort，后 7 arm
+  未执行；
+- 14-record ignored `0600` journal 无 partial tail；read-only projection 两次
+  byte-identical，得到 2 trajectory、1 arm result、1 TypeScript measurement
+  interruption、false success 0、0 product loss、0 repeated independent loss。
+
+因此 M20B 不是完整 9-arm baseline；verifier pass 也不能越过 incomplete accounting
+成为完整产品 label。决策为 `stop_incomplete_accounting /
+insufficient_repeated_current_loss`，没有 production candidate、quality aggregate、
+cost comparison 或 retry admission。Doctor 的非推理 cutover 因删除 untracked
+inference side effect 而保留。详细 frozen identity、raw/report hash、官方链接和
+非结论见
+[M20 transport viability and fixed-Pro successor](../../eval/summaries/m20-transport-viability-and-fixed-pro-successor-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

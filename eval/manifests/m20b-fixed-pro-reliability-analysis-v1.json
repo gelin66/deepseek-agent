@@ -1,0 +1,100 @@
+{
+  "schema": "dse.eval.m20b-fixed-pro-reliability-analysis.v1",
+  "frozen_at": "2026-07-26",
+  "source_identity": {
+    "candidate_revision": "7797ec9d7aaa6de13ce7a4af25787b249175aeeb",
+    "candidate_tree": "d9cc7562d45ac0eefad8f9314893d11d06d9bb29",
+    "live_admission_revision": "00a10a196",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:299b554cdc76346df8273c86530ecd47298fa8067f3b839a9ed20c1f7d239bb4",
+    "analysis_harness_sha256": "sha256:299b554cdc76346df8273c86530ecd47298fa8067f3b839a9ed20c1f7d239bb4",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M20B produced one accounting-complete verified Python recovery, then the TypeScript recovery reached a verifier-passing workspace but its sixth physical response ended with typed deepseek_transport after five usage-bearing responses. The exact Store/reopen facts must be classified without treating incomplete usage or the seven unexecuted arms as product evidence.",
+    "acceptance": [
+      "validate one exact 0600 regular non-symlink 14-record hash-chained journal with no partial tail",
+      "derive exactly two canonical Store trajectories and one complete arm label while preserving the accounting_incomplete abort",
+      "retain the Python arm as one measurement-valid verified success with false success zero",
+      "classify the TypeScript trajectory as measurement-incomplete because one of six responses lacks complete usage even though the external verifier passes",
+      "keep all unexecuted schedule arms outside product-loss labels",
+      "require one identical stable loss code across at least two distinct task IDs before returning an owner audit",
+      "expose only canonical counts, stable failure codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection or treating a verifier-passing but usage-incomplete transport terminal as a complete coding outcome",
+    "cutover": "retain immutable raw identity and one read-only report; do not implement a production treatment from this interrupted acquisition"
+  },
+  "inputs": [
+    {
+      "campaign": "m20b-fixed-pro-reliability",
+      "path": "eval/results/m20b-fixed-pro-reliability-7797ec9d7aaa-v1.jsonl",
+      "journal_schema": "dse.eval.m20b-fixed-pro-reliability-journal.v1",
+      "file_sha256": "sha256:cf25d9412fcfb8db3b50f1d5cfda0cf82d8a0d0786daa63fdd0469c468c639b7",
+      "size_bytes": 5875259,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 2,
+    "completed_arm_results": 1,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts and canonical Runtime events",
+    "label_source": "arm_result only; M20B produced one complete Python label before the accounting stop",
+    "acquisition_stop": "the second arm has an exact failed terminal and credential-free Store reopen, then one accounting_incomplete abort with usage_incomplete=true, billing_unknown=false and maximum_reruns=0",
+    "product_loss": [
+      "positive task not verified after an accounting-complete canonical trajectory",
+      "false success",
+      "deterministic verifier failure",
+      "verifier-passing workspace that never reaches a terminal Host receipt after complete accounting"
+    ],
+    "non_loss": [
+      "typed transport failure with incomplete usage",
+      "canonical trajectory without an arm_result",
+      "initial external verifier failure required by the frozen task",
+      "unexecuted schedule arm",
+      "measurement or evaluation environment interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable product loss_code across at least two distinct task IDs",
+    "owner_attribution_gate": "a measurement stop never authorizes a production owner audit"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "trajectory without a complete arm_result",
+      "incomplete accounting",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
