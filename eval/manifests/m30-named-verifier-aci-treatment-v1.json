@@ -1,0 +1,198 @@
+{
+  "schema": "dse.eval.m30-named-verifier-aci-treatment.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "f74804a08bd169d027c16db5761593125301bcae",
+    "starting_tree": "dd6e7793d7f0261b3e6992bb2a2ff964a3ee02f8",
+    "required_clean_start": true,
+    "treatment_revision": "d0d509b6e3ddecf079c968c50a838e6516047010",
+    "treatment_tree": "3059e31dabc1a04fad9799892b3832fd998c4dcb",
+    "expected_production_delta": [
+      "crates/runtime/src/agent.rs"
+    ],
+    "run_api": 13,
+    "runtime_event": 20,
+    "state_schema": 26,
+    "exec_stream": 4,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.9.6",
+    "go": "1.26.4",
+    "cargo_lock_sha256": "sha256:55b6c060bc65d3acd60aa71df4ff8f0124a7b85fb1adf10f812ae61b97899fe4",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m23b-hardness-control-v1.json",
+    "file_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+    "sections": [
+      "fixture_contract",
+      "reference_patches",
+      "tasks",
+      "tool_policies"
+    ],
+    "historical_identity_inherited": false,
+    "historical_raw_is_input": false
+  },
+  "baseline_evidence": {
+    "acquisition_manifest": "eval/manifests/m30-dogfood-loss-acquisition-v1.json",
+    "acquisition_manifest_sha256": "sha256:60ae20a289da072764b6f93f3b4578877c46504d1968c25008aa56775aa6c1a0",
+    "analysis_manifest": "eval/manifests/m30-dogfood-loss-analysis-v1.json",
+    "analysis_manifest_sha256": "sha256:400aad54a6079ae6c2fbaaf217ff059edb87a22c9e9b3c275875459c65d3eb70",
+    "decision_summary": "eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md",
+    "decision_summary_sha256": "sha256:449650bba82ead5520fced04b8755f9a3aa94fd6d53bd1ab54b1e422b97cb89b",
+    "historical_raw_is_input": false,
+    "owner_code": "host_completion",
+    "loss_code": "verified_workspace_without_terminal_receipt",
+    "independent_task_ids": [
+      "rust_line_recovery_resume",
+      "rust_netstring_recovery_resume"
+    ]
+  },
+  "task_selection": [
+    "rust_line_recovery_resume",
+    "rust_netstring_recovery_resume"
+  ],
+  "slice_contract": {
+    "real_problem": "Two independent current fixed-Pro/high tasks reached externally verified latest workspaces but failed terminal completion after every model-authored named-verifier invocation supplied the advertised tool name where the frozen TaskContract acceptance ID was required.",
+    "acceptance": [
+      "change only the model-visible named-verifier ACI description while preserving the exact verifier_id schema, resolver, Host parameter expansion, RuntimeEvent and RunStore replay",
+      "run exactly the two independent acquisition losses once each on one immutable treatment binary with the same task, fixture, verifier, fixed Pro/high route, permission and continuity contracts",
+      "require both treatment arms to be verified successes with false_success=0, exact reopen, complete accounting and no new route, lane, safety or evidence ambiguity",
+      "stop before the next arm on unknown billing, incomplete usage, identity mismatch, observer ambiguity, false success, unsafe evidence or a cost ceiling",
+      "delete the treatment if either task does not become a verified success"
+    ],
+    "owner": "crates/runtime named-verifier tool specialization",
+    "production_delta": "description-only clarification that verifier_id is the TaskContract acceptance ID and is not the advertised run_verifiers tool name",
+    "old_path_replaced": "the ambiguous model-visible named-verifier description",
+    "cutover": "keep one exact resolver and one persisted verifier invocation; no alias, fallback, raw parameter override, protocol version, state version or compatibility reader",
+    "failed_treatment_deletion": "revert the description-only treatment and delete this unconsumed campaign branch if either formal arm fails a quality, replay or accounting gate"
+  },
+  "resources": {
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "formal_tasks": 2,
+    "formal_arms": 2,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 32768,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 1200000,
+    "harness_wall_time_ms": 1320000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 180,
+    "per_arm_known_cost_ceiling_usd": "0.50",
+    "suite_known_cost_ceiling_usd": "1.00",
+    "permission_mode": "agent",
+    "interactive": false,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m30-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "rust_line_recovery_resume",
+        "rust_netstring_recovery_resume"
+      ]
+    ],
+    "schedule_semantics": "one frozen treatment arm for each of the two independent acquisition losses; no control rerun, no mate, no selective rerun and maximum_reruns=0"
+  },
+  "continuity_policy": {
+    "task_selector": "selected task.required_continuity is not null",
+    "permission_mode": "ask",
+    "interactive": true,
+    "checkpoint_kind": "interaction_requested",
+    "interaction_kind": "user_input",
+    "process_stop": "sigkill_process_group",
+    "restarts_per_arm": 1,
+    "physical_requests_added_at_reopen": 0,
+    "resolve_only_after_reopen": true
+  },
+  "decision_rule": {
+    "keep": "both treatment arms are verified successes, false_success=0, exact reopen and accounting complete",
+    "reject_and_delete": "either treatment arm is not a verified success or any replay, identity, observer, safety or accounting gate fails",
+    "stop_incomplete": "stop before the next arm on unknown billing, incomplete usage, identity mismatch, observer ambiguity, false success, unsafe evidence or a cost ceiling; never rerun",
+    "record_class": "m30_named_verifier_aci_treatment",
+    "product_metric_eligible": false,
+    "quality_aggregate_eligible": false
+  },
+  "metrics": [
+    "verified_success",
+    "correct_safety_rejection",
+    "false_success",
+    "behavior_status",
+    "behavior_owner_code",
+    "behavior_loss_code",
+    "accounting_status",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+    "cost_nanousd",
+    "wall_time_ms",
+    "first_relevant_file_ms",
+    "relevant_files_seen_before_first_edit",
+    "irrelevant_files_seen_before_first_edit",
+    "first_edit_verified",
+    "repair_loops",
+    "repeated_reads_same_mutation_epoch",
+    "compaction_count",
+    "resume_count",
+    "goal_constraint_loss",
+    "service_started",
+    "runtime_assertion_passed"
+  ],
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_model_aliases_retired_on": "2026-07-24T15:59:00Z",
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "tool_calls_supported": true,
+      "thinking_supported": true
+    }
+  },
+  "security": {
+    "credential_read_before_live_admission": false,
+    "network_model_request_before_live_admission": false,
+    "raw_output": "ignored_0600_exclusive_hash_chained",
+    "raw_is_committed": false,
+    "historical_raw_is_input": false,
+    "github_access": false,
+    "push": false,
+    "release": false
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:28a17f9f8f0680e34a62d745930ed573cec96ff4fdbaf9cca32d96bac1d0f572",
+    "evaluation": "sha256:ce2fa4a9e0d9c9e0d62b0b9e059749a0abd7684eb296fb0d6c9690d6a58d5419",
+    "current_architecture": "sha256:39a685863d455cec3f605a76a29e6844ef50936ebe1f12c8b2b3930e399c40fa"
+  },
+  "live_admission": {
+    "exists": false,
+    "credential_authorized": false,
+    "official_model_request_authorized": false
+  }
+}
