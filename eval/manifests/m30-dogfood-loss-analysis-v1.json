@@ -1,0 +1,103 @@
+{
+  "schema": "dse.eval.m30-dogfood-loss-analysis.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "candidate_revision": "f74804a08bd169d027c16db5761593125301bcae",
+    "candidate_tree": "dd6e7793d7f0261b3e6992bb2a2ff964a3ee02f8",
+    "live_admission_revision": "2761f1b8d39730dacedaa27c311d8b19dfa15a21",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:e214dd1cd9af555728b614344720c170b99dbd37dfec90f81bf68de8c71886a6",
+    "analysis_harness_sha256": "sha256:e214dd1cd9af555728b614344720c170b99dbd37dfec90f81bf68de8c71886a6",
+    "run_api": 13,
+    "runtime_event": 20,
+    "state_schema": 26,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M30 closed twelve current one-arm-per-task observations, including two independent accounting-complete verifier-passing long-horizon workspaces without a Host terminal receipt. The thirteenth Writer arm then durably closed its Store, reopen and verifier facts but accounting reported billing_unknown=true, so the campaign stopped before arm fourteen. The exact current behavior losses must be classified without completing an arm, aggregating the partial campaign or conflating accounting truth with behavior truth.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink 86-record hash-chained journal with no partial tail",
+      "derive exactly thirteen canonical Store trajectories, twelve complete arm labels and one accounting_incomplete abort",
+      "retain only the twelve complete arms as full-utility observations and classify the thirteenth behavior/accounting axes independently",
+      "exclude the billing-unknown Writer trajectory and seven unexecuted tasks from cost, quality and full-utility aggregates",
+      "prove false success remains zero in every closed behavior observation",
+      "require one identical stable owner_code:loss_code across at least two independent task IDs before returning a candidate audit",
+      "expose only canonical counts, stable codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection, selective completion of stopped arms or treating an accounting stop as either a coding success or a coding failure",
+    "cutover": "retain immutable raw identity and one read-only report; do not rerun arm thirteen or execute the seven unstarted tasks",
+    "failed_candidate_deletion": "any later unique-owner treatment that fails replay, false-success, behavior or accounting gates is physically deleted with its old-path adapter"
+  },
+  "inputs": [
+    {
+      "campaign": "m30-dogfood-loss",
+      "path": "eval/results/m30-dogfood-loss-f74804a08bd1-v1.jsonl",
+      "journal_schema": "dse.eval.m30-dogfood-loss-acquisition-journal.v1",
+      "file_sha256": "sha256:c1c1705d2f5546a2d1428f90a4925939fde6d597dbcd12755c4aa5d1b317e4fd",
+      "size_bytes": 27186596,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 13,
+    "completed_arm_results": 12,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "label_source": "behavior truth is derived independently from canonical terminal, latest Host receipt, lane, route, workspace and verifier facts; accounting truth is projected independently from canonical ModelAccounting",
+    "acquisition_stop": "writer_policy_migration closed terminal, Store reopen and external verifier before accounting_projection rejected complete=false with billing_unknown=true, usage_complete=true, sealed=true and maximum_reruns=0",
+    "repeated_loss_observation": "rust_line_recovery_resume and rust_netstring_recovery_resume each have complete accounting, exact reopen, verifier-passing latest workspace and no false success, but no valid latest Host terminal receipt",
+    "product_loss": [
+      "false success",
+      "deterministic verifier failure",
+      "actor contract failure",
+      "verifier-passing workspace without a latest Host receipt",
+      "production terminal failure with closed identity and environment"
+    ],
+    "non_loss": [
+      "billing-unknown accounting when behavior truth is independently closed",
+      "unexecuted schedule arm",
+      "initial verifier failure required by the frozen task",
+      "expected security rejection",
+      "measurement or evaluator interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct task IDs with complete accounting for the loss-bearing trajectories",
+    "owner_attribution_gate": "the accounting stop does not authorize a production owner audit; only the two independently closed Host completion losses can do so"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "trajectory without complete accounting",
+      "accounting status as a behavior label",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}

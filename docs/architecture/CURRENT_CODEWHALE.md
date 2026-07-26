@@ -2617,24 +2617,30 @@ Harness、probe、Runtime、Store、protocol、renderer、permission/model route
 完整事实见
 [M29 local workflow acceptance](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
 
-M30 当前只有 credential-free contract，没有 production capability delta。它从 M29 clean
-checkpoint `1b7f92a97` 继承 current Run API v13 / RuntimeEvent v20 / State v26 /
-exec-stream v4 identity，并按 hash 引用 M23 的 20-task fixture、task contracts、tool
-policies 与 reference patches；不继承 M23 的旧 binary、live admission、authority hash、
-journal 或 raw。
+M30 从 M29 clean checkpoint `1b7f92a97` 继承 current Run API v13 / RuntimeEvent v20 /
+State v26 / exec-stream v4 identity，并按 hash 引用 M23 的 20-task fixture、task
+contracts、tool policies 与 reference patches；不继承 M23 的旧 binary、raw、admission
+或停止位置。当前 fixed actor route、三档 permission、唯一
+AgentApplication/AgentRuntime/RunStore、canonical tools 与 latest-revision Host
+completion 均未改变。
 
-计划中的 current acquisition 是 20 个独立任务各一次的 breadth-first loss collector，
-不是 pass³ 或 treatment A/B。当前 fixed actor route、三档 permission、唯一
-AgentApplication/AgentRuntime/RunStore、canonical tools 与 latest-revision Host completion
-都保持不变。
+用户在 offline self-test、real process SIGKILL/reopen、strict Clippy/test 与 immutable
+release identity 闭合后，明确授权冻结 `$10` 上限的 current acquisition。admission
+`2761f1b8d` 绑定 candidate `f74804a08`；formal campaign 完整闭合 12 个 arm，在第 13
+个 Writer arm 保存 terminal/Store/credential-free reopen/verifier facts 后因
+`billing_unknown=true` 按合同停止。没有重跑、补 mate 或执行后七个任务。
 
-当前唯一 corrected Harness 已有 `--campaign m30` 的 credential-free caller。它使用
-current 三字段 permission controls；三个 long-horizon task 通过 runtime-owned
-`request_user_input` 形成 durable checkpoint，真实 app-server SIGKILL/SQLite reopen 在
-answer 前不增加物理请求，answer 后只执行一次 workspace side effect。20-task
-fail-before/reference-proof、journal crash windows、M23 truth/hardness observer 与历史
-M23B/M9C self-test 都通过。live admission 与本 Goal 的 credential 授权仍未闭合，因此
-没有读取 Key、没有 official model API request，也没有 current loss 或候选结论。
+当前只读 canonical loss matrix 有 13 条 Store trajectory、12 条 full-utility
+observation：9 verified success、1 correct safety rejection、2 verified product
+failure、false success 0；第 13 条是 billing unknown 与 route invalid observation。
+两个 accounting-complete 的 independent long-horizon task 重复
+`host_completion:verified_workspace_without_terminal_receipt`，因此只准入一个
+`crates/runtime` named-verifier ACI audit。两条 canonical 时间线的 contract-bound
+verifier 调用都在执行前被 binding 拒绝，最终 Host exact verifier 通过却缺少
+failed-write-pass lineage；Stop Gate 的拒绝仍是正确行为。production delta 仍为 0，
+不得弱化 receipt、伪造 fail-before、补跑 acquisition 或建立第二 verifier path。完整
+事实见
+[M30 current dogfood loss acquisition](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
 
 ## 8. 明确非结论
 

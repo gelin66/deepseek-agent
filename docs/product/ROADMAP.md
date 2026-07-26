@@ -5283,7 +5283,7 @@ release 均为 0。完整结果见
 
 ## 28. M30：current production dogfood loss acquisition
 
-- 状态：**offline Harness/current continuity 已闭合；credential-front 尚未准入**
+- 状态：**live acquisition 已按 accounting 合同停止；重复 Host completion loss 已准入一个最小 named-verifier ACI 审计**
 - 基线：M29 clean checkpoint `1b7f92a97`
 - owner：唯一 corrected Harness
   `scripts/eval-m9b-fixed-pro-regression.py`
@@ -5360,3 +5360,67 @@ terminal reopen exact                    = true
 M23B 与 M9C self-test、M23 truth/hardness observer regression 均继续通过。该 checkpoint
 只准入 current offline acquisition mechanism；没有 live admission、Key、official model
 request 或 loss matrix。
+
+### 28.5 Live acquisition 与正交结论
+
+用户在冻结 `$0.50/arm`、`$10/suite`、`maximum_reruns=0` 后明确授权。独立 admission
+commit `2761f1b8d` 绑定 candidate `f74804a08`、release binary、Harness、schedule、task、
+authority、raw path 与 official DeepSeek 2026-07-27 review；credential 内容只在 clean
+formal preflight 通过后由唯一 Harness 读取。
+
+campaign 完整闭合 12 个 arm；第 13 个 `writer_policy_migration` 已保存 canonical
+terminal、Store、SQLite reopen 与 verifier snapshot，但 accounting 为
+`complete=false, usage_complete=true, billing_unknown=true`。Harness 写入
+`accounting_incomplete` abort 并在第 14 arm 前停止；没有重跑、补 mate 或继续后七个任务。
+
+只读 trajectory-report 两次 byte-identical，确认：
+
+```text
+canonical trajectories       13
+completed arm results        12
+behavior:
+  verified success            9
+  correct safety rejection    1
+  verified product failure    2
+  invalid observation         1
+  false success               0
+accounting:
+  complete                   12
+  billing unknown             1
+full utility observations    12
+```
+
+第 13 arm 的 billing/route invalid fact 不授权 production work，也不进入成本或质量
+aggregate。两个 accounting-complete 的独立 long-horizon task：
+
+```text
+rust_line_recovery_resume
+rust_netstring_recovery_resume
+```
+
+均在最新 workspace 上通过 external verifier，却缺少 Host terminal receipt；stable
+owner/cause 均为
+`host_completion:verified_workspace_without_terminal_receipt`。因此 acquisition 结论为
+`stop_incomplete_accounting`，loss 结论为 `next_candidate_audit_required`。这不是完整
+20-task baseline、release quality 或自动 treatment admission。完整身份与指标见
+[M30 summary](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
+
+### 28.6 唯一候选：named-verifier ACI
+
+1. **真实问题**：两个 loss task 的 canonical 时间线共出现九次 contract-bound verifier
+   调用，全部在执行前被 named-verifier binding 拒绝；最终 Host exact verifier 通过，
+   但没有 fail→mutation→pass lineage，所以 Stop Gate 正确返回
+   `EvidenceLineageUnavailable`。
+2. **验收**：只消除 model-visible TaskContract acceptance identity 与 tool identity
+   歧义；保持 Host 展开 exact parameters、latest-revision receipt、false success=0、
+   replay/crash/accounting 完整。两个独立同任务 fixed-Pro/high、零重跑 treatment 都必须
+   形成完整 failed-write-pass receipt。
+3. **唯一 owner**：`crates/runtime` 已有 named-verifier tool specialization/binding。
+4. **替代旧路径**：删除把 acceptance identity 与 tool identity 同称为 verifier ID 的
+   模糊 ACI；不增加模型可见同义工具、不接受 raw verifier 参数覆盖。
+5. **证据**：先写 schema、binding、authorization、Store replay、
+   failed-write-pass/continuity 失败测试；再走同一 production composition 的两任务
+   vertical treatment。当前 acquisition raw 只作 control fact，不重跑。
+6. **cutover/deletion**：若 treatment 通过，删除模糊描述与失去消费者的测试；若任一
+   behavior、receipt、false-success、replay 或 accounting 门失败，完整删除 treatment，
+   保留当前 Stop Gate 与 summary。

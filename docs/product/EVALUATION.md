@@ -3711,6 +3711,59 @@ task-contract hash 为
 `sha256:7d71a8597adc1d628987e6eb1ee588c48c150f228322aec05658c663cd135c99`。
 这仍不是 current DeepSeek loss 或质量结论；live credential-front 尚未准入。
 
+#### M30 live result 与候选门
+
+live admission `2761f1b8d` 在 clean tree 上绑定 candidate `f74804a08`、immutable
+release binary、当前 Harness/schedule/task hash、ignored 0600 raw path、显式授权和
+`$10` suite ceiling。formal acquisition 在 12 个完整 arm 后，于第 13 个
+`writer_policy_migration` 保存 terminal/Store/reopen/verifier facts，再因
+`billing_unknown=true` 写入 `accounting_incomplete` abort；没有重跑或执行后七个任务。
+
+只读 canonical report 的输入为 86-record、无 partial tail、SHA-256
+`c1c1705d2f5546a2d1428f90a4925939fde6d597dbcd12755c4aa5d1b317e4fd` 的 journal。两次
+report byte-identical，SHA-256 均为
+`d68e101dc0ee184ac034df6066c67c3f6bb8818ceea676a78575d3e15526175f`：
+
+```text
+behavior status
+  verified_success             9
+  correct_safety_rejection     1
+  verified_product_failure     2
+  invalid                      1
+  false_success                0
+accounting status
+  complete                    12
+  billing_unknown              1
+full_utility_observations      12
+```
+
+第 13 trajectory 的 `route_identity_mismatch` 与 billing unknown 都排除在候选归因外。
+两个独立且 accounting-complete 的 trajectory：
+
+- `rust_line_recovery_resume`
+- `rust_netstring_recovery_resume`
+
+均得到 stable
+`host_completion:verified_workspace_without_terminal_receipt`。因此 valid decision 同时
+保留 acquisition stop `stop_incomplete_accounting`，并把 loss gate 提升为
+`next_candidate_audit_required`。partial 12-arm 数值不能变成 20-task aggregate，但两个
+闭合 loss observation 可以且只可以打开一个 unique-owner audit。
+
+候选冻结为 `crates/runtime` named-verifier ACI。正式 keep gate：
+
+1. model-visible identity 不再把 TaskContract acceptance 与 tool name 混为同一语义；
+2. Host 仍从 frozen TaskContract 展开 exact verifier parameters，模型不能覆盖；
+3. 两个原 loss task 各一个 fresh fixed-Pro/high treatment、`maximum_reruns=0`；
+4. 两者都必须提交 fail→effective mutation→latest pass `EvidenceReceipt`，external
+   verifier 通过、false success=0、accounting/reopen 完整；
+5. root/read-only/Writer、authorization、Store exact replay、SIGKILL/reopen 与全仓门禁
+   不回退；
+6. 任一门失败即 `reject_and_delete`，不得通过弱化 `failed_write_pass`、导入 external
+   failure、兼容别名或第二 verifier path 保留候选。
+
+完整事实见
+[M30 current dogfood loss acquisition](../../eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
