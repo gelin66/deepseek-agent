@@ -3268,6 +3268,38 @@ ApplicationProbe、localization、VerifiedMilestone 或 Tool ACI。完整身份�
 非结论见
 [M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
 
+### M25 repository agent-legibility cutover
+
+M25 是 credential-free repository-maintenance A/B，不是 Agent/model treatment。baseline
+`748ed47b8` 的根 `AGENTS.md` 为 379 行 / 21,307 bytes，其中 227 行重复 mutable milestone
+history；12 个冻结稳定规则的首次位置中位数/最大值为 309.5/375。只读 inventory 同时
+记录 54/24/7 个 tracked Rust 文件超过 1k/2k/5k 行，以及 16 crate / 51 internal edge，
+但后两者没有 current wrong-owner、review、compile 或 architecture violation，因而没有
+进入候选。
+
+唯一 treatment 把 guide 收敛为 134 行 / 5,488 bytes，删除 milestone/checkpoint ledger，
+保留 12/12 rule anchors 和五个 authority links，并把 owner map 稳定到同一短入口。规则
+首次位置中位数/最大值变为 76/131，lines/bytes 分别下降 64.64%/74.24%；
+milestone/commit identity 从 `42/12` 变为 `0/0`。
+
+现有 `scripts/check-public-repository.py` 是唯一机械 owner；它强制 line/byte budget、
+authority link resolution、stable rules 和无 mutable history，并以 oversized、
+missing-authority、mutable-history 3/3 负向 fixture 防止 false green。没有第二 checker、
+parallel docs、Rust/module move、dependency policy 或 production branch。
+
+focused/fmt/strict Clippy/workspace test 通过。workspace 首轮一个 stream-stall test 在并行
+负载下先观察到 retry-open network error；同一 test 定向单线程通过，第二次完整 workspace
+也通过，且候选没有 Rust/transport delta。clean detached `6981f54fb` 又通过 public
+checker、delivery lifecycle 与 exact locked/offline artifact checksum/install/
+verify/uninstall。
+
+决定为 `keep_compact_agent_guide_contract`。production code、Runtime、Store、protocol、
+model、prompt 和 tools delta 为 0；Key/API/network/GitHub/push/release 为 0。该结果只
+支持 repository instruction bytes、规则定位和历史重复债下降，不形成 DeepSeek Token、
+cache、费用、wall-time 或 verified-success 结论，也不授权按超大文件或 edge count
+继续重构。完整证据见
+[M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

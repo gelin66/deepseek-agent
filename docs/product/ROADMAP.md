@@ -4601,3 +4601,60 @@ compatibility branch，也不从本地 release gate 推导新的模型能力或 
 
 - `eval/manifests/m24-local-release-candidate-v1.json`；
 - [M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
+
+## 23. M25：仓库 Agent-legibility 收敛
+
+- 状态：**完成；保留 compact guide contract**
+- 决策：`keep_compact_agent_guide_contract`
+- production code delta：0
+
+M25 冻结 M24 release candidate 和 M23 无重复产品损失结论，只比较规则发现、owner
+定位、超大 Rust 文件与 dependency direction 四类维护信号。唯一具备直接可重复损失的是
+根 `AGENTS.md`：baseline 为 379 行 / 21,307 bytes，其中 227 行是已由现有权威文档维护的
+里程碑历史；12 个稳定工作规则的首次位置中位数为 309.5 行。该文件自 product baseline
+以来又经历 30 次提交、净增长 208 行。
+
+超大文件信号为 54 个 tracked Rust 文件 >=1,000 行、24 个 >=2,000、7 个 >=5,000，
+但当前没有错误 owner 修改、review defect、compile regression 或 behavior loss 能定义
+一个安全 lifecycle split。16 个 workspace crate / 51 条内部 dependency edge 也没有
+current violation；因此 M25 没有拆 Rust 文件或发明全局 layer model。
+
+### 23.1 Cutover 与机械门
+
+根指南收敛为 134 行 / 5,488 bytes 的稳定 authority/owner directory：
+
+- 五个权威入口全部改为可验证本地链接；
+- 保留 12/12 architecture、work、protocol、replay、Git 与 validation 规则；
+- 增加紧凑 crate owner map；
+- 物理删除旧 `Current repository truth`、checkpoint/commit 清单和重复评测结论。
+
+唯一机械 owner 继续是现有 `scripts/check-public-repository.py`。它现在强制 140 行 /
+9,000 bytes 上限、五个 authority link、稳定规则和“无 milestone/commit ledger”，并以
+oversized、missing-authority、mutable-history 三个负向 fixture 拒绝 false green；没有
+第二 checker、doc tree 或 compatibility reader。
+
+规则首次位置中位数 `309.5 -> 76`（-75.44%），最大值 `375 -> 131`；owner anchor 中位数
+`51 -> 45`。guide lines/bytes 分别下降 64.64%/74.24%，milestone/commit identity
+`42/12 -> 0/0`。
+
+### 23.2 验证、边界与下一步
+
+focused、fmt、strict workspace Clippy、完整 workspace test、public checker 与
+`git diff --check` 全部通过。全仓测试首轮有一个已在 focused 通过的 stream-stall
+时序测试在并行负载下失败；该 exact test 随即单线程通过，第二次完整 workspace run
+也通过。候选没有 Rust 或 transport delta，此首轮抖动保留为测试事实。
+
+clean detached `6981f54fb304893612227c19282f0c84353e53a8` /
+tree `37cf7707cae91dceef34e4f9efd692111aacfbae` 通过 public/delivery self-test，并重建
+locked/offline exact-source artifact；outer/internal checksum、install/verify/uninstall
+与用户数据保留闭合。Key、official API、external network、GitHub、push、tag/release
+均为 0。
+
+M25 不证明 DeepSeek Token/cache/cost/quality 提升，也不授权按文件大小搬家或按 dependency
+edge count 建新架构。下一个 maintenance treatment 仍须先复现独立、可归因的错误 owner、
+review、compile 或架构违例；只有“文件很大”不足以准入。
+
+完整证据：
+
+- `eval/manifests/m25-agent-legibility-v1.json`；
+- [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。

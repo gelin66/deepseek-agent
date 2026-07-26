@@ -2525,9 +2525,30 @@ Key、调用 official API、访问 GitHub、push 或 release，也没有增加�
 Runtime、Store、Provider、protocol 或兼容路径。完整事实见
 [M24 local release candidate](../../eval/summaries/m24-local-release-candidate-2026-07-26.md)。
 
+M25 没有改变 production architecture。根 `AGENTS.md` 不再保存当前实现/里程碑账本，
+而是 134 行 / 5,488 bytes 的稳定 authority + owner directory；当前版本、cutover、
+拒绝结论和 frozen evidence 继续只由 PRODUCT_PLAN/ADRs、ROADMAP、EVALUATION、
+CURRENT_CODEWHALE 与 `eval/` 各自拥有。
+
+现有 `scripts/check-public-repository.py` 现在机械限制根 guide 的 line/byte budget，验证
+五个 authority link、stable architecture/work/protocol/replay/Git/validation rules，并
+拒绝 milestone/commit ledger。三个内建负向 fixture 覆盖 oversized、
+missing-authority 与 mutable-history false green。没有第二 checker、parallel docs、
+dependency layer、Rust file split 或 compatibility reader。
+
+12 个 stable rule anchor 的 median first line 从 309.5 降到 76，guide bytes 下降
+74.24%；focused、strict Clippy、workspace test 和 clean-checkout locked/offline release
+regression 通过。Run API v12、RuntimeEvent v19、State v25、exec-stream v4、唯一
+AgentRuntime/RunStore、fixed actor route、official DeepSeek ChatCompletions 和 canonical
+tools 均保持不变。完整事实见
+[M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：
+
+- M25 的 guide bytes/规则行位下降等于真实 DeepSeek Token、cache、wall-time、费用或
+  verified-success 提升，或任一超大 Rust 文件/依赖边需要重构；
 
 - M24 的本地 locked/offline release gate 等于远端 CI、公开发布、真实 DeepSeek 质量、
   M23 Hardness baseline 或新的 verified-success/成本结论；它只把 current exact source
