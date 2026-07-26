@@ -1,0 +1,122 @@
+{
+  "schema": "dse.eval.m30-named-verifier-aci-treatment-live-admission.v1",
+  "admitted_at_utc": "2026-07-26T20:00:34Z",
+  "contract_manifest": "eval/manifests/m30-named-verifier-aci-treatment-v1.json",
+  "contract_manifest_sha256": "sha256:30995a561aae2ba5b7c76552abc87d79931805a9ec5015e9eead29df44f2e743",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "d0d509b6e3ddecf079c968c50a838e6516047010",
+  "candidate_tree": "3059e31dabc1a04fad9799892b3832fd998c4dcb",
+  "candidate_binary": "/private/tmp/dse-m30-target/release/dse",
+  "candidate_binary_sha256": "sha256:8f80e2f045a4d05628acdbe4520ba0e607ada7bb23d1fee8d7f87edc1c7ab113",
+  "candidate_binary_size_bytes": 15644800,
+  "candidate_binary_version": "dse 0.8.68 (d0d509b6e3dd)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:9ff46730b7374fde55378e1ceea108fc931a71dd4eb98ab30ca096c0210ae355",
+  "schedule_sha256": "sha256:2d3e70865ff988279203c80b8e74e2b024788669198d474bce81e65511f13375",
+  "task_contracts_sha256": "sha256:800d99fa9472aba598f41c7bda27d836da2d6abd6fa402d44c204b2a74b8e946",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:9940c7507ee8c8cf6de2bd6011ca09c004706096ccc95dfe655bcc738b51cf64",
+  "freeze_report_sha256": "sha256:4c3995cb854a769dd1969fac125cb89945b803ff5c693dc8c31694076d035ae8",
+  "dry_run_sha256": "sha256:d05e6aef73dc04152a92776cb891cae46337d61dbd1544b1aca5c3aa9eb16b7d",
+  "continuity_process_report_sha256": "sha256:f438d8459a4e36256acd4aeba39a08b26a85af673221ba1841159f16a7f9427a",
+  "process_test_binary_sha256": "sha256:b79f679f20d836aa1dce44d35fb7bc0fb09955b228417d8eb44a77980507d4d4",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": true,
+    "treatment_label_delta": "named-verifier description states that verifier_id is the exact TaskContract acceptance ID and not the run_verifiers tool name"
+  },
+  "offline_gates": [
+    {
+      "gate": "description-only ACI red test and targeted named-verifier resolver, persisted invocation, failed-write/pass receipt tests",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, process crash/reopen, CLI/TUI/app-server parity and bilingual PTY",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "two-task inherited fixture, reference patches, exact schedule, hash-chain journal and four crash write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary, credential-free dry-run and real request_user_input SIGKILL/reopen continuity",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, V4 release, ChatCompletions, Thinking, Tool Calls and pricing revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and not read while freezing this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "rust_line_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 2,
+    "runs_per_task": 1,
+    "formal_arms": 2,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "control_rerun": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 1.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m30-named-verifier-aci-d0d509b6e3dd-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized M30 named-verifier treatment under USD 0.50 per arm and USD 1.00 suite ceilings"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 1.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
