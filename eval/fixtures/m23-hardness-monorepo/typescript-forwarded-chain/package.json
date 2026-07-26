@@ -1,0 +1,8 @@
+{
+  "name": "m19-forwarded-chain",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}

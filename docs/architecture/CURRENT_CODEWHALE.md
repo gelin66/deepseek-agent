@@ -2464,6 +2464,21 @@ M23-A 结论为 `keep_orthogonal_behavior_accounting_truth`。它没有建立 Ha
 VerifiedMilestone 或 Tool ACI candidate。完整证据见
 [M23-A behavior/accounting truth](../../eval/summaries/m23-a-behavior-accounting-truth-2026-07-26.md)。
 
+M23-B1 没有改变 production。现有 corrected Harness 增加一个 credential-free `m23b`
+campaign，冻结 20 个独立任务、3 个平衡 round 和 60 个 future fixed-Pro/high control
+arm。136-file monorepo fixture 可为每个 arm 物化 fresh Git repository；17 个正向
+reference solution 全部从初始 verifier failure 变为 pass，3 个安全反例继续失败。
+Go service 与 Chrome/Playwright DOM verifier、本机 toolchain、reference changed scope、
+continuity/runtime assertion、资源预算和四个 journal crash window 均由同一 Harness
+离线自证，连续两次 freeze/self-test byte-identical。Key、API、network、model request
+与 production delta 均为 0。
+
+M23-B1 结论为 `keep_offline_hardness_task_set_control_not_acquired`。当前没有
+fixed-Pro Hardness trajectory、pass@1/pass^3、false-success aggregate 或重复
+owner/cause loss matrix，因此不授权 high/max、ApplicationProbe、symbol localization、
+VerifiedMilestone 或 Tool ACI。完整证据见
+[M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

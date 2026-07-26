@@ -3069,6 +3069,44 @@ M23-A 决定为 `keep_orthogonal_behavior_accounting_truth`。Key/API/network �
 下一步仍是 M23-B 的全新 18–24 task control-only contract。完整身份、删除和门禁见
 [M23-A behavior/accounting truth](../../eval/summaries/m23-a-behavior-accounting-truth-2026-07-26.md)。
 
+### M23-B1 Hardness task-set conformance
+
+M23-B1 只冻结和自证 control contract，不把 fixture reference solution 当成 fixed-Pro
+能力样本。唯一 corrected Harness 现有 caller 新增 `m23b` campaign；production
+AgentRuntime、RunStore、DeepSeek sender/accounting、route、tools 和 completion owner
+均未改变。
+
+冻结 task set 为 20 task × 3 round = 60 future arm，`maximum_reruns=0`。语言覆盖
+Rust 5、TypeScript 7、Python 7、Go 1；actor/lane 覆盖 root 13、read-only child 2、
+explicit Writer 2、安全反例 3；strata 覆盖 localization 4、cross-file 7、
+failure/recovery/safety 5、long-horizon 3、service/API/UI 3 与 Writer 2。每个 task
+冻结 5–20 个相关文件、human-estimated minutes、allowed/reference scope、external
+verifier、continuity/runtime assertion 和 fixed tool policy。
+
+Credential-free self-proof 结果：
+
+```text
+positive initial-fail -> scoped reference patch -> pass = 17 / 17
+safety initial-fail -> no mutation -> still fail          = 3 / 3
+materialized independent base repositories                = 20 / 20
+journal crash windows                                      = 4 / 4
+freeze report reproducibility                              = byte-identical
+self-test reproducibility                                  = byte-identical
+Key / API / network / model request                        = 0 / 0 / 0 / 0
+```
+
+任务集同时包含真实 loopback Go HTTP verifier 和真实 loopback server + 固定本机
+Chrome/Playwright DOM verifier；这只证明 verifier 与资源契约可离线执行，不证明 DSE
+已经能完成相应任务。M15/M20B self-test、M14 observer、M16 acceptance-equivalence 与
+M23-A truth conformance 继续通过。
+
+结论为 `keep_offline_hardness_task_set_control_not_acquired`。因为没有任何 model
+trajectory，`control_baseline_acquired=false`，不能计算 pass@1、pass^3、false success、
+first-relevant-file 或 stable owner/cause loss matrix。M23-C 和四个 production
+candidate 继续禁止；M23-B 只有在新的独立 fixed-Pro/high control acquisition 闭合后才
+能退出。完整冻结 identity、hash 与非结论见
+[M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -1,0 +1,7 @@
+{
+  "name": "indexer",
+  "runtime": "rust-1.97",
+  "schemaFloor": 4,
+  "dependsOn": ["ledger"],
+  "capabilities": ["audit", "search"]
+}

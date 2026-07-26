@@ -1,0 +1,7 @@
+{
+  "name": "gateway",
+  "runtime": "node-25",
+  "protocolFloor": 2,
+  "dependsOn": ["auth", "billing"],
+  "features": ["http2", "tracing"]
+}

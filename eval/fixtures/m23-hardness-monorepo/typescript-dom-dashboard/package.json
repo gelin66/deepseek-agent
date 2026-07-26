@@ -1,0 +1,8 @@
+{
+  "name": "m23-typescript-dom-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/state.test.js"
+  }
+}

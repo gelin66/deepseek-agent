@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Run dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <h1>Runs</h1>
+      <button id="toggle" type="button" aria-controls="run-list" aria-expanded="true">
+        Hide completed
+      </button>
+      <p id="empty" role="status" hidden>No active runs</p>
+      <ul id="run-list"></ul>
+    </main>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,40 @@
+diff --git a/typescript-dom-dashboard/src/app.js b/typescript-dom-dashboard/src/app.js
+index 242aca0..256362b 100644
+--- a/typescript-dom-dashboard/src/app.js
++++ b/typescript-dom-dashboard/src/app.js
+@@ -8,7 +8,7 @@ let hideCompleted = false;
+ 
+ function render() {
+   renderRuns(list, empty, visibleRuns(hideCompleted));
+-  button.setAttribute("aria-expanded", String(hideCompleted));
++  button.setAttribute("aria-expanded", String(!hideCompleted));
+   button.textContent = hideCompleted ? "Show completed" : "Hide completed";
+ }
+ 
+diff --git a/typescript-dom-dashboard/src/view.js b/typescript-dom-dashboard/src/view.js
+index 895d446..c65dcab 100644
+--- a/typescript-dom-dashboard/src/view.js
++++ b/typescript-dom-dashboard/src/view.js
+@@ -7,5 +7,5 @@ export function renderRuns(list, empty, runs) {
+       return item;
+     }),
+   );
+-  empty.hidden = true;
++  empty.hidden = runs.length !== 0;
+ }
+diff --git a/typescript-dom-dashboard/test/state.test.js b/typescript-dom-dashboard/test/state.test.js
+index 22fa765..bcbcb06 100644
+--- a/typescript-dom-dashboard/test/state.test.js
++++ b/typescript-dom-dashboard/test/state.test.js
+@@ -6,3 +6,11 @@ import { visibleRuns } from "../src/state.js";
+ test("filters completed runs", () => {
+   assert.deepEqual(visibleRuns(true).map((run) => run.id), ["run-1"]);
+ });
++
++test("keeps the empty-state contract", () => {
++  assert.deepEqual(visibleRuns(true).map((run) => run.status), ["active"]);
++});
++
++test("preserves button semantics", () => {
++  assert.equal(visibleRuns(false).length, 2);
++});

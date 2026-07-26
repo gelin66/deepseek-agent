@@ -1,0 +1,7 @@
+{
+  "name": "worker",
+  "runtime": "node-25",
+  "schemaFloor": 4,
+  "dependsOn": ["indexer", "ledger"],
+  "capabilities": ["audit", "jobs"]
+}

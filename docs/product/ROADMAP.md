@@ -3977,7 +3977,7 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 ## 21. M23：effect-first Hardness / Harness 能力优化
 
-- 状态：**执行中；M23-A 已通过离线门并保留，下一步 M23-B**
+- 状态：**执行中；M23-A 与 M23-B1 离线任务集已保留，control baseline 尚未获得**
 - 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
 - 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
 - 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
@@ -4180,6 +4180,40 @@ verifier 不公平的任务必须剔除并保留理由。
 - 同一 owner/cause 必须跨至少两个独立 task family 重复，或在同一独立任务 3/3 稳定复现
   且有第二任务的同类机制反例，才授权 production candidate；
 - 没有重复 current loss 时结论为 `insufficient_repeated_current_loss`，不开发功能。
+
+#### M23-B1 离线结果
+
+M23-B1 已冻结 20 个 task、3 个固定平衡 round、共 60 个 future fixed-Pro/high control
+arm。每个 arm 从同一个 136-file monorepo fixture 物化独立 Git 仓库；reference patch
+位于 model workspace 外，`maximum_reruns=0`。覆盖为：
+
+```text
+language: Rust 5 / TypeScript 7 / Python 7 / Go 1
+lane: root 13 / read-only 2 / explicit Writer 2 / safety 3
+strata:
+  large-repo localization 4
+  cross-file behavior 7
+  failure/recovery/safety 5
+  long-horizon resume 3
+  service/API/UI 3
+  explicit Writer 2
+```
+
+17 个正向任务均满足初始 verifier 失败、scoped reference patch 后通过；3 个安全反例在
+没有修改时继续失败。Go fixture 运行真实 loopback HTTP service；DOM fixture 运行真实
+loopback server 与固定本机 Chrome/Playwright。reference changed scope、toolchain、
+verifier command、human effort、runtime assertion、continuity contract、schedule 和资源
+上界均由唯一 corrected Harness 校验。freeze report 与 self-test 各连续两次
+byte-identical；20 个 base repository 都物化为同一冻结 commit，四个 journal
+SIGKILL window 保持通过。M15/M20B self-test 与 M14/M16/M23-A conformance 也未回退。
+
+M23-B1 决定为 `keep_offline_hardness_task_set_control_not_acquired`。本切片没有读取 Key、
+没有 API/network、没有模型请求、没有 production delta，因此没有 fixed-Pro success、
+false-success 或 stable owner/cause loss matrix。它不满足 M23-B 的 control acquisition
+退出门，也不授权 M23-C、high/max 或 M23-D 四个候选。下一步只能是独立、明确授权且
+accounting 边界完整的 fixed-Pro/high control acquisition；在此之前保持停止。完整身份与
+门禁见
+[M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
 
 ### 21.5 M23-C：Root/Writer `high` 对 `max`
 
