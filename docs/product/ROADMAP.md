@@ -3974,3 +3974,429 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 改变固定架构边界必须新增 ADR，说明问题、证据、替代方案、迁移和删除影响。
 不能用临时开发困难作为恢复多 Provider、多 Runtime 或多状态真相的理由。
+
+## 21. M23：effect-first Hardness / Harness 能力优化
+
+- 状态：**计划中；在 M22 完整收口并提交后开始**
+- 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
+- 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
+- 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
+
+### 21.1 审计结论与真实问题
+
+截至 2026-07-26，DSE 已经具备强可靠性内核：
+
+- root、read-only child、explicit Writer 共用唯一 `AgentRuntime`；
+- `RuntimeEvent`、`RunStore`、RequestPlan、route、usage 与 crash/reopen 是 canonical truth；
+- Host 以最新 workspace revision 的 deterministic evidence 决定完成，模型不能自报成功；
+- 生产工具目录固定且精简，Writer 具有 isolated worktree、verify、integrate 和 cleanup；
+- Standard Chat、Strict 整目录诊断/无损回退、reasoning replay、stream failure 和
+  accounting owner 已形成单一路径；
+- fixed Pro/high、Flash/high read-only child 与 Pro/max typed recovery 可精确重放，
+  Auto 已物理删除；
+- M22 已把 same-chunk streaming delta 收敛接入唯一 DeepSeek sender，在完整本地门禁下
+  保持 partial-response、reopen、completion 和客户端投影语义。
+
+当前主要缺口不是再造 Runtime，而是能力证据覆盖不足：
+
+1. 正式任务大多是小到中等规模，尚不能证明大仓库、多模块、长时和完整应用任务能力；
+2. `billing_unknown -> formal campaign stop` 正确保护成本结论，但也频繁阻断可独立观察的
+   质量学习；
+3. 当前 root/Writer 的 `high` 尚未在真正困难任务上与 `max` 做合格对照；
+4. shell 是前台命令 owner，尚无 Host 管理的服务启动、健康检查、日志、HTTP、DOM/截图
+   与确定性清理闭环；
+5. compaction/reopen 机制强，但尚无跨多次压缩或多次进程重启完成长工程任务的当前证据；
+6. canonical 搜索/读取能力足够精简，但大仓库定位召回率、首次相关文件时间和错误入口率
+   尚未被正式测量；
+7. 核心源码和权威历史文档已经出现超大文件，开始增加人和 Agent 的定位成本。
+
+M23 不预设上述缺口都需要生产功能。先建立可重复损失，只允许一个被重复证据定位的最小
+owner treatment 进入下一垂直切片。
+
+### 21.2 固定优先级与判定顺序
+
+所有 M23 候选按以下词典序判定，不用便宜掩盖能力下降：
+
+```text
+1. false_success == 0
+2. verified task success / correct safety rejection
+3. long-horizon and hard-task completion
+4. Token / cache miss / physical requests / wall time / API cost
+5. net production complexity
+```
+
+质量未过门时不比较节省；质量同等时才以 Token、时间、费用和复杂度决定。任何 treatment
+不得恢复 Auto、运行中动态路由或额外模型分类请求。
+
+### 21.3 M23-A：质量真相与 accounting 真相解耦
+
+#### 真实问题
+
+现有 Harness 对 request/usage/cost 的 fail-closed 纪律是正确的，但多次正式采集因
+pre-header unknown billing 或 partial-response usage incomplete 停止。停止费用结论不应
+自动抹掉已经由 canonical workspace、external verifier、Host receipt 和 terminal truth
+独立证明的质量事实。
+
+#### 单一 owner
+
+- 规范 owner：`docs/product/EVALUATION.md`；
+- 执行 owner：现有 corrected fixed-Pro Harness 与其只读 analyzer；
+- production Runtime、Store、transport、completion owner 不变。
+
+#### 先决决策
+
+本切片改变当前正式采集准入规则，实施前必须新增一份 ADR。ADR 至少冻结以下两个互不
+推导的维度：
+
+```text
+behavior_status:
+  verified_success
+  correct_safety_rejection
+  verified_product_failure
+  measurement_interruption
+  invalid
+
+accounting_status:
+  complete
+  usage_incomplete
+  billing_unknown
+  unpriced
+```
+
+#### 固定语义
+
+- `billing_unknown` 或 `usage_incomplete` 停止费用、Token 效率和完整 product-utility
+  aggregate，不把未知费用猜成 0；
+- 若 identity、任务输入、workspace outcome、external verifier、Host terminal/evidence
+  与 observer 全部闭合，允许保留独立的 behavior label；
+- production 自己在冻结 deadline 内以 typed failure/blocked 结束且任务未获最新 receipt，
+  记为 `verified_product_failure`；
+- Harness、机器、外部网络或人工中断使 production outcome 无法形成时，记为
+  `measurement_interruption`，不得伪装成产品失败；
+- identity、evaluator、workspace、evidence、safety 或 observer 存在歧义时仍为 `invalid`
+  并停止；
+- 下一次付费 request 前按冻结输入上限、输出上限和当时官方价格预留最坏费用；预留额只能
+  证明授权上界，不能替代请求级实际结算；
+- `maximum_reruns=0` 保持不变，不补 mate、不选择性续跑、不拼接旧 raw。
+
+#### 验收
+
+- 旧 frozen evidence 的 hash、raw、历史结论不改写；
+- 同一 journal 的 analyzer 两次输出 byte-identical；
+- 为 complete、partial response、pre-header failure、deadline kill、observer mismatch、
+  external verifier pass 但 Host receipt 缺失等窗口建立离线 fixture；
+- 质量 aggregate 只使用预注册允许的 behavior status，成本 aggregate 只使用
+  `accounting_status=complete`；
+- focused、Harness self-test、crash/reopen 和 `git diff --check` 通过；
+- 删除旧 analyzer 中把所有 accounting stop 无差别折叠为同一产品结论的分支；不保留双写
+  或 compatibility reader。
+
+### 21.4 M23-B：current Hardness 私有任务集
+
+#### 真实问题
+
+现有小任务已经能证明机制正确，但不能测量大仓库定位、长时连续性、应用运行可见性和真正
+复杂的跨模块实现。没有这个任务集，新增功能只能证明“代码存在”，不能证明有效优化。
+
+#### 单一 owner
+
+继续使用现有 corrected Harness、manifest、immutable binary、external verifier 和
+hash-chained `0600` raw。不得建立第二评测 Runtime 或复制生产工具。
+
+#### 第一块任务
+
+冻结 18 至 24 个互相独立的任务，至少覆盖：
+
+| strata | 最低覆盖 | 任务要求 |
+|---|---:|---|
+| large-repo localization | 4 | 真实多 crate/package，入口不在任务直接点名文件 |
+| cross-file behavior | 4 | 5 至 20 个相关文件，外部行为验证而非字符串断言 |
+| failure/recovery/safety | 4 | 初次 verifier 失败、环境错误、拒绝修改反例 |
+| long-horizon resume | 3 | 至少一次 hard compaction 或进程重启后继续 |
+| service/API/UI | 3 | 启动服务、健康/HTTP；其中至少一个需要 DOM 行为 |
+| explicit Writer | 2 | isolated worktree、Host integrate、latest-root verify、cleanup |
+
+语言至少覆盖 Rust、TypeScript、Python 和 Go。每个正向 fixture 必须满足“初始 verifier
+失败、reference patch 通过”；安全反例必须保持失败。任务可取自许可兼容的公开 revision
+或本地自建 fixture，必须冻结 source commit、task、verifier、toolchain 与 solution identity，
+不得在 model-visible context 中泄露参考补丁。
+
+#### 环境与噪声契约
+
+每个正式 block 冻结并记录：
+
+- OS、CPU floor、memory ceiling、并发、文件系统与网络策略；
+- Rust/Node/Python/Go、浏览器及依赖版本；
+- API region、模型、reasoning、请求/output/turn/deadline 预算；
+- immutable source/binary SHA、task order 和 `maximum_reruns=0`；
+- infrastructure failure 与 production failure 的不同稳定 code；
+- 至少在两个时间窗口重复关键对照，避免把基础设施波动当能力提升。
+
+#### 指标
+
+除现有指标外新增：
+
+```text
+pass_at_1
+pass_power_3
+human_estimated_minutes
+first_relevant_file_ms
+relevant_files_seen_before_first_edit
+irrelevant_files_seen_before_first_edit
+first_edit_verified
+repair_loops
+repeated_reads_same_mutation_epoch
+compaction_count
+resume_count
+goal_constraint_loss
+service_started
+runtime_assertion_passed
+```
+
+`pass^3` 是连续三次都成功，不得误写成“最多三次有一次成功”的 `pass@3`。公开
+Terminal-Bench、SWE 类任务只作诊断输入，不作为单一发布真相；已知 broken、泄漏或
+verifier 不公平的任务必须剔除并保留理由。
+
+#### 退出门槛
+
+- 第一块全部通过离线身份、自证、reference patch 和资源门禁；
+- 先只运行 current fixed Pro/high control，禁止同时开发 treatment；
+- 产出按稳定 owner 分类的 loss matrix；
+- 同一 owner/cause 必须跨至少两个独立 task family 重复，或在同一独立任务 3/3 稳定复现
+  且有第二任务的同类机制反例，才授权 production candidate；
+- 没有重复 current loss 时结论为 `insufficient_repeated_current_loss`，不开发功能。
+
+### 21.5 M23-C：Root/Writer `high` 对 `max`
+
+#### 候选
+
+只比较以下固定 profile，不创建 Auto 或新路由器：
+
+| actor | control | treatment |
+|---|---|---|
+| root | `deepseek-v4-pro/high` | `deepseek-v4-pro/max` |
+| explicit Writer | `deepseek-v4-pro/high` | `deepseek-v4-pro/max` |
+| read-only child | `deepseek-v4-flash/high` | 不变 |
+| typed recovery/recheck/rework | `deepseek-v4-pro/max` | 不变 |
+
+使用同 revision、同 immutable binary、相同任务、提示词、工具目录、预算和 verifier；
+reasoning 是唯一 treatment delta。root 与 Writer 分层，困难任务每个 cell 至少三次。
+
+#### 准入
+
+- false success 保持 0；
+- hard-task verified success 与 `pass^3` 不退化；
+- treatment 至少在两个独立困难 task family 上形成可重复成功增量，或在预注册统计门上
+  形成整体明确提升；
+- strata 内不得用简单任务收益掩盖 localization、long-horizon、Writer 或 safety 回退；
+- 若质量提升，成本和时延可增加但必须落在预注册硬预算内；若质量相同，保留更简单、
+  更快、更便宜的 `high`；
+- max 胜出后只改变 root/Writer 的固定默认并更新 ADR-0008；显式选择和 exact replay
+  继续保留；
+- 无净质量收益则删除 eval-only selector/treatment，生产保持 `high`。
+
+### 21.6 M23-D：失败归因与唯一候选选择
+
+M23-B/C 后先形成只读 loss matrix，不立即写生产代码。稳定原因只允许来自 canonical
+事实，不使用额外 LLM classifier：
+
+```text
+environment_visibility
+repository_localization
+long_horizon_continuity
+tool_aci
+writer_integration
+transport_or_accounting
+infrastructure
+model_capability_ceiling
+```
+
+一次只准入下列一个最高收益候选。每个候选必须重新声明真实问题、唯一 owner、替代路径、
+回归证据和 cutover 删除项。
+
+#### 候选 A：Host-owned ApplicationProbe
+
+仅当服务/API/UI strata 跨独立任务重复失败于运行可见性时准入。最小行为：
+
+```text
+worktree-local start
+  -> bounded health/port wait
+  -> bounded logs
+  -> HTTP assertion
+  -> optional Playwright DOM/screenshot artifact
+  -> exact revision receipt
+  -> guaranteed teardown/reopen cleanup
+```
+
+- lifecycle 与 verifier 由 Host 拥有，模型不获得第二完成权；
+- 复用现有 ToolOutcome、Artifact、EvidenceReceipt 和 RunStore；
+- 不建设常驻浏览器平台、服务注册中心、全局日志库或第二环境状态；
+- DOM/截图只在任务契约要求时加载，不扩张默认工具目录；
+- 若不能提高 service/UI verified success，删除 launcher、schema、fixture-only wiring 和
+  依赖，保留失败证据。
+
+#### 候选 B：确定性 symbol/reference localization
+
+仅当大仓库任务重复败在入口、调用方或影响范围定位时准入。
+
+- 先调优现有 `file_search/grep_files/read_file` 的描述、分页和结果摘要；
+- 仍不足时，在 `context/tools` 唯一 owner 内加入 lazy、确定性的 symbol/reference
+  事实源，优先编译器/LSP/tree-sitter，不先建 embedding/vector DB；
+- 不创建第二 project overview、任务状态或永久 RepoGraph 产品模式；
+- treatment 必须同时提高相关文件召回、减少首次编辑前无关读取，并提高 verified success；
+- 若只减少工具调用却不改善质量，删除 treatment。
+
+#### 候选 C：Host-derived VerifiedMilestone
+
+仅当 long-horizon 任务跨压缩/重开重复出现目标遗失、重复实现或提前完成时准入。
+
+- 从现有 TaskContract、workspace revision、EvidenceReceipt 和 verifier step 派生；
+- 只记录 Host 已验证的 milestone、未满足 acceptance 与恢复入口；
+- 不允许模型自由维护第二 plan、progress file、memory store 或 terminal truth；
+- 恢复时先检查 Git/status、任务约束和最小 smoke verifier，再继续一个未完成 milestone；
+- M10-C 的通用 Acceptance Progress 已因当前任务不增益且增加上下文/代码而删除，本候选
+  必须由新的长任务损失独立证明，不能恢复旧实现；
+- 无 long-horizon success 增量则完整删除。
+
+#### 候选 D：最小 Tool ACI 调优
+
+仅当 loss matrix 显示 malformed arguments、过长结果、重复调用或错误工具选择跨任务重复。
+
+- 优先修改现有工具 schema、description、错误 code 和有界结果；
+- 保持工具名称、权限、side-effect/retry truth 和单一目录；
+- 不因竞品存在某工具就增加同义工具；
+- 以 held-out task 验证，训练/调参任务上的改善不能单独准入。
+
+### 21.7 M23-E：仓库 Agent-legibility 与机械约束
+
+该切片只能在 M22 和当前能力候选稳定后执行，不与 Runtime 行为修改混合。
+
+#### 真实问题
+
+核心模块、TUI 与权威历史文档已经过大，规则发现、owner 定位和修改审查成本上升。目标是
+减少维护熵，不是为了目录美观搬家。
+
+#### 最小工作
+
+- 把根 `AGENTS.md` 收敛为约 100 行的稳定目录和不可违反边界；细节继续指向现有
+  PRODUCT_PLAN、ADR、ROADMAP、EVALUATION 和 CURRENT 权威，不创建平行文档；
+- 对超大 Rust 文件只按已经存在的 owner/生命周期拆分，并保持 public API 和行为不变；
+- 增加机械 dependency-direction、禁止 UI 拥有模型循环、结构化日志、文件大小预算和
+  docs link/freshness 检查；
+- frozen manifests/summaries/raw 不改写；历史证据通过现有索引发现，不注入每次模型请求；
+- 用规则定位任务、owner 定位任务、focused/full workspace tests 和编译时间验证，不以
+  净删行数代替能力证据。
+
+#### 删除/停止门
+
+- 不能降低规则发现时间、减少错误 owner 修改或提供可靠机械保护的搬文件重构应停止；
+- 不创建 Manager/Factory/Service 空壳、空 crate 或 temporary bridge；
+- 临时 re-export 最多跨一个切片并写明删除提交。
+
+### 21.8 暂缓项
+
+以下能力只有新的独立重复损失才能重新进入：
+
+- 自动模型/Thinking 路由；
+- 默认多 Writer、自由 swarm、常驻 planner/critic/evaluator；
+- FIM、默认 RepoGraph、embedding/vector memory；
+- 为固定 11 个工具建设动态工具发现/code mode；
+- Anthropic Messages、第二 Provider、第二 Runtime/Store；
+- 为追求 99% cache hit 改写最新 revision Host facts；
+- 强行启用 Strict 或弱化整目录兼容门；
+- Windows sandbox：只有 Windows 成为明确发布目标时单独处理；
+- MCP production tools：只有外部系统任务成为产品范围且固定工具目录显著扩张时评测。
+
+多 Writer 只有在单 Writer 的长任务 wall time 成为主要且可分解瓶颈时重开。候选必须有
+预先冻结的任务依赖图、worktree lease、冲突/merge/e2e verifier，并证明 wall-time 净收益
+且 verified success、false success、成本和复杂度可接受。
+
+### 21.9 执行顺序
+
+```text
+M22 complete + clean local commit
+  -> M23-A ADR / quality-accounting contract
+  -> M23-B Hardness control-only acquisition
+  -> M23-C fixed high/max paired A/B
+  -> M23-D choose exactly one repeated-loss candidate
+  -> candidate contract/test
+  -> minimal production implementation
+  -> real caller migration
+  -> old/eval-only path deletion
+  -> deterministic + crash/reopen + hard-task verification
+  -> keep / shrink / reject-and-delete
+  -> M23-E agent-legibility cleanup
+```
+
+每一步单独提交。M23-A/B 没有形成合格 loss matrix 前不得开发 ApplicationProbe、symbol
+index、VerifiedMilestone 或新工具。
+
+### 21.10 最低验证
+
+每个 production 切片至少通过：
+
+```bash
+cargo fmt --all -- --check
+cargo test -p <owning-crate> --locked <filter>
+cargo check -p <owning-crate> --locked
+./scripts/dev-dse.sh focused
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+git diff --check
+```
+
+此外按 owner 覆盖：
+
+- exact RequestPlan/route/tool catalog/usage replay；
+- SQLite reopen 与 pending Start；
+- root/read-only/Writer conformance；
+- SIGKILL 窗口与 side-effect/retry truth；
+- latest revision Host completion；
+- CLI/TUI/API canonical projection；
+- immutable binary、manifest、raw permissions、hash chain 和 analyzer reproducibility。
+
+Credentialed DeepSeek 采集只有在离线门禁、真实 treatment delta、固定预算和授权边界完整时
+运行。M23 不访问 GitHub、不 push、不 release；本地全量门禁通过即可提交。
+
+### 21.11 前沿 Harness 研究输入
+
+以下只提供问题与验证方法，不是源码或架构权威；DSE 仍按本总纲的唯一 Rust/DeepSeek
+owner 原生吸收：
+
+- [OpenAI Harness Engineering](https://openai.com/index/harness-engineering/)：
+  agent-legible 应用、浏览器/DOM、日志/指标、短入口文档与机械架构约束；
+- [OpenAI Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/)：
+  上下文增长、工具循环与 compaction；
+- [Anthropic Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)：
+  长任务恢复、可验证进度和每次恢复的环境检查；
+- [Anthropic Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps)：
+  planner/generator/evaluator 的收益边界与 Playwright 应用验证；
+- [Anthropic Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)：
+  outcome、grader、trial、pass@k/pass^k 和 capability/regression 分层；
+- [Anthropic Infrastructure noise in agent evaluations](https://www.anthropic.com/engineering/infrastructure-noise)：
+  CPU、内存、并发、网络与时间对评测差异的影响；
+- [Anthropic Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)：
+  精简工具、schema/context/token 效率与 held-out eval；
+- [SWE-agent ACI](https://arxiv.org/abs/2405.15793) 与
+  [Agentless](https://arxiv.org/abs/2407.01489)：固定模型下的接口、定位、修复和验证价值；
+- [OpenHands CAID](https://www.openhands.dev/blog/asynchronous-software-engineering-agents)
+  与 [Anthropic C compiler experiment](https://www.anthropic.com/engineering/building-c-compiler)：
+  worktree/依赖/并行收益及高协调成本；
+- [Terminal-Bench 2.0](https://www.tbench.ai/benchmarks)、
+  [OpenAI SWE-bench Verified audit](https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/)
+  与 [Separating signal from noise](https://openai.com/index/separating-signal-from-noise-coding-evaluations/)：
+  困难任务、broken verifier、污染与私有任务集必要性；
+- [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：
+  `high/max` 的官方语义与 reasoning replay 要求。
+
+吸收原则保持：
+
+```text
+外部优秀能力
+  -> 还原它解决的真实失败
+  -> 在 DSE 当前任务中复现
+  -> 选择唯一 owner
+  -> 最小垂直 treatment
+  -> 同任务验证
+  -> 保留或物理删除
+```
