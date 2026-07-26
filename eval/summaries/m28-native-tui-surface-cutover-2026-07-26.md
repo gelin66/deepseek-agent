@@ -36,6 +36,7 @@ M28 的独立 checkpoints 为：
 | E deletion | `f25ffc906` | 删除 theme/display modes/retired copy/fixtures |
 | gate hardening | `28577e80b` | 分离 transport 与 model-event stall 测试时限 |
 | F PTY/reopen | `1e420d9d7` | 五尺寸双语真实 PTY与 exact visible-cell reopen |
+| post-cutover lint | `8fc40ac6f` | 删除 E 切片遗留的等价分支与空 struct update |
 
 物理删除：
 
@@ -70,7 +71,7 @@ TUI/localization；protocol、runtime、state、deepseek、tools 没有 M28 sema
 | TUI unit/integration | 763/763，2 个预注册 ignored |
 | localization/color | key/placeholder parity；ANSI-16/256/truecolor/reset semantic gate |
 | repository gates | focused、fmt、strict Clippy、workspace test、public checker、diff check |
-| installed lifecycle | locked/offline package、install、verify、binary smoke、uninstall |
+| installed lifecycle | `8fc40ac6f` locked/offline package、install、verify、binary smoke、uninstall |
 
 全量套件最初暴露一个测试自相干扰：raw SSE fixture 同时把 transport chunk/open guard 和
 model-event idle guard 设为 1 秒；并发负载下前者会先失败，使测试进入错误的 transport
