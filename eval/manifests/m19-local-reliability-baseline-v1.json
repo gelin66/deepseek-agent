@@ -20,9 +20,9 @@
   },
   "authority_sha256": {
     "product_plan": "sha256:2173e154f2d76212d60e21bc20bf0e26bdd0695045008f2e3e8c567d3e97bf89",
-    "roadmap": "sha256:649552c32d745fe4a8fd964d9b0e995b6185ff942308ee245260b660abca8cf8",
-    "evaluation": "sha256:10ba28192efd4fb493e9e8149935d1638eb11edf82c5b541ae4dfb48785c30c9",
-    "current_architecture": "sha256:ff44fc45ff1e49e38b0ca7c1ac5942313f766ca729ccd41c16de609cc43ca120"
+    "roadmap": "sha256:55195ef79cb457f39658f2e4c1309e880a9aa2ab736639764929e60a6ca1bade",
+    "evaluation": "sha256:4f344927b15126d558356d9392c1f7abb94551fb67a3730046ce768078f05944",
+    "current_architecture": "sha256:c3fff577d8984bfcf7c9a77826447af167504426686965683e0a1491c211ef1c"
   },
   "resources": {
     "runs_per_task": 3,
