@@ -80,6 +80,10 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 14. UI 消息目录与模型提示词组合是两个独立层次，不能用界面文案替代 Agent 提示词调优。
 15. 每个 Run 的权限策略必须类型化、冻结、可重放并由 Host 在副作用前强制；TUI、CLI 和
     API 只选择或投影该策略，模型不能批准自己的工具调用。
+16. 交互 TUI 只有一个 DSE 原生、terminal-native 的表面系统：transcript 是主表面，
+    canonical Run 摘要闭合任务/活动/变更/验证/终态；短选择使用 bottom sheet，长内容使用
+    full-screen room，审批使用 inline interruption。不得保留旧视觉模式、第二套 renderer、
+    General Settings 或 TUI 私有进度/证据真相。
 
 ## 4. 第一性原理运行链
 
@@ -117,6 +121,19 @@ typed Run permission
 V1 只提供“请求批准 / 替我审批 / 完全访问权限”三个权限档位，不提供 Custom、自由组合
 权限字段或第二套规则编辑 UI。档位不是 TUI 私有模式；完整语义、owner、迁移和删除约束
 见 [ADR-0012](../decisions/0012-canonical-permission-policy.md)。
+
+TUI 展示遵守同一单 owner 原则：
+
+```text
+canonical RuntimeEvent / RunStore
+  -> CanonicalRunPresentation
+  -> one DSE surface grammar
+  -> keyboard / mouse / bilingual projection
+```
+
+界面完整合同、响应式规则、设置减法和旧表面删除点见
+[ADR-0013](../decisions/0013-native-tui-surface-system.md)。借鉴 Codex/macOS 的范围只限
+成熟交互习惯与工艺标准，不复制其源码、品牌或内部状态模型。
 
 ## 5. 目标架构
 
@@ -350,7 +367,9 @@ diff 和 UI 状态通过 reducer 生成投影。大日志和 diff 使用内容�
 5. 没有真实 DeepSeek 评测收益的功能不进入稳定核心。
 6. 不采用强制六阶段、无限递归、自由聊天式 swarm 或默认双模型调用。
 7. 不因“以后可能需要”提前建设通用 Provider、云平台或插件市场。
-8. 产品复杂度留在内部；用户只看到任务、进度、diff、证据、成本和结果。
+8. 产品复杂度留在内部；用户只看到任务、活动、diff、证据、成本、所需操作和结果。
+9. TUI 新能力必须加入既有 DSE surface grammar；不得为单个功能再发明 panel、modal、
+   theme、快捷键体系或持久 UI 真相。
 
 ## 12. 固定方向与灵活实现
 
@@ -362,7 +381,7 @@ diff 和 UI 状态通过 reducer 生成投影。大日志和 diff 使用内容�
 - 默认工具、Agent 数量和预算；
 - Strict 的任务路由，以及 FIM 是否重新准入；
 - snapshot 间隔；
-- UI 交互和配置细节；
+- 不改变 ADR-0013 固定 surface grammar 前提下的 UI 细节；
 - 是否加入 embedding。
 
 不能在没有 ADR 和评测证据的情况下改变第 3 节中的架构边界。灵活调整应遵循：
@@ -381,7 +400,7 @@ diff 和 UI 状态通过 reducer 生成投影。大日志和 diff 使用内容�
 - 企业 RBAC/SSO；
 - 默认长期向量记忆；
 - 每次工具调用全仓 checkpoint；
-- 与 Agent 编码能力无关的 UI 重设计。
+- 没有可复现可用性问题、统一 owner 和旧路径删除点的装饰性 UI 重设计。
 
 ## 14. V1 完成定义
 
@@ -413,6 +432,10 @@ V1 必须同时满足：
   按 ADR-0010 的 2×2 current fixed-Pro A/B 决定，失败候选与 selector 在 cutover 删除；
 - login、interactive start、headless coding、run inspection 与 resume 等共同用户 workflow
   的显式动作数不高于 imported baseline。
+- 交互 TUI 的 first-run、idle、running、tool、approval、user input、permission、failed、
+  rework、completed、pager 与 resume/reopen 全部使用一个 DSE 原生表面系统；不存在
+  Underwater/Ocean、通用居中 modal、General Settings、旧视觉模式、direct palette 分支或
+  用户可组合的布局/装饰设置。
 
 ## 15. 来源与许可
 

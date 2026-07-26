@@ -3435,6 +3435,93 @@ Host 本地权限行为和历史债删除，不外推模型质量、Token、费�
 完整结果：
 [M27 canonical permission policy](../../eval/summaries/m27-canonical-permission-policy-2026-07-26.md)。
 
+### M28 DSE native TUI surface cutover
+
+M28 是 credential-free presentation/interaction replacement，不是 DeepSeek model、
+prompt、tool、permission 或 Runtime treatment。baseline 是 M27 clean checkpoint 上真实
+可达的 Underwater/Ocean shell、M26 canonical Run presentation、M27 typed permission
+selector、现有 onboarding/user-input/approval/pager 和 settings reader。
+
+#### Frozen state and surface matrix
+
+同一 immutable binary、loopback model、workspace 与 canonical Store 至少覆盖：
+
+| dimension | required cases |
+|---|---|
+| lifecycle | first-run, idle, typing, running, waiting, rework, failed, blocked, cancelled, completed |
+| activity | thinking, streaming, tool running, tool success/failure, collapsed/expanded detail |
+| interaction | approval, permission, short/long user input, slash, mention, pager, cancel/close |
+| actor | root, read-only child, explicit Writer |
+| recovery | live, resume, SQLite reopen, resize during active state |
+| size | 48×12, 60×16, 80×24, 100×32, 140×40 |
+| language | en, zh-Hans, CJK/combining/emoji/long path stress |
+| terminal | ANSI-16, truecolor, reset background, mouse on/off, reduced motion, SSH/constrained |
+| macOS host | Apple Terminal, iTerm2, Ghostty where locally available |
+
+每个 case 保存或断言：
+
+```text
+surface kind and opener
+canonical RunPresentation digest
+visible task / phase / change / verification / required action / terminal
+focused object and render-time hitbox
+keyboard action / equivalent mouse action
+composer contents and cursor
+scroll and resize state
+localized message ids
+frame overflow / clipping / exit path
+live / reopen presentation equality
+```
+
+#### Correctness and usability gates
+
+必须为零：
+
+- model claim rendered as Host evidence；
+- guessed progress、ETA、confidence、file count 或 terminal truth；
+- hidden required action、false success 或 child replacing root；
+- denied/approval/permission semantics changed by presentation；
+- mouse-only action、invisible focus、unclosable sheet/room；
+- clipping/panic/invalid Unicode width in frozen dimensions；
+- reachable hardcoded human text or `en`/`zh-Hans` placeholder drift；
+- periodic idle frame mutation or presentation-state disk write；
+- production Underwater/Ocean/fish/bubble/ambient animation；
+- reachable generic centered modal、General Settings、legacy visual mode；
+- selectable layout/decorative setting reader or second palette/theme owner；
+- RuntimeEvent/Run API/State/DeepSeek/tools/permission semantic delta。
+
+必须通过：
+
+1. task -> activity -> change -> verification -> required action/terminal 在每种状态可见闭合；
+2. live 与同一 RunStore reopen 的 presentation byte-equivalent；
+3. keyboard/mouse 同 action parity 100%，`Enter/Esc/↑/↓/Ctrl-C/Ctrl-D` 不改变既有
+   canonical semantics；
+4. 宽屏 right rail、中屏 top strip、窄屏 single-column 只改变 layout，不改变事实和焦点；
+5. ANSI-16 不丢信息，truecolor 只改善层级；
+6. idle 初帧后的 5 秒观察窗口没有内容 frame change、timer-driven full redraw 或 TUI 写盘；
+7. old renderer、setting、normalizer、message、fixture 与 adapter 在 cutover 物理删除；
+8. focused、fmt、strict workspace Clippy、完整 workspace test、public checker 与
+   `git diff --check` 全部通过。
+
+#### Admission and claims
+
+M28 只有以下可接受结果：
+
+```text
+keep_native_surface_and_delete_legacy
+rework_before_cutover
+```
+
+`rework_before_cutover` 不能以 permanent old/new toggle、hidden legacy theme 或
+compatibility reader 结束。只有全部 gate 通过并删除旧 path 后才记录
+`keep_native_surface_and_delete_legacy`。
+
+不使用 LLM-as-judge、付费模型请求或单张“好看截图”决定准入。真实 PTY 与 frame contract
+证明的是 presentation correctness、交互一致性、idle efficiency 和历史债删除；不得外推
+verified task success、Token、cache、费用或模型 wall-time 提升。完整架构和实施合同见
+[ADR-0013](../decisions/0013-native-tui-surface-system.md)、[DESIGN.md](../../DESIGN.md)
+和 ROADMAP M28。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

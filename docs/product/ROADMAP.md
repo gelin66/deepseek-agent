@@ -4917,3 +4917,211 @@ policy/network/writable roots 的 `dse-tui sandbox run` 直接执行旁路及其
 旧字段字符串只保留在显式拒绝测试、State v26 一次性 retirement fixture 和 frozen 历史
 证据中，不是 production reader。完整证据见
 [M27 canonical permission policy](../../eval/summaries/m27-canonical-permission-policy-2026-07-26.md)。
+
+## 26. M28：DSE 原生 TUI 全表面切换
+
+- 状态：**方案已接受；等待 M27 clean checkpoint 后执行**
+- 架构决策：[ADR-0013](../decisions/0013-native-tui-surface-system.md)
+- 设计合同：[DESIGN.md](../../DESIGN.md)
+- 目标：把所有可达 TUI surface 切到同一 terminal-native 表面系统，并物理删除
+  Underwater/Ocean、通用居中 modal、显示设置矩阵和并行 palette 路径
+- 范围：纯 presentation/interaction；不改变 DeepSeek、prompt、model、Thinking、tools、
+  canonical permission、RuntimeEvent 语义、RunStore 或 completion owner
+
+### 26.1 真实问题与冻结基线
+
+M26 只解决 canonical Run 可读性，M27 只解决权限语义和选择器。M28 开始前仍存在：
+
+- 唯一主 shell 名为 Underwater，并默认渲染 Ocean gradient、3 条鱼、气泡和 80ms
+  ambient animation cadence；
+- onboarding 使用居中 `Borders::ALL` card，`UserInputView` 使用约 `82% × 68%`
+  居中 modal，而 approval、permission、pager 和主 shell 使用其他 chrome；
+- `settings.toml` 仍把 ocean treatment、fancy animation、WorkSurface placement、theme、
+  background、composer density/border、transcript spacing 和 status ornament 暴露为并列
+  视觉真相；
+- reachable renderer 混用 resolved `app.ui_theme` 与 direct global palette；
+- Doctor 中仍有 `/constitution`、`/setup`、`/model`、`/setup tools`、
+  `/setup persistence` 等退役提示，settings parse warning 仍有硬编码英文；
+- 旧 feature/测试文件仍描述已删除的 session/command surface。
+
+这些是 current baseline，不得把 M26/M27 的通过误报为“全界面已重构”。
+
+### 26.2 固定表面与信息闭环
+
+M28 只保留：
+
+1. main work surface；
+2. bottom sheet；
+3. full-screen room；
+4. transcript/composer 之间的 inline approval interruption。
+
+主循环固定为：
+
+```text
+用户任务
+  -> 当前 activity
+  -> Host-observed change
+  -> Host verification
+  -> required action / terminal outcome
+```
+
+transcript 保持主表面。`CanonicalRunPresentation` 继续是 task、phase、change、
+verification、Agent、permission、recovery 和 terminal 的唯一 presentation owner。
+UI 不新增 plan、ETA、confidence、文件数、进度百分比或 completion truth。
+
+### 26.3 垂直切片
+
+#### M28-A：表面合同与可达矩阵
+
+- 枚举从首次启动到 resume/reopen 的全部 production surface 和 opener；
+- 冻结 English/`zh-Hans`、键盘/鼠标、宽高、颜色深度和 live/replay frame contract；
+- 在现有 TUI test owner 内增加 surface reachability 与 legacy-ban 断言，不建立第二
+  screenshot framework、第二 event store 或 LLM visual judge；
+- 先更新 `crates/tui/AGENTS.md` 为 ADR-0013 的当前实施规则，但明确 M28 完成前旧 shell
+  仍是 baseline，不得把目标写成已实现事实。
+
+验收：每个可达 view 都有 opener、state source、target surface、退出 action 和旧路径
+删除点；未知 surface 不进入重构。
+
+#### M28-B：唯一 token 与 shell owner
+
+- 建立一个 resolved DSE presentation token/theme owner，所有 reachable renderer 显式
+  消费它；
+- 以终端 background/foreground 为基础，固定 accent/success/warning/error/muted/focus
+  语义，ANSI-16 与 truecolor 信息等价；
+- 把 `underwater.rs` 的真实 header/footer/phase/focus 职责迁入中性 shell owner；
+- 主 caller 接管后删除 `ocean.rs`、fish/bubble/ambient renderer、flee animation、
+  `UI_UNDERWATER_ANIMATION_MS` 和 idle timer redraw；
+- 不创建 legacy/new theme 双读、compatibility renderer 或 feature flag。
+
+验收：idle 初帧后 5 秒无内容 frame change、无 presentation state/disk write；运行活动仍
+由 canonical event 驱动并保持 streaming delta 原速。
+
+#### M28-C：主工作表面与响应式布局
+
+- 宽屏使用 transcript 主列 + 右侧 canonical Run rail；
+- 中屏把同一摘要投影为 transcript 上方短 strip；
+- 窄/矮屏使用单列，按“重复标题 -> caption -> border -> 空白 -> 次要 metric”的顺序减法；
+- composer、slash menu、`@mention`、phase、terminal outcome 和 required action 保持稳定；
+- 删除用户可选 left/right/top placement、composer density/border、transcript spacing 与
+  status ornament；产品只保留一套默认布局；
+- root/child/Writer、tool collapsed/expanded、rework 和 completion 均使用同一语法。
+
+验收：resize 前后输入、焦点、scroll、active Run 和 canonical presentation 不漂移；不得
+因窄屏先隐藏任务、当前状态、所需操作、验证或终态。
+
+#### M28-D：所有次级表面迁移
+
+- onboarding 变为 quiet full-screen room，保留 language/API key/project trust/Tips 的真实
+  顺序、mask/paste/validation 和 back/cancel；
+- `UserInputView` 变为 adaptive bottom sheet，短选择不遮蔽 transcript，长问题先内部滚动，
+  超出 sheet 预算才进入同一 full-screen room；
+- permission 继续使用 M27 三行 bottom sheet，不改变任何 policy 语义；
+- approval 保持 inline interruption，并统一 token、focus、action rail 与 mouse hitbox；
+- pager/help/log/diff/evidence 共用一个 full-screen room primitive；
+- slash 与 mention menu 保持 composer-attached，不改为 command palette。
+
+验收：不存在可达 `centered_rect` 或 generic centered modal；所有 close/cancel/confirm
+恢复原 focus/scroll，键盘与 mouse 产生同一 action。
+
+#### M28-E：设置、文案与残留减法
+
+在 caller 审计后物理删除没有必要性的：
+
+- `ocean_treatment`、`fancy_animations`、`work_surface_placement`；
+- selectable appearance theme、`background_color`、`composer_density`、
+  `composer_border`、`transcript_spacing`、`status_indicator`；
+- persistent `calm_mode`、`tool_collapse_mode`、`show_tool_details` display variants；tool
+  detail 改为同一默认折叠规则与 process-local row expansion，不保留第二布局模式；
+- 对应 defaults、normalizer、environment branch、message、docs 和 self-proving tests；
+- reachable direct palette reads、old surface helper、Underwater/Ocean 命名和临时 adapter；
+- Doctor 的 retired command hints、硬编码用户英文、orphan session/command feature；
+- 只证明已删除视觉模式的 Cargo/test feature 或 fixture。
+
+必须保留真实兼容或无障碍职责：bracketed paste、synchronized output、Unicode width、
+ANSI depth、terminal capability、SSH/low-motion safety和 input/tool compatibility。
+`show_thinking`、`reasoning_effort`、cost currency、mention behavior 和 PDF/symlink 等
+非纯外观设置只按各自真实行为 owner 审计，M28 不得借“视觉统一”改变模型可见 prompt、
+reasoning route、工具行为或 workspace traversal。
+若某字段同时承担真实非视觉职责，先拆到唯一 owner 再删除视觉别名，不能误删功能。
+
+不新增 General/Appearance/Theme/Layout/Advanced settings page；没有兼容 reader、alias、
+隐藏 legacy theme 或 Custom。
+
+#### M28-F：真实 PTY cutover 与旧路径删除
+
+- 对冻结矩阵执行 buffer/PTY、process reopen 和 installed-binary 回归；
+- 确认所有 production opener 已进入新 surface；
+- 物理删除最后一个 old renderer、old message、old setting、old snapshot/fixture；
+- 更新 `CURRENT_CODEWHALE.md`、public repository checker 和配置参考，只记录实际结果；
+- M28 形成独立 reviewable commits，不混入 Runtime、model、prompt、permission 或 release
+  能力改动。
+
+### 26.4 冻结验收矩阵
+
+状态至少覆盖：
+
+```text
+first-run language / API key / trust / tips
+idle / typing / slash / mention
+thinking / model streaming / tool running
+tool success / tool failure / collapsed / expanded
+approval routine / elevated / critical / deny
+permission Ask / Agent / FullAccess
+user input short / long / cancel / invalid response
+read-only child / Writer / rework
+failed / blocked / cancelled / completed
+pager help / cost / diff / evidence
+live / resume / SQLite reopen / terminal resize
+```
+
+终端矩阵至少覆盖：
+
+- `48×12`、`60×16`、`80×24`、`100×32`、`140×40`；
+- English 与 `zh-Hans`，长路径、CJK、combining character、emoji；
+- ANSI-16、truecolor、terminal reset background；
+- macOS Terminal、iTerm2、Ghostty；无法自动化的宿主差异记录人工观察，不伪造通过；
+- keyboard-only、mouse on/off、scroll、resize、focus restore、bracketed paste；
+- ordinary、`NO_ANIMATIONS`、SSH/受限终端；
+- live event 与同一 Store reopen 后的 exact presentation parity。
+
+### 26.5 正向门、否决项与删除标准
+
+必须同时满足：
+
+- 每个 frame 的 task/state/change/verification/permission/terminal 与 canonical facts 一致；
+- required user action 在所有尺寸和语言中可见，false progress/false success 为 0；
+- 全部可达 surface 使用同一 token、focus、hitbox、action rail 和 container grammar；
+- keyboard/mouse action parity 为 100%，无 mouse-only/hidden shortcut behavior；
+- 所有冻结尺寸无 panic、越界、主要内容遮挡或无法退出；
+- idle frame 0 周期视觉变化、0 周期 presentation 写盘；
+- `en`/`zh-Hans` key/placeholder parity 100%，reachable hardcoded human text 为 0；
+- production Underwater/Ocean/fish/bubble/centered generic modal/General Settings/旧视觉
+  setting reader 和第二 palette owner 为 0；
+- Runtime、State、protocol、DeepSeek、tools 和 permission semantic delta 为 0；
+- 代码结果优先净删除旧 renderer/setting/test；若新增 owner 后旧 path 未删除，不得完成。
+
+任一 canonical truth、审批/权限、input、resume、CJK、退出或 terminal restoration 回归均
+否决 cutover。失败时在同一新 surface 上返工；不得以“暂时保留旧模式”完成 M28。
+
+### 26.6 验证与边界
+
+最低顺序：
+
+```text
+targeted renderer / focus / hitbox / localization tests
+  -> surface reachability + legacy-ban
+  -> English/zh-Hans buffer matrix
+  -> real PTY keyboard/mouse/resize
+  -> canonical live/reopen parity
+  -> ./scripts/dev-dse.sh focused
+  -> cargo fmt --all -- --check
+  -> cargo clippy --workspace --all-targets --locked -- -D warnings
+  -> cargo test --workspace --locked
+  -> public repository checker
+  -> git diff --check
+```
+
+M28 不需要 Key、official DeepSeek API 或付费 A/B；loopback model 和 canonical Store 已足够
+验证 UI correctness。视觉主观印象不能替代上述门禁，PTY/snapshot 也不能被外推成模型质量、
+Token、cache、成本或 verified-success 提升。

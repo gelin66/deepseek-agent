@@ -36,6 +36,9 @@ Professional, calm, precise.
   established macOS terminal and Codex conventions.
 - Decorative panels, excessive borders, or visual effects that compete with
   the transcript.
+- The retired CodeWhale underwater world: ocean gradients, fish, bubbles,
+  ambient motion, and appearance knobs that make the user finish the product's
+  design work.
 
 ## Design Principles
 
@@ -48,6 +51,22 @@ Professional, calm, precise.
    affordances.
 5. Optimize for comfort during sustained use through restrained hierarchy,
    stable placement, and concise bilingual copy.
+6. Keep one DSE-native terminal grammar across the main shell, bottom sheets,
+   full-screen reading rooms, and inline approval; do not preserve a legacy
+   visual mode.
+
+## Standing Visual Direction
+
+Use the category-standard professional terminal interaction at full fidelity:
+transcript first, canonical task summary always legible, familiar keyboard and
+mouse behavior, restrained semantic color, and no decorative identity layer.
+Codex and mature macOS terminal tools set the craft and interaction bar, not a
+source-code or branding template. DSE remains visually and architecturally
+native to its own Run, evidence, recovery, and permission model.
+
+There is no General Settings surface. Language and the three permission modes
+keep their existing dedicated owners; layout, theme, spacing, borders, and
+motion are coherent product defaults or terminal capability adaptations.
 
 ## Accessibility & Inclusion
 

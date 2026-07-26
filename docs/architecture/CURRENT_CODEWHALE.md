@@ -2571,7 +2571,34 @@ AgentRuntime/RunStore、fixed actor route、official DeepSeek ChatCompletions �
 tools 均保持不变。完整事实见
 [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
 
-## 7. 明确非结论
+## 7. 当前 TUI 表面债务（M28 baseline）
+
+M26 已实现 `CanonicalRunPresentation`，M27 已实现三个且仅三个 canonical permission
+mode 和同一 bottom-sheet selector；这两项都已进入真实 TUI caller。但截至本快照，完整
+TUI 仍未按 ADR-0013 切换：
+
+- `crates/tui/src/tui/underwater.rs` 仍是唯一主 shell，`ocean.rs`、ChatWidget 和 event loop
+  继续拥有 Ocean column、fish/bubble ambient renderer、flee 动画与 80ms animation cadence；
+- `settings.toml` 仍读取 `fancy_animations`、`ocean_treatment`、
+  `work_surface_placement`、selectable theme/background、composer density/border、
+  transcript spacing 和 status indicator；
+- onboarding 仍是居中 `Borders::ALL` card；`UserInputView` 仍使用约 `82% × 68%`
+  centered modal；
+- permission 使用 bottom sheet，approval 使用 inline band，pager 使用 full-screen
+  Underwater room；容器、token、留白和 focus chrome 尚未统一；
+- reachable renderer 仍混用 resolved `app.ui_theme` 与 direct global palette；
+- `dse-tui doctor` 仍包含 `/constitution`、`/setup`、`/model`、`/setup tools` 和
+  `/setup persistence` 等退役提示，settings parse warning 仍有硬编码英文；
+- `tests/features` 仍有描述 retired session/command surface 的孤儿 Gherkin 文件，是否删除
+  仍须以 production/test caller 审计为准。
+
+当前没有 production General Settings、ThemePicker 或 ConfigView；它们已经删除。M28 要
+保持这个减法，不得为了重构恢复设置中心。M28 的目标表面、响应式规则、键鼠语义与物理
+删除门见 [ADR-0013](../decisions/0013-native-tui-surface-system.md)、
+[DESIGN.md](../../DESIGN.md) 和 [ROADMAP M28](../product/ROADMAP.md)；在该里程碑全量
+门禁和 cutover 完成前，不能把本节目标描述成当前实现。
+
+## 8. 明确非结论
 
 当前源码不证明：
 
