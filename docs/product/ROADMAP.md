@@ -3977,7 +3977,7 @@ partial-response fail-closed、usage/accounting、root/read-only/Writer、SIGKIL
 
 ## 21. M23：effect-first Hardness / Harness 能力优化
 
-- 状态：**执行中；M23-A、M23-B1、M23-B2 与 M23-B3 continuity caller 已保留，control baseline 尚未获得**
+- 状态：**已按证据停止；M23-B formal control 在 5 个完整成功 arm 后因第 6 arm usage incomplete 停止，当前仅 1 个独立 loss，不授权 M23-C/D**
 - 范围：DSE 当前唯一 DeepSeek/AgentRuntime/RunStore production 链
 - 目标：先扩大可验证任务能力边界，再在质量不回退的前提下优化 Token、时间、费用与复杂度
 - 禁止：把更多 Agent、模式、工具、状态、提示词或代码行数本身当成进步
@@ -4286,6 +4286,35 @@ formal 入口仍必须通过独立 admission、immutable binary、费用上界�
 credential 参数，因此本切片不等于 control baseline，也不授权 M23-C 或 production
 candidate。完整证据见
 [M23-B3 live continuity caller](../../eval/summaries/m23-b3-hardness-live-continuity-2026-07-26.md)。
+
+#### M23-B4 fixed-Pro/high control 结果
+
+B4 先以 clean `e68d215c` candidate 和独立 `8090adce` admission 冻结 immutable release
+binary、唯一 corrected Harness、20-task × 3-round schedule、B2/B3 observer/continuity、
+费用上界和 `maximum_reruns=0`。offline 全量门禁和官方 DeepSeek
+ChatCompletions/V4/Thinking/Tool Calls/价格复核完成后，formal runner 才读取 ignored
+0600 Key，并从 position 1 执行 fixed `deepseek-v4-pro/high` control-only acquisition。
+
+前 5 个 arm 全部 verified success、false success 0、accounting complete；累计 39 个
+physical model request、535,669 input、24,743 output、428,672 cache-hit、106,997
+cache-miss token、USD 0.069624041 和 380,131 ms。第 4 个 arm 完成一次 durable approval
+checkpoint 后 SIGKILL、同 Store exact reopen 和新进程继续。
+
+第 6 个 `readonly_service_graph` 已闭合 canonical terminal、Store/reopen 与 verifier
+facts，但 response accounting 为 `usage_incomplete=true`、`billing_unknown=false`。
+runner 按 admission 在下一物理 request 前以 `accounting_incomplete` 停止；没有重发、
+补 mate、续跑或选择性 rerun。54 个未执行 arm 不进入行为或费用样本，所以 M23-B 的完整
+pass@1/pass^3、成本和 Token baseline 没有获得。
+
+ADR-0011 的正交只读分析保留 6 个 behavior observation：5 verified success、1
+`deepseek_transport:deepseek_transport` verified product failure、false success 0；
+accounting 则为 5 complete、1 usage incomplete。唯一 loss 只出现在一个独立 task，
+未达到至少两个 independent task 的冻结门。M23 决定为
+`stop_incomplete_accounting` + `insufficient_repeated_current_loss`：不运行 M23-C
+high/max，不开发四个 production candidate，不继续这一 formal schedule。production
+delta 为 0，B1/B2/B3 Harness 能力与 ignored 0600 raw 审计证据保留。完整身份、指标、
+安全边界与非结论见
+[M23-B4 Hardness control](../../eval/summaries/m23-b4-hardness-control-2026-07-26.md)。
 
 ### 21.5 M23-C：Root/Writer `high` 对 `max`
 

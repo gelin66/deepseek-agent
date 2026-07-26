@@ -3180,6 +3180,55 @@ results，不建立 success、false-success 或 loss matrix，也不授权 high/
 production candidate。完整身份、门禁与非结论见
 [M23-B3 live continuity caller](../../eval/summaries/m23-b3-hardness-live-continuity-2026-07-26.md)。
 
+### M23-B4 Hardness fixed-Pro/high control stop
+
+独立 admission 绑定 `e68d215c` candidate、`8090adce` admission、immutable binary、
+唯一 corrected Harness、20-task × 3-round schedule、B2/B3 truth、费用上界与
+`maximum_reruns=0`。formal runner 只在 offline 门禁、official DeepSeek protocol/price
+复核和 clean admission commit 后读取 ignored 0600 Key。
+
+正式采集得到：
+
+```text
+complete arms / started trajectories    5 / 6
+verified success                        5
+verified product failure                1
+false success                           0
+accounting complete / usage incomplete  5 / 1
+full-utility observations               5
+complete-arm physical requests          39
+complete-arm input / output tokens      535,669 / 24,743
+complete-arm cache hit / miss tokens    428,672 / 106,997
+complete-arm cost / wall time           USD 0.069624041 / 380,131 ms
+real process resume                     1
+```
+
+第 6 个 `readonly_service_graph` 的 production terminal、canonical Store、无凭据 SQLite
+reopen 与 external verifier 已闭合，但一个 response 没有完整 usage；runner 在下一物理
+request 前以 `accounting_incomplete` 停止。没有 rerun、mate、续跑或把 54 个未执行 arm
+计入样本。
+
+现有 trajectory-report mode 两次生成 byte-identical report。ADR-0011 behavior 轴把第
+6 个轨迹归类为
+`deepseek_transport:deepseek_transport` verified product failure；accounting 轴独立归类
+为 usage incomplete。该 loss 仅出现于一个独立 task，未达到至少两个 task 的 candidate
+门槛。因此：
+
+```text
+acquisition decision  stop_incomplete_accounting
+loss decision         insufficient_repeated_current_loss
+candidate             null
+M23-C high/max         not authorized
+M23-D treatment        not authorized
+production delta      0
+```
+
+B1 task contract、B2 metric observer、B3 live continuity caller 与 ADR-0011 analyzer
+保留；ignored 0600 raw 只作为不可变审计证据。M23 不补跑当前 schedule，也不从单个
+transport failure 制造 ApplicationProbe、localization、VerifiedMilestone 或 Tool ACI。
+完整 hash、官方来源、安全与非结论见
+[M23-B4 Hardness control](../../eval/summaries/m23-b4-hardness-control-2026-07-26.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

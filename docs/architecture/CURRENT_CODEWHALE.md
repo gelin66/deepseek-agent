@@ -2479,6 +2479,29 @@ owner/cause loss matrix，因此不授权 high/max、ApplicationProbe、symbol l
 VerifiedMilestone 或 Tool ACI。完整证据见
 [M23-B1 Hardness task set](../../eval/summaries/m23-b1-hardness-task-set-2026-07-26.md)。
 
+M23-B2/B3 仍只改变唯一 corrected Harness，不改变 production。B2 从 canonical
+RuntimeEvent、workspace mutation、Host receipt 与 external verifier 派生 Hardness
+metrics，并把真正 resume 限定为 durable approval checkpoint、不同 process、byte-exact
+event prefix、reopen 时 physical request 不增长和新进程继续。B3 用现有
+app-server external-process test child 实现这条 lifecycle；3 个冻结长任务才获得
+interactive caller，其余 arm 不变。process self-test 证明 SIGKILL/reopen/resume 后
+请求与文件副作用不重复，正式 M23B arm 现在投影同一 metric/truth contract。
+
+M23-B4 从 clean `e68d215c` binary 和 `8090adce` admission 启动 formal
+fixed-Pro/high control。前 5 个 arm 为 verified success、false success 0 且 accounting
+complete；第 6 个 read-only task 形成 canonical failed terminal、Store exact reopen 与
+verifier snapshot，但 response usage incomplete。runner 在下一物理 request 前停止，
+没有 rerun 或 mate。ADR-0011 analyzer 保留 6 个 behavior observation 和 5 个完整
+accounting observation；唯一
+`deepseek_transport:deepseek_transport` loss 只覆盖一个独立 task。
+
+M23 因而以 `stop_incomplete_accounting` +
+`insufficient_repeated_current_loss` 停止。当前没有完整 Hardness baseline、high/max
+对照或四个 production candidate；production 继续是唯一 AgentRuntime/RuntimeEvent/
+RunStore、fixed actor route、canonical tools、Host latest-revision completion 与 official
+DeepSeek ChatCompletions。完整证据见
+[M23-B4 Hardness control](../../eval/summaries/m23-b4-hardness-control-2026-07-26.md)。
+
 ## 7. 明确非结论
 
 当前源码不证明：

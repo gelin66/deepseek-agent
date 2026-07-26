@@ -1,0 +1,99 @@
+{
+  "schema": "dse.eval.m23b-hardness-control-analysis.v1",
+  "frozen_at": "2026-07-26",
+  "source_identity": {
+    "candidate_revision": "e68d215c300f4b5eda8ab4f8bd96c61bf7cff11d",
+    "candidate_tree": "9443a2029c996cf12343d8cd418a06a2c96e90c0",
+    "live_admission_revision": "8090adce37186af92322086c74c6092a90227bef",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:f91cbc688730eea016177167bf7c6840a24c33bdfdda04c046ef0faeb4687c74",
+    "analysis_harness_sha256": "sha256:f91cbc688730eea016177167bf7c6840a24c33bdfdda04c046ef0faeb4687c74",
+    "run_api": 12,
+    "runtime_event": 19,
+    "state_schema": 25,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "The position-1 M23B control acquired five complete fixed-Pro/high arms, then the sixth arm durably closed its production terminal, Store reopen and external verifier before one response ended with usage_incomplete=true and billing_unknown=false. The six canonical behaviors must be classified independently without admitting cost truth, completing the 60-arm baseline or rerunning any mate.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink 41-record hash-chained journal with no partial tail",
+      "derive exactly six canonical Store trajectories, five complete arm labels and one accounting_incomplete abort",
+      "retain the five complete arms as behavior and accounting observations without exposing raw model or tool content",
+      "classify the sixth trajectory from canonical terminal, latest receipt, workspace, lane and verifier facts even though it has no arm_result",
+      "classify the sixth accounting axis as usage_incomplete and exclude it from cost, token and full-utility aggregate",
+      "keep the 54 unexecuted schedule arms outside product and loss labels",
+      "require the same stable owner/cause across at least two independent task IDs before returning a candidate audit",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection or collapsing an accounting stop into either a successful complete baseline or a product failure",
+    "cutover": "retain immutable raw identity and one read-only report; do not continue the campaign, run high/max or implement a production treatment"
+  },
+  "inputs": [
+    {
+      "campaign": "m23b-hardness-control",
+      "path": "eval/results/m23b-hardness-control-e68d215c300f-v1.jsonl",
+      "journal_schema": "dse.eval.m23b-hardness-control-journal.v1",
+      "file_sha256": "sha256:9c988b5079b9d6a634afc45ea03104d9af059d8405657fa80734b816a70c80a7",
+      "size_bytes": 9747100,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 6,
+    "completed_arm_results": 5,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "label_source": "behavior truth is independent of arm_result; accounting truth is projected independently from canonical ModelAccounting",
+    "acquisition_stop": "arm index 5 closed terminal, Store reopen and verifier, then accounting_projection rejected complete=false, usage_complete=false, usage_incomplete=true, billing_unknown=false and maximum_reruns=0",
+    "product_loss": [
+      "false success",
+      "deterministic verifier failure",
+      "actor contract failure",
+      "verifier-passing workspace without a latest Host receipt",
+      "production terminal failure with closed identity and environment"
+    ],
+    "non_loss": [
+      "usage_incomplete accounting when behavior truth is independently closed",
+      "unexecuted schedule arm",
+      "initial verifier failure required by the frozen task",
+      "measurement or evaluator interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct task IDs",
+    "owner_attribution_gate": "an accounting stop never authorizes a production owner audit by itself"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "accounting status as a behavior label",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
