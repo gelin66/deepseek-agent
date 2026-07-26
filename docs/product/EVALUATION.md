@@ -3555,6 +3555,67 @@ delivery install/verify/uninstall 与 `git diff --check` 全绿。一个 exec st
 push 或 release。完整审计见
 [M28 summary](../../eval/summaries/m28-native-tui-surface-cutover-2026-07-26.md)。
 
+### M29 local release-candidate workflow acceptance
+
+M29 是 credential-free、workflow-level local release regression，不是模型 treatment 或
+新 Harness。baseline 为 M28 clean checkpoint `548afbe3e`。它只接受 canonical
+`AgentApplication -> AgentRuntime -> RunStore`、现有 TUI/CLI/app-server caller、loopback
+ChatCompletions、真实临时 Git repository 和 deterministic external verifier 的证据。
+
+#### Frozen cases
+
+| case | required production evidence | veto |
+|---|---|---|
+| long root task | >=2 model turns、workspace mutation、Host verifier、1 terminal | 丢 input/event、未验证成功、重复 terminal |
+| verifier recovery | fail receipt、rejection、fresh correction、latest-revision pass | 旧 receipt 接管、false success |
+| approval deny | pending exact interaction、deny、0 start/request/side effect | deny 后执行 |
+| approval approve/reopen | frozen digest/revision、1 start、1 outcome、1 side effect | 重复 prompt/执行或 stale authorization |
+| read-only child | fixed Flash/high、read-only catalog、handoff、Pro/high root completion | child 写入或替代 root |
+| explicit Writer | isolated worktree、seal/verify/integrate/cleanup each once | root direct write、重复/漏 cleanup |
+| Store/process reopen | same run/event prefix/plan/accounting/evidence/terminal | resend、重复副作用、第二终态 |
+| terminal workflow | en/zh-Hans typing/paste/resize/mouse/approval/resume | required action 不可达或 projection 漂移 |
+
+每个 case 必须冻结 task/acceptance/verifier、actor/workspace/permission/route、
+attempt/request/accounting、tool lifecycle、workspace revision、evidence receipt、terminal
+和 reopen equality。`maximum_reruns=0`；确定性门禁可从全新独立 temp identity 重复执行，
+但失败 execution 不得被选择性替换或隐藏。
+
+#### Defect admission
+
+production fix 只在下列任一条件满足时准入：
+
+- 同一 stable owner/cause 在两个独立 workflow execution 重复；
+- 一个 deterministic fault injection 精确违反 false-success、latest-revision evidence、
+  permission/deny、Writer isolation、exactly-once side effect 或 crash/reopen 不变量。
+
+单次不可复现噪声、测试采样竞态、主观 UI 判断和分层 unit pass 都不是 production defect。
+现有测试已完整覆盖的行为必须复用真实 owner，禁止复制工具、Store、projection 或 failure
+分类。临时观测代码没有独立 production 消费者，结论前必须删除。
+
+#### Gates and decision
+
+机制门要求：
+
+1. 8/8 workflow 的 external acceptance、Host terminal 与 Store replay 一致；
+2. `false_success=0`，denied/unapproved/stale invocation 的 side effect 为 0；
+3. root/read-only child/Writer/recheck 路由与三档 permission 无变化；
+4. crash/reopen 的 event prefix、RequestPlan、accounting、evidence、request/side-effect/
+   terminal count 精确；
+5. CLI/TUI/app-server、English/`zh-Hans`、keyboard/mouse parity；
+6. targeted workflow/PTY/reopen/Writer、focused、fmt、strict workspace Clippy、workspace
+   test、locked/offline delivery lifecycle、public checker、diff check 全部通过。
+
+最终只能记录：
+
+```text
+keep_current_workflow_no_reproducible_blocker
+keep_minimal_attributable_workflow_fix_and_delete_old_path
+blocked_by_reproducible_local_release_workflow_defect
+```
+
+M29 的 false-success/verification 只属于 deterministic loopback fixture，不外推官方
+DeepSeek coding quality。Key/API/network/GitHub/push/release 必须为 0。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

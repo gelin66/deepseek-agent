@@ -5157,3 +5157,107 @@ deterministic gate 覆盖。macOS Terminal、iTerm2、Ghostty 的宿主渲染差
 M28 范围内没有修改 protocol、Runtime、State、DeepSeek、tools、prompt、model 或
 permission 语义；没有 Key、official API、GitHub、push 或 release。完整结果见
 [M28 summary](../../eval/summaries/m28-native-tui-surface-cutover-2026-07-26.md)。
+
+## 27. M29：本地 release-candidate 真实工作流验收
+
+- 状态：**合同冻结；执行中**
+- 基线：M28 clean checkpoint `548afbe3e`
+- 目标：用唯一 credential-free production composition 闭合真实用户工作流，而不是把
+  M24、M26、M27、M28 的分层机制通过拼接成可用性结论
+- 范围：验收与缺陷修复；不改变 DeepSeek model/prompt/tool catalog、三档 permission、
+  fixed actor route、RuntimeEvent/Run API/State schema 或 Host completion 语义
+
+### 27.1 真实问题、owner 与反事实
+
+M24 证明 exact-source 本地交付，M26 证明 canonical Run 可读，M27 证明权限闭环，M28
+证明 terminal-native presentation/interaction 正确。当前仍缺少一个以用户工作流为单位的
+可复现矩阵，逐项证明：
+
+- 长任务不会因多轮 tool/model/verification 生命周期丢失终态或输入；
+- verifier 失败后能在同一 Run、最新 workspace revision 上返工并完成；
+- approval 的 deny/approve/reopen 都保持 exact invocation 与零重复副作用；
+- read-only child 的证据由 root 汇聚，child 不能替代 root completion；
+- 显式 Writer 只在 isolated worktree 写入，Host seal/verify/integrate/cleanup 恰好一次；
+- terminal resume 与 SQLite reopen 恢复同一事实、焦点和唯一终态。
+
+唯一 execution owner 仍是 `AgentApplication -> AgentRuntime -> RunStore`；底层行为分别由
+现有 tools、state、orchestrator、localization 和 TUI owner 提供。M29 的 acceptance owner
+是现有 Rust integration/PTY test surface，不新增 evaluator、第二 Store、第二 event
+protocol、第二 renderer 或 parallel workflow controller。
+
+旧路径不是 production feature，而是“从互不相连的机制测试推断整条工作流可用”的证据
+缺口。M29 以明确 case -> production caller -> frozen acceptance -> Store evidence 映射
+替代该推断；若现有用例已经覆盖，只引用并重跑真实 owner，不复制实现。
+
+### 27.2 冻结工作流矩阵
+
+全部 case 使用同一 source revision、locked/offline binary、loopback ChatCompletions、
+临时真实 Git repository、canonical tools、fixed actor route、外部 deterministic verifier、
+`maximum_reruns=0` 和独立 SQLite Store：
+
+| workflow | 必须观察的真实闭环 |
+|---|---|
+| long root task | 至少两次 model turn、一次 workspace mutation、一次 Host verifier、唯一 terminal |
+| verifier recovery | fail receipt -> completion rejection -> fresh correction -> latest-revision pass |
+| approval deny | exact pending interaction -> deny -> tool start/side effect 为 0 -> 非成功终态 |
+| approval approve/reopen | exact digest/revision 冻结；reopen 后一次 start/outcome，不重复 interaction/side effect |
+| read-only child | Flash/high child、只读 catalog、typed handoff、Pro/high root 汇聚与唯一 completion |
+| explicit Writer | Pro/high Writer worktree、root 不被直接写、seal/verify/integrate/cleanup 各一次 |
+| RunStore reopen | 同一 run id/event prefix/request plan/accounting/evidence/terminal；无第二 request 或 terminal |
+| terminal interaction | English/`zh-Hans` 的 typing/paste/resize/mouse/approval/resume，required action 始终可达 |
+
+每个 workflow 冻结并检查：
+
+```text
+task acceptance and external verifier identity
+run / attempt / actor / workspace assignment
+permission and actual fixed route audit
+model request count and accounting completeness
+ToolPrepared / ToolExecutionStarted / ToolOutcome order
+workspace revision before/after and side-effect count
+child/Writer handoff and Host evidence receipt
+terminal state/count and SQLite reopen equality
+visible required action and terminal projection
+```
+
+### 27.3 缺陷准入与删除规则
+
+M29 只允许修复：
+
+1. 同一 stable owner/cause 在两个独立 workflow execution 中重复；或
+2. 一个 deterministic fault-injection case 精确违反 safety、latest-revision evidence、
+   exactly-once side effect、permission、reopen 或 false-success 不变量。
+
+超时、并发调度或 PTY 采样失败必须先证明是 production defect；测试自身竞态只在现有 test
+owner 内收敛，不得借机改变 production semantics。主观不顺、单次不可复现噪声、模型质量
+猜测和无 treatment delta 的重构不进入代码。
+
+若复现真实缺陷，顺序固定为 failing contract/test -> 最小唯一-owner修复 -> 真实 caller
+迁移 -> 被替代路径物理删除 -> 全矩阵回归。若没有缺陷，production delta 为 0。任何临时
+trace、probe、fixture repository、SQLite、PTY capture、Cargo target 和 installed artifact
+都在结论前精确删除；失去消费者的 M29-only runner/test helper 也必须删除。
+
+### 27.4 判定与门禁
+
+硬门：
+
+- workflow matrix 全部通过，`false_success=0`；
+- latest-revision verifier、approval/deny 和 Writer isolation 无例外；
+- crash/reopen 保持 event prefix、exact RequestPlan/accounting、零重复 request/side effect、
+  一个且仅一个 terminal；
+- root Pro/high、read-only child Flash/high、Writer Pro/high、typed recheck Pro/max 不变；
+- Ask/Agent/FullAccess 与 explicit deny/hard invariant 不变；
+- CLI/TUI/app-server、English/`zh-Hans` 和 keyboard/mouse 投影一致；
+- focused、targeted PTY/reopen/Writer、fmt、strict workspace Clippy、workspace test、
+  locked/offline delivery lifecycle、public repository checker 与 `git diff --check` 全通过。
+
+可接受结论只有：
+
+```text
+keep_current_workflow_no_reproducible_blocker
+keep_minimal_attributable_workflow_fix_and_delete_old_path
+blocked_by_reproducible_local_release_workflow_defect
+```
+
+本切片不读取 Key、不调用 official DeepSeek API、不访问 GitHub、不 push、不 release，也
+不形成 DeepSeek verified-success、Token、cache、费用或模型 wall-time 改善结论。
