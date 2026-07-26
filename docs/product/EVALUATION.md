@@ -3636,6 +3636,57 @@ Key、official API、external network、GitHub、push、release 均为 0。结�
 official DeepSeek quality/Token/cache/cost/wall-time。完整证据见
 [M29 summary](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
 
+### M30 current dogfood loss acquisition
+
+M30 不是 M23 continuation，也不是 M29 机制结果的质量外推。它从 clean
+`1b7f92a97` 冻结一个新的 current control-only loss acquisition：
+
+| fact | frozen value |
+|---|---|
+| task material | hash-bound inheritance of M23 20-task fixture/contracts |
+| schedule | one position-1 arm per task；20 arms；no mate |
+| production identity | current Run API v13 / RuntimeEvent v20 / State v26 / exec stream v4 |
+| model | root/Writer `deepseek-v4-pro` + high；ordinary read-only actor profile Flash/high |
+| permission | headless Agent；three continuity cases Ask + interactive reopen |
+| verifier | per-task external deterministic verifier + latest-revision Host receipt |
+| retry | `maximum_reruns=0`；transport/runtime retry 0 |
+| cost ceiling | `$0.50/arm`、`$10.00/suite` |
+| historical evidence | manifest facts only；historical raw/admission/journal excluded |
+
+Offline acceptance:
+
+1. inherited manifest/file/tree/reference hashes and all 20 fail-before/pass-after or safety
+   counterexamples reproduce;
+2. current Run API permission envelope, fixed actor routes and task/lane scopes are exact;
+3. three continuity tasks commit interaction, SIGKILL, reopen and resolve once with no additional
+   physical model request or side effect;
+4. behavior/accounting truth remain orthogonal and deterministic;
+5. journal remains ignored 0600, exclusive, fsynced and hash-chained;
+6. self-test, dry-run, production loopback, focused/full repository gates and exact-source identity
+   all pass without Key/API.
+
+Credential-front is not admitted by this contract. Before it can exist, the immutable binary,
+manifest/Harness/schedule/task hashes, authority hashes, raw path, official 2026-07-27 DeepSeek
+surface/price review, current explicit authorization and `$10` suite ceiling must all be frozen.
+Any false success, identity mismatch, observer ambiguity, unsafe evidence, unknown billing,
+incomplete usage, environment ambiguity or ceiling breach stops before the next arm. No rerun or
+mate completion is allowed.
+
+Candidate attribution requires one identical stable `owner_code:loss_code` across at least two
+distinct task IDs. One task, raw tool frequency, expected safety rejection, accounting stop or
+unexecuted arm cannot authorize production work. Valid decisions are:
+
+```text
+next_candidate_audit_required
+insufficient_repeated_current_loss
+stop_incomplete_accounting
+stop_invalid_identity_or_observation
+```
+
+`next_candidate_audit_required` only opens one minimum owner audit; it is not automatic
+implementation. Until a repeated loss exists, production delta and product metric claim are both
+zero.
+
 ## 10. 结果与决策记录
 
 建议结果格式：

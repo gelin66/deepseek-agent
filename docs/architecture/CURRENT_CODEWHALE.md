@@ -2617,6 +2617,18 @@ Harness、probe、Runtime、Store、protocol、renderer、permission/model route
 完整事实见
 [M29 local workflow acceptance](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
 
+M30 当前只有 credential-free contract，没有 production capability delta。它从 M29 clean
+checkpoint `1b7f92a97` 继承 current Run API v13 / RuntimeEvent v20 / State v26 /
+exec-stream v4 identity，并按 hash 引用 M23 的 20-task fixture、task contracts、tool
+policies 与 reference patches；不继承 M23 的旧 binary、live admission、authority hash、
+journal 或 raw。
+
+计划中的 current acquisition 是 20 个独立任务各一次的 breadth-first loss collector，
+不是 pass³ 或 treatment A/B。当前 fixed actor route、三档 permission、唯一
+AgentApplication/AgentRuntime/RunStore、canonical tools 与 latest-revision Host completion
+都保持不变。离线 Harness/current caller/reopen 门和本 Goal 的 credential 授权尚未闭合，
+因此没有读取 Key、没有 model API request，也没有 current loss 或候选结论。
+
 ## 8. 明确非结论
 
 当前源码不证明：

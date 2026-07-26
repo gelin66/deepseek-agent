@@ -5280,3 +5280,56 @@ counterexample 的准入条件；因此 production delta=0，没有新增 treatm
 也没有 old production path 可删。Key、official API、external network、GitHub、push、
 release 均为 0。完整结果见
 [M29 summary](../../eval/summaries/m29-local-release-workflow-2026-07-27.md)。
+
+## 28. M30：current production dogfood loss acquisition
+
+- 状态：**合同已冻结；credential-front 尚未准入**
+- 基线：M29 clean checkpoint `1b7f92a97`
+- owner：唯一 corrected Harness
+  `scripts/eval-m9b-fixed-pro-regression.py`
+- production delta：重复、可归因 current loss 出现前为 0
+
+### 28.1 真实问题与边界
+
+M29 已证明当前本地 production composition 的 8 条确定性 workflow 闭合，但不能外推
+official DeepSeek coding quality。M23 的 20-task Hardness campaign 属于旧 revision、旧
+Run API/permission contract，且在第六条轨迹 usage incomplete 后已正式停止；不能续跑、
+补 mate 或把 5 个成功和 1 个独立 loss 当作 current baseline。
+
+M30 不预设新功能。它复用 M23 已冻结的 fixture、reference solution、task scope 和
+deterministic verifier，只建立新的 current identity、Run API v13 / RuntimeEvent v20 /
+State v26 permission/reopen 合同和一轮 breadth-first schedule。任务事实由 M23 manifest
+按 hash 继承，不复制第二任务集；历史 raw、live admission、旧 authority hash 和旧
+campaign journal 均不继承。
+
+### 28.2 冻结 acquisition
+
+20 个独立任务各执行一次，顺序固定为 M23 position 1；每个 arm 使用 fresh Git
+repository、独立 SQLite Store/verifier HOME、同一 immutable current binary、
+`maximum_reruns=0`、canonical tools、external verifier 和 Host latest-revision receipt。
+root 与显式 Writer 固定 Pro/high，普通 read-only child 按现有 actor profile 固定
+Flash/high；这不是 Auto。普通 headless run 使用 `permission_mode=agent`；需要 durable
+restart 的三个任务使用 Ask/interactive，在 interaction commit 后 SIGKILL，reopen 后才
+resolve，且不得增加 physical model request。
+
+这是一组 current loss observations，不是 pass³、A/B 或 release quality score。每条轨迹
+分别派生 behavior truth 与 accounting truth；任一 false success、identity/observer/
+environment ambiguity、unknown billing、usage incomplete、unsafe evidence 或 cost ceiling
+在下一 arm 前停止，不重跑。
+
+### 28.3 候选门与删除
+
+只有同一 `stable owner_code:loss_code` 跨至少两个不同 task id 重复，且对应 behavior、
+latest revision、route/lane、reopen 和 accounting 均闭合，才允许审计一个最小
+unique-owner candidate。达到阈值也不自动授权实现；必须重新写明 problem、acceptance、
+owner、old path、tests 与 deletion。
+
+若没有重复 loss，M30 以 `insufficient_repeated_current_loss` 收口。若 acquisition 因
+accounting/identity 停止，则只记录精确停止事实，不从部分样本形成 aggregate。任何后续
+候选未通过质量、replay 或 accounting 门，完整删除 treatment 和失去消费者的接线。
+
+合同为
+`eval/manifests/m30-dogfood-loss-acquisition-v1.json`。离线 manifest/Harness/self-test、
+current production loopback、crash/reopen、route/permission parity 与全仓门禁闭合前不
+读取 Key、不调用 official API；credential-front 还必须取得本 Goal 的明确授权和冻结
+$0.50/arm、$10/suite 上界。全程不访问 GitHub、不 push、不 release。

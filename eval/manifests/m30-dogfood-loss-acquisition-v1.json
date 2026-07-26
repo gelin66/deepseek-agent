@@ -1,0 +1,189 @@
+{
+  "schema": "dse.eval.m30-dogfood-loss-acquisition.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "1b7f92a97655b4cbaada3340521cabc17721d2cb",
+    "starting_tree": "67efaaf99c521ca93c2ab80e01384da4162f71a4",
+    "required_clean_start": true,
+    "run_api": 13,
+    "runtime_event": 20,
+    "state_schema": 26,
+    "exec_stream": 4,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.9.6",
+    "go": "1.26.4",
+    "cargo_lock_sha256": "sha256:55b6c060bc65d3acd60aa71df4ff8f0124a7b85fb1adf10f812ae61b97899fe4",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m23b-hardness-control-v1.json",
+    "file_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+    "sections": [
+      "fixture_contract",
+      "reference_patches",
+      "tasks",
+      "tool_policies"
+    ],
+    "historical_identity_inherited": false,
+    "historical_raw_is_input": false
+  },
+  "slice_contract": {
+    "real_problem": "M29 proves the current local production composition but does not identify current official DeepSeek coding losses. Earlier M23 stopped after six trajectories and belongs to an older revision and permission protocol, so it cannot be resumed or treated as a current baseline.",
+    "acceptance": [
+      "reuse the frozen 20-task Hardness fixture and verifier facts without copying a second task corpus",
+      "run one breadth-first position-1 arm per independent task on one current immutable binary",
+      "derive behavior truth independently from accounting truth using canonical Store, latest-revision Host receipt and external verifier facts",
+      "preserve fixed actor route, current three-mode permission policy, exact reopen and one continuity restart for tasks that require it",
+      "stop before the next arm on false success, identity mismatch, observer ambiguity, unsafe evidence, unknown billing, incomplete usage or a cost ceiling",
+      "require the same stable owner and cause across at least two independent task IDs before any production candidate audit",
+      "return insufficient_repeated_current_loss when the threshold is not met"
+    ],
+    "owner": "the existing corrected scripts/eval-m9b-fixed-pro-regression.py Harness",
+    "production_delta": "none before a repeated owner/cause loss is proven",
+    "old_path_replaced": "subjective feature selection, resuming the stopped M23 campaign, or inferring current loss from deterministic M29 regression",
+    "cutover": "retain one current loss matrix; do not create a second evaluator, rerun an arm, complete historical mates or implement a feature without repeated evidence",
+    "failed_treatment_deletion": "any later candidate that fails quality, replay or accounting gates is physically deleted with its unconsumed branch"
+  },
+  "resources": {
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "formal_tasks": 20,
+    "formal_arms": 20,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 0,
+    "max_output_tokens_per_request": 32768,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 1200000,
+    "harness_wall_time_ms": 1320000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 180,
+    "per_arm_known_cost_ceiling_usd": "0.50",
+    "suite_known_cost_ceiling_usd": "10.00",
+    "permission_mode": "agent",
+    "interactive": false,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m30-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "rust_router_localization",
+        "typescript_route_localization",
+        "python_config_crossfile",
+        "rust_line_recovery_resume",
+        "python_jsonl_runtime",
+        "readonly_service_graph",
+        "writer_envelope",
+        "safety_authorization_claim",
+        "rust_event_localization",
+        "typescript_request_crossfile",
+        "rust_netstring_recovery_resume",
+        "readonly_component_graph",
+        "writer_policy_migration",
+        "safety_export_claim",
+        "rust_registry_localization",
+        "typescript_forwarded_crossfile",
+        "typescript_retry_resume",
+        "safety_tenant_claim",
+        "go_health_api",
+        "typescript_dom_ui"
+      ]
+    ],
+    "schedule_semantics": "one frozen breadth-first position-1 arm per independent task; this is a current loss acquisition, not pass-power-3 or treatment A/B; maximum_reruns=0"
+  },
+  "continuity_policy": {
+    "task_selector": "inherited task.required_continuity is not null",
+    "permission_mode": "ask",
+    "interactive": true,
+    "checkpoint_kind": "interaction_requested",
+    "interaction_kind": "approval",
+    "process_stop": "sigkill_process_group",
+    "restarts_per_arm": 1,
+    "physical_requests_added_at_reopen": 0,
+    "resolve_only_after_reopen": true
+  },
+  "decision_rule": {
+    "complete_acquisition": "all 20 current arms have closed behavior truth and complete accounting with exact reopen and false_success=0",
+    "stop_incomplete": "stop before the next arm on unknown billing, incomplete usage, identity mismatch, observer ambiguity, false success, unsafe evidence, cost ceiling or infrastructure ambiguity; never rerun",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct task IDs",
+    "candidate_action": "audit exactly one minimum unique-owner repair; implementation is not automatic",
+    "no_repeated_loss": "insufficient_repeated_current_loss",
+    "record_class": "m30_current_dogfood_loss_acquisition",
+    "product_metric_eligible": false,
+    "quality_aggregate_eligible": false
+  },
+  "metrics": [
+    "verified_success",
+    "correct_safety_rejection",
+    "false_success",
+    "behavior_status",
+    "behavior_owner_code",
+    "behavior_loss_code",
+    "accounting_status",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+    "cost_nanousd",
+    "wall_time_ms",
+    "first_relevant_file_ms",
+    "relevant_files_seen_before_first_edit",
+    "irrelevant_files_seen_before_first_edit",
+    "first_edit_verified",
+    "repair_loops",
+    "repeated_reads_same_mutation_epoch",
+    "compaction_count",
+    "resume_count",
+    "goal_constraint_loss",
+    "service_started",
+    "runtime_assertion_passed"
+  ],
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_model_aliases_retired_on": "2026-07-24T15:59:00Z",
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "tool_calls_supported": true,
+      "thinking_supported": true
+    }
+  },
+  "security": {
+    "credential_read_before_live_admission": false,
+    "network_model_request_before_live_admission": false,
+    "raw_output": "ignored_0600_exclusive_hash_chained",
+    "raw_is_committed": false,
+    "raw_is_historical_input": false,
+    "github_access": false,
+    "push": false,
+    "release": false
+  },
+  "authority_identity": {
+    "freeze_after_offline_gates": true,
+    "live_admission_exists": false
+  }
+}
