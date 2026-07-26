@@ -21,6 +21,18 @@ use dse_localization::{MessageId, tr};
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
+    let surface_contract = crate::tui::surface_system::for_onboarding(app.onboarding)
+        .expect("onboarding renderer requires a reachable onboarding state");
+    debug_assert!(
+        surface_contract
+            .targets
+            .contains(&crate::tui::surface_system::SurfaceContainer::FullScreenRoom)
+    );
+    debug_assert!(!surface_contract.opener.is_empty());
+    debug_assert!(!surface_contract.state_source.is_empty());
+    debug_assert!(!surface_contract.exit_action.is_empty());
+    debug_assert!(!surface_contract.legacy_deletion_point.is_empty());
+
     let block = Block::default().style(Style::default().bg(palette::DSE_BG));
     f.render_widget(block, area);
 

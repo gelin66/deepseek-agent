@@ -37,6 +37,7 @@ pub mod run_projection;
 pub mod scrolling;
 pub mod slash_menu;
 pub mod spinner;
+pub(crate) mod surface_system;
 pub mod transcript;
 pub mod ui;
 mod ui_text;

@@ -367,8 +367,21 @@ impl ViewStack {
 
     pub fn push<V: ModalView + 'static>(&mut self, view: V) {
         let kind = view.kind();
+        let contract = crate::tui::surface_system::for_modal(kind);
         self.views.push(Box::new(view));
-        tracing::debug!(target: "dse_tui::view_stack", action = "push", kind = ?kind, depth = self.views.len(), "view pushed");
+        tracing::debug!(
+            target: "dse_tui::view_stack",
+            action = "push",
+            kind = ?kind,
+            surface = ?contract.surface,
+            targets = ?contract.targets,
+            opener = contract.opener,
+            state_source = contract.state_source,
+            exit_action = contract.exit_action,
+            legacy_deletion_point = contract.legacy_deletion_point,
+            depth = self.views.len(),
+            "view pushed"
+        );
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {

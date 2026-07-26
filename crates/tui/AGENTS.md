@@ -4,35 +4,45 @@ Scope: the TUI, the runtime engine embedded in it, and everything a user
 sees. Read the repo-root `AGENTS.md` first; this file adds the rules that
 are specific to this crate.
 
-## The shell grammar (do not regress it)
+## The surface grammar (do not regress it)
 
-The default shell is the underwater system (`src/tui/underwater.rs`,
-`ocean.rs`, `widgets/`, `views/`). Its contract, in one list:
+ADR-0013 and the root `DESIGN.md` define one Operate, transcript-first,
+terminal-native surface system. M28 is the active cutover milestone. Until its
+cutover commits land, `src/tui/underwater.rs`, `ocean.rs`, the centered
+onboarding card, and legacy display settings are current baseline debt, not
+accepted target behavior and not a reason to add another legacy caller.
 
-- **One owner per fact.** Route/mode/permission/context live in the header;
-  Tasks/To-do in the top strip; receipts and the single live row in the
-  transcript; phase/cost/detail keys in the footer. Never restate a fact in
-  a second place.
-- **One live row.** Settled receipts are still; only the active row and the
-  footer phase mark move. Decorative motion exists only in empty idle water
-  and stops the instant the user types or anything needs attention.
-- **Phase is typed.** `ShellPhase::from_app` derives idle/typing/working/
-  waiting/approval/done/failed from real app state. Never invent state in a
-  renderer; never compare English strings to detect state (use the enums —
-  the permission chip maps from canonical `RunPermissionMode`).
-- **Treatment is typed.** `OceanTreatment` (ombre/flat) parses once
-  from settings. Every underwater treatment keeps ambient life; appearance
-  and motion (`low_motion`, `fancy_animations`) are independent axes.
+- **Only four surface contracts.** Production UI is the main work surface,
+  a bottom sheet, a full-screen room, or the inline approval interruption.
+  Slash and mention completion remain composer-attached parts of the main
+  surface. Do not invent another panel, generic modal, renderer, or mode.
+- **One owner per fact.** `CanonicalRunPresentation` owns task, phase, change,
+  verification, Agent, permission, recovery, and terminal projection. A
+  renderer never invents plan, progress, ETA, confidence, evidence, or
+  completion truth.
+- **Transcript first.** Wide layouts add the canonical right rail, medium
+  layouts project the same facts as a short top strip, and narrow/short
+  layouts use one column. Responsive placement never changes state, focus,
+  input, scroll, or the facts shown.
+- **Idle is still.** Rendering is event-driven. No fish, bubbles, gradients,
+  ambient glyphs, timer redraw, pulsing brand mark, or decorative completion
+  sequence survives M28.
+- **One token owner.** Reachable renderers consume the same resolved DSE
+  presentation tokens. Terminal background/foreground are the base; one
+  accent plus semantic success/warning/error/focus roles carry meaning.
+  Color is always paired with text or a stable symbol.
 - **Footer notices go through the toast system** (`push_status_toast` /
   `active_status_toast`), never the legacy `status_message` sink directly:
   toasts carry level + TTL, errors hold sticky, acknowledgements expire.
-- **Compact tiers shed chrome, not content.** At small sizes a room drops
-  titles/captions/spacers before it drops the object the user opened it to
-  manipulate, and bodies budget from the footer's *wrapped* height
-  (`wrapped_footer_lines` / `action_footer_lines`).
+- **Compact tiers shed chrome, not content.** Drop repeated titles, captions,
+  borders, blank rows, and secondary metrics before task, current state,
+  required action, verification, terminal outcome, or composer.
 - **Rows are objects.** Anything selectable has a hitbox recorded at render
-  time, keyboard + mouse parity, and visible focus. Destructive controls
-  arm before they fire.
+  time, keyboard + mouse parity, and visible focus. Destructive controls arm
+  before they fire.
+- **No appearance matrix.** Do not add General Settings, selectable themes,
+  background/layout/density/spacing/status variants, Custom permission, a
+  legacy toggle, compatibility reader, or hidden fourth mode.
 
 ## Localization rules
 
