@@ -62,6 +62,20 @@ M20_ADMISSION_SCHEMA = "dse.eval.m20-transport-viability-live-admission.v1"
 M20_JOURNAL_SCHEMA = "dse.eval.m20-transport-viability-journal.v1"
 M20_SUCCESS_MARKER = b"Official API host and credential are reachable"
 M20_FAILURE_MARKER = b"API connection failed"
+M35_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m35-official-reliability-soak-v1.json"
+)
+M35_MANIFEST_SCHEMA = "dse.eval.m35-official-reliability-soak.v1"
+M35_ADMISSION_SCHEMA = (
+    "dse.eval.m35-official-reliability-soak-live-admission.v1"
+)
+M35_JOURNAL_SCHEMA = (
+    "dse.eval.m35-official-reliability-soak-journal.v1"
+)
+M35_RUN_API = 15
+M35_EVENT_API = 22
+M35_STATE_SCHEMA = 28
+M35_EXEC_STREAM = 6
 
 
 def selected_campaign(arguments: list[str]) -> str:
@@ -2021,6 +2035,7 @@ class StdioClient:
         forbidden: bytes,
         *,
         allow_stdout_prelude: bool = False,
+        schema_version: int = RUN_API,
     ) -> None:
         require(
             process.stdin is not None and process.stdout is not None,
@@ -2031,6 +2046,7 @@ class StdioClient:
         self.stdout_fd = process.stdout.fileno()
         self.forbidden = forbidden
         self.allow_stdout_prelude = allow_stdout_prelude
+        self.schema_version = schema_version
         self.buffer = bytearray()
         os.set_blocking(self.stdin_fd, False)
         os.set_blocking(self.stdout_fd, False)
@@ -2070,7 +2086,7 @@ class StdioClient:
             break
         require(
             isinstance(response, dict)
-            and response.get("schema_version") == RUN_API
+            and response.get("schema_version") == self.schema_version
             and response.get("request_id") == envelope["request_id"]
             and isinstance(response.get("result"), dict),
             "stdio_response_invalid",
@@ -9676,6 +9692,1250 @@ def run_formal(args: argparse.Namespace) -> int:
                 pass
 
 
+def m35_manifest() -> dict[str, Any]:
+    manifest = read_json_object(
+        M35_MANIFEST_PATH, "m35_manifest_unavailable"
+    )
+    source = manifest.get("source_identity")
+    schedule = manifest.get("schedule")
+    resources = manifest.get("resources")
+    profiles = manifest.get("task_profiles")
+    require(
+        manifest.get("schema") == M35_MANIFEST_SCHEMA
+        and isinstance(source, dict)
+        and source.get("run_api") == M35_RUN_API
+        and source.get("runtime_event") == M35_EVENT_API
+        and source.get("state_schema") == M35_STATE_SCHEMA
+        and source.get("exec_stream") == M35_EXEC_STREAM
+        and isinstance(schedule, dict)
+        and schedule.get("rounds") == 6
+        and schedule.get("logical_runs") == 24
+        and schedule.get("maximum_harness_reruns") == 0
+        and schedule.get("normal_runtime_max_model_retries") == 2
+        and isinstance(resources, dict)
+        and resources.get("maximum_harness_reruns") == 0
+        and resources.get("stop_before_next_run_on_incomplete_accounting")
+        is True
+        and isinstance(profiles, list)
+        and [profile.get("id") for profile in profiles]
+        == [
+            "plain_chat_marker",
+            "read_file_marker",
+            "grep_then_read_marker",
+            "bounded_edit_marker",
+        ],
+        "m35_manifest_invalid",
+    )
+    return manifest
+
+
+def m35_schedule(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    profiles = {
+        profile["id"]: profile for profile in manifest["task_profiles"]
+    }
+    rotations = manifest["schedule"]["rotation"]
+    require(
+        isinstance(rotations, list)
+        and len(rotations) == 3
+        and all(
+            isinstance(rotation, list)
+            and sorted(rotation) == sorted(profiles)
+            for rotation in rotations
+        ),
+        "m35_schedule_invalid",
+    )
+    schedule: list[dict[str, Any]] = []
+    for round_index in range(manifest["schedule"]["rounds"]):
+        rotation = rotations[round_index % len(rotations)]
+        for position, profile_id in enumerate(rotation):
+            schedule.append(
+                {
+                    "run_index": len(schedule),
+                    "round_index": round_index,
+                    "round_position": position,
+                    "profile_id": profile_id,
+                    "profile": profiles[profile_id],
+                }
+            )
+    require(
+        len(schedule) == manifest["schedule"]["logical_runs"],
+        "m35_schedule_invalid",
+    )
+    return schedule
+
+
+def m35_binary_identity(binary: Path, revision: str) -> dict[str, Any]:
+    identity = probe_binary(binary, revision)
+    companion = binary.with_name("dse-tui")
+    require(
+        binary.name == "dse"
+        and companion.is_file()
+        and not companion.is_symlink()
+        and os.access(companion, os.X_OK),
+        "m35_binary_pair_invalid",
+    )
+    companion_probe = run_command(
+        [str(companion), "--version"], cwd=ROOT, timeout=15
+    )
+    require(
+        companion_probe.returncode == 0
+        and revision[:12] in companion_probe.stdout.decode(
+            "utf-8", "strict"
+        ),
+        "m35_binary_pair_invalid",
+    )
+    return {
+        "dse": identity,
+        "dse_tui": {
+            "revision": revision,
+            "sha256": file_hash(companion),
+            "size_bytes": companion.stat().st_size,
+            "version": companion_probe.stdout.decode("utf-8").strip(),
+        },
+        "pair_sha256": canonical_hash(
+            {
+                "dse": identity["sha256"],
+                "dse_tui": file_hash(companion),
+            }
+        ),
+    }
+
+
+def m35_preflight(
+    binary: Path,
+    revision: str,
+    *,
+    require_clean: bool,
+) -> dict[str, Any]:
+    manifest = m35_manifest()
+    require(
+        git_output("branch", "--show-current") == "deepseek-agent",
+        "branch_invalid",
+    )
+    if require_clean:
+        require(not git_output("status", "--porcelain=v1"), "worktree_dirty")
+    require(
+        git_output("rev-parse", "--verify", f"{revision}^{{commit}}")
+        == revision,
+        "revision_invalid",
+    )
+    source = manifest["source_identity"]
+    require(
+        git_output("rev-parse", f"{source['starting_revision']}^{{tree}}")
+        == source["starting_tree"],
+        "m35_starting_identity_mismatch",
+    )
+    ancestry = run_command(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            source["starting_revision"],
+            revision,
+        ],
+        cwd=ROOT,
+    )
+    require(ancestry.returncode == 0, "m35_candidate_ancestry_invalid")
+    production_diff = git_output(
+        "diff",
+        "--name-only",
+        f"{source['starting_revision']}..{revision}",
+        "--",
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "config.example.toml",
+    )
+    require(
+        not production_diff,
+        "m35_pre_acquisition_production_delta",
+    )
+    require(
+        file_hash(ROOT / "Cargo.lock") == source["cargo_lock_sha256"]
+        and file_hash(ROOT / "rust-toolchain.toml")
+        == source["rust_toolchain_sha256"],
+        "m35_toolchain_identity_mismatch",
+    )
+    return {
+        "revision": revision,
+        "tree": git_output("rev-parse", f"{revision}^{{tree}}"),
+        "manifest_sha256": file_hash(M35_MANIFEST_PATH),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "schedule_sha256": canonical_hash(m35_schedule(manifest)),
+        "binary_pair": m35_binary_identity(binary, revision),
+        "official_surface": {
+            "base_url": "https://api.deepseek.com",
+            "endpoint": "/chat/completions",
+            "model": "deepseek-v4-pro",
+            "reasoning_effort": "high",
+            "streaming": True,
+        },
+    }
+
+
+def m35_load_admission(
+    path: Path,
+    output: Path,
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    admission = read_json_object(path, "m35_admission_unavailable")
+    contract = admission.get("live_contract")
+    require(
+        admission.get("schema") == M35_ADMISSION_SCHEMA
+        and admission.get("candidate_revision") == identity["revision"]
+        and admission.get("candidate_tree") == identity["tree"]
+        and admission.get("manifest_sha256")
+        == identity["manifest_sha256"]
+        and admission.get("harness_sha256")
+        == identity["harness_sha256"]
+        and admission.get("schedule_sha256")
+        == identity["schedule_sha256"]
+        and admission.get("binary_pair")
+        == identity["binary_pair"]
+        and admission.get("official_surface")
+        == identity["official_surface"]
+        and admission.get("offline_gates_passed") is True
+        and admission.get("live_api_admitted") is True
+        and isinstance(contract, dict)
+        and contract.get("logical_runs") == 24
+        and contract.get("maximum_harness_reruns") == 0
+        and contract.get("normal_runtime_max_model_retries") == 2
+        and contract.get("max_suite_cost_usd") == 10.0
+        and contract.get("stop_before_next_run_on_incomplete_accounting")
+        is True
+        and contract.get("output")
+        == repository_relative(output, "m35_output_scope_invalid")
+        and contract.get("raw_mode") == "0600_exclusive_hash_chained",
+        "m35_admission_invalid",
+    )
+    return admission
+
+
+def m35_marker(profile_id: str, round_index: int) -> str:
+    return (
+        f"M35_{profile_id.upper()}_R{round_index + 1}_OK"
+    )
+
+
+def m35_prepare_workspace(
+    root: Path, profile_id: str, round_index: int
+) -> tuple[Path, str, str | None]:
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    marker = m35_marker(profile_id, round_index)
+    expected_counter: str | None = None
+    (workspace / "README.md").write_text(
+        "# M35 reliability fixture\n", encoding="utf-8"
+    )
+    if profile_id == "read_file_marker":
+        (workspace / "signal.txt").write_text(
+            f"{marker}\n", encoding="utf-8"
+        )
+    elif profile_id == "grep_then_read_marker":
+        (workspace / "decoy-a.txt").write_text(
+            "M35_DECOY_A\n", encoding="utf-8"
+        )
+        (workspace / "nested").mkdir()
+        (workspace / "nested" / "target.txt").write_text(
+            f"reliability_target={marker}\n", encoding="utf-8"
+        )
+        (workspace / "decoy-b.txt").write_text(
+            "M35_DECOY_B\n", encoding="utf-8"
+        )
+    elif profile_id == "bounded_edit_marker":
+        expected_counter = str(42 + round_index)
+        (workspace / "counter.txt").write_text("41\n", encoding="utf-8")
+        (workspace / "DO_NOT_EDIT.txt").write_text(
+            f"{marker}\n", encoding="utf-8"
+        )
+    environment = safe_env()
+    for arguments in (
+        ["git", "init", "-q"],
+        ["git", "add", "."],
+        [
+            "git",
+            "-c",
+            "user.name=M35 Fixture",
+            "-c",
+            "user.email=m35@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+    ):
+        result = run_command(arguments, cwd=workspace, environment=environment)
+        require(result.returncode == 0, "m35_fixture_git_failed")
+    return workspace, marker, expected_counter
+
+
+def m35_prompt(
+    profile_id: str, marker: str, expected_counter: str | None
+) -> str:
+    if profile_id == "plain_chat_marker":
+        return (
+            "这是可靠性探针。不要使用工具，不要解释；最终答案只输出 "
+            f"{marker}"
+        )
+    if profile_id == "read_file_marker":
+        return (
+            "使用 read_file 读取工作区 signal.txt；最终答案只输出文件中的 "
+            f"marker（应为 {marker}），不要修改文件。"
+        )
+    if profile_id == "grep_then_read_marker":
+        return (
+            "先用 grep_files 搜索 reliability_target，再用 read_file 读取唯一匹配文件；"
+            f"最终答案只输出值 {marker}，不要修改文件。"
+        )
+    require(
+        profile_id == "bounded_edit_marker"
+        and expected_counter is not None,
+        "m35_profile_invalid",
+    )
+    return (
+        "先用 read_file 读取 counter.txt，再用 edit_file 把唯一一行 41 精确改为 "
+        f"{expected_counter}。不要修改其他文件；最终答案只输出 {marker}。"
+    )
+
+
+def m35_allowed_tools(profile_id: str) -> list[str]:
+    return {
+        "plain_chat_marker": [],
+        "read_file_marker": ["read_file"],
+        "grep_then_read_marker": ["grep_files", "read_file"],
+        "bounded_edit_marker": ["read_file", "edit_file"],
+    }[profile_id]
+
+
+def m35_run_process(
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    timeout_seconds: int,
+    forbidden: bytes,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise EvaluationError("m35_exec_launch_failed") from error
+    require(
+        process.stdout is not None and process.stderr is not None,
+        "m35_exec_pipe_missing",
+    )
+    streams = {
+        process.stdout.fileno(): ("stdout", bytearray()),
+        process.stderr.fileno(): ("stderr", bytearray()),
+    }
+    for descriptor in streams:
+        os.set_blocking(descriptor, False)
+    first_stdout_ms: int | None = None
+    deadline = started + timeout_seconds
+    with selectors.DefaultSelector() as selector:
+        for descriptor in streams:
+            selector.register(descriptor, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                process.wait(timeout=5)
+                raise EvaluationError(
+                    "m35_exec_deadline",
+                    {
+                        "stdout_sha256": sha256_bytes(
+                            bytes(streams[process.stdout.fileno()][1])
+                        ),
+                        "stderr_sha256": sha256_bytes(
+                            bytes(streams[process.stderr.fileno()][1])
+                        ),
+                    },
+                )
+            ready = selector.select(min(remaining, 1.0))
+            if not ready and process.poll() is not None:
+                ready = [
+                    (key, selectors.EVENT_READ)
+                    for key in list(selector.get_map().values())
+                ]
+            for key, _ in ready:
+                descriptor = key.fd
+                try:
+                    chunk = os.read(descriptor, 65_536)
+                except BlockingIOError:
+                    continue
+                if chunk:
+                    require(forbidden not in chunk, "m35_key_in_process_output")
+                    if (
+                        descriptor == process.stdout.fileno()
+                        and first_stdout_ms is None
+                    ):
+                        first_stdout_ms = int(
+                            (time.monotonic() - started) * 1000
+                        )
+                    streams[descriptor][1].extend(chunk)
+                    require(
+                        len(streams[descriptor][1]) <= 128 * 1024 * 1024,
+                        "m35_process_output_too_large",
+                    )
+                else:
+                    selector.unregister(descriptor)
+    returncode = process.wait(timeout=5)
+    return {
+        "returncode": returncode,
+        "stdout": bytes(streams[process.stdout.fileno()][1]),
+        "stderr": bytes(streams[process.stderr.fileno()][1]),
+        "wall_time_ms": int((time.monotonic() - started) * 1000),
+        "time_to_first_response_ms": first_stdout_ms,
+    }
+
+
+def m35_parse_stream(stdout: bytes) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    try:
+        for raw_line in stdout.splitlines():
+            if not raw_line.strip():
+                continue
+            value = json.loads(raw_line)
+            require(isinstance(value, dict), "m35_stream_invalid")
+            require(
+                value.get("schema") == "dse.exec-stream"
+                and value.get("schema_version") == M35_EXEC_STREAM,
+                "m35_stream_identity_invalid",
+            )
+            records.append(value)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvaluationError("m35_stream_invalid") from error
+    require(
+        records
+        and records[-1].get("type") == "done"
+        and sum(record.get("type") == "done" for record in records) == 1,
+        "m35_stream_terminal_invalid",
+    )
+    metadata = [
+        record.get("meta")
+        for record in records
+        if record.get("type") == "metadata"
+    ]
+    require(
+        len(metadata) == 1 and isinstance(metadata[0], dict),
+        "m35_stream_metadata_invalid",
+    )
+    return {
+        "records": records,
+        "metadata": metadata[0],
+        "content": "".join(
+            str(record.get("content", ""))
+            for record in records
+            if record.get("type") == "content"
+        ),
+        "tool_uses": [
+            record
+            for record in records
+            if record.get("type") == "tool_use"
+        ],
+        "tool_results": [
+            record
+            for record in records
+            if record.get("type") == "tool_result"
+        ],
+        "model_failures": [
+            record
+            for record in records
+            if record.get("type") == "model_request_failed"
+        ],
+        "errors": [
+            record
+            for record in records
+            if record.get("type") == "error"
+        ],
+    }
+
+
+def m35_external_verifier(
+    workspace: Path,
+    profile_id: str,
+    marker: str,
+    expected_counter: str | None,
+    parsed: dict[str, Any],
+) -> dict[str, Any]:
+    content_ok = marker in parsed["content"]
+    tool_names = [
+        record.get("name") for record in parsed["tool_uses"]
+    ]
+    changed = [
+        line
+        for line in git_output(
+            "status", "--short", "--untracked-files=all", cwd=workspace
+        ).splitlines()
+        if line
+    ]
+    if profile_id == "plain_chat_marker":
+        tool_ok = not tool_names
+        workspace_ok = not changed
+    elif profile_id == "read_file_marker":
+        tool_ok = tool_names == ["read_file"]
+        workspace_ok = not changed
+    elif profile_id == "grep_then_read_marker":
+        tool_ok = (
+            "grep_files" in tool_names
+            and "read_file" in tool_names
+            and all(
+                name in {"grep_files", "read_file"} for name in tool_names
+            )
+        )
+        workspace_ok = not changed
+    else:
+        tool_ok = (
+            "read_file" in tool_names
+            and "edit_file" in tool_names
+            and all(
+                name in {"read_file", "edit_file"} for name in tool_names
+            )
+        )
+        workspace_ok = (
+            expected_counter is not None
+            and (workspace / "counter.txt").read_text(
+                encoding="utf-8"
+            )
+            == f"{expected_counter}\n"
+            and [
+                line[3:] if len(line) > 3 else line for line in changed
+            ]
+            == ["counter.txt"]
+        )
+    passed = content_ok and tool_ok and workspace_ok
+    return {
+        "passed": passed,
+        "content_marker_present": content_ok,
+        "tool_sequence_valid": tool_ok,
+        "workspace_valid": workspace_ok,
+        "changed_files": [
+            line[3:] if len(line) > 3 else line for line in changed
+        ],
+        "tool_names": tool_names,
+    }
+
+
+def m35_query_envelope(
+    kind: str, run_id: str, request_id: str
+) -> dict[str, Any]:
+    command: dict[str, Any] = {"kind": kind, "run_id": run_id}
+    if kind == "events":
+        command["after_sequence"] = 0
+    return {
+        "schema_version": M35_RUN_API,
+        "request_id": request_id,
+        "command": command,
+    }
+
+
+def m35_reopen_once(
+    binary: Path,
+    workspace: Path,
+    state_root: Path,
+    run_id: str,
+    suffix: str,
+) -> tuple[dict[str, Any], bytes]:
+    product_home = state_root / "dse"
+    home = state_root / "home"
+    xdg = state_root / "xdg"
+    for directory in (product_home, home, xdg):
+        directory.mkdir(parents=True, exist_ok=True)
+    environment = {
+        **safe_env(),
+        "HOME": str(home),
+        "DSE_HOME": str(product_home),
+        "XDG_CONFIG_HOME": str(xdg),
+        "NO_COLOR": "1",
+    }
+    stderr_path = state_root / f"reopen-{suffix}.stderr"
+    with stderr_path.open("ab") as stderr_stream:
+        try:
+            process = subprocess.Popen(
+                [str(binary), "app-server", "--stdio"],
+                cwd=workspace,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise EvaluationError("m35_reopen_launch_failed") from error
+    client = StdioClient(
+        process,
+        b"\0m35-no-key\0",
+        schema_version=M35_RUN_API,
+    )
+    try:
+        run_result = client.call(
+            m35_query_envelope("get", run_id, f"m35-get-{suffix}")
+        )
+        require(run_result.get("kind") == "run", "m35_reopen_run_missing")
+        run = run_result.get("run")
+        require(isinstance(run, dict), "m35_reopen_run_missing")
+        events_result = client.call(
+            m35_query_envelope(
+                "events", run_id, f"m35-events-{suffix}"
+            )
+        )
+        require(
+            events_result.get("kind") == "events",
+            "m35_reopen_events_missing",
+        )
+        events = events_result.get("events")
+        require(
+            isinstance(events, list)
+            and events
+            and all(isinstance(event, dict) for event in events)
+            and [event.get("sequence") for event in events]
+            == list(range(1, len(events) + 1))
+            and all(
+                event.get("schema_version") == M35_EVENT_API
+                for event in events
+            ),
+            "m35_reopen_events_invalid",
+        )
+        facts = {"run": run, "events": events}
+    finally:
+        stop_process(process)
+    return facts, stderr_path.read_bytes()
+
+
+def m35_state_check(product_home: Path) -> dict[str, Any]:
+    database = product_home / "state.db"
+    require(
+        database.is_file() and not database.is_symlink(),
+        "m35_state_database_missing",
+    )
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{database}?mode=ro", uri=True
+        )
+        version = connection.execute("PRAGMA user_version").fetchone()
+        quick = connection.execute("PRAGMA quick_check").fetchall()
+        foreign = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise EvaluationError("m35_state_database_invalid") from error
+    finally:
+        if connection is not None:
+            connection.close()
+    require(
+        version == (M35_STATE_SCHEMA,)
+        and quick == [("ok",)]
+        and not foreign,
+        "m35_state_database_invalid",
+    )
+    return {
+        "schema": M35_STATE_SCHEMA,
+        "quick_check": "ok",
+        "foreign_key_violations": 0,
+    }
+
+
+def m35_accounting_projection(metadata: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        "physical_started": metadata.get("api_request_count"),
+        "physical_completed": metadata.get("api_request_completed"),
+        "physical_in_flight": metadata.get("api_request_in_flight"),
+        "runtime_retries": metadata.get("runtime_retry_count"),
+        "usage_complete": metadata.get("usage_complete"),
+        "cost_complete": metadata.get("cost_complete"),
+        "billing_unknown_attempts": metadata.get(
+            "billing_unknown_attempts"
+        ),
+        "input_tokens": metadata.get("input_tokens"),
+        "output_tokens": metadata.get("output_tokens"),
+        "cache_hit_tokens": metadata.get("prompt_cache_hit_tokens"),
+        "cache_miss_tokens": metadata.get("prompt_cache_miss_tokens"),
+        "reasoning_tokens": metadata.get("reasoning_tokens"),
+        "cost_usd": metadata.get("cost_usd"),
+    }
+    require(
+        all(
+            isinstance(fields[name], int)
+            and not isinstance(fields[name], bool)
+            and fields[name] >= 0
+            for name in (
+                "physical_started",
+                "physical_completed",
+                "physical_in_flight",
+                "runtime_retries",
+                "billing_unknown_attempts",
+            )
+        )
+        and isinstance(fields["usage_complete"], bool)
+        and isinstance(fields["cost_complete"], bool),
+        "m35_accounting_shape_invalid",
+    )
+    fields["complete"] = (
+        fields["physical_started"] == fields["physical_completed"]
+        and fields["physical_in_flight"] == 0
+        and fields["usage_complete"] is True
+        and fields["cost_complete"] is True
+        and fields["billing_unknown_attempts"] == 0
+    )
+    return fields
+
+
+def m35_failure_projection(
+    failures: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "run_id": failure.get("run_id"),
+            "event_id": failure.get("event_id"),
+            "sequence": failure.get("sequence"),
+            "attempt_id": failure.get("attempt_id"),
+            "failure": failure.get("failure"),
+            "retry": failure.get("retry"),
+            "accounting": failure.get("accounting"),
+        }
+        for failure in failures
+    ]
+
+
+def m35_execute_run(
+    frozen_binary: Path,
+    key: str,
+    scheduled: dict[str, Any],
+    root: Path,
+) -> dict[str, Any]:
+    profile_id = scheduled["profile_id"]
+    round_index = scheduled["round_index"]
+    profile = scheduled["profile"]
+    workspace, marker, expected_counter = m35_prepare_workspace(
+        root, profile_id, round_index
+    )
+    state_root = root / "state"
+    product_home = state_root / "dse"
+    home = state_root / "home"
+    xdg = state_root / "xdg"
+    for directory in (product_home, home, xdg):
+        directory.mkdir(parents=True, exist_ok=True)
+    environment = {
+        **safe_env(),
+        "HOME": str(home),
+        "DSE_HOME": str(product_home),
+        "XDG_CONFIG_HOME": str(xdg),
+        "DEEPSEEK_API_KEY": key,
+        "NO_COLOR": "1",
+    }
+    arguments = [
+        str(frozen_binary),
+        "--workspace",
+        str(workspace),
+        "--skip-onboarding",
+        "exec",
+        "--model",
+        "deepseek-v4-pro",
+        "--reasoning-effort",
+        "high",
+        "--output-format",
+        "stream-json",
+        "--max-turns",
+        str(profile["max_turns"]),
+        "--max-api-requests",
+        str(profile["max_physical_requests"]),
+        "--max-runtime-secs",
+        str(profile["max_runtime_seconds"]),
+    ]
+    allowed_tools = m35_allowed_tools(profile_id)
+    if allowed_tools:
+        arguments.extend(
+            ["--auto", "--allowed-tools", ",".join(allowed_tools)]
+        )
+    arguments.append(
+        m35_prompt(profile_id, marker, expected_counter)
+    )
+    secret = key.encode("utf-8")
+    result = m35_run_process(
+        arguments,
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=int(profile["max_runtime_seconds"]) + 60,
+        forbidden=secret,
+    )
+    require(
+        secret not in result["stdout"] and secret not in result["stderr"],
+        "m35_key_in_process_output",
+    )
+    parsed = m35_parse_stream(result["stdout"])
+    metadata = parsed["metadata"]
+    run_id = metadata.get("run_id")
+    require(isinstance(run_id, str) and run_id, "m35_run_id_missing")
+    verifier = m35_external_verifier(
+        workspace,
+        profile_id,
+        marker,
+        expected_counter,
+        parsed,
+    )
+    accounting = m35_accounting_projection(metadata)
+    first_facts, first_stderr = m35_reopen_once(
+        frozen_binary,
+        workspace,
+        state_root,
+        run_id,
+        f"{scheduled['run_index']}-a",
+    )
+    second_facts, second_stderr = m35_reopen_once(
+        frozen_binary,
+        workspace,
+        state_root,
+        run_id,
+        f"{scheduled['run_index']}-b",
+    )
+    require(
+        canonical_bytes(first_facts) == canonical_bytes(second_facts),
+        "m35_reopen_mismatch",
+    )
+    require(
+        secret not in canonical_bytes(first_facts)
+        and secret not in first_stderr
+        and secret not in second_stderr
+        and not tree_contains(workspace, secret)
+        and not tree_contains(state_root, secret),
+        "m35_key_persisted",
+    )
+    terminal_completed = (
+        metadata.get("status") == "completed"
+        and metadata.get("termination_reason") == "resolved"
+    )
+    verified_success = terminal_completed and verifier["passed"]
+    false_success = terminal_completed and not verifier["passed"]
+    failure_projection = m35_failure_projection(
+        parsed["model_failures"]
+    )
+    terminal_model_loss = (
+        metadata.get("termination_reason") == "model_error"
+        and bool(failure_projection)
+    )
+    reliability_loss = None
+    if terminal_model_loss:
+        last_failure = failure_projection[-1]
+        failure = last_failure.get("failure")
+        category = (
+            failure.get("category")
+            if isinstance(failure, dict)
+            else "unknown"
+        )
+        reliability_loss = f"deepseek_transport:{category}"
+    elif false_success:
+        reliability_loss = "host_completion:false_success"
+    return {
+        "record_type": "run_result",
+        "run_index": scheduled["run_index"],
+        "round_index": round_index,
+        "round_position": scheduled["round_position"],
+        "profile_id": profile_id,
+        "marker_sha256": sha256_bytes(marker.encode("utf-8")),
+        "process": {
+            "returncode": result["returncode"],
+            "wall_time_ms": result["wall_time_ms"],
+            "time_to_first_response_ms": result[
+                "time_to_first_response_ms"
+            ],
+            "stdout_sha256": sha256_bytes(result["stdout"]),
+            "stderr_sha256": sha256_bytes(result["stderr"]),
+        },
+        "run_id": run_id,
+        "terminal": {
+            "status": metadata.get("status"),
+            "termination_reason": metadata.get("termination_reason"),
+            "receipt_kind": metadata.get("receipt_kind"),
+        },
+        "verified_success": verified_success,
+        "false_success": false_success,
+        "external_verifier": verifier,
+        "accounting": accounting,
+        "model_failures": failure_projection,
+        "runtime_retry_recovered": (
+            accounting["runtime_retries"] > 0 and terminal_completed
+        ),
+        "reliability_loss": reliability_loss,
+        "state": m35_state_check(product_home),
+        "reopen": {
+            "exact": True,
+            "facts_sha256": canonical_hash(first_facts),
+            "event_count": len(first_facts["events"]),
+            "event_prefix": [
+                {
+                    "sequence": event.get("sequence"),
+                    "event_id": event.get("event_id"),
+                    "kind": event_kind(event),
+                }
+                for event in first_facts["events"]
+            ],
+            "facts": first_facts,
+        },
+        "key_accessed": True,
+        "network_accessed": True,
+        "maximum_harness_reruns": 0,
+    }
+
+
+def m35_aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+    losses = Counter(
+        result["reliability_loss"]
+        for result in results
+        if result["reliability_loss"] is not None
+    )
+    loss_profiles: dict[str, set[str]] = defaultdict(set)
+    for result in results:
+        if result["reliability_loss"] is not None:
+            loss_profiles[result["reliability_loss"]].add(
+                result["profile_id"]
+            )
+    repeated = {
+        loss: {
+            "count": count,
+            "profiles": sorted(loss_profiles[loss]),
+        }
+        for loss, count in losses.items()
+        if count >= 2
+    }
+    complete = len(results) == 24
+    return {
+        "record_type": "aggregate",
+        "completed_runs": len(results),
+        "schedule_complete": complete,
+        "verified_success": sum(
+            result["verified_success"] for result in results
+        ),
+        "false_success": sum(
+            result["false_success"] for result in results
+        ),
+        "runs_with_model_failure": sum(
+            bool(result["model_failures"]) for result in results
+        ),
+        "runs_recovered_by_runtime_retry": sum(
+            result["runtime_retry_recovered"] for result in results
+        ),
+        "physical_attempts": sum(
+            result["accounting"]["physical_started"]
+            for result in results
+        ),
+        "runtime_retries": sum(
+            result["accounting"]["runtime_retries"]
+            for result in results
+        ),
+        "input_tokens": sum(
+            int(result["accounting"]["input_tokens"] or 0)
+            for result in results
+        ),
+        "output_tokens": sum(
+            int(result["accounting"]["output_tokens"] or 0)
+            for result in results
+        ),
+        "cost_usd": sum(
+            float(result["accounting"]["cost_usd"] or 0.0)
+            for result in results
+        ),
+        "reliability_losses": dict(sorted(losses.items())),
+        "repeated_loss_candidates": repeated,
+        "decision": (
+            "repeated_live_reliability_loss"
+            if repeated
+            else (
+                "no_repeated_live_reliability_loss"
+                if complete
+                else "incomplete_acquisition"
+            )
+        ),
+        "production_treatment_admitted": bool(repeated) and complete,
+    }
+
+
+def run_m35_self_test() -> int:
+    manifest = m35_manifest()
+    schedule = m35_schedule(manifest)
+    require(
+        len(schedule) == 24
+        and Counter(item["profile_id"] for item in schedule)
+        == {
+            "plain_chat_marker": 6,
+            "read_file_marker": 6,
+            "grep_then_read_marker": 6,
+            "bounded_edit_marker": 6,
+        },
+        "m35_self_test_schedule_invalid",
+    )
+    synthetic = (
+        canonical_bytes(
+            {
+                "schema": "dse.exec-stream",
+                "schema_version": 6,
+                "type": "model_request_failed",
+                "run_id": "run-m35",
+                "event_id": "event-m35",
+                "sequence": 5,
+                "attempt_id": "attempt-1",
+                "failure": {"category": "timeout"},
+                "retry": {
+                    "decision": "retry",
+                    "next_attempt": 1,
+                    "max_retries": 2,
+                    "backoff_ms": 1000,
+                },
+                "accounting": {
+                    "physical_started": 1,
+                    "physical_completed": 1,
+                    "physical_in_flight": 0,
+                    "runtime_retries": 1,
+                    "usage_complete": True,
+                    "billing_unknown": False,
+                },
+            }
+        )
+        + b"\n"
+        + canonical_bytes(
+            {
+                "schema": "dse.exec-stream",
+                "schema_version": 6,
+                "type": "content",
+                "content": "M35_SYNTHETIC_OK",
+            }
+        )
+        + b"\n"
+        + canonical_bytes(
+            {
+                "schema": "dse.exec-stream",
+                "schema_version": 6,
+                "type": "metadata",
+                "meta": {
+                    "run_id": "run-m35",
+                    "status": "completed",
+                    "termination_reason": "resolved",
+                },
+            }
+        )
+        + b"\n"
+        + canonical_bytes(
+            {
+                "schema": "dse.exec-stream",
+                "schema_version": 6,
+                "type": "done",
+            }
+        )
+        + b"\n"
+    )
+    parsed = m35_parse_stream(synthetic)
+    require(
+        parsed["content"] == "M35_SYNTHETIC_OK"
+        and len(parsed["model_failures"]) == 1
+        and parsed["model_failures"][0]["retry"]["decision"]
+        == "retry",
+        "m35_self_test_stream_invalid",
+    )
+    print(
+        json.dumps(
+            {
+                "m35_self_test": "passed",
+                "manifest_sha256": file_hash(M35_MANIFEST_PATH),
+                "schedule_sha256": canonical_hash(schedule),
+                "logical_runs": len(schedule),
+                "credential_accessed": False,
+                "network_accessed": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def run_m35_dry(args: argparse.Namespace) -> int:
+    require(args.binary, "binary_required")
+    revision = args.revision or git_output("rev-parse", "HEAD")
+    identity = m35_preflight(
+        Path(args.binary).resolve(), revision, require_clean=True
+    )
+    print(json.dumps(identity, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def run_m35_formal(args: argparse.Namespace) -> int:
+    require(args.binary, "binary_required")
+    require(args.acknowledge_cost, "cost_acknowledgement_required")
+    require(args.key_file, "key_file_required")
+    require(args.output, "output_required")
+    require(args.admission, "live_admission_required")
+    revision = args.revision or git_output("rev-parse", "HEAD")
+    binary = Path(args.binary).resolve()
+    output = Path(args.output).resolve()
+    identity = m35_preflight(binary, revision, require_clean=True)
+    m35_load_admission(
+        Path(args.admission).resolve(), output, identity
+    )
+    manifest = m35_manifest()
+    schedule = m35_schedule(manifest)
+    with Journal.claim(output, schema=M35_JOURNAL_SCHEMA) as journal:
+        journal.emit(
+            {
+                "record_type": "plan",
+                "identity": identity,
+                "logical_runs": len(schedule),
+                "maximum_harness_reruns": 0,
+                "normal_runtime_max_model_retries": 2,
+                "key_accessed": False,
+                "network_accessed": False,
+            }
+        )
+        key = read_key(Path(args.key_file).expanduser().resolve())
+        journal.emit(
+            {
+                "record_type": "credential_access",
+                "key_accessed": True,
+                "network_accessed": False,
+            }
+        )
+        frozen_root = Path(
+            tempfile.mkdtemp(prefix="dse-m35-frozen-binary-")
+        )
+        frozen_binary = frozen_root / "dse"
+        frozen_companion = frozen_root / "dse-tui"
+        results: list[dict[str, Any]] = []
+        try:
+            shutil.copy2(binary, frozen_binary)
+            shutil.copy2(binary.with_name("dse-tui"), frozen_companion)
+            os.chmod(frozen_binary, 0o500)
+            os.chmod(frozen_companion, 0o500)
+            require(
+                m35_binary_identity(frozen_binary, revision)
+                == identity["binary_pair"],
+                "m35_frozen_binary_mismatch",
+            )
+            for scheduled in schedule:
+                run_root = Path(
+                    tempfile.mkdtemp(
+                        prefix=(
+                            f"dse-m35-{scheduled['run_index']:02d}-"
+                            f"{scheduled['profile_id']}-"
+                        )
+                    )
+                )
+                try:
+                    result = m35_execute_run(
+                        frozen_binary,
+                        key,
+                        scheduled,
+                        run_root,
+                    )
+                    journal.emit(result)
+                    results.append(result)
+                    print(
+                        json.dumps(
+                            {
+                                "m35_progress": (
+                                    f"{len(results)}/{len(schedule)}"
+                                ),
+                                "profile": result["profile_id"],
+                                "verified_success": result[
+                                    "verified_success"
+                                ],
+                                "physical_attempts": result[
+                                    "accounting"
+                                ]["physical_started"],
+                                "runtime_retries": result[
+                                    "accounting"
+                                ]["runtime_retries"],
+                                "accounting_complete": result[
+                                    "accounting"
+                                ]["complete"],
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    cost = sum(
+                        float(
+                            item["accounting"]["cost_usd"] or 0.0
+                        )
+                        for item in results
+                    )
+                    require(
+                        cost
+                        <= float(
+                            manifest["resources"][
+                                "max_suite_cost_usd"
+                            ]
+                        ),
+                        "m35_suite_cost_ceiling",
+                    )
+                    if (
+                        not result["accounting"]["complete"]
+                        or result["false_success"]
+                    ):
+                        journal.emit(
+                            {
+                                "record_type": "abort",
+                                "error_code": (
+                                    "m35_false_success"
+                                    if result["false_success"]
+                                    else "m35_accounting_incomplete"
+                                ),
+                                "completed_runs": len(results),
+                                "maximum_harness_reruns": 0,
+                            }
+                        )
+                        return 2
+                except EvaluationError as error:
+                    journal.emit(
+                        {
+                            "record_type": "abort",
+                            "error_code": error.code,
+                            "details": error.details,
+                            "completed_runs": len(results),
+                            "maximum_harness_reruns": 0,
+                        }
+                    )
+                    return 2
+                finally:
+                    shutil.rmtree(run_root, ignore_errors=True)
+            aggregate = m35_aggregate(results)
+            journal.emit(aggregate)
+            print(
+                json.dumps(
+                    {
+                        "m35_complete": True,
+                        "decision": aggregate["decision"],
+                        "verified_success": aggregate[
+                            "verified_success"
+                        ],
+                        "false_success": aggregate["false_success"],
+                        "physical_attempts": aggregate[
+                            "physical_attempts"
+                        ],
+                        "runtime_retries": aggregate[
+                            "runtime_retries"
+                        ],
+                        "cost_usd": aggregate["cost_usd"],
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return 0
+        finally:
+            key = ""
+            shutil.rmtree(frozen_root, ignore_errors=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -9708,6 +10968,9 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--transport-viability-self-test", action="store_true")
     mode.add_argument("--transport-viability-dry-run", action="store_true")
     mode.add_argument("--transport-viability", action="store_true")
+    mode.add_argument("--reliability-soak-self-test", action="store_true")
+    mode.add_argument("--reliability-soak-dry-run", action="store_true")
+    mode.add_argument("--reliability-soak", action="store_true")
     parser.add_argument("--fault-child")
     parser.add_argument("--self-test-fault", action="store_true")
     parser.add_argument("--binary")
@@ -9759,7 +11022,13 @@ def main() -> int:
             )
         if args.transport_viability_self_test:
             return run_m20_self_test()
+        if args.reliability_soak_self_test:
+            return run_m35_self_test()
         require(args.binary, "binary_required")
+        if args.reliability_soak_dry_run:
+            return run_m35_dry(args)
+        if args.reliability_soak:
+            return run_m35_formal(args)
         if args.transport_viability_dry_run:
             return run_m20_dry(args)
         if args.transport_viability:
@@ -9768,15 +11037,20 @@ def main() -> int:
             return run_dry(args)
         return run_formal(args)
     except EvaluationError as error:
-        error_schema = (
-            M20_JOURNAL_SCHEMA
-            if (
-                args.transport_viability_self_test
-                or args.transport_viability_dry_run
-                or args.transport_viability
-            )
-            else JOURNAL_SCHEMA
-        )
+        if (
+            args.reliability_soak_self_test
+            or args.reliability_soak_dry_run
+            or args.reliability_soak
+        ):
+            error_schema = M35_JOURNAL_SCHEMA
+        elif (
+            args.transport_viability_self_test
+            or args.transport_viability_dry_run
+            or args.transport_viability
+        ):
+            error_schema = M20_JOURNAL_SCHEMA
+        else:
+            error_schema = JOURNAL_SCHEMA
         print(
             json.dumps(
                 {
