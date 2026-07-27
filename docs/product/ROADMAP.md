@@ -5473,3 +5473,47 @@ M30 最终以 `reject_and_delete_named_verifier_aci` 收口，不继续开发第
 authority，才允许审计 permission/verifier integration；本次 raw 不授权重跑或叠加修复。
 完整结果见
 [M30 named-verifier ACI treatment](../../eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md)。
+
+## 29. M31：contract-bound Host verifier 最小执行授权
+
+- 状态：**deterministic contract frozen；production treatment 尚未 cutover**
+- 基线：M30 clean checkpoint `401545971`
+- owner：`crates/runtime` 派生并重放 exact grant，`crates/tools` 作最终授权与 sandbox
+  判定，`crates/protocol`/`crates/state` 只承载唯一 typed durable fact
+- production delta：当前为 0
+
+### 29.1 可重复 production defect
+
+M30 的两个独立 Ask/interactive continuity task 中，18/18 次
+`run_verifiers` 调用都已使用正确的 TaskContract acceptance ID，并由 Runtime 展开为
+同一份冻结参数；它们仍在 `ToolExecutionStarted` 前被
+`ask_external_path_fail_closed` 拒绝。随后终态 Host verification 在同一 Ask Run、
+同一 workspace/no-network sandbox 中启动并成功执行相同的
+`/usr/bin/python3` verifier。失败因此不是模型 ACI、verifier 本身或 Stop Gate defect，
+而是通用 external-path 分类把 Host 冻结的 executable program 当成模型选择的外部路径。
+
+M31 不把 Ask 改成 FullAccess，也不开放 ordinary external path。唯一候选是
+Runtime 从 exact acceptance-ID handle 与 frozen `VerifierSpec` 派生一个不可由模型请求
+的 typed execution grant；tools 重新解析 canonical spec 并只允许该 exact
+`run_verifiers` executable program 使用 Host 已冻结的 read/execute authority。external
+cwd、普通 read/edit/shell path、network、explicit deny、hard invariant、read-only child
+目录和 isolated Writer sandbox 必须保持原边界。
+
+### 29.2 冻结顺序与删除门
+
+合同与 16-case permission matrix、4 个 crash/reopen window 冻结在
+`eval/manifests/m31-contract-verifier-permission-v1.json` 和
+`eval/fixtures/m31-contract-verifier-permission-v1.json`。实现顺序为：
+
+1. protocol digest/grant contract 与 forged/spec-drift 负向测试；
+2. Runtime exact derivation、ToolPrepared 持久事实与 Store replay；
+3. tools 最终授权，只删除 exact verifier program 的 generic denial；
+4. root/read-only/Writer、Ask interactive/headless、sandbox、SQLite 与 SIGKILL 门禁；
+5. 只有 offline 全绿后，才建立新的 live admission，冻结相同两项 fixed-Pro/high
+   treatment、`maximum_reruns=0`、授权与费用上界。
+
+两项原任务必须都形成 latest-revision failed→write→pass receipt，false success=0、
+accounting/reopen 完整，候选才可保留。任一 ordinary authority 扩张、scope/replay/
+evidence/accounting 失败或任一 task 未 verified success，typed grant 与所有候选接线
+完整删除。当前合同阶段不读 Key、不请求 official API、不访问 GitHub、不 push、不
+release。

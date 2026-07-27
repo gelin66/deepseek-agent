@@ -1,0 +1,124 @@
+{
+  "schema": "dse.eval.m31-contract-verifier-permission.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "4015459712001bcc7141809c188cde7c7a6c4be2",
+    "starting_tree": "7c4929e8b3cee15a20343b9c7667ceddf615b746",
+    "required_clean_start": true,
+    "run_api": 13,
+    "runtime_event": 20,
+    "state_schema": 26,
+    "exec_stream": 4,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "cargo_lock_sha256": "sha256:55b6c060bc65d3acd60aa71df4ff8f0124a7b85fb1adf10f812ae61b97899fe4",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "baseline_evidence": {
+    "acquisition_manifest": "eval/manifests/m30-dogfood-loss-acquisition-v1.json",
+    "acquisition_manifest_sha256": "sha256:60ae20a289da072764b6f93f3b4578877c46504d1968c25008aa56775aa6c1a0",
+    "analysis_manifest": "eval/manifests/m30-dogfood-loss-analysis-v1.json",
+    "analysis_manifest_sha256": "sha256:400aad54a6079ae6c2fbaaf217ff059edb87a22c9e9b3c275875459c65d3eb70",
+    "acquisition_summary": "eval/summaries/m30-dogfood-loss-acquisition-2026-07-27.md",
+    "acquisition_summary_sha256": "sha256:449650bba82ead5520fced04b8755f9a3aa94fd6d53bd1ab54b1e422b97cb89b",
+    "m30_treatment_manifest": "eval/manifests/m30-named-verifier-aci-treatment-v1.json",
+    "m30_treatment_manifest_sha256": "sha256:30995a561aae2ba5b7c76552abc87d79931805a9ec5015e9eead29df44f2e743",
+    "m30_treatment_admission": "eval/manifests/m30-named-verifier-aci-treatment-live-admission-v1.json",
+    "m30_treatment_admission_sha256": "sha256:a0700bb90a3db9e8a9cbabd9671851d86e75a34a6096fec006ca61e1c75685ae",
+    "m30_treatment_summary": "eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md",
+    "m30_treatment_summary_sha256": "sha256:e39aed1fa32db49937dae09ffb4f330549a477a3251a5ad16d2c2d5e443858fb",
+    "m30_treatment_raw_sha256": "sha256:9453bed41dbe09c7f19ae532eacf75d2a9a99aaa8c7483c86fa8845bc7094b13",
+    "historical_raw_is_input": false,
+    "independent_task_ids": [
+      "rust_line_recovery_resume",
+      "rust_netstring_recovery_resume"
+    ],
+    "repeated_fact": "18 of 18 exact contract-bound run_verifiers calls were denied before operation start by ask_external_path_fail_closed; the later Host terminal execution of the same frozen verifier succeeded under the same Ask sandbox"
+  },
+  "permission_matrix": {
+    "path": "eval/fixtures/m31-contract-verifier-permission-v1.json",
+    "sha256": "sha256:74780eafeaa66b1c61b0c9b09f82c4edde104d6941c27957e657c8ca13c5109e",
+    "required_case_count": 16,
+    "required_replay_window_count": 4,
+    "matrix_is_production_test_input": true
+  },
+  "slice_contract": {
+    "real_problem": "The Runtime expands an exact model-visible TaskContract verifier handle into the frozen Host invocation, but ordinary Ask external-path classification treats the verifier executable program as model-selected external authority and denies it before execution even though Host terminal verification later executes the same frozen verifier successfully under the same workspace-write, no-network sandbox.",
+    "acceptance": [
+      "derive one typed TaskContract-verifier execution grant only from the exact acceptance-ID handle and frozen VerifierSpec; the model cannot request or forge it",
+      "persist and replay the grant with the prepared operation, then validate it against the frozen TaskContract, exact expanded invocation, workspace revision and permission mode before execution",
+      "allow only the executable-program path of the exact canonical run_verifiers plan to use Host-frozen read/execute authority; external cwd, ordinary external file/edit/shell paths, network and explicit deny or hard invariants remain denied",
+      "preserve root Ask/Agent/FullAccess, read-only child catalog filtering, isolated Writer confinement, headless behavior, accounting, exact replay and all prepared/started/outcome SIGKILL windows",
+      "make both original fixed-Pro/high continuity tasks produce latest-revision failed-write-pass receipts with false_success=0 and complete accounting before production cutover"
+    ],
+    "owner": {
+      "grant_derivation_and_replay": "crates/runtime",
+      "grant_protocol": "crates/protocol",
+      "final_authorization_and_sandbox": "crates/tools",
+      "sqlite_reopen": "crates/state",
+      "production_composition": "crates/app"
+    },
+    "single_final_decision_owner": "crates/tools ProductionToolExecutor authorization",
+    "old_path_replaced": "generic command-program external-path classification for an exact Host-frozen TaskContract verifier",
+    "cutover_deletion": "delete the generic denial only for the validated exact verifier-program subcase; retain the ordinary external-path denial, the exact TaskContract resolver, one Runtime/Store/verifier path and the existing OS sandbox",
+    "failed_treatment_deletion": "remove the typed grant and all candidate-only protocol/state/tools wiring if any negative scope, replay, false-success, accounting or two-task quality gate fails"
+  },
+  "non_goals": [
+    "no FullAccess substitution for Ask",
+    "no global external-path authority",
+    "no approval popup or one-time user authority",
+    "no raw verifier parameter override, alias or second verifier path",
+    "no change to failed-write-pass or latest-revision completion semantics",
+    "no additional model request, router, Runtime, Store, Provider or tool catalog",
+    "no credential read or official DeepSeek API request before a separate live admission"
+  ],
+  "offline_gates": [
+    "protocol digest and typed grant validation including forged acceptance, digest and spec drift",
+    "all 16 frozen permission cases and four replay windows",
+    "root, read-only child and explicit isolated Writer conformance",
+    "Ask interactive and headless production composition",
+    "OS sandbox negative write/network counterexamples",
+    "SQLite exact replay and process SIGKILL at prepared, authorization-committed, execution-started and outcome-committed windows",
+    "CLI, TUI and app-server projection parity",
+    "focused, fmt, owning-crate checks/tests, strict workspace Clippy/test and git diff check"
+  ],
+  "live_gate": {
+    "candidate_required": true,
+    "formal_tasks": 2,
+    "runs_per_task": 1,
+    "formal_arms": 2,
+    "maximum_reruns": 0,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "permission_mode": "ask",
+    "interactive": true,
+    "same_task_fixture_verifier_and_continuity_as_m30": true,
+    "proposed_per_arm_known_cost_ceiling_usd": "0.50",
+    "proposed_suite_known_cost_ceiling_usd": "1.00",
+    "separate_live_admission_required": true,
+    "current_authorization_applies": false,
+    "credential_authorized": false,
+    "official_model_request_authorized": false
+  },
+  "decision_rule": {
+    "keep": "all offline scope/replay gates pass and both separately admitted formal task arms are verified successes with false_success=0, latest-revision failed-write-pass receipts, exact reopen and complete accounting",
+    "reject_and_delete": "any ordinary authority expands, a sandbox/replay/evidence invariant fails, false success appears, accounting is incomplete, or either formal task is not a verified success",
+    "record_class": "m31_contract_verifier_permission",
+    "quality_aggregate_eligible": false
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:de2d0513475c8a5878bf7c07392ab8cdf35cf07eb0ac47e9b174e226b54d6acc",
+    "evaluation": "sha256:620fe6c7f2f8eb5f5d7f648fc74f530b30e7a96115064726233d9cd722786a17",
+    "current_architecture": "sha256:d2a775a8e85798212411ac11afae88cb3cfeee603103b44405599313a3440340"
+  },
+  "security": {
+    "credential_read": false,
+    "official_model_requests": 0,
+    "github_access": false,
+    "push": false,
+    "release": false
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "schema": "dse.eval.m31-contract-verifier-permission-matrix.v1",
+  "frozen_at": "2026-07-27",
+  "cases": [
+    {
+      "id": "ask_interactive_exact_contract_verifier",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "allow"
+    },
+    {
+      "id": "ask_headless_exact_contract_verifier",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": false,
+      "sandbox": "workspace_write_no_network",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "allow"
+    },
+    {
+      "id": "agent_exact_contract_verifier",
+      "permission_mode": "agent",
+      "actor": "root",
+      "interactive": false,
+      "sandbox": "danger_full_access",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "allow"
+    },
+    {
+      "id": "full_access_exact_contract_verifier",
+      "permission_mode": "full_access",
+      "actor": "root",
+      "interactive": false,
+      "sandbox": "danger_full_access",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "allow"
+    },
+    {
+      "id": "isolated_writer_exact_contract_verifier",
+      "permission_mode": "agent",
+      "actor": "explicit_writer",
+      "interactive": false,
+      "sandbox": "isolated_writer_no_network",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "allow"
+    },
+    {
+      "id": "read_only_child_has_no_mutating_verifier",
+      "permission_mode": "agent",
+      "actor": "read_only_child",
+      "interactive": false,
+      "sandbox": "read_only",
+      "grant": "ordinary",
+      "invocation": "run_verifiers",
+      "expected": "catalog_denied"
+    },
+    {
+      "id": "ask_raw_verifier_with_same_arguments",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "ordinary",
+      "invocation": "raw_run_verifiers_external_program_workspace_cwd",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_forged_contract_grant_digest",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "task_contract_verifier_wrong_digest",
+      "invocation": "exact_run_verifiers_external_program_workspace_cwd",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_contract_verifier_external_cwd",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "task_contract_verifier",
+      "invocation": "exact_run_verifiers_external_program_external_cwd",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_contract_verifier_spec_drift",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "task_contract_verifier",
+      "invocation": "run_verifiers_parameters_changed_after_freeze",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_ordinary_external_read",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "ordinary",
+      "invocation": "read_file_external_path",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_ordinary_external_shell_cwd",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "ordinary",
+      "invocation": "exec_shell_external_cwd",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_ordinary_external_patch",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "ordinary",
+      "invocation": "apply_patch_external_path",
+      "expected": "deny"
+    },
+    {
+      "id": "ask_network_command",
+      "permission_mode": "ask",
+      "actor": "root",
+      "interactive": true,
+      "sandbox": "workspace_write_no_network",
+      "grant": "ordinary",
+      "invocation": "exec_shell_network",
+      "expected": "deny"
+    },
+    {
+      "id": "agent_explicit_execpolicy_deny",
+      "permission_mode": "agent",
+      "actor": "root",
+      "interactive": false,
+      "sandbox": "danger_full_access",
+      "grant": "ordinary",
+      "invocation": "exec_shell_explicit_deny",
+      "expected": "deny"
+    },
+    {
+      "id": "full_access_hard_invariant",
+      "permission_mode": "full_access",
+      "actor": "root",
+      "interactive": false,
+      "sandbox": "danger_full_access",
+      "grant": "ordinary",
+      "invocation": "exec_shell_hard_invariant",
+      "expected": "deny"
+    }
+  ],
+  "replay_windows": [
+    {
+      "id": "prepared_before_authorization",
+      "expected": "rederive_exact_invocation_and_authorize_once"
+    },
+    {
+      "id": "authorization_committed_before_start",
+      "expected": "start_exactly_once_without_reauthorization"
+    },
+    {
+      "id": "execution_started_before_outcome",
+      "expected": "recovery_required_without_blind_reexecution"
+    },
+    {
+      "id": "outcome_committed",
+      "expected": "resume_without_duplicate_execution_or_evidence"
+    }
+  ]
+}

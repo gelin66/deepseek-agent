@@ -3810,6 +3810,41 @@ raw 为 21-record、无 partial tail、0600 hash-chain journal，SHA-256
 末记录为 summary。完整决定见
 [M30 named-verifier ACI treatment](../../eval/summaries/m30-named-verifier-aci-treatment-2026-07-27.md)。
 
+#### M31 contract-bound verifier permission contract
+
+M31 只接受 M30 已冻结的两个 independent、accounting-complete loss fact，不重写或重跑
+历史 raw。重复 defect 是：exact acceptance-ID handle 已由 Runtime 展开为冻结
+`run_verifiers` 参数，但 Ask 的 generic external-path classifier 在 operation 前拒绝
+外部 executable program；同一 Run 的终态 Host verifier 随后在同一 workspace-write、
+no-network sandbox 中成功执行相同 spec。
+
+offline matrix 固定为 16 个 permission/scope case 和 4 个 SIGKILL/reopen window：
+
+- Ask interactive/headless、Agent、FullAccess 和 explicit Writer 的 exact contract
+  verifier 可由 typed Host grant 启动；
+- read-only child 仍没有 mutating verifier catalog；
+- 相同 raw 参数但没有 grant、错误 digest、spec drift、external cwd、普通 external
+  read/edit/shell、network、explicit deny 和 hard invariant 全部 fail closed；
+- prepared 可在 reopen 后只授权/执行一次，authorization committed 不重新判定，
+  started 无 outcome 不盲重放，committed outcome 不重复执行或签发 evidence；
+- Store 必须从 frozen TaskContract、prepared abbreviated invocation 与 grant 重建同一
+  exact invocation；workspace revision 或 grant identity 不一致视为 corrupt/stale，
+  不能 fallback。
+
+grant 不是第四个 permission 档位、用户 approval、通用外部路径能力或第二 verifier
+协议。tools 必须重新解析 canonical `VerifierSpec` 并只豁免 exact verifier 的
+`commands[].program`；现有 OS sandbox 继续限制写根和 network。Run API/RuntimeEvent/
+State 如因 durable shape 改变而升级，旧 materialized run 必须 fail-closed retirement，
+只允许证明仍符合新 Start contract 的 pending intent 留存，不增加 compatibility reader。
+
+offline 全绿后仍不能读取 Key。live treatment 需要新的 immutable candidate/admission、
+当前明确授权和 `$0.50/arm`、`$1.00/suite` 上界；两项原 fixed-Pro/high continuity task
+各只执行一次，`maximum_reruns=0`。唯一 keep 结果要求 2/2 verified success、
+false success=0、latest-revision failed-write-pass receipt、exact SQLite reopen 与完整
+accounting。其他结果一律 `reject_and_delete_contract_verifier_grant`，不得以 FullAccess、
+弱化 Stop Gate、导入 external failure、raw verifier 参数或第二执行路径补救。冻结合同见
+`eval/manifests/m31-contract-verifier-permission-v1.json`。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
