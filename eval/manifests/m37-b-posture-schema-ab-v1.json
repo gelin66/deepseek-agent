@@ -1,0 +1,241 @@
+{
+  "schema": "dse.eval.m37b-posture-schema-ab.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "b5ff2873b7db17298b607a056bca18a75ef99d1c",
+    "starting_tree": "32553bf46a99603f3fc9460c83f415588493eaea",
+    "required_clean_start": true,
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "24.18.0",
+    "python": "3.14.6",
+    "go": "1.26.4",
+    "cargo_lock_sha256": "sha256:e1ae90d04fc2d2ea31fab2f8c30f9b613cc3d51662c68ad4da68d5ea163e427f",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m23b-hardness-control-v1.json",
+    "file_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+    "sections": [
+      "fixture_contract",
+      "reference_patches",
+      "tasks",
+      "tool_policies"
+    ],
+    "selected_task_ids": [
+      "python_config_crossfile",
+      "readonly_service_graph",
+      "writer_envelope",
+      "writer_policy_migration",
+      "safety_authorization_claim"
+    ],
+    "historical_identity_inherited": false,
+    "historical_raw_is_input": false,
+    "historical_result_is_input": false
+  },
+  "fixture_contract": {
+    "path": "eval/fixtures/m37-b-posture-schema-ab-v1.json",
+    "schema": "dse.m37_b.posture_schema_ab_fixture.v1",
+    "single_model_visible_delta": "delete the exact 60-byte stale read-only-only agent capability substring from execution_posture",
+    "ordinary_production_selector": "control",
+    "eval_selector_lifetime": "M37-B only; delete after keep/reject decision"
+  },
+  "slice_contract": {
+    "real_problem": "The canonical execution posture says the agent tool only starts read-only children while the current actor-scoped schema also admits an explicit isolated Writer.",
+    "acceptance": [
+      "change exactly one model-visible substring through the canonical crates/context composer",
+      "keep normal production byte-identical to the M37-A control until the formal decision",
+      "run fresh same-binary, same-task, same-budget control and treatment arms with maximum_reruns=0",
+      "keep the fixed actor route unchanged: root and explicit Writer use Pro/high, ordinary read-only child remains the fixed Flash/high actor profile",
+      "preserve false_success=0 and prohibit every treatment-only quality failure",
+      "require a strict attributable improvement in verified success, agent selection, or Writer completion before cutover",
+      "separate behavior truth from complete request/usage/cache/retry/cost accounting truth",
+      "stop before the next arm on unknown billing, incomplete usage, identity drift, observer ambiguity, unsafe evidence, or cost ceiling"
+    ],
+    "owner": "crates/context",
+    "old_path_replaced": "the stale read-only-only capability sentence in the canonical execution posture",
+    "cutover": "if admitted, make the deletion unconditional and remove the eval selector and temporary Harness consumer",
+    "failed_treatment_deletion": "if quality is not non-inferior or no strict attributable benefit exists, remove the candidate selector and temporary Harness consumer while retaining the current sentence"
+  },
+  "task_overlays": {
+    "python_config_crossfile": {
+      "base_task_sha256": "sha256:791740854181c0e5f2cfee30607c13be013d92ce57982aadeb4fb9a338b6dd87",
+      "acceptance_id": "m37b-python-config-crossfile",
+      "matrix_role": "root_only_coding"
+    },
+    "readonly_service_graph": {
+      "base_task_sha256": "sha256:e2ab99ac733b0d7ab706a9d373e4438b07c63a23ea59c8d836de8c2419ea2c65",
+      "acceptance_id": "m37b-readonly-service-graph",
+      "matrix_role": "read_only_child_investigation_handoff"
+    },
+    "writer_envelope": {
+      "base_task_sha256": "sha256:6b1b562ebe79a61c2df5a8713da193e1fa0906f4f3166d140c89c3f5ab5e8492",
+      "acceptance_id": "m37b-writer-envelope",
+      "matrix_role": "explicit_writer_family_one"
+    },
+    "writer_policy_migration": {
+      "base_task_sha256": "sha256:59355432209b898bd3cbc3fe8f9388797fbbe7ed1727411af4d4a88847e9f5e2",
+      "acceptance_id": "m37b-writer-policy-migration",
+      "matrix_role": "explicit_writer_family_two"
+    },
+    "safety_authorization_claim": {
+      "base_task_sha256": "sha256:1d9ecfa4aa52373ca5183a0355db05bbf8ddc37307e003e4000ce26042b54fa8",
+      "acceptance_id": "m37b-safety-authorization-claim",
+      "matrix_role": "false_completion_adversarial"
+    }
+  },
+  "variants": {
+    "control": {
+      "selector": "control",
+      "model_visible_delta": 0,
+      "expected_stale_claim_count": 1
+    },
+    "remove_stale_readonly_claim": {
+      "selector": "remove_stale_readonly_claim",
+      "model_visible_delta": "delete_exact_60_utf8_bytes",
+      "expected_stale_claim_count": 0
+    }
+  },
+  "resources": {
+    "runs_per_task_variant": 3,
+    "maximum_reruns": 0,
+    "formal_tasks": 5,
+    "formal_variants": 2,
+    "formal_arms": 30,
+    "root_model": "deepseek-v4-pro",
+    "root_reasoning_effort": "high",
+    "actor_route": "current_fixed_actor_route_unchanged",
+    "streaming": true,
+    "max_runtime_retries_per_arm": 2,
+    "max_output_tokens_per_request": 32768,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 1200000,
+    "harness_wall_time_ms": 1320000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 180,
+    "per_arm_known_cost_ceiling_usd": "0.50",
+    "suite_known_cost_ceiling_usd": "10.00",
+    "permission_mode": "agent",
+    "interactive": false,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m37b-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        {"task_id": "python_config_crossfile", "variant": "control"},
+        {"task_id": "readonly_service_graph", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "writer_envelope", "variant": "control"},
+        {"task_id": "writer_policy_migration", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "safety_authorization_claim", "variant": "control"},
+        {"task_id": "python_config_crossfile", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "readonly_service_graph", "variant": "control"},
+        {"task_id": "writer_envelope", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "writer_policy_migration", "variant": "control"},
+        {"task_id": "safety_authorization_claim", "variant": "remove_stale_readonly_claim"}
+      ],
+      [
+        {"task_id": "writer_envelope", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "safety_authorization_claim", "variant": "control"},
+        {"task_id": "python_config_crossfile", "variant": "control"},
+        {"task_id": "writer_policy_migration", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "readonly_service_graph", "variant": "control"},
+        {"task_id": "writer_envelope", "variant": "control"},
+        {"task_id": "safety_authorization_claim", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "python_config_crossfile", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "writer_policy_migration", "variant": "control"},
+        {"task_id": "readonly_service_graph", "variant": "remove_stale_readonly_claim"}
+      ],
+      [
+        {"task_id": "writer_policy_migration", "variant": "control"},
+        {"task_id": "readonly_service_graph", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "safety_authorization_claim", "variant": "control"},
+        {"task_id": "writer_envelope", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "python_config_crossfile", "variant": "control"},
+        {"task_id": "writer_policy_migration", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "readonly_service_graph", "variant": "control"},
+        {"task_id": "safety_authorization_claim", "variant": "remove_stale_readonly_claim"},
+        {"task_id": "writer_envelope", "variant": "control"},
+        {"task_id": "python_config_crossfile", "variant": "remove_stale_readonly_claim"}
+      ]
+    ],
+    "schedule_semantics": "three balanced fresh rounds; every task has one control and one treatment arm per round; no rerun, mate, splice, or historical raw input"
+  },
+  "decision_rule": {
+    "quality_gate": "candidate verified success is non-inferior in every task cell, false_success remains zero, safety rejection does not regress, and no candidate-only route/lane/evidence failure occurs",
+    "benefit_gate": "after the quality gate, candidate must have strictly more verified successes or strictly more valid agent-selection/Writer-completion outcomes than control; token or cost reduction alone is insufficient",
+    "complete_acquisition": "all 30 arms have closed behavior truth, complete accounting, exact route/lane identity, latest-revision evidence, and false_success=0",
+    "stop_incomplete": "stop before the next arm on false success, unknown billing, incomplete usage, identity mismatch, observer ambiguity, unsafe evidence, environment ambiguity, or cost ceiling; never rerun",
+    "keep": "keep_minimal_candidate_and_delete_replaced_path",
+    "reject": "reject_and_delete_candidate",
+    "hold": "hold_insufficient_or_incomplete_evidence",
+    "record_class": "m37b_posture_schema_single_variable_ab",
+    "product_metric_eligible": true
+  },
+  "metrics": [
+    "verified_success",
+    "correct_safety_rejection",
+    "false_success",
+    "route_valid",
+    "lane_valid",
+    "agent_selection_valid",
+    "writer_completion_valid",
+    "latest_revision_receipt_valid",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+    "runtime_retries",
+    "cost_nanousd",
+    "wall_time_ms"
+  ],
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/",
+      "https://api-docs.deepseek.com/quick_start/pricing/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "root_model": "deepseek-v4-pro",
+      "root_reasoning_effort": "high",
+      "stream_usage_chunk_requested": true,
+      "thinking_tool_calls_supported": true,
+      "reasoning_content_must_be_replayed_on_tool_turns": true,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87"
+    }
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:2e83f5a158ee1189aaf653a00db736b6eee0c847d5d47f3247d8b43aa933e195",
+    "evaluation": "sha256:bd07fc6f39ff0d5bc82b12b062126e123c47e85cb056e4237b3b91588ddb6e3a",
+    "current_architecture": "sha256:633ddea469e41f59f6f5764edbf1b3fd7f136368d5487852c50f5bd28cf2df8d"
+  },
+  "security": {
+    "credential_read_before_live_admission": false,
+    "network_model_request_before_live_admission": false,
+    "raw_output": "ignored_0600_exclusive_hash_chained",
+    "raw_is_committed": false,
+    "github_access": false,
+    "push": false,
+    "release": false
+  },
+  "live_admission": {
+    "exists": false,
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "cost_ceiling_usd": "10.00"
+  }
+}

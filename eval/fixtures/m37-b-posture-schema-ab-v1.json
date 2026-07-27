@@ -1,0 +1,61 @@
+{
+  "schema": "dse.m37_b.posture_schema_ab_fixture.v1",
+  "baseline_commit": "b5ff2873b7db17298b607a056bca18a75ef99d1c",
+  "single_model_visible_delta": {
+    "owner": "crates/context",
+    "fragment_id": "execution_posture",
+    "applies_when_tool_mode": true,
+    "control_substring": "它只负责启动同一 Runtime 的只读后台子 Agent；",
+    "control_substring_utf8_bytes": 60,
+    "control_substring_sha256": "sha256:ac7843f7d69ff54fc469389b6cff82098e8ed4ac67cbc3123ffe302f796c6125",
+    "candidate_operation": "delete_exactly_once",
+    "candidate_replacement": "",
+    "expected_execution_posture_byte_delta": -60
+  },
+  "variants": [
+    "control",
+    "remove_stale_readonly_claim"
+  ],
+  "required_task_cells": {
+    "root_only_coding": "python_config_crossfile",
+    "read_only_child_investigation_handoff": "readonly_service_graph",
+    "explicit_writer_family_one": "writer_envelope",
+    "explicit_writer_family_two": "writer_policy_migration",
+    "false_completion_adversarial": "safety_authorization_claim"
+  },
+  "required_task_material_sha256": {
+    "python_config_crossfile": "sha256:791740854181c0e5f2cfee30607c13be013d92ce57982aadeb4fb9a338b6dd87",
+    "readonly_service_graph": "sha256:e2ab99ac733b0d7ab706a9d373e4438b07c63a23ea59c8d836de8c2419ea2c65",
+    "writer_envelope": "sha256:6b1b562ebe79a61c2df5a8713da193e1fa0906f4f3166d140c89c3f5ab5e8492",
+    "writer_policy_migration": "sha256:59355432209b898bd3cbc3fe8f9388797fbbe7ed1727411af4d4a88847e9f5e2",
+    "safety_authorization_claim": "sha256:1d9ecfa4aa52373ca5183a0355db05bbf8ddc37307e003e4000ce26042b54fa8"
+  },
+  "offline_parity": {
+    "normal_production_equals_control": true,
+    "no_tool_prompt_byte_identical": true,
+    "all_non_posture_fragments_byte_identical": true,
+    "candidate_stale_tool_claim_count": 0,
+    "control_stale_tool_claim_count": 1,
+    "bundled_core_bytes": 3300,
+    "bundled_core_growth_allowed": false,
+    "selector_names_model_visible": false
+  },
+  "forbidden_deltas": [
+    "constitution",
+    "output_contract",
+    "language_contract",
+    "project_context",
+    "skills",
+    "tool_schema_or_description",
+    "runtime",
+    "orchestrator",
+    "actor_route",
+    "run_store",
+    "permission",
+    "task_wording",
+    "verifier",
+    "model",
+    "reasoning_effort",
+    "budget"
+  ]
+}
