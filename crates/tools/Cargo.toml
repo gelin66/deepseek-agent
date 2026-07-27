@@ -18,9 +18,12 @@ dse-protocol = { path = "../protocol", version = "0.8.68" }
 dse-runtime = { path = "../runtime", version = "0.8.68" }
 dse-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 futures-util = "0.3.31"
+flate2 = "1.1"
 ignore = "0.4"
 pdf-extract = { version = "0.12", optional = true }
 regex = "1.11"
+reqwest = { workspace = true, features = ["stream"] }
+rustls.workspace = true
 similar = "3"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }

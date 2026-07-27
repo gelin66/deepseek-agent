@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-26
+- 上次更新：2026-07-28
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -4931,3 +4931,89 @@ credential-free report 对 frozen raw 两次产生 byte-identical
 temporary consumer 已删除；完整身份和门禁见
 [M40-A summary](../../eval/summaries/m40-a-engineering-loss-acquisition-2026-07-28.md)。ADR-0015
 仍未实施，本结果不准入 browser/search/vision。
+
+### M41 native `web_fetch` delivery contract
+
+M41 是确定性工具能力交付，不是 Prompt、模型、reasoning、route 或多 Agent 策略 treatment。
+它的首要问题是“production 是否获得以前不存在的安全 URL 观察”，不是“随机模型样本是否
+再次证明没有这个工具”。因此 M41 不适用 3/cell 的正式产品 A/B 门。
+
+最低证据分四层：
+
+1. **合同正确性**：输入/schema、actor catalog、authorization、typed failure、bounded
+   outcome 和 external-untrusted provenance；
+2. **安全正确性**：scheme、DNS/connect/redirect IP、metadata、body/decompression、content
+   type、deadline 和 truncation 反例全部 fail closed；
+3. **production verticality**：真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor
+   -> ToolOutcome -> RunStore` caller，SQLite reopen 只重放 committed outcome，不重新抓取；
+4. **可用性 canary**：一个费用受限 official DeepSeek known-URL task，证明模型能选择工具、
+   消费有界来源并由 Host 闭合任务。
+
+canary 使用 maximum reruns=0、known-cost ceiling `$0.10`。若 provider usage 不完整，按
+ADR-0011 停止下一付费请求并禁止精确成本/效率声明；已经闭合的合同、安全和 production
+behavior 仍可独立保留。单次 canary 不能被表述为通用成功率、Token、时间或成本提升。
+
+以下变化才必须重新进入正式 A/B：改变 model-visible Prompt/strategy、默认 actor route、
+多个 search/browser treatment 取舍、或声称模型任务成功率/效率相对 current 获得提升。
+确定性工具 plumbing、TUI 对已有 Run API 的投影和精确 Skill path grant 使用 contract、
+security、caller、reopen 与真实 workflow gate，不为满足样本数量读取 Key。
+
+M41 keep gate：所有安全否决 100% 正确、false success=0、真实 caller/reopen 通过、没有第二
+Runtime/Store/Web session truth，且产品不把未接线管理面宣称为 Agent 能力。否则完整删除
+candidate，不保留 disabled implementation、provider marketplace、浏览器 placeholder 或长期
+adapter。
+
+#### M41 formal result
+
+结论为 `keep_native_web_fetch`。contract/security 层的 URL、scheme、userinfo、metadata、
+IPv4/IPv6 special range、mixed DNS/rebinding、connect pin、redirect escape/loop/limit、deadline、
+content type/encoding/charset、raw/decompressed body、UTF-8、Unicode truncation、HTML
+title/text/link 与 script suppression 反例全部通过；authorization 证明 Ask fail closed、
+Agent/FullAccess root allow、isolated Writer network deny，当前 actor catalog hash/parity 已冻结。
+false success=0。
+
+production vertical 使用真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor ->
+ToolOutcome -> RunStore` loopback：模型选择 `web_fetch`，结果先 committed，再作为 exact tool
+message 进入下一次 model request。SQLite 用无凭据 application reopen 后，`Get/Events` 与原
+snapshot/events 相同，DNS/HTTP 调用保持 1/1，没有重抓。现有 ToolOutcome 足以保存成功 payload
+和 Web-specific failure metadata，因此 RuntimeEvent/State version 均未升级。
+
+唯一付费 canary 的冻结事实为：
+
+```text
+date_local                 2026-07-28
+model / reasoning          deepseek-v4-flash / low
+known_url                  https://api-docs.deepseek.com/
+maximum_reruns             0
+api_request_limit          2
+physical requests          2 started / 2 completed
+runtime retries            0
+terminal                   completed
+web_fetch calls            1
+status / final_url          200 / https://api-docs.deepseek.com/
+title                       Your First API Call | DeepSeek API Docs
+trust                       external_untrusted
+bytes read / returned       7356 / 3077, truncated=false
+source_sha256               sha256:6fb009a86bf7aa16148b7140b0de48516c749f4f8d3b5076abfc76d3c8a9c424
+input / output tokens       18646 / 331
+cache hit / miss tokens     2304 / 16342
+usage / cost complete       true / true
+billing unknown             0
+actual cost                 $0.002387011
+known-cost ceiling          $0.10
+run_id                      4d694f8c-610a-44d4-983f-9fb9d8bc5093
+binary_sha256               sha256:9aba506014a2d8fd3fa967f99924d4d7117eca4d65e23c206fdc4280cdc3130b
+prompt_sha256               sha256:daff24c0848d0f8f4057b88b1f8a4f33e741010638043c8c6d0fdd29da187876
+tool_catalog_sha256         sha256:0c6be663c4a292ec63fe08473949e783aaa1943bce641661c5fe085db73478bc
+```
+
+用户全局 config 仍含已删除的 `root.provider` 时，第一次 launcher preflight 在任何 official
+request 前拒绝该配置；official requests=0。随后在隔离的临时 DSE_HOME 中使用同一已配置
+凭据执行上述唯一实际 canary，不修改用户 config，也没有补跑 model sample。该 configuration
+preflight 不计为 canary rerun。
+
+离线证据为 `dse-tools` 359 passed / 1 existing ignored、`dse-app` 58 passed / 1 existing ignored、
+`./scripts/dev-dse.sh focused` 通过、strict workspace Clippy 通过，以及 fmt/check/diff gate
+通过。单次 canary 只证明已知 URL 工具可选、来源可读和 vertical task 闭合；没有 A/B，也不
+支持成功率、Token、时间或费用相对提升声明。search/browser/visual/ApplicationProbe 与第二
+Runtime/Store/accounting owner 均未引入。

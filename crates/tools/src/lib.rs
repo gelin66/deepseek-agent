@@ -23,6 +23,7 @@ pub mod shell;
 pub mod shell_dispatcher;
 mod unified_diff;
 mod verification_artifact;
+mod web_fetch;
 
 pub(crate) use apply_patch::{execute_apply_patch, preflight_apply_patch};
 pub use atomic_write::write_atomic;
@@ -45,6 +46,9 @@ pub(crate) use run_verifiers::{execute_run_verifiers, resolve_run_verifiers_spec
 pub use unified_diff::make_unified_diff;
 pub use verification_artifact::{
     attach_verifier_observation, capture_workspace_revision, reject_verification_artifact,
+};
+pub use web_fetch::{
+    SystemWebFetchNetwork, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
 };
 
 #[cfg(test)]

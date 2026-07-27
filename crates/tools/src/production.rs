@@ -28,6 +28,9 @@ use crate::shell::{
     command_likely_needs_network, execute_exec_shell, new_shared_shell_manager,
     preflight_exec_shell,
 };
+use crate::web_fetch::{
+    SystemWebFetchNetwork, WebFetchNetwork, execute_web_fetch, preflight_web_fetch,
+};
 use crate::{
     ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
     execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
@@ -36,7 +39,7 @@ use crate::{
     resolve_run_verifiers_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 12] = [
     "apply_patch",
     "edit_file",
     "exec_shell",
@@ -48,6 +51,7 @@ pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
     "read_file",
     "run_tests",
     "run_verifiers",
+    "web_fetch",
 ];
 
 /// Immutable per-run configuration. It never contains live shell jobs,
@@ -64,6 +68,7 @@ pub struct ProductionToolConfig {
     sandbox_backend: Option<Arc<dyn SandboxBackend>>,
     prefer_external_pdftotext: bool,
     exec_policy: Option<ExecPolicy>,
+    web_fetch_network: Arc<dyn WebFetchNetwork>,
 }
 
 #[derive(Clone)]
@@ -102,6 +107,7 @@ pub struct ProductionToolExecutionIdentity {
     pub prefer_external_pdftotext: bool,
     pub shell_network_denied_hint_sha256: Option<String>,
     pub exec_policy_sha256: Option<String>,
+    pub web_fetch_network_sha256: String,
 }
 
 impl ProductionToolConfig {
@@ -119,6 +125,7 @@ impl ProductionToolConfig {
             sandbox_backend: None,
             prefer_external_pdftotext: false,
             exec_policy: None,
+            web_fetch_network: Arc::new(SystemWebFetchNetwork),
         }
     }
 
@@ -203,12 +210,21 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Replace only the stateless DNS/HTTP seam used by `web_fetch`.
+    /// Production callers keep the pinned Rustls implementation; deterministic
+    /// vertical tests use this to avoid depending on public network state.
+    #[must_use]
+    pub fn with_web_fetch_network(mut self, network: Arc<dyn WebFetchNetwork>) -> Self {
+        self.web_fetch_network = network;
+        self
+    }
+
     /// Project this config into deterministic, serializable and non-secret
     /// fingerprint material. Live executor state is intentionally absent.
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 1,
+            schema: 2,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -229,6 +245,7 @@ impl ProductionToolConfig {
                     .expect("production exec policy snapshot is serializable");
                 non_secret_sha256_bytes(&bytes)
             }),
+            web_fetch_network_sha256: non_secret_sha256(self.web_fetch_network.identity()),
         }
     }
 
@@ -335,12 +352,14 @@ fn invocation_has_external_path(
         || patch_paths.any(|path| context.path_is_external(&path))
 }
 
-/// Direct executor for the fixed eleven-tool production surface.
+/// Direct executor for the fixed twelve-tool production surface.
 pub struct ProductionToolExecutor {
     context: ProductionToolContext,
     shell: ExecShellOptions,
     prefer_external_pdftotext: bool,
     shell_host: ProductionExecShellHost,
+    web_fetch_network: Arc<dyn WebFetchNetwork>,
+    web_fetch_network_allowed: bool,
 }
 
 impl ProductionToolExecutor {
@@ -369,6 +388,11 @@ impl ProductionToolExecutor {
         shell.elevated_sandbox_policy = config.elevated_sandbox_policy;
         shell.shell_network_denied_hint = config.shell_network_denied_hint;
         shell.sandbox_backend = config.sandbox_backend;
+        let web_fetch_network_allowed = config.permission_mode != RunPermissionMode::Ask
+            && shell
+                .elevated_sandbox_policy
+                .as_ref()
+                .is_none_or(ExecutionSandboxPolicy::has_network_access);
         Self {
             context,
             shell,
@@ -376,6 +400,8 @@ impl ProductionToolExecutor {
             shell_host: ProductionExecShellHost {
                 exec_policy: config.exec_policy,
             },
+            web_fetch_network: config.web_fetch_network,
+            web_fetch_network_allowed,
         }
     }
 
@@ -509,6 +535,12 @@ impl ProductionToolExecutor {
             "read_file" => execute_read_file(input, context, self.prefer_external_pdftotext),
             "run_tests" => execute_run_tests(input, context, &self.shell).await,
             "run_verifiers" => execute_run_verifiers(input, context, &self.shell).await,
+            "web_fetch" => Ok(execute_web_fetch(
+                input,
+                Arc::clone(&self.web_fetch_network),
+                self.web_fetch_network_allowed,
+            )
+            .await),
             _ => unreachable!("validated production tool missing direct dispatch: {name}"),
         }
     }
@@ -522,18 +554,16 @@ impl ToolExecutor for ProductionToolExecutor {
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {
-                WorkspaceAccess::ReadOnly
-            }
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file"
+            | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {
-                WorkspaceAccess::ReadOnly
-            }
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file"
+            | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
@@ -572,6 +602,9 @@ impl ToolExecutor for ProductionToolExecutor {
                 Ok(outcome) => outcome,
                 Err(error) => Some(Self::preflight_error_outcome(error)),
             };
+        }
+        if invocation.name == "web_fetch" {
+            return preflight_web_fetch(input);
         }
         None
     }
@@ -764,6 +797,38 @@ impl ToolExecutor for ProductionToolExecutor {
             }
         }
 
+        if invocation.name == "web_fetch" {
+            let sandbox_denies_network = self
+                .shell
+                .elevated_sandbox_policy
+                .as_ref()
+                .is_some_and(|policy| !policy.has_network_access());
+            if mode == RunPermissionMode::Ask || sandbox_denies_network {
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Deny,
+                    ApprovalRisk::Elevated,
+                    Some(if mode == RunPermissionMode::Ask {
+                        "ask_network_fail_closed".to_owned()
+                    } else {
+                        "sandbox_network_denied".to_owned()
+                    }),
+                    if mode == RunPermissionMode::Ask {
+                        "当前执行后端不能证明一次性网络授权范围，已安全拒绝"
+                    } else {
+                        "当前 actor 的冻结执行边界禁止网络访问"
+                    },
+                    None,
+                ));
+            }
+            return Ok(decision.build(
+                ToolAuthorizationDisposition::Allow,
+                ApprovalRisk::Routine,
+                Some("public_https_web_fetch".to_owned()),
+                "只读 public HTTPS fetch 由 Host URL/DNS/connect/redirect 安全门约束",
+                None,
+            ));
+        }
+
         if allow_external_verifier_program {
             return Ok(decision.build(
                 ToolAuthorizationDisposition::Allow,
@@ -906,6 +971,11 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             "run_verifiers",
             "同步运行与项目类型匹配的确定性验证，可选择快速或完整等级，也可提供明确的程序与参数。",
             run_verifiers_schema(),
+        ),
+        definition(
+            "web_fetch",
+            "读取一个已知公开 HTTPS URL，返回有界正文、标题、canonical links、来源哈希与 external_untrusted 信任标记；不提供搜索、认证、Cookie、任意 header、脚本或浏览器执行。",
+            web_fetch_schema(),
         ),
     ]
 }
@@ -1129,6 +1199,10 @@ fn run_tests_schema() -> Value {
 
 fn run_verifiers_schema() -> Value {
     json!({"type":"object","properties":{"profile":{"type":"string","enum":["auto","rust","node","python","go","exact"],"default":"auto"},"level":{"type":"string","enum":["quick","full"],"default":"quick"},"max_python_files":{"type":"integer","minimum":1,"maximum":1000,"default":200},"commands":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"default":[]},"cwd":{"type":"string"}},"required":["name","program"],"additionalProperties":false},"default":[]}},"additionalProperties":false})
+}
+
+fn web_fetch_schema() -> Value {
+    json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
 }
 
 #[cfg(test)]
@@ -1428,6 +1502,119 @@ allow = ["git push"]
             );
             assert_eq!(decision.matched_rule.as_deref(), Some(expected_rule));
         }
+    }
+
+    #[test]
+    fn web_fetch_schema_catalog_and_authorization_follow_existing_actor_policy() {
+        let workspace = tempfile::tempdir().unwrap();
+        let valid = invocation(
+            "web_fetch",
+            json!({"url":"https://example.com/docs","max_chars":4096}),
+        );
+
+        let ask = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Ask),
+        );
+        assert!(ask.preflight(&valid).is_none());
+        assert_eq!(
+            ask.definition_workspace_access("web_fetch"),
+            WorkspaceAccess::ReadOnly
+        );
+        let denied = ask
+            .authorize(
+                RunPermissionMode::Ask,
+                &ToolExecutionGrant::Ordinary,
+                &valid,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(
+            denied.matched_rule.as_deref(),
+            Some("ask_network_fail_closed")
+        );
+
+        for mode in [RunPermissionMode::Agent, RunPermissionMode::FullAccess] {
+            let executor = ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path()).with_permission_mode(mode),
+            );
+            let allowed = executor
+                .authorize(
+                    mode,
+                    &ToolExecutionGrant::Ordinary,
+                    &valid,
+                    &workspace_state(),
+                )
+                .unwrap();
+            assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
+            assert_eq!(
+                allowed.matched_rule.as_deref(),
+                Some("public_https_web_fetch")
+            );
+        }
+
+        let writer = tempfile::tempdir().unwrap();
+        let isolated = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+        let denied = isolated
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &valid,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(
+            denied.matched_rule.as_deref(),
+            Some("sandbox_network_denied")
+        );
+
+        for field in [
+            "headers",
+            "cookie",
+            "authorization",
+            "proxy",
+            "method",
+            "path",
+        ] {
+            let mut input = json!({"url":"https://example.com/"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), Value::String("forbidden".to_owned()));
+            let rejected = ask
+                .preflight(&invocation("web_fetch", input))
+                .expect("unsupported web authority must fail schema preflight");
+            assert_eq!(rejected.failure_code, Some(ToolFailureCode::InvalidField));
+        }
+        for max_chars in [0, 50_001] {
+            assert!(
+                ask.preflight(&invocation(
+                    "web_fetch",
+                    json!({"url":"https://example.com/", "max_chars": max_chars}),
+                ))
+                .is_some()
+            );
+        }
+        let unsafe_url = ask
+            .preflight(&invocation(
+                "web_fetch",
+                json!({"url":"http://169.254.169.254/latest"}),
+            ))
+            .expect("non-HTTPS metadata URL must fail before authorization");
+        assert_eq!(
+            unsafe_url.failure_code,
+            Some(ToolFailureCode::InvocationRejected)
+        );
+        assert_eq!(
+            unsafe_url.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
+            "web_scheme_denied"
+        );
     }
 
     #[test]

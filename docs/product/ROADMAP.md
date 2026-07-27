@@ -204,7 +204,11 @@
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-24
+- 上次更新：2026-07-28
+
+- 当前执行指针（2026-07-28）：M41 原生 `web_fetch` 已完成并以 `keep` 关闭；M40-A 继续保持
+  `reject_incomplete_acquisition`，不能续跑或补样。M42 是下一条候选 production slice，但
+  尚未启动；M43–M46 也只记录顺序。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6680,3 +6684,116 @@ M40 temporary campaign consumer 已物理删除，唯一 Harness 恢复 exact bl
 fixture/reference、contract/admission/analysis、ignored `0600` raw、
 [M40-A summary](../../eval/summaries/m40-a-engineering-loss-acquisition-2026-07-28.md)与 Git 历史
 保留。ADR-0015 继续 implementation-not-admitted；没有 browser/search/vision implementation。
+
+## 39. M41：原生 `web_fetch` 生产能力
+
+- 状态：**已完成并保留（2026-07-28）**
+- Goal：以前 DSE 无法以 canonical 工具读取用户给出的公开 URL；完成后，root Agent 能在
+  现有权限、ToolOutcome、RunStore 和完成链中安全读取有界网页文本与来源事实。
+- owner：`crates/tools`
+- 起始事实：current catalog 只有 11 个本地代码工具；没有 `web_fetch`、search、browser、
+  MCP model executor 或第二 Web owner。
+
+### 39.1 固定范围
+
+W1 只实现一个已知 URL 获取工具：
+
+```text
+url
+optional max_chars
+```
+
+结果至少包含 requested/final URL、status、media type、title、有界正文、有界 canonical links、
+retrieved time、source SHA-256、读取/返回 bytes、truncation 和
+`trust=external_untrusted`。模型不能提供任意 header、Cookie、认证、代理、证书、文件路径或
+脚本。
+
+Host 必须在每次解析、连接和 redirect 上拒绝 private/loopback/link-local/multicast、metadata、
+非 HTTPS scheme 与 redirect escape；限制 redirect、deadline、response/decompressed bytes 和
+content type。HTML 只做确定性文本/标题/链接提取，不执行脚本。第一版不读取 PDF、图片、
+archive，不启动 Chrome，也不增加 search provider。
+
+### 39.2 纵向实现与旧路
+
+1. 先在 `crates/tools` 写 URL、egress、redirect、body、extract 和 outcome 的失败合同；
+2. 把 `web_fetch` 加入现有 production catalog/schema/authorization/executor；
+3. 复用现有 `ToolOutcome -> RuntimeEvent -> RunStore`，不增加 Web Store、session 或第二
+   accounting ledger；
+4. root 默认可见；read-only child/Writer 是否可见必须由现有 actor catalog 正向授权决定，
+   不从 Prompt 或角色名称推断；
+5. TUI/config 中未进入模型 catalog 的 search-provider 管理面不算 W1 caller，本切片不顺手
+   重构；只在用户文案中禁止把它描述为已具备的 Agent 搜索能力；
+6. 若实现发现必须改变 RuntimeEvent/State schema，先证明现有 ToolOutcome 无法无损表达，
+   不得为 Web 预建 Manager/Factory/Service 或兼容层。
+
+### 39.3 验收、费用与停止门
+
+- deterministic：HTTPS、redirect、SSRF/DNS rebinding、metadata、content type、解压上限、
+  truncation、HTML 提取、typed failure、authorization、catalog parity 和 SQLite reopen；
+- production loopback：同一 AgentApplication/AgentRuntime 路径中模型选择 `web_fetch`，结果
+  经 Store 重放且不重复请求网络；
+- real canary：一个 current official DeepSeek known-URL task，maximum reruns=0、费用上限
+  `$0.10`；只证明工具可选、来源可读和任务闭合，不宣称通用成功率/成本提升；
+- gates：`./scripts/dev-dse.sh focused`、`cargo fmt --all -- --check`、
+  `cargo test -p dse-tools --locked`、`cargo check -p dse-tools --locked`、`git diff --check`；
+- accounting incomplete 只阻止精确成本声明和后续付费请求，不抹掉已闭合的 deterministic
+  behavior；该规则作为本切片的 evaluator policy 小改，不另立 M41-accounting 里程碑。
+
+M41 不执行多 cell 付费 A/B。只有安全边界无法强制、结果不能进入 canonical outcome/replay，
+或真实 caller 无法使用时，才 `reject_and_delete`；不得因文档、测试或评测工作量本身延期
+交付。
+
+### 39.4 正式结果与删除
+
+M41 在 `crates/tools` 交付第 12 个固定 Host 工具 `web_fetch(url, max_chars?)`，复用 workspace
+已有的 Reqwest/Rustls、`ProductionToolExecutor`、authorization、`ToolOutcome`、RuntimeEvent
+和 SQLite RunStore。Host 固定执行 public HTTPS、userinfo/metadata deny、逐跳 DNS 全地址校验、
+connect pin、manual redirect、deadline、raw/decompressed body、content type/encoding/charset 与
+UTF-8 安全门；HTML 只产生有界 title/text/canonical links。Ask 因缺少可强制的 scoped network
+approval 而 deny，Agent/FullAccess root allow，isolated Writer 继续由 network-denied sandbox
+deny。现有 `ToolOutcome.content + metadata` 足够表达成功与 Web-specific typed failure，所以
+RuntimeEvent/State schema 未变。
+
+deterministic suite 覆盖 URL、public/special IP、mixed DNS/rebinding、connect pin、redirect
+escape/loop/limit、metadata、deadline、content type、raw/decompression/UTF-8、Unicode truncation、
+script suppression、link bound、authorization 与 catalog parity。真实 production loopback 中
+DeepSeek fixture 选择 `web_fetch`，committed outcome 进入下一次 canonical model request；同一
+SQLite 以无凭据 `AgentApplication` reopen 后 `Get/Events` byte-for-byte 重放，DNS/HTTP 计数
+保持不变。
+
+唯一 official canary 使用 `deepseek-v4-flash`/low 和
+`https://api-docs.deepseek.com/`，maximum reruns=0、2-request hard limit、只允许 `web_fetch`。
+模型调用工具一次并完成任务；页面为 200、title `Your First API Call | DeepSeek API Docs`、
+`trust=external_untrusted`，读取 7,356 bytes、返回 3,077 bytes、未截断。canonical accounting
+为 2 started / 2 completed、runtime retry 0、usage/cost complete、18,646 input / 331 output
+tokens，费用 `$0.002387011`，低于 `$0.10` ceiling；没有 billing unknown 或 incomplete usage。
+该单次 canary 只证明 vertical usability，不宣称通用效率或成功率提升。
+
+`./scripts/dev-dse.sh focused`、严格 workspace Clippy、`dse-tools` 全测试/check、production app
+targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、Chrome/CDP、ApplicationProbe、
+视觉、第二 Provider/Runtime/Store、Web session、独立 accounting ledger、Manager/Factory/Service
+或 compatibility path，也没有改造 TUI/config 的 search-provider 管理面；因此 keep。
+
+## 40. M42–M46：生产力后续顺序
+
+这些里程碑只冻结顺序；M41 已形成实现与证据 checkpoint，本次交付未启动其中任何一项。
+
+1. **M42 TUI Run Hub**：复用 `list_roots/resume/continue`，实现 workspace/project 运行列表、
+   状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
+2. **M43 Skills 可靠加载**：提供 Host-owned exact `load_skill(name)` 或精确 discovered-path
+   grant；不能读取的全局 Skill 不再向模型宣称可用。MCP/plugin 未进入模型 catalog 前保持
+   管理面或隐藏，不建设 marketplace。
+3. **M44 DeepSeek 原生 Web Search 决策**：最多两天、最多一到两个官方请求，验证 Anthropic
+   compatibility 的 server tool result、stream、thinking、usage、finish、来源和 replay；
+   若需要第二 DeepSeek wire，必须新 ADR。无完整收益则等待 Chat surface，不建 provider
+   fallback chain。
+4. **M45 ApplicationProbe**：先实现 worktree-local process、port/health、logs、HTTP assertion、
+   latest-revision receipt 和 teardown；HTTP 足够时不启动 Chrome。
+5. **M46 只读语义浏览器**：只有 ApplicationProbe/真实 JS 页面证明 HTTP 不足时，使用
+   Rust/Tokio + CDP + pinned Chrome for Testing，实现 navigate、bounded AX/DOM snapshot 和
+   Host teardown；action、登录、截图和视觉分别后置。
+
+在 M41–M46 期间继续停做：多 Writer/swarm、FIM、RepoGraph/LSP、视觉 placeholder、Firecrawl/
+Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss
+acquisition。每个里程碑必须写出“以前用户不能 X，现在可以 X”，并在 3–5 个工作日内产生
+用户可见纵向结果，否则缩小或停止。

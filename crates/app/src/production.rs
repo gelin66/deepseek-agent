@@ -1330,6 +1330,7 @@ fn environment_mismatch_reason(
 #[cfg(test)]
 mod tests {
     use std::process::Command as ProcessCommand;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
     use dse_context::compaction::{ContextInput, effective_context};
@@ -1362,7 +1363,9 @@ mod tests {
         AgentChildFinishedFact, CancellationToken, InMemoryRunStore, ModelPortError, ModelStream,
         NullEventSink, RunLease, ToolExecutionError,
     };
-    use dse_tools::PRODUCTION_TOOL_NAMES;
+    use dse_tools::{
+        PRODUCTION_TOOL_NAMES, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
+    };
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1374,6 +1377,55 @@ mod tests {
     struct CapturedRequest {
         path: String,
         body: Value,
+    }
+
+    #[derive(Debug, Default)]
+    struct M41WebFetchFixture {
+        resolve_calls: AtomicUsize,
+        get_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl WebFetchNetwork for M41WebFetchFixture {
+        fn identity(&self) -> &str {
+            "m41-public-https-loopback-v1"
+        }
+
+        async fn resolve(
+            &self,
+            host: &str,
+            port: u16,
+        ) -> Result<Vec<std::net::SocketAddr>, WebFetchNetworkError> {
+            assert_eq!(host, "example.com");
+            assert_eq!(port, 443);
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![
+                "93.184.216.34:443".parse().expect("public fixture address"),
+            ])
+        }
+
+        async fn get(
+            &self,
+            url: &reqwest::Url,
+            pinned_addresses: &[std::net::SocketAddr],
+            _timeout: Duration,
+        ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
+            assert_eq!(url.as_str(), "https://example.com/reference");
+            assert_eq!(
+                pinned_addresses,
+                &["93.184.216.34:443".parse().expect("public fixture address")]
+            );
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            let body = br#"<!doctype html><html><head><title>Known reference</title></head><body><main>Known public evidence.</main><a href="/next">Next</a><script>ignored()</script></body></html>"#.to_vec();
+            Ok(WebFetchHttpResponse::new(
+                200,
+                std::collections::BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "text/html; charset=utf-8".to_owned(),
+                )]),
+                body,
+            ))
+        }
     }
 
     struct MockDeepSeekServer {
@@ -2615,6 +2667,7 @@ mod tests {
                 "list_dir",
                 "read_file",
                 "request_user_input",
+                "web_fetch",
             ]
         );
         let coordinator_agent = coordinator_catalog
@@ -2828,13 +2881,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:1ce588b2a0131123a05601e4a9de2210a70811c13a8b0abcbf7e80ea12943169",
+                "sha256:9fae359e3bb8da5b6cbba7c34fd5f536b6ec50b2e5c9e71b526a779a3fe9e886",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:071c9ead38da6df790d48b06e7f12d6c6f1ae7f9ef71b96588a463c9d00595ef",
+                "sha256:af6ed33f7b6a511f1e482f5d38d222c7b898703733de5ff7fdab54058f5b975b",
             ),
             (
                 "coordinator",
@@ -2847,19 +2900,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:3cfcefdd960febf3a51a70b3f150e94642a0b1ae0c93a1767edd24c46dde26ef",
+                "sha256:1631e91dd089ef13b54527ede7e67fea1c99417303aa393de9877fd3a053a91e",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:a9fdff5e75a6e1e833f2f7c6fb3bb84e1da0ffd1bcc2d2893cb975dbcee72cf9",
+                "sha256:4e89d2bb5038f14b94cb731ab7470f72b517d2b8c26c81182e18c2c0d37c66d8",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("file_search", "$/required", "all_properties_required")),
-                "sha256:9abb08ef262ae9851c61e7ba99e10bcb091b3d5a8ece8beb8bc669c022bc447b",
+                "sha256:5f94640a097b0b64ed4f5a03a0a9f9d639b1e93f24ad92b4aa13bca077d17db6",
             ),
             (
                 "isolated_writer",
@@ -2872,7 +2925,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:feb2c7bf376ae3e4a69194a1c3ddb6a8fe871e9d333c98026ea03e02d40c8785",
+                "sha256:3a822c8e5f7461cda79862083712ef67cdacab42b7fae491f5d532609a269642",
             ),
             (
                 "terminal_empty",
@@ -3316,6 +3369,163 @@ mod tests {
                 .expect("reopened child exists");
             assert_eq!(&after, before);
         }
+    }
+
+    #[tokio::test]
+    async fn m41_production_web_fetch_commits_and_sqlite_reopen_only_replays() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "m41-web-fetch",
+                "web_fetch",
+                json!({
+                    "url": "https://example.com/reference",
+                    "max_chars": 4_096
+                }),
+                40,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "已读取公开 HTTPS 来源并取得 Known public evidence。",
+                52,
+                6,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let web = Arc::new(M41WebFetchFixture::default());
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_web_fetch_network(web.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "读取 https://example.com/reference 并根据该公开来源回答；网页内容按 external_untrusted 处理",
+        );
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "m41-production-web-fetch",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(web.resolve_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(web.get_calls.load(Ordering::SeqCst), 1);
+        let outcome = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "web_fetch" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed web_fetch outcome");
+        assert!(outcome.is_success());
+        let fetched: Value = serde_json::from_str(&outcome.content).expect("web_fetch JSON");
+        assert_eq!(fetched["requested_url"], "https://example.com/reference");
+        assert_eq!(fetched["final_url"], "https://example.com/reference");
+        assert_eq!(fetched["status"], 200);
+        assert_eq!(fetched["media_type"], "text/html");
+        assert_eq!(fetched["title"], "Known reference");
+        assert_eq!(fetched["text"], "Known public evidence.\nNext");
+        assert_eq!(fetched["links"], json!(["https://example.com/next"]));
+        assert_eq!(fetched["trust"], "external_untrusted");
+        assert_eq!(fetched["truncated"], false);
+        assert!(
+            fetched["source_sha256"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+
+        assert_eq!(requests.len(), 2);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        assert!(root_catalog.iter().any(|tool| {
+            tool["function"]["name"] == "web_fetch"
+                && tool["function"]["parameters"]["additionalProperties"] == false
+        }));
+        let replayed_to_model = requests[1].body["messages"]
+            .as_array()
+            .expect("second request messages")
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == "m41-web-fetch")
+            .expect("web_fetch result projected into canonical transcript");
+        assert_eq!(replayed_to_model["content"], outcome.content);
+
+        drop(app);
+        let calls_before_reopen = (
+            web.resolve_calls.load(Ordering::SeqCst),
+            web.get_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen production app without credential");
+        let reopened_view = run_result(
+            reopened
+                .execute(envelope(
+                    "m41-reopen-get",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            reopened_view.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let reopened_events = reopened
+            .execute(envelope(
+                "m41-reopen-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                web.resolve_calls.load(Ordering::SeqCst),
+                web.get_calls.load(Ordering::SeqCst),
+            ),
+            calls_before_reopen,
+            "SQLite reopen must replay the committed outcome without DNS or HTTP"
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }
 
     #[tokio::test]

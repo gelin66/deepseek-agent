@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-26
+- 快照日期：2026-07-28
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -523,13 +523,30 @@ Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache
 ### Tools
 
 `crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
-当前 11 个 Host 工具为：
+当前 12 个 Host 工具为：
 
 ```text
 apply_patch  edit_file    exec_shell   file_search
 git_diff     git_status   grep_files   list_dir
-read_file    run_tests    run_verifiers
+read_file    run_tests    run_verifiers web_fetch
 ```
+
+M41 已在 `crates/tools` 加入 canonical `web_fetch(url, max_chars?)`。它只读取 public HTTPS，
+每一跳都重新执行 URL、DNS/IP、connect pin 与 redirect 安全门；system proxy、自动 redirect、
+Cookie、认证、任意 header、证书绕过和自动解压均未开放。当前硬边界为 5 次 redirect、15 秒
+总 deadline、1 MiB raw response、2 MiB decompressed body、50,000 个返回字符和 32 个 canonical
+link；只接受 UTF-8/US-ASCII 的 HTML/XHTML/plain text，HTML 提取不执行 script。
+
+成功结果携带 requested/final URL、status、media type、title、有界正文/链接、retrieved time、
+source SHA-256、读取/返回 bytes、truncation 和 `trust=external_untrusted`；Web-specific stable
+failure detail 放入现有 `ToolOutcome.metadata`，生命周期仍使用 canonical typed fields。没有改变
+RuntimeEvent 或 State schema，也没有 Web session/store/accounting ledger。committed outcome 经
+SQLite reopen 只重放，不重新 DNS/HTTP。root、coordinator 和 read-only child 依现有 read-only
+catalog 获得定义；Ask 因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess
+root 可执行，isolated Writer 继续由既有 network-denied sandbox 拒绝。
+
+production 仍没有 `web_search` 或 browser tool。TUI 的 MCP/search-provider 配置与插件发现没有
+进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。
 
 Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启动的 child 仍是同一个
 `AgentRuntime`，不是另一套 swarm loop。
