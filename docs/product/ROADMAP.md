@@ -5555,3 +5555,51 @@ preflight、continuity/live runner 分支，corrected Harness 恢复 pre-M31 blo
 `90ffb72bbd830ec7e1e66c685768bea37b37e0c3`。frozen contract/treatment/admission、
 ignored `0600` raw 与 summary 保留作审计证据。完整结论见
 [M31 contract-bound verifier permission treatment](../../eval/summaries/m31-contract-verifier-permission-2026-07-27.md)。
+
+## 30. M32：current Hardness 全量回归与剩余损失门
+
+- 状态：**in progress；contract freeze**
+- 基线：M31 clean checkpoint `bfa8ec84f`
+- owner：唯一 corrected `scripts/eval-m9b-fixed-pro-regression.py` Harness
+- production delta：control acquisition 阶段为 0
+
+### 30.1 真实问题与验收
+
+M31 只在两个原 loss task 上证明 typed exact TaskContract verifier grant 修复有效；
+它没有证明该 production delta 在完整 current Hardness 分层上无回归，也没有定位修复后
+仍然重复的 current loss。M30 的旧 revision、停止位置、raw 和 12-arm partial result
+不能续跑、补 mate 或冒充 M32 baseline。
+
+M32 通过 hash 继承 M23 冻结的 20 个 task/fixture/reference/tool-policy material，
+但冻结全新的 Run API v14 / RuntimeEvent v21 / State v27 / exec-stream v4 source
+identity。正式 schedule 为每个 task 一个新的 position-1 arm，共 20 arms；
+fixed Pro/high、`maximum_reruns=0`、transport/runtime retry 0。普通 arm 使用 current
+Agent permission；三个 long-horizon arm 使用 Ask + typed `request_user_input`，
+在 interaction durable 后 SIGKILL，并从同一 RunStore exact reopen、answer、continue。
+
+完整验收为：
+
+1. 20/20 initial verifier 按合同失败，17/17 reference solution 通过，3/3 safety
+   counterexample 保持失败；
+2. root、ordinary read-only child、explicit Writer、safety 和三种 continuity actor
+   profile 与当前 production composition 一致；
+3. behavior truth 与 accounting truth 正交；latest-revision receipt、external verifier、
+   route/lane、SQLite reopen 和 crash prefix 全部闭合；
+4. false success 为 0，任何 unknown billing、usage incomplete、identity/observer/
+   environment ambiguity、unsafe evidence 或 ceiling breach 都在下一 arm 前停止；
+5. 只有同一 `owner_code:loss_code` 跨至少两个不同 task id 重复，才允许审计一个最小
+   unique-owner treatment；否则结论为 `no_repeated_current_loss` 并停止功能开发。
+
+### 30.2 顺序、授权与删除
+
+先提交 contract/manifest，再让唯一 Harness 增加一个可删除的 M32 consumer；完成
+fixture/reference、journal crash windows、deterministic loopback、真实 process
+SIGKILL/reopen、dry-run、source identity 和全仓离线门禁。credential-front 必须另行冻结
+immutable binary、Harness/schedule/task/authority hash、ignored `0600` raw 路径、当前
+明确授权、`$0.50/arm` 与 `$10.00/suite` 上界后才可读取 Key 或请求 official API。
+
+若 20 arms 完整闭合且没有重复 current loss，保留 manifest/result/summary 身份，删除
+M32 临时 live consumer，不开发 production treatment。若出现重复 loss，只允许按
+problem/acceptance/owner/old-path/tests/deletion 新开一个单变量 candidate；失败即物理
+删除 candidate 与临时接线。历史 M23/M30/M31 evidence 不修改。全程不访问 GitHub、
+不 push、不 release。

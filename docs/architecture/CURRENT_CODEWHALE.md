@@ -2670,6 +2670,27 @@ named-verifier description/schema/resolver、三档 permission policy、唯一 R
 仅用于审计；它们没有 production consumer。本结果只暴露一个未来需独立冻结的
 permission/verifier integration owner，不授权在 M30 内叠加第二修复。
 
+M31 已以 `keep_contract_verifier_grant` 收口。current production 使用 typed
+`ToolExecutionGrant::TaskContractVerifier`：Runtime 只从 exact acceptance-ID handle
+和 frozen `VerifierSpec` 派生 grant，tools 重新验证 canonical digest、invocation 和
+workspace revision 后，才允许 exact verifier `commands[].program` 使用 Host 冻结的
+read/execute authority。普通 external path/cwd、network、explicit deny、hard invariant、
+read-only child 与 Writer sandbox 不变。current identity 因 durable shape 变更为 Run API
+v14 / RuntimeEvent v21 / State v27 / exec-stream v4；两项原 loss task 均得到
+latest-revision failed-write-pass receipt、exact reopen、false success 0 和完整 accounting。
+临时 M31 Harness consumer 已删除，frozen contract/admission/raw/summary 保留。
+
+M32 当前处于 contract-freeze 阶段，基线是 M31 clean checkpoint `bfa8ec84f`。M32 不修改
+production；它将由唯一 corrected Harness 对 M23 冻结的 20-task material 建立全新
+position-1 fixed-Pro/high control-only 回归，验证 M31 grant 在完整 task strata 上的
+回归安全性并定位剩余重复 loss。M30 的 partial raw/停止位置不作为输入，M31 的两任务
+treatment 结果也不冒充 broad regression。
+
+当前尚无 M32 live admission、immutable campaign binary、Key read、official model
+request 或质量结论。credential-free contract/Harness/continuity/full gate 完成后仍需
+单独冻结明确授权和费用上界；没有跨独立 task 重复的 stable owner/cause 时，不开发新
+production feature。
+
 ## 8. 明确非结论
 
 当前源码不证明：

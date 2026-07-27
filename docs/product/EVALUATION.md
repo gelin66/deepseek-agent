@@ -3879,6 +3879,47 @@ raw SHA-256 为
 无 partial tail。完整结论见
 [M31 contract-bound verifier permission treatment](../../eval/summaries/m31-contract-verifier-permission-2026-07-27.md)。
 
+#### M32 current Hardness regression contract
+
+M32 从 clean checkpoint `bfa8ec84f` 建立一个新的 current control-only acquisition，
+只通过 SHA-256 继承
+`eval/manifests/m23b-hardness-control-v1.json` 的 fixture、reference patches、tasks
+和 tool policies。M23/M30/M31 的 binary、raw、admission、停止位置和历史 label 都不是
+输入。冻结矩阵如下：
+
+| fact | M32 value |
+|---|---|
+| task set | 20 independent Hardness tasks；17 positive + 3 safety |
+| schedule | one new position-1 arm per task；20 total |
+| identity | Run API v14 / RuntimeEvent v21 / State v27 / exec-stream v4 |
+| route | current fixed actor profiles；root/Writer Pro-high |
+| continuity | 3 long-horizon tasks；Ask + user-input + SIGKILL/reopen |
+| retry | transport 0；runtime 0；`maximum_reruns=0` |
+| verifier | frozen TaskContract verifier + external deterministic verifier |
+| ceiling | `$0.50/arm`；`$10.00/suite` |
+| raw | ignored `0600` exclusive hash-chain journal |
+
+Credential-free gates must prove task/reference hashes, fail-before/pass-after and safety
+counterexamples, current permission envelopes, root/read-only/Writer conformance, journal
+before/mid/unfsynced/after-write windows, behavior/accounting orthogonality, exact Store reopen,
+and a real process continuity restart with zero physical request or side-effect increase at reopen.
+The immutable release binary, dry-run, focused/full repository gates and exact source identity must
+also close before live admission.
+
+Live acquisition requires a separately committed admission with exact current authorization and
+cost ceilings. The Harness stops before the next arm on false success, incomplete accounting,
+unknown billing, identity/observer/environment ambiguity, unsafe evidence or ceiling breach; it
+never reruns or completes a mate. A complete 20-arm result is regression-safe only when
+false-success is zero, all closed behavior and accounting facts are valid, and route/lane,
+latest-revision evidence and reopen facts are exact.
+
+Candidate attribution requires one identical stable `owner_code:loss_code` across at least two
+different task IDs. A single loss, tool frequency, expected safety rejection, accounting stop,
+historical raw or unexecuted task cannot authorize production work. With no repeated loss the
+decision is `no_repeated_current_loss`; with a repeated loss the only permitted successor is one
+minimum unique-owner audit. M32 acquisition itself changes no Runtime, Store, Provider, route,
+prompt or tool catalog.
+
 ## 10. 结果与决策记录
 
 建议结果格式：
