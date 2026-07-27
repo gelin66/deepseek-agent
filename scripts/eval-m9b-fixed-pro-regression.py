@@ -9161,7 +9161,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in CURRENT_PERMISSION_CAMPAIGNS
                     else {
                         "interactive": requires_live_continuity(
                             task_id
