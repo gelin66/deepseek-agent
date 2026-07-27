@@ -2890,6 +2890,14 @@ fn serve_loopback_sse_connection(
     chat_requests: &AtomicUsize,
     mode: RawSseMode,
 ) {
+    // Whether an accepted socket inherits O_NONBLOCK from its listener is
+    // platform-dependent. The listener polls nonblocking, but each accepted
+    // request must use the bounded blocking read contract below; otherwise a
+    // handler can observe WouldBlock before the child writes its first header
+    // and replace the intended SSE failure with a connection reset.
+    stream
+        .set_nonblocking(false)
+        .expect("make loopback SSE connection blocking");
     stream
         // A full workspace test run can heavily deschedule this raw fixture
         // while the child process is still writing its request headers. Two
