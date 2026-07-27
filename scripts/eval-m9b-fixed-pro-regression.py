@@ -6002,7 +6002,7 @@ def hardness_continuity_self_test_envelope(
                 "enabled": True,
                 "allowed": (
                     ["apply_patch", "request_user_input"]
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in CURRENT_PERMISSION_CAMPAIGNS
                     else ["apply_patch"]
                 ),
                 "denied": [],
