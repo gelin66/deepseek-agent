@@ -1,0 +1,104 @@
+{
+  "schema": "dse.eval.m32-hardness-regression-analysis.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "candidate_revision": "994e36d7bdfab57e47af4928b07f8c506ddd7b3a",
+    "candidate_tree": "0a5e0f20e4d93c9605c53f49be44fcfcfe2b1eef",
+    "live_admission_revision": "7b8e65b71c04a69283d4dcfa2bdef57c1b208570",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:59b5b26bfc0c68d942224dd36a71adef9323ac55b11615b4d8683178425539a9",
+    "analysis_harness_sha256": "sha256:59b5b26bfc0c68d942224dd36a71adef9323ac55b11615b4d8683178425539a9",
+    "run_api": 14,
+    "runtime_event": 21,
+    "state_schema": 27,
+    "exec_stream": 4
+  },
+  "slice_contract": {
+    "real_problem": "M32 closed six current position-1 arms with complete accounting, then the seventh Writer arm durably closed terminal, Store, credential-free reopen and verifier facts after one pre-header deepseek_timeout, while accounting reported usage_complete=true and billing_unknown=true. The partial campaign must be classified without rerunning, continuing the remaining thirteen tasks, or treating an unknown-billing stop as either product success or a complete 20-task baseline.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink 47-record hash-chained journal with no partial tail",
+      "derive exactly seven canonical Store trajectories, six complete arm labels and one accounting_incomplete abort",
+      "retain only the six accounting-complete arms as full-utility observations while projecting behavior and accounting truth independently for the seventh",
+      "exclude the billing-unknown Writer trajectory and thirteen unexecuted tasks from cost, quality and full-suite aggregates",
+      "prove false success remains zero in every closed behavior observation",
+      "require one identical stable owner_code:loss_code across at least two independent accounting-complete task IDs before returning a candidate audit",
+      "expose only canonical counts, stable codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read or network access"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection, selective completion of the stopped arm, continuing the frozen schedule after unknown billing, or treating six partial results as a 20-task regression baseline",
+    "cutover": "retain immutable raw identity and one read-only report; do not rerun arm seven, execute the thirteen unstarted tasks, or implement a production treatment from this interrupted acquisition",
+    "failed_candidate_deletion": "no treatment is admitted from incomplete M32 evidence; temporary M32 live consumer paths are deleted after the decision while frozen evidence remains auditable"
+  },
+  "inputs": [
+    {
+      "campaign": "m32-hardness-regression",
+      "path": "eval/results/m32-hardness-regression-994e36d7bdfa-v1.jsonl",
+      "journal_schema": "dse.eval.m32-hardness-regression-journal.v1",
+      "file_sha256": "sha256:4f7ed8b09122ab613b31e2b1b1b4b108df85df1f69a257aec2c478f57b914521",
+      "size_bytes": 11530869,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 7,
+    "completed_arm_results": 6,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "label_source": "behavior truth is derived independently from canonical terminal, latest Host receipt, lane, route, workspace and verifier facts; accounting truth is projected independently from canonical ModelAccounting",
+    "acquisition_stop": "writer_envelope received one retry-safe pre-header deepseek_timeout with zero Runtime or transport retries; terminal, Store reopen and external verifier facts closed before accounting_projection rejected complete=false, usage_complete=true, billing_unknown=true, sealed=true and maximum_reruns=0",
+    "complete_observation": "rust_router_localization is one accounting-complete root_task_outcome:deterministic_verifier_failed loss; the other five completed arms are verified successes and false success is zero",
+    "product_loss": [
+      "false success",
+      "deterministic verifier failure",
+      "actor contract failure",
+      "verifier-passing workspace without a latest Host receipt",
+      "production terminal failure with closed identity and environment"
+    ],
+    "non_loss": [
+      "billing-unknown accounting when behavior truth is independently closed",
+      "unexecuted schedule arm",
+      "single-task loss without independent repetition",
+      "initial verifier failure required by the frozen task",
+      "expected security rejection",
+      "measurement or evaluator interruption"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct accounting-complete task IDs",
+    "owner_attribution_gate": "the unknown-billing stop and one independently closed loss do not authorize a production owner audit"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "unexecuted schedule arms",
+      "trajectory without complete accounting",
+      "accounting status as a behavior label",
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
