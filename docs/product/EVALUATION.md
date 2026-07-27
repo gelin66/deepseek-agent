@@ -4173,6 +4173,21 @@ unique-owner 最小候选，并从全新 position-1 successor 复测。任何 bl
 `reject_and_delete`。完整 schedule、官方/外部依据和预算见
 [`m35-official-reliability-soak-v1.json`](../../eval/manifests/m35-official-reliability-soak-v1.json)。
 
+正式结果为 `no_repeated_live_reliability_loss`。第一次 v1 只暴露 Harness argv observer
+缺陷并在 official request 前停止；immutable journal 不续写。修正后 candidate
+`6202bb0d7` 从新 output/position 1 完成 24/24 verified，false success 0，
+physical started/completed/in-flight=`54/54/0`，model failure/Runtime retry=`0/0`，
+usage/cost complete 24/24，billing unknown 0，credential-free SQLite reopen 24/24
+exact。TTFR median/p95 为 2,020/2,380ms，wall median/p95 为 4,796/7,428ms，已知费用
+`$0.014071409`。工具任务的多 physical request 是 canonical tool loop，不计作 retry。
+
+因此 M35 不改 production；M33/M34 的 deterministic failure/replay matrix 仍是 retry
+safety 主证据。没有用自然运行未遇到故障来调整次数、jitter 或 circuit breaker。临时
+M35 Harness consumer 已删除并恢复 acquisition 前 exact blob；frozen manifest、
+live admission、ignored `0600` journals 与
+[decision summary](../../eval/summaries/m35-official-reliability-soak-2026-07-27.md)
+保留审计。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

@@ -5860,7 +5860,7 @@ Key、没有 official API request、没有 GitHub/push/release。完整证据见
 
 ## 33. M35：官方 DeepSeek production reliability soak
 
-- 状态：**contract frozen；live acquisition pending**
+- 状态：**complete；`keep_current_retry_no_new_treatment`**
 - 基线：M34 clean checkpoint `39da745f5`
 - production retry owner：既有 `crates/runtime::AgentRuntime`
 - typed transport/accounting owner：既有 `crates/deepseek`
@@ -5911,3 +5911,37 @@ production。自然 soak 不故意攻击、并发压测或制造官方 429/5xx�
 覆盖或拼接 M35 v1 raw。候选必须保持 false success=0、partial/in-flight 零盲发、
 exact reopen/accounting 与唯一 Runtime retry owner，否则完整删除。正式决策后删除
 临时 M35 Harness consumer；manifest、ignored `0600` raw 和 summary 保留审计。
+
+### 33.4 正式结果与删除
+
+第一次 formal v1 因临时 Harness 把全局 `--model` 放在 `exec` 后而在网络前停止：
+completed Run=0、official request=0；3-record `0600` journal 保持 immutable。修正
+`6202bb0d7` 增加真实 production argv self-test 与 typed `m35_exec_no_stream` 后，一个
+独立 canary 以 1 physical、0 retry、usage/cost complete 成功；正式 acquisition 再从
+新 binary、新 output 和 position 1 开始，没有补跑或拼接 v1。
+
+candidate `6202bb0d7` 的 24 个独立 official Pro/high Runs 全部 verified：
+
+```text
+verified success             24/24
+false success                 0
+physical started/completed   54/54
+physical in-flight            0
+model failure events          0
+Runtime retries               0
+usage/cost complete          24/24
+billing unknown               0
+credential-free reopen       24/24 exact
+TTFR median/p95          2,020/2,380 ms
+wall median/p95          4,796/7,428 ms
+input/output tokens     106,121/4,113
+known cost             $0.014071409
+```
+
+工具任务的 2–3 个 physical attempts 是正常 tool loop，不是 retry；canonical
+`runtime_retry_count` 保持 0。没有同一 live `owner_code:loss_code` 跨 profile/round
+重复，因此决定为 `no_repeated_live_reliability_loss`，production delta=0。没有凭通用
+云端建议增加 jitter、次数、circuit breaker 或第二控制器。临时 M35 Harness consumer
+已物理删除并恢复 M35 前 exact blob `5f3f613c`；保留 frozen contract、live admission、
+两个 ignored `0600` journal、summary 与 Git 历史。完整证据见
+[M35 summary](../../eval/summaries/m35-official-reliability-soak-2026-07-27.md)。

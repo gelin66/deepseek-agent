@@ -2736,9 +2736,28 @@ failure、retry decision 与紧凑 accounting，不复制完整 system prompt、
 tool catalog。app-server 继续原样投影 canonical stored event；sequence reconnect、
 same-Run resume 与 upstream retry 仍是三个不同机制。
 
+M35 用 official DeepSeek current `deepseek-v4-pro/high` 对这条 production 链执行了
+24 个 fresh Git/HOME/State/RunStore Runs：plain、read、grep→read、read→edit 各 6 次，
+24/24 verified，false success 0；physical started/completed/in-flight=`54/54/0`，
+model failure/Runtime retry=`0/0`，usage/cost complete 24/24，billing unknown 0，
+credential-free SQLite reopen 24/24 exact。TTFR median/p95 为 2,020/2,380ms，wall
+median/p95 为 4,796/7,428ms，已知费用 `$0.014071409`。工具任务的多 physical request
+是正常 tool loop，不是 retry。
+
+没有 live failure 跨 profile/round 重复，所以 current production retry policy、1s/2s
+backoff、exec-stream v6 和客户端 projection 均不改变。M35 temporary Harness consumer
+已删除并恢复到 M35 前 exact blob；frozen contract/admission、ignored `0600` journals
+与 [M35 summary](../../eval/summaries/m35-official-reliability-soak-2026-07-27.md)
+保留。第一次 observer argv 错误在网络前停止并单独留痕，修正后 formal 从新 identity/
+position 1 开始，没有续写或拼接。
+
 ## 8. 明确非结论
 
 当前源码不证明：
+
+- M35 已测得 official timeout/429/5xx/partial failure incidence 或 live recovery rate；
+  24 个独立 Run 没有触发模型故障，只证明当次成功路径、latency、accounting 与 reopen
+  闭合，retry safety 仍由 M33/M34 deterministic fault matrix 证明；
 
 - M29 的 credential-free deterministic workflow pass 等于 official DeepSeek coding
   quality、Token、cache、费用、模型 wall-time、远端 CI 或公开发布；它只证明当前本地

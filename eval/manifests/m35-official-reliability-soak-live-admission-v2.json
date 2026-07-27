@@ -1,0 +1,41 @@
+{
+  "schema": "dse.eval.m35-official-reliability-soak-live-admission.v1",
+  "candidate_revision": "6202bb0d70058af9a0fa535413694e2b1a5a4ffe",
+  "candidate_tree": "6bf011e53c8f3475964ed74fe9beaf51cd990090",
+  "manifest_sha256": "sha256:a634a064e45746662201dc5b9f0d4e16017d5bfe56d20d80402429452120b160",
+  "harness_sha256": "sha256:005e82c469037b47ca47501ea0b423832c85a0abedec36e20e55f475316eb276",
+  "schedule_sha256": "sha256:2f6eabbe86eddda7b2c42e40b7237b424693954a82fde80c025abe5b77995758",
+  "binary_pair": {
+    "dse": {
+      "revision": "6202bb0d70058af9a0fa535413694e2b1a5a4ffe",
+      "sha256": "sha256:e379e97235aa5cf4191f3e2ce402f15e68559a73832c9712c13bb24d3517bb01",
+      "size_bytes": 15694416,
+      "version": "dse 0.8.68 (6202bb0d7005)"
+    },
+    "dse_tui": {
+      "revision": "6202bb0d70058af9a0fa535413694e2b1a5a4ffe",
+      "sha256": "sha256:33b80d1ff4d17fae4c282d5e5e8e440abeb03fd83e8348511f9990b5563e0fb3",
+      "size_bytes": 18246448,
+      "version": "dse-tui 0.8.68 (6202bb0d7005)"
+    },
+    "pair_sha256": "sha256:9f495c571b7a3abfe787dac1de9af0c14aa71b19e3f31a731f7a7d623d41bcf0"
+  },
+  "official_surface": {
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true,
+  "live_contract": {
+    "logical_runs": 24,
+    "maximum_harness_reruns": 0,
+    "normal_runtime_max_model_retries": 2,
+    "max_suite_cost_usd": 10.0,
+    "stop_before_next_run_on_incomplete_accounting": true,
+    "output": "eval/results/m35-official-reliability-soak-6202bb0d7005-v2.jsonl",
+    "raw_mode": "0600_exclusive_hash_chained"
+  }
+}
