@@ -7516,6 +7516,14 @@ def aggregate_trajectory_loss(
         candidate = repeated_current_loss_candidate(
             current_task_losses, loss_tasks
         )
+        if (
+            CAMPAIGN == "m36a"
+            and candidate["result_class"]
+            == "insufficient_repeated_current_loss"
+        ):
+            candidate["result_class"] = (
+                "keep_current_harness_no_repeated_loss"
+            )
     elif control_visible_reads >= 2 and control_campaign_count >= 2:
         candidate = {
             "result_class": "next_candidate",
