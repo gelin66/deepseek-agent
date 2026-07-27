@@ -6239,8 +6239,8 @@ M36 不准入：
 
 ## 35. M37：模型可见契约减法与 Harness 控制边界
 
-- 状态：**M37-A 离线 projection audit 已完成；M37-B 正式 acquisition 因
-  unknown billing 停止且候选已删除；M37-C–E 未自动准入**
+- 状态：**M37-A 离线 projection audit 已完成；M37-B/C 正式 acquisition 均因
+  incomplete evidence 停止且候选已删除；M37-D/E 未自动准入**
 - 起始基线：M36-A clean checkpoint `400ec0813`
 - 长期决策：[ADR-0014](../decisions/0014-model-visible-contract-and-harness-control.md)
 - owner：`crates/context`；工具、权限、Runtime、Orchestrator、Verifier 继续由现有模块拥有
@@ -6359,6 +6359,22 @@ selector、alternate prompt branch、M37-B Harness consumer 与专属测试均�
 - false success=0、安全和 verified success 不回退是硬门；
 - secondary metrics 为 cache-miss input、首相关文件、read/search 重复、requests、wall/cost；
 - winner cutover 后删除第二 renderer/caller 与 eval-only selector；失败则恢复 pack-on。
+
+M37-C 已冻结 6 families × 2 variants × 3 fresh runs 的 same-binary Pro/high 合同，并在
+candidate `241941733` 上完成全部离线门禁。正式 position 1 的 control 已读取授权测试 Key
+并到达冻结的 `request_user_input` 连续性 checkpoint，但 M37-C Harness consumer 错把
+非 M30 的合法 user-input interaction 限定为 approval，写入
+`abort(hardness_user_input_not_admitted, completed_arms=0)`。raw 只有 plan、credential、
+arm-start、abort 四条 hash-chained record，没有 `arm_result`、闭合 accounting 或 summary；
+没有启动 position 2、mate 或 rerun。
+
+按 `maximum_reruns=0` 与 incomplete-evidence 删除门，formal 决定为
+`hold_insufficient_or_incomplete_evidence`，production treatment 为
+`reject_and_delete_candidate`。current pack-on 继续作为唯一 production prompt；临时 selector、
+alternate projection、M37-C Harness campaign/aggregate 与专属测试均已物理删除。只保留 frozen
+fixture/contract/admission、ignored `0600` raw hash 与
+[M37-C summary](../../eval/summaries/m37-c-context-dedup-ab-2026-07-27.md)。本结果不证明
+去重有益/有害/等价，也不准入 M37-D/E。
 
 #### M37-D：authority 与总预算
 

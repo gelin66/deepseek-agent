@@ -4518,6 +4518,22 @@ code/concept delta
 候选只有质量门全部通过且至少一个 secondary metric 有稳定净收益时接管。没有净收益或
 出现 treatment-only product loss 时 `reject_and_delete`。
 
+M37-C current result（2026-07-27）：same-binary candidate `241941733` 的 36-arm formal
+schedule 在 position 1 终止，complete `arm_result=0`。control 模型已到达冻结的首次
+`request_user_input` 连续性 checkpoint，但专属 Harness consumer 仍使用旧的非 M30
+approval-only interaction 判定，因此把合法 user-input 事件误判为
+`hardness_user_input_not_admitted`。owner-only raw 只有 plan、credential、arm-start、abort
+四条 hash-chained record；Key 已读取且至少一个 official request 已发生，但没有闭合
+behavior/accounting cell、usage/cost aggregate 或 summary。Harness 没有启动下一 arm、补 mate、
+重跑或拼接 M10-A/M37-B raw。
+
+因此 acquisition 为 `hold_insufficient_or_incomplete_evidence`，production candidate 为
+`reject_and_delete_candidate`。current pack-on 保持唯一 production bytes，临时 selector、
+alternate projection 和 M37-C Harness consumer 已删除。冻结身份、raw hash、删除事实与
+非结论见
+[M37-C summary](../../eval/summaries/m37-c-context-dedup-ab-2026-07-27.md)。该 Harness stop
+不是 Prompt-quality 或 DeepSeek model loss，也不形成 M37-D/E 准入证据。
+
 #### 5. Authority/budget and compact Constitution
 
 M37-D/E 必须各自拥有新的 manifest，不能与 M37-B/C 共用 treatment：

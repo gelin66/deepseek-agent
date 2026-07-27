@@ -2802,15 +2802,30 @@ consumer，均已物理删除。Run API 15、RuntimeEvent 22、State schema 28�
 DeepSeek sender、tool catalog、permission、actor route、Runtime 和 RunStore 无变化。frozen
 contract/admission、ignored `0600` raw hash 与
 [M37-B summary](../../eval/summaries/m37-b-posture-schema-ab-2026-07-27.md)只记录历史事实，
-不提供 continuation 或第二 prompt truth。M37-C 仍需独立 fresh 准入。
+不提供 continuation 或第二 prompt truth。
+
+M37-C 随后在 candidate `241941733` 上临时增加 exact-payload-digest guarded
+single-projection 分支，并冻结 36-arm fresh Pro/high A/B。全部离线门禁通过；formal
+position 1 已到达合法 `request_user_input` 连续性 checkpoint，但专属 Harness consumer
+沿用旧的非 M30 approval-only 判定而写入
+`abort(hardness_user_input_not_admitted, completed_arms=0)`。由于没有任何 complete arm、闭合
+accounting 或 summary，且合同禁止 rerun，candidate 按 incomplete-evidence 门删除。
+
+current production 因此仍无 M37-C selector/alternate projection，fallback overview 与默认
+Project Context Pack 继续双重投影同 payload。M37-C Harness campaign/aggregate/专属测试也无
+consumer 并已删除；只保留 frozen fixture/contract/admission、ignored `0600` raw hash 与
+[M37-C summary](../../eval/summaries/m37-c-context-dedup-ab-2026-07-27.md)。Run API 15、
+RuntimeEvent 22、State schema 28、exec-stream 6、DeepSeek sender、Runtime/RunStore、工具、
+权限和 Writer behavior 均未改变。M37-D/E 没有由该 incomplete result 准入。
 
 ## 8. 明确非结论
 
 当前源码不证明：
 
-- M37-A 已证明删除 execution posture 句子或 project context pack 会提升 verified
+- M37-A/B/C 已证明删除 execution posture 句子或 project context pack 会提升 verified
   success、Token、cache、时间或费用；它只冻结两项 current debt 和零行为变化 audit。
-  M37-B/C 必须分别预注册，不能从这次离线观测自动进入 production treatment；
+  M37-B/C 的 incomplete formal attempts 也没有证明收益，不能从 partial/raw 进入
+  production treatment；
 
 - M36-A 的 16/17 positive pass@1 可外推为所有仓库、语言或公开 benchmark，或一个
   `writer_envelope` loss 已证明 Writer owner 需要 treatment；同一
