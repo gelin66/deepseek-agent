@@ -38,8 +38,9 @@
     "historical_raw_is_input": false,
     "historical_result_is_input": false
   },
-  "fixture_contract": {
+  "prompt_fixture_contract": {
     "path": "eval/fixtures/m37-b-posture-schema-ab-v1.json",
+    "file_sha256": "sha256:6ebf2746e55c9dab9ecdafc952bc45a9d8333ad3532b8daf520c8974a5bf24b9",
     "schema": "dse.m37_b.posture_schema_ab_fixture.v1",
     "single_model_visible_delta": "delete the exact 60-byte stale read-only-only agent capability substring from execution_posture",
     "ordinary_production_selector": "control",
@@ -51,7 +52,7 @@
       "change exactly one model-visible substring through the canonical crates/context composer",
       "keep normal production byte-identical to the M37-A control until the formal decision",
       "run fresh same-binary, same-task, same-budget control and treatment arms with maximum_reruns=0",
-      "keep the fixed actor route unchanged: root and explicit Writer use Pro/high, ordinary read-only child remains the fixed Flash/high actor profile",
+      "keep production actor routing unchanged while the explicit experiment RunRequest makes root, read-only child, and explicit Writer inherit the same Pro/high route in both variants",
       "preserve false_success=0 and prohibit every treatment-only quality failure",
       "require a strict attributable improvement in verified success, agent selection, or Writer completion before cutover",
       "separate behavior truth from complete request/usage/cache/retry/cost accounting truth",
@@ -102,6 +103,7 @@
     }
   },
   "resources": {
+    "runs_per_task": 6,
     "runs_per_task_variant": 3,
     "maximum_reruns": 0,
     "formal_tasks": 5,
@@ -169,7 +171,7 @@
   },
   "decision_rule": {
     "quality_gate": "candidate verified success is non-inferior in every task cell, false_success remains zero, safety rejection does not regress, and no candidate-only route/lane/evidence failure occurs",
-    "benefit_gate": "after the quality gate, candidate must have strictly more verified successes or strictly more valid agent-selection/Writer-completion outcomes than control; token or cost reduction alone is insufficient",
+    "benefit_gate": "after the quality gate, candidate must improve verified success, valid agent selection, or Writer completion in at least two independent affected task cells, or gain at least two of three runs in one affected cell; token or cost reduction alone is insufficient",
     "complete_acquisition": "all 30 arms have closed behavior truth, complete accounting, exact route/lane identity, latest-revision evidence, and false_success=0",
     "stop_incomplete": "stop before the next arm on false success, unknown billing, incomplete usage, identity mismatch, observer ambiguity, unsafe evidence, environment ambiguity, or cost ceiling; never rerun",
     "keep": "keep_minimal_candidate_and_delete_replaced_path",
