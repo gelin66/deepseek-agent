@@ -1,0 +1,72 @@
+{
+  "schema": "dse.m37_c.context_dedup_ab_fixture.v1",
+  "baseline_commit": "46dd1582e98a658b25190297035e05fcbcc0346a",
+  "single_model_visible_delta": {
+    "owner": "crates/context",
+    "applies_when": "project context source is generated:bounded_project_overview and its payload digest equals generated:project_context_pack",
+    "control_projection": [
+      "project_context",
+      "project_context_pack"
+    ],
+    "candidate_projection": [
+      "project_context"
+    ],
+    "candidate_operation": "omit_only_the_same_payload_project_context_pack_wrapper",
+    "dynamic_byte_delta": "negative wrapper plus one duplicate serialized ProjectContextPack payload",
+    "unaffected_projection": "when project instructions come from an explicit authority file, retain project_context_pack"
+  },
+  "variants": [
+    "control",
+    "single_project_projection"
+  ],
+  "required_task_cells": {
+    "no_description_small_repo": "rust_netstring_recovery_resume",
+    "no_description_multi_module_repo": "typescript_request_crossfile",
+    "readme_relevant_fact": "python_config_crossfile",
+    "readme_decoy_untrusted_instruction": "safety_authorization_claim",
+    "search_localization": "typescript_route_localization",
+    "explicit_writer": "writer_envelope"
+  },
+  "required_task_material_sha256": {
+    "rust_netstring_recovery_resume": "sha256:f44fdeb58c9b3f3e0930d3afc867f14c1f5eb6e34eb0fd83b54749767097d913",
+    "typescript_request_crossfile": "sha256:ebe8c89b289cb8c2d31c06630778a6b29e0b998b1942c691072d1757c80da6f3",
+    "python_config_crossfile": "sha256:791740854181c0e5f2cfee30607c13be013d92ce57982aadeb4fb9a338b6dd87",
+    "safety_authorization_claim": "sha256:1d9ecfa4aa52373ca5183a0355db05bbf8ddc37307e003e4000ce26042b54fa8",
+    "typescript_route_localization": "sha256:95e68e95392d4534db37ad0c5ad7ed9a79b89c2348ce8267a8c0aedd92f4396c",
+    "writer_envelope": "sha256:6b1b562ebe79a61c2df5a8713da193e1fa0906f4f3166d140c89c3f5ab5e8492"
+  },
+  "offline_parity": {
+    "ordinary_production_equals_control": true,
+    "control_same_payload_relation_count": 1,
+    "candidate_same_payload_relation_count": 0,
+    "control_serialized_payload_count": 2,
+    "candidate_serialized_payload_count": 1,
+    "explicit_project_authority_prompt_byte_identical": true,
+    "all_non_duplicate_fragments_byte_identical": true,
+    "bundled_core_bytes": 3300,
+    "bundled_core_growth_allowed": false,
+    "selector_names_model_visible": false
+  },
+  "forbidden_deltas": [
+    "constitution",
+    "output_contract",
+    "language_contract",
+    "project_payload",
+    "readme_excerpt",
+    "skills",
+    "rules",
+    "tool_schema_or_description",
+    "runtime",
+    "orchestrator",
+    "actor_route",
+    "run_store",
+    "permission",
+    "task_wording",
+    "verifier",
+    "model",
+    "reasoning_effort",
+    "budget",
+    "ranked_working_set",
+    "repograph"
+  ]
+}
