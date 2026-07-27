@@ -6592,3 +6592,69 @@ consumer 已物理删除，Harness 恢复 M39 前 exact blob `d3916654f`。保�
 contract/live admission/analysis、fixture/reference、ignored `0600` raw、
 [M39-A summary](../../eval/summaries/m39-a-context-loss-admission-2026-07-27.md)与 Git 历史。
 ADR-0015 继续 implementation-not-admitted；没有 browser/search/vision implementation。
+
+## 38. M40：fresh build/state/protocol loss acquisition
+
+- 状态：**M40-A contract 冻结中；production delta=0**
+- 起始基线：M39-A checkpoint `f7b54fc4e`
+- acquisition owner：唯一 corrected
+  `scripts/eval-m9b-fixed-pro-regression.py`
+- production owner：未选择；只有本轮 fresh repeated-loss 门通过后才允许审计一个唯一 owner
+- 外部能力边界：ADR-0015 继续 implementation-not-admitted；不开发或评测 browser、search、
+  vision、Web fetch 或 ApplicationProbe
+
+### 38.1 真实问题与新覆盖
+
+M36-A/M39-A 已覆盖常规 deterministic repair、large-repo localization、service/API/UI、
+long-horizon reopen、read-only graph、explicit Writer migration 与 false completion，但两轮都
+没有同一 fresh `owner_code:loss_code` 跨两个独立任务重复。继续把历史 Writer/context 单例
+拼接为候选会违反 ADR-0011 和 M36 门槛。
+
+M40-A 只扩展 exact current control 到尚未独立覆盖的 instruction-bearing 工程 strata：
+
+```text
+Rust workspace feature/build matrix
+Go CLI exit-code and stderr contract
+Python SQLite transactional schema migration
+TypeScript incremental UTF-8 stream framing
+Rust append-journal reopen integrity
+read-only child failure-artifact investigation and root handoff
+explicit Writer release-artifact metadata migration
+missing generator source false-completion counterexample
+```
+
+八个 task 都使用新 material、新 acceptance identity、新 Git workspace、DSE home、RunStore、
+verifier home 和 position-1 schedule；M36/M39/M32 的 raw、result、admission 和 loss 均不是
+输入。fixture root 含最小 `AGENTS.md`，只冻结真实 production/test scope 和各项目验证命令，
+不嵌入 gold patch 或唯一修复步骤。
+
+### 38.2 验收、归因和删除
+
+1. 8/8 初始 verifier 失败，7/7 positive reference solution 通过，安全反例继续失败；
+2. fixed `deepseek-v4-pro/high`、current Prompt/tools/permission/Runtime/Store，normal Runtime
+   safe retry=2，Harness rerun=0；
+3. root、read-only child、explicit Writer 与 safety lane 使用各自 current actor catalog；
+4. behavior/accounting 正交闭合、false success=0、terminal 后 credential-free exact SQLite
+   reopen；
+5. loss 只从 canonical terminal/receipt/verifier/actor/tool/accounting facts 保守归因，不从
+   task 名、历史结论或工具调用数量猜测；
+6. 同一 exact `owner_code:loss_code` 至少覆盖两个本轮 fresh task_id，才返回
+   `next_candidate_audit_required`；即使通过也只准入一个独立 held-out audit，不自动实现；
+7. 未达门时决定为 `keep_current_harness_no_repeated_loss`，production delta=0，并删除 M40
+   temporary selector/loader/live caller/aggregate/self-test/trajectory consumer。
+
+本阶段不替代 production old path，也不加入 treatment。frozen fixture、reference、contract、
+admission、ignored `0600` raw、analysis/summary 与 Git 历史是审计证据；临时 Harness consumer
+在决定后物理删除。
+
+### 38.3 费用与停止门
+
+正式 schedule 为 8 个 fresh position-1 arms，per-arm known-cost ceiling `$0.50`、suite
+ceiling `$4.00`。credential 前完成 reference proof、loss threshold、journal crash windows、
+M38 interaction、truth/acceptance observer、process SIGKILL/reopen、immutable binary dry-run、
+focused、fmt、strict workspace Clippy/test、public checker 与 diff check。
+
+任何 billing unknown、usage incomplete、false success、identity/route/actor/observer/evidence
+歧义或费用越界都在下一付费 arm 前停止；不补 mate、不重跑、不拼接历史 raw。M40 不修改
+Prompt、ContextBroker、RuntimeEvent、State、tool catalog、permission、Writer behavior、UI、
+DeepSeek surface 或 fixed actor route。

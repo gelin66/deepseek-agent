@@ -4831,3 +4831,76 @@ analysis/summary 与 Git 历史。
 完整身份、逐 task 结果、费用、门禁与非结论见
 [M39-A summary](../../eval/summaries/m39-a-context-loss-admission-2026-07-27.md)。ADR-0015
 仍未实施；本结果没有准入 browser/search/vision。
+
+### M40 fresh build/state/protocol loss acquisition contract
+
+M40-A 是 M39-A checkpoint `f7b54fc4e` 后的新 control-only breadth acquisition。它不续跑
+M36/M39，不拼接历史 Writer/context 单例，也不是 ADR-0015 W0；production delta 固定为 0。
+
+#### 1. Frozen identity and corpus
+
+`m40a-engineering-loss-acquisition-v1.json` 必须冻结 exact source/tree、Run API v15、
+RuntimeEvent v22、State v28、exec-stream v6、current production Prompt/catalog/permission、
+Pro/high、normal Runtime retry=2、Harness rerun=0、预算、task/material/reference/verifier 与
+删除门。
+
+fresh corpus 固定八个独立 task：
+
+| task | lane | new stratum |
+|---|---|---|
+| `rust_feature_matrix` | root | workspace feature/build contract |
+| `go_cli_exit_semantics` | root | process exit/stderr contract |
+| `python_sqlite_upgrade` | root | transactional persistent-state migration |
+| `typescript_utf8_frames` | root | incremental multibyte stream framing |
+| `rust_journal_reopen` | root | append/reopen integrity |
+| `readonly_failure_handoff` | read-only child + root | failure-artifact localization |
+| `writer_release_artifact` | explicit Writer | isolated release metadata migration |
+| `safety_missing_generator` | safety | missing source-of-truth false completion |
+
+fixture root 的 `AGENTS.md` 只表达 tests/verifier 不可修改、项目独立和验证命令；reference patch
+不进入 model-visible workspace。离线必须证明 8/8 initial fail、7/7 reference pass、安全反例
+仍 fail、changed scope 与 manifest 精确一致。
+
+#### 2. Canonical observation and taxonomy
+
+每 arm 记录 terminal、latest Host receipt、external verifier、changed scope、root/child actor
+lifecycle、tool failure codes、first relevant file/edit、repair、physical request/retry/usage/cache/
+cost 和 credential-free reopen。稳定 loss taxonomy 为：
+
+```text
+deepseek:transport_or_accounting
+orchestrator:writer_integration
+runtime:actor_contract
+tools:edit_application
+tools:tool_aci
+context:localization
+runtime:long_horizon_recovery
+runtime:verification_visibility
+deepseek:model_capability_ceiling
+```
+
+归因顺序固定：transport/accounting -> actor contract -> typed tool/edit -> localization ->
+long-horizon/reopen -> latest-revision completion -> model ceiling。初始 verifier failure、工具数量、
+task 名称和历史 loss 都不能自行生成 product loss。
+
+#### 3. Formal acquisition and decision
+
+每 task 只运行一个 fresh position-1 arm；fixed Pro/high、current binary、TaskContract、工具、
+预算与 verifier 保持一致。maximum reruns=0；unknown billing/usage incomplete/false success/
+identity/observer ambiguity 在下一请求前停止。
+
+```text
+same canonical owner_code:loss_code on fewer than 2 fresh task IDs
+  -> keep_current_harness_no_repeated_loss
+  -> production delta = 0
+  -> delete temporary M40 campaign consumer
+
+same canonical owner_code:loss_code on at least 2 fresh task IDs
+  -> next_candidate_audit_required
+  -> audit exactly one unique existing owner
+  -> freeze a separate held-out treatment before any production change
+```
+
+费用上限为每 arm `$0.50`、suite `$4.00`。behavior/accounting 必须按 ADR-0011 正交完整；
+Token、费用和速度不能补偿质量失败。ADR-0015 保持 implementation-not-admitted，M40 不含
+known URL、source discovery、JS/DOM、browser interaction、visual 或外部网络 task。
