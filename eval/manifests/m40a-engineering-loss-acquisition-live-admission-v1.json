@@ -1,0 +1,138 @@
+{
+  "schema": "dse.eval.m40a-engineering-loss-acquisition-live-admission.v1",
+  "admitted_at_utc": "2026-07-27T18:08:00Z",
+  "contract_manifest": "eval/manifests/m40a-engineering-loss-acquisition-v1.json",
+  "contract_manifest_sha256": "sha256:63a6432e0644e72a9ecb30ce587daa7ddc653617da0b349c9da4d33e038ca0ce",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "e2ed02c3a805118d06399eb2b01d15f36789f033",
+  "candidate_tree": "e4b67767b396013982af23e44f37ea7f9f4cd49d",
+  "candidate_binary": "/private/tmp/dse-m40-target/release/dse",
+  "candidate_binary_sha256": "sha256:5e81b58721eca6109545422fd1fb06af0804b756de502f894169a5b3193b8821",
+  "candidate_binary_size_bytes": 14371344,
+  "candidate_binary_version": "dse 0.8.68 (e2ed02c3a805)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:73e2773b5d561ea10307375da7cf40c7424fbb9608158ccbce1774d3bccd2bdd",
+  "schedule_sha256": "sha256:645ec7e8473294deed77c5b5f0a38b8a9e9f836a6a1db6abdcecaca63663d24e",
+  "task_contracts_sha256": "sha256:3f0468596e4c37f078bf58ff2b4f37039f67e45a65d788772ee2b73945144295",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:3bac2a0f312413837256708f655a22aa08fb2ecf0e85234ff17ee9d7289b00e0",
+  "freeze_report_sha256": "sha256:c11a00ff9b17f8203e9eaff40e1df4ba5281218f053adb5252da4bedbd6ea8cb",
+  "dry_run_sha256": "sha256:0a72470bc672a55a08d1e1fa812803d67e5438990777e30a4f4b653cd66e8a16",
+  "continuity_process_report_sha256": "sha256:13640deb9c33302ebff235e57dfe569b9881388dc123201b8c2775894dea5c0f",
+  "process_test_binary_sha256": "sha256:674b653556bf21f821426a2609cce3750388bf70f7e6f10f6a5b0750918ae6bc",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:9166977d9bba6afcb8680837c32390d978d0e3a9f88cc620f9bc7ca4b7cfa5c3",
+  "interaction_conformance_sha256": "sha256:ff917b55b82a8f4ff878c45397ec77eb001db6cb9d7a38ce8291ba5832385ad6",
+  "truth_conformance_sha256": "sha256:e3f105c620eb79b6d7bdf1128935e28e7b39dd3b084c9cb3b20ddd6f41f74280",
+  "hardness_conformance_sha256": "sha256:9119a96d712f9e6f67ca8dd85e54b7053c2a46d316600f667ffd5da703781126",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "fresh eight-task position-1 current engineering loss acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "fresh 55-file eight-task fixture, eight initial failures, seven reference solutions, one safety counterexample and exact changed scopes",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "hash-chain journal, four write crash windows, exact repeated-loss threshold and conservative M40 canonical loss projection",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary, clean-clone credential-free dry-run and current-protocol SIGKILL/reopen continuity run twice byte-identically",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "tool trajectory, acceptance equivalence, M38 typed interaction, behavior/accounting truth and Hardness observer conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, surface parity, bilingual PTY, public checker and diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek V4, ChatCompletions, Thinking, Tool Calls, streaming usage and pricing revalidated on 2026-07-28",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, non-symlink, owner-only 0600 and not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "rust_feature_matrix": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "go_cli_exit_semantics": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "python_sqlite_upgrade": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "typescript_utf8_frames": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "rust_journal_reopen": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "readonly_failure_handoff": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "writer_release_artifact": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f",
+    "safety_missing_generator": "sha256:37ef46b6bbad3116976891cac415f0305ca3accbeb3a6ccee40c6a8f1a150d9f"
+  },
+  "live_contract": {
+    "formal_tasks": 8,
+    "runs_per_task": 1,
+    "formal_arms": 8,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 4.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m40a-engineering-loss-e2ed02c3a805-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized current fixed-Pro/high fresh engineering loss acquisition under the frozen USD 4.00 suite ceiling"
+  },
+  "official_protocol_revalidated_on": "2026-07-28",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-28",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 4.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
