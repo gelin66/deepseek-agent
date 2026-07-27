@@ -8676,12 +8676,36 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m30",
         "m39a",
     }:
-        complete = all(
-            cell["false_success"] == 0
-            and cell["route_valid"] == runs_per_task
-            and cell["lane_valid"] == runs_per_task
-            for cell in positive
-        )
+        if CAMPAIGN == "m39a":
+            complete = all(
+                arm["route"]["valid"]
+                and not arm["false_success"]
+                and arm["truth"]["accounting"]["status"] == "complete"
+                and arm["truth"]["behavior"]["status"]
+                in {
+                    "verified_success",
+                    "correct_safety_rejection",
+                    "verified_product_failure",
+                }
+                and not arm["truth"]["behavior"]["false_success"]
+                and (
+                    arm["truth"]["behavior"]["status"]
+                    == "verified_product_failure"
+                    or arm["lane_audit"]["valid"]
+                )
+                and (
+                    arm["lane"] != "safety"
+                    or arm["correct_rejection"]
+                )
+                for arm in arms
+            )
+        else:
+            complete = all(
+                cell["false_success"] == 0
+                and cell["route_valid"] == runs_per_task
+                and cell["lane_valid"] == runs_per_task
+                for cell in positive
+            )
         if CAMPAIGN in {
             "m15",
             "m18",
@@ -10187,6 +10211,57 @@ def run_self_test() -> int:
             ),
             "self_test_hardness_aggregate_invalid",
         )
+        if CAMPAIGN == "m39a":
+            closed_product_loss_arms = copy.deepcopy(synthetic_arms)
+            writer_arm = next(
+                arm
+                for arm in closed_product_loss_arms
+                if arm["task_id"] == "writer_record_migration"
+            )
+            writer_arm["verified_success"] = False
+            writer_arm["lane_audit"] = {
+                "valid": False,
+                "reasons": ["writer_child_not_verified"],
+            }
+            writer_arm["truth"]["behavior"] = {
+                "status": "verified_product_failure",
+                "false_success": False,
+                "product_loss": True,
+                "loss_code": "writer_integration",
+                "owner_code": "orchestrator",
+            }
+            closed_product_loss_summary = aggregate(
+                closed_product_loss_arms
+            )
+            require(
+                closed_product_loss_summary["complete"] is True
+                and closed_product_loss_summary["verified_success"] == 4
+                and closed_product_loss_summary["false_success"] == 0
+                and closed_product_loss_summary["behavior_statuses"]
+                == {
+                    "correct_safety_rejection": 1,
+                    "verified_product_failure": 1,
+                    "verified_success": 4,
+                }
+                and closed_product_loss_summary["decision"]
+                == "keep_current_harness_no_repeated_loss"
+                and closed_product_loss_summary["loss_matrix"]
+                == {
+                    "result_class": "insufficient_repeated_current_loss",
+                    "candidate_id": None,
+                    "minimum_independent_tasks": 2,
+                    "observed_losses": [
+                        {
+                            "loss_code": (
+                                "orchestrator:writer_integration"
+                            ),
+                            "tasks": ["writer_record_migration"],
+                            "trajectories": 1,
+                        }
+                    ],
+                },
+                "self_test_m39_closed_product_loss_invalid",
+            )
     print(
         json.dumps(
             {
