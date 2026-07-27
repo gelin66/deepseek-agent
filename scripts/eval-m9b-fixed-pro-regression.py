@@ -7565,19 +7565,28 @@ def trajectory_truth_projection(
         trajectory_accounting_observation(facts)
     )
     if CAMPAIGN == "m40a":
-        require(
-            isinstance(task, dict)
-            and isinstance(arm_result, dict)
-            and isinstance(arm_result.get("hardness"), dict)
-            and isinstance(arm_result.get("failure_codes"), dict),
-            "trajectory_m40_loss_input_invalid",
-        )
+        require(isinstance(task, dict), "trajectory_m40_loss_input_invalid")
+        if arm_result is None:
+            require(
+                accounting.get("status") != "complete",
+                "trajectory_m40_incomplete_arm_accounting_invalid",
+            )
+            hardness = {}
+            failure_codes = analysis["failure_codes"]
+        else:
+            require(
+                isinstance(arm_result.get("hardness"), dict)
+                and isinstance(arm_result.get("failure_codes"), dict),
+                "trajectory_m40_loss_input_invalid",
+            )
+            hardness = arm_result["hardness"]
+            failure_codes = arm_result["failure_codes"]
         canonical_loss = m40_loss_projection(
             task,
             behavior,
             accounting,
-            arm_result["hardness"],
-            arm_result["failure_codes"],
+            hardness,
+            failure_codes,
             lane_valid=observation["lane_valid"],
         )
         behavior["raw_loss_code"] = behavior["loss_code"]
@@ -7856,7 +7865,26 @@ def aggregate_trajectory_loss(
     control_campaign_count = len(
         control_campaigns_with_visible_read_duplicates
     )
-    if CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
+    if CAMPAIGN == "m40a" and (
+        acquisition_aborts > 0
+        or accounting_statuses["complete"] != trajectories
+    ):
+        candidate = {
+            "result_class": "reject_incomplete_acquisition",
+            "candidate_id": None,
+            "minimum_independent_tasks": 2,
+            "completed_accounting_observations": accounting_statuses[
+                "complete"
+            ],
+            "canonical_store_snapshots": trajectories,
+            "accounting_aborts": acquisition_aborts,
+            "reason": (
+                "the frozen control acquisition did not close usage and "
+                "cost for every physical request; no repeated-loss or "
+                "utility conclusion is admissible"
+            ),
+        }
+    elif CAMPAIGN in CURRENT_LOSS_CAMPAIGNS:
         candidate = repeated_current_loss_candidate(
             current_task_losses, loss_tasks
         )

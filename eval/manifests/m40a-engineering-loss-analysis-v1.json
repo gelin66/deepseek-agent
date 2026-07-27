@@ -1,0 +1,89 @@
+{
+  "schema": "dse.eval.m40a-engineering-loss-analysis.v1",
+  "frozen_at": "2026-07-28",
+  "source_identity": {
+    "candidate_revision": "e2ed02c3a805118d06399eb2b01d15f36789f033",
+    "candidate_tree": "e4b67767b396013982af23e44f37ea7f9f4cd49d",
+    "live_admission_revision": "2b1169dbe52ac5a1f5f1b2d8ef983fb4abb42d68",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:73e2773b5d561ea10307375da7cf40c7424fbb9608158ccbce1774d3bccd2bdd",
+    "analysis_harness_sha256": "sha256:19ff2f69650ec17bb1ffa54c6a42ff3f7785bd3e94f552c5492ca4f2ecaecb66",
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6
+  },
+  "slice_contract": {
+    "real_problem": "The first M40 control arm reached a deterministic verifier pass, then its seventh physical DeepSeek request failed after response headers and actionable reasoning but before content, usage, finish and stream DONE. Runtime correctly refused an unsafe replay, while the frozen acquisition stopped with usage_incomplete and no arm_result. Behavior truth remains closed in the canonical Store, but cost truth and the full campaign baseline do not.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink eight-record hash-chained journal with no partial tail",
+      "derive exactly one canonical Store trajectory with matching credential-free SQLite reopen and deterministic verifier snapshot",
+      "classify the failed terminal independently from the usage-incomplete accounting observation without inventing an arm result",
+      "preserve false_success=0 and prove that no latest Host completion receipt was accepted",
+      "require the sole accounting abort to be accounting_incomplete with maximum_reruns=0",
+      "return reject_incomplete_acquisition and admit no repeated-loss or production treatment candidate",
+      "produce byte-identical canonical JSON across repeated runs and expose no prompt, reasoning, tool arguments/content, evaluation IDs or credential material"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual inspection that either discards the closed behavior trajectory or guesses missing provider usage and cost",
+    "cutover": "retain immutable acquisition and analysis identities plus one read-only report; do not rerun, mate or amend the frozen arm",
+    "failed_candidate_deletion": "delete the temporary M40 campaign consumer after freezing the result and leave production unchanged"
+  },
+  "inputs": [
+    {
+      "campaign": "m40a-engineering-loss",
+      "path": "eval/results/m40a-engineering-loss-e2ed02c3a805-v1.jsonl",
+      "journal_schema": "dse.eval.m40a-engineering-loss-acquisition-journal.v1",
+      "file_sha256": "sha256:3dda3bc717694a732e6a9a956e188f62373b13d87e5caa440071e41f5c9aae9c",
+      "size_bytes": 1006365,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 1,
+    "completed_arm_results": 0,
+    "accounting_abort_records": 1,
+    "allowed_abort_code": "accounting_incomplete",
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "behavior_truth": "the positive root arm is a verified product failure because the terminal failed, no latest Host receipt exists, and false success is impossible even though the external workspace verifier passed",
+    "accounting_truth": "usage_incomplete because all seven attempts are sealed and billing_unknown=false, but the last completed physical response supplied no usage and canonical accounting therefore remains incomplete",
+    "wire_boundary": "the last physical attempt received response headers and actionable reasoning but no content, tool fragment, trusted finish, usage or stream DONE; replay_safe=false and Runtime stopped instead of issuing an eighth request",
+    "full_utility": "ineligible because behavior and accounting are orthogonal gates and accounting is not complete",
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct fresh task IDs, which this stopped acquisition cannot satisfy",
+    "provider_truth_boundary": "missing usage is never reconstructed from local token estimates or balance deltas and is never treated as an exact billed amount"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "single-task failure",
+      "usage-incomplete observation",
+      "estimated provider cost",
+      "selective rerun or historical mate",
+      "raw tool count without causal loss"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss",
+      "reject_incomplete_acquisition"
+    ],
+    "expected_result_class": "reject_incomplete_acquisition",
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
