@@ -18,6 +18,12 @@
     "cargo_lock_sha256": "sha256:e1ae90d04fc2d2ea31fab2f8c30f9b613cc3d51662c68ad4da68d5ea163e427f",
     "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
   },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:1725fff1f1c001d94b0d29ca13401760cdbd7fc828cff92a8448a142f8207d72",
+    "evaluation": "sha256:d6157d0603807b72a2ddd604e1f3e78918a628bda7d9f23aab761a71f6714b9a",
+    "current_architecture": "sha256:a0fc62ab8da4bbc4023bb0e4ebabdf421f5fcee1f547c9f7a07ead84b88c9400"
+  },
   "resources": {
     "runs_per_task": 1,
     "maximum_reruns": 0,
