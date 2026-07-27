@@ -1,0 +1,245 @@
+{
+  "schema": "dse.eval.m35-official-reliability-soak.v1",
+  "suite_id": "m35-official-reliability-soak-v1",
+  "frozen_on": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "39da745f5dbd3e27fd4e2ab4a6159dfd0cfb20ca",
+    "starting_tree": "7618892f860185ec2b910748f3ee3c66fe1087cb",
+    "required_clean_start": true,
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "python": "3.14.6",
+    "cargo_lock_sha256": "sha256:d7c2248d92cd35a40500c30af194d505e30ecce6522756039da6588afc7b98da",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256_before_m35": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:a30019b61ec10ac806d6b585c08b947228a0bf31469dd98afef7707f41c91afc",
+    "evaluation": "sha256:62291f12ce441fd53d0e3a4892f9498c89caf1862d23978371e631867b469c90",
+    "current_architecture": "sha256:2a835bff12359b2333e3f0d8827cd00ba6f5198180b5abf735b002c0e0d02092"
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/tool_calls/",
+      "https://api-docs.deepseek.com/quick_start/rate_limit/",
+      "https://api-docs.deepseek.com/quick_start/error_codes/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/get-user-balance/",
+      "https://api-docs.deepseek.com/updates/"
+    ],
+    "frozen_facts": {
+      "base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "thinking_default": "enabled",
+      "stream_terminator": "data: [DONE]",
+      "stream_usage_requires_include_usage": true,
+      "stream_keep_alive_comment": ": keep-alive",
+      "server_closes_if_inference_not_started_after_minutes": 10,
+      "pro_account_concurrency_limit": 500,
+      "documented_retryable_statuses": [
+        429,
+        500,
+        503
+      ],
+      "documented_permanent_statuses": [
+        400,
+        401,
+        402,
+        422
+      ],
+      "retry_after_guaranteed": false,
+      "partial_stream_continuation_documented": false,
+      "request_level_billing_reconciliation_documented": false,
+      "legacy_model_aliases_retired_after_2026_07_24": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ]
+    }
+  },
+  "external_reliability_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+      "https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/",
+      "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/retry-strategy",
+      "https://developers.openai.com/codex/cli/reference/",
+      "https://docs.anthropic.com/en/docs/claude-code/cli-reference"
+    ],
+    "adopted_mechanisms": [
+      "one retry controller at the highest layer that owns replay safety",
+      "bounded exponential backoff and a hard deadline",
+      "retryability and idempotency/replay safety are separate gates",
+      "persist attempt, delay and final disposition for observability and recovery",
+      "saved-session resume is distinct from upstream stream continuation"
+    ],
+    "not_copied": [
+      "a second Provider or fallback model chain",
+      "SDK and Runtime retry loops at the same time",
+      "random jitter without measured concurrent-herd loss",
+      "partial token-stream continuation without an upstream event-id contract",
+      "a new settings page or user retry language"
+    ]
+  },
+  "slice_contract": {
+    "real_problem": "M33 proved deterministic retry safety and M34 proved client feedback under controlled faults, but only one successful official request has exercised the retained production path. DSE does not yet know the current official service's natural latency distribution, transient failure frequency, safe-retry recovery rate, partial-response incidence or whether the stored failure facts remain complete in independent real Agent Runs.",
+    "acceptance": [
+      "run one immutable dse/dse-tui binary pair through the canonical AgentApplication -> AgentRuntime -> RunStore path",
+      "use only official OpenAI-format DeepSeek ChatCompletions with deepseek-v4-pro/high",
+      "interleave four task profiles for six fresh rounds, twenty-four independent Runs total",
+      "enable the normal product max_model_retries=2; transport hidden retries remain zero",
+      "record every physical started/completed/in-flight attempt, Runtime retry, failure category, retry/stop decision, latency, terminal, external verifier, usage/cache/cost and billing status",
+      "prove credential-free SQLite reopen and exact event-prefix/accounting replay after every Run",
+      "stop before the next paid Run on billing_unknown, usage_incomplete, identity mismatch, unsafe evidence, observer ambiguity or any unsealed/in-flight request",
+      "admit a production treatment only when the same stable owner_code:loss_code repeats across at least two different task profiles or two independent rounds"
+    ],
+    "single_owner": "the existing corrected scripts/eval-m9b-fixed-pro-regression.py Harness temporarily projects canonical production facts; retry policy remains owned only by crates/runtime::AgentRuntime",
+    "old_path_replaced": [],
+    "candidate_deletion": "the temporary M35 Harness consumer is deleted after the decision; if no repeated live loss exists, production code remains byte-unchanged",
+    "forbidden": [
+      "attacking or deliberately rate-limiting the official DeepSeek service",
+      "Harness-level logical Run reruns, mate completion or selective resampling",
+      "transport retries, infinite reconnect, blind partial-response replay or fake SSE continuation",
+      "changing model, reasoning, permission, prompt, tool catalog or task after acquisition begins",
+      "Auto, Anthropic Messages, a second Provider/Runtime/Store/controller or fallback model",
+      "printing, logging, persisting or committing the credential",
+      "GitHub, push or release"
+    ]
+  },
+  "task_profiles": [
+    {
+      "id": "plain_chat_marker",
+      "mode": "plain",
+      "tool_policy": "tools disabled",
+      "acceptance": "visible final answer contains the frozen round-specific marker",
+      "max_turns": 1,
+      "max_physical_requests": 3,
+      "max_runtime_seconds": 300
+    },
+    {
+      "id": "read_file_marker",
+      "mode": "agent",
+      "tool_policy": "allow read_file only",
+      "acceptance": "the model reads signal.txt and the visible final answer contains its frozen marker",
+      "max_turns": 3,
+      "max_physical_requests": 9,
+      "max_runtime_seconds": 600
+    },
+    {
+      "id": "grep_then_read_marker",
+      "mode": "agent",
+      "tool_policy": "allow grep_files and read_file only",
+      "acceptance": "the model locates one marker among decoys, reads the matching file and returns that marker",
+      "max_turns": 4,
+      "max_physical_requests": 12,
+      "max_runtime_seconds": 600
+    },
+    {
+      "id": "bounded_edit_marker",
+      "mode": "agent",
+      "tool_policy": "allow read_file and edit_file only under Agent permission",
+      "acceptance": "counter.txt changes from 41 to the frozen round-specific value, no other workspace file changes, and the final answer contains the marker",
+      "max_turns": 5,
+      "max_physical_requests": 15,
+      "max_runtime_seconds": 900
+    }
+  ],
+  "schedule": {
+    "rounds": 6,
+    "logical_runs": 24,
+    "rotation": [
+      [
+        "plain_chat_marker",
+        "read_file_marker",
+        "bounded_edit_marker",
+        "grep_then_read_marker"
+      ],
+      [
+        "grep_then_read_marker",
+        "bounded_edit_marker",
+        "read_file_marker",
+        "plain_chat_marker"
+      ],
+      [
+        "read_file_marker",
+        "plain_chat_marker",
+        "grep_then_read_marker",
+        "bounded_edit_marker"
+      ]
+    ],
+    "fresh_git_repository_per_run": true,
+    "fresh_home_state_and_run_store_per_run": true,
+    "maximum_harness_reruns": 0,
+    "normal_runtime_max_model_retries": 2
+  },
+  "metrics": {
+    "behavior": [
+      "verified_success",
+      "correct_safety_rejection",
+      "verified_product_failure",
+      "measurement_interruption",
+      "invalid",
+      "false_success"
+    ],
+    "reliability": [
+      "time_to_first_response_ms",
+      "wall_time_ms",
+      "physical_attempts",
+      "runtime_retries",
+      "failure_category",
+      "retry_ordinal",
+      "backoff_ms",
+      "retry_after_ms",
+      "stop_reason",
+      "recovery_success",
+      "partial_or_actionable_output",
+      "duplicate_physical_request"
+    ],
+    "accounting": [
+      "input_tokens",
+      "output_tokens",
+      "cache_hit_tokens",
+      "cache_miss_tokens",
+      "reasoning_tokens",
+      "usage_response_count",
+      "usage_complete",
+      "cost_complete",
+      "billing_unknown_attempts",
+      "cost_usd"
+    ],
+    "surface": [
+      "exec_stream_failure_fact",
+      "terminal_reason",
+      "next_action",
+      "credential_free_reopen_equal"
+    ]
+  },
+  "resources": {
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_access_after_offline_gates_only": true,
+    "raw_path_template": "eval/results/m35-official-reliability-soak-<candidate12>-v1.jsonl",
+    "raw_ignored": true,
+    "raw_mode": "0600",
+    "raw_contains_credential": false,
+    "max_cost_per_logical_run_usd": "0.50",
+    "max_suite_cost_usd": "10.00",
+    "maximum_harness_reruns": 0,
+    "stop_before_next_run_on_incomplete_accounting": true,
+    "cargo_incremental": "0",
+    "cargo_target_dir": "/private/tmp/dse-m35-target"
+  },
+  "decision_rule": {
+    "no_treatment": "complete the available schedule or stop at the first formal accounting/safety boundary; if no stable owner_code:loss_code repeats, record no_repeated_live_reliability_loss and leave production unchanged",
+    "treatment_admission": "only one smallest unique-owner treatment may be implemented after the same cause repeats across independent real Runs; rerun a fresh successor schedule from position 1 rather than editing or continuing frozen raw",
+    "keep": "the treatment must remove the repeated loss while preserving partial/in-flight fail-closed behavior, false_success=0, exact reopen, complete accounting and one Runtime retry owner",
+    "reject": "delete the treatment and keep M33/M34 behavior if it fails any safety, replay, accounting, surface or complexity gate"
+  }
+}

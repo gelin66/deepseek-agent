@@ -5857,3 +5857,57 @@ app-server exact stored-event replay 均未改变。
 focused、fmt、strict Clippy、workspace test、public checker 与 diff check 通过。没有读取
 Key、没有 official API request、没有 GitHub/push/release。完整证据见
 [M34 summary](../../eval/summaries/m34-model-failure-feedback-2026-07-27.md)。
+
+## 33. M35：官方 DeepSeek production reliability soak
+
+- 状态：**contract frozen；live acquisition pending**
+- 基线：M34 clean checkpoint `39da745f5`
+- production retry owner：既有 `crates/runtime::AgentRuntime`
+- typed transport/accounting owner：既有 `crates/deepseek`
+- acquisition owner：唯一 corrected `scripts/eval-m9b-fixed-pro-regression.py` Harness
+
+### 33.1 真实问题与外部边界
+
+M33 已用 fake clock、loopback 和进程故障证明唯一 Runtime retry 的安全性，M34 已用
+受控代理证明同一 stored failure fact 能被 CLI/TUI/app-server 准确投影；但官方路径只有
+一个普通成功 canary。当前仍缺真实独立 Run 上的延迟分布、自然 timeout/network/
+429/5xx/partial incidence、Runtime retry 恢复率和用户状态完整性。没有这些样本，不应
+凭云端通用文章继续调整次数、backoff、jitter 或 UI。
+
+2026-07-27 复核官方事实：唯一 production endpoint 仍是
+`https://api.deepseek.com/chat/completions`，模型为 `deepseek-v4-pro`，stream 以
+`[DONE]` 结束且可能包含 `: keep-alive`；429/500/503 可短暂等待后重试，400/401/402/422
+需修正请求或账户；官方没有承诺 `Retry-After`、request-level billing reconciliation 或
+partial stream continuation。AWS/Google 的成熟原则只作为机制约束：单一 retry layer、
+bounded backoff/deadline、retryability 与 replay safety 分离、attempt/final outcome
+可观察。Codex/Claude Code 的 saved-session resume 也不能解释为上游 token stream 续传。
+
+### 33.2 冻结 acquisition
+
+冻结 manifest：
+[`m35-official-reliability-soak-v1.json`](../../eval/manifests/m35-official-reliability-soak-v1.json)。
+同一个 immutable `dse`/`dse-tui`、Pro/high、official Standard Chat、prompt/tool policy、
+预算和 observer 下交错 6 轮：
+
+1. tool-less marker Chat；
+2. `read_file` 单工具读取；
+3. `grep_files -> read_file` 定位；
+4. `read_file -> edit_file` 受限 workspace 修改。
+
+共 24 个全新独立 Run，每个使用新 Git repo、HOME、State 和 RunStore。正常产品
+`max_model_retries=2` 保持开启；`maximum_harness_reruns=0`，不得补跑 logical Run。
+逐 Run 保存 physical attempts、Runtime retry、typed failure/backoff/stop、terminal、
+外部 verifier、usage/cache/cost、raw mode 与 credential-free SQLite reopen。任何
+`billing_unknown`、usage incomplete、identity/evidence/observer ambiguity、unsafe
+partial 或 in-flight 未闭合，都在下一付费 Run 前停止。
+
+### 33.3 treatment 与删除门
+
+只有同一 `owner_code:loss_code` 跨至少两个不同 task profile 或两个独立轮次重复，才准入
+一个最小 production treatment；否则结论是 `no_repeated_live_reliability_loss`，不改
+production。自然 soak 不故意攻击、并发压测或制造官方 429/5xx。
+
+若准入 treatment，必须从新的 immutable identity 和 position 1 successor 复测；不得续跑、
+覆盖或拼接 M35 v1 raw。候选必须保持 false success=0、partial/in-flight 零盲发、
+exact reopen/accounting 与唯一 Runtime retry owner，否则完整删除。正式决策后删除
+临时 M35 Harness consumer；manifest、ignored `0600` raw 和 summary 保留审计。

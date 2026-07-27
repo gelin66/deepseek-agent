@@ -4131,6 +4131,48 @@ credential read=false、official API request=0；本结论不外推官方服务�
 收益。完整 control/treatment、删除与非结论见
 [M34 summary](../../eval/summaries/m34-model-failure-feedback-2026-07-27.md)。
 
+#### M35 official production reliability soak contract
+
+M35 不把 deterministic fault injection 重做成官方故障攻击，也不把普通成功 canary冒充
+恢复率。它用 current M34 clean checkpoint `39da745f5` 的同一个 immutable binary，
+冻结 4 个 product profile × 6 个独立轮次：
+
+```text
+plain Chat marker                 6
+read_file tool loop              6
+grep_files -> read_file loop     6
+bounded read_file -> edit_file   6
+logical Runs total              24
+```
+
+每个 Run 使用新 Git repo、HOME、State 和 RunStore；模型/effort 固定
+`deepseek-v4-pro/high`，official endpoint 固定
+`https://api.deepseek.com/chat/completions`。正常产品的初次请求加最多两次 Runtime
+safe retry 保持开启；Harness logical rerun 固定为 0。transport hidden retry 必须为 0。
+
+每条 observation 同时闭合：
+
+```text
+behavior terminal + external verifier + latest workspace
+physical started/completed/in-flight + Runtime retry
+typed failure/actionable evidence + retry/stop decision
+usage/cache/cost/billing status
+exec-stream failure/terminal projection
+credential-free SQLite reopen/event-prefix equality
+```
+
+`billing_unknown`、usage incomplete、identity/evidence ambiguity、unsafe partial、
+observer ambiguity或未封存 in-flight request 都在下一付费 Run 前停止。它们的闭合行为
+事实可按 ADR-0011 保留，但不能进入费用/效率 aggregate，也不能选择性补跑。
+
+production treatment 的准入门是同一个稳定 `owner_code:loss_code` 在至少两个不同 task
+profile 或两个独立轮次重复。没有重复损失则
+`no_repeated_live_reliability_loss`，production delta=0；有重复损失也只能审计一个
+unique-owner 最小候选，并从全新 position-1 successor 复测。任何 blind partial replay、
+第二 retry controller、false success、reopen/accounting 回退或复杂度双轨都要求
+`reject_and_delete`。完整 schedule、官方/外部依据和预算见
+[`m35-official-reliability-soak-v1.json`](../../eval/manifests/m35-official-reliability-soak-v1.json)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
