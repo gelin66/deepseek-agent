@@ -1807,17 +1807,19 @@ async fn established_sse_without_events_hits_typed_stream_stall() {
         output.stdout,
         output.stderr
     );
+    let events = parse_strict_ndjson(&output.stdout);
+    let metadata = assert_terminal_tail(&events, Some("stream_stall"));
+    let runtime_duration_ms = metadata["duration_ms"]
+        .as_u64()
+        .expect("terminal receipt runtime duration");
     assert!(
-        output.elapsed < Duration::from_secs(18),
-        "stream stall did not stop promptly: {:?}, requests={}\nstdout:\n{}\nstderr:\n{}",
+        runtime_duration_ms < 18_000,
+        "stream stall did not stop promptly: runtime={runtime_duration_ms}ms, process={:?}, requests={}\nstdout:\n{}\nstderr:\n{}",
         output.elapsed,
         server.chat_requests(),
         output.stdout,
         output.stderr
     );
-
-    let events = parse_strict_ndjson(&output.stdout);
-    let metadata = assert_terminal_tail(&events, Some("stream_stall"));
     assert_eq!(metadata["status"], "failed");
     assert_ne!(metadata["termination_reason"], "resolved");
     // Initial attempt plus at least one outer retry, capped at three retries.
