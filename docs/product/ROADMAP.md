@@ -5948,8 +5948,8 @@ known cost             $0.014071409
 
 ## 34. M36：DeepSeek-native verified harness 优化计划
 
-- 状态：**M36-A fresh acquisition contract/observer 已冻结；正式 official
-  acquisition 尚未准入**
+- 状态：**M36-A fresh official acquisition 已完成；决定
+  `keep_current_harness_no_repeated_loss`，production delta=0**
 - 起始基线：M35 clean checkpoint `e84abb1ed`
 - 产品边界：继续执行 PRODUCT_PLAN、ADR-0001/0002/0003/0005/0008/0011；不改变
   DeepSeek-only、单 `AgentRuntime`、单 `RuntimeEvent`、单 `RunStore`、单 Writer 默认和
@@ -6083,6 +6083,27 @@ completion rework 和 latest receipt 指标。正常 production `max_model_retri
 position-1 retry=0 外推成产品默认。此阶段 production delta=0；只有正式 acquisition
 产生同一 canonical `owner_code:loss_code` 跨至少两个独立 task_id 重复，才允许审计
 M36-B/C 的一个候选。
+
+正式 acquisition 已从 immutable `03b40abe6dcc` binary、position 1 完成 20/20 arms：
+16 个正向 verified success、3 个正确安全拒绝、1 个 Writer verified product failure，
+false success=0；behavior/accounting/full-utility observations 均为 20，known cost
+`$0.278444080`，maximum reruns=0。三个 long-horizon SIGKILL/reopen、service/API/UI、
+两个 read-only child 和第二个 explicit Writer 均通过。
+
+唯一 canonical loss 为
+`orchestrator:writer_integration`，只出现在 `writer_envelope` 一个独立 task；未达到两个
+task_id 的门槛。frozen raw final summary 曾因把 positive lane validity 错当 acquisition
+completeness 而报告 incomplete；三个独立 eval-only correction commits 只读重算同一
+132-record `0600` journal，20/20 truth 闭合且两次 report byte-identical，没有修改 raw、
+补跑或重调 API。结果为 `keep_current_harness_no_repeated_loss`，M36-B/C 不准入。
+
+temporary M36 Harness consumer 已物理删除并恢复 M36 前 exact blob `5f3f613c`；
+production-compiled crates 始终无 delta。最终 focused 暴露的唯一 crate source 变化是
+`#[cfg(test)]` loopback helper 的 5 秒 timeout 小于五回合正常执行时间；`8657a5b5c`
+将 bounded test timeout 调为 15 秒，targeted/focused/workspace test 随后通过，不改变
+production deadline 或行为。frozen manifest/admission/analysis/raw 与
+[M36-A summary](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)
+保留审计。
 
 #### M36-B：DeepSeek effort 与 context control-only
 

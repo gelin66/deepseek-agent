@@ -4215,6 +4215,23 @@ windows、进程 SIGKILL/reopen continuity、11-case canonical loss taxonomy 和
 observer。loss observer 只能输出下文稳定 taxonomy；若 task contract 在人工复核中存在
 歧义，该 case 必须在 credential 前 invalid，不能靠正式模型失败补标签。
 
+M36-A 已按该 identity 完成 20/20 formal arms：positive verified success 16/17，
+correct safety rejection 3/3，false success 0；behavior product observations、
+accounting-complete observations 与 full-utility observations 均为 20。known cost
+`$0.278444080`，154 个 model requests，Harness rerun 0，Runtime retry 0。
+
+唯一 product loss 为
+`writer_envelope -> orchestrator:writer_integration`，只覆盖一个独立 task_id；第二个
+Writer、两个 read-only child、三个 long-horizon reopen 和 service/API/UI tasks 均通过。
+所以结果是 `keep_current_harness_no_repeated_loss`，不准入 M36-B/C。
+
+frozen raw final summary 的 `complete=false` 是 eval aggregate defect：旧逻辑把 positive
+lane success 与 acquisition completeness 绑定。raw 中 20 个 per-arm behavior/accounting
+truth 均已闭合。read-only analysis manifest 分别绑定 acquisition/analysis Harness hash，
+从同一 132-record ignored `0600` journal 两次生成 byte-identical report，且不读
+credential、不访问 network、不修改 raw、不补跑。正式身份、修正与删除证据见
+[M36-A summary](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)。
+
 ##### 1. 基线任务层
 
 每个基线 manifest 必须从以下任务层中选择与候选 owner 相关的 fresh、人工复核任务：
