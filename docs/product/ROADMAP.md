@@ -5627,3 +5627,102 @@ grant、唯一 Runtime/Store、canonical tools 与 production prompt 均不改�
 Harness consumer 已物理删除并恢复到 M32 前 blob `90ffb72b`，frozen
 contract/admission/analysis、ignored 0600 raw 与 summary 保留。完整事实见
 [M32 current Hardness regression](../../eval/summaries/m32-hardness-regression-2026-07-27.md)。
+
+## 31. M33：模型请求超时恢复与唯一重试闭环
+
+- 状态：**in progress；offline-only**
+- 基线：M32 clean checkpoint `e5df72e78`
+- 唯一决策 owner：`crates/runtime::AgentRuntime`
+- typed failure/accounting owner：`crates/deepseek`
+- durable truth owner：现有 canonical `RuntimeEvent` / `RunStore`
+- production surface：CLI、TUI、app-server 只投影同一 stored retry fact
+
+### 31.1 真实问题与可测验收
+
+M32 的 `transport/runtime retry=0` 与 `maximum_reruns=0` 是 position-1 正式采集合同，
+不是正常产品策略。正常 `RunLimits` 已默认 `max_model_retries=2`，但 current production
+同时留下两套互相漂移的控制面：
+
+1. `DeepSeekModelPort` 构造时总是关闭 transport retry，真正的安全重试由 Runtime
+   `plan_model_failure` 决定并与 failed attempt 原子提交；
+2. app/TUI/config/CLI 仍暴露 transport 默认 3 次、`[retry]`、
+   `--transport-max-retries`、1s/2x/60s 与 execution fingerprint 字段；
+3. Runtime 的 canonical retry 目前在 durable decision 后立即再次发送，没有可重开
+   `not-before`，用户表面只显示 opaque attempt id；
+4. DeepSeek 已解析 HTTP `Retry-After`，但没有把 hint 带到 Runtime。
+
+M33 只建立一个有界、可观察、可恢复的 Host 闭环：
+
+```text
+DeepSeek typed failure / response evidence / usage / optional Retry-After
+  -> AgentRuntime retryable + replay-safe + no-actionable-output + limit/budget
+  -> failed attempt + prepared retry + backoff/not-before atomic RuntimeEvent
+  -> RunStore exact replay
+  -> wait remaining time
+  -> exactly one next physical attempt
+```
+
+默认仍是初次请求加最多两次 Runtime retry。第一次/第二次固定退避 1s/2s；
+`Retry-After` 只在 HTTP response 实际携带时作为不短于本地退避的 typed hint，等待受既有
+Run deadline 约束。没有设置页、无限重连、transport 内循环、语言/模型分类或第二
+controller。
+
+### 31.2 安全边界
+
+- 只有 response headers 前的 timeout/network，或无 content/reasoning/tool/usage/finish
+  actionable evidence 的 429、可重试 5xx，才可进入有界自动重试；
+- 401/403、普通 4xx、协议错误、failure cause 改变、预算/次数耗尽必须停止；
+- 任意 content、reasoning、tool-call fragment、usage、finish、`[DONE]` 或 incomplete
+  stream 的 replay-unsafe 证据都禁止盲目重发；
+- retry decision 已提交但尚未发送时，SIGKILL/reopen 必须按 persisted not-before 等待并
+  只发送一次；retry 已 in-flight 时仍返回 canonical `RecoveryRequired`，不猜测上游是否
+  执行；
+- app-server sequence reconnect 只重放本地 stored events；same-Run resume 只恢复
+  canonical run。二者都不是 DeepSeek partial SSE continuation。
+
+官方 DeepSeek 2026-07-27 文档确认 429 是并发/限速错误，500/503 建议短暂等待后重试，
+streaming 以 `[DONE]` 结束并可能发送 keep-alive；官方没有承诺 `Retry-After` 或 partial
+stream continuation。实现只能消费实际 response header，不能扩大官方保证：
+
+- https://api-docs.deepseek.com/quick_start/rate_limit/
+- https://api-docs.deepseek.com/quick_start/error_codes/
+- https://api-docs.deepseek.com/api/create-chat-completion
+
+### 31.3 冻结离线矩阵
+
+优先 loopback 与 fake clock，不使用真实 sleep：
+
+1. pre-header timeout → 1s backoff → success：一个 logical request、两个 physical
+   attempts、一个 canonical retry；
+2. network reset → 1s/2s → success：初次 + 两次，request/accounting 精确；
+3. 429 + Retry-After → success：Runtime 等待 typed hint，transport 不重发；
+4. 500/503 有界重试；401/403/普通 4xx不重试；
+5. partial content/reasoning/tool fragment 或 usage 后 stall/incomplete：
+   physical attempt=1，Stop(ActionableOutput/UnsafeReplay)；
+6. retry decision committed、send 前 SIGKILL：SQLite reopen 后等待剩余时间并发送一次；
+7. retry in-flight SIGKILL：`RecoveryRequired(ModelRequest)`，零盲发；
+8. retry limit/request budget/deadline 耗尽：明确 terminal，false progress/success=0；
+9. root、普通 read-only child、explicit Writer 共用同一 conformance；
+10. CLI/TUI/app-server 与 en/zh-Hans 投影同一 retry ordinal/total/backoff/stop reason；
+11. physical started/completed/in-flight、runtime retry、usage completeness、
+    billing unknown 与 reopen 前后一致。
+
+### 31.4 实施、旧路删除与 keep gate
+
+顺序固定为：
+
+1. protocol/Runtime/Store 失败测试，先暴露立即重试和缺失 not-before；
+2. DeepSeek 传递 typed `Retry-After`，Runtime 生成唯一 backoff decision；
+3. State migration、prepared/in-flight crash/reopen 与 fake-clock loopback；
+4. 真实 app/CLI/TUI/app-server caller 和双语 projection；
+5. 删除 `TransportRetryPolicy` 自动循环、`with_retries_disabled`、
+   `[retry]` reader/example/reference、`--transport-max-retries`、production retry
+   fingerprint 与只验证旧双层路径的测试；
+6. targeted、focused、fmt、strict Clippy、workspace test、process SIGKILL/reopen、
+   surface parity、public checker 和 diff check。
+
+只有安全 timeout/network/429/5xx 能自动恢复、partial output 不重发、crash/reopen
+不重复、surface/accounting 一致且 active code 只剩一个 controller 时，结论才是
+`keep_runtime_owned_model_retry_loop`。任一 exactly-once、evidence、billing 或 replay
+门失败，删除 M33 candidate 并保留当前 fail-closed 语义。M33 不读取 Key、不请求 official
+API、不修改或续跑 M32 frozen evidence、不访问 GitHub、不 push、不 release。

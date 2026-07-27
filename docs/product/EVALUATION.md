@@ -3963,6 +3963,57 @@ adapter 已删除，Harness 恢复到 M32 前 blob `90ffb72b`；production 不�
 partial metric、删除和非结论见
 [M32 current Hardness regression](../../eval/summaries/m32-hardness-regression-2026-07-27.md)。
 
+#### M33 Runtime-owned model retry contract
+
+M33 是 credential-free reliability/correctness treatment，不是 M32 formal campaign
+续跑，也不以 `maximum_reruns=0` 覆盖正常产品默认。control 是 M32 clean checkpoint
+`e5df72e78`：
+
+- `RunLimits.max_model_retries=2` 已允许初次请求后最多两次 Runtime retry；
+- DeepSeek transport 仍有 retry loop/config 类型，但 production
+  `DeepSeekModelPort` 总是调用 `with_retries_disabled()`；
+- `[retry]`、app 默认 3、`--transport-max-retries` 与 fingerprint 因而不是实际
+  Runtime 行为；
+- `ModelRequestFailed` 已原子保存 retry decision/prepared attempt，但没有 backoff 或
+  not-before，Runtime 会立即继续。
+
+候选只允许一个 delta：让既有 Runtime retry decision 带 durable
+decision-time/backoff/not-before，删除 transport controller 与失效配置，并把
+DeepSeek 实际返回的 `Retry-After` 作为 typed hint 传给 Runtime。固定本地 backoff 为
+1s、2s；hint 只能延长，不能绕过 replay-safe、actionable-output、limit、budget 或
+deadline gate。
+
+离线 admission 必须完成 ROADMAP 31.3 的 11 项矩阵，并满足：
+
+```text
+safe pre-header recovery                  pass
+partial/actionable output resend          0
+prepared-retry reopen duplicate send      0
+in-flight-retry reopen blind send         0
+false success / false progress            0 / 0
+transport hidden retries                  0
+root / read-only / Writer conformance     pass
+CLI / TUI / app-server parity             pass
+en / zh-Hans retry projection             pass
+physical/accounting/reopen exactness       pass
+```
+
+`Retry-After` 不是官方 DeepSeek 当前公开保证；只测试实际 header 的 typed 解析和 Host
+等待。官方 2026-07-27 error/rate-limit 文档支持 429 与 500/503 的有界等待重试，
+Chat 文档支持以 `[DONE]` 结束的 SSE，但没有 partial response continuation contract。
+
+最终只允许：
+
+```text
+keep_runtime_owned_model_retry_loop
+reject_and_delete_retry_candidate
+```
+
+keep 必须物理删除 transport loop、失效 config/CLI/fingerprint 和旧双控制器测试；
+reject 必须删除 backoff treatment，保留当前 actionable-output/in-flight fail-closed
+语义。两种结果都不得读取 Key、调用 official API、修改 M32 frozen
+manifest/result/raw、访问 GitHub、push 或 release。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
