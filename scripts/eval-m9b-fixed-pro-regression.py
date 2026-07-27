@@ -7540,30 +7540,55 @@ def trajectory_truth_projection(
         "failure_code": failure_code,
     }
     behavior = behavior_truth_projection(observation)
-    loss_code = behavior["loss_code"]
-    if loss_code == "deepseek_transport":
-        owner_code = "deepseek_transport"
-    elif loss_code in {
-        "false_success",
-        "verified_workspace_without_terminal_receipt",
-    }:
-        owner_code = "host_completion"
-    elif lane == "writer":
-        owner_code = "writer_integration"
-    elif lane == "read_only":
-        owner_code = "read_only_handoff"
-    elif lane == "safety":
-        owner_code = "safety_completion"
-    else:
-        owner_code = "root_task_outcome"
-    behavior["owner_code"] = (
-        owner_code if behavior["product_loss"] else None
+    accounting = accounting_truth_projection(
+        trajectory_accounting_observation(facts)
     )
+    if CAMPAIGN == "m39a":
+        require(
+            isinstance(task, dict)
+            and isinstance(arm_result, dict)
+            and isinstance(arm_result.get("hardness"), dict)
+            and isinstance(arm_result.get("failure_codes"), dict),
+            "trajectory_m39_loss_input_invalid",
+        )
+        canonical_loss = m39_loss_projection(
+            task,
+            behavior,
+            accounting,
+            arm_result["hardness"],
+            arm_result["failure_codes"],
+            lane_valid=observation["lane_valid"],
+        )
+        behavior["raw_loss_code"] = behavior["loss_code"]
+        behavior["owner_code"] = canonical_loss[
+            "canonical_loss_owner_code"
+        ]
+        behavior["loss_code"] = canonical_loss[
+            "canonical_loss_code"
+        ]
+    else:
+        loss_code = behavior["loss_code"]
+        if loss_code == "deepseek_transport":
+            owner_code = "deepseek_transport"
+        elif loss_code in {
+            "false_success",
+            "verified_workspace_without_terminal_receipt",
+        }:
+            owner_code = "host_completion"
+        elif lane == "writer":
+            owner_code = "writer_integration"
+        elif lane == "read_only":
+            owner_code = "read_only_handoff"
+        elif lane == "safety":
+            owner_code = "safety_completion"
+        else:
+            owner_code = "root_task_outcome"
+        behavior["owner_code"] = (
+            owner_code if behavior["product_loss"] else None
+        )
     return {
         "behavior": behavior,
-        "accounting": accounting_truth_projection(
-            trajectory_accounting_observation(facts)
-        ),
+        "accounting": accounting,
     }
 
 
