@@ -19,7 +19,6 @@ struct ApiRequestBudgetState {
     started: u32,
     in_flight: u32,
     completed: u32,
-    retry_attempts: u32,
     exhausted_denied: u32,
     sealed_denied: u32,
     sealed: bool,
@@ -44,7 +43,6 @@ struct ApiRequestActorCounters {
     started: u32,
     in_flight: u32,
     completed: u32,
-    retries: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +63,6 @@ pub struct ApiRequestBudgetSnapshot {
     pub started: u32,
     pub in_flight: u32,
     pub completed: u32,
-    pub retry_attempts: u32,
     pub exhausted_denied: u32,
     pub sealed_denied: u32,
     pub sealed: bool,
@@ -76,11 +73,9 @@ pub struct ApiRequestActorSnapshot {
     pub root_started: u32,
     pub root_in_flight: u32,
     pub root_completed: u32,
-    pub root_retries: u32,
     pub child_started: u32,
     pub child_in_flight: u32,
     pub child_completed: u32,
-    pub child_retries: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -246,13 +241,6 @@ impl ApiRequestLease {
         }
     }
 
-    pub fn mark_retry_attempt(&mut self) {
-        let mut state = self.budget.lock_state();
-        state.retry_attempts = state.retry_attempts.saturating_add(1);
-        let actor = actor_counters_mut(&mut state, self.actor);
-        actor.retries = actor.retries.saturating_add(1);
-    }
-
     fn settle_inference_response(
         &mut self,
         model: &str,
@@ -348,7 +336,6 @@ impl SharedApiRequestBudget {
                 started: 0,
                 in_flight: 0,
                 completed: 0,
-                retry_attempts: 0,
                 exhausted_denied: 0,
                 sealed_denied: 0,
                 sealed: false,
@@ -655,7 +642,6 @@ fn snapshot_of(state: &ApiRequestBudgetState) -> ApiRequestBudgetSnapshot {
         started: state.started,
         in_flight: state.in_flight,
         completed: state.completed,
-        retry_attempts: state.retry_attempts,
         exhausted_denied: state.exhausted_denied,
         sealed_denied: state.sealed_denied,
         sealed: state.sealed,
@@ -668,11 +654,9 @@ fn actor_snapshot_of(state: &ApiRequestBudgetState) -> ApiRequestActorSnapshot {
         root_started: state.root.started,
         root_in_flight: state.root.in_flight,
         root_completed: state.root.completed,
-        root_retries: state.root.retries,
         child_started: state.child.started,
         child_in_flight: state.child.in_flight,
         child_completed: state.child.completed,
-        child_retries: state.child.retries,
     }
 }
 
@@ -808,7 +792,6 @@ mod tests {
                 started: 3,
                 in_flight: 3,
                 completed: 0,
-                retry_attempts: 0,
                 exhausted_denied: (CALLERS - 3) as u32,
                 sealed_denied: 0,
                 sealed: false,
@@ -824,12 +807,9 @@ mod tests {
         assert!(Arc::ptr_eq(&root.state, &child.state));
         assert!(Arc::ptr_eq(&child.state, &nested_child.state));
 
-        let mut root_lease = root.try_reserve().unwrap();
-        let mut child_lease = child.clone().try_reserve().unwrap();
+        let root_lease = root.try_reserve().unwrap();
+        let child_lease = child.clone().try_reserve().unwrap();
         let nested_child_lease = nested_child.try_reserve().unwrap();
-        root_lease.mark_retry_attempt();
-        child_lease.mark_retry_attempt();
-        child_lease.mark_retry_attempt();
 
         let admitted = root.snapshot();
         let admitted_actors = root.actor_snapshot();
@@ -842,9 +822,6 @@ mod tests {
         assert_eq!(admitted.completed, 0);
         assert_eq!(admitted_actors.root_completed, 0);
         assert_eq!(admitted_actors.child_completed, 0);
-        assert_eq!(admitted.retry_attempts, 3);
-        assert_eq!(admitted_actors.root_retries, 1);
-        assert_eq!(admitted_actors.child_retries, 2);
         assert_eq!(
             admitted.started,
             admitted_actors.root_started + admitted_actors.child_started
@@ -894,7 +871,6 @@ mod tests {
                 started: 1,
                 in_flight: 0,
                 completed: 1,
-                retry_attempts: 0,
                 exhausted_denied: 0,
                 sealed_denied: 0,
                 sealed: true,

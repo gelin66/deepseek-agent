@@ -79,24 +79,6 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     dse_config::canonical_deepseek_model(model).ok()
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct RetryConfig {
-    pub enabled: Option<bool>,
-    pub max_retries: Option<u32>,
-    pub initial_delay: Option<f64>,
-    pub max_delay: Option<f64>,
-    pub exponential_base: Option<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RetryPolicy {
-    pub enabled: bool,
-    pub max_retries: u32,
-    pub initial_delay: f64,
-    pub max_delay: f64,
-    pub exponential_base: f64,
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
@@ -157,7 +139,6 @@ pub struct Config {
     pub prefer_bwrap: Option<bool>,
     #[serde(alias = "maxSubagents")]
     pub max_subagents: Option<usize>,
-    pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
     pub tui: Option<TuiConfig>,
     pub ui: Option<UiConfig>,
@@ -248,6 +229,7 @@ impl Config {
             "permission_mode",
             "permissions",
             "yolo",
+            "retry",
         ] {
             if self.extra.contains_key(retired) {
                 if retired == "context" {
@@ -528,27 +510,6 @@ impl Config {
     }
 
     #[must_use]
-    pub fn retry_policy(&self) -> RetryPolicy {
-        let defaults = RetryPolicy {
-            enabled: true,
-            max_retries: 3,
-            initial_delay: 1.0,
-            max_delay: 60.0,
-            exponential_base: 2.0,
-        };
-        let Some(config) = &self.retry else {
-            return defaults;
-        };
-        RetryPolicy {
-            enabled: config.enabled.unwrap_or(defaults.enabled),
-            max_retries: config.max_retries.unwrap_or(defaults.max_retries),
-            initial_delay: config.initial_delay.unwrap_or(defaults.initial_delay),
-            max_delay: config.max_delay.unwrap_or(defaults.max_delay),
-            exponential_base: config.exponential_base.unwrap_or(defaults.exponential_base),
-        }
-    }
-
-    #[must_use]
     pub fn search_provider_resolution(&self) -> SearchProviderResolution {
         if let Ok(raw) = std::env::var("DSE_SEARCH_PROVIDER")
             && let Some(provider) = SearchProvider::parse(&raw)
@@ -667,7 +628,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
         sandbox_api_key: selected.sandbox_api_key.or(base.sandbox_api_key),
         prefer_bwrap: selected.prefer_bwrap.or(base.prefer_bwrap),
         max_subagents: selected.max_subagents.or(base.max_subagents),
-        retry: selected.retry.or(base.retry),
         features: merge_features(base.features, selected.features),
         tui: selected.tui.or(base.tui),
         ui: base.ui,

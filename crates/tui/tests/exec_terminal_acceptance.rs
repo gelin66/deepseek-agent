@@ -647,8 +647,7 @@ async fn resume_environment_mismatches_fail_closed_before_model_io() {
     let home = TempDir::new().expect("home tempdir");
     let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
-    std::fs::write(config_dir.join("config.toml"), "[retry]\nenabled = false\n")
-        .expect("write isolated exec config");
+    std::fs::write(config_dir.join("config.toml"), "").expect("write isolated exec config");
     let state_db = config_dir.join("state.db");
     let store = StateStore::open(Some(state_db)).expect("open mismatch fixture state db");
 
@@ -1813,7 +1812,7 @@ async fn established_sse_without_events_hits_typed_stream_stall() {
         .as_u64()
         .expect("terminal receipt runtime duration");
     assert!(
-        runtime_duration_ms < 18_000,
+        runtime_duration_ms < 19_500,
         "stream stall did not stop promptly: runtime={runtime_duration_ms}ms, process={:?}, requests={}\nstdout:\n{}\nstderr:\n{}",
         output.elapsed,
         server.chat_requests(),
@@ -1822,16 +1821,13 @@ async fn established_sse_without_events_hits_typed_stream_stall() {
     );
     assert_eq!(metadata["status"], "failed");
     assert_ne!(metadata["termination_reason"], "resolved");
-    // Initial attempt plus at least one outer retry, capped at three retries.
-    // A retry that fails during open/send terminates immediately while still
-    // retaining the first stall, so the exact count may stop before four.
+    // The only retry controller is Runtime: initial attempt + exactly two
+    // replay-safe retries with durable 1s/2s backoff.
     let request_count = metadata["api_request_count"]
         .as_u64()
         .expect("typed request count");
-    assert!(
-        (2..=4).contains(&request_count),
-        "unexpected request ledger count: {request_count}"
-    );
+    assert_eq!(request_count, 3);
+    assert_eq!(metadata["runtime_retry_count"], 2);
     assert_eq!(
         metadata["api_request_completed"],
         metadata["api_request_count"]
@@ -1842,8 +1838,8 @@ async fn established_sse_without_events_hits_typed_stream_stall() {
         Some(server.chat_requests() as u64)
     );
     assert!(
-        (1..=4).contains(&server.chat_requests()),
-        "unexpected stream retry count: {}",
+        (1..=3).contains(&server.chat_requests()),
+        "fixture parsed an impossible request count: {}",
         server.chat_requests()
     );
     assert!(
@@ -2160,8 +2156,7 @@ fn prepare_non_agent_exec(
     let home = TempDir::new().expect("home tempdir");
     let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
-    std::fs::write(config_dir.join("config.toml"), "[retry]\nenabled = false\n")
-        .expect("write isolated exec config");
+    std::fs::write(config_dir.join("config.toml"), "").expect("write isolated exec config");
 
     let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
@@ -2217,11 +2212,8 @@ fn prepare_exec_with_options(
     let home = TempDir::new().expect("home tempdir");
     let config_dir = home.path().join(".dse");
     std::fs::create_dir_all(&config_dir).expect("create isolated config dir");
-    std::fs::write(
-        config_dir.join("config.toml"),
-        format!("[retry]\nenabled = false\n{extra_config}"),
-    )
-    .expect("write isolated exec config");
+    std::fs::write(config_dir.join("config.toml"), extra_config)
+        .expect("write isolated exec config");
 
     let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
@@ -2391,7 +2383,7 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                 )
             });
             assert_eq!(event["schema"], "dse.exec-stream");
-            assert_eq!(event["schema_version"], 4);
+            assert_eq!(event["schema_version"], 5);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",
@@ -2490,7 +2482,7 @@ fn assert_exact_success_accounting(
     assert_eq!(metadata["api_request_count"], expected_requests);
     assert_eq!(metadata["api_request_completed"], expected_requests);
     assert_eq!(metadata["api_request_in_flight"], 0);
-    assert_eq!(metadata["transport_retry_count"], 0);
+    assert_eq!(metadata["runtime_retry_count"], 0);
     assert_eq!(metadata["api_request_budget_exhausted"], false);
     assert_eq!(metadata["api_request_rejected_exhausted"], 0);
     assert_eq!(metadata["input_tokens"], expected_input_tokens);

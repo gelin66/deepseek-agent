@@ -232,7 +232,7 @@
   M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
   Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
   Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
-- 当前协议：Run API v14、RuntimeEvent v21、State schema v27、exec-stream v4。产品默认
+- 当前协议：Run API v15、RuntimeEvent v22、State schema v28、exec-stream v5。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 ## 1. 当前结论
@@ -291,7 +291,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v21 与 State schema v27 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v22 与 State schema v28 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -401,7 +401,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v21 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+当前 RuntimeEvent v22 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
 Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -476,7 +476,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v21 / State v27 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v22 / State v28 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -621,7 +621,7 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v14 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v15 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
   writer/reader 为 v21；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
@@ -1078,7 +1078,7 @@ M4-C foreground 切换后还已物理删除：
   子进程内部 I/O 只声明 OS sandbox 基线，不从 Shell 字符串伪推导。Agent 的
   Host-critical 调用仍 Ask，FullAccess 无动态 prompt，但 explicit execpolicy deny 与
   hard invariant 始终优先。
-- RuntimeEvent v21 的 `ToolAuthorizationDecision` 还必须绑定 typed
+- RuntimeEvent v22 的 `ToolAuthorizationDecision` 还必须绑定 typed
   `ToolExecutionGrant`。普通模型调用只有 `Ordinary`；Runtime 只会从 exact
   acceptance-ID handle 和 frozen TaskContract 派生 contract-verifier grant，tools 会用
   canonical `VerifierSpec` digest 重新验证。该 grant 只让 exact verifier executable
@@ -2697,6 +2697,33 @@ contract/admission/analysis、ignored 0600 raw 与
 [M32 summary](../../eval/summaries/m32-hardness-regression-2026-07-27.md) 保留。current
 production 仍是 M31 exact TaskContract verifier grant、固定 actor route、唯一
 AgentRuntime/RunStore 与 canonical tools，没有 M32 production delta。
+
+M33 已把模型请求重试收敛到唯一 `AgentRuntime`。DeepSeek transport 每次调用只发送
+一个物理请求，并只返回 typed timeout/network/HTTP/stream evidence、usage/accounting
+与可选 `Retry-After`；它不再拥有 retry loop、sleep 或 retry 配置。Runtime 仅在
+retryable、replay-safe、无 actionable output、次数与物理预算都允许时，原子提交 failed
+attempt 与下一 attempt 的 `decision_unix_ms/backoff_ms/not_before_unix_ms/max_retries`。
+默认仍是初次请求加最多两次重试，固定 1s/2s；实际 HTTP `Retry-After`（delay-seconds 或
+HTTP-date）只能延长等待。SQLite reopen 会等待剩余 not-before 后只发送一次；已 in-flight
+的 attempt 仍 fail closed 为 `RecoveryRequired`。
+
+这次 durable shape 硬切换将协议更新为 Run API v15、RuntimeEvent v22、State v28 和
+exec-stream v5。v28 只保留可安全重建的 pending Start，旧 materialized Run 不通过
+compatibility reader 猜测新 retry schedule。`[retry]`、`--transport-max-retries`、
+`TransportRetryPolicy`、`with_retries_disabled`、production retry fingerprint 与
+transport retry accounting 已删除；唯一 corrected Harness 也不再传递失效 CLI flag。
+TUI/CLI/app-server 只投影 stored event；中英文状态给出 failure、retry ordinal/total、
+等待秒数或停止原因。app-server sequence reconnect、same-Run resume 与上游模型请求
+retry 是三个不同概念；DeepSeek 没有 event id/partial continuation 合同，因此任何已观察
+content/reasoning/tool/usage/finish 的中断都不会被包装成流式断点续传。
+
+credential-free loopback/fake-clock、root/read-only/Writer、process SIGKILL/reopen、
+surface parity 与 focused 门禁闭合后，使用同一 dirty-source identity 的 release
+`dse`/`dse-tui` 做了一个授权 official DeepSeek Standard Chat canary。第一次 delivery
+preflight 因缺少 sibling `dse-tui` 在网络前停止（官方请求 0）；补齐同源 companion 后
+一个 Pro/high 请求完成，physical started/completed/in-flight 为 `1/1/0`，
+runtime retry 0，usage/cost complete，billing unknown 0。该 canary 只证明当前普通成功
+路径与 accounting，没有用真实服务故障替代确定性的 retry safety matrix。
 
 ## 8. 明确非结论
 

@@ -21,7 +21,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header::ACCEPT, header::CONTENT_TYPE};
 use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-    ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
+    ProductionPromptConfig, ProductionToolConfig, ShellPolicy,
 };
 use dse_app_server::{AppServerOptions, router, serve_stdio};
 use dse_config::PromptPreferences;
@@ -300,7 +300,7 @@ fn prepare_exec_config(home: &Path) -> PathBuf {
     std::fs::create_dir_all(config_dir.join("skills")).expect("create isolated config");
     std::fs::write(
         config_dir.join("config.toml"),
-        "[retry]\nenabled = false\n\n[subagents]\nenabled = false\n",
+        "[subagents]\nenabled = false\n",
     )
     .expect("write isolated config");
     config_dir
@@ -391,12 +391,6 @@ fn production_application(
         strict_tools: false,
         response_header_timeout: Duration::from_secs(45),
         stream_idle_timeout: Duration::from_secs(900),
-        retry: TransportRetryPolicy {
-            max_retries: 0,
-            initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            exponential_base: 2.0,
-        },
     };
     let tools = ProductionToolConfig::new(workspace)
         .with_permission_mode(RunPermissionMode::Agent)
@@ -1068,13 +1062,11 @@ fn writer_outcome_accounting() -> ModelAccounting {
             started: 0,
             completed: 0,
             in_flight: 0,
-            retries: 0,
         },
         child: ActorRequestAccounting {
             started: 2,
             completed: 2,
             in_flight: 0,
-            retries: 1,
         },
         runtime_retries: 1,
         sealed: true,
@@ -1103,15 +1095,13 @@ fn writer_parent_accounting() -> ModelAccounting {
             started: 1,
             completed: 1,
             in_flight: 0,
-            retries: 0,
         },
         child: ActorRequestAccounting {
             started: 3,
             completed: 3,
             in_flight: 0,
-            retries: 1,
         },
-        transport_retries: 1,
+        runtime_retries: 1,
         sealed: true,
         complete: true,
         usage_complete: true,

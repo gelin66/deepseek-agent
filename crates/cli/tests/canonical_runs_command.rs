@@ -204,7 +204,7 @@ async fn app_server_process_loads_the_same_config_home_prompt_override_as_exec()
         .env("HTTPS_PROXY", "http://127.0.0.1:1")
         .env("https_proxy", "http://127.0.0.1:1")
         .env("ALL_PROXY", "http://127.0.0.1:1")
-        .args(["app-server", "--stdio", "--transport-max-retries", "0"])
+        .args(["app-server", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -589,6 +589,7 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         vec!["tts", "paid input"],
         vec!["serve", "--acp"],
         vec!["serve", "--mcp"],
+        vec!["app-server", "--transport-max-retries", "0"],
     ] {
         let output =
             run_dispatcher_with_tui_probe(home.path(), workspace.path(), &fake_tui, &marker, &args);

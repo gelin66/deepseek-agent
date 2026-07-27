@@ -786,7 +786,12 @@ fn model_retry_label(language: ProductLanguage, retry: &ModelRetryDecision) -> S
             &model_retry_stop_reason_label(language, *reason),
         ),
         ModelRetryDecision::Retry { prepared } => tr_in(language, MessageId::RunRetryPrepared)
-            .replace("{attempt_id}", &prepared.attempt_id.0),
+            .replace("{attempt}", &prepared.request.attempt.to_string())
+            .replace("{max_retries}", &prepared.max_retries.to_string())
+            .replace(
+                "{seconds}",
+                &prepared.backoff_ms.div_ceil(1_000).to_string(),
+            ),
     }
 }
 
@@ -1588,6 +1593,7 @@ mod tests {
             category: ModelErrorCategory::Transport,
             message: "connection reset by peer".to_owned(),
             retryable: true,
+            retry_after_ms: None,
             retry_safe: true,
             actionable_output: false,
             response: ModelResponseEvidence::default(),
@@ -1647,11 +1653,19 @@ mod tests {
                     request_number: 2,
                     attempt: 2,
                 }),
+                decision_unix_ms: 1_000,
+                backoff_ms: 2_000,
+                not_before_unix_ms: 3_000,
+                max_retries: 2,
             },
         };
         assert_eq!(
             model_retry_label(ProductLanguage::SimplifiedChinese, &retry),
-            "将重试（尝试 ID：attempt-retry-2）"
+            "第 2/2 次重试 · 2 秒后继续"
+        );
+        assert_eq!(
+            model_retry_label(ProductLanguage::English, &retry),
+            "retry 2/2 · continuing in 2s"
         );
         assert_eq!(
             control_action_label(
@@ -1666,10 +1680,6 @@ mod tests {
                 DurableControlAction::Cancel
             ),
             "取消"
-        );
-        assert_eq!(
-            model_retry_label(ProductLanguage::English, &retry),
-            "Will retry (attempt ID: attempt-retry-2)"
         );
         assert_eq!(
             control_action_label(ProductLanguage::English, DurableControlAction::Cancel),

@@ -42,10 +42,7 @@ fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harne
 
 fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let ws = make_sealed_workspace()?;
-    std::fs::write(
-        ws.home().join(".dse").join("config.toml"),
-        "[retry]\nenabled = false\n",
-    )?;
+    std::fs::write(ws.home().join(".dse").join("config.toml"), "")?;
     spawn_minimal(ws)
 }
 

@@ -831,10 +831,7 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request as HttpRequest, Uri, header};
-    use dse_app::{
-        DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-        TransportRetryPolicy,
-    };
+    use dse_app::{DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig};
     use dse_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, CommandId, InteractionId,
         ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId, RuntimeEventKind,
@@ -990,7 +987,6 @@ mod tests {
                 strict_tools: false,
                 response_header_timeout: Duration::from_secs(2),
                 stream_idle_timeout: Duration::from_secs(2),
-                retry: TransportRetryPolicy::disabled(),
             }
         }
 

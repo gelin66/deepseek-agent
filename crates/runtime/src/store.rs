@@ -84,7 +84,16 @@ pub struct PendingModelAction {
     pub attempt_id: AttemptId,
     pub request: ModelRequest,
     pub primary_failure: Option<ModelAttemptFailure>,
+    pub retry_schedule: Option<PreparedModelRetrySchedule>,
     pub state: DurableActionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedModelRetrySchedule {
+    pub decision_unix_ms: u64,
+    pub backoff_ms: u64,
+    pub not_before_unix_ms: u64,
+    pub max_retries: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -683,6 +692,7 @@ pub fn apply_event(
                 attempt_id: attempt_id.clone(),
                 request: (**request).clone(),
                 primary_failure: None,
+                retry_schedule: None,
                 state: DurableActionState::Prepared,
             });
         }
@@ -763,6 +773,12 @@ pub fn apply_event(
                         attempt_id: prepared.attempt_id.clone(),
                         request: (*prepared.request).clone(),
                         primary_failure: Some(primary_failure),
+                        retry_schedule: Some(PreparedModelRetrySchedule {
+                            decision_unix_ms: prepared.decision_unix_ms,
+                            backoff_ms: prepared.backoff_ms,
+                            not_before_unix_ms: prepared.not_before_unix_ms,
+                            max_retries: prepared.max_retries,
+                        }),
                         state: DurableActionState::Prepared,
                     });
                 }
@@ -3266,6 +3282,23 @@ fn validate_model_failure_evidence(
             "persisted model response evidence exists before response headers",
         ));
     }
+    if failure.retry_after_ms.is_some()
+        && !matches!(
+            failure.category,
+            ModelErrorCategory::RateLimit | ModelErrorCategory::Service
+        )
+    {
+        return Err(corrupt(
+            run_id,
+            "persisted retry-after hint is only valid for a retryable HTTP response",
+        ));
+    }
+    if failure.retry_after_ms.is_some() && !response.response_headers_received {
+        return Err(corrupt(
+            run_id,
+            "persisted retry-after hint requires observed response headers",
+        ));
+    }
     Ok(())
 }
 
@@ -3315,6 +3348,24 @@ fn validate_prepared_retry(
         return Err(corrupt(
             run_id,
             "prepared model retry changed fields other than the attempt number",
+        ));
+    }
+    if prepared.max_retries != max_model_retries {
+        return Err(corrupt(
+            run_id,
+            "prepared model retry changed the frozen retry limit",
+        ));
+    }
+    let expected_backoff = model_retry_backoff_ms(prepared.request.attempt, failure.retry_after_ms);
+    if prepared.backoff_ms != expected_backoff
+        || prepared.not_before_unix_ms
+            != prepared
+                .decision_unix_ms
+                .saturating_add(prepared.backoff_ms)
+    {
+        return Err(corrupt(
+            run_id,
+            "prepared model retry schedule disagrees with the retry policy",
         ));
     }
     Ok(())

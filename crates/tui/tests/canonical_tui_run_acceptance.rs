@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-    ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
+    ProductionPromptConfig, ProductionToolConfig, ShellPolicy,
 };
 use dse_protocol::agent_runtime::{
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, StoredRuntimeEvent, ToolPolicy,
@@ -201,12 +201,6 @@ fn production_application(
         strict_tools: false,
         response_header_timeout: Duration::from_secs(10),
         stream_idle_timeout: Duration::from_secs(10),
-        retry: TransportRetryPolicy {
-            max_retries: 0,
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(1),
-            exponential_base: 1.0,
-        },
     };
     let prompt = ProductionPromptConfig {
         skills_dir: Some(skills_dir.to_path_buf()),

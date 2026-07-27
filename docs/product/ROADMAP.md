@@ -5630,7 +5630,7 @@ contract/admission/analysis、ignored 0600 raw 与 summary 保留。完整事实
 
 ## 31. M33：模型请求超时恢复与唯一重试闭环
 
-- 状态：**in progress；offline-only**
+- 状态：**completed；keep_runtime_owned_model_retry_loop**
 - 基线：M32 clean checkpoint `e5df72e78`
 - 唯一决策 owner：`crates/runtime::AgentRuntime`
 - typed failure/accounting owner：`crates/deepseek`
@@ -5724,5 +5724,35 @@ stream continuation。实现只能消费实际 response header，不能扩大官
 只有安全 timeout/network/429/5xx 能自动恢复、partial output 不重发、crash/reopen
 不重复、surface/accounting 一致且 active code 只剩一个 controller 时，结论才是
 `keep_runtime_owned_model_retry_loop`。任一 exactly-once、evidence、billing 或 replay
-门失败，删除 M33 candidate 并保留当前 fail-closed 语义。M33 不读取 Key、不请求 official
-API、不修改或续跑 M32 frozen evidence、不访问 GitHub、不 push、不 release。
+门失败，删除 M33 candidate 并保留当前 fail-closed 语义。M33 不修改或续跑 M32 frozen
+evidence、不访问 GitHub、不 push、不 release；credentialed canary 只有在用户重新明确
+授权后才可运行。
+
+### 31.5 结果、删除与非结论
+
+M33 结论为 `keep_runtime_owned_model_retry_loop`。Run API v15、RuntimeEvent v22、
+State v28 与 exec-stream v5 已硬切换；DeepSeek transport 每次调用只发送一个物理
+request，Runtime 原子持久化 retry decision、attempt、1s/2s backoff 与 not-before，
+实际 `Retry-After` 的 delay-seconds/HTTP-date 只能延长等待。fake clock、loopback 与
+process SIGKILL/reopen 证明 prepared retry 重开后只发送一次，in-flight retry 重开仍
+fail closed；root、普通只读 child、Writer、CLI、TUI、app-server、en/zh-Hans 与
+accounting 使用同一 stored fact。任何 content/reasoning/tool/usage/finish evidence
+仍禁止盲重发，false success/progress 为 0。
+
+`TransportRetryPolicy`、transport sleep/loop、`with_retries_disabled`、`[retry]`、
+`--transport-max-retries`、production retry fingerprint、transport retry accounting
+及 active Harness 对失效 flag 的依赖已物理删除。历史 evaluator 与 frozen evidence 中
+的旧字段仅作为当时事实保留，不是 current consumer。
+
+离线门禁闭合后，用户明确授权使用测试 Key。一个同源 release
+`dse`/`dse-tui`、official DeepSeek Standard Chat、Pro/high canary 成功返回
+`M33_LIVE_OK`：physical started/completed/in-flight=`1/1/0`、runtime retry=0、
+usage/cost complete、billing unknown=0、2811 input、38 output、2849 total、
+USD 0.000979765、1611ms。第一次 delivery preflight 因缺少 sibling `dse-tui`
+在网络前停止，官方请求数为 0；补齐同源 companion 后才执行上述唯一请求。
+
+真实 canary 只证明普通成功路径和 accounting，没有人为制造远端故障，也不替代
+deterministic retry safety matrix。DSE 没有 DeepSeek partial SSE continuation 协议；
+app-server sequence reconnect、same-Run resume 与 upstream retry 仍是三种不同机制。
+完整结论见
+[M33 Runtime-owned model retry](../../eval/summaries/m33-runtime-owned-model-retry-2026-07-27.md)。

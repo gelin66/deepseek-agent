@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 21;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 21;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 22;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 22;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -2138,7 +2138,6 @@ pub struct ActorRequestAccounting {
     pub started: u64,
     pub completed: u64,
     pub in_flight: u64,
-    pub retries: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2157,7 +2156,6 @@ pub struct ModelAccounting {
     pub hard_request_limit: Option<u32>,
     pub root: ActorRequestAccounting,
     pub child: ActorRequestAccounting,
-    pub transport_retries: u64,
     pub runtime_retries: u64,
     pub sealed_denied: u64,
     /// Number of physical API admission attempts rejected because the shared
@@ -2218,9 +2216,6 @@ impl ModelAccounting {
         self.hard_request_limit = self.hard_request_limit.or(other.hard_request_limit);
         add_actor_accounting(&mut self.root, other.root);
         add_actor_accounting(&mut self.child, other.child);
-        self.transport_retries = self
-            .transport_retries
-            .saturating_add(other.transport_retries);
         self.runtime_retries = self.runtime_retries.saturating_add(other.runtime_retries);
         self.sealed_denied = self.sealed_denied.saturating_add(other.sealed_denied);
         self.exhausted_denied = self.exhausted_denied.saturating_add(other.exhausted_denied);
@@ -2275,7 +2270,6 @@ fn add_actor_accounting(target: &mut ActorRequestAccounting, other: ActorRequest
     target.started = target.started.saturating_add(other.started);
     target.completed = target.completed.saturating_add(other.completed);
     target.in_flight = target.in_flight.saturating_add(other.in_flight);
-    target.retries = target.retries.saturating_add(other.retries);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2885,6 +2879,7 @@ pub struct ModelAttemptFailure {
     pub category: ModelErrorCategory,
     pub message: String,
     pub retryable: bool,
+    pub retry_after_ms: Option<u64>,
     pub retry_safe: bool,
     pub actionable_output: bool,
     pub response: ModelResponseEvidence,
@@ -2905,6 +2900,10 @@ pub enum ModelRetryStopReason {
 pub struct PreparedModelRetry {
     pub attempt_id: AttemptId,
     pub request: Box<ModelRequest>,
+    pub decision_unix_ms: u64,
+    pub backoff_ms: u64,
+    pub not_before_unix_ms: u64,
+    pub max_retries: u32,
 }
 
 /// The durable host decision made after one model attempt fails.
@@ -3527,8 +3526,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 21);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 21);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 22);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 22);
     }
 
     #[test]
@@ -4359,6 +4358,7 @@ mod tests {
                 category: ModelErrorCategory::Transport,
                 message: "connection reset".into(),
                 retryable: true,
+                retry_after_ms: None,
                 retry_safe: true,
                 actionable_output: false,
                 response: ModelResponseEvidence::default(),
@@ -4381,6 +4381,10 @@ mod tests {
                         request_number: 1,
                         attempt: 1,
                     }),
+                    decision_unix_ms: 1_000,
+                    backoff_ms: 1_000,
+                    not_before_unix_ms: 2_000,
+                    max_retries: 2,
                 },
             },
         };

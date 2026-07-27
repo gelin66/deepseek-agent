@@ -115,17 +115,22 @@ fn model_request(request: &RunRequest, attempt: u32) -> ModelRequest {
     }
 }
 
-fn accounting(actor: AgentActorKind, started: u64, retries: u64, sealed: bool) -> ModelAccounting {
+fn accounting(
+    actor: AgentActorKind,
+    started: u64,
+    runtime_retries: u64,
+    sealed: bool,
+) -> ModelAccounting {
     let actor_accounting = ActorRequestAccounting {
         started,
         completed: started,
         in_flight: 0,
-        retries,
     };
     let mut accounting = ModelAccounting {
         complete: true,
         usage_complete: true,
         sealed,
+        runtime_retries,
         ..ModelAccounting::default()
     };
     match actor {
@@ -226,6 +231,7 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     category: ModelErrorCategory::Timeout,
                     message: "首次模型请求超时。".to_owned(),
                     retryable: true,
+                    retry_after_ms: None,
                     retry_safe: true,
                     actionable_output: false,
                     response: ModelResponseEvidence::default(),
@@ -235,6 +241,10 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     prepared: PreparedModelRetry {
                         attempt_id: root_attempt_1.clone(),
                         request: Box::new(retry_model_request),
+                        decision_unix_ms: 1_000,
+                        backoff_ms: 1_000,
+                        not_before_unix_ms: 2_000,
+                        max_retries: 1,
                     },
                 },
             },
@@ -260,6 +270,7 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     category: ModelErrorCategory::Timeout,
                     message: "模型重试仍然超时。".to_owned(),
                     retryable: true,
+                    retry_after_ms: None,
                     retry_safe: true,
                     actionable_output: false,
                     response: ModelResponseEvidence::default(),

@@ -59,10 +59,11 @@ fn retired_m10a_project_context_pack_setting_is_rejected() {
 }
 
 #[test]
-fn retired_permission_inputs_and_execpolicy_feature_fork_are_rejected() {
+fn retired_permission_retry_and_execpolicy_inputs_are_rejected() {
     for raw in [
         "permission_mode = \"full_access\"\n",
         "[permissions]\nmode = \"custom\"\n",
+        "[retry]\nmax_retries = 9\n",
         "[features]\nexec_policy = false\n",
     ] {
         let parsed: ConfigFile = toml::from_str(raw).expect("parse retired permission input");

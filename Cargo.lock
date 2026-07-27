@@ -1311,6 +1311,7 @@ dependencies = [
  "dse-context",
  "dse-runtime",
  "futures-util",
+ "httpdate",
  "reqwest 0.13.4",
  "rustls",
  "serde_json",

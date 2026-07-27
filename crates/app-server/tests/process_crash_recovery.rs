@@ -23,10 +23,11 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-    TransportRetryPolicy,
 };
 use dse_app_server::run_stdio;
 use dse_protocol::agent_runtime::{
@@ -178,6 +179,134 @@ impl Drop for DeepSeekFixture {
         }
         if let Some(server) = self.server.take() {
             server.join().expect("join fixture server");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RetryFixtureState {
+    requests: Arc<AtomicUsize>,
+    observed: Arc<(Mutex<usize>, Condvar)>,
+}
+
+struct RetryDeepSeekFixture {
+    root: String,
+    requests: Arc<AtomicUsize>,
+    observed: Arc<(Mutex<usize>, Condvar)>,
+    shutdown: Option<oneshot::Sender<()>>,
+    server: Option<thread::JoinHandle<()>>,
+}
+
+impl RetryDeepSeekFixture {
+    fn start() -> Self {
+        async fn complete(State(state): State<RetryFixtureState>) -> Response {
+            let count = state.requests.fetch_add(1, Ordering::AcqRel) + 1;
+            let (lock, changed) = &*state.observed;
+            *lock.lock().expect("retry fixture observation lock") = count;
+            changed.notify_all();
+            if count == 1 {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "5")],
+                    Json(json!({"error": {"message": "retry later"}})),
+                )
+                    .into_response();
+            }
+            Json(json!({
+                "id": format!("retry-response-{count}"),
+                "model": "deepseek-v4-flash",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "外部进程重试恢复完成"}
+                }],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 3,
+                    "total_tokens": 14
+                }
+            }))
+            .into_response()
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind retry fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("make retry fixture nonblocking");
+        let address = listener.local_addr().expect("retry fixture address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new((Mutex::new(0), Condvar::new()));
+        let state = RetryFixtureState {
+            requests: requests.clone(),
+            observed: observed.clone(),
+        };
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let (ready, ready_rx) = mpsc::sync_channel(0);
+        let server = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("build retry fixture runtime");
+            runtime.block_on(async move {
+                let listener =
+                    tokio::net::TcpListener::from_std(listener).expect("adopt retry fixture");
+                let router = Router::new()
+                    .route("/v1/chat/completions", post(complete))
+                    .with_state(state);
+                ready.send(()).expect("announce retry fixture readiness");
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+                    .expect("serve retry fixture");
+            });
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("retry fixture becomes ready");
+        Self {
+            root: format!("http://{address}/v1"),
+            requests,
+            observed,
+            shutdown: Some(shutdown),
+            server: Some(server),
+        }
+    }
+
+    fn wait_requests(&self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let (lock, changed) = &*self.observed;
+        let mut count = lock.lock().expect("retry fixture observation lock");
+        while *count < expected {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "retry fixture missed request {expected}"
+            );
+            let (next, timed) = changed
+                .wait_timeout(count, remaining)
+                .expect("wait for retry fixture request");
+            count = next;
+            assert!(
+                !timed.timed_out() || *count >= expected,
+                "retry fixture missed request {expected}"
+            );
+        }
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for RetryDeepSeekFixture {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(server) = self.server.take() {
+            server.join().expect("join retry fixture");
         }
     }
 }
@@ -800,7 +929,6 @@ fn app_server_process_child() {
         strict_tools: false,
         response_header_timeout: Duration::from_secs(5),
         stream_idle_timeout: Duration::from_secs(5),
-        retry: TransportRetryPolicy::disabled(),
     };
     let mut config = ProductionApplicationConfig::official()
         .with_state_db_path(db)
@@ -882,6 +1010,72 @@ fn live_owner_resume_is_rejected_across_app_server_processes() {
     contender.shutdown();
     owner.kill_group();
     fixture.release_one();
+}
+
+#[test]
+fn retry_decision_sigkill_reopen_waits_remaining_deadline_and_sends_once() {
+    let (_temp, workspace, home, db) = fixture_paths("m33-app-retry-sigkill-");
+    let fixture = RetryDeepSeekFixture::start();
+    let mut command = start_command(&workspace);
+    command.limits.max_model_retries = 2;
+    command.limits.wall_time_ms = Some(20_000);
+
+    let mut crashed = StdioProcess::spawn(&db, &fixture.root, true, &home);
+    let started = run_from_response(crashed.request(&envelope(
+        "start-before-retry-sigkill",
+        RunCommand::Start(command),
+    )));
+    fixture.wait_requests(1);
+    let retry_prepared = wait_db_state(&db, Duration::from_secs(5), |state| {
+        state.run_id == started.run_id.0
+            && !state.pending_model_in_flight
+            && state.event_kinds.last().map(String::as_str) == Some("model_request_failed")
+            && state.model_request_count == 1
+    });
+    assert_eq!(fixture.request_count(), 1);
+    let killed_pid = crashed.pid();
+    let signal = crashed.kill_group();
+    assert_eq!(signal, libc::SIGKILL);
+    assert!(!process_alive(killed_pid));
+    assert_eq!(
+        fixture.request_count(),
+        1,
+        "prepared retry must not have been sent before the deadline"
+    );
+
+    let mut resumed = StdioProcess::spawn(&db, &fixture.root, true, &home);
+    let resumed_view = run_from_response(resumed.request(&envelope(
+        "resume-prepared-retry",
+        RunCommand::Resume {
+            run_id: started.run_id.clone(),
+            expected_workspace: Some(started.workspace.clone()),
+        },
+    )));
+    assert_eq!(resumed_view.run_id, started.run_id);
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        fixture.request_count(),
+        1,
+        "reopen must wait the remaining canonical not-before interval"
+    );
+
+    fixture.wait_requests(2);
+    let completed = wait_db_state(&db, Duration::from_secs(8), |state| state.terminal);
+    assert_eq!(completed.run_id, started.run_id.0);
+    assert_eq!(fixture.request_count(), 2);
+    assert_eq!(
+        completed
+            .event_kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "model_request_failed")
+            .count(),
+        1
+    );
+    assert_eq!(completed.model_request_count, 2);
+    assert!(completed.last_sequence > retry_prepared.last_sequence);
+    assert_eq!(completed.terminal_count, 1);
+    assert!(completed.terminal_last);
+    resumed.shutdown();
 }
 
 #[test]

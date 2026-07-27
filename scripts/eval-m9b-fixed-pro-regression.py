@@ -2172,8 +2172,6 @@ def launch_server(
                 str(binary),
                 "app-server",
                 "--stdio",
-                "--transport-max-retries",
-                str(RESOURCES["transport_max_retries_per_request"]),
             ],
             cwd=workspace,
             env=environment,
@@ -2828,7 +2826,6 @@ def accounting_projection(task_id: str, run: dict[str, Any]) -> dict[str, Any]:
         started > 0
         and started == completed
         and in_flight == 0
-        and int(accounting.get("transport_retries", -1)) == 0
         and int(accounting.get("runtime_retries", -1)) == 0
         and int(accounting.get("billing_unknown_attempts", -1)) == 0
         and int(accounting.get("usage_missing_responses", -1)) == 0

@@ -27,13 +27,6 @@ allow_shell = true
 # mcp_config_path = "~/.dse/mcp.json"
 # instructions = ["~/.dse/AGENTS.md"]
 
-[retry]
-enabled = true
-max_retries = 3
-initial_delay = 1.0
-max_delay = 60.0
-exponential_base = 2.0
-
 [features]
 subagents = true
 

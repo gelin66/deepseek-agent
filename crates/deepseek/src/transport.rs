@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dse_runtime::{
     ModelFinishReason, ModelOutput, ModelResponseEvidence, ModelStreamEvent, ModelToolCall,
@@ -134,41 +134,12 @@ fn normalize_fixture_root(raw: &str) -> Result<String, DeepSeekTransportError> {
     Ok(root)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TransportRetryPolicy {
-    pub max_retries: u32,
-    pub initial_delay: Duration,
-    pub max_delay: Duration,
-    pub exponential_base: f64,
-}
-
-impl TransportRetryPolicy {
-    #[must_use]
-    pub fn disabled() -> Self {
-        Self {
-            max_retries: 0,
-            initial_delay: Duration::ZERO,
-            max_delay: Duration::ZERO,
-            exponential_base: 1.0,
-        }
-    }
-
-    fn delay(self, retry_index: u32) -> Duration {
-        let seconds = self.initial_delay.as_secs_f64()
-            * self
-                .exponential_base
-                .powi(retry_index.min(i32::MAX as u32) as i32);
-        Duration::from_secs_f64(seconds.min(self.max_delay.as_secs_f64()))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DeepSeekConnectionConfig {
     pub endpoint: DeepSeekEndpoint,
     pub strict_tools: bool,
     pub response_header_timeout: Duration,
     pub stream_idle_timeout: Duration,
-    pub retry: TransportRetryPolicy,
 }
 
 impl DeepSeekConnectionConfig {
@@ -181,11 +152,6 @@ impl DeepSeekConnectionConfig {
         if self.stream_idle_timeout.is_zero() {
             return Err(DeepSeekTransportError::InvalidConfig(
                 "DeepSeek stream idle timeout must be greater than zero".to_string(),
-            ));
-        }
-        if self.retry.exponential_base < 1.0 || !self.retry.exponential_base.is_finite() {
-            return Err(DeepSeekTransportError::InvalidConfig(
-                "DeepSeek retry exponential base must be finite and at least 1".to_string(),
             ));
         }
         Ok(())
@@ -209,7 +175,6 @@ impl DeepSeekConnectionConfig {
                 strict_tools: self.strict_tools,
                 response_header_timeout: self.response_header_timeout,
                 stream_idle_timeout: self.stream_idle_timeout,
-                retry: self.retry,
                 request_budget,
             },
         )
@@ -279,7 +244,6 @@ pub struct DeepSeekTransportConfig {
     pub strict_tools: bool,
     pub response_header_timeout: Duration,
     pub stream_idle_timeout: Duration,
-    pub retry: TransportRetryPolicy,
     pub request_budget: SharedApiRequestBudget,
 }
 
@@ -295,7 +259,6 @@ impl DeepSeekTransportConfig {
             strict_tools: self.strict_tools,
             response_header_timeout: self.response_header_timeout,
             stream_idle_timeout: self.stream_idle_timeout,
-            retry: self.retry,
         }
     }
 }
@@ -332,12 +295,6 @@ impl DeepSeekTransport {
     #[must_use]
     pub fn with_request_budget(mut self, request_budget: SharedApiRequestBudget) -> Self {
         self.config.request_budget = request_budget;
-        self
-    }
-
-    #[must_use]
-    pub fn with_retries_disabled(mut self) -> Self {
-        self.config.retry = TransportRetryPolicy::disabled();
         self
     }
 
@@ -573,79 +530,48 @@ impl DeepSeekTransport {
     }
 
     async fn send(&self, plan: &RequestPlan) -> Result<SentResponse, DeepSeekTransportError> {
-        let mut retry_index = 0;
-        loop {
-            let mut lease = self
-                .config
-                .request_budget
-                .try_reserve()
-                .map_err(DeepSeekTransportError::RequestBudget)?;
-            if retry_index > 0 {
-                lease.mark_retry_attempt();
-            }
-            let request = self
-                .client
-                .post(&plan.url)
-                .header(reqwest::header::USER_AGENT, DSE_USER_AGENT)
-                .bearer_auth(self.config.credential.expose())
-                .json(&plan.body);
-            let response =
-                match tokio::time::timeout(self.config.response_header_timeout, request.send())
-                    .await
-                {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(error)) => {
-                        let error = DeepSeekTransportError::Network(format_error_chain(&error));
-                        if self.should_retry(&error, retry_index) {
-                            tokio::time::sleep(self.config.retry.delay(retry_index)).await;
-                            retry_index += 1;
-                            continue;
-                        }
-                        return Err(error);
-                    }
-                    Err(_) => {
-                        let error = DeepSeekTransportError::ResponseHeaderTimeout {
-                            timeout: self.config.response_header_timeout,
-                        };
-                        if self.should_retry(&error, retry_index) {
-                            tokio::time::sleep(self.config.retry.delay(retry_index)).await;
-                            retry_index += 1;
-                            continue;
-                        }
-                        return Err(error);
-                    }
-                };
-            lease.mark_response_received();
-            let status = response.status();
-            if status.is_success() {
-                lease.mark_usage_expected();
-                return Ok(SentResponse {
-                    response,
-                    lease: Some(lease),
-                });
-            }
-            if status.is_server_error() {
-                lease.mark_billing_unknown();
-            }
-            let retry_after = retry_after(response.headers());
-            let body = bounded_body(response).await;
-            let error = DeepSeekTransportError::Http {
-                status: status.as_u16(),
-                message: sanitize_error_body(&body),
-                retry_after,
+        let mut lease = self
+            .config
+            .request_budget
+            .try_reserve()
+            .map_err(DeepSeekTransportError::RequestBudget)?;
+        let request = self
+            .client
+            .post(&plan.url)
+            .header(reqwest::header::USER_AGENT, DSE_USER_AGENT)
+            .bearer_auth(self.config.credential.expose())
+            .json(&plan.body);
+        let response =
+            match tokio::time::timeout(self.config.response_header_timeout, request.send()).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    return Err(DeepSeekTransportError::Network(format_error_chain(&error)));
+                }
+                Err(_) => {
+                    return Err(DeepSeekTransportError::ResponseHeaderTimeout {
+                        timeout: self.config.response_header_timeout,
+                    });
+                }
             };
-            if self.should_retry(&error, retry_index) {
-                let delay = retry_after.unwrap_or_else(|| self.config.retry.delay(retry_index));
-                tokio::time::sleep(delay.min(self.config.retry.max_delay)).await;
-                retry_index += 1;
-                continue;
-            }
-            return Err(error);
+        lease.mark_response_received();
+        let status = response.status();
+        if status.is_success() {
+            lease.mark_usage_expected();
+            return Ok(SentResponse {
+                response,
+                lease: Some(lease),
+            });
         }
-    }
-
-    fn should_retry(&self, error: &DeepSeekTransportError, retry_index: u32) -> bool {
-        retry_index < self.config.retry.max_retries && error.retryable()
+        if status.is_server_error() {
+            lease.mark_billing_unknown();
+        }
+        let retry_after = retry_after(response.headers());
+        let body = bounded_body(response).await;
+        Err(DeepSeekTransportError::Http {
+            status: status.as_u16(),
+            message: sanitize_error_body(&body),
+            retry_after,
+        })
     }
 }
 
@@ -1179,11 +1105,23 @@ fn sse_data(event: &str) -> Option<String> {
 }
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    headers
-        .get(RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+    retry_after_at(headers, SystemTime::now())
+}
+
+fn retry_after_at(
+    headers: &reqwest::header::HeaderMap,
+    received_at: SystemTime,
+) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(delay_seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(delay_seconds));
+    }
+    let retry_at = httpdate::parse_http_date(value).ok()?;
+    Some(
+        retry_at
+            .duration_since(received_at)
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 async fn bounded_body(response: reqwest::Response) -> String {
@@ -1308,12 +1246,6 @@ mod tests {
             strict_tools: false,
             response_header_timeout,
             stream_idle_timeout: Duration::from_secs(1),
-            retry: TransportRetryPolicy {
-                max_retries: 3,
-                initial_delay: Duration::from_millis(1),
-                max_delay: Duration::from_millis(2),
-                exponential_base: 2.0,
-            },
         }
     }
 
@@ -2148,7 +2080,6 @@ mod tests {
             strict_tools: false,
             response_header_timeout: Duration::from_secs(1),
             stream_idle_timeout,
-            retry: TransportRetryPolicy::disabled(),
         }
         .bind(
             reqwest::Client::new(),
@@ -2157,6 +2088,111 @@ mod tests {
         )
         .expect("fixture transport");
         (transport, budget, root, server)
+    }
+
+    #[tokio::test]
+    async fn inference_transport_returns_retry_after_without_hidden_retry() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind retry-after fixture");
+        let address = listener.local_addr().expect("retry-after fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept inference request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).expect("read inference request");
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"error":{"message":"rate limited"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("write retry-after response");
+            stream.flush().expect("flush retry-after response");
+            drop(stream);
+
+            listener
+                .set_nonblocking(true)
+                .expect("make retry-after listener nonblocking");
+            let deadline = Instant::now() + Duration::from_millis(150);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) => panic!("transport made a hidden inference retry"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("retry-after audit failed: {error}"),
+                }
+            }
+        });
+        let budget = SharedApiRequestBudget::new(NonZeroU32::new(4).unwrap());
+        let root = format!("http://{address}/v1");
+        let transport = DeepSeekConnectionConfig {
+            endpoint: DeepSeekEndpoint::loopback_fixture(&root).expect("loopback endpoint"),
+            strict_tools: false,
+            response_header_timeout: Duration::from_secs(1),
+            stream_idle_timeout: Duration::from_secs(1),
+        }
+        .bind(
+            reqwest::Client::new(),
+            DeepSeekCredential::new("fixture-key").expect("fixture credential"),
+            budget.clone(),
+        )
+        .expect("fixture transport");
+
+        let error = match transport.stream(stream_plan(&root)).await {
+            Ok(_) => panic!("429 must return to Runtime"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            DeepSeekTransportError::Http {
+                status: 429,
+                retry_after: Some(delay),
+                ..
+            } if delay == Duration::from_secs(3)
+        ));
+        server.join().expect("retry-after fixture");
+        let requests = budget.snapshot();
+        assert_eq!(requests.started, 1);
+        assert_eq!(requests.completed, 1);
+        assert_eq!(requests.in_flight, 0);
+    }
+
+    #[test]
+    fn retry_after_accepts_http_delay_seconds_and_http_date() {
+        let received_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(RETRY_AFTER, "7".parse().expect("delay-seconds header"));
+        assert_eq!(
+            retry_after_at(&headers, received_at),
+            Some(Duration::from_secs(7))
+        );
+
+        headers.insert(
+            RETRY_AFTER,
+            httpdate::fmt_http_date(received_at + Duration::from_secs(11))
+                .parse()
+                .expect("HTTP-date header"),
+        );
+        assert_eq!(
+            retry_after_at(&headers, received_at),
+            Some(Duration::from_secs(11))
+        );
+
+        headers.insert(
+            RETRY_AFTER,
+            httpdate::fmt_http_date(received_at - Duration::from_secs(1))
+                .parse()
+                .expect("past HTTP-date header"),
+        );
+        assert_eq!(retry_after_at(&headers, received_at), Some(Duration::ZERO));
     }
 
     fn fixture_owned_stream_transport(
@@ -2197,7 +2233,6 @@ mod tests {
             strict_tools: false,
             response_header_timeout: Duration::from_secs(1),
             stream_idle_timeout: Duration::from_secs(1),
-            retry: TransportRetryPolicy::disabled(),
         }
         .bind(
             reqwest::Client::new(),

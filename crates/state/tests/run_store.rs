@@ -868,6 +868,7 @@ async fn typed_incomplete_response_failure_and_accounting_survive_store_reopen_e
         category: ModelErrorCategory::Protocol,
         message: "DeepSeek SSE stream ended before [DONE]".to_owned(),
         retryable: true,
+        retry_after_ms: None,
         retry_safe: false,
         actionable_output: true,
         response,
@@ -887,7 +888,6 @@ async fn typed_incomplete_response_failure_and_accounting_survive_store_reopen_e
             started: 1,
             completed: 1,
             in_flight: 0,
-            retries: 0,
         },
         complete: false,
         usage_complete: false,
@@ -1016,6 +1016,7 @@ async fn m21_partial_reasoning_transport_failure_survives_store_reopen_exactly()
         category: ModelErrorCategory::Transport,
         message: "DeepSeek 网络传输失败".to_owned(),
         retryable: true,
+        retry_after_ms: None,
         retry_safe: false,
         actionable_output: true,
         response,
@@ -1026,7 +1027,6 @@ async fn m21_partial_reasoning_transport_failure_survives_store_reopen_exactly()
             started: 1,
             completed: 1,
             in_flight: 0,
-            retries: 0,
         },
         complete: false,
         usage_complete: false,
@@ -1157,7 +1157,6 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
             started: 1,
             completed: 1,
             in_flight: 0,
-            retries: 0,
         },
         complete: true,
         usage_complete: true,
@@ -2639,7 +2638,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2731,7 +2730,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
 }
 
 #[tokio::test]
@@ -2803,7 +2802,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
 }
 
 #[tokio::test]
@@ -2847,7 +2846,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
 }
 
 #[tokio::test]
@@ -2916,7 +2915,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3014,7 +3013,7 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_pending_creati
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -3097,7 +3096,7 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
@@ -3284,7 +3283,7 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3404,7 +3403,7 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3513,7 +3512,7 @@ async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pen
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3659,7 +3658,7 @@ async fn v26_permission_cutover_retires_old_runs_and_pending_starts_without_gues
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3741,12 +3740,94 @@ async fn v27_verifier_grant_cutover_retires_materialized_runs_and_keeps_pending_
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
             .get::<_, i64>(0))
             .expect("count retired pre-grant runs"),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retained pending Starts"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn v28_runtime_retry_cutover_retires_materialized_runs_and_keeps_pending_start() {
+    let path = temp_state_path("v28_runtime_retry_cutover");
+    let workspace = "/tmp/v28-runtime-retry-cutover";
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+    let created = store
+        .create(request("v27-materialized-run", workspace))
+        .await
+        .expect("create materialized pre-retry-schedule run");
+    let run_id = created.lease.run_id.clone();
+    store
+        .release(&created.lease)
+        .await
+        .expect("release materialized pre-retry-schedule run");
+
+    let pending_id = CommandId::from("v27-pending-start");
+    let pending_intent = creation_intent(workspace);
+    let pending = store
+        .reserve_creation(
+            &pending_id,
+            "sha256:v27-pending-start",
+            RunId::from("v27-pending-run"),
+            pending_intent.clone(),
+        )
+        .await
+        .expect("reserve pre-retry-schedule pending Start");
+    assert!(pending.newly_reserved);
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare exact state v27 fixture");
+    conn.execute(
+        "UPDATE agent_run_events SET schema_version = 21 WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("mark materialized events as RuntimeEvent v21");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"missing_retry_schedule\"}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible pre-retry-schedule snapshot");
+    conn.pragma_update(None, "user_version", 27)
+        .expect("mark exact state v27 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply v28 runtime retry cutover");
+    assert!(
+        reopened
+            .load(&run_id)
+            .await
+            .expect("query retired pre-retry-schedule run")
+            .is_none()
+    );
+    let recovered = reopened
+        .creation(&pending_id)
+        .await
+        .expect("query retained pending Start")
+        .expect("pending Start survives the runtime retry cutover");
+    assert_eq!(recovered.intent, Some(pending_intent));
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v28 runtime retry cutover");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("read current version"),
+        28
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retired pre-retry-schedule runs"),
         0
     );
     assert_eq!(
@@ -3829,7 +3910,7 @@ async fn v23_thread_deletion_and_v24_route_cutover_are_atomic_and_direct() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        27
+        28
     );
     let threads_exists: bool = conn
         .query_row(
@@ -3924,7 +4005,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     for column in [
         "creation_kind",
         "workspace",
@@ -3963,7 +4044,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
 }
 
 #[tokio::test]
@@ -3987,7 +4068,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
 }
 
 #[tokio::test]
@@ -4097,7 +4178,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -4148,7 +4229,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -4205,7 +4286,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 27);
+    assert_eq!(user_version, 28);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -4321,7 +4402,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -5094,13 +5175,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 28)
+    conn.pragma_update(None, "user_version", 29)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 27")
+            .contains("newer than supported version 28")
     );
 }

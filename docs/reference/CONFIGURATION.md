@@ -193,19 +193,15 @@ completion evidence.
 
 ## Retry policy
 
-```toml
-[retry]
-enabled = true
-max_retries = 3
-initial_delay = 1.0
-max_delay = 60.0
-exponential_base = 2.0
-```
-
-Transport retries remain subject to typed retry disposition and side-effect
-safety. An incomplete or failed physical request is not replayed unless the
-canonical sender can prove the retry safe. Formal evaluations stop on unknown
-billing.
+Model-request retries are not configurable. `AgentRuntime` owns one bounded
+policy: an initial request plus at most two replay-safe retries, with durable
+1-second then 2-second backoff and a typed `Retry-After` extension when a
+rate-limited response supplies it. DeepSeek transport performs exactly one
+physical attempt per Runtime request. Partial output, usage, an in-flight
+crash, unknown billing, or other replay-unsafe evidence stops automatic
+resending. The retired `[retry]` table and
+`dse app-server --transport-max-retries` fail closed instead of being accepted
+as inert settings.
 
 ## TUI settings
 

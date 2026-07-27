@@ -3963,11 +3963,10 @@ adapter 已删除，Harness 恢复到 M32 前 blob `90ffb72b`；production 不�
 partial metric、删除和非结论见
 [M32 current Hardness regression](../../eval/summaries/m32-hardness-regression-2026-07-27.md)。
 
-#### M33 Runtime-owned model retry contract
+#### M33 Runtime-owned model retry result
 
-M33 是 credential-free reliability/correctness treatment，不是 M32 formal campaign
-续跑，也不以 `maximum_reruns=0` 覆盖正常产品默认。control 是 M32 clean checkpoint
-`e5df72e78`：
+M33 是独立 reliability/correctness treatment，不是 M32 formal campaign 续跑，也不以
+`maximum_reruns=0` 覆盖正常产品默认。control 是 M32 clean checkpoint `e5df72e78`：
 
 - `RunLimits.max_model_retries=2` 已允许初次请求后最多两次 Runtime retry；
 - DeepSeek transport 仍有 retry loop/config 类型，但 production
@@ -4011,8 +4010,37 @@ reject_and_delete_retry_candidate
 
 keep 必须物理删除 transport loop、失效 config/CLI/fingerprint 和旧双控制器测试；
 reject 必须删除 backoff treatment，保留当前 actionable-output/in-flight fail-closed
-语义。两种结果都不得读取 Key、调用 official API、修改 M32 frozen
-manifest/result/raw、访问 GitHub、push 或 release。
+语义。两种结果都不得修改 M32 frozen manifest/result/raw、访问 GitHub、push 或
+release；credentialed canary 必须在离线门禁和新的明确授权之后。
+
+结果为 `keep_runtime_owned_model_retry_loop`。冻结矩阵全部闭合：
+
+```text
+safe pre-header recovery                  pass
+partial/actionable output resend          0
+prepared-retry reopen duplicate send      0
+in-flight-retry reopen blind send         0
+false success / false progress            0 / 0
+transport hidden retries                  0
+root / read-only / Writer conformance     pass
+CLI / TUI / app-server parity             pass
+en / zh-Hans retry projection             pass
+physical/accounting/reopen exactness       pass
+```
+
+覆盖 timeout→1s→success、network→1s/2s→success、429+Retry-After、可重试
+500/503、不可重试 401/403/普通 4xx、partial content/reasoning/tool/usage/finish、
+prepared retry SIGKILL/reopen、in-flight SIGKILL、limit/budget/deadline 与三个 actor。
+workspace strict Clippy/test、focused、fmt、process crash/reopen、surface parity、
+双语 PTY、public checker 与 diff check 全绿。
+
+离线 admission 后用户明确授权 official canary。一个 fixed Pro/high Standard Chat
+request 成功：`M33_LIVE_OK`，physical=`1/1/0`、runtime retry=0、usage/cost
+complete、billing unknown=0、input/output=`2811/38`、cost
+USD `0.000979765`、duration `1611ms`。它只证明成功路径与 accounting；真实 retry
+故障没有被人为诱发，replay safety 仍以 deterministic loopback/process evidence 为
+权威。完整身份、删除与研究依据见
+[M33 summary](../../eval/summaries/m33-runtime-owned-model-retry-2026-07-27.md)。
 
 ## 10. 结果与决策记录
 

@@ -31,9 +31,9 @@ pub use store::{
     AgentSealCommittedFact, AgentSealLifecycle, AgentTaskLifecycle, AgentWorkspaceCreatedFact,
     CommandReceipt, CommittedContextCompaction, CreatedRun, CreationIntent, CreationReservation,
     DurableActionState, DurableCommand, InMemoryRunStore, PendingControl, PendingHostVerification,
-    PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction, ReservedCreation,
-    RootRunRecord, RunLease, RunReplay, RunSnapshot, StoppedModelFailure, apply_event,
-    reduce_events, validate_continuation_request,
+    PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction,
+    PreparedModelRetrySchedule, ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot,
+    StoppedModelFailure, apply_event, reduce_events, validate_continuation_request,
 };
 
 /// SHA-256 of the exact ordered model-visible tool definitions.
@@ -142,6 +142,7 @@ pub struct ModelPortError {
     pub category: ModelErrorCategory,
     pub message: String,
     pub retryable: bool,
+    pub retry_after_ms: Option<u64>,
     pub response: ModelResponseEvidence,
 }
 
@@ -158,8 +159,21 @@ impl ModelPortError {
             category,
             message: message.into(),
             retryable,
+            retry_after_ms: None,
             response: ModelResponseEvidence::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_retry_after_ms(mut self, retry_after_ms: u64) -> Self {
+        self.retry_after_ms = Some(retry_after_ms);
+        self
+    }
+
+    #[must_use]
+    pub fn with_optional_retry_after_ms(mut self, retry_after_ms: Option<u64>) -> Self {
+        self.retry_after_ms = retry_after_ms;
+        self
     }
 
     #[must_use]
@@ -262,6 +276,34 @@ pub trait ModelPort: Send + Sync {
     /// Child runs pass `false`; only a settled root run passes `true` and
     /// seals further admission before its unique terminal event is built.
     async fn accounting_snapshot(&self, seal: bool) -> Result<ModelAccounting, ModelPortError>;
+}
+
+/// Runtime-owned time boundary for durable model retry scheduling.
+///
+/// The transport never sleeps or retries. Tests inject a manual clock so
+/// backoff and reopen semantics are deterministic without wall-clock sleeps.
+#[async_trait]
+pub trait RuntimeClock: Send + Sync {
+    fn now_unix_ms(&self) -> u64;
+
+    async fn sleep_until_unix_ms(&self, deadline_unix_ms: u64);
+}
+
+#[derive(Debug, Default)]
+pub struct SystemRuntimeClock;
+
+#[async_trait]
+impl RuntimeClock for SystemRuntimeClock {
+    fn now_unix_ms(&self) -> u64 {
+        now_unix_ms()
+    }
+
+    async fn sleep_until_unix_ms(&self, deadline_unix_ms: u64) {
+        let remaining_ms = deadline_unix_ms.saturating_sub(now_unix_ms());
+        if remaining_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(remaining_ms)).await;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -430,6 +472,18 @@ pub(crate) fn now_unix_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+pub(crate) fn model_retry_backoff_ms(attempt: u32, retry_after_ms: Option<u64>) -> u64 {
+    const INITIAL_BACKOFF_MS: u64 = 1_000;
+    const MAX_BACKOFF_MS: u64 = 60_000;
+
+    let exponent = attempt.saturating_sub(1).min(31);
+    let policy_backoff = INITIAL_BACKOFF_MS
+        .checked_shl(exponent)
+        .unwrap_or(u64::MAX)
+        .min(MAX_BACKOFF_MS);
+    policy_backoff.max(retry_after_ms.unwrap_or_default())
 }
 
 #[derive(Debug, Default)]

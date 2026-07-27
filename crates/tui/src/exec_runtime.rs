@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use dse_app::{
     AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-    ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
+    ProductionPromptConfig, ProductionToolConfig, ShellPolicy,
 };
 use dse_context::InstructionSource;
 use dse_protocol::run_api::{
@@ -938,7 +938,6 @@ pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConn
     } else {
         DeepSeekEndpoint::loopback_fixture(&base_url)?
     };
-    let retry = config.retry_policy();
     let connection = DeepSeekConnectionConfig {
         endpoint,
         // M7-B found no production actor catalog with a real Strict surface
@@ -947,12 +946,6 @@ pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConn
         strict_tools: false,
         response_header_timeout: Duration::from_secs(45),
         stream_idle_timeout: Duration::from_secs(config.stream_chunk_timeout_secs()),
-        retry: TransportRetryPolicy {
-            max_retries: if retry.enabled { retry.max_retries } else { 0 },
-            initial_delay: Duration::from_secs_f64(retry.initial_delay.clamp(0.0, 300.0)),
-            max_delay: Duration::from_secs_f64(retry.max_delay.clamp(0.0, 300.0)),
-            exponential_base: retry.exponential_base,
-        },
     };
     Ok(connection)
 }
@@ -1691,7 +1684,7 @@ fn accounting_receipt(accounting: &ModelAccounting) -> ExecAccountingReceipt {
         billing_unknown_attempts: Some(u32_saturating(accounting.billing_unknown_attempts)),
         unpriced_usage_responses: Some(u32_saturating(accounting.unpriced_usage_responses)),
         usage_records_after_seal_observed: Some(u32_saturating(accounting.records_after_seal)),
-        transport_retry_count: Some(u32_saturating(accounting.transport_retries)),
+        runtime_retry_count: Some(u32_saturating(accounting.runtime_retries)),
         api_request_count: Some(u32_saturating(accounting.total_started())),
         api_request_completed: Some(u32_saturating(accounting.total_completed())),
         api_request_in_flight: Some(u32_saturating(accounting.total_in_flight())),
@@ -2005,7 +1998,7 @@ mod tests {
             1_025,
         );
         let value = crate::exec_stream_value(&stream).unwrap();
-        assert_eq!(value["schema_version"], 4);
+        assert_eq!(value["schema_version"], 5);
         assert_eq!(value["type"], "tool_result");
         assert_eq!(value["failure_code"], "stale_read");
         assert_eq!(value["invocation_status"], "accepted");

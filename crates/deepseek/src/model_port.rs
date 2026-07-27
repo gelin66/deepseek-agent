@@ -95,9 +95,7 @@ impl DeepSeekModelPort {
     #[must_use]
     pub fn new(transport: DeepSeekTransport, accounting: SharedApiRequestBudget) -> Self {
         Self {
-            transport: transport
-                .with_retries_disabled()
-                .with_request_budget(accounting.clone()),
+            transport: transport.with_request_budget(accounting.clone()),
             accounting,
         }
     }
@@ -268,13 +266,21 @@ fn transport_error(error: DeepSeekTransportError) -> ModelPortError {
             | DeepSeekTransportError::UnsupportedFinishReason(_)
             | DeepSeekTransportError::MissingField(_)
     );
+    let retry_after_ms = match &error {
+        DeepSeekTransportError::Http {
+            status,
+            retry_after: Some(retry_after),
+            ..
+        } if *status == 429 || *status >= 500 => retry_after.as_millis().try_into().ok(),
+        _ => None,
+    };
     let message = transport_diagnostic_message(&error);
-    ModelPortError::new(code, category, message, error.retryable()).with_response(
-        ModelResponseEvidence {
+    ModelPortError::new(code, category, message, error.retryable())
+        .with_optional_retry_after_ms(retry_after_ms)
+        .with_response(ModelResponseEvidence {
             response_headers_received,
             ..ModelResponseEvidence::default()
-        },
-    )
+        })
 }
 
 fn transport_diagnostic_message(error: &DeepSeekTransportError) -> String {
@@ -323,15 +329,12 @@ fn runtime_accounting(
             started: u64::from(actors.root_started),
             completed: u64::from(actors.root_completed),
             in_flight: u64::from(actors.root_in_flight),
-            retries: u64::from(actors.root_retries),
         },
         child: ActorRequestAccounting {
             started: u64::from(actors.child_started),
             completed: u64::from(actors.child_completed),
             in_flight: u64::from(actors.child_in_flight),
-            retries: u64::from(actors.child_retries),
         },
-        transport_retries: u64::from(requests.retry_attempts),
         runtime_retries: 0,
         sealed_denied: u64::from(requests.sealed_denied),
         exhausted_denied: u64::from(requests.exhausted_denied),
@@ -452,6 +455,40 @@ mod tests {
         assert!(http.response.response_headers_received);
         assert!(!http.message.contains("sensitive"));
         assert!(!http.message.contains("/private"));
+
+        let rate_limited = transport_error(DeepSeekTransportError::Http {
+            status: 429,
+            message: "slow down".to_owned(),
+            retry_after: Some(std::time::Duration::from_secs(3)),
+        });
+        assert_eq!(rate_limited.category, ModelErrorCategory::RateLimit);
+        assert_eq!(rate_limited.retry_after_ms, Some(3_000));
+        assert!(rate_limited.retryable);
+
+        let service = transport_error(DeepSeekTransportError::Http {
+            status: 503,
+            message: "unavailable".to_owned(),
+            retry_after: Some(std::time::Duration::from_secs(7)),
+        });
+        assert_eq!(service.category, ModelErrorCategory::Service);
+        assert_eq!(service.retry_after_ms, Some(7_000));
+        assert!(service.retryable);
+
+        let authentication = transport_error(DeepSeekTransportError::Http {
+            status: 401,
+            message: "rejected".to_owned(),
+            retry_after: None,
+        });
+        assert_eq!(authentication.category, ModelErrorCategory::Authentication);
+        assert!(!authentication.retryable);
+
+        let bad_request = transport_error(DeepSeekTransportError::Http {
+            status: 400,
+            message: "bad request".to_owned(),
+            retry_after: None,
+        });
+        assert_eq!(bad_request.category, ModelErrorCategory::Protocol);
+        assert!(!bad_request.retryable);
 
         let network = transport_error(DeepSeekTransportError::Network(
             "request to https://secret.example failed at /private/path".to_owned(),
@@ -577,7 +614,6 @@ mod tests {
             strict_tools: false,
             response_header_timeout: std::time::Duration::from_secs(1),
             stream_idle_timeout: std::time::Duration::from_secs(1),
-            retry: crate::TransportRetryPolicy::disabled(),
         };
         let transport = connection
             .bind(
@@ -644,7 +680,6 @@ mod tests {
         assert_eq!(accounting.root.started, 1);
         assert_eq!(accounting.root.completed, 1);
         assert_eq!(accounting.root.in_flight, 0);
-        assert_eq!(accounting.transport_retries, 0);
         assert_eq!(accounting.runtime_retries, 0);
         assert_eq!(accounting.incomplete_responses, 1);
         assert_eq!(accounting.billing_unknown_attempts, 0);

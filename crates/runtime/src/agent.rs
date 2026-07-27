@@ -38,6 +38,7 @@ pub struct AgentRuntime {
     store: Arc<dyn RunStore>,
     orchestrator: Option<Arc<dyn AgentOrchestrator>>,
     child_route_policy: Arc<dyn ChildRunRoutePolicy>,
+    clock: Arc<dyn RuntimeClock>,
 }
 
 /// Typed Host facts available when resolving one child run before its
@@ -172,7 +173,14 @@ impl AgentRuntime {
             store,
             orchestrator: None,
             child_route_policy: Arc::new(InheritedChildRunRoutePolicy),
+            clock: Arc::new(SystemRuntimeClock),
         }
+    }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn RuntimeClock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     #[must_use]
@@ -203,6 +211,7 @@ impl AgentRuntime {
             store: self.store.clone(),
             orchestrator: self.orchestrator.clone(),
             child_route_policy: self.child_route_policy.clone(),
+            clock: self.clock.clone(),
         })
     }
 
@@ -945,6 +954,12 @@ impl AgentRuntime {
         'attempts: loop {
             let (attempt_id, request) = if let Some(pending) = prepared.take() {
                 debug_assert_eq!(pending.state, DurableActionState::Prepared);
+                if let Some(terminal) = self
+                    .wait_for_model_retry(state, control, deadline, &pending)
+                    .await?
+                {
+                    return Ok(ModelTurnControl::Terminal(terminal));
+                }
                 (pending.attempt_id, pending.request)
             } else {
                 let terminal_turn_due = request_number >= state.snapshot.request.limits.max_turns;
@@ -1366,11 +1381,44 @@ impl AgentRuntime {
 
         let mut next_request = request.clone();
         next_request.attempt = next_request.attempt.saturating_add(1);
+        let decision_unix_ms = self.clock.now_unix_ms();
+        let backoff_ms = model_retry_backoff_ms(next_request.attempt, error.retry_after_ms);
         let prepared = PreparedModelRetry {
             attempt_id: AttemptId::new(),
             request: Box::new(next_request),
+            decision_unix_ms,
+            backoff_ms,
+            not_before_unix_ms: decision_unix_ms.saturating_add(backoff_ms),
+            max_retries: state.snapshot.request.limits.max_model_retries,
         };
         ModelFailurePlan::Retry { prepared, permit }
+    }
+
+    async fn wait_for_model_retry(
+        &self,
+        state: &mut RunState,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        pending: &PendingModelAction,
+    ) -> Result<Option<TerminalState>, RuntimeFailure> {
+        let Some(schedule) = pending.retry_schedule else {
+            return Ok(None);
+        };
+        while self.clock.now_unix_ms() < schedule.not_before_unix_ms {
+            tokio::select! {
+                () = self.clock.sleep_until_unix_ms(schedule.not_before_unix_ms) => {}
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => return Ok(Some(terminal)),
+                    }
+                },
+                () = wait_for_deadline(deadline) => {
+                    return Ok(Some(timeout_terminal(state, deadline)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn execute_call(
@@ -5604,6 +5652,7 @@ fn model_attempt_failure(
         category: error.category,
         message: error.message.clone(),
         retryable: error.retryable,
+        retry_after_ms: error.retry_after_ms,
         retry_safe: response.replay_safe(),
         actionable_output: response.actionable_output(),
         response,
@@ -5617,6 +5666,7 @@ fn model_port_error_from_failure(failure: &ModelAttemptFailure) -> ModelPortErro
         failure.message.clone(),
         failure.retryable,
     )
+    .with_optional_retry_after_ms(failure.retry_after_ms)
     .with_response(failure.response)
 }
 

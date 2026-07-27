@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 27;
+const STATE_SCHEMA_VERSION: u32 = 28;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -358,6 +358,24 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-verifier-grant canonical run state")?;
         }
+        if user_version < 28 {
+            // RuntimeEvent v22 makes Runtime-owned retry delay and retry-after
+            // evidence durable while deleting transport retry accounting.
+            // Existing materialized events cannot be rewritten without
+            // inventing a canonical decision time. Preserve only replay-safe
+            // pending Start intents and retire every materialized Run.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire pre-runtime-retry creation state")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-runtime-retry creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-runtime-retry canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -556,6 +574,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 27)
                 .context("failed to commit TaskContract verifier grant state cutover")?;
             user_version = 27;
+        }
+        if user_version < 28 {
+            tx.pragma_update(None, "user_version", 28)
+                .context("failed to commit Runtime-owned model retry state cutover")?;
+            user_version = 28;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

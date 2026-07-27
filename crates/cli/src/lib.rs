@@ -305,9 +305,6 @@ struct AppServerArgs {
     /// Maximum accepted HTTP request body size.
     #[arg(long = "max-body-bytes")]
     max_body_bytes: Option<usize>,
-    /// Maximum transport retries for each DeepSeek request.
-    #[arg(long = "transport-max-retries", value_parser = clap::value_parser!(u32).range(0..=10))]
-    transport_max_retries: Option<u32>,
 }
 
 fn install_rustls_crypto_provider() {
@@ -494,10 +491,6 @@ fn localize_cli_command_with_parent(
         ("insecure_no_auth", MessageId::CliArgInsecureNoAuth),
         ("cors_origin", MessageId::CliArgCorsOrigin),
         ("max_body_bytes", MessageId::CliArgMaxBodyBytes),
-        (
-            "transport_max_retries",
-            MessageId::CliArgTransportMaxRetries,
-        ),
     ];
     for (id, message) in arg_messages {
         if localized
@@ -1223,7 +1216,7 @@ fn run_app_server_command(
         .build()
         .context(tr(MessageId::CliAppServerRuntimeFailed).into_owned())?;
     let application = Arc::new(AgentApplication::production(
-        production_application_config(resolved_runtime, args.transport_max_retries)?,
+        production_application_config(resolved_runtime)?,
     )?);
     if args.stdio {
         return runtime
@@ -1254,7 +1247,6 @@ fn run_app_server_command(
 
 fn production_application_config(
     resolved_runtime: &ResolvedRuntimeOptions,
-    transport_max_retries: Option<u32>,
 ) -> Result<ProductionApplicationConfig> {
     let base_url = resolved_runtime.base_url.trim_end_matches('/');
     if !is_official_deepseek_base_url(base_url) {
@@ -1277,9 +1269,6 @@ fn production_application_config(
     let mut config = ProductionApplicationConfig::official()
         .with_tool_config(tools)
         .with_prompt(prompt);
-    if let Some(max_retries) = transport_max_retries {
-        config = config.with_transport_max_retries(max_retries);
-    }
     if let Some(api_key) = resolved_runtime.api_key.clone() {
         config = config.with_api_key(api_key)?;
     }
@@ -1935,7 +1924,7 @@ mod tests {
             .resolve_runtime_options(&CliRuntimeOverrides::default())
             .unwrap();
         resolved.base_url = "https://example.com/v1".to_string();
-        let error = match production_application_config(&resolved, None) {
+        let error = match production_application_config(&resolved) {
             Ok(_) => panic!("foreign endpoint must fail before app construction"),
             Err(error) => error,
         };

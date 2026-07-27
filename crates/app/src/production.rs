@@ -10,7 +10,7 @@ use dse_config::PromptPreferences;
 use dse_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
 use dse_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
-    DeepSeekTransport, SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
+    DeepSeekTransport, SharedApiRequestBudget, model_accounting_snapshot,
     official_model_capabilities, resume_api_request_budget,
 };
 use dse_orchestrator::ProductionAgentOrchestrator;
@@ -119,12 +119,6 @@ impl ProductionApplicationConfig {
                 strict_tools: false,
                 response_header_timeout: Duration::from_secs(45),
                 stream_idle_timeout: Duration::from_secs(900),
-                retry: TransportRetryPolicy {
-                    max_retries: 3,
-                    initial_delay: Duration::from_secs(1),
-                    max_delay: Duration::from_secs(60),
-                    exponential_base: 2.0,
-                },
             },
             ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
         )
@@ -135,16 +129,6 @@ impl ProductionApplicationConfig {
     #[must_use]
     pub fn with_deepseek_connection(mut self, connection: DeepSeekConnectionConfig) -> Self {
         self.deepseek = connection;
-        self
-    }
-
-    /// Override only the transport retry admission bound.
-    ///
-    /// The resolved value is part of the production execution fingerprint, so
-    /// a resumed run cannot silently change this resource contract.
-    #[must_use]
-    pub fn with_transport_max_retries(mut self, max_retries: u32) -> Self {
-        self.deepseek.retry.max_retries = max_retries;
         self
     }
 
@@ -1013,7 +997,7 @@ impl ProductionComposition {
         tool_catalog_sha256: &str,
     ) -> String {
         let value = ProductionExecutionFingerprint {
-            schema: 1,
+            schema: 2,
             composition_build_revision: &self.composition_build_revision,
             provider: DEEPSEEK_PROVIDER,
             model,
@@ -1024,12 +1008,6 @@ impl ProductionComposition {
             strict_tools: self.deepseek.strict_tools,
             response_header_timeout_ms: duration_millis(self.deepseek.response_header_timeout),
             stream_idle_timeout_ms: duration_millis(self.deepseek.stream_idle_timeout),
-            retry: ProductionRetryIdentity {
-                max_retries: self.deepseek.retry.max_retries,
-                initial_delay_ms: duration_millis(self.deepseek.retry.initial_delay),
-                max_delay_ms: duration_millis(self.deepseek.retry.max_delay),
-                exponential_base: self.deepseek.retry.exponential_base,
-            },
             tool_identity,
             tool_catalog_sha256,
         };
@@ -1051,17 +1029,8 @@ struct ProductionExecutionFingerprint<'a> {
     strict_tools: bool,
     response_header_timeout_ms: u64,
     stream_idle_timeout_ms: u64,
-    retry: ProductionRetryIdentity,
     tool_identity: &'a ProductionToolExecutionIdentity,
     tool_catalog_sha256: &'a str,
-}
-
-#[derive(Serialize)]
-struct ProductionRetryIdentity {
-    max_retries: u32,
-    initial_delay_ms: u64,
-    max_delay_ms: u64,
-    exponential_base: f64,
 }
 
 fn canonical_start_workspace(raw: &str) -> Result<PathBuf, RunApiError> {
@@ -1136,7 +1105,6 @@ fn accounting_dominates(candidate: &ModelAccounting, parent: &ModelAccounting) -
         // so only child-attributed physical requests may advance.
         && candidate.root == parent.root
         && actor_accounting_dominates(&candidate.child, &parent.child)
-        && candidate.transport_retries >= parent.transport_retries
         && candidate.sealed_denied >= parent.sealed_denied
         && candidate.exhausted_denied >= parent.exhausted_denied
         && (!parent.budget_exhausted || candidate.budget_exhausted)
@@ -1168,9 +1136,7 @@ fn actor_accounting_dominates(
     candidate: &ActorRequestAccounting,
     parent: &ActorRequestAccounting,
 ) -> bool {
-    candidate.started >= parent.started
-        && candidate.completed >= parent.completed
-        && candidate.retries >= parent.retries
+    candidate.started >= parent.started && candidate.completed >= parent.completed
 }
 
 fn usage_dominates(candidate: Usage, parent: Usage) -> bool {
@@ -1723,28 +1689,7 @@ mod tests {
             strict_tools,
             response_header_timeout: Duration::from_secs(2),
             stream_idle_timeout: Duration::from_secs(2),
-            retry: TransportRetryPolicy::disabled(),
         }
-    }
-
-    #[test]
-    fn transport_retry_override_changes_only_the_connection_bound() {
-        let baseline = ProductionApplicationConfig::official();
-        let limited = baseline.clone().with_transport_max_retries(1);
-        assert_eq!(baseline.deepseek.retry.max_retries, 3);
-        assert_eq!(limited.deepseek.retry.max_retries, 1);
-        assert_eq!(
-            baseline.deepseek.retry.initial_delay,
-            limited.deepseek.retry.initial_delay
-        );
-        assert_eq!(
-            baseline.deepseek.retry.max_delay,
-            limited.deepseek.retry.max_delay
-        );
-        assert_eq!(
-            baseline.deepseek.retry.exponential_base,
-            limited.deepseek.retry.exponential_base,
-        );
     }
 
     fn config(
@@ -3275,7 +3220,7 @@ mod tests {
         assert_eq!(replay.snapshot.accounting.root.completed, 2);
         assert_eq!(replay.snapshot.accounting.child.started, 2);
         assert_eq!(replay.snapshot.accounting.child.completed, 2);
-        assert_eq!(replay.snapshot.accounting.transport_retries, 0);
+        assert_eq!(replay.snapshot.accounting.runtime_retries, 0);
         assert_eq!(replay.snapshot.accounting.usage_responses, 4);
         assert_eq!(replay.snapshot.accounting.usage.input_tokens, 46);
         assert_eq!(replay.snapshot.accounting.usage.output_tokens, 9);

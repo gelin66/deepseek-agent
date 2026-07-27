@@ -589,7 +589,7 @@ mod tests {
 
     use dse_app::{
         DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
-        ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
+        ProductionPromptConfig, ProductionToolConfig, ShellPolicy,
     };
     use dse_protocol::agent_runtime::{
         AgentOutcome, CommandId, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
@@ -754,7 +754,6 @@ mod tests {
             strict_tools: false,
             response_header_timeout: Duration::from_secs(2),
             stream_idle_timeout: Duration::from_secs(2),
-            retry: TransportRetryPolicy::disabled(),
         };
         let config = ProductionApplicationConfig::official()
             .with_state_db_path(state_path)

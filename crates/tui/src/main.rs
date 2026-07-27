@@ -4794,7 +4794,7 @@ struct ExecAccountingReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     usage_records_after_seal_observed: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    transport_retry_count: Option<u32>,
+    runtime_retry_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_request_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

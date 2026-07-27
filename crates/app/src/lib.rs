@@ -41,8 +41,7 @@ pub use production::{
 // budget are bound only inside a live start/resume path.
 pub use dse_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
-    OfficialModelCapabilities, OfficialModelCapabilityError, TransportRetryPolicy,
-    official_model_capabilities,
+    OfficialModelCapabilities, OfficialModelCapabilityError, official_model_capabilities,
 };
 pub use dse_tools::sandbox::SandboxPolicy;
 pub use dse_tools::shell::ShellPolicy;

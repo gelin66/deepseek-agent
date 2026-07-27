@@ -36,7 +36,7 @@ pub use pricing::{
 pub use transport::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekResponse,
     DeepSeekStream, DeepSeekTransport, DeepSeekTransportConfig, DeepSeekTransportError,
-    TransportRetryPolicy, parse_chat_response,
+    parse_chat_response,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

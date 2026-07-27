@@ -82,7 +82,6 @@ impl ModelPort for MockModel {
             hard_request_limit: Some(128),
             root: self.ledger.root.snapshot(),
             child: self.ledger.child.snapshot(),
-            transport_retries: 0,
             runtime_retries: 0,
             sealed_denied: 0,
             exhausted_denied: 0,
@@ -246,7 +245,6 @@ impl ActorLedger {
             started: self.started.load(Ordering::Acquire),
             completed: self.completed.load(Ordering::Acquire),
             in_flight: self.in_flight.load(Ordering::Acquire),
-            retries: 0,
         }
     }
 }
@@ -275,6 +273,42 @@ impl CollectSink {
                 return;
             }
             notified.await;
+        }
+    }
+}
+
+struct ManualRuntimeClock {
+    now_unix_ms: AtomicU64,
+    changed: Notify,
+}
+
+impl ManualRuntimeClock {
+    fn new(now_unix_ms: u64) -> Self {
+        Self {
+            now_unix_ms: AtomicU64::new(now_unix_ms),
+            changed: Notify::new(),
+        }
+    }
+
+    fn advance_to(&self, now_unix_ms: u64) {
+        self.now_unix_ms.store(now_unix_ms, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+}
+
+#[async_trait]
+impl RuntimeClock for ManualRuntimeClock {
+    fn now_unix_ms(&self) -> u64 {
+        self.now_unix_ms.load(Ordering::Acquire)
+    }
+
+    async fn sleep_until_unix_ms(&self, deadline_unix_ms: u64) {
+        loop {
+            let changed = self.changed.notified();
+            if self.now_unix_ms() >= deadline_unix_ms {
+                return;
+            }
+            changed.await;
         }
     }
 }
@@ -687,6 +721,24 @@ fn fixture(
         sink.clone(),
         store.clone(),
     ));
+    (runtime, tools, sink, store)
+}
+
+fn fixture_with_clock(
+    model: Arc<MockModel>,
+    clock: Arc<dyn RuntimeClock>,
+) -> (
+    Arc<AgentRuntime>,
+    Arc<MockTools>,
+    Arc<CollectSink>,
+    Arc<InMemoryRunStore>,
+) {
+    let tools = Arc::new(MockTools::default());
+    let sink = Arc::new(CollectSink::default());
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(
+        AgentRuntime::new(model, tools.clone(), sink.clone(), store.clone()).with_clock(clock),
+    );
     (runtime, tools, sink, store)
 }
 
@@ -3112,6 +3164,283 @@ async fn retryable_transport_reopens_only_without_output_and_preserves_first_fai
 }
 
 #[tokio::test]
+async fn runtime_retry_waits_for_durable_not_before_and_honors_retry_after_hint() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        if script_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            ScriptResponse::OpenError(
+                ModelPortError::new(
+                    "deepseek_rate_limited",
+                    ModelErrorCategory::RateLimit,
+                    "429",
+                    true,
+                )
+                .with_retry_after_ms(5_000)
+                .with_response(ModelResponseEvidence {
+                    response_headers_received: true,
+                    ..ModelResponseEvidence::default()
+                }),
+            )
+        } else {
+            ScriptResponse::Events(vec![completed(
+                "已恢复",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        }
+    }));
+    let clock = Arc::new(ManualRuntimeClock::new(10_000));
+    let (runtime, _, sink, _) = fixture_with_clock(model, clock.clone());
+    let mut retry_request = request("retry with backoff");
+    retry_request.limits.max_model_retries = 2;
+    let run = runtime.start(retry_request);
+
+    sink.wait_for(|event| {
+        matches!(
+            event.event,
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "retry must not be sent immediately"
+    );
+    let prepared = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::ModelRequestFailed {
+                failure,
+                retry: ModelRetryDecision::Retry { prepared },
+                ..
+            } => {
+                assert_eq!(failure.retry_after_ms, Some(5_000));
+                Some(prepared)
+            }
+            _ => None,
+        })
+        .expect("durable retry decision");
+    assert_eq!(prepared.request.attempt, 1);
+    assert_eq!(prepared.decision_unix_ms, 10_000);
+    assert_eq!(prepared.backoff_ms, 5_000);
+    assert_eq!(prepared.not_before_unix_ms, 15_000);
+
+    clock.advance_to(14_999);
+    tokio::task::yield_now().await;
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    clock.advance_to(15_000);
+
+    let outcome = tokio::time::timeout(Duration::from_secs(1), run.wait())
+        .await
+        .expect("fake-clock retry completes without real sleep")
+        .unwrap();
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Completed { ref message, .. } if message == "已恢复"
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_eq!(outcome.runtime_retries, 1);
+}
+
+#[tokio::test]
+async fn runtime_network_retry_uses_one_then_two_second_backoff_and_exact_accounting() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let script_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        let attempt = script_calls.fetch_add(1, Ordering::AcqRel);
+        if attempt < 2 {
+            ScriptResponse::OpenError(ModelPortError::new(
+                "deepseek_transport",
+                ModelErrorCategory::Transport,
+                "connection reset",
+                true,
+            ))
+        } else {
+            ScriptResponse::Events(vec![completed(
+                "两次退避后恢复",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        }
+    }));
+    let clock = Arc::new(ManualRuntimeClock::new(0));
+    let (runtime, _, sink, _) = fixture_with_clock(model, clock.clone());
+    let mut retry_request = request("network reset twice");
+    retry_request.limits.max_model_retries = 2;
+    let run = runtime.start(retry_request);
+
+    sink.wait_for(|event| {
+        matches!(
+            event.event,
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry {
+                    ref prepared
+                },
+                ..
+            } if prepared.request.attempt == 1
+        )
+    })
+    .await;
+    let first = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry { prepared },
+                ..
+            } if prepared.request.attempt == 1 => Some(prepared),
+            _ => None,
+        })
+        .expect("first retry schedule");
+    assert_eq!((first.backoff_ms, first.not_before_unix_ms), (1_000, 1_000));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+
+    clock.advance_to(1_000);
+    sink.wait_for(|event| {
+        matches!(
+            event.event,
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry {
+                    ref prepared
+                },
+                ..
+            } if prepared.request.attempt == 2
+        )
+    })
+    .await;
+    let second = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry { prepared },
+                ..
+            } if prepared.request.attempt == 2 => Some(prepared),
+            _ => None,
+        })
+        .expect("second retry schedule");
+    assert_eq!(
+        (
+            second.decision_unix_ms,
+            second.backoff_ms,
+            second.not_before_unix_ms,
+        ),
+        (1_000, 2_000, 3_000)
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+
+    clock.advance_to(3_000);
+    let outcome = run.wait().await.unwrap();
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Completed { ref message, .. } if message == "两次退避后恢复"
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+    assert_eq!(outcome.runtime_model_requests, 3);
+    assert_eq!(outcome.runtime_retries, 2);
+    assert_eq!(outcome.accounting.runtime_retries, 2);
+}
+
+#[tokio::test]
+async fn root_readonly_child_and_writer_share_the_same_durable_retry_contract() {
+    for actor in [
+        ToolFailureActorCase::Root,
+        ToolFailureActorCase::ReadOnlyChild,
+        ToolFailureActorCase::WriterChild,
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let expected_actor = if matches!(actor, ToolFailureActorCase::Root) {
+            AgentActorKind::Root
+        } else {
+            AgentActorKind::Child
+        };
+        let model = Arc::new(MockModel::new(move |request| {
+            assert_eq!(request.actor.kind, expected_actor);
+            if observed_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                ScriptResponse::OpenError(ModelPortError::new(
+                    "deepseek_timeout",
+                    ModelErrorCategory::Timeout,
+                    "response headers timed out",
+                    true,
+                ))
+            } else {
+                ScriptResponse::Events(vec![completed(
+                    "actor retry recovered",
+                    None,
+                    Vec::new(),
+                    ModelFinishReason::Stop,
+                )])
+            }
+        }));
+        let clock = Arc::new(ManualRuntimeClock::new(0));
+        let (runtime, _, sink, store) = fixture_with_clock(model, clock.clone());
+        let mut run_request = actor_failure_request(actor, &format!("retry actor={actor:?}"));
+        run_request.limits.max_model_retries = 1;
+        if let Some(task) = run_request.agent_task.as_mut() {
+            task.limits.max_model_retries = 1;
+        }
+        let definitions = runtime.tool_definitions(
+            &run_request.tool_policy,
+            run_request
+                .task_contract
+                .as_ref()
+                .map(|contract| &contract.definition),
+            actor.authority(),
+            run_request.actor.depth,
+            run_request.limits.max_depth,
+            run_request.environment.interactive,
+        );
+        run_request.environment.tool_catalog_sha256 =
+            Some(canonical_tool_catalog_sha256(&definitions));
+        let run_id = run_request.run_id.clone().expect("actor run id");
+        let created = store.create(run_request).await.unwrap();
+        store.release(&created.lease).await.unwrap();
+        let run = runtime.resume(run_id.clone());
+
+        sink.wait_for(|event| {
+            matches!(
+                event.event,
+                RuntimeEventKind::ModelRequestFailed {
+                    retry: ModelRetryDecision::Retry {
+                        ref prepared
+                    },
+                    ..
+                } if prepared.request.attempt == 1
+                    && prepared.backoff_ms == 1_000
+                    && prepared.max_retries == 1
+            )
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        clock.advance_to(1_000);
+        let outcome = run.wait().await.unwrap();
+
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::Completed { ref message, .. } if message == "actor retry recovered"
+        ));
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        assert_eq!(outcome.runtime_retries, 1);
+        let replay = store
+            .load(&run_id)
+            .await
+            .unwrap()
+            .expect("actor retry replay");
+        assert_eq!(replay.snapshot.runtime_retries, 1);
+        assert_eq!(replay.snapshot.accounting.runtime_retries, 1);
+    }
+}
+
+#[tokio::test]
 async fn m21_partial_reasoning_transport_failure_stops_without_retry_or_completion() {
     let calls = Arc::new(AtomicUsize::new(0));
     let script_calls = calls.clone();
@@ -3306,11 +3635,25 @@ async fn model_event_idle_is_runtime_owned_and_obeys_actionable_output_gate() {
             },
         )])
     }));
-    let (runtime, _, sink, _) = fixture(model);
+    let clock = Arc::new(ManualRuntimeClock::new(0));
+    let (runtime, _, sink, _) = fixture_with_clock(model, clock.clone());
     let mut stalled = request("idle");
     stalled.limits.model_event_idle_ms = Some(10);
     stalled.limits.max_model_retries = 1;
-    let outcome = tokio::time::timeout(Duration::from_secs(1), runtime.start(stalled).wait())
+    let run = runtime.start(stalled);
+    sink.wait_for(|event| {
+        matches!(
+            event.event,
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    clock.advance_to(1_000);
+    let outcome = tokio::time::timeout(Duration::from_secs(1), run.wait())
         .await
         .expect("runtime event-idle deadline")
         .unwrap();
@@ -7083,6 +7426,7 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
         category: ModelErrorCategory::Transport,
         message: "connection reset".into(),
         retryable: true,
+        retry_after_ms: None,
         retry_safe: true,
         actionable_output: false,
         response: ModelResponseEvidence::default(),
@@ -7103,6 +7447,10 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
                         prepared: PreparedModelRetry {
                             attempt_id: AttemptId("changed-retry-next".into()),
                             request: Box::new(changed_request),
+                            decision_unix_ms: 0,
+                            backoff_ms: 1_000,
+                            not_before_unix_ms: 1_000,
+                            max_retries: 2,
                         },
                     },
                 },
@@ -7145,6 +7493,7 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
                 category: ModelErrorCategory::Transport,
                 message: "connection reset".into(),
                 retryable: true,
+                retry_after_ms: None,
                 retry_safe: true,
                 actionable_output: false,
                 response: ModelResponseEvidence::default(),
@@ -7154,6 +7503,10 @@ async fn atomic_retry_decision_rejects_a_changed_request_projection() {
                 prepared: PreparedModelRetry {
                     attempt_id: AttemptId("changed-retry-live-next".into()),
                     request: Box::new(changed_request),
+                    decision_unix_ms: 0,
+                    backoff_ms: 1_000,
+                    not_before_unix_ms: 1_000,
+                    max_retries: 2,
                 },
             },
         },
@@ -7636,6 +7989,7 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
         category: ModelErrorCategory::Transport,
         message: "first connection reset".into(),
         retryable: true,
+        retry_after_ms: None,
         retry_safe: true,
         actionable_output: false,
         response: ModelResponseEvidence::default(),
@@ -7675,6 +8029,10 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
                 prepared: PreparedModelRetry {
                     attempt_id: retry_attempt.clone(),
                     request: Box::new(retry_request),
+                    decision_unix_ms: 10_000,
+                    backoff_ms: 1_000,
+                    not_before_unix_ms: 11_000,
+                    max_retries: 2,
                 },
             },
         },
@@ -7738,17 +8096,39 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
             )])
         }
     }));
-    let runtime = Arc::new(AgentRuntime::new(
-        model,
-        Arc::new(MockTools::default()),
-        Arc::new(CollectSink::default()),
-        store.clone(),
-    ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let clock = Arc::new(ManualRuntimeClock::new(10_500));
+    let sink = Arc::new(CollectSink::default());
+    let runtime = Arc::new(
+        AgentRuntime::new(
+            model,
+            Arc::new(MockTools::default()),
+            sink.clone(),
+            store.clone(),
+        )
+        .with_clock(clock.clone()),
+    );
+    let run = runtime.resume(created.lease.run_id.clone());
+    tokio::task::yield_now().await;
+    assert!(
+        attempts.lock().unwrap().is_empty(),
+        "reopen must preserve the remaining not-before delay"
+    );
+    clock.advance_to(11_000);
+    sink.wait_for(|event| {
+        matches!(
+            event.event,
+            RuntimeEventKind::ModelRequestFailed {
+                retry: ModelRetryDecision::Retry {
+                    ref prepared
+                },
+                ..
+            } if prepared.request.attempt == 2
+        )
+    })
+    .await;
+    assert_eq!(*attempts.lock().unwrap(), vec![1]);
+    clock.advance_to(13_000);
+    let outcome = run.wait().await.unwrap();
     assert_eq!(*attempts.lock().unwrap(), vec![1, 2]);
     assert_eq!(outcome.runtime_model_requests, 3);
     assert_eq!(outcome.runtime_retries, 2);
@@ -7779,6 +8159,7 @@ async fn resume_in_flight_retry_requires_recovery_without_reissuing_the_retry() 
         category: ModelErrorCategory::Transport,
         message: "first connection reset".into(),
         retryable: true,
+        retry_after_ms: None,
         retry_safe: true,
         actionable_output: false,
         response: ModelResponseEvidence::default(),
@@ -7818,6 +8199,10 @@ async fn resume_in_flight_retry_requires_recovery_without_reissuing_the_retry() 
                 prepared: PreparedModelRetry {
                     attempt_id: retry_attempt.clone(),
                     request: Box::new(retry_request),
+                    decision_unix_ms: 0,
+                    backoff_ms: 1_000,
+                    not_before_unix_ms: 1_000,
+                    max_retries: 2,
                 },
             },
         },
@@ -8173,7 +8558,6 @@ async fn run_created_accounting_baseline_survives_crash_and_resume() {
             started: 1,
             completed: 1,
             in_flight: 0,
-            retries: 0,
         },
         complete: true,
         usage_complete: true,
