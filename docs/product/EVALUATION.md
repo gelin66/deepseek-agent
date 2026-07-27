@@ -4042,6 +4042,66 @@ USD `0.000979765`、duration `1611ms`。它只证明成功路径与 accounting�
 权威。完整身份、删除与研究依据见
 [M33 summary](../../eval/summaries/m33-runtime-owned-model-retry-2026-07-27.md)。
 
+#### M34 model failure feedback contract
+
+M34 的 control 是 M33 clean checkpoint `408611fb1`。它不再证明 retry algorithm，
+而是冻结 production client 能否把同一 canonical retry/stop fact 准确、持续、双语地
+交给用户。故障只由 test-only loopback proxy 注入；production sender、Runtime、
+RunStore、permission、prompt、model 和 backoff 均不改变。
+
+| profile | upstream observation | expected Runtime decision | required client fact |
+|---|---|---|---|
+| `timeout_then_success` | response headers 前 timeout | retry 1/2，1s 后成功 | 类别、1/2、等待、成功后清除失败 |
+| `reset_reset_success` | 两次 pre-header reset | retry 1/2、2/2 后成功 | 每次 ordinal/delay，恰好 3 physical |
+| `rate_limit_then_success` | 429 + `Retry-After: 2` | 等待不短于 2s 后成功 | 429/限流、1/2、2s |
+| `service_unavailable_exhausted` | 连续 503 | 两次 retry 后 Stop | terminal 后原因、耗尽和下一 canonical action |
+| `unauthorized_no_retry` | 401 | Stop(NotRetryable) | 永久错误、0 retry、修正凭据/重新发起 |
+| `partial_content_close` | content delta 后连接关闭 | Stop(ActionableOutput/UnsafeReplay) | 不重发、说明不能安全自动重试 |
+| `prepared_retry_reopen` | decision committed、send 前 crash | reopen 等剩余 not-before，只发一次 | same-Run 恢复，不声称流续传 |
+| `in_flight_reopen` | request in flight 时 crash | `RecoveryRequired`、零盲发 | 上游结果未知、明确 fail closed |
+
+所有 profile 同时断言：
+
+```text
+server physical attempts == Runtime accounting physical attempts
+stored retry events == visible retry ordinal sequence
+terminal stop reason survives terminal projection and event reconnect
+en placeholders == zh-Hans placeholders
+false progress == 0
+false success == 0
+```
+
+information rubric 的七个原子事实为 provider、failure category、automatic action、
+retry ordinal/total、wait、stop safety reason、next canonical action。每个事实只在适用
+profile 计分；不得用一条泛化“失败，请重试”冒充通过。相同缺失必须跨两个独立 profile
+重复才允许 production treatment。
+
+候选只能修改既有 localization/TUI/CLI projection。RuntimeEvent 与 State 已有 retry
+decision/stop reason，不允许为了展示再持久化第二份状态。若 plain `dse exec` 需要进度，
+沿用成熟 CLI 的 stderr progress / stdout final-result 分离；machine JSON/JSONL 保持
+canonical schema，不混入人类文案。terminal 只建议既有操作，不新增 modal、resume
+protocol 或模型请求。
+
+keep gate：
+
+```text
+applicable information rubric              100%
+retry success returns to normal progress    pass
+terminal cause remains available            pass
+physical/retry/accounting/reopen exact       pass
+partial/in-flight duplicate request          0
+false progress / false success               0 / 0
+CLI / TUI / app-server semantic parity       pass
+en / zh-Hans placeholder parity              pass
+new retry controller / setting / state truth 0
+```
+
+结果只允许 `keep_minimal_model_failure_feedback`、
+`keep_existing_surface_no_repeated_loss` 或
+`reject_and_delete_feedback_candidate`。完整 contract 与 fault truth 固定在
+`eval/manifests/m34-model-failure-feedback-v1.json` 和
+`eval/fixtures/m34-model-failure-feedback-v1.json`。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

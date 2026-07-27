@@ -1,0 +1,91 @@
+{
+  "schema": "dse.eval.m34-model-failure-feedback.v1",
+  "suite_id": "m34-model-failure-feedback-v1",
+  "frozen_on": "2026-07-27",
+  "baseline": {
+    "branch": "deepseek-agent",
+    "commit": "408611fb1928b76dcf657288bc7df8deae24cf77",
+    "tree": "89a1406dcd0de75f3f96bf080beb0adb157dfa1e",
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 5,
+    "m33_summary_sha256": "sha256:a179eb959fda46903b5a2b577b4426a532141d0cb7b0b035ea99e2f8ec90b142"
+  },
+  "slice": {
+    "real_problem": "M33 made safe retry durable and observable in stored events, but it did not prove that production CLI and TUI keep failure category, retry ordinal, wait, exhaustion reason and the next valid action understandable after subsequent in-flight or terminal projections.",
+    "acceptance": [
+      "inject timeout, reset, 429 with Retry-After, 503, permanent 401, partial SSE and prepared/in-flight crash through a controlled loopback proxy without changing production retry policy",
+      "observe the real DeepSeek sender, AgentRuntime, RunStore, CLI, TUI and app-server instead of copying retry classification or reducers into the evaluator",
+      "score only deterministic applicable information facts and require identical semantic facts in en and zh-Hans",
+      "prove server attempt count, stored physical/retry accounting, event replay and SQLite reopen agree",
+      "make no production change unless the same missing fact repeats across at least two independent fault profiles",
+      "after treatment, require all applicable information facts, zero duplicate request, zero false progress and zero false success"
+    ],
+    "single_owner": "Retry decisions remain exclusively in crates/runtime::AgentRuntime; typed transport facts remain in crates/deepseek; human projection changes may only be owned by crates/localization plus crates/tui or crates/cli.",
+    "old_path_replaced": "Only a measured silent or ephemeral human projection branch may be replaced. Runtime retry, RunStore truth, app-server sequence replay and same-Run resume are not candidate paths.",
+    "evidence": "credential-free controlled loopback proxy, real binary PTY/exec, canonical app-server events, SQLite reopen, process SIGKILL and exact accounting",
+    "cutover_deletion": "A kept candidate physically deletes the silent or ephemeral projection it replaces and any superseded helper. A failed or unsupported candidate is fully deleted; the frozen fixture, manifest and summary remain.",
+    "non_goals": [
+      "changing retry count, 1s/2s backoff, Retry-After policy or replay safety",
+      "second retry controller, transport retry loop, settings page or modal",
+      "SSE token continuation, Last-Event-ID emulation or blind resend",
+      "Provider, Runtime, Store, prompt, model, permission or tool changes",
+      "LLM judge, external failure attack against official DeepSeek, GitHub, push or release"
+    ]
+  },
+  "experiment": {
+    "fixture": "eval/fixtures/m34-model-failure-feedback-v1.json",
+    "maximum_reruns": 0,
+    "cargo_target": "/private/tmp/dse-m34-target",
+    "credential_read": false,
+    "official_api_requests": 0,
+    "external_network": false,
+    "real_sleep": "Only real CLI/TUI end-to-end profiles may observe the production 1s/2s waits; Runtime correctness remains fake-clock based."
+  },
+  "external_basis": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/quick_start/error_codes/",
+      "https://api-docs.deepseek.com/quick_start/rate_limit/",
+      "https://api-docs.deepseek.com/api/create-chat-completion",
+      "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+      "https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/",
+      "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/retry-strategy",
+      "https://developers.openai.com/codex/codex-manual.md",
+      "https://docs.anthropic.com/en/docs/claude-code/cli-usage"
+    ],
+    "adopted": [
+      "one bounded retry layer",
+      "replay/idempotency gate",
+      "observable error, attempt, wait and final outcome",
+      "stderr progress separated from stdout final output",
+      "saved session resume separated from upstream request retry"
+    ],
+    "not_copied_without_evidence": [
+      "random jitter for a single local Runtime",
+      "provider-specific UI or configuration",
+      "session resume described as partial token continuation"
+    ]
+  },
+  "admission": {
+    "repeated_loss_minimum_independent_profiles": 2,
+    "required": {
+      "applicable_information_rubric": 1.0,
+      "retry_success_returns_to_normal_progress": true,
+      "terminal_cause_survives_terminal_projection": true,
+      "physical_retry_accounting_reopen_exact": true,
+      "partial_or_in_flight_duplicate_requests": 0,
+      "false_progress": 0,
+      "false_success": 0,
+      "surface_semantic_parity": true,
+      "locale_placeholder_parity": true,
+      "new_retry_controller_or_state_truth": 0
+    }
+  },
+  "decision": {
+    "if_no_repeated_loss": "keep_existing_surface_no_repeated_loss",
+    "if_candidate_passes": "keep_minimal_model_failure_feedback",
+    "if_candidate_fails": "reject_and_delete_feedback_candidate"
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "schema": "dse.eval.m34-model-failure-feedback-fixture.v1",
+  "frozen_on": "2026-07-27",
+  "fault_owner": "test-only controlled loopback proxy",
+  "production_request_surface": "official DeepSeek Standard Chat sender through the canonical AgentApplication and AgentRuntime",
+  "profiles": [
+    {
+      "id": "timeout_then_success",
+      "attempts": [
+        {
+          "fault": "response_headers_timeout",
+          "response_evidence": false
+        },
+        {
+          "response": "complete_sse_success"
+        }
+      ],
+      "expected_runtime_retries": 1,
+      "expected_physical_attempts": 2,
+      "expected_terminal": "completed"
+    },
+    {
+      "id": "reset_reset_success",
+      "attempts": [
+        {
+          "fault": "connection_reset_before_headers",
+          "response_evidence": false
+        },
+        {
+          "fault": "connection_reset_before_headers",
+          "response_evidence": false
+        },
+        {
+          "response": "complete_sse_success"
+        }
+      ],
+      "expected_runtime_retries": 2,
+      "expected_physical_attempts": 3,
+      "expected_terminal": "completed"
+    },
+    {
+      "id": "rate_limit_then_success",
+      "attempts": [
+        {
+          "status": 429,
+          "headers": {
+            "Retry-After": "2"
+          },
+          "response_evidence": false
+        },
+        {
+          "response": "complete_sse_success"
+        }
+      ],
+      "expected_runtime_retries": 1,
+      "expected_physical_attempts": 2,
+      "minimum_retry_delay_ms": 2000,
+      "expected_terminal": "completed"
+    },
+    {
+      "id": "service_unavailable_exhausted",
+      "attempts": [
+        {
+          "status": 503,
+          "response_evidence": false
+        },
+        {
+          "status": 503,
+          "response_evidence": false
+        },
+        {
+          "status": 503,
+          "response_evidence": false
+        }
+      ],
+      "expected_runtime_retries": 2,
+      "expected_physical_attempts": 3,
+      "expected_terminal": "failed",
+      "expected_stop": "retry_limit"
+    },
+    {
+      "id": "unauthorized_no_retry",
+      "attempts": [
+        {
+          "status": 401,
+          "response_evidence": false
+        }
+      ],
+      "expected_runtime_retries": 0,
+      "expected_physical_attempts": 1,
+      "expected_terminal": "failed",
+      "expected_stop": "not_retryable"
+    },
+    {
+      "id": "partial_content_close",
+      "attempts": [
+        {
+          "response": "sse_content_delta_then_connection_close",
+          "response_evidence": true
+        }
+      ],
+      "expected_runtime_retries": 0,
+      "expected_physical_attempts": 1,
+      "expected_terminal": "failed",
+      "expected_stop": "actionable_output_or_unsafe_replay"
+    },
+    {
+      "id": "prepared_retry_reopen",
+      "attempts": [
+        {
+          "fault": "connection_reset_before_headers",
+          "response_evidence": false
+        },
+        {
+          "response": "complete_sse_success"
+        }
+      ],
+      "crash_window": "retry_decision_committed_before_send",
+      "expected_runtime_retries": 1,
+      "expected_physical_attempts": 2,
+      "expected_terminal": "completed"
+    },
+    {
+      "id": "in_flight_reopen",
+      "attempts": [
+        {
+          "fault": "process_sigkill_while_request_in_flight",
+          "response_evidence": "unknown"
+        }
+      ],
+      "crash_window": "retry_attempt_in_flight",
+      "expected_runtime_retries": 0,
+      "expected_physical_attempts": 1,
+      "expected_terminal": "recovery_required"
+    }
+  ],
+  "information_rubric": [
+    "provider",
+    "failure_category",
+    "automatic_action",
+    "retry_ordinal_and_total",
+    "wait_duration",
+    "stop_safety_reason",
+    "next_canonical_action"
+  ],
+  "surface_contract": {
+    "human": [
+      "tui_en",
+      "tui_zh_hans",
+      "exec_stderr_en",
+      "exec_stderr_zh_hans"
+    ],
+    "machine": [
+      "app_server_events",
+      "exec_stream_json"
+    ],
+    "machine_messages_localized": false,
+    "session_resume_is_upstream_stream_continuation": false
+  }
+}

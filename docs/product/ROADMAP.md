@@ -5756,3 +5756,81 @@ deterministic retry safety matrix。DSE 没有 DeepSeek partial SSE continuation
 app-server sequence reconnect、same-Run resume 与 upstream retry 仍是三种不同机制。
 完整结论见
 [M33 Runtime-owned model retry](../../eval/summaries/m33-runtime-owned-model-retry-2026-07-27.md)。
+
+## 32. M34：模型故障反馈与恢复体验闭环
+
+- 状态：**contract frozen；baseline pending**
+- 基线：M33 clean checkpoint `408611fb1`
+- 唯一重试决策 owner：既有 `crates/runtime::AgentRuntime`
+- 人类投影 owner：`crates/localization` + `crates/tui` / `crates/cli`
+- 故障注入 owner：test-only controlled loopback proxy；不进入 production
+
+### 32.1 真实问题与可测验收
+
+M33 已证明安全 transient failure 可以由唯一 Runtime 闭环自动恢复，也证明 partial
+output 与 in-flight crash 不得盲重发。它还没有用真实客户端回答：用户是否能持续看见
+失败种类、正在执行第几次重试、还要等待多久、为什么停止，以及停止后应使用哪一个既有
+canonical 操作。
+
+M34 不改变 retry policy、次数、backoff 或 replay gate。它先用受控代理向同一个
+production DeepSeek sender 注入 response-before-headers timeout、connection reset、
+429 + `Retry-After`、503、partial SSE close 和 process crash，再由真实 CLI/TUI/
+app-server 读取 canonical stored events。体验验收使用确定性 information rubric，而
+不是 LLM judge：
+
+1. transient failure 明确显示 DeepSeek、稳定失败类别、自动动作、当前重试序号/总数和
+   等待时间；
+2. retry 成功后回到正常进度，不留下 false failure 或重复 terminal；
+3. limit、永久 4xx、partial output、unsafe replay 和 crash recovery 的最终原因在
+   terminal 后仍可取得，并指向既有的 new task / same-Run resume / fail-closed
+   `RecoveryRequired` 之一；
+4. en / zh-Hans 使用同一 `MessageId` 和相同 placeholder 集，窄终端不遮蔽关键事实；
+5. app-server event sequence reconnect 只重放 Store，same-Run resume 只恢复 Run；
+   二者都不得描述为 DeepSeek partial stream continuation；
+6. physical attempt、Runtime retry、usage/accounting、billing unknown、event prefix 与
+   SQLite reopen 前后一致，false progress / false success 为 0。
+
+### 32.2 外部依据与产品取舍
+
+2026-07-27 复核的官方/一手资料边界：
+
+- DeepSeek 把 429、500、503 视为可短暂等待后重试的 transient failure；400/401/422
+  是修正请求或凭据的永久错误；Chat streaming 以 `[DONE]` 结束但没有 partial stream
+  continuation contract：
+  <https://api-docs.deepseek.com/quick_start/error_codes/>、
+  <https://api-docs.deepseek.com/quick_start/rate_limit/>、
+  <https://api-docs.deepseek.com/api/create-chat-completion>；
+- AWS / Google 要求有界 exponential backoff、单一 retry layer、幂等/replay safety
+  gate，并观察 error、attempt、delay 和 final outcome；不能因 timeout 就假定上游未执行：
+  <https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/>、
+  <https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/>、
+  <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/retry-strategy>；
+- Codex 把执行进度输出到 stderr，并把 saved-session resume 与 transport failure 分开；
+  Claude Code 的 `--resume` / `--continue` 同样是会话恢复，不是 token stream 续传：
+  <https://developers.openai.com/codex/codex-manual.md>、
+  <https://docs.anthropic.com/en/docs/claude-code/cli-usage>。
+
+DSE 只吸收这些机制，不复制 Provider、第二 controller、设置页或产品词汇。当前单本地
+Runtime 没有测得并发惊群，因此保持 M33 可重放的确定性 1s/2s，不凭云端通用建议加入
+随机 jitter。
+
+### 32.3 顺序、删除与 keep gate
+
+先冻结
+`eval/manifests/m34-model-failure-feedback-v1.json` 与对应 fault fixture；随后：
+
+1. test-only proxy + 真实 binary 基线，保存每个 scenario 的 server attempts、
+   RuntimeEvent、SQLite/accounting 与 en/zh-Hans surface observation；
+2. 只把跨至少两个独立 fault profile 重复的 information loss 定义为 production defect；
+3. 最小修改既有人类投影，不新增 protocol/state truth；transient status 保持紧凑，
+   terminal stop fact 必须可持续取得；
+4. 重跑相同 frozen profiles，并完成 process SIGKILL/reopen、surface parity、focused、
+   fmt、strict Clippy、workspace test、public checker 与 diff check；
+5. treatment 接管后删除被替代的 silent/ephemeral projection 及失去消费者的测试 helper；
+   若没有重复损失或 treatment 不通过，删除 treatment，只保留可复现 baseline 与结论。
+
+只允许 `keep_minimal_model_failure_feedback`、
+`keep_existing_surface_no_repeated_loss` 或
+`reject_and_delete_feedback_candidate`。M34 不需要故意攻击官方 DeepSeek 服务；如运行
+普通 official canary，只能验证成功路径，不能替代 controlled fault evidence。全程不
+访问 GitHub、不 push、不 release。
