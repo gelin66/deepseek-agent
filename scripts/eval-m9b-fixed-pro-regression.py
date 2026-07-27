@@ -7971,18 +7971,48 @@ def preflight(
         cwd=ROOT,
     )
     require(ancestry.returncode == 0, "candidate_ancestry_invalid")
-    production_diff = git_output(
-        "diff",
-        "--name-only",
-        f"{starting_revision}..{revision}",
-        "--",
-        "crates",
-        "Cargo.toml",
-        "Cargo.lock",
-        "rust-toolchain.toml",
-        "config.example.toml",
-    )
-    require(not production_diff, "candidate_production_delta_detected")
+    production_diff = {
+        path
+        for path in git_output(
+            "diff",
+            "--name-only",
+            f"{starting_revision}..{revision}",
+            "--",
+            "crates",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "config.example.toml",
+        ).splitlines()
+        if path
+    }
+    gate_only = source.get("candidate_gate_only_delta")
+    if gate_only is None:
+        require(not production_diff, "candidate_production_delta_detected")
+    else:
+        paths = gate_only.get("paths")
+        hashes = gate_only.get("file_sha256")
+        require(
+            CAMPAIGN == "m32"
+            and isinstance(paths, list)
+            and paths
+            and all(
+                isinstance(path, str)
+                and path.startswith("crates/")
+                and "/tests/" in path
+                for path in paths
+            )
+            and len(paths) == len(set(paths))
+            and isinstance(hashes, dict)
+            and set(paths) == set(hashes)
+            and production_diff == set(paths)
+            and all(
+                file_hash(ROOT / path) == hashes[path] for path in paths
+            )
+            and isinstance(gate_only.get("classification"), str)
+            and gate_only["classification"],
+            "candidate_gate_only_delta_invalid",
+        )
     authority_paths = {
         "product_plan": ROOT / "docs/product/PRODUCT_PLAN.md",
         "roadmap": ROOT / "docs/product/ROADMAP.md",

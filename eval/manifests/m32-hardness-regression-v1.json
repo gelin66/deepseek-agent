@@ -16,7 +16,16 @@
     "python": "3.9.6",
     "go": "1.26.4",
     "cargo_lock_sha256": "sha256:55b6c060bc65d3acd60aa71df4ff8f0124a7b85fb1adf10f812ae61b97899fe4",
-    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "candidate_gate_only_delta": {
+      "paths": [
+        "crates/tui/tests/exec_terminal_acceptance.rs"
+      ],
+      "file_sha256": {
+        "crates/tui/tests/exec_terminal_acceptance.rs": "sha256:0d073f0d5f43149350b0f6b9f05e50913995adf74f9541cee9f2001ffd337812"
+      },
+      "classification": "process acceptance timing reads the canonical Runtime receipt; release behavior is unchanged"
+    }
   },
   "slice_contract": {
     "real_problem": "M31 proves the exact TaskContract verifier grant on two original loss tasks, but not its regression safety across the complete current Hardness strata or the stable owner and cause of any remaining repeated current loss.",
