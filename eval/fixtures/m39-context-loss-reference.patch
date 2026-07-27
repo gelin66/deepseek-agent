@@ -1,0 +1,161 @@
+diff --git a/python-shard-config/codec.py b/python-shard-config/codec.py
+index 68f5f0327d1f1b684d3c735f9fd2f049f67844c2..351aefa9ff53359dbce8718fee62667f46003bb2 100644
+--- a/python-shard-config/codec.py
++++ b/python-shard-config/codec.py
+@@ -4,4 +4,9 @@ from config import normalize_shard_config
+ 
+ 
+ def encode_config(value):
+-    return json.dumps(normalize_shard_config(value))
++    return json.dumps(
++        normalize_shard_config(value),
++        ensure_ascii=False,
++        sort_keys=True,
++        separators=(",", ":"),
++    )
+diff --git a/python-shard-config/config.py b/python-shard-config/config.py
+index fdc9e5e4c0da950e192a9ee6518ccb9cc502c9b6..9aeb4c1d13048d9cc1e2bcda1df7447612618dca 100644
+--- a/python-shard-config/config.py
++++ b/python-shard-config/config.py
+@@ -1,2 +1,19 @@
+ def normalize_shard_config(value):
+-    return dict(value)
++    result = dict(value)
++    if "timeout" in result and "timeout_ms" in result:
++        raise ValueError("timeout_conflict")
++    if "timeout" in result:
++        seconds = result.pop("timeout")
++        if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
++            raise ValueError("timeout_invalid")
++        result["timeout_ms"] = seconds * 1000
++    timeout_ms = result.get("timeout_ms")
++    if timeout_ms is not None and (
++        isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0
++    ):
++        raise ValueError("timeout_invalid")
++    replicas = result.get("replicas", 1)
++    if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
++        raise ValueError("replicas_invalid")
++    result.setdefault("replicas", replicas)
++    return result
+diff --git a/readonly-module-map/projection.py b/readonly-module-map/projection.py
+index e562188b6bd01ec147c86d2a93adced42b55b6c8..13a768d9c54b957dc9b1a6c9a6c2c39c20d17eb2 100644
+--- a/readonly-module-map/projection.py
++++ b/readonly-module-map/projection.py
+@@ -1,2 +1,29 @@
++import json
++from pathlib import Path
++
++
+ def deployment_order():
+-    return []
++    root = Path(__file__).resolve().parent / "services"
++    modules = {}
++    for path in sorted(root.glob("*/module.json")):
++        value = json.loads(path.read_text(encoding="utf-8"))
++        if value.get("enabled") is True:
++            modules[value["name"]] = tuple(value.get("depends_on", []))
++
++    ordered = []
++    visiting = set()
++
++    def visit(name):
++        if name in ordered:
++            return
++        if name in visiting or name not in modules:
++            raise ValueError("module_graph_invalid")
++        visiting.add(name)
++        for dependency in sorted(modules[name]):
++            visit(dependency)
++        visiting.remove(name)
++        ordered.append(name)
++
++    for name in sorted(modules):
++        visit(name)
++    return ordered
+diff --git a/rust-header-route/src/lib.rs b/rust-header-route/src/lib.rs
+index 1b1a1bcd1d45cd0664c1627666bd60b1fa926934..42b9e5fca4887e17a9da1c83d6c0aa956e2815f5 100644
+--- a/rust-header-route/src/lib.rs
++++ b/rust-header-route/src/lib.rs
+@@ -1,6 +1,15 @@
+ pub fn canonical_header_name(raw: &str) -> Result<String, &'static str> {
+-    if raw.is_empty() {
++    let trimmed = raw.trim();
++    if trimmed.is_empty() {
+         return Err("header_empty");
+     }
+-    Ok(raw.to_ascii_lowercase())
++    let normalized = trimmed.replace('_', "-").to_ascii_lowercase();
++    if normalized.contains("..")
++        || normalized
++            .bytes()
++            .any(|byte| !(byte.is_ascii_alphanumeric() || byte == b'-'))
++    {
++        return Err("header_invalid");
++    }
++    Ok(normalized)
+ }
+diff --git a/typescript-protocol-map/src/protocol.ts b/typescript-protocol-map/src/protocol.ts
+index 87cb6677486c925a77888973a0a741304daab208..f4f242e1b92d713eebb8d20cd7dc8500cb360f77 100644
+--- a/typescript-protocol-map/src/protocol.ts
++++ b/typescript-protocol-map/src/protocol.ts
+@@ -1,3 +1,17 @@
+ export function canonicalRoute(raw: string): string {
+-  return raw.toLowerCase();
++  const withoutSuffix = raw.trim().split(/[?#]/, 1)[0];
++  let decoded: string;
++  try {
++    decoded = decodeURIComponent(withoutSuffix);
++  } catch {
++    throw new Error("route_escape_invalid");
++  }
++  const segments = decoded.split("/").filter((part) => part.length > 0);
++  if (segments.some((part) => part === "." || part === "..")) {
++    throw new Error("route_segment_invalid");
++  }
++  if (segments.length === 0) {
++    return "/";
++  }
++  return `/${segments.join("/").toLowerCase()}`;
+ }
+diff --git a/writer-record-codec/codec.py b/writer-record-codec/codec.py
+index b1e5edd785b2ec250b7832ef80843a3d71574669..a020edc1bc8d153328e05435e7ae892aa8006b94 100644
+--- a/writer-record-codec/codec.py
++++ b/writer-record-codec/codec.py
+@@ -8,4 +8,9 @@ def decode_record(raw):
+ 
+ 
+ def encode_record(value):
+-    return json.dumps(normalize_record(value))
++    return json.dumps(
++        normalize_record(value),
++        ensure_ascii=False,
++        sort_keys=True,
++        separators=(",", ":"),
++    )
+diff --git a/writer-record-codec/record.py b/writer-record-codec/record.py
+index ce353dec3f449007f152170746c726fe3d89752f..5bfa534b4911f3666c2e1895e49b2ff13187fb63 100644
+--- a/writer-record-codec/record.py
++++ b/writer-record-codec/record.py
+@@ -1,2 +1,20 @@
+ def normalize_record(value):
+-    return dict(value)
++    result = dict(value)
++    if "id" in result and "record_id" in result:
++        raise ValueError("record_id_conflict")
++    if "id" in result:
++        result["record_id"] = result.pop("id")
++    result.setdefault("version", 2)
++    if result["version"] != 2:
++        raise ValueError("record_version_invalid")
++    record_id = result.get("record_id")
++    if not isinstance(record_id, str) or not record_id:
++        raise ValueError("record_id_invalid")
++    attempt = result.get("attempt")
++    if (
++        isinstance(attempt, bool)
++        or not isinstance(attempt, int)
++        or attempt < 1
++    ):
++        raise ValueError("record_attempt_invalid")
++    return result

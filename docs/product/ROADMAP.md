@@ -6509,3 +6509,62 @@ M9-C 与 M30 运行同一 M38 conformance 得到 byte-identical report，证明 
 M37-C frozen manifest/raw/summary 不修改、不续跑、不补 mate；M38 不读取 Key、不访问网络。
 结论为 `keep_typed_interaction_observer_and_durable_abort_snapshot`。完整证据见
 [M38 summary](../../eval/summaries/m38-typed-interaction-observer-2026-07-27.md)。
+
+## 37. M39：fresh context/localization loss admission audit
+
+- 状态：**M39-A contract/fixture 实施中；production delta=0**
+- 起始基线：M36-A2 clean checkpoint `360e52cae`
+- acquisition owner：唯一 corrected
+  `scripts/eval-m9b-fixed-pro-regression.py`
+- 潜在 production owner：只有 repeated loss 门通过后才允许审计 `crates/context`
+- 共享边界：ADR-0015 仍为 implementation-not-admitted；本里程碑不开发或评测
+  browser/search/vision
+
+### 37.1 真实问题与验收
+
+M36-A2 已再次证明 Writer 同因只覆盖一个 fresh task，不能继续为该单例堆 recovery。
+M32 的 Rust localization 单例又被更晚 M36-A 的三项 localization 3/3 反证为未重复。
+当前仍有一项确定性但未证明 material 的 context debt：无显式项目说明文件时，fallback
+overview 与默认 Project Context Pack 会把同一 payload 投影两次；M37-C 正式 A/B 因旧
+interaction observer 在 position 1 停止，且候选按合同已删除，不能续跑或拼样。
+
+M39-A 只用 exact current pack-on production 做 control-only acquisition，回答：在新的
+无项目说明文件仓库中，是否至少两个独立任务都形成可复核的 `context:localization` loss。
+验收冻结为：
+
+1. 6 个全新 task/material，5 个正向任务覆盖 root、read-only child、explicit Writer，另有
+   1 个 no-tool 假完成反例；
+2. 每项初始 verifier 失败，5 项 reference solution 通过，安全反例继续失败；
+3. fixed `deepseek-v4-pro/high`、current Prompt/tools/permission/Runtime/Store，正常 Runtime
+   safe retry=2，Harness rerun=0；
+4. 每 arm 新 Git repository、DSE home、RunStore、verifier home，terminal 后 exact
+   credential-free SQLite reopen；
+5. behavior/accounting 正交闭合，false success=0；unknown billing、usage incomplete、
+   identity/observer/evidence 歧义在下一付费 arm 前停止；
+6. 同一 canonical `owner_code:loss_code` 未跨至少两个 fresh task_id 重复时，决定必须为
+   `keep_current_harness_no_repeated_loss`，production delta 保持 0。
+
+### 37.2 单一 owner、旧路与删除门
+
+本阶段没有 production old path 被替代，也不恢复 M37-C alternate projection。临时
+Harness 只增加 M39 manifest loader、fresh fixture/reference proof、context-aware loss
+projection、aggregate/self-test 与 live caller；所有事实继续来自 canonical
+RunStore/verifier/accounting observation。
+
+只有 fresh set 中 `context:localization` 至少覆盖两个 task_id，下一独立切片才可审计一个
+`crates/context` treatment；它仍需新的 same-task held-out A/B，不能由 acquisition 自动接管。
+若没有 repeated loss，删除 M39 temporary campaign consumer，只保留 frozen manifest、
+ignored `0600` raw、summary 与 Git 历史。即使出现其他 repeated owner，也一次最多准入一个
+唯一 owner audit；不得同时修改 Prompt、工具、Runtime 或 actor route。
+
+### 37.3 费用、门禁与明确非目标
+
+正式 schedule 为 6 个 position-1 arms，per-arm known-cost ceiling `$0.50`、suite ceiling
+`$3.00`。读取既有授权测试 Key 前，必须完成 fixture/reference proof、loss threshold、
+journal crash windows、M38 typed interaction、truth/acceptance observer、process
+SIGKILL/reopen、immutable binary dry-run、focused、fmt、strict workspace Clippy/test、
+public checker 与 `git diff --check`。
+
+M39-A 不证明 duplicate pack 有益或有害，不执行 M37-C successor，不修改 Prompt bytes、
+ContextBroker、RuntimeEvent、State、tool catalog、permission、Writer behavior 或 UI；不恢复
+Auto、FIM、RepoGraph、planner/critic、多 Writer或第二 Provider/Runtime/Store。

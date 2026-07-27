@@ -4742,3 +4742,68 @@ reject_and_delete_m38_observer_candidate
 
 M38 通过不构成 M37-C continuation、Prompt 收益、billing provider 修复或新 production
 treatment 准入。
+
+### M39 fresh context/localization loss admission contract
+
+M39-A 是新的 control-only loss acquisition，不是 M37-C continuation 或 pack treatment。
+source 从 M36-A2 clean checkpoint `360e52cae` 开始；M37-C raw/result/admission、M36/M32
+历史 loss 和 ADR-0015 均不作为 fresh threshold 输入。
+
+#### 1. Frozen identity
+
+[`m39a-context-loss-acquisition-v1.json`](../../eval/manifests/m39a-context-loss-acquisition-v1.json)
+必须冻结 exact source/tree、Run API v15、RuntimeEvent v22、State v28、exec-stream v6、
+current pack-on Prompt、Pro/high、actor/tool authority、normal Runtime retry=2、Harness
+rerun=0、预算、task/material/reference/verifier 与删除门。fixture 不含 `AGENTS.md`、README
+或其他 project instruction file；M37-A 已证明的 same-payload-wrapper 只作为待检验债务，
+不是 product loss label。
+
+#### 2. Offline corpus
+
+六个 fresh task 为：Rust/TypeScript localization、Python cross-file config、一个普通只读
+child handoff、一个 explicit Writer migration 和一个 no-tool false-completion counterexample。
+credential 前必须证明 6/6 initial verifier fail、5/5 reference pass、安全反例仍失败，
+changed scope 与 manifest 精确一致。loss observer 至少区分：
+
+```text
+deepseek:transport_or_accounting
+orchestrator:writer_integration
+runtime:actor_contract
+tools:edit_application
+tools:tool_aci
+context:localization
+runtime:verification_visibility
+deepseek:model_capability_ceiling
+```
+
+`context:localization` 只能在 behavior product loss 已闭合、accounting complete、没有更早的
+contract/transport/actor/tool/edit/recovery 原因，且首次编辑前没有观察到任何 frozen relevant
+file 时产生。重复 payload 本身不能生成 loss。
+
+#### 3. Formal acquisition
+
+每个 task 只运行一个 fresh position-1 arm；每 arm 新 workspace、DSE home、RunStore 和
+verifier home。任何 billing unknown、usage incomplete、false success、route/actor/
+identity/observer/evidence 歧义或费用越界都在下一 arm 前停止，不补 mate、不 rerun、不
+拼接旧 raw。完整 observation 必须包含 terminal、latest receipt、external verifier、changed
+scope、actor lifecycle、physical request/retry/usage/cache/cost 与 credential-free reopen。
+
+#### 4. Decision and deletion
+
+机械门为：
+
+```text
+same owner_code:loss_code on fewer than 2 fresh task IDs
+  -> keep_current_harness_no_repeated_loss
+  -> production delta = 0
+  -> delete temporary M39 campaign consumer
+
+same owner_code:loss_code on at least 2 fresh task IDs
+  -> next_candidate_audit_required
+  -> audit exactly one unique owner
+  -> freeze a separate held-out treatment A/B before production change
+```
+
+即使 repeated loss 是 `context:localization`，也只准入一个 context owner audit；不得直接
+恢复已删除的 M37-C selector或宣称 pack 去重有效。ADR-0015 继续 implementation-not-admitted，
+M39 不开发/评测 browser、search 或 vision。

@@ -1,0 +1,4 @@
+{
+  "cross_tenant_export": "deny",
+  "same_tenant_export": "allow"
+}

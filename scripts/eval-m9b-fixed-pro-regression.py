@@ -17,6 +17,8 @@ contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
 ``--campaign m30`` selects the current one-arm-per-task dogfood loss
 acquisition while inheriting only the frozen M23 task material.
+``--campaign m39a`` selects the fresh pack-on context/localization loss
+admission audit. It uses new task material and does not continue M37-C.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -90,6 +92,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m20b",
         "m23b",
         "m30",
+        "m39a",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -107,6 +110,7 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "m39a",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -116,10 +120,27 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "m39a",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
-HARDNESS_CAMPAIGNS = {"m23b", "m30"}
-if CAMPAIGN == "m30":
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30", "m39a"}
+HARDNESS_CAMPAIGNS = {"m23b", "m30", "m39a"}
+CURRENT_HARDNESS_CAMPAIGNS = {"m30", "m39a"}
+if CAMPAIGN == "m39a":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m39a-context-loss-acquisition-v1.json"
+    )
+    BASE_MANIFEST_PATH: Path | None = None
+    MANIFEST_SCHEMA = "dse.eval.m39a-context-loss-acquisition.v1"
+    BASE_MANIFEST_SCHEMA: str | None = None
+    JOURNAL_SCHEMA = "dse.eval.m39a-context-loss-acquisition-journal.v1"
+    ADMISSION_SCHEMA = (
+        "dse.eval.m39a-context-loss-acquisition-live-admission.v1"
+    )
+    RUN_API = 15
+    EVENT_API = 22
+    STATE_SCHEMA = 28
+    EXEC_STREAM = 6
+elif CAMPAIGN == "m30":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
     )
@@ -255,7 +276,15 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m30":
+if CAMPAIGN == "m39a":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m39a-context-loss-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m39a-context-loss-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = "dse.eval.m39a-context-loss-report.v1"
+elif CAMPAIGN == "m30":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
     )
@@ -590,6 +619,7 @@ def load_manifest() -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
+            "m39a",
         },
         "campaign_invalid",
     )
@@ -647,28 +677,39 @@ def load_manifest() -> dict[str, Any]:
             tasks = manifest["tasks"]
             tool_policies = manifest["tool_policies"]
         if CAMPAIGN in HARDNESS_CAMPAIGNS:
-            expected_tasks = [
-                "rust_router_localization",
-                "typescript_route_localization",
-                "python_config_crossfile",
-                "rust_line_recovery_resume",
-                "python_jsonl_runtime",
-                "readonly_service_graph",
-                "writer_envelope",
-                "safety_authorization_claim",
-                "rust_event_localization",
-                "typescript_request_crossfile",
-                "rust_netstring_recovery_resume",
-                "readonly_component_graph",
-                "writer_policy_migration",
-                "safety_export_claim",
-                "rust_registry_localization",
-                "typescript_forwarded_crossfile",
-                "typescript_retry_resume",
-                "safety_tenant_claim",
-                "go_health_api",
-                "typescript_dom_ui",
-            ]
+            expected_tasks = (
+                [
+                    "rust_header_localization",
+                    "typescript_protocol_localization",
+                    "python_config_crossfile",
+                    "readonly_module_handoff",
+                    "writer_record_migration",
+                    "safety_tenant_claim",
+                ]
+                if CAMPAIGN == "m39a"
+                else [
+                    "rust_router_localization",
+                    "typescript_route_localization",
+                    "python_config_crossfile",
+                    "rust_line_recovery_resume",
+                    "python_jsonl_runtime",
+                    "readonly_service_graph",
+                    "writer_envelope",
+                    "safety_authorization_claim",
+                    "rust_event_localization",
+                    "typescript_request_crossfile",
+                    "rust_netstring_recovery_resume",
+                    "readonly_component_graph",
+                    "writer_policy_migration",
+                    "safety_export_claim",
+                    "rust_registry_localization",
+                    "typescript_forwarded_crossfile",
+                    "typescript_retry_resume",
+                    "safety_tenant_claim",
+                    "go_health_api",
+                    "typescript_dom_ui",
+                ]
+            )
             require(
                 source.get("run_api") == RUN_API
                 and source.get("runtime_event") == EVENT_API
@@ -676,7 +717,9 @@ def load_manifest() -> dict[str, Any]:
                 and source.get("exec_stream") == EXEC_STREAM,
                 "protocol_identity_invalid",
             )
-            expected_runs = 1 if CAMPAIGN == "m30" else 3
+            expected_runs = (
+                1 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 3
+            )
             require(
                 resources.get("model") == MODEL
                 and resources.get("reasoning_effort") == REASONING
@@ -707,6 +750,83 @@ def load_manifest() -> dict[str, Any]:
                     },
                     "permission_continuity_contract_invalid",
                 )
+            elif CAMPAIGN == "m39a":
+                official_review = manifest.get("official_review")
+                require(
+                    resources.get("permission_mode") == "agent"
+                    and resources.get("interactive") is False
+                    and resources.get("max_runtime_retries_per_arm") == 2
+                    and manifest.get("freshness_contract")
+                    == {
+                        "new_task_material": True,
+                        "new_task_contract_identity": True,
+                        "new_workspace_per_arm": True,
+                        "new_run_store_per_arm": True,
+                        "new_position_1_schedule": True,
+                        "historical_raw_is_input": False,
+                        "historical_result_is_input": False,
+                        "historical_admission_is_input": False,
+                        "m37_c_is_continued": False,
+                    }
+                    and manifest.get("hypothesis_contract")
+                    == {
+                        "owner_under_audit": "crates/context",
+                        "current_prompt_treatment": "pack_on_only",
+                        "production_delta": 0,
+                        "fixture_has_project_instruction_file": False,
+                        "known_offline_relation": (
+                            "project_context_to_project_context_pack_"
+                            "same_payload_wrapper"
+                        ),
+                        "admission_loss": "context:localization",
+                        "candidate_is_automatic": False,
+                        "browser_search_vision_in_scope": False,
+                    },
+                    "m39a_freshness_contract_invalid",
+                )
+                require(
+                    official_review
+                    == {
+                        "reviewed_on": "2026-07-27",
+                        "sources": [
+                            "https://api-docs.deepseek.com/updates/",
+                            "https://api-docs.deepseek.com/news/news260424/",
+                            "https://api-docs.deepseek.com/quick_start/pricing/",
+                            (
+                                "https://api-docs.deepseek.com/api/"
+                                "create-chat-completion/"
+                            ),
+                            (
+                                "https://api-docs.deepseek.com/guides/"
+                                "thinking_mode/"
+                            ),
+                            (
+                                "https://api-docs.deepseek.com/guides/"
+                                "tool_calls/"
+                            ),
+                        ],
+                        "frozen_facts": {
+                            "openai_base_url": "https://api.deepseek.com",
+                            "chat_endpoint": "/chat/completions",
+                            "model": "deepseek-v4-pro",
+                            "reasoning_effort": "high",
+                            "legacy_model_aliases_retired_on": (
+                                "2026-07-24T15:59:00Z"
+                            ),
+                            "chat_completions_retired": False,
+                            "context_length_tokens": 1_000_000,
+                            "maximum_output_tokens": 384_000,
+                            "cache_hit_input_usd_per_million": "0.003625",
+                            "cache_miss_input_usd_per_million": "0.435",
+                            "output_usd_per_million": "0.87",
+                            "tool_calls_supported": True,
+                            "thinking_supported": True,
+                            "reasoning_content_must_be_replayed_on_tool_turns": True,
+                            "stream_usage_precedes_done": True,
+                        },
+                    },
+                    "m39a_official_review_invalid",
+                )
             require(
                 isinstance(resources.get("runtime_wall_time_ms"), int)
                 and isinstance(resources.get("harness_wall_time_ms"), int)
@@ -715,6 +835,33 @@ def load_manifest() -> dict[str, Any]:
                 "deadline_resource_identity_invalid",
             )
             expected_metrics = (
+                [
+                    "verified_success",
+                    "correct_safety_rejection",
+                    "false_success",
+                    "behavior_status",
+                    "canonical_loss_owner_code",
+                    "canonical_loss_code",
+                    "accounting_status",
+                    "request_count",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_hit_tokens",
+                    "cache_miss_tokens",
+                    "cost_nanousd",
+                    "wall_time_ms",
+                    "first_relevant_file_ms",
+                    "relevant_files_seen_before_first_edit",
+                    "irrelevant_files_seen_before_first_edit",
+                    "first_edit_verified",
+                    "repair_loops",
+                    "repeated_reads_same_mutation_epoch",
+                    "compaction_count",
+                    "resume_count",
+                    "goal_constraint_loss",
+                ]
+                if CAMPAIGN == "m39a"
+                else
                 [
                     "verified_success",
                     "correct_safety_rejection",
@@ -775,22 +922,34 @@ def load_manifest() -> dict[str, Any]:
                 "task_identity_invalid",
             )
             fixture = manifest.get("fixture_contract")
+            expected_fixture = (
+                "eval/fixtures/m39-context-loss-monorepo"
+                if CAMPAIGN == "m39a"
+                else "eval/fixtures/m23-hardness-monorepo"
+            )
+            expected_profile = (
+                "m39a-2026-07-27"
+                if CAMPAIGN == "m39a"
+                else "m23b-2026-07-26"
+            )
             require(
                 isinstance(fixture, dict)
-                and fixture.get("path")
-                == "eval/fixtures/m23-hardness-monorepo"
+                and fixture.get("path") == expected_fixture
                 and fixture.get("tree_sha256")
                 == canonical_tree_hash(ROOT / fixture["path"])
                 and isinstance(fixture.get("base_commit"), str)
-                and fixture.get("commit_profile")
-                == "m23b-2026-07-26",
+                and fixture.get("commit_profile") == expected_profile,
                 "fixture_contract_invalid",
             )
             reference_patches = manifest.get("reference_patches")
+            expected_reference_ids = (
+                {"m39"}
+                if CAMPAIGN == "m39a"
+                else {"m15", "m18", "m19", "go", "dom"}
+            )
             require(
                 isinstance(reference_patches, dict)
-                and set(reference_patches)
-                == {"m15", "m18", "m19", "go", "dom"},
+                and set(reference_patches) == expected_reference_ids,
                 "reference_solution_identity_invalid",
             )
             for patch in reference_patches.values():
@@ -801,14 +960,23 @@ def load_manifest() -> dict[str, Any]:
                     == patch.get("sha256"),
                     "reference_solution_identity_invalid",
                 )
-            required_tags = {
-                "large_repo_localization": 4,
-                "cross_file_behavior": 4,
-                "failure_recovery_safety": 4,
-                "long_horizon_resume": 3,
-                "service_api_ui": 3,
-                "explicit_writer": 2,
-            }
+            required_tags = (
+                {
+                    "large_repo_localization": 2,
+                    "cross_file_behavior": 3,
+                    "failure_recovery_safety": 1,
+                    "explicit_writer": 1,
+                }
+                if CAMPAIGN == "m39a"
+                else {
+                    "large_repo_localization": 4,
+                    "cross_file_behavior": 4,
+                    "failure_recovery_safety": 4,
+                    "long_horizon_resume": 3,
+                    "service_api_ui": 3,
+                    "explicit_writer": 2,
+                }
+            )
             observed_tags: Counter[str] = Counter()
             observed_languages: set[str] = set()
             projects: set[str] = set()
@@ -897,8 +1065,13 @@ def load_manifest() -> dict[str, Any]:
                     "fixture_base_commit": fixture["base_commit"],
                     "fixture_commit_profile": fixture["commit_profile"],
                 }
+            expected_languages = (
+                {"rust", "typescript", "python"}
+                if CAMPAIGN == "m39a"
+                else {"rust", "typescript", "python", "go"}
+            )
             require(
-                observed_languages == {"rust", "typescript", "python", "go"}
+                observed_languages == expected_languages
                 and all(
                     observed_tags[tag] >= minimum
                     for tag, minimum in required_tags.items()
@@ -1443,6 +1616,7 @@ def reference_solution_proof() -> dict[str, Any] | None:
         "m20b",
         "m23b",
         "m30",
+        "m39a",
     }:
         return None
     if CAMPAIGN in HARDNESS_CAMPAIGNS:
@@ -1684,6 +1858,10 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         date = "2026-07-19T00:00:00Z"
         message = "fixture"
         init = ["git", "init", "-q"]
+    elif profile == "m39a-2026-07-27":
+        date = "2026-07-27T00:00:00Z"
+        message = f"M39 frozen fixture {source.name}"
+        init = ["git", "init", "-q", "-b", "main"]
     elif profile in {
         "m11-2026-07-25",
         "m12-2026-07-25",
@@ -1962,7 +2140,7 @@ def start_envelope(
                         else RESOURCES["interactive"]
                     ),
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else {
                     "write_execution_mode": (
                         "isolated_writer" if lane == "writer" else "root"
@@ -5338,6 +5516,95 @@ def hardness_metrics_projection(
     }
 
 
+def m39_loss_projection(
+    task: dict[str, Any],
+    behavior: dict[str, Any],
+    accounting_truth: dict[str, Any],
+    hardness: dict[str, Any],
+    failure_codes: dict[str, int],
+    *,
+    lane_valid: bool,
+) -> dict[str, str | None]:
+    """Conservatively attribute a closed M39 product loss.
+
+    The duplicate prompt relation is only the hypothesis under test. It never
+    creates a label by itself; context localization is emitted only after a
+    closed product loss with complete accounting and no earlier typed owner.
+    """
+
+    require(
+        isinstance(task, dict)
+        and isinstance(behavior, dict)
+        and isinstance(accounting_truth, dict)
+        and isinstance(hardness, dict)
+        and isinstance(failure_codes, dict)
+        and all(
+            isinstance(code, str)
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 0
+            for code, count in failure_codes.items()
+        )
+        and isinstance(lane_valid, bool),
+        "m39a_loss_projection_input_invalid",
+    )
+    if not behavior.get("product_loss"):
+        return {
+            "canonical_loss_owner_code": None,
+            "canonical_loss_code": None,
+        }
+
+    raw_loss = behavior.get("loss_code")
+    if (
+        raw_loss == "deepseek_transport"
+        or accounting_truth.get("status") != "complete"
+    ):
+        owner_code, loss_code = "deepseek", "transport_or_accounting"
+    elif task.get("lane") == "writer" and not lane_valid:
+        owner_code, loss_code = "orchestrator", "writer_integration"
+    elif task.get("lane") == "read_only" and not lane_valid:
+        owner_code, loss_code = "runtime", "actor_contract"
+    elif any(
+        failure_codes.get(code, 0) > 0
+        for code in {
+            "workspace_precondition",
+            "stale_read",
+            "authorization_stale",
+            "ambiguous_edit",
+            "patch_parse",
+            "side_effect_ambiguous",
+        }
+    ):
+        owner_code, loss_code = "tools", "edit_application"
+    elif any(
+        failure_codes.get(code, 0) > 0
+        for code in {
+            "malformed_arguments",
+            "schema_validation",
+            "unknown_tool",
+            "missing_field",
+            "invalid_field",
+        }
+    ):
+        owner_code, loss_code = "tools", "tool_aci"
+    elif (
+        hardness.get("first_relevant_file_ms") is None
+        or hardness.get("relevant_files_seen_before_first_edit") == 0
+    ):
+        owner_code, loss_code = "context", "localization"
+    elif raw_loss in {
+        "false_success",
+        "verified_workspace_without_terminal_receipt",
+    }:
+        owner_code, loss_code = "runtime", "verification_visibility"
+    else:
+        owner_code, loss_code = "deepseek", "model_capability_ceiling"
+    return {
+        "canonical_loss_owner_code": owner_code,
+        "canonical_loss_code": loss_code,
+    }
+
+
 def build_hardness_conformance_report() -> dict[str, Any]:
     require(CAMPAIGN == "m23b", "hardness_campaign_required")
     manifest = read_json_object(
@@ -6304,6 +6571,23 @@ def derive_arm(
         accounting_truth = accounting_truth_projection(
             trajectory_accounting_observation(facts)
         )
+        if CAMPAIGN == "m39a":
+            canonical_loss = m39_loss_projection(
+                task,
+                behavior,
+                accounting_truth,
+                hardness,
+                dict(failure_codes),
+                lane_valid=lane["valid"],
+            )
+            behavior["raw_loss_code"] = behavior["loss_code"]
+            behavior["owner_code"] = canonical_loss[
+                "canonical_loss_owner_code"
+            ]
+            behavior["loss_code"] = canonical_loss[
+                "canonical_loss_code"
+            ]
+            hardness.update(canonical_loss)
         truth = {
             "behavior": behavior,
             "accounting": accounting_truth,
@@ -8390,6 +8674,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b",
         "m23b",
         "m30",
+        "m39a",
     }:
         complete = all(
             cell["false_success"] == 0
@@ -8421,7 +8706,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     for safety in safety_cells
                 )
             )
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             complete = complete and all(
                 arm["truth"]["behavior"]["status"]
                 in {
@@ -8469,6 +8754,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
         "m30": "insufficient_repeated_current_loss",
+        "m39a": "keep_current_harness_no_repeated_loss",
     }[CAMPAIGN]
     result = {
         "record_type": "summary",
@@ -8553,7 +8839,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     require(
                         isinstance(owner_code, str)
                         and isinstance(loss_code, str),
-                        "m30_loss_identity_invalid",
+                        "current_loss_identity_invalid",
                     )
                     stable_loss = f"{owner_code}:{loss_code}"
                     losses[stable_loss] += 1
@@ -8562,11 +8848,16 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                 losses, loss_tasks
             )
             hardness_result["loss_matrix"] = candidate
-            result["decision"] = (
-                candidate["result_class"]
-                if complete
-                else "reject_incomplete_acquisition"
-            )
+            if complete:
+                result["decision"] = (
+                    "keep_current_harness_no_repeated_loss"
+                    if CAMPAIGN == "m39a"
+                    and candidate["result_class"]
+                    == "insufficient_repeated_current_loss"
+                    else candidate["result_class"]
+                )
+            else:
+                result["decision"] = "reject_incomplete_acquisition"
             result["baseline_label_eligible"] = False
         result.update(hardness_result)
     return result
@@ -8881,7 +9172,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                     else {
                         "interactive": requires_live_continuity(
                             task_id
@@ -9673,6 +9964,63 @@ def run_self_test() -> int:
             == "next_candidate_audit_required",
             "self_test_trajectory_loss_threshold_invalid",
         )
+        if CAMPAIGN == "m39a":
+            closed_loss = {
+                "product_loss": True,
+                "loss_code": "terminal_failure",
+            }
+            closed_accounting = {"status": "complete"}
+            context_loss = m39_loss_projection(
+                TASKS["rust_header_localization"],
+                closed_loss,
+                closed_accounting,
+                {
+                    "first_relevant_file_ms": None,
+                    "relevant_files_seen_before_first_edit": 0,
+                },
+                {},
+                lane_valid=True,
+            )
+            tool_loss = m39_loss_projection(
+                TASKS["rust_header_localization"],
+                closed_loss,
+                closed_accounting,
+                {
+                    "first_relevant_file_ms": None,
+                    "relevant_files_seen_before_first_edit": 0,
+                },
+                {"schema_validation": 1},
+                lane_valid=True,
+            )
+            non_loss = m39_loss_projection(
+                TASKS["rust_header_localization"],
+                {"product_loss": False, "loss_code": None},
+                closed_accounting,
+                {
+                    "first_relevant_file_ms": None,
+                    "relevant_files_seen_before_first_edit": 0,
+                },
+                {},
+                lane_valid=True,
+            )
+            require(
+                context_loss
+                == {
+                    "canonical_loss_owner_code": "context",
+                    "canonical_loss_code": "localization",
+                }
+                and tool_loss
+                == {
+                    "canonical_loss_owner_code": "tools",
+                    "canonical_loss_code": "tool_aci",
+                }
+                and non_loss
+                == {
+                    "canonical_loss_owner_code": None,
+                    "canonical_loss_code": None,
+                },
+                "self_test_m39a_loss_projection_invalid",
+            )
     continuity_controls = None
     if CAMPAIGN in HARDNESS_CAMPAIGNS:
         continuity_controls = {
@@ -9688,7 +10036,7 @@ def run_self_test() -> int:
             for task_id in TASKS
             if requires_live_continuity(task_id)
         }
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             require(
                 all(
                     controls["interactive"] is (task_id in required)
@@ -9702,7 +10050,7 @@ def run_self_test() -> int:
                     }
                     for task_id, controls in continuity_controls.items()
                 )
-                and len(required) == 3,
+                and len(required) == (3 if CAMPAIGN == "m30" else 0),
                 "self_test_continuity_control_scope_invalid",
             )
         else:
@@ -9752,7 +10100,7 @@ def run_self_test() -> int:
                             "loss_code": None,
                             **(
                                 {"owner_code": None}
-                                if CAMPAIGN == "m30"
+                                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                                 else {}
                             ),
                         },
@@ -9787,6 +10135,11 @@ def run_self_test() -> int:
             }
             if CAMPAIGN == "m30"
             else {
+                "correct_safety_rejection": 1,
+                "verified_success": 5,
+            }
+            if CAMPAIGN == "m39a"
+            else {
                 "correct_safety_rejection": 9,
                 "verified_success": 51,
             }
@@ -9809,6 +10162,17 @@ def run_self_test() -> int:
                     CAMPAIGN == "m30"
                     and synthetic_summary["decision"]
                     == "insufficient_repeated_current_loss"
+                    and synthetic_summary["loss_matrix"][
+                        "result_class"
+                    ]
+                    == "insufficient_repeated_current_loss"
+                    and "pass_power_3_tasks"
+                    not in synthetic_summary
+                )
+                or (
+                    CAMPAIGN == "m39a"
+                    and synthetic_summary["decision"]
+                    == "keep_current_harness_no_repeated_loss"
                     and synthetic_summary["loss_matrix"][
                         "result_class"
                     ]
@@ -10546,6 +10910,7 @@ def parse_args() -> argparse.Namespace:
             "m20b",
             "m23b",
             "m30",
+            "m39a",
         ),
         default="m9c",
     )
