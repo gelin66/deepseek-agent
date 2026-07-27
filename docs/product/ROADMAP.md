@@ -5945,3 +5945,256 @@ known cost             $0.014071409
 已物理删除并恢复 M35 前 exact blob `5f3f613c`；保留 frozen contract、live admission、
 两个 ignored `0600` journal、summary 与 Git 历史。完整证据见
 [M35 summary](../../eval/summaries/m35-official-reliability-soak-2026-07-27.md)。
+
+## 34. M36：DeepSeek-native verified harness 优化计划
+
+- 状态：**方案冻结；等待独立基线 acquisition**
+- 起始基线：M35 clean checkpoint `e84abb1ed`
+- 产品边界：继续执行 PRODUCT_PLAN、ADR-0001/0002/0003/0005/0008/0011；不改变
+  DeepSeek-only、单 `AgentRuntime`、单 `RuntimeEvent`、单 `RunStore`、单 Writer 默认和
+  Host latest-revision completion
+- 北极星：`verified task success / tokens / time / code complexity`
+
+### 34.1 结论与方法
+
+M36 不把 Codex、Claude Code、Gemini CLI、Aider、SWE-agent、OpenHands、Pi/Oh My Pi 或
+其他 Agent 的功能清单当作 DSE backlog。外部系统只用于回答三个问题：
+
+1. 它解决的是哪一种可复现任务损失；
+2. 有效机制能否进入 DSE 已有因果链中的唯一 owner；
+3. 在相同 DeepSeek 模型、任务、预算和 verifier 下，是否产生 held-out 正收益。
+
+DSE 的唯一 Harness 闭环保持：
+
+```text
+TaskContract
+  -> ContextBundle
+  -> DeepSeek-native AgentRuntime
+  -> ToolOutcome
+  -> EvidenceReceipt(latest workspace revision)
+  -> TerminalState / typed recovery
+```
+
+`RunStore` 是以上事实的唯一持久真相。任何计划、里程碑、多 Agent、TUI 摘要和评测结果都
+只能由这条链投影或编排；不得建立模型自由维护的第二 plan、memory、progress、completion
+或 retry controller。
+
+前沿研究提供两个直接约束：
+
+- DeepSeek V4 官方 Coding Agent 评测使用的是以 Bash 和文件编辑为核心的 minimal harness，
+  不是多 Provider、多 planner 或大工具市场；DSE 应优先提高少量工具和 Host 反馈质量；
+- Claw-SWE-Bench 在固定模型下观察到 Harness 差异与模型差异都可显著改变 Pass@1，说明
+  Harness 值得深度优化，但必须把模型选择与 Harness 贡献分开测量，不能用竞品整机成绩
+  代替 DSE 工程归因。
+
+### 34.2 DeepSeek 原生定义
+
+“原生”指准确利用官方 DeepSeek 行为，不指复制任一兼容客户端的产品结构：
+
+1. production 继续只走官方 DeepSeek ChatCompletions Standard/Strict surface；公开 wire
+   使用 OpenAI-style Chat 格式不等于增加 OpenAI Provider；
+2. tool-call 回合的 assistant `reasoning_content`、`content`、`tool_calls` 与 tool result
+   按官方语义精确、完整回放；不得把工具结果伪装成 user message；
+3. `RequestPlan` 在请求前确定 surface、model、reasoning、tool catalog、strict、
+   streaming 和 replay；sender 不二次猜测；
+4. 不接 Anthropic Messages，不增加第二 transport、第二 Provider 或通用兼容抽象；
+5. DeepSeek 报告中的内部 DSML/XML 不是公开 API 接入要求，不在 DSE 另造 wire protocol；
+6. 1M context 是容量上限，不是默认填充目标；active context 继续由 ContextBroker 按任务和
+   Token 预算渐进加载，不能用大窗口掩盖上下文污染；
+7. cache 只优化安全稳定前缀；最新 revision、receipt 和未满足 acceptance 不能为了命中率
+   被前移、删除或写回为 stale history；
+8. fixed root/Writer 继续 Pro/high，read-only child 继续 Flash/high，已有 typed
+   recovery/recheck/rework 继续 Pro/max。M36 不恢复 Auto、分类请求、关键词 heuristic 或
+   运行中动态切换。
+
+若困难任务上的 current Pro/high 与 Pro/max 对照产生完整正向证据，只能形成“是否修改一个
+固定产品默认值”的后续决策；不得据此恢复 per-task Auto。改变 ADR-0008 的固定默认值需要
+独立 ADR、current same-binary A/B 和完整回滚身份。
+
+### 34.3 顶尖 Agent 能力的原生映射
+
+| 外部经验 | 要吸收的问题本质 | DSE 唯一落点 | 明确不复制 |
+|---|---|---|---|
+| Codex | 清晰 goal/context/constraints/done、确定性 test/diff、sandbox、worktree、只读并行调查 | `TaskContract`、Verifier、typed permission、Writer worktree、read-only child | OpenAI Provider、产品 surface、插件/云平台 |
+| Claude Code | just-in-time context、渐进探索、长任务跨会话连续性 | `ContextBundle`、artifact、Host-derived verified milestone、typed continuation | 常驻 planner/generator/evaluator、模型自由 memory |
+| SWE-agent | 模型友好的 ACI、有界读取、简洁搜索、编辑后即时错误反馈 | 现有 `read_file/file_search/grep_files/edit_file/exec_shell` schema 与 outcome | 同义工具、专用命令语言、第二工具目录 |
+| Agentless | localization -> repair -> validation 的简单可解释链 | TaskContract/Context/ToolOutcome/Evidence 主链 | 为展示自主性增加自由 workflow |
+| Aider | Token 预算内的符号/引用导航 | 重复定位损失后的 lazy compiler/LSP/tree-sitter facts | 默认 RepoGraph、每请求全仓 map、vector memory |
+| Gemini CLI | actor-scoped tool catalog、read-only planning、denied tool 不进入模型目录 | fixed actor catalog、Host permission、read-only child | 通用 policy DSL、Auto model routing |
+| OpenHands | 单一 mutable truth、可恢复 replay、Agent/Application 边界 | RunStore、RuntimeEvent、app/CLI/TUI/API 分层 | 多 Provider SDK、云平台、配置图拼装 |
+| Pi/Oh My Pi | minimal loop、steer/follow-up、stale-safe edit 与紧凑结果候选 | 现有 Runtime command、canonical edit、bounded outcome | 32+ 工具、Provider 抽象、默认 browser/debugger/memory |
+
+表中机制只是候选来源，不代表 production admission。某能力若不能映射到一个现有 owner、
+不能替代旧路径或没有可复现损失，就不开发。
+
+### 34.4 执行切片
+
+#### M36-A：能力基线与 loss matrix
+
+先冻结 fresh、人工复核、可确定性验收的任务矩阵，不先写 production treatment：
+
+```text
+small/medium deterministic repair
+large-repository localization and impact analysis
+multi-module hard implementation/refactor
+multi-compaction / multi-reopen long-horizon task
+service/API/UI application behavior
+false-completion and recovery adversarial cases
+```
+
+每条轨迹至少记录：
+
+- 首个相关文件时间、首次正确编辑时间、错误入口和相关文件 recall；
+- tool selection、malformed arguments、重复调用、空输出歧义、结果截断和 stale edit；
+- 每轮 active context、稳定前缀、raw tool-output 占比、compaction/reopen 次数；
+- verifier plan、latest revision receipt、false completion/rework；
+- physical request、retry、usage/cache/cost、wall time、terminal 和 credential-free reopen。
+
+loss 只能归入稳定 taxonomy：
+
+```text
+contract_ambiguity
+localization
+context_pollution_or_loss
+tool_aci
+edit_application
+verification_visibility
+long_horizon_recovery
+writer_integration
+transport_or_accounting
+model_capability_ceiling
+```
+
+同一 `owner_code:loss_code` 未跨至少两个独立任务重复，不进入 production。
+
+#### M36-B：DeepSeek effort 与 context control-only
+
+只做两个可归因控制实验，不同时改变 Prompt、工具或 Runtime：
+
+1. 在冻结困难任务集上比较 current `deepseek-v4-pro/high` 与
+   `deepseek-v4-pro/max`，验证 Max 是否提高 verified success/降低 false completion，
+   并完整记录 output/reasoning Token、请求、wall time 和费用；
+2. 先观察实际 active context 与失败位置；只有损失重复指向 under-context 或
+   context pollution 时，才比较 current ContextBroker 与一个最小 working-set treatment。
+
+不做多档 Auto、不让 Flash 分类任务、不以 1M 最大窗口作为 treatment。任何 in-place
+compaction 都必须保持当前 tool-call/result 原子性和 DeepSeek reasoning replay；若证据要求
+context reset，只能在无 in-flight model/tool、Host 已验证 milestone 的 typed continuation
+边界建立新请求历史，不能静默截断正在进行的工具推理链。
+
+#### M36-C：一次只准入一个最高收益 Harness treatment
+
+按 M36-A 的重复损失，最多选择下列一个候选：
+
+1. **最小 Tool ACI**：先改现有 schema、description、typed error、分页或 bounded summary；
+   可测试 lint-on-edit、search file-first 再按需展开 snippet、明确 empty-success 和 stale
+   target feedback，但一次实验只改变一个行为族；
+2. **确定性 localization**：先改进现有 file/grep/read；仍失败时才在 `context/tools`
+   owner 内 lazy 加载 symbol/definition/reference fact，不建设永久 RepoGraph；
+3. **Host-derived VerifiedMilestone**：只从 TaskContract、revision、EvidenceReceipt 与
+   verifier 派生已验证进度、未满足 acceptance 和恢复入口，不允许模型维护第二进度真相；
+4. **Host-owned ApplicationProbe**：只在 service/API/UI 任务重复败于运行可见性时，建立
+   bounded start -> health/port -> logs -> HTTP -> optional DOM/screenshot -> receipt ->
+   guaranteed teardown/reopen cleanup；
+5. **content-anchored edit**：只有 canonical edit 的真实模型轨迹重复出现 stale/ambiguous
+   target，且现有 12/12 Host correctness 仍不能解决时才评测；不能因竞品宣传 hashline
+   就替换已正确的 edit owner。
+
+candidate 必须使用现有 crate owner、事件、ToolOutcome、artifact、receipt 和 Store。
+不创建 Manager/Factory/Service 空壳，不增加第二模型循环或第二完成权。
+
+#### M36-D：长程与多 Agent 的受控扩展
+
+只有单 Agent 基线证明 context pollution 或可并行 wall-time 是主要瓶颈时才执行：
+
+- read-heavy exploration、测试和日志分析可交给 bounded read-only child，返回结构化摘要，
+  根 Agent 保留 TaskContract、决策与最终收敛；
+- single Writer 继续默认；它使用 isolated worktree、diff、verify、integrate、root
+  latest-revision verify 和 cleanup；
+- 多 Writer 只有在依赖图可冻结、子任务真正独立、单 Writer wall time 跨任务重复成为主要
+  瓶颈时重开，并必须证明净时间收益且不增加 conflict、false success、Token 或复杂度；
+- 不建立自由聊天 swarm、无限递归、长期 reviewer/critic 群或第二 scheduler。
+
+#### M36-E：外部系统能力保持范围外
+
+MCP、浏览器、web search、IDE/GUI、远程执行和云平台不属于 M36 核心 Harness。只有产品范围
+出现外部系统任务，且固定工具面无法完成时才另立里程碑。届时外部内容必须带 provenance/
+trust/capability 边界进入 ToolOutcome，不得让网页、README 或 MCP 输出直接获得指令权。
+
+### 34.5 三层比较，避免混淆模型与 Harness
+
+正式结果必须分开报告：
+
+```text
+Harness comparison:
+  same DeepSeek V4 model/effort
+  DSE vs minimal/generic compatible harness
+
+Product comparison:
+  DSE + DeepSeek V4
+  vs Codex / Claude Code / other complete products
+
+Model-ceiling comparison:
+  official-style minimal DeepSeek harness
+  vs DSE treatment under the same DeepSeek model
+```
+
+只有第一层可以直接归因 DSE Harness。第二层反映用户最终体验，但同时混合模型、Harness、
+工具和产品环境；第三层说明工程增益与 DeepSeek 当前模型上限之间的距离。
+
+### 34.6 准入、删除与停止门
+
+每个 M36 production treatment 都必须：
+
+1. 先冻结 real problem、唯一 owner、control、treatment、held-out tasks、预算和 verifier；
+2. control/treatment 使用相同 DeepSeek model、reasoning、Prompt、workspace、tool authority、
+   deadline、request/Token budget 和 external verifier；
+3. false success 保持 0，correct safety rejection 不回退；
+4. verified success 或目标 hard/long-horizon task completion 有明确净提升；
+5. 不用 Token、cache、费用或速度改善掩盖质量下降；
+6. behavior/accounting 按 ADR-0011 正交记录，unknown billing 不猜零、不拼样、不补 mate；
+7. candidate 通过 root/read-only/Writer、crash/reopen、focused 和 full workspace gates；
+8. replacement cutover 后物理删除旧路径、eval-only selector、临时 fixture consumer 和
+   无消费者依赖；
+9. held-out 无净收益、出现 false success、增加第二 truth 或复杂度不可接受时
+   `reject_and_delete`。
+
+可接受结果只有：
+
+```text
+keep_current_harness_no_repeated_loss
+keep_minimal_treatment_and_delete_replaced_path
+reject_and_delete_candidate
+hold_model_capability_ceiling
+```
+
+### 34.7 明确拒绝的开发路线
+
+M36 不准入：
+
+- “把每个顶尖 Agent 最强功能各抄一个”的竞品 backlog；
+- Anthropic Messages、OpenAI Provider、第二 DeepSeek compatibility Provider；
+- Auto model/Thinking classifier、关键词路由或运行中升级；
+- 默认 planner/critic/evaluator 三 Agent 流水线；
+- 默认多 Writer、swarm、Agent 社交协议和重复 team tools；
+- 默认 RepoGraph、embedding/vector memory 或每请求全仓 map；
+- 为固定小工具集建设动态 tool search/code mode；
+- 为 99% cache hit 重排或弱化 latest-revision Host facts；
+- 浏览器/MCP/云平台先于真实外部任务；
+- 用 benchmark 排名、工具调用数、代码行数或架构图复杂度冒充产品提升。
+
+### 34.8 研究依据
+
+- [DeepSeek V4 Technical Report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/89d501aed998d33fa4f4702102ec1bb2331e10f6/DeepSeek_V4.pdf)
+- [DeepSeek Thinking Mode and tool-call replay](https://api-docs.deepseek.com/guides/thinking_mode/)
+- [Claw-SWE-Bench](https://arxiv.org/abs/2606.12344)
+- [SWE-agent Agent-Computer Interface](https://swe-agent.com/0.7/background/aci/)
+- [Agentless](https://arxiv.org/abs/2407.01489)
+- [Aider repository map](https://aider.chat/docs/repomap.html)
+- [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+- [Anthropic long-running harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+- [Codex best practices](https://learn.chatgpt.com/guides/best-practices)
+- [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+- [Codex sandbox](https://learn.chatgpt.com/docs/sandboxing)
+- [OpenHands V1 design principles](https://docs.openhands.dev/sdk/arch/design)
+- [OpenAI coding evaluation audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/)

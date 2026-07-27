@@ -4188,6 +4188,111 @@ live admission、ignored `0600` journals 与
 [decision summary](../../eval/summaries/m35-official-reliability-soak-2026-07-27.md)
 保留审计。
 
+#### M36 DeepSeek-native verified harness 评测合同
+
+M36 的评测对象是 DSE Harness，不是竞品功能数量。任何 treatment 必须先证明一个稳定
+production loss，再在相同 DeepSeek 模型下测量；不得把 Codex/Claude Code 整机成绩或
+不同模型的排行榜差异归因给 DSE。
+
+##### 1. 基线任务层
+
+每个基线 manifest 必须从以下任务层中选择与候选 owner 相关的 fresh、人工复核任务：
+
+```text
+deterministic repair
+large-repository localization
+multi-module hard implementation/refactor
+multi-compaction / multi-reopen long horizon
+service/API/UI application behavior
+false-completion / recovery adversarial
+```
+
+任务必须有可执行 acceptance、外部 deterministic verifier、clean workspace seed 和完整
+allowed/non-goal scope。静态公共 benchmark 只能作为一层输入；任务 prompt、tests 或 gold
+存在歧义时标记 invalid，不用模型失败填补数据集缺陷。
+
+##### 2. loss acquisition
+
+control 只运行 exact current production。每条 observation 在 terminal 后派生：
+
+```text
+contract clarity
+first relevant file / first correct edit
+localization recall and wrong-entry count
+tool choice / malformed args / repeated calls / output truncation
+active context / stable prefix / raw-output share / compaction
+latest revision / receipt / verifier / false completion
+physical request / retry / usage / cache / cost / wall time
+crash-reopen and terminal replay
+```
+
+loss 必须绑定 `owner_code:loss_code` 和具体轨迹证据。同一 loss 未在至少两个独立任务或两个
+独立轮次重复时，结论只能是 `keep_current_harness_no_repeated_loss`，不得写 production
+treatment。
+
+##### 3. candidate fairness
+
+每个候选独立冻结 manifest，并至少满足：
+
+- 一个 treatment family、一个 owning module、一个 replacement/deletion point；
+- control/treatment 在同一 immutable binary 中可显式选择，或分别使用可复核且除 treatment
+  外 byte-equivalent 的 immutable binaries；
+- task、seed workspace、model、reasoning、system prompt、tool catalog/authority、
+  request/Token/deadline budget、verifier 和 observer 完全一致；
+- affected task family 至少三个独立任务，每个 cell 至少三次 fresh Run；样本数若因成本或
+  deadline 缩小，必须在 credential 前预注册，不能观察结果后改变；
+- 不选择性补跑、不补 mate、不拼接旧 raw；`maximum_harness_reruns=0`；
+- root、read-only child、explicit Writer 只运行与候选真实 production surface 相符的
+  actor，不用 fixture-only 差异冒充 treatment。
+
+##### 4. 决策顺序
+
+所有 candidate 按词典序判定：
+
+```text
+1. identity / observer / latest-revision evidence valid
+2. false_success == 0
+3. correct safety rejection does not regress
+4. verified task success
+5. hard / long-horizon / full-application completion
+6. tool and recovery correctness
+7. input/output/cache tokens and API cost
+8. wall time
+9. production code and concept complexity
+```
+
+后项不能补偿前项失败。cache hit、工具调用数、Token 或速度改善不能掩盖 success 回退。
+模型 self-review 不进入 deterministic evidence；只有缺少客观 oracle 的主观任务才可使用
+独立 reviewer profile，并且其输出仍是 advisory artifact，不获得 terminal authority。
+
+##### 5. effort 与 context 特例
+
+`Pro/high` vs `Pro/max` 必须保持同一 Prompt、工具、ContextBroker 和任务；结论只说明一个
+固定 effort 的质量/成本差异，不产生 Auto classifier。context treatment 必须保持当前
+tool-call/result 原子性和 DeepSeek `reasoning_content` replay；任何 reset 只能发生在
+无 in-flight model/tool 且 Host 已验证 milestone 的 typed continuation 边界。
+
+##### 6. Harness、产品与模型上限分层
+
+结果报告必须分别标注：
+
+```text
+harness_comparison_same_deepseek_model
+full_product_comparison_mixed_model_and_harness
+deepseek_model_ceiling_observation
+```
+
+只有第一类可形成 DSE Harness 因果结论。完整产品比较可以说明最终体验，不能说明差异由
+Harness、模型、工具或环境中的哪一项造成。
+
+##### 7. 保留与删除
+
+candidate 只有在完整 accounting 下提高 verified success 或目标 hard/long-horizon
+completion，且不增加 false success、错误安全放行、crash/reopen 不确定性或第二状态真相时
+才可接管。接管后删除被替代路径和 eval-only selector。无净收益、复杂度双轨或质量回退时
+完整 `reject_and_delete`；只证明当前 DeepSeek 无法完成时记录
+`hold_model_capability_ceiling`，不以更多 Agent、工具或 Prompt 规则掩盖。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
