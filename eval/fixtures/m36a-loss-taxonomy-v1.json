@@ -1,0 +1,179 @@
+{
+  "schema": "dse.eval.m36a-loss-taxonomy-corpus.v1",
+  "defaults": {
+    "task": {
+      "lane": "root",
+      "required_continuity": null,
+      "m36a_review": {
+        "status": "manual_prompt_test_gold_reviewed",
+        "contract_ambiguity": "none_observed"
+      }
+    },
+    "behavior": {
+      "product_loss": true,
+      "loss_code": "task_not_verified"
+    },
+    "accounting": {
+      "status": "complete"
+    },
+    "hardness": {
+      "continuity": {
+        "satisfied": true
+      },
+      "malformed_argument_failures": 0,
+      "false_completion_rework_count": 0,
+      "latest_revision_receipt_valid": true,
+      "first_relevant_file_ms": 12,
+      "relevant_file_recall_numerator": 1,
+      "compaction_count": 0
+    },
+    "failure_codes": {},
+    "lane_valid": true
+  },
+  "cases": [
+    {
+      "case_id": "verified_non_loss",
+      "overrides": {
+        "behavior": {
+          "product_loss": false,
+          "loss_code": null
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": null,
+        "canonical_loss_code": null
+      }
+    },
+    {
+      "case_id": "contract_ambiguity",
+      "overrides": {
+        "task": {
+          "m36a_review": {
+            "status": "manual_prompt_test_gold_reviewed",
+            "contract_ambiguity": "underspecified"
+          }
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "task_contract",
+        "canonical_loss_code": "contract_ambiguity"
+      }
+    },
+    {
+      "case_id": "transport_or_accounting",
+      "overrides": {
+        "behavior": {
+          "product_loss": true,
+          "loss_code": "deepseek_transport"
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "deepseek",
+        "canonical_loss_code": "transport_or_accounting"
+      }
+    },
+    {
+      "case_id": "writer_integration",
+      "overrides": {
+        "task": {
+          "lane": "writer"
+        },
+        "lane_valid": false
+      },
+      "expected": {
+        "canonical_loss_owner_code": "orchestrator",
+        "canonical_loss_code": "writer_integration"
+      }
+    },
+    {
+      "case_id": "long_horizon_recovery",
+      "overrides": {
+        "task": {
+          "required_continuity": "process_restart_after_durable_checkpoint"
+        },
+        "hardness": {
+          "continuity": {
+            "satisfied": false
+          }
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "runtime",
+        "canonical_loss_code": "long_horizon_recovery"
+      }
+    },
+    {
+      "case_id": "edit_application",
+      "overrides": {
+        "failure_codes": {
+          "workspace_precondition": 1
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "tools",
+        "canonical_loss_code": "edit_application"
+      }
+    },
+    {
+      "case_id": "tool_aci",
+      "overrides": {
+        "hardness": {
+          "malformed_argument_failures": 1
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "tools",
+        "canonical_loss_code": "tool_aci"
+      }
+    },
+    {
+      "case_id": "verification_visibility",
+      "overrides": {
+        "behavior": {
+          "product_loss": true,
+          "loss_code": "false_success"
+        },
+        "hardness": {
+          "latest_revision_receipt_valid": false
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "runtime",
+        "canonical_loss_code": "verification_visibility"
+      }
+    },
+    {
+      "case_id": "localization",
+      "overrides": {
+        "hardness": {
+          "first_relevant_file_ms": null,
+          "relevant_file_recall_numerator": 0
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "context",
+        "canonical_loss_code": "localization"
+      }
+    },
+    {
+      "case_id": "context_pollution_or_loss",
+      "overrides": {
+        "hardness": {
+          "compaction_count": 2
+        }
+      },
+      "expected": {
+        "canonical_loss_owner_code": "context",
+        "canonical_loss_code": "context_pollution_or_loss"
+      }
+    },
+    {
+      "case_id": "model_capability_ceiling",
+      "overrides": {},
+      "expected": {
+        "canonical_loss_owner_code": "deepseek",
+        "canonical_loss_code": "model_capability_ceiling"
+      }
+    }
+  ]
+}

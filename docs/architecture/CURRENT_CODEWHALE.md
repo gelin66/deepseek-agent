@@ -2751,9 +2751,23 @@ backoff、exec-stream v6 和客户端 projection 均不改变。M35 temporary Ha
 保留。第一次 observer argv 错误在网络前停止并单独留痕，修正后 formal 从新 identity/
 position 1 开始，没有续写或拼接。
 
+M36-A 当前只有 eval/Harness delta，production crate delta=0。唯一 corrected Harness
+冻结 20 个新 `m36a-*` acceptance identity，覆盖 deterministic repair、large-repository
+localization、multi-module hard、long-horizon reopen、service/API/UI behavior 与
+false-completion adversarial 六层；素材来自同一私有 136-file monorepo，但旧 trajectory、
+raw、result、admission 和 arm label 均不作为输入。当前 observer 同时记录 first relevant/
+correct edit、relevant recall/wrong entry、tool/failure/stale/truncation、per-request
+context/stable prefix/raw tool output、compaction/reopen、latest receipt 和 accounting。
+10-code loss taxonomy 的 11 个离线 case、reference proof 17/17 positive 与 3/3 negative、
+journal crash windows 及一次真实 process SIGKILL/reopen loopback 已通过；official
+acquisition 尚未发生，不能写成能力基线结果或 production treatment 证据。
+
 ## 8. 明确非结论
 
 当前源码不证明：
+
+- M36-A 离线 observer 已证明 current DeepSeek coding success 或某个 Harness treatment
+  应准入；只有 fresh official position-1 acquisition 才能形成 canonical loss matrix；
 
 - M35 已测得 official timeout/429/5xx/partial failure incidence 或 live recovery rate；
   24 个独立 Run 没有触发模型故障，只证明当次成功路径、latency、accounting 与 reopen

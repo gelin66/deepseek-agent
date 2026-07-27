@@ -1,0 +1,31 @@
+{
+  "schema": "dse.eval.m36a-loss-taxonomy.v1",
+  "frozen_at": "2026-07-27",
+  "owner": "scripts/eval-m9b-fixed-pro-regression.py",
+  "corpus": {
+    "path": "eval/fixtures/m36a-loss-taxonomy-v1.json",
+    "schema": "dse.eval.m36a-loss-taxonomy-corpus.v1",
+    "file_sha256": "sha256:c6c4fab7f0f0545ff70a0150f4e26c3fc501f2fe4aa9046553f60d2177fdb1dd",
+    "case_count": 11
+  },
+  "acceptance": {
+    "byte_identical_repeated_projection": true,
+    "all_stable_loss_codes_covered": true,
+    "non_loss_has_no_owner_or_loss": true,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "stable_loss_codes": [
+    "contract_ambiguity",
+    "localization",
+    "context_pollution_or_loss",
+    "tool_aci",
+    "edit_application",
+    "verification_visibility",
+    "long_horizon_recovery",
+    "writer_integration",
+    "transport_or_accounting",
+    "model_capability_ceiling"
+  ]
+}

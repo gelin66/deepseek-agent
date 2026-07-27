@@ -5948,7 +5948,8 @@ known cost             $0.014071409
 
 ## 34. M36：DeepSeek-native verified harness 优化计划
 
-- 状态：**方案冻结；等待独立基线 acquisition**
+- 状态：**M36-A fresh acquisition contract/observer 已冻结；正式 official
+  acquisition 尚未准入**
 - 起始基线：M35 clean checkpoint `e84abb1ed`
 - 产品边界：继续执行 PRODUCT_PLAN、ADR-0001/0002/0003/0005/0008/0011；不改变
   DeepSeek-only、单 `AgentRuntime`、单 `RuntimeEvent`、单 `RunStore`、单 Writer 默认和
@@ -6066,6 +6067,22 @@ model_capability_ceiling
 ```
 
 同一 `owner_code:loss_code` 未跨至少两个独立任务重复，不进入 production。
+
+当前 M36-A 垂直切片使用唯一 corrected
+`scripts/eval-m9b-fixed-pro-regression.py`，不复制 evaluator。它只继承 M23 私有
+136-file monorepo 的 task material、reference patches、deterministic verifier 和
+tool policy；20 个任务全部获得新的 `m36a-*` acceptance identity、新 workspace、
+新 RunStore 和新 position-1 schedule，历史 raw/result/admission 均不是输入。人工复核
+已逐项核对 objective、constraints、non-goals、gold scope 与隐藏 verifier；
+reference proof 保持 17 个正向全通过、3 个 false-completion 反例全失败。
+
+离线 contract 新增六个 task family、10-code canonical loss taxonomy、每请求 context/
+stable-prefix/raw-tool-output ledger，以及定位、首次正确编辑、Tool ACI、stale edit、
+completion rework 和 latest receipt 指标。正常 production `max_model_retries=2` 保持
+生效，Harness `maximum_reruns=0`；这是 current product 能力基线，不把 M32 的正式
+position-1 retry=0 外推成产品默认。此阶段 production delta=0；只有正式 acquisition
+产生同一 canonical `owner_code:loss_code` 跨至少两个独立 task_id 重复，才允许审计
+M36-B/C 的一个候选。
 
 #### M36-B：DeepSeek effort 与 context control-only
 

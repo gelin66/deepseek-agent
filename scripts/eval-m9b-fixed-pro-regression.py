@@ -17,6 +17,9 @@ contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
 ``--campaign m30`` selects the current one-arm-per-task dogfood loss
 acquisition while inheriting only the frozen M23 task material.
+``--campaign m36a`` selects the fresh DeepSeek-native verified-harness
+control baseline after re-auditing the private Hardness task material. It
+inherits no historical trajectory, result, admission, or binary identity.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -87,6 +90,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m20b",
         "m23b",
         "m30",
+        "m36a",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -104,6 +108,7 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "m36a",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -113,10 +118,29 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "m36a",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
-HARDNESS_CAMPAIGNS = {"m23b", "m30"}
-if CAMPAIGN == "m30":
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30", "m36a"}
+HARDNESS_CAMPAIGNS = {"m23b", "m30", "m36a"}
+CURRENT_HARDNESS_CAMPAIGNS = {"m30", "m36a"}
+if CAMPAIGN == "m36a":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/m36a-deepseek-native-baseline-v1.json"
+    )
+    BASE_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m23b-hardness-control-v1.json"
+    )
+    MANIFEST_SCHEMA = "dse.eval.m36a-deepseek-native-baseline.v1"
+    BASE_MANIFEST_SCHEMA = "dse.eval.m23b-hardness-control.v1"
+    JOURNAL_SCHEMA = "dse.eval.m36a-deepseek-native-baseline-journal.v1"
+    ADMISSION_SCHEMA = (
+        "dse.eval.m36a-deepseek-native-baseline-live-admission.v1"
+    )
+    RUN_API = 15
+    EVENT_API = 22
+    STATE_SCHEMA = 28
+    EXEC_STREAM = 6
+elif CAMPAIGN == "m30":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
     )
@@ -252,7 +276,17 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m30":
+if CAMPAIGN == "m36a":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m36a-deepseek-native-baseline-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.m36a-deepseek-native-baseline-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "dse.eval.m36a-deepseek-native-baseline-report.v1"
+    )
+elif CAMPAIGN == "m30":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
     )
@@ -379,9 +413,19 @@ HARDNESS_CONTINUITY_MANIFEST_PATH = (
 HARDNESS_CONTINUITY_MANIFEST_SCHEMA = (
     "dse.eval.m23b-hardness-live-continuity.v1"
 )
+M36_LOSS_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m36a-loss-taxonomy-v1.json"
+)
+M36_LOSS_MANIFEST_SCHEMA = "dse.eval.m36a-loss-taxonomy.v1"
+M36_LOSS_CORPUS_SCHEMA = "dse.eval.m36a-loss-taxonomy-corpus.v1"
+M36_LOSS_REPORT_SCHEMA = "dse.eval.m36a-loss-taxonomy-report.v1"
 HARDNESS_CONTINUITY_REPORT_SCHEMA = (
-    "dse.eval.m30-dogfood-continuity-report.v1"
-    if CAMPAIGN == "m30"
+    (
+        "dse.eval.m36a-deepseek-native-continuity-report.v1"
+        if CAMPAIGN == "m36a"
+        else "dse.eval.m30-dogfood-continuity-report.v1"
+    )
+    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
     else "dse.eval.m23b-hardness-live-continuity-report.v1"
 )
 BEHAVIOR_STATUSES = {
@@ -575,6 +619,7 @@ def load_manifest() -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
+            "m36a",
         },
         "campaign_invalid",
     )
@@ -588,7 +633,7 @@ def load_manifest() -> dict[str, Any]:
         resources = manifest.get("resources", {})
         tasks = manifest.get("tasks")
         tool_policies = manifest.get("tool_policies")
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             inherited = manifest.get("inherited_contract")
             require(
                 isinstance(inherited, dict)
@@ -631,6 +676,40 @@ def load_manifest() -> dict[str, Any]:
             }
             tasks = manifest["tasks"]
             tool_policies = manifest["tool_policies"]
+            if CAMPAIGN == "m36a":
+                overlays = manifest.get("task_overlays")
+                require(
+                    isinstance(overlays, dict)
+                    and list(overlays) == list(tasks),
+                    "m36a_task_overlay_identity_invalid",
+                )
+                for task_id, overlay in overlays.items():
+                    require(
+                        isinstance(overlay, dict)
+                        and overlay.get("base_task_sha256")
+                        == canonical_hash(tasks[task_id])
+                        and overlay.get("review_status")
+                        == "manual_prompt_test_gold_reviewed"
+                        and overlay.get("contract_ambiguity")
+                        == "none_observed"
+                        and isinstance(overlay.get("acceptance_id"), str)
+                        and overlay["acceptance_id"]
+                        == f"m36a-{task_id.replace('_', '-')}",
+                        "m36a_task_overlay_invalid",
+                        {"task_id": task_id},
+                    )
+                    tasks[task_id]["acceptance_id"] = overlay[
+                        "acceptance_id"
+                    ]
+                    tasks[task_id]["m36a_task_family"] = overlay[
+                        "task_family"
+                    ]
+                    tasks[task_id]["m36a_review"] = {
+                        "status": overlay["review_status"],
+                        "contract_ambiguity": overlay[
+                            "contract_ambiguity"
+                        ],
+                    }
         if CAMPAIGN in HARDNESS_CAMPAIGNS:
             expected_tasks = [
                 "rust_router_localization",
@@ -661,7 +740,9 @@ def load_manifest() -> dict[str, Any]:
                 and source.get("exec_stream") == EXEC_STREAM,
                 "protocol_identity_invalid",
             )
-            expected_runs = 1 if CAMPAIGN == "m30" else 3
+            expected_runs = (
+                1 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 3
+            )
             require(
                 resources.get("model") == MODEL
                 and resources.get("reasoning_effort") == REASONING
@@ -672,10 +753,12 @@ def load_manifest() -> dict[str, Any]:
                 and resources.get("maximum_reruns") == 0,
                 "resource_identity_invalid",
             )
-            if CAMPAIGN == "m30":
+            if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
                 require(
                     resources.get("permission_mode") == "agent"
                     and resources.get("interactive") is False
+                    and resources.get("max_runtime_retries_per_arm")
+                    == (2 if CAMPAIGN == "m36a" else 0)
                     and manifest.get("continuity_policy")
                     == {
                         "task_selector": (
@@ -691,6 +774,35 @@ def load_manifest() -> dict[str, Any]:
                         "resolve_only_after_reopen": True,
                     },
                     "permission_continuity_contract_invalid",
+                )
+            if CAMPAIGN == "m36a":
+                families = Counter(
+                    task.get("m36a_task_family")
+                    for task in tasks.values()
+                )
+                require(
+                    set(families)
+                    == {
+                        "deterministic_repair",
+                        "large_repository_localization",
+                        "multi_module_hard",
+                        "long_horizon",
+                        "service_api_ui",
+                        "false_completion_recovery_adversarial",
+                    }
+                    and min(families.values()) >= 2
+                    and manifest.get("freshness_contract")
+                    == {
+                        "new_task_contract_identity": True,
+                        "new_workspace_per_arm": True,
+                        "new_run_store_per_arm": True,
+                        "new_position_1_schedule": True,
+                        "historical_raw_is_input": False,
+                        "historical_result_is_input": False,
+                        "historical_admission_is_input": False,
+                        "manual_prompt_test_gold_review_required": True,
+                    },
+                    "m36a_freshness_contract_invalid",
                 )
             require(
                 isinstance(resources.get("runtime_wall_time_ms"), int)
@@ -726,8 +838,31 @@ def load_manifest() -> dict[str, Any]:
                     "goal_constraint_loss",
                     "service_started",
                     "runtime_assertion_passed",
+                    *(
+                        [
+                            "first_correct_edit_ms",
+                            "relevant_file_recall_numerator",
+                            "relevant_file_recall_denominator",
+                            "wrong_entry_count",
+                            "tool_call_count_by_name",
+                            "malformed_argument_failures",
+                            "ambiguous_empty_results",
+                            "output_truncations",
+                            "stale_edit_failures",
+                            "model_request_context_bytes",
+                            "model_request_stable_prefix_bytes",
+                            "model_request_raw_tool_output_bytes",
+                            "model_request_total_message_bytes",
+                            "false_completion_rework_count",
+                            "latest_revision_receipt_valid",
+                            "canonical_loss_owner_code",
+                            "canonical_loss_code",
+                        ]
+                        if CAMPAIGN == "m36a"
+                        else []
+                    ),
                 ]
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else [
                     "pass_at_1",
                     "pass_power_3",
@@ -1428,6 +1563,7 @@ def reference_solution_proof() -> dict[str, Any] | None:
         "m20b",
         "m23b",
         "m30",
+        "m36a",
     }:
         return None
     if CAMPAIGN in HARDNESS_CAMPAIGNS:
@@ -1827,7 +1963,10 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
 def task_definition(task_id: str) -> dict[str, Any]:
     task = TASKS[task_id]
     objective = task["objective"]
-    if CAMPAIGN == "m30" and requires_live_continuity(task_id):
+    if (
+        CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
+        and requires_live_continuity(task_id)
+    ):
         objective += (
             "\n\n连续性协议：第一次模型回合必须调用且只调用一次 "
             "request_user_input，问题 id 必须为 continue，提供“继续”和“停止”"
@@ -1868,7 +2007,7 @@ def task_definition(task_id: str) -> dict[str, Any]:
 
 
 def requires_live_continuity(task_id: str) -> bool:
-    if CAMPAIGN == "m30":
+    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
         return TASKS[task_id].get("required_continuity") is not None
     return (
         CAMPAIGN in HARDNESS_CAMPAIGNS
@@ -1893,7 +2032,7 @@ def start_envelope(
     else:
         enabled = True
         allowed = TOOLS["root_tools"]
-    if CAMPAIGN == "m30" and continuity:
+    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and continuity:
         allowed = [*allowed, "request_user_input"]
     return {
         "schema_version": RUN_API,
@@ -1921,7 +2060,7 @@ def start_envelope(
                 "max_tool_calls": task["max_tool_calls"]
                 + (
                     1
-                    if CAMPAIGN == "m30" and continuity
+                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and continuity
                     else 0
                 ),
                 "max_depth": task["max_depth"],
@@ -1947,7 +2086,7 @@ def start_envelope(
                         else RESOURCES["interactive"]
                     ),
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else {
                     "write_execution_mode": (
                         "isolated_writer" if lane == "writer" else "root"
@@ -2005,7 +2144,7 @@ def resolve_interaction_envelope(
                         }
                     ],
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else {"kind": "approved"}
             ),
         },
@@ -2381,7 +2520,11 @@ def pending_interactions(facts: dict[str, Any]) -> list[dict[str, str]]:
             require(
                 isinstance(prompt, dict)
                 and prompt.get("kind")
-                == ("user_input" if CAMPAIGN == "m30" else "approval"),
+                == (
+                    "user_input"
+                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
+                    else "approval"
+                ),
                 "hardness_user_input_not_admitted",
             )
             pending.append(
@@ -4396,6 +4539,82 @@ def hardness_continuity_projection(
     }
 
 
+def hardness_nested_flag(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return value.get(key) is True or any(
+            hardness_nested_flag(item, key) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(hardness_nested_flag(item, key) for item in value)
+    return False
+
+
+def m36_request_context_projection(
+    facts: dict[str, Any],
+) -> dict[str, list[int]]:
+    context_bytes: list[int] = []
+    stable_prefix_bytes: list[int] = []
+    raw_tool_output_bytes: list[int] = []
+    total_message_bytes: list[int] = []
+    for record in hardness_event_records(facts):
+        event = record["event"]
+        if event.get("kind") != "model_request_prepared":
+            continue
+        request = event.get("request")
+        require(
+            isinstance(request, dict)
+            and isinstance(request.get("system_prompt"), dict)
+            and isinstance(request.get("messages"), list)
+            and all(
+                isinstance(message, dict)
+                for message in request["messages"]
+            ),
+            "m36a_model_request_context_invalid",
+        )
+        messages = request["messages"]
+        blocks = request["system_prompt"].get("blocks")
+        require(
+            isinstance(blocks, list)
+            and all(
+                isinstance(block, dict)
+                and block.get("cache_control") in {"stable", "volatile"}
+                and isinstance(block.get("text"), str)
+                for block in blocks
+            ),
+            "m36a_model_request_context_invalid",
+        )
+        message_bytes = canonical_bytes(messages)
+        context = canonical_bytes(
+            {
+                "system_prompt": request["system_prompt"],
+                "messages": messages,
+            }
+        )
+        context_bytes.append(len(context))
+        stable_prefix_bytes.append(
+            sum(
+                len(block["text"].encode("utf-8"))
+                for block in blocks
+                if block["cache_control"] == "stable"
+            )
+        )
+        total_message_bytes.append(len(message_bytes))
+        raw_tool_output_bytes.append(
+            sum(
+                len(message.get("content", "").encode("utf-8"))
+                for message in messages
+                if message.get("role") == "tool"
+                and isinstance(message.get("content"), str)
+            )
+        )
+    return {
+        "model_request_context_bytes": context_bytes,
+        "model_request_stable_prefix_bytes": stable_prefix_bytes,
+        "model_request_raw_tool_output_bytes": raw_tool_output_bytes,
+        "model_request_total_message_bytes": total_message_bytes,
+    }
+
+
 def hardness_metrics_projection(
     task: dict[str, Any],
     facts: dict[str, Any],
@@ -4404,6 +4623,7 @@ def hardness_metrics_projection(
     *,
     lane_valid: bool,
     route_valid: bool,
+    latest_receipt_valid: bool,
     continuity: Any,
 ) -> dict[str, Any]:
     require(
@@ -4411,7 +4631,8 @@ def hardness_metrics_projection(
         and isinstance(verifier, dict)
         and isinstance(verifier.get("passed"), bool)
         and isinstance(lane_valid, bool)
-        and isinstance(route_valid, bool),
+        and isinstance(route_valid, bool)
+        and isinstance(latest_receipt_valid, bool),
         "hardness_metric_input_invalid",
     )
     project_files = hardness_project_files(task)
@@ -4449,6 +4670,14 @@ def hardness_metrics_projection(
     repair_loops = 0
     repeated_reads = 0
     compaction_count = 0
+    first_correct_edit_ms: int | None = None
+    last_applied_edit_ms: int | None = None
+    tool_calls: Counter[str] = Counter()
+    malformed_argument_failures = 0
+    ambiguous_empty_results = 0
+    output_truncations = 0
+    stale_edit_failures = 0
+    completion_rejections = 0
 
     for record in records:
         actor = record["actor_index"]
@@ -4456,6 +4685,9 @@ def hardness_metrics_projection(
         kind = event.get("kind")
         if kind == "context_compaction_committed":
             compaction_count += 1
+            continue
+        if kind == "completion_rejected":
+            completion_rejections += 1
             continue
         if kind == "tool_prepared":
             invocation = event.get("invocation")
@@ -4465,6 +4697,7 @@ def hardness_metrics_projection(
                 and isinstance(invocation.get("call_id"), str),
                 "hardness_tool_prepared_invalid",
             )
+            tool_calls[invocation["name"]] += 1
             prepared[(actor, invocation["call_id"])] = invocation
             if invocation["name"] in HARDNESS_REPEATABLE_READ_TOOLS:
                 identity = trajectory_argument_identity(invocation)
@@ -4485,6 +4718,38 @@ def hardness_metrics_projection(
             )
             invocation = prepared.get((actor, call_id), {})
             success = tool_outcome_success(outcome)
+            failure_code = outcome.get("failure_code")
+            if not success and failure_code in {
+                "malformed_arguments",
+                "schema_validation",
+                "unknown_tool",
+                "missing_field",
+                "invalid_field",
+                "patch_parse",
+            }:
+                malformed_argument_failures += 1
+            if not success and failure_code in {
+                "workspace_precondition",
+                "stale_read",
+                "authorization_stale",
+            }:
+                stale_edit_failures += 1
+            decoded = hardness_json_content(outcome)
+            if (
+                success
+                and name in HARDNESS_OBSERVATION_TOOLS
+                and (
+                    outcome.get("content") == ""
+                    or decoded == []
+                    or (
+                        isinstance(decoded, dict)
+                        and decoded.get("matches") == []
+                    )
+                )
+            ):
+                ambiguous_empty_results += 1
+            if hardness_nested_flag(outcome, "truncated"):
+                output_truncations += 1
             if success and name in HARDNESS_OBSERVATION_TOOLS:
                 paths = hardness_observed_paths(
                     name, invocation, outcome, project_files
@@ -4497,6 +4762,9 @@ def hardness_metrics_projection(
                         0, record["occurred_at_unix_ms"] - started_ms
                     )
             if name in MAY_WRITE_TOOLS and outcome.get("side_effect") == "applied":
+                last_applied_edit_ms = max(
+                    0, record["occurred_at_unix_ms"] - started_ms
+                )
                 if failed_verifier_pending:
                     repair_loops += 1
                     failed_verifier_pending = False
@@ -4510,6 +4778,11 @@ def hardness_metrics_projection(
                 seen_in_epoch.clear()
             if name == "run_verifiers":
                 if success:
+                    if (
+                        first_correct_edit_ms is None
+                        and last_applied_edit_ms is not None
+                    ):
+                        first_correct_edit_ms = last_applied_edit_ms
                     if first_edit_seen:
                         successful_verifier_after_edit = True
                     if first_edit_open and not first_edit_closed:
@@ -4527,6 +4800,11 @@ def hardness_metrics_projection(
                 "hardness_host_verification_invalid",
             )
             if tool_outcome_success(outcome):
+                if (
+                    first_correct_edit_ms is None
+                    and last_applied_edit_ms is not None
+                ):
+                    first_correct_edit_ms = last_applied_edit_ms
                 if first_edit_seen:
                     successful_verifier_after_edit = True
                 if first_edit_open and not first_edit_closed:
@@ -4566,7 +4844,7 @@ def hardness_metrics_projection(
         and continuity_result["satisfied"]
         and failed_write_pass_valid
     )
-    return {
+    projection = {
         "human_estimated_minutes": task.get("human_estimated_minutes"),
         "first_relevant_file_ms": first_relevant_ms,
         "relevant_files_seen_before_first_edit": len(
@@ -4585,6 +4863,446 @@ def hardness_metrics_projection(
         "runtime_assertion_passed": runtime_assertion_passed,
         "continuity": continuity_result,
     }
+    if CAMPAIGN == "m36a":
+        projection.update(
+            {
+                "first_correct_edit_ms": first_correct_edit_ms,
+                "relevant_file_recall_numerator": len(
+                    observed_before_edit & relevant
+                ),
+                "relevant_file_recall_denominator": len(relevant),
+                "wrong_entry_count": len(observed_before_edit - relevant),
+                "tool_call_count_by_name": dict(sorted(tool_calls.items())),
+                "malformed_argument_failures": (
+                    malformed_argument_failures
+                ),
+                "ambiguous_empty_results": ambiguous_empty_results,
+                "output_truncations": output_truncations,
+                "stale_edit_failures": stale_edit_failures,
+                **m36_request_context_projection(facts),
+                "false_completion_rework_count": completion_rejections,
+                "latest_revision_receipt_valid": latest_receipt_valid,
+                "canonical_loss_owner_code": None,
+                "canonical_loss_code": None,
+            }
+        )
+    return projection
+
+
+def m36_loss_projection(
+    task: dict[str, Any],
+    behavior: dict[str, Any],
+    accounting_truth: dict[str, Any],
+    hardness: dict[str, Any],
+    failure_codes: dict[str, int],
+    *,
+    lane_valid: bool,
+) -> dict[str, str | None]:
+    require(
+        isinstance(task, dict)
+        and isinstance(behavior, dict)
+        and isinstance(accounting_truth, dict)
+        and isinstance(hardness, dict)
+        and isinstance(failure_codes, dict)
+        and all(
+            isinstance(code, str)
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 0
+            for code, count in failure_codes.items()
+        )
+        and isinstance(lane_valid, bool),
+        "m36a_loss_projection_input_invalid",
+    )
+    if not behavior.get("product_loss"):
+        return {
+            "canonical_loss_owner_code": None,
+            "canonical_loss_code": None,
+        }
+
+    review = task.get("m36a_review")
+    if (
+        isinstance(review, dict)
+        and review.get("contract_ambiguity") != "none_observed"
+    ):
+        owner_code, loss_code = "task_contract", "contract_ambiguity"
+    elif (
+        behavior.get("loss_code") == "deepseek_transport"
+        or accounting_truth.get("status") != "complete"
+    ):
+        owner_code, loss_code = "deepseek", "transport_or_accounting"
+    elif task.get("lane") == "writer" and not lane_valid:
+        owner_code, loss_code = "orchestrator", "writer_integration"
+    elif (
+        task.get("required_continuity") is not None
+        and not hardness.get("continuity", {}).get("satisfied")
+    ):
+        owner_code, loss_code = "runtime", "long_horizon_recovery"
+    elif any(
+        failure_codes.get(code, 0) > 0
+        for code in {
+            "workspace_precondition",
+            "stale_read",
+            "authorization_stale",
+            "ambiguous_edit",
+            "patch_parse",
+            "side_effect_ambiguous",
+        }
+    ):
+        owner_code, loss_code = "tools", "edit_application"
+    elif (
+        hardness.get("malformed_argument_failures", 0) > 0
+        or any(
+            failure_codes.get(code, 0) > 0
+            for code in {
+                "malformed_arguments",
+                "schema_validation",
+                "unknown_tool",
+                "missing_field",
+                "invalid_field",
+            }
+        )
+    ):
+        owner_code, loss_code = "tools", "tool_aci"
+    elif (
+        behavior.get("loss_code")
+        in {
+            "false_success",
+            "verified_workspace_without_terminal_receipt",
+            "deterministic_verifier_failed",
+        }
+        or hardness.get("false_completion_rework_count", 0) > 0
+        or hardness.get("latest_revision_receipt_valid") is False
+    ):
+        owner_code, loss_code = "runtime", "verification_visibility"
+    elif (
+        hardness.get("first_relevant_file_ms") is None
+        or hardness.get("relevant_file_recall_numerator") == 0
+    ):
+        owner_code, loss_code = "context", "localization"
+    elif hardness.get("compaction_count", 0) > 0:
+        owner_code, loss_code = "context", "context_pollution_or_loss"
+    else:
+        owner_code, loss_code = "deepseek", "model_capability_ceiling"
+    require(
+        loss_code
+        in {
+            "contract_ambiguity",
+            "localization",
+            "context_pollution_or_loss",
+            "tool_aci",
+            "edit_application",
+            "verification_visibility",
+            "long_horizon_recovery",
+            "writer_integration",
+            "transport_or_accounting",
+            "model_capability_ceiling",
+        },
+        "m36a_loss_taxonomy_invalid",
+    )
+    return {
+        "canonical_loss_owner_code": owner_code,
+        "canonical_loss_code": loss_code,
+    }
+
+
+def m36_loss_case_merge(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = (
+                m36_loss_case_merge(base[key], value)
+                if key in base
+                else value
+            )
+        return merged
+    return override
+
+
+def m36_metric_observer_self_test() -> str:
+    accepted = {
+        "invocation": "accepted",
+        "transport": "succeeded",
+        "operation": "succeeded",
+        "side_effect": "not_applied",
+    }
+    request = {
+        "system_prompt": {
+            "blocks": [{"cache_control": "stable", "text": "system"}]
+        },
+        "messages": [],
+    }
+    facts = {
+        "root_events": [
+            {
+                "sequence": 1,
+                "occurred_at_unix_ms": 1_000,
+                "event": {"kind": "run_created"},
+            },
+            {
+                "sequence": 2,
+                "occurred_at_unix_ms": 1_010,
+                "event": {
+                    "kind": "model_request_prepared",
+                    "request": request,
+                },
+            },
+            {
+                "sequence": 3,
+                "occurred_at_unix_ms": 1_020,
+                "event": {
+                    "kind": "tool_prepared",
+                    "invocation": {
+                        "call_id": "search-1",
+                        "name": "file_search",
+                        "arguments": {"parsed": {"query": "target"}},
+                    },
+                },
+            },
+            {
+                "sequence": 4,
+                "occurred_at_unix_ms": 1_100,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "call_id": "search-1",
+                    "name": "file_search",
+                    "outcome": {
+                        **accepted,
+                        "content": (
+                            '[{"path":"project/src/lib.rs"},'
+                            '{"path":"project/README.md"}]'
+                        ),
+                    },
+                },
+            },
+            {
+                "sequence": 5,
+                "occurred_at_unix_ms": 1_110,
+                "event": {
+                    "kind": "model_request_prepared",
+                    "request": {
+                        **request,
+                        "messages": [
+                            {
+                                "role": "tool",
+                                "call_id": "search-1",
+                                "name": "file_search",
+                                "content": "bounded result",
+                            }
+                        ],
+                    },
+                },
+            },
+            {
+                "sequence": 6,
+                "occurred_at_unix_ms": 1_150,
+                "event": {
+                    "kind": "tool_prepared",
+                    "invocation": {
+                        "call_id": "edit-1",
+                        "name": "edit_file",
+                        "arguments": {
+                            "parsed": {
+                                "path": "project/src/lib.rs",
+                                "search": "old",
+                                "replace": "new",
+                            }
+                        },
+                    },
+                },
+            },
+            {
+                "sequence": 7,
+                "occurred_at_unix_ms": 1_200,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "call_id": "edit-1",
+                    "name": "edit_file",
+                    "outcome": {
+                        **accepted,
+                        "side_effect": "applied",
+                        "content": "updated",
+                    },
+                },
+            },
+            {
+                "sequence": 8,
+                "occurred_at_unix_ms": 1_210,
+                "event": {"kind": "completion_rejected"},
+            },
+            {
+                "sequence": 9,
+                "occurred_at_unix_ms": 1_220,
+                "event": {
+                    "kind": "tool_prepared",
+                    "invocation": {
+                        "call_id": "verify-1",
+                        "name": "run_verifiers",
+                        "arguments": {"parsed": {"profile": "exact"}},
+                    },
+                },
+            },
+            {
+                "sequence": 10,
+                "occurred_at_unix_ms": 1_250,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "call_id": "verify-1",
+                    "name": "run_verifiers",
+                    "outcome": {**accepted, "content": "pass"},
+                },
+            },
+        ],
+        "children": [],
+    }
+    projection = hardness_metrics_projection(
+        {
+            "project_files": [
+                "project/README.md",
+                "project/src/lib.rs",
+                "project/tests/lib.rs",
+            ],
+            "related_files": [
+                "project/src/lib.rs",
+                "project/tests/lib.rs",
+            ],
+            "allowed_paths": ["project/src/lib.rs"],
+            "reference_changed_files": ["project/src/lib.rs"],
+            "human_estimated_minutes": 30,
+            "evidence_policy": "pass",
+            "required_continuity": None,
+        },
+        facts,
+        {"passed": True},
+        ["project/src/lib.rs"],
+        lane_valid=True,
+        route_valid=True,
+        latest_receipt_valid=True,
+        continuity=[],
+    )
+    require(
+        projection["first_relevant_file_ms"] == 100
+        and projection["first_correct_edit_ms"] == 200
+        and projection["relevant_file_recall_numerator"] == 1
+        and projection["relevant_file_recall_denominator"] == 2
+        and projection["wrong_entry_count"] == 1
+        and projection["tool_call_count_by_name"]
+        == {"edit_file": 1, "file_search": 1, "run_verifiers": 1}
+        and projection["false_completion_rework_count"] == 1
+        and projection["first_edit_verified"] is True
+        and len(projection["model_request_context_bytes"]) == 2
+        and projection["model_request_stable_prefix_bytes"]
+        == [len("system".encode("utf-8"))] * 2
+        and projection["model_request_raw_tool_output_bytes"]
+        == [0, len("bounded result".encode("utf-8"))]
+        and projection["latest_revision_receipt_valid"] is True,
+        "m36a_metric_observer_self_test_failed",
+        {"projection": projection},
+    )
+    return canonical_hash(projection)
+
+
+def build_m36_loss_conformance_report() -> dict[str, Any]:
+    require(CAMPAIGN == "m36a", "m36a_campaign_required")
+    manifest = read_json_object(
+        M36_LOSS_MANIFEST_PATH, "m36a_loss_manifest_unavailable"
+    )
+    corpus_contract = manifest.get("corpus")
+    require(
+        manifest.get("schema") == M36_LOSS_MANIFEST_SCHEMA
+        and isinstance(corpus_contract, dict)
+        and corpus_contract.get("schema") == M36_LOSS_CORPUS_SCHEMA
+        and corpus_contract.get("path")
+        == "eval/fixtures/m36a-loss-taxonomy-v1.json",
+        "m36a_loss_manifest_invalid",
+    )
+    corpus_path = (ROOT / corpus_contract["path"]).resolve()
+    require(
+        repository_relative(
+            corpus_path, "m36a_loss_corpus_path_invalid"
+        )
+        == corpus_contract["path"]
+        and file_hash(corpus_path) == corpus_contract.get("file_sha256"),
+        "m36a_loss_corpus_identity_invalid",
+    )
+    corpus = read_json_object(
+        corpus_path, "m36a_loss_corpus_unavailable"
+    )
+    defaults = corpus.get("defaults")
+    cases = corpus.get("cases")
+    require(
+        corpus.get("schema") == M36_LOSS_CORPUS_SCHEMA
+        and isinstance(defaults, dict)
+        and isinstance(cases, list)
+        and len(cases) == corpus_contract.get("case_count")
+        and all(isinstance(case, dict) for case in cases),
+        "m36a_loss_corpus_invalid",
+    )
+    results = []
+    for case in cases:
+        case_id = case.get("case_id")
+        expected = case.get("expected")
+        merged = m36_loss_case_merge(
+            defaults, case.get("overrides", {})
+        )
+        require(
+            isinstance(case_id, str)
+            and case_id
+            and isinstance(expected, dict)
+            and isinstance(merged, dict),
+            "m36a_loss_case_invalid",
+        )
+        projection = m36_loss_projection(
+            merged.get("task"),
+            merged.get("behavior"),
+            merged.get("accounting"),
+            merged.get("hardness"),
+            merged.get("failure_codes"),
+            lane_valid=merged.get("lane_valid"),
+        )
+        require(
+            projection == expected,
+            "m36a_loss_case_result_mismatch",
+            {"case_id": case_id, "projection": projection},
+        )
+        results.append({"case_id": case_id, "projection": projection})
+    require(
+        len({result["case_id"] for result in results}) == len(results),
+        "m36a_loss_case_identity_invalid",
+    )
+    covered = {
+        result["projection"]["canonical_loss_code"]
+        for result in results
+        if result["projection"]["canonical_loss_code"] is not None
+    }
+    require(
+        covered == set(manifest.get("stable_loss_codes", [])),
+        "m36a_loss_taxonomy_coverage_invalid",
+    )
+    return {
+        "schema": M36_LOSS_REPORT_SCHEMA,
+        "status": "pass",
+        "manifest_sha256": file_hash(M36_LOSS_MANIFEST_PATH),
+        "corpus_sha256": file_hash(corpus_path),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "cases": len(results),
+        "stable_loss_codes_covered": len(covered),
+        "metric_observer_projection_sha256": (
+            m36_metric_observer_self_test()
+        ),
+        "results_sha256": canonical_hash(results),
+        "historical_raw_read": False,
+        "key_accessed": False,
+        "network_accessed": False,
+    }
+
+
+def run_m36_loss_conformance() -> int:
+    first = canonical_bytes(build_m36_loss_conformance_report())
+    second = canonical_bytes(build_m36_loss_conformance_report())
+    require(first == second, "m36a_loss_report_not_reproducible")
+    sys.stdout.buffer.write(first + b"\n")
+    return 0
 
 
 def build_hardness_conformance_report() -> dict[str, Any]:
@@ -4665,6 +5383,9 @@ def build_hardness_conformance_report() -> dict[str, Any]:
             case.get("changed_files"),
             lane_valid=case.get("lane_valid"),
             route_valid=case.get("route_valid"),
+            latest_receipt_valid=case.get(
+                "latest_receipt_valid", True
+            ),
             continuity=case.get("continuity"),
         )
         require(
@@ -4714,7 +5435,7 @@ def run_hardness_conformance() -> int:
 
 
 def hardness_continuity_sse(request_index: int) -> bytes:
-    if CAMPAIGN == "m30" and request_index == 1:
+    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and request_index == 1:
         frames = [
             {
                 "id": "chatcmpl-m30-continuity-input",
@@ -4791,7 +5512,9 @@ def hardness_continuity_sse(request_index: int) -> bytes:
         ]
     elif (
         CAMPAIGN == "m23b" and request_index == 1
-    ) or (CAMPAIGN == "m30" and request_index == 2):
+    ) or (
+        CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and request_index == 2
+    ):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-tool",
@@ -4851,7 +5574,9 @@ def hardness_continuity_sse(request_index: int) -> bytes:
                 },
             },
         ]
-    elif request_index == (3 if CAMPAIGN == "m30" else 2):
+    elif request_index == (
+        3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2
+    ):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-final",
@@ -5050,7 +5775,7 @@ def hardness_continuity_self_test_envelope(
                 "enabled": True,
                 "allowed": (
                     ["apply_patch", "request_user_input"]
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                     else ["apply_patch"]
                 ),
                 "denied": [],
@@ -5059,7 +5784,9 @@ def hardness_continuity_self_test_envelope(
                 "max_turns": 3,
                 "max_model_requests": 3,
                 "max_model_retries": 0,
-                "max_tool_calls": 2 if CAMPAIGN == "m30" else 1,
+                "max_tool_calls": (
+                    2 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 1
+                ),
                 "max_depth": 0,
                 "max_concurrent_children": 0,
                 "model_event_idle_ms": 10_000,
@@ -5071,7 +5798,7 @@ def hardness_continuity_self_test_envelope(
                     "permission_mode": "ask",
                     "interactive": True,
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else {
                     "write_execution_mode": "root",
                     "auto_approve": False,
@@ -5304,12 +6031,12 @@ def run_hardness_continuity_self_test(
         final_events = reopened["root_events"]
         require(
             loopback.request_count
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2)
             and not loopback.errors
             and final_accounting["physical_requests_started"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2)
             and final_accounting["physical_requests_completed"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2)
             and final_accounting["physical_requests_in_flight"] == 0
             and len(event_values(final_events, "interaction_requested"))
             == 1
@@ -5317,7 +6044,7 @@ def run_hardness_continuity_self_test(
             and len(event_values(final_events, "tool_execution_started"))
             == 1
             and len(event_values(final_events, "tool_outcome_committed"))
-            == (2 if CAMPAIGN == "m30" else 1)
+            == (2 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 1)
             and secret not in (
                 (stderr_path.read_bytes() if stderr_path.exists() else b"")
                 + (
@@ -5336,7 +6063,7 @@ def run_hardness_continuity_self_test(
             "status": "pass",
             "manifest_sha256": file_hash(
                 MANIFEST_PATH
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                 else HARDNESS_CONTINUITY_MANIFEST_PATH
             ),
             "harness_sha256": file_hash(Path(__file__).resolve()),
@@ -5348,7 +6075,7 @@ def run_hardness_continuity_self_test(
             "physical_requests_before_restart": 1,
             "physical_requests_at_reopen": 1,
             "physical_requests_final": (
-                3 if CAMPAIGN == "m30" else 2
+                3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2
             ),
             "process_restart_count": 1,
             "interaction_requested": 1,
@@ -5358,7 +6085,9 @@ def run_hardness_continuity_self_test(
             "official_credential_accessed": False,
             "official_api_accessed": False,
             "external_network_accessed": False,
-            "loopback_requests": 3 if CAMPAIGN == "m30" else 2,
+            "loopback_requests": (
+                3 if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS else 2
+            ),
             "production_delta": False,
             "maximum_reruns": 0,
         }
@@ -5509,6 +6238,7 @@ def derive_arm(
             changed,
             lane_valid=lane["valid"],
             route_valid=route["valid"],
+            latest_receipt_valid=receipt,
             continuity=continuity,
         )
         if CAMPAIGN in HARDNESS_CAMPAIGNS
@@ -5547,13 +6277,28 @@ def derive_arm(
                 ),
             }
         )
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             behavior["owner_code"] = behavior_owner_code(
                 task["lane"], behavior
             )
         accounting_truth = accounting_truth_projection(
             trajectory_accounting_observation(facts)
         )
+        if CAMPAIGN == "m36a":
+            require(
+                isinstance(hardness, dict),
+                "m36a_hardness_projection_missing",
+            )
+            hardness.update(
+                m36_loss_projection(
+                    task,
+                    behavior,
+                    accounting_truth,
+                    hardness,
+                    dict(failure_codes),
+                    lane_valid=lane["valid"],
+                )
+            )
         truth = {
             "behavior": behavior,
             "accounting": accounting_truth,
@@ -7571,6 +8316,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b",
         "m23b",
         "m30",
+        "m36a",
     }:
         complete = all(
             cell["false_success"] == 0
@@ -7585,6 +8331,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
+            "m36a",
         }:
             safety_cells = [
                 cell
@@ -7602,7 +8349,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     for safety in safety_cells
                 )
             )
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             complete = complete and all(
                 arm["truth"]["behavior"]["status"]
                 in {
@@ -7650,6 +8397,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
         "m30": "insufficient_repeated_current_loss",
+        "m36a": "keep_current_harness_no_repeated_loss",
     }[CAMPAIGN]
     result = {
         "record_type": "summary",
@@ -7728,13 +8476,21 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             loss_tasks: dict[str, set[str]] = defaultdict(set)
             for arm in arms:
                 behavior_truth = arm["truth"]["behavior"]
-                owner_code = behavior_truth.get("owner_code")
-                loss_code = behavior_truth.get("loss_code")
+                if CAMPAIGN == "m36a":
+                    owner_code = arm["hardness"].get(
+                        "canonical_loss_owner_code"
+                    )
+                    loss_code = arm["hardness"].get(
+                        "canonical_loss_code"
+                    )
+                else:
+                    owner_code = behavior_truth.get("owner_code")
+                    loss_code = behavior_truth.get("loss_code")
                 if behavior_truth["product_loss"]:
                     require(
                         isinstance(owner_code, str)
                         and isinstance(loss_code, str),
-                        "m30_loss_identity_invalid",
+                        "hardness_loss_identity_invalid",
                     )
                     stable_loss = f"{owner_code}:{loss_code}"
                     losses[stable_loss] += 1
@@ -7742,6 +8498,14 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             candidate = repeated_current_loss_candidate(
                 losses, loss_tasks
             )
+            if (
+                CAMPAIGN == "m36a"
+                and candidate["result_class"]
+                == "insufficient_repeated_current_loss"
+            ):
+                candidate["result_class"] = (
+                    "keep_current_harness_no_repeated_loss"
+                )
             hardness_result["loss_matrix"] = candidate
             result["decision"] = (
                 candidate["result_class"]
@@ -8062,7 +8826,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                     else {
                         "interactive": requires_live_continuity(
                             task_id
@@ -8832,7 +9596,7 @@ def run_self_test() -> int:
             for task_id in TASKS
             if requires_live_continuity(task_id)
         }
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
             require(
                 all(
                     controls["interactive"] is (task_id in required)
@@ -8896,7 +9660,7 @@ def run_self_test() -> int:
                             "loss_code": None,
                             **(
                                 {"owner_code": None}
-                                if CAMPAIGN == "m30"
+                                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                                 else {}
                             ),
                         },
@@ -8929,7 +9693,7 @@ def run_self_test() -> int:
                 "correct_safety_rejection": 3,
                 "verified_success": 17,
             }
-            if CAMPAIGN == "m30"
+            if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
             else {
                 "correct_safety_rejection": 9,
                 "verified_success": 51,
@@ -8950,13 +9714,21 @@ def run_self_test() -> int:
             == len(required) * RESOURCES["runs_per_task"]
             and (
                 (
-                    CAMPAIGN == "m30"
+                    CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
                     and synthetic_summary["decision"]
-                    == "insufficient_repeated_current_loss"
+                    == (
+                        "keep_current_harness_no_repeated_loss"
+                        if CAMPAIGN == "m36a"
+                        else "insufficient_repeated_current_loss"
+                    )
                     and synthetic_summary["loss_matrix"][
                         "result_class"
                     ]
-                    == "insufficient_repeated_current_loss"
+                    == (
+                        "keep_current_harness_no_repeated_loss"
+                        if CAMPAIGN == "m36a"
+                        else "insufficient_repeated_current_loss"
+                    )
                     and "pass_power_3_tasks"
                     not in synthetic_summary
                 )
@@ -9690,6 +10462,7 @@ def parse_args() -> argparse.Namespace:
             "m20b",
             "m23b",
             "m30",
+            "m36a",
         ),
         default="m9c",
     )
@@ -9701,6 +10474,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--acceptance-conformance", action="store_true")
     mode.add_argument("--truth-conformance", action="store_true")
     mode.add_argument("--hardness-conformance", action="store_true")
+    mode.add_argument("--m36-loss-conformance", action="store_true")
     mode.add_argument(
         "--hardness-continuity-self-test", action="store_true"
     )
@@ -9745,6 +10519,8 @@ def main() -> int:
             return run_truth_conformance()
         if args.hardness_conformance:
             return run_hardness_conformance()
+        if args.m36_loss_conformance:
+            return run_m36_loss_conformance()
         if args.hardness_continuity_self_test:
             require(args.binary, "binary_required")
             require(

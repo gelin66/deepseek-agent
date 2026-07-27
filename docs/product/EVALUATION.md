@@ -4194,6 +4194,27 @@ M36 的评测对象是 DSE Harness，不是竞品功能数量。任何 treatment
 production loss，再在相同 DeepSeek 模型下测量；不得把 Codex/Claude Code 整机成绩或
 不同模型的排行榜差异归因给 DSE。
 
+##### 0. M36-A fresh acquisition identity
+
+M36-A 只复用 `eval/manifests/m23b-hardness-control-v1.json` 中已经由 reference patch
+证明的私有 task material、deterministic verifier 和 tool policy，不复用任何历史
+trajectory、raw、result、admission 或 arm label。新的
+`eval/manifests/m36a-deepseek-native-baseline-v1.json` 必须同时冻结：
+
+- 20 个按原顺序人工复核的 `m36a-*` acceptance identity；
+- 每 arm 新 workspace、DSE home、SQLite RunStore 和 breadth-first position-1 schedule；
+- current `Run API v15 / RuntimeEvent v22 / State v28 / exec-stream v6`；
+- `deepseek-v4-pro/high`、Standard streaming ChatCompletions、current fixed actor route；
+- normal Runtime safe retry 上限 2，Harness rerun 上限 0；
+- 六个 task family 每类至少两个独立任务；
+- behavior/accounting 正交 truth、exact credential-free reopen、latest-revision receipt；
+- `$0.50` per-arm 和 `$10.00` suite known-cost hard ceiling。
+
+离线 acquisition 前必须通过 reference solution proof、hash-chained journal crash
+windows、进程 SIGKILL/reopen continuity、11-case canonical loss taxonomy 和扩展 metric
+observer。loss observer 只能输出下文稳定 taxonomy；若 task contract 在人工复核中存在
+歧义，该 case 必须在 credential 前 invalid，不能靠正式模型失败补标签。
+
 ##### 1. 基线任务层
 
 每个基线 manifest 必须从以下任务层中选择与候选 owner 相关的 fresh、人工复核任务：

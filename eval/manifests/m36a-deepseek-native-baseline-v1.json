@@ -1,0 +1,384 @@
+{
+  "schema": "dse.eval.m36a-deepseek-native-baseline.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "b9221fd1bb1c92521f0eb023d6914bcbf714e64a",
+    "starting_tree": "949d7c5b8e52dbaa2b6ce401c4f7818d40a68886",
+    "required_clean_start": true,
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "25.6.0",
+    "python": "3.14.6",
+    "go": "1.26.4",
+    "cargo_lock_sha256": "sha256:d7c2248d92cd35a40500c30af194d505e30ecce6522756039da6588afc7b98da",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "inherited_contract": {
+    "path": "eval/manifests/m23b-hardness-control-v1.json",
+    "file_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+    "sections": [
+      "fixture_contract",
+      "reference_patches",
+      "tasks",
+      "tool_policies"
+    ],
+    "historical_identity_inherited": false,
+    "historical_raw_is_input": false
+  },
+  "slice_contract": {
+    "real_problem": "DSE has current mechanism and reliability proofs but no fresh, manually reviewed, deterministic-verifier capability baseline that distinguishes Harness, model and product-system loss on the current retry, feedback and protocol revision.",
+    "acceptance": [
+      "reuse only the frozen private task material and reference proofs while assigning every task a new M36 acceptance identity",
+      "run one fresh position-1 trajectory per independent task on one immutable current binary, fresh workspace and fresh RunStore",
+      "cover deterministic repair, large-repository localization, multi-module hard work, long-horizon reopen, service/API/UI behavior and adversarial false-completion recovery",
+      "derive behavior and accounting truth independently and retain canonical localization, context, tool, edit, evidence, recovery and accounting observations",
+      "keep normal production Runtime safe retry at initial plus at most two retries while Harness maximum_reruns remains zero",
+      "stop before the next task on false success, identity ambiguity, observer ambiguity, unsafe evidence, unknown billing, incomplete usage or cost ceiling",
+      "require one identical canonical owner_code:loss_code across at least two independent task IDs before any production candidate"
+    ],
+    "owner": "the existing corrected scripts/eval-m9b-fixed-pro-regression.py Harness",
+    "production_delta": "zero in M36-A",
+    "old_path_replaced": "feature imitation, historical result splicing, selective reruns and subjective loss attribution",
+    "cutover": "retain one current M36 baseline and canonical loss matrix; delete the temporary live consumer after the decision",
+    "failed_treatment_deletion": "when no repeated current loss exists, keep current production unchanged; any later treatment that fails held-out quality gates is physically deleted"
+  },
+  "freshness_contract": {
+    "new_task_contract_identity": true,
+    "new_workspace_per_arm": true,
+    "new_run_store_per_arm": true,
+    "new_position_1_schedule": true,
+    "historical_raw_is_input": false,
+    "historical_result_is_input": false,
+    "historical_admission_is_input": false,
+    "manual_prompt_test_gold_review_required": true
+  },
+  "task_overlays": {
+    "rust_router_localization": {
+      "base_task_sha256": "sha256:8a1e51b134f6483896bbb2369137f3894b3a43711292126f1d0d7653cbd22904",
+      "acceptance_id": "m36a-rust-router-localization",
+      "task_family": "large_repository_localization",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "typescript_route_localization": {
+      "base_task_sha256": "sha256:95e68e95392d4534db37ad0c5ad7ed9a79b89c2348ce8267a8c0aedd92f4396c",
+      "acceptance_id": "m36a-typescript-route-localization",
+      "task_family": "large_repository_localization",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "python_config_crossfile": {
+      "base_task_sha256": "sha256:791740854181c0e5f2cfee30607c13be013d92ce57982aadeb4fb9a338b6dd87",
+      "acceptance_id": "m36a-python-config-crossfile",
+      "task_family": "deterministic_repair",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "rust_line_recovery_resume": {
+      "base_task_sha256": "sha256:318400383a9cbf64e774313d027b787950006f43baba373f95b1e8e1d20f6b1b",
+      "acceptance_id": "m36a-rust-line-recovery-resume",
+      "task_family": "long_horizon",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "python_jsonl_runtime": {
+      "base_task_sha256": "sha256:3b199667f3ea7075e068a65b9de9b02d7bd9e17b0e4966b41df6ff11c7cee3a6",
+      "acceptance_id": "m36a-python-jsonl-runtime",
+      "task_family": "service_api_ui",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "readonly_service_graph": {
+      "base_task_sha256": "sha256:e2ab99ac733b0d7ab706a9d373e4438b07c63a23ea59c8d836de8c2419ea2c65",
+      "acceptance_id": "m36a-readonly-service-graph",
+      "task_family": "multi_module_hard",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "writer_envelope": {
+      "base_task_sha256": "sha256:6b1b562ebe79a61c2df5a8713da193e1fa0906f4f3166d140c89c3f5ab5e8492",
+      "acceptance_id": "m36a-writer-envelope",
+      "task_family": "multi_module_hard",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "safety_authorization_claim": {
+      "base_task_sha256": "sha256:1d9ecfa4aa52373ca5183a0355db05bbf8ddc37307e003e4000ce26042b54fa8",
+      "acceptance_id": "m36a-safety-authorization-claim",
+      "task_family": "false_completion_recovery_adversarial",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "rust_event_localization": {
+      "base_task_sha256": "sha256:b8efe584c7ee4045c05eb9f0d41bdfe93b3cc167f945017d561da25e2d2a83a0",
+      "acceptance_id": "m36a-rust-event-localization",
+      "task_family": "deterministic_repair",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "typescript_request_crossfile": {
+      "base_task_sha256": "sha256:ebe8c89b289cb8c2d31c06630778a6b29e0b998b1942c691072d1757c80da6f3",
+      "acceptance_id": "m36a-typescript-request-crossfile",
+      "task_family": "deterministic_repair",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "rust_netstring_recovery_resume": {
+      "base_task_sha256": "sha256:f44fdeb58c9b3f3e0930d3afc867f14c1f5eb6e34eb0fd83b54749767097d913",
+      "acceptance_id": "m36a-rust-netstring-recovery-resume",
+      "task_family": "long_horizon",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "readonly_component_graph": {
+      "base_task_sha256": "sha256:6a7bc574c25c46e953deea36edcb828935ee69fe043145dd27f61eb38d9f4df7",
+      "acceptance_id": "m36a-readonly-component-graph",
+      "task_family": "multi_module_hard",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "writer_policy_migration": {
+      "base_task_sha256": "sha256:59355432209b898bd3cbc3fe8f9388797fbbe7ed1727411af4d4a88847e9f5e2",
+      "acceptance_id": "m36a-writer-policy-migration",
+      "task_family": "multi_module_hard",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "safety_export_claim": {
+      "base_task_sha256": "sha256:fc0a435695f48c53ee51288aecffd565245f4fc9937211ae5be14bfdeca6bffb",
+      "acceptance_id": "m36a-safety-export-claim",
+      "task_family": "false_completion_recovery_adversarial",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "rust_registry_localization": {
+      "base_task_sha256": "sha256:13988224bdd130e58489a1d05c6c6f14a5058e1c2dfab90a46812223160f65a8",
+      "acceptance_id": "m36a-rust-registry-localization",
+      "task_family": "large_repository_localization",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "typescript_forwarded_crossfile": {
+      "base_task_sha256": "sha256:60523cd8acdda1ebc0c0921fa3c4907fce707e57bef2f33e907fde30c7869ac2",
+      "acceptance_id": "m36a-typescript-forwarded-crossfile",
+      "task_family": "multi_module_hard",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "typescript_retry_resume": {
+      "base_task_sha256": "sha256:25a8d1ce355d7426dd398be23f56eefb4380dfe8fe345cba543a0d4eb6fea4c5",
+      "acceptance_id": "m36a-typescript-retry-resume",
+      "task_family": "long_horizon",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "safety_tenant_claim": {
+      "base_task_sha256": "sha256:e6201c4637330256d4583d9d5931a61595da8f5a29183427e2d2f9f4e31fd6ed",
+      "acceptance_id": "m36a-safety-tenant-claim",
+      "task_family": "false_completion_recovery_adversarial",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "go_health_api": {
+      "base_task_sha256": "sha256:72d61a3e4ca2374f8efd60fdaf7f55cfdc1503644a3693d3685bf6815c2295d4",
+      "acceptance_id": "m36a-go-health-api",
+      "task_family": "service_api_ui",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    },
+    "typescript_dom_ui": {
+      "base_task_sha256": "sha256:4bb54622809c9cc2d5647dea54e1ed13cfcf4333cffba510041f083ebabf252f",
+      "acceptance_id": "m36a-typescript-dom-ui",
+      "task_family": "service_api_ui",
+      "review_status": "manual_prompt_test_gold_reviewed",
+      "contract_ambiguity": "none_observed"
+    }
+  },
+  "resources": {
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "formal_tasks": 20,
+    "formal_arms": 20,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "max_runtime_retries_per_arm": 2,
+    "max_output_tokens_per_request": 32768,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 1200000,
+    "harness_wall_time_ms": 1320000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 180,
+    "per_arm_known_cost_ceiling_usd": "0.50",
+    "suite_known_cost_ceiling_usd": "10.00",
+    "permission_mode": "agent",
+    "interactive": false,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m36-target"
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "rust_router_localization",
+        "typescript_route_localization",
+        "python_config_crossfile",
+        "rust_line_recovery_resume",
+        "python_jsonl_runtime",
+        "readonly_service_graph",
+        "writer_envelope",
+        "safety_authorization_claim",
+        "rust_event_localization",
+        "typescript_request_crossfile",
+        "rust_netstring_recovery_resume",
+        "readonly_component_graph",
+        "writer_policy_migration",
+        "safety_export_claim",
+        "rust_registry_localization",
+        "typescript_forwarded_crossfile",
+        "typescript_retry_resume",
+        "safety_tenant_claim",
+        "go_health_api",
+        "typescript_dom_ui"
+      ]
+    ],
+    "schedule_semantics": "one fresh breadth-first position-1 trajectory per independent task; maximum_reruns=0; no historical result is an input"
+  },
+  "continuity_policy": {
+    "task_selector": "inherited task.required_continuity is not null",
+    "permission_mode": "ask",
+    "interactive": true,
+    "checkpoint_kind": "interaction_requested",
+    "interaction_kind": "user_input",
+    "process_stop": "sigkill_process_group",
+    "restarts_per_arm": 1,
+    "physical_requests_added_at_reopen": 0,
+    "resolve_only_after_reopen": true
+  },
+  "decision_rule": {
+    "complete_acquisition": "all 20 fresh arms have closed behavior truth, complete accounting, exact reopen, current route and lane identity, latest-revision evidence and false_success=0",
+    "stop_incomplete": "stop before the next arm on false success, unknown billing, incomplete usage, identity mismatch, observer ambiguity, environment ambiguity, unsafe evidence or cost ceiling; never rerun",
+    "candidate_threshold": "one identical canonical owner_code:loss_code across at least two distinct task IDs",
+    "candidate_action": "audit exactly one minimum unique-owner treatment; implementation is not automatic",
+    "no_repeated_loss": "keep_current_harness_no_repeated_loss",
+    "record_class": "m36a_deepseek_native_capability_baseline",
+    "product_metric_eligible": false,
+    "quality_aggregate_eligible": false
+  },
+  "metrics": [
+    "verified_success",
+    "correct_safety_rejection",
+    "false_success",
+    "behavior_status",
+    "behavior_owner_code",
+    "behavior_loss_code",
+    "accounting_status",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+    "cost_nanousd",
+    "wall_time_ms",
+    "first_relevant_file_ms",
+    "relevant_files_seen_before_first_edit",
+    "irrelevant_files_seen_before_first_edit",
+    "first_edit_verified",
+    "repair_loops",
+    "repeated_reads_same_mutation_epoch",
+    "compaction_count",
+    "resume_count",
+    "goal_constraint_loss",
+    "service_started",
+    "runtime_assertion_passed",
+    "first_correct_edit_ms",
+    "relevant_file_recall_numerator",
+    "relevant_file_recall_denominator",
+    "wrong_entry_count",
+    "tool_call_count_by_name",
+    "malformed_argument_failures",
+    "ambiguous_empty_results",
+    "output_truncations",
+    "stale_edit_failures",
+    "model_request_context_bytes",
+    "model_request_stable_prefix_bytes",
+    "model_request_raw_tool_output_bytes",
+    "model_request_total_message_bytes",
+    "false_completion_rework_count",
+    "latest_revision_receipt_valid",
+    "canonical_loss_owner_code",
+    "canonical_loss_code"
+  ],
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "legacy_model_aliases_retired_on": "2026-07-24T15:59:00Z",
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "tool_calls_supported": true,
+      "thinking_supported": true,
+      "reasoning_content_must_be_replayed_on_tool_turns": true
+    }
+  },
+  "external_method_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://openai.com/index/separating-signal-from-noise-coding-evaluations/",
+      "https://www.anthropic.com/engineering/harness-design-long-running-apps",
+      "https://swe-agent.com/0.7/background/aci/",
+      "https://arxiv.org/abs/2407.01489",
+      "https://aider.chat/docs/repomap.html",
+      "https://docs.openhands.dev/sdk/arch/overview"
+    ],
+    "adopted_mechanisms": [
+      "manual prompt, test and gold review before acquisition",
+      "deterministic verifier and explicit false-completion observation",
+      "one current immutable system with one variable per later treatment",
+      "bounded tool-observation and localization measurements",
+      "one canonical runtime and persisted trajectory owner"
+    ],
+    "explicitly_not_a_feature_backlog": true
+  },
+  "security": {
+    "credential_read_before_live_admission": false,
+    "network_model_request_before_live_admission": false,
+    "raw_output": "ignored_0600_exclusive_hash_chained",
+    "raw_is_committed": false,
+    "raw_is_historical_input": false,
+    "github_access": false,
+    "push": false,
+    "release": false
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:5a609498e984a417e88a42b3baa507a43c0061e3f8687fb88ca406ef068468bd",
+    "evaluation": "sha256:ddcb47efe76f50e09acc28bb41ae5ef0b95ebe69bd0603d08a3015fbcf3aa21d",
+    "current_architecture": "sha256:f54f06cb4100c43bc6d62e29b0af9a16a7109608396cc77b4c7607867f299ab4"
+  },
+  "live_admission": {
+    "exists": false,
+    "credential_authorized": false,
+    "official_model_request_authorized": false
+  }
+}
