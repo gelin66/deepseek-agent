@@ -2868,6 +2868,24 @@ Writer behavior、CLI/TUI/app-server 均无 delta。frozen contract/live admissi
 fixture/reference、ignored `0600` raw、summary 与 Git 历史保留。ADR-0015 仍为
 implementation-not-admitted，当前没有 browser/search/vision production 路径。
 
+M40-A 从 immutable `e2ed02c3a805` binary 启动新的八任务 engineering-loss schedule，但按
+冻结停止门只运行 position-1 `rust_feature_matrix`。该 workspace 的 deterministic verifier
+通过；第七个 physical DeepSeek request 在 headers 和 reasoning 后、usage/finish/`[DONE]`
+前断流。Runtime 记录 `deepseek_transport`、`retryable=true`、`actionable_output=true`、
+`retry_safe=false` 并停止，没有盲发第八次；Run terminal failed、latest receipt 缺失、
+`false_success=0`。
+
+canonical Store/reopen 一致，accounting 记录 7 started/completed、6 usage responses、1
+incomplete response、runtime retry 0。已返回 usage 的局部 known cost 为 `$0.010289171`，但
+最后请求没有 provider usage，因而 `usage_incomplete=true`、accounting complete 0/1、full
+utility 0/1。Harness 在第二 arm 前以 `accounting_incomplete` 停止；只读报告得到
+`reject_incomplete_acquisition`，production delta=0，没有 candidate、treatment 或 A/B。
+
+M40 temporary selector/loader/live caller/aggregate/self-test/trajectory consumer 已删除，唯一
+Harness 恢复 exact blob `d3916654f`。frozen fixture/reference、contract/admission/analysis、
+ignored `0600` raw、summary 与 Git 历史保留。ADR-0015 仍是
+implementation-not-admitted，当前没有 browser/search/vision production 路径。
+
 ## 8. 明确非结论
 
 当前源码不证明：

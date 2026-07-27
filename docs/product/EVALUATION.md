@@ -4890,6 +4890,11 @@ task 名称和历史 loss 都不能自行生成 product loss。
 identity/observer ambiguity 在下一请求前停止。
 
 ```text
+any behavior/accounting observation incomplete
+  -> reject_incomplete_acquisition
+  -> stop before the next paid arm
+  -> production delta = 0
+
 same canonical owner_code:loss_code on fewer than 2 fresh task IDs
   -> keep_current_harness_no_repeated_loss
   -> production delta = 0
@@ -4904,3 +4909,25 @@ same canonical owner_code:loss_code on at least 2 fresh task IDs
 费用上限为每 arm `$0.50`、suite `$4.00`。behavior/accounting 必须按 ADR-0011 正交完整；
 Token、费用和速度不能补偿质量失败。ADR-0015 保持 implementation-not-admitted，M40 不含
 known URL、source discovery、JS/DOM、browser interaction、visual 或外部网络 task。
+
+#### M40-A formal result
+
+正式 acquisition 只启动 position-1 `rust_feature_matrix`。该 workspace 的 deterministic
+verifier 通过，但 Run 在第七个 physical model request 以 typed `deepseek_transport` failed：
+response headers/reasoning 已出现，content/tool fragment/trusted finish/usage/stream DONE 均未
+出现。该 failure 为 retryable，但 actionable output 使 `retry_safe=false`；Runtime 正确
+`Stop(actionable_output)`，physical request 维持 7，没有盲发第八次。
+
+行为和 accounting 正交结果为：1 个 `verified_product_failure`、`false_success=0`；7 started /
+7 completed、6 usage responses、1 incomplete response、0 runtime retries、accounting complete
+0/1、full utility 0/1。局部 known usage/cost 只覆盖六个 usage response，不能冒充最后请求或
+全 arm 的实际费用。Harness 追加 exact Store/reopen/verifier snapshot 和
+`accounting_incomplete` abort 后，在 arm 2 前停止；maximum reruns=0，没有补 mate或续跑。
+
+credential-free report 对 frozen raw 两次产生 byte-identical
+`sha256:410b9a13db8d1d7bab0969a6c67e492d9c36351cef31c794b6653ddbf4b290c3`，结果为
+`reject_incomplete_acquisition`。唯一 `deepseek:transport_or_accounting` 只覆盖一个 fresh task，
+而且 accounting 未闭合，因此不能进入 repeated-loss candidate 门。production delta=0，M40
+temporary consumer 已删除；完整身份和门禁见
+[M40-A summary](../../eval/summaries/m40-a-engineering-loss-acquisition-2026-07-28.md)。ADR-0015
+仍未实施，本结果不准入 browser/search/vision。

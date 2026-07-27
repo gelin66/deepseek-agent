@@ -6595,7 +6595,7 @@ ADR-0015 继续 implementation-not-admitted；没有 browser/search/vision imple
 
 ## 38. M40：fresh build/state/protocol loss acquisition
 
-- 状态：**M40-A contract 冻结中；production delta=0**
+- 状态：**M40-A 已完成；`reject_incomplete_acquisition`，production delta=0**
 - 起始基线：M39-A checkpoint `f7b54fc4e`
 - acquisition owner：唯一 corrected
   `scripts/eval-m9b-fixed-pro-regression.py`
@@ -6640,7 +6640,9 @@ verifier home 和 position-1 schedule；M36/M39/M32 的 raw、result、admission
    task 名、历史结论或工具调用数量猜测；
 6. 同一 exact `owner_code:loss_code` 至少覆盖两个本轮 fresh task_id，才返回
    `next_candidate_audit_required`；即使通过也只准入一个独立 held-out audit，不自动实现；
-7. 未达门时决定为 `keep_current_harness_no_repeated_loss`，production delta=0，并删除 M40
+7. accounting 全闭合但未达 repeated-loss 门时决定为
+   `keep_current_harness_no_repeated_loss`；任一 arm usage/accounting 不完整则立即
+   `reject_incomplete_acquisition`。两种结果都保持 production delta=0，并删除 M40
    temporary selector/loader/live caller/aggregate/self-test/trajectory consumer。
 
 本阶段不替代 production old path，也不加入 treatment。frozen fixture、reference、contract、
@@ -6658,3 +6660,23 @@ focused、fmt、strict workspace Clippy/test、public checker 与 diff check。
 歧义或费用越界都在下一付费 arm 前停止；不补 mate、不重跑、不拼接历史 raw。M40 不修改
 Prompt、ContextBroker、RuntimeEvent、State、tool catalog、permission、Writer behavior、UI、
 DeepSeek surface 或 fixed actor route。
+
+### 38.4 正式结果与删除
+
+immutable `e2ed02c3a805` binary 从 position 1 启动 `rust_feature_matrix`。workspace 修改通过
+deterministic verifier，但第七个 physical DeepSeek request 在收到 response headers 和
+actionable reasoning 后、收到 content/finish/usage/`[DONE]` 前断流。Runtime 将其分类为
+retryable 但 `retry_safe=false`，以 `actionable_output` 停止，没有发出第八个请求；Host terminal
+为 failed、latest receipt 缺失、`false_success=0`。
+
+canonical accounting 为 7 started / 7 completed、6 usage responses、1 incomplete response、
+runtime retry 0；已知六次 usage 的局部费用为 `$0.010289171`，但最后一次真实 usage/费用无法
+从 provider response 还原，所以 accounting complete 为 0/1、full-utility observation 为 0。
+Harness 按冻结门在 arm 2 前停止，没有补 mate、选择性重跑或拼接历史证据。只读报告得到唯一
+`deepseek:transport_or_accounting` 单例，但 incomplete accounting 先于 repeated-loss 门，最终
+决定为 `reject_incomplete_acquisition`，没有 production owner、treatment 或 A/B。
+
+M40 temporary campaign consumer 已物理删除，唯一 Harness 恢复 exact blob `d3916654f`。
+fixture/reference、contract/admission/analysis、ignored `0600` raw、
+[M40-A summary](../../eval/summaries/m40-a-engineering-loss-acquisition-2026-07-28.md)与 Git 历史
+保留。ADR-0015 继续 implementation-not-admitted；没有 browser/search/vision implementation。
