@@ -6239,7 +6239,7 @@ M36 不准入：
 
 ## 35. M37：模型可见契约减法与 Harness 控制边界
 
-- 状态：**方案已冻结；只准入 M37-A 离线 projection audit**
+- 状态：**M37-A 离线 projection audit 已完成；M37-B–E 未自动准入**
 - 起始基线：M36-A clean checkpoint `400ec0813`
 - 长期决策：[ADR-0014](../decisions/0014-model-visible-contract-and-harness-control.md)
 - owner：`crates/context`；工具、权限、Runtime、Orchestrator、Verifier 继续由现有模块拥有
@@ -6291,6 +6291,34 @@ Writer state machine、TUI、Provider 或 external surface。M36-A2 Writer-loss 
 
 M37-A 不读取 Key、不调用官方 API。它只建立观测与机械门，不因发现 debt 自动修改
 production prompt。
+
+M37-A 已在 `5fb2bc971` 完成：
+
+- `crates/context` 直接扩展原有 derived ledger，新增 ordered fragment identity、
+  owner/authority/trust、payload relation、final assembled/stable-prefix identity、
+  3,300-byte bundled core gate 和 actor-scoped tool claim parity；没有第二 composer、
+  Store、RuntimeEvent 或 production caller；
+- fixture 覆盖有/无 `AGENTS.md`、compatibility source ordering、rules-heavy、
+  skills-heavy、small/medium/large、显式 constitution override、root、Writer
+  coordinator、read-only child、explicit Writer 与 SQLite reopen；
+- 普通 `production_system_prompt` 与 audited prompt 逐字段相等；DeepSeek 仍把相同 blocks
+  合并成唯一 system message，root/read-only/Writer reopen 后 ledger、prompt 和
+  RequestPlan 精确一致；
+- 当前机械观测为：无项目说明时 `project_context -> project_context_pack` 是
+  `same_payload_wrapper`；普通 root/read-only child 的 `agent` claim 与实际 read-only
+  schema 一致，Writer coordinator 的实际 schema 还含 `isolated_write`，因此同一
+  execution-posture claim 为 mismatch；explicit Writer 没有 `agent` tool；
+- current deterministic fixture 的 assembled bytes/token estimates 为 no-AGENTS
+  `5,283/2,063`、rules-heavy `5,198/1,995`、skills-heavy `9,225/3,802`、
+  medium `9,013/4,161`、large `18,963/9,735`。这些是离线分布，不是任意仓库 hard limit；
+- Constitution/output/language 仍为 `2,629 + 360 + 311 = 3,300` bytes。M37-A 没有修改
+  production prompt、project pack、tool catalog、permission、Runtime、RunStore、Writer
+  或 DeepSeek 请求，也没有读取 Key 或调用官方 API。
+
+结论为 `keep_current_no_material_loss`：保留机械 audit/no-growth gate 和两项 current debt
+事实；不从离线发现自动进入 M37-B/C，更不把 M36 单个 Writer loss改写成 Prompt treatment。
+完整证据见
+[M37-A prompt projection audit](../../eval/summaries/m37-a-prompt-projection-audit-2026-07-27.md)。
 
 #### M37-B：execution posture/schema parity
 

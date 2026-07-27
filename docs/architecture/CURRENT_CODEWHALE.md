@@ -2768,9 +2768,33 @@ contract/admission/analysis/raw、summary 与 Git 历史。production-compiled c
 delta；最终 gate 只把一个 `#[cfg(test)]` 五回合 loopback terminal timeout 从 5 秒调为
 bounded 15 秒，避免并行 focused 在正常完成前失败。
 
+M37-A 没有改变任何 model-visible bytes 或 production execution。`crates/context`
+原有显式 measurement ledger 已原位扩展为 canonical projection audit：每个 ordered
+fragment 记录 source、owner、authority、trust、stability、hash、bytes、estimated
+tokens、payload/duplicate relation、model visibility 和可选 tool-schema claim；ledger
+同时派生最终 DeepSeek 单 system-message identity、stable-prefix boundary 与 bundled core
+no-growth gate。普通 `production_system_prompt` 仍只返回相同 `SystemPrompt`，ledger
+不进入 RunStore、RuntimeEvent 或模型上下文。
+
+current core 仍为 3,300 bytes。离线 fixture 冻结 no-AGENTS、rules/skills、
+small/medium/large、显式 override 和 source ordering；actual catalog audit 证明 root 与
+read-only child 的 read-only claim 匹配，Writer coordinator 因 schema 同时公开
+`isolated_write` 而 mismatch，explicit Writer 没有 `agent`。no-AGENTS fallback overview
+与 project pack 被稳定标记为 same-payload wrapper。root/read-only/Writer 的 prompt
+provenance、完整 ModelRequest/RequestPlan 和 SQLite reopen 精确一致。
+
+实现 checkpoint 为 `5fb2bc971`。它没有修改 Constitution/output/language、execution
+posture、project pack、DeepSeek model/request、tool catalog、permission、Runtime、
+RunStore、TUI 或 Writer state machine；Key 未读取，official API 请求为 0。M37-B/C/D/E
+仍需独立单变量准入，M36-A 的单个 Writer loss 仍归 M36-A2。
+
 ## 8. 明确非结论
 
 当前源码不证明：
+
+- M37-A 已证明删除 execution posture 句子或 project context pack 会提升 verified
+  success、Token、cache、时间或费用；它只冻结两项 current debt 和零行为变化 audit。
+  M37-B/C 必须分别预注册，不能从这次离线观测自动进入 production treatment；
 
 - M36-A 的 16/17 positive pass@1 可外推为所有仓库、语言或公开 benchmark，或一个
   `writer_envelope` loss 已证明 Writer owner 需要 treatment；同一

@@ -4392,6 +4392,28 @@ M37-A 必须通过：
 - `cargo test --workspace --locked`
 - `git diff --check`
 
+M37-A current 结果（2026-07-27）：
+
+- implementation `5fb2bc971` 只扩展 canonical composer 派生 ledger；普通 production
+  prompt 与 audited prompt 逐字段相等，model-visible delta 为 0；
+- bundled core 为 `3,300/3,300` bytes；no-AGENTS/rules-heavy/skills-heavy/medium/large
+  deterministic assembled 分布分别为 `5,283/5,198/9,225/9,013/18,963` bytes，
+  token estimates 分别为 `2,063/1,995/3,802/4,161/9,735`；
+- exact duplicate detector 由独立 fixture 覆盖；current no-AGENTS 路径稳定报告
+  `project_context -> project_context_pack = same_payload_wrapper`；
+- actual actor catalog parity 为 root=`match`、Writer coordinator=`mismatch`
+  (`read_only` vs `read_only + isolated_write`)、read-only child=`match`、
+  explicit Writer=`tool_unavailable`；
+- DeepSeek 单 system-message projection、root/read-only/Writer SQLite reopen、
+  exact RequestPlan、显式 constitution override provenance 与 compatibility source
+  ordering通过；ledger 不进入 RunStore；
+- credential read=false、official API requests=0。决定为
+  `keep_current_no_material_loss`，只保留 audit/no-growth 机制和 debt facts；
+  M37-B/C 不因本结果自动准入。
+
+完整身份、测试与非结论见
+[M37-A summary](../../eval/summaries/m37-a-prompt-projection-audit-2026-07-27.md)。
+
 #### 2. Failure admission
 
 model-visible candidate 前必须给 loss 指定唯一分类：
