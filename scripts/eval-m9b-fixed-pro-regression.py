@@ -427,6 +427,8 @@ HARDNESS_CONTINUITY_MANIFEST_SCHEMA = (
 HARDNESS_CONTINUITY_REPORT_SCHEMA = (
     "dse.eval.m30-dogfood-continuity-report.v1"
     if CAMPAIGN == "m30"
+    else "dse.eval.m40a-engineering-loss-continuity-report.v1"
+    if CAMPAIGN == "m40a"
     else "dse.eval.m23b-hardness-live-continuity-report.v1"
 )
 BEHAVIOR_STATUSES = {
@@ -5747,7 +5749,7 @@ def run_hardness_conformance() -> int:
 
 
 def hardness_continuity_sse(request_index: int) -> bytes:
-    if CAMPAIGN == "m30" and request_index == 1:
+    if CAMPAIGN in {"m30", "m40a"} and request_index == 1:
         frames = [
             {
                 "id": "chatcmpl-m30-continuity-input",
@@ -5824,7 +5826,7 @@ def hardness_continuity_sse(request_index: int) -> bytes:
         ]
     elif (
         CAMPAIGN == "m23b" and request_index == 1
-    ) or (CAMPAIGN == "m30" and request_index == 2):
+    ) or (CAMPAIGN in {"m30", "m40a"} and request_index == 2):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-tool",
@@ -5884,7 +5886,9 @@ def hardness_continuity_sse(request_index: int) -> bytes:
                 },
             },
         ]
-    elif request_index == (3 if CAMPAIGN == "m30" else 2):
+    elif request_index == (
+        3 if CAMPAIGN in {"m30", "m40a"} else 2
+    ):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-final",
@@ -6083,7 +6087,7 @@ def hardness_continuity_self_test_envelope(
                 "enabled": True,
                 "allowed": (
                     ["apply_patch", "request_user_input"]
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in {"m30", "m40a"}
                     else ["apply_patch"]
                 ),
                 "denied": [],
@@ -6092,7 +6096,9 @@ def hardness_continuity_self_test_envelope(
                 "max_turns": 3,
                 "max_model_requests": 3,
                 "max_model_retries": 0,
-                "max_tool_calls": 2 if CAMPAIGN == "m30" else 1,
+                "max_tool_calls": (
+                    2 if CAMPAIGN in {"m30", "m40a"} else 1
+                ),
                 "max_depth": 0,
                 "max_concurrent_children": 0,
                 "model_event_idle_ms": 10_000,
@@ -6104,7 +6110,7 @@ def hardness_continuity_self_test_envelope(
                     "permission_mode": "ask",
                     "interactive": True,
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in {"m30", "m40a"}
                 else {
                     "write_execution_mode": "root",
                     "auto_approve": False,
@@ -6336,12 +6342,12 @@ def run_hardness_continuity_self_test(
         final_events = reopened["root_events"]
         require(
             loopback.request_count
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in {"m30", "m40a"} else 2)
             and not loopback.errors
             and final_accounting["physical_requests_started"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in {"m30", "m40a"} else 2)
             and final_accounting["physical_requests_completed"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in {"m30", "m40a"} else 2)
             and final_accounting["physical_requests_in_flight"] == 0
             and len(event_values(final_events, "interaction_requested"))
             == 1
@@ -6349,7 +6355,7 @@ def run_hardness_continuity_self_test(
             and len(event_values(final_events, "tool_execution_started"))
             == 1
             and len(event_values(final_events, "tool_outcome_committed"))
-            == (2 if CAMPAIGN == "m30" else 1)
+            == (2 if CAMPAIGN in {"m30", "m40a"} else 1)
             and secret not in (
                 (stderr_path.read_bytes() if stderr_path.exists() else b"")
                 + (
@@ -6368,7 +6374,7 @@ def run_hardness_continuity_self_test(
             "status": "pass",
             "manifest_sha256": file_hash(
                 MANIFEST_PATH
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in {"m30", "m40a"}
                 else HARDNESS_CONTINUITY_MANIFEST_PATH
             ),
             "harness_sha256": file_hash(Path(__file__).resolve()),
@@ -6380,7 +6386,7 @@ def run_hardness_continuity_self_test(
             "physical_requests_before_restart": 1,
             "physical_requests_at_reopen": 1,
             "physical_requests_final": (
-                3 if CAMPAIGN == "m30" else 2
+                3 if CAMPAIGN in {"m30", "m40a"} else 2
             ),
             "process_restart_count": 1,
             "interaction_requested": 1,
