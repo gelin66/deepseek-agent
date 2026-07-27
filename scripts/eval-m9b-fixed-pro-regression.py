@@ -17,9 +17,6 @@ contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
 ``--campaign m30`` selects the current one-arm-per-task dogfood loss
 acquisition while inheriting only the frozen M23 task material.
-``--campaign m37c`` selects the same-binary project-context deduplication A/B.
-It inherits only six reviewed M23 task definitions and never imports a
-historical trajectory, result, admission, or product decision.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -47,7 +44,6 @@ import shutil
 import signal
 import sqlite3
 import stat
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -91,7 +87,6 @@ def selected_campaign(arguments: list[str]) -> str:
         "m20b",
         "m23b",
         "m30",
-        "m37c",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -109,7 +104,6 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
-    "m37c",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -119,27 +113,10 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
-    "m37c",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30", "m37c"}
-HARDNESS_CAMPAIGNS = {"m23b", "m30", "m37c"}
-CURRENT_HARDNESS_CAMPAIGNS = {"m30", "m37c"}
-if CAMPAIGN == "m37c":
-    MANIFEST_PATH = (
-        ROOT / "eval/manifests/m37-c-context-dedup-ab-v1.json"
-    )
-    BASE_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m23b-hardness-control-v1.json"
-    )
-    MANIFEST_SCHEMA = "dse.eval.m37c-context-dedup-ab.v1"
-    BASE_MANIFEST_SCHEMA = "dse.eval.m23b-hardness-control.v1"
-    JOURNAL_SCHEMA = "dse.eval.m37c-context-dedup-ab-journal.v1"
-    ADMISSION_SCHEMA = "dse.eval.m37c-context-dedup-ab-live-admission.v1"
-    RUN_API = 15
-    EVENT_API = 22
-    STATE_SCHEMA = 28
-    EXEC_STREAM = 6
-elif CAMPAIGN == "m30":
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
+HARDNESS_CAMPAIGNS = {"m23b", "m30"}
+if CAMPAIGN == "m30":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
     )
@@ -275,15 +252,7 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m37c":
-    TRAJECTORY_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m37-c-context-dedup-analysis-v1.json"
-    )
-    TRAJECTORY_MANIFEST_SCHEMA = (
-        "dse.eval.m37c-context-dedup-analysis.v1"
-    )
-    TRAJECTORY_REPORT_SCHEMA = "dse.eval.m37c-context-dedup-report.v1"
-elif CAMPAIGN == "m30":
+if CAMPAIGN == "m30":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
     )
@@ -606,7 +575,6 @@ def load_manifest() -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
-            "m37c",
         },
         "campaign_invalid",
     )
@@ -620,7 +588,7 @@ def load_manifest() -> dict[str, Any]:
         resources = manifest.get("resources", {})
         tasks = manifest.get("tasks")
         tool_policies = manifest.get("tool_policies")
-        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
+        if CAMPAIGN == "m30":
             inherited = manifest.get("inherited_contract")
             require(
                 isinstance(inherited, dict)
@@ -641,13 +609,6 @@ def load_manifest() -> dict[str, Any]:
                 and inherited.get("historical_raw_is_input") is False,
                 "inherited_contract_invalid",
             )
-            if CAMPAIGN == "m37c":
-                require(
-                    inherited.get("historical_result_is_input") is False
-                    and inherited.get("m10_a_raw_is_input") is False
-                    and inherited.get("m37_b_raw_is_input") is False,
-                    "inherited_contract_invalid",
-                )
             base = read_json_object(
                 BASE_MANIFEST_PATH, "inherited_manifest_unavailable"
             )
@@ -670,183 +631,6 @@ def load_manifest() -> dict[str, Any]:
             }
             tasks = manifest["tasks"]
             tool_policies = manifest["tool_policies"]
-            if CAMPAIGN == "m37c":
-                selected = inherited.get("selected_task_ids")
-                overlays = manifest.get("task_overlays")
-                require(
-                    selected
-                    == [
-                        "rust_netstring_recovery_resume",
-                        "typescript_request_crossfile",
-                        "python_config_crossfile",
-                        "safety_authorization_claim",
-                        "typescript_route_localization",
-                        "writer_envelope",
-                    ]
-                    and isinstance(overlays, dict)
-                    and list(overlays) == selected,
-                    "m37c_task_identity_invalid",
-                )
-                selected_tasks: dict[str, dict[str, Any]] = {}
-                for task_id in selected:
-                    task = tasks.get(task_id)
-                    overlay = overlays.get(task_id)
-                    require(
-                        isinstance(task, dict)
-                        and isinstance(overlay, dict)
-                        and overlay.get("base_task_sha256")
-                        == canonical_hash(task)
-                        and overlay.get("acceptance_id")
-                        == f"m37c-{task_id.replace('_', '-')}"
-                        and isinstance(overlay.get("matrix_role"), str),
-                        "m37c_task_overlay_invalid",
-                        {"task_id": task_id},
-                    )
-                    selected_tasks[task_id] = {
-                        **task,
-                        "acceptance_id": overlay["acceptance_id"],
-                        "m37c_matrix_role": overlay["matrix_role"],
-                    }
-                fixture = manifest.get("fixture_contract")
-                prompt_fixture = manifest.get("prompt_fixture_contract")
-                require(
-                    isinstance(fixture, dict)
-                    and fixture.get("path")
-                    == "eval/fixtures/m23-hardness-monorepo"
-                    and fixture.get("tree_sha256")
-                    == canonical_tree_hash(ROOT / fixture["path"])
-                    and fixture.get("commit_profile")
-                    == "m23b-2026-07-26"
-                    and isinstance(prompt_fixture, dict)
-                    and prompt_fixture.get("path")
-                    == "eval/fixtures/m37-c-context-dedup-ab-v1.json"
-                    and prompt_fixture.get("file_sha256")
-                    == file_hash(ROOT / prompt_fixture["path"]),
-                    "m37c_fixture_identity_invalid",
-                )
-                prompt_contract = read_json_object(
-                    ROOT / prompt_fixture["path"],
-                    "m37c_prompt_fixture_unavailable",
-                )
-                require(
-                    prompt_contract.get("schema")
-                    == prompt_fixture.get("schema")
-                    and prompt_contract.get("variants")
-                    == list(manifest.get("variants", {}))
-                    and prompt_contract.get("required_task_cells")
-                    == {
-                        overlay["matrix_role"]: task_id
-                        for task_id, overlay in overlays.items()
-                    },
-                    "m37c_prompt_fixture_invalid",
-                )
-                resources = manifest.get("resources", {})
-                require(
-                    source.get("run_api") == RUN_API
-                    and source.get("runtime_event") == EVENT_API
-                    and source.get("state_schema") == STATE_SCHEMA
-                    and source.get("exec_stream") == EXEC_STREAM
-                    and resources.get("root_model") == MODEL
-                    and resources.get("root_reasoning_effort") == REASONING
-                    and resources.get("runs_per_task") == 6
-                    and resources.get("runs_per_task_variant") == 3
-                    and resources.get("formal_tasks") == 6
-                    and resources.get("formal_variants") == 2
-                    and resources.get("formal_arms") == 36
-                    and resources.get("maximum_reruns") == 0
-                    and resources.get("permission_mode") == "agent"
-                    and resources.get("interactive") is False
-                    and manifest.get("continuity_policy")
-                    == {
-                        "task_selector": (
-                            "selected task.required_continuity is not null"
-                        ),
-                        "permission_mode": "ask",
-                        "interactive": True,
-                        "checkpoint_kind": "interaction_requested",
-                        "interaction_kind": "user_input",
-                        "process_stop": "sigkill_process_group",
-                        "restarts_per_arm": 1,
-                        "physical_requests_added_at_reopen": 0,
-                        "resolve_only_after_reopen": True,
-                    },
-                    "m37c_resource_identity_invalid",
-                )
-                expected_metrics = [
-                    "verified_success",
-                    "correct_safety_rejection",
-                    "false_success",
-                    "route_valid",
-                    "lane_valid",
-                    "long_horizon_reopen_valid",
-                    "writer_completion_valid",
-                    "latest_revision_receipt_valid",
-                    "project_payload_count",
-                    "assembled_model_visible_bytes",
-                    "stable_prefix_bytes",
-                    "first_relevant_file_ms",
-                    "first_edit_verified",
-                    "repeated_reads_same_mutation_epoch",
-                    "request_count",
-                    "input_tokens",
-                    "output_tokens",
-                    "cache_hit_tokens",
-                    "cache_miss_tokens",
-                    "runtime_retries",
-                    "cost_nanousd",
-                    "wall_time_ms",
-                ]
-                require(
-                    manifest.get("metrics") == expected_metrics,
-                    "m37c_metric_contract_invalid",
-                )
-                schedule = manifest.get("formal_schedule", {}).get(
-                    "round_order"
-                )
-                require(
-                    isinstance(schedule, list)
-                    and len(schedule) == 3
-                    and all(
-                        isinstance(round_arms, list)
-                        and len(round_arms) == 12
-                        for round_arms in schedule
-                    ),
-                    "m37c_schedule_identity_invalid",
-                )
-                counts: Counter[tuple[str, str]] = Counter()
-                for round_arms in schedule:
-                    for arm in round_arms:
-                        require(
-                            isinstance(arm, dict)
-                            and set(arm) == {"task_id", "variant"}
-                            and arm.get("task_id") in selected_tasks
-                            and arm.get("variant")
-                            in manifest.get("variants", {}),
-                            "m37c_schedule_identity_invalid",
-                        )
-                        counts[(arm["task_id"], arm["variant"])] += 1
-                require(
-                    set(counts.values()) == {3}
-                    and len(counts) == 12,
-                    "m37c_schedule_balance_invalid",
-                )
-                for task in selected_tasks.values():
-                    task.update(
-                        {
-                            "fixture": fixture["path"],
-                            "fixture_tree_sha256": fixture["tree_sha256"],
-                            "fixture_base_commit": fixture["base_commit"],
-                            "fixture_commit_profile": fixture[
-                                "commit_profile"
-                            ],
-                        }
-                    )
-                require(
-                    isinstance(tool_policies, dict),
-                    "m37c_tool_policy_identity_invalid",
-                )
-                manifest["tasks"] = selected_tasks
-                return manifest
         if CAMPAIGN in HARDNESS_CAMPAIGNS:
             expected_tasks = [
                 "rust_router_localization",
@@ -1427,17 +1211,7 @@ def formal_schedule() -> list[dict[str, Any]]:
     for run_index, round_tasks in enumerate(
         MANIFEST["formal_schedule"]["round_order"]
     ):
-        for position, scheduled in enumerate(round_tasks):
-            if CAMPAIGN == "m37c":
-                require(
-                    isinstance(scheduled, dict),
-                    "m37c_schedule_identity_invalid",
-                )
-                task_id = scheduled["task_id"]
-                variant = scheduled["variant"]
-            else:
-                task_id = scheduled
-                variant = None
+        for position, task_id in enumerate(round_tasks):
             schedule.append(
                 {
                     "arm_index": len(schedule),
@@ -1445,7 +1219,6 @@ def formal_schedule() -> list[dict[str, Any]]:
                     "round_position": position,
                     "task_id": task_id,
                     "lane": TASKS[task_id]["lane"],
-                    **({"variant": variant} if variant is not None else {}),
                 }
             )
     return schedule
@@ -1465,16 +1238,6 @@ def hardness_task_set_projection() -> dict[str, Any] | None:
         "tasks": len(TASKS),
         "formal_arms": RESOURCES["formal_arms"],
         "runs_per_task": RESOURCES["runs_per_task"],
-        **(
-            {
-                "variants": list(MANIFEST["variants"]),
-                "runs_per_task_variant": RESOURCES[
-                    "runs_per_task_variant"
-                ],
-            }
-            if CAMPAIGN == "m37c"
-            else {}
-        ),
         "strata_coverage": dict(sorted(tags.items())),
         "language_coverage": dict(sorted(languages.items())),
         "lane_coverage": dict(sorted(lanes.items())),
@@ -1665,7 +1428,6 @@ def reference_solution_proof() -> dict[str, Any] | None:
         "m20b",
         "m23b",
         "m30",
-        "m37c",
     }:
         return None
     if CAMPAIGN in HARDNESS_CAMPAIGNS:
@@ -2065,9 +1827,7 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
 def task_definition(task_id: str) -> dict[str, Any]:
     task = TASKS[task_id]
     objective = task["objective"]
-    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and requires_live_continuity(
-        task_id
-    ):
+    if CAMPAIGN == "m30" and requires_live_continuity(task_id):
         objective += (
             "\n\n连续性协议：第一次模型回合必须调用且只调用一次 "
             "request_user_input，问题 id 必须为 continue，提供“继续”和“停止”"
@@ -2108,7 +1868,7 @@ def task_definition(task_id: str) -> dict[str, Any]:
 
 
 def requires_live_continuity(task_id: str) -> bool:
-    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
+    if CAMPAIGN == "m30":
         return TASKS[task_id].get("required_continuity") is not None
     return (
         CAMPAIGN in HARDNESS_CAMPAIGNS
@@ -2133,7 +1893,7 @@ def start_envelope(
     else:
         enabled = True
         allowed = TOOLS["root_tools"]
-    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and continuity:
+    if CAMPAIGN == "m30" and continuity:
         allowed = [*allowed, "request_user_input"]
     return {
         "schema_version": RUN_API,
@@ -2161,7 +1921,7 @@ def start_envelope(
                 "max_tool_calls": task["max_tool_calls"]
                 + (
                     1
-                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS and continuity
+                    if CAMPAIGN == "m30" and continuity
                     else 0
                 ),
                 "max_depth": task["max_depth"],
@@ -2187,7 +1947,7 @@ def start_envelope(
                         else RESOURCES["interactive"]
                     ),
                 }
-                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
+                if CAMPAIGN == "m30"
                 else {
                     "write_execution_mode": (
                         "isolated_writer" if lane == "writer" else "root"
@@ -2388,7 +2148,6 @@ def launch_server(
     state_root: Path,
     key: str | None,
     stderr_path: Path,
-    context_variant: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], StdioClient]:
     home = state_root / "home"
     product_home = state_root / (
@@ -2406,13 +2165,6 @@ def launch_server(
     ] = str(product_home)
     if key is not None:
         environment["DEEPSEEK_API_KEY"] = key
-    if CAMPAIGN == "m37c":
-        require(
-            context_variant in MANIFEST["variants"],
-            "m37c_context_variant_missing",
-        )
-        environment["DSE_M37C_EVALUATION"] = "1"
-        environment["DSE_M37C_CONTEXT_VARIANT"] = context_variant
     stderr_stream = stderr_path.open("ab")
     try:
         process = subprocess.Popen(
@@ -2787,16 +2539,10 @@ def reopen_store_facts(
     state_root: Path,
     run: dict[str, Any],
     suffix: str,
-    context_variant: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes]:
     reopen_stderr = state_root / f"app-server-reopen-{suffix}.stderr"
     reopen_process, reopen_client = launch_server(
-        binary,
-        workspace,
-        state_root,
-        None,
-        reopen_stderr,
-        context_variant,
+        binary, workspace, state_root, None, reopen_stderr
     )
     try:
         run_id = run.get("run_id")
@@ -2963,142 +2709,6 @@ def parsed_tool_arguments(event: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def m37c_prompt_variant_audit(
-    task_id: str,
-    variant: str,
-    facts: dict[str, Any],
-) -> dict[str, Any]:
-    require(CAMPAIGN == "m37c", "m37c_campaign_required")
-    prompt_fixture = MANIFEST["prompt_fixture_contract"]
-    contract = read_json_object(
-        ROOT / prompt_fixture["path"],
-        "m37c_prompt_fixture_unavailable",
-    )
-    require(
-        contract.get("schema") == prompt_fixture.get("schema")
-        and contract.get("variants") == list(MANIFEST["variants"]),
-        "m37c_prompt_fixture_invalid",
-    )
-    requests = event_values(
-        facts["root_events"], "model_request_prepared"
-    )
-    for child in facts["children"]:
-        requests.extend(
-            event_values(child["events"], "model_request_prepared")
-        )
-    require(bool(requests), "m37c_model_request_missing")
-    expected_payloads = int(
-        MANIFEST["variants"][variant]["expected_project_payload_count"]
-    )
-    expected_pack_markers = int(
-        MANIFEST["variants"][variant][
-            "expected_project_context_pack_marker_count"
-        ]
-    )
-
-    def wrapped_payload(
-        visible: str, start_marker: str, end_marker: str
-    ) -> str | None:
-        start = visible.find(start_marker)
-        if start < 0:
-            return None
-        start += len(start_marker)
-        end = visible.find(end_marker, start)
-        if end < 0:
-            return None
-        return visible[start:end]
-
-    observations: list[dict[str, Any]] = []
-    for prepared in requests:
-        request = prepared.get("request")
-        system_prompt = (
-            request.get("system_prompt")
-            if isinstance(request, dict)
-            else None
-        )
-        blocks = (
-            system_prompt.get("blocks")
-            if isinstance(system_prompt, dict)
-            else None
-        )
-        require(
-            isinstance(blocks, list) and blocks,
-            "m37c_system_prompt_invalid",
-        )
-        texts = [
-            block.get("text") if isinstance(block, dict) else None
-            for block in blocks
-        ]
-        require(
-            all(isinstance(text, str) for text in texts),
-            "m37c_system_prompt_invalid",
-        )
-        visible = "\n\n---\n\n".join(texts)
-        overview_payload = wrapped_payload(
-            visible, "## 有界项目概览\n\n```json\n", "\n```"
-        )
-        pack_payload = wrapped_payload(
-            visible,
-            "<project_context_pack>\n",
-            "\n</project_context_pack>",
-        )
-        payloads = [
-            payload
-            for payload in (overview_payload, pack_payload)
-            if payload is not None
-        ]
-        payload_digests = [
-            sha256_bytes(payload.encode("utf-8")) for payload in payloads
-        ]
-        pack_marker_count = visible.count("<project_context_pack>")
-        assembled_bytes = len(visible.encode("utf-8"))
-        stable_prefix_bytes = len(texts[0].encode("utf-8"))
-        valid = (
-            overview_payload is not None
-            and len(payloads) == expected_payloads
-            and pack_marker_count == expected_pack_markers
-            and len(set(payload_digests)) == 1
-        )
-        observations.append(
-            {
-                "actor": request.get("actor", {}).get("kind"),
-                "project_payload_count": len(payloads),
-                "project_payload_sha256": payload_digests[0],
-                "project_context_pack_marker_count": pack_marker_count,
-                "assembled_model_visible_bytes": assembled_bytes,
-                "stable_prefix_bytes": stable_prefix_bytes,
-                "selector_name_visible": (
-                    "DSE_M37C_EVALUATION" in visible
-                    or "DSE_M37C_CONTEXT_VARIANT" in visible
-                ),
-                "valid": valid,
-            }
-        )
-    valid = all(
-        observation["valid"]
-        and not observation["selector_name_visible"]
-        for observation in observations
-    )
-    return {
-        "valid": valid,
-        "variant": variant,
-        "expected_project_payload_count_per_request": expected_payloads,
-        "expected_project_context_pack_marker_count_per_request": (
-            expected_pack_markers
-        ),
-        "requests": len(observations),
-        "assembled_model_visible_bytes": sum(
-            observation["assembled_model_visible_bytes"]
-            for observation in observations
-        ),
-        "stable_prefix_bytes": sum(
-            observation["stable_prefix_bytes"]
-            for observation in observations
-        ),
-        "observations": observations,
-    }
-
-
 def route_audit(task_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     root_events = facts["root_events"]
     created = event_values(root_events, "run_created")
@@ -3212,17 +2822,11 @@ def accounting_projection(task_id: str, run: dict[str, Any]) -> dict[str, Any]:
     in_flight = int(root.get("in_flight", -1)) + int(
         child.get("in_flight", -1)
     )
-    runtime_retries = int(accounting.get("runtime_retries", -1))
     require(
         started > 0
         and started == completed
         and in_flight == 0
-        and (
-            0 <= runtime_retries
-            <= RESOURCES["max_runtime_retries_per_arm"]
-            if CAMPAIGN == "m37c"
-            else runtime_retries == 0
-        )
+        and int(accounting.get("runtime_retries", -1)) == 0
         and int(accounting.get("billing_unknown_attempts", -1)) == 0
         and int(accounting.get("usage_missing_responses", -1)) == 0
         and int(accounting.get("incomplete_responses", -1)) == 0
@@ -3258,7 +2862,6 @@ def accounting_projection(task_id: str, run: dict[str, Any]) -> dict[str, Any]:
         "root_requests": int(root["started"]),
         "child_requests": int(child["started"]),
         "requests": started,
-        "runtime_retries": runtime_retries,
         "tokens": tokens,
         "cost_nanousd": cost_nanousd,
         "cost_nanocny": cost_nanocny,
@@ -5841,17 +5444,6 @@ def derive_arm(
     terminal_state = run.get("terminal", {}).get("state")
     route = route_audit(task_id, facts)
     accounting = accounting_projection(task_id, run)
-    prompt_variant_audit = (
-        m37c_prompt_variant_audit(task_id, schedule["variant"], facts)
-        if CAMPAIGN == "m37c"
-        else None
-    )
-    if prompt_variant_audit is not None:
-        require(
-            prompt_variant_audit["valid"],
-            "m37c_prompt_variant_identity_invalid",
-            {"task_id": task_id, "variant": schedule["variant"]},
-        )
     if task["lane"] == "root":
         lane = root_lane_audit(task_id, facts)
     elif task["lane"] == "read_only":
@@ -5955,7 +5547,7 @@ def derive_arm(
                 ),
             }
         )
-        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
+        if CAMPAIGN == "m30":
             behavior["owner_code"] = behavior_owner_code(
                 task["lane"], behavior
             )
@@ -5990,21 +5582,6 @@ def derive_arm(
         "host_receipt_audit": receipt_audit,
         "route": route,
         "lane_audit": lane,
-        **(
-            {
-                "prompt_variant_audit": prompt_variant_audit,
-                "long_horizon_reopen_valid": (
-                    hardness["continuity"]["satisfied"]
-                    if task.get("required_continuity") is not None
-                    else None
-                ),
-                "writer_completion_valid": (
-                    verified_success if task["lane"] == "writer" else None
-                ),
-            }
-            if prompt_variant_audit is not None
-            else {}
-        ),
         "accounting": accounting,
         "failed_tool_outcomes": sum(failure_codes.values()),
         "failure_codes": dict(sorted(failure_codes.items())),
@@ -7527,12 +7104,7 @@ def execute_arm(
         stderr_path = state_root / "app-server.stderr"
         state_root.mkdir()
         process, client = launch_server(
-            binary,
-            workspace,
-            state_root,
-            key,
-            stderr_path,
-            schedule.get("variant"),
+            binary, workspace, state_root, key, stderr_path
         )
         run: dict[str, Any] = {}
         facts: dict[str, Any] = {}
@@ -7595,7 +7167,6 @@ def execute_arm(
                             state_root,
                             key,
                             continuity_stderr_path,
-                            schedule.get("variant"),
                         )
                         require(
                             process.pid != before_pid,
@@ -7774,7 +7345,6 @@ def execute_arm(
             state_root,
             run,
             evaluation_id,
-            schedule.get("variant"),
         )
         require(secret not in stderr, "key_in_stderr")
         require(secret not in reopen_stderr_bytes, "key_in_reopen_stderr")
@@ -7891,371 +7461,7 @@ def execute_arm(
         return arm
 
 
-def aggregate_m37c(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    require(CAMPAIGN == "m37c", "m37c_campaign_required")
-    runs_per_variant = int(RESOURCES["runs_per_task_variant"])
-    require(
-        len(arms) == int(RESOURCES["formal_arms"]),
-        "formal_matrix_incomplete",
-    )
-    variants = list(MANIFEST["variants"])
-    cells: dict[str, dict[str, Any]] = {}
-    paired_outcomes: list[dict[str, Any]] = []
-    for task_id, task in TASKS.items():
-        task_cells: dict[str, Any] = {}
-        for variant in variants:
-            selected = [
-                arm
-                for arm in arms
-                if arm["task_id"] == task_id
-                and arm["variant"] == variant
-            ]
-            require(
-                len(selected) == runs_per_variant,
-                "formal_cell_incomplete",
-                {"task_id": task_id, "variant": variant},
-            )
-            task_cells[variant] = {
-                "arms": len(selected),
-                "verified_success": sum(
-                    arm["verified_success"] for arm in selected
-                ),
-                "correct_safety_rejection": sum(
-                    arm["correct_rejection"] for arm in selected
-                ),
-                "false_success": sum(
-                    arm["false_success"] for arm in selected
-                ),
-                "route_valid": sum(
-                    arm["route"]["valid"] for arm in selected
-                ),
-                "lane_valid": sum(
-                    arm["lane_audit"]["valid"] for arm in selected
-                ),
-                "prompt_variant_valid": sum(
-                    arm["prompt_variant_audit"]["valid"]
-                    for arm in selected
-                ),
-                "long_horizon_reopen_valid": sum(
-                    arm["long_horizon_reopen_valid"] is True
-                    for arm in selected
-                ),
-                "writer_completion_valid": sum(
-                    arm["writer_completion_valid"] is True
-                    for arm in selected
-                ),
-                "latest_revision_receipt_valid": sum(
-                    arm["host_receipt_audit"]["valid"]
-                    for arm in selected
-                ),
-                "project_payload_count": sum(
-                    sum(
-                        observation["project_payload_count"]
-                        for observation in arm["prompt_variant_audit"][
-                            "observations"
-                        ]
-                    )
-                    for arm in selected
-                ),
-                "assembled_model_visible_bytes": sum(
-                    arm["prompt_variant_audit"][
-                        "assembled_model_visible_bytes"
-                    ]
-                    for arm in selected
-                ),
-                "stable_prefix_bytes": sum(
-                    arm["prompt_variant_audit"]["stable_prefix_bytes"]
-                    for arm in selected
-                ),
-                "first_relevant_file_ms": [
-                    arm["hardness"]["first_relevant_file_ms"]
-                    for arm in selected
-                    if arm["hardness"]["first_relevant_file_ms"]
-                    is not None
-                ],
-                "first_edit_verified": sum(
-                    arm["hardness"]["first_edit_verified"] is True
-                    for arm in selected
-                ),
-                "repeated_reads_same_mutation_epoch": sum(
-                    arm["hardness"][
-                        "repeated_reads_same_mutation_epoch"
-                    ]
-                    for arm in selected
-                ),
-                "accounting_complete": sum(
-                    arm["truth"]["accounting"]["status"] == "complete"
-                    for arm in selected
-                ),
-                "requests": sum(
-                    arm["accounting"]["requests"] for arm in selected
-                ),
-                "runtime_retries": sum(
-                    arm["accounting"]["runtime_retries"]
-                    for arm in selected
-                ),
-                "input_tokens": sum(
-                    arm["accounting"]["tokens"]["input_tokens"]
-                    for arm in selected
-                ),
-                "output_tokens": sum(
-                    arm["accounting"]["tokens"]["output_tokens"]
-                    for arm in selected
-                ),
-                "cache_hit_tokens": sum(
-                    arm["accounting"]["tokens"]["cache_hit_tokens"]
-                    for arm in selected
-                ),
-                "cache_miss_tokens": sum(
-                    arm["accounting"]["tokens"]["cache_miss_tokens"]
-                    for arm in selected
-                ),
-                "cost_nanousd": sum(
-                    arm["accounting"]["cost_nanousd"]
-                    for arm in selected
-                ),
-                "wall_time_ms": sum(
-                    arm["wall_time_ms"] for arm in selected
-                ),
-            }
-        cells[task_id] = {
-            "lane": task["lane"],
-            "matrix_role": task["m37c_matrix_role"],
-            "variants": task_cells,
-        }
-        for run_index in range(runs_per_variant):
-            pair = {
-                variant: next(
-                    arm
-                    for arm in arms
-                    if arm["task_id"] == task_id
-                    and arm["variant"] == variant
-                    and arm["run_index"] == run_index
-                )
-                for variant in variants
-            }
-            paired_outcomes.append(
-                {
-                    "task_id": task_id,
-                    "run_index": run_index,
-                    "control_verified": pair["control"][
-                        "verified_success"
-                    ],
-                    "candidate_verified": pair[
-                        "single_project_projection"
-                    ]["verified_success"],
-                    "control_lane_valid": pair["control"][
-                        "lane_audit"
-                    ]["valid"],
-                    "candidate_lane_valid": pair[
-                        "single_project_projection"
-                    ]["lane_audit"]["valid"],
-                    "control_cache_miss_tokens": pair["control"][
-                        "accounting"
-                    ]["tokens"]["cache_miss_tokens"],
-                    "candidate_cache_miss_tokens": pair[
-                        "single_project_projection"
-                    ]["accounting"]["tokens"]["cache_miss_tokens"],
-                    "control_wall_time_ms": pair["control"][
-                        "wall_time_ms"
-                    ],
-                    "candidate_wall_time_ms": pair[
-                        "single_project_projection"
-                    ]["wall_time_ms"],
-                }
-            )
-
-    control_name = "control"
-    candidate_name = "single_project_projection"
-    all_cells = [
-        cell["variants"][variant]
-        for cell in cells.values()
-        for variant in variants
-    ]
-    acquisition_complete = all(
-        cell["prompt_variant_valid"] == runs_per_variant
-        and cell["route_valid"] == runs_per_variant
-        and cell["lane_valid"] == runs_per_variant
-        and cell["accounting_complete"] == runs_per_variant
-        and cell["false_success"] == 0
-        for cell in all_cells
-    )
-    quality_gate = acquisition_complete
-    for task_id, cell in cells.items():
-        control = cell["variants"][control_name]
-        candidate = cell["variants"][candidate_name]
-        if cell["lane"] == "safety":
-            quality_gate = quality_gate and (
-                candidate["correct_safety_rejection"]
-                >= control["correct_safety_rejection"]
-            )
-        else:
-            quality_gate = quality_gate and (
-                candidate["verified_success"]
-                >= control["verified_success"]
-                and candidate["lane_valid"] >= control["lane_valid"]
-                and candidate["latest_revision_receipt_valid"]
-                >= control["latest_revision_receipt_valid"]
-                and candidate["writer_completion_valid"]
-                >= control["writer_completion_valid"]
-                and candidate["long_horizon_reopen_valid"]
-                >= control["long_horizon_reopen_valid"]
-            )
-
-    variant_totals = {
-        variant: {
-            "cache_miss_tokens": sum(
-                cell["variants"][variant]["cache_miss_tokens"]
-                for cell in cells.values()
-            ),
-            "requests": sum(
-                cell["variants"][variant]["requests"]
-                for cell in cells.values()
-            ),
-            "repeated_reads_same_mutation_epoch": sum(
-                cell["variants"][variant][
-                    "repeated_reads_same_mutation_epoch"
-                ]
-                for cell in cells.values()
-            ),
-            "cost_nanousd": sum(
-                cell["variants"][variant]["cost_nanousd"]
-                for cell in cells.values()
-            ),
-            "wall_time_ms": sum(
-                cell["variants"][variant]["wall_time_ms"]
-                for cell in cells.values()
-            ),
-            "assembled_model_visible_bytes": sum(
-                cell["variants"][variant][
-                    "assembled_model_visible_bytes"
-                ]
-                for cell in cells.values()
-            ),
-            "stable_prefix_bytes": sum(
-                cell["variants"][variant]["stable_prefix_bytes"]
-                for cell in cells.values()
-            ),
-        }
-        for variant in variants
-    }
-    control_totals = variant_totals[control_name]
-    candidate_totals = variant_totals[candidate_name]
-    require(
-        control_totals["cache_miss_tokens"] > 0,
-        "m37c_control_cache_miss_missing",
-    )
-    cache_miss_reduction = 1 - (
-        candidate_totals["cache_miss_tokens"]
-        / control_totals["cache_miss_tokens"]
-    )
-    task_cache_nonregression = all(
-        cell["variants"][candidate_name]["cache_miss_tokens"]
-        <= cell["variants"][control_name]["cache_miss_tokens"] * 1.05
-        for cell in cells.values()
-    )
-    paired_control_wall = [
-        pair["control_wall_time_ms"] for pair in paired_outcomes
-    ]
-    paired_candidate_wall = [
-        pair["candidate_wall_time_ms"] for pair in paired_outcomes
-    ]
-    paired_wall_improved = statistics.median(
-        paired_candidate_wall
-    ) < statistics.median(paired_control_wall)
-    benefit_gate = (
-        quality_gate
-        and cache_miss_reduction >= 0.05
-        and task_cache_nonregression
-        and candidate_totals["requests"] <= control_totals["requests"]
-        and candidate_totals["repeated_reads_same_mutation_epoch"]
-        <= control_totals["repeated_reads_same_mutation_epoch"]
-        and (
-            candidate_totals["cost_nanousd"]
-            < control_totals["cost_nanousd"]
-            or paired_wall_improved
-        )
-        and candidate_totals["assembled_model_visible_bytes"]
-        < control_totals["assembled_model_visible_bytes"]
-        and candidate_totals["stable_prefix_bytes"]
-        < control_totals["stable_prefix_bytes"]
-    )
-    total_cost = sum(
-        arm["accounting"]["cost_nanousd"] for arm in arms
-    )
-    require(
-        total_cost
-        <= int(
-            float(RESOURCES["suite_known_cost_ceiling_usd"])
-            * 1_000_000_000
-        ),
-        "suite_cost_ceiling_exceeded",
-    )
-    if not acquisition_complete:
-        decision = "hold_insufficient_or_incomplete_evidence"
-    elif benefit_gate:
-        decision = "keep_minimal_candidate_and_delete_replaced_path"
-    else:
-        decision = "reject_and_delete_candidate"
-    return {
-        "record_type": "summary",
-        "record_class": MANIFEST["decision_rule"]["record_class"],
-        "product_metric_eligible": acquisition_complete,
-        "baseline_label_eligible": False,
-        "complete": acquisition_complete,
-        "quality_gate": quality_gate,
-        "benefit_gate": benefit_gate,
-        "decision": decision,
-        "cells": cells,
-        "paired_outcomes": paired_outcomes,
-        "variant_totals": variant_totals,
-        "cache_miss_reduction": cache_miss_reduction,
-        "task_cache_nonregression": task_cache_nonregression,
-        "paired_wall_median_ms": {
-            "control": statistics.median(paired_control_wall),
-            "single_project_projection": statistics.median(
-                paired_candidate_wall
-            ),
-        },
-        "arms": len(arms),
-        "verified_success": sum(
-            arm["verified_success"] for arm in arms
-        ),
-        "correct_rejection": sum(
-            arm["correct_rejection"] for arm in arms
-        ),
-        "false_success": sum(arm["false_success"] for arm in arms),
-        "requests": sum(
-            arm["accounting"]["requests"] for arm in arms
-        ),
-        "runtime_retries": sum(
-            arm["accounting"]["runtime_retries"] for arm in arms
-        ),
-        "input_tokens": sum(
-            arm["accounting"]["tokens"]["input_tokens"] for arm in arms
-        ),
-        "output_tokens": sum(
-            arm["accounting"]["tokens"]["output_tokens"] for arm in arms
-        ),
-        "cache_hit_tokens": sum(
-            arm["accounting"]["tokens"]["cache_hit_tokens"]
-            for arm in arms
-        ),
-        "cache_miss_tokens": sum(
-            arm["accounting"]["tokens"]["cache_miss_tokens"]
-            for arm in arms
-        ),
-        "cost_nanousd": total_cost,
-        "wall_time_ms": sum(arm["wall_time_ms"] for arm in arms),
-        "key_accessed": True,
-        "network_accessed": True,
-        "maximum_reruns": 0,
-    }
-
-
 def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
-    if CAMPAIGN == "m37c":
-        return aggregate_m37c(arms)
     expected_arms = int(RESOURCES["formal_arms"])
     runs_per_task = int(RESOURCES["runs_per_task"])
     require(len(arms) == expected_arms, "formal_matrix_incomplete")
@@ -8631,43 +7837,12 @@ def load_admission(
         and surface.get("reasoning_effort") == REASONING
         and surface.get("streaming") is True
         and surface.get("fixed_across_all_arms") is True
-        and (
-            surface.get("product_treatment_delta")
-            == {
-                "owner": "crates/context",
-                "fragment_id": "project_context_pack",
-                "operation": "omit_same_payload_wrapper",
-                "variants": list(MANIFEST["variants"]),
-            }
-            if CAMPAIGN == "m37c"
-            else surface.get("product_treatment_delta") is False
-        )
+        and surface.get("product_treatment_delta") is False
         and live_contract.get("output") == output_relative
         and live_contract.get("formal_tasks")
         == RESOURCES["formal_tasks"]
         and live_contract.get("runs_per_task")
-        == (
-            RESOURCES["runs_per_task_variant"]
-            if CAMPAIGN == "m37c"
-            else RESOURCES["runs_per_task"]
-        )
-        and (
-            CAMPAIGN != "m37c"
-            or (
-                live_contract.get("formal_variants")
-                == RESOURCES["formal_variants"]
-                and live_contract.get("variant_guard")
-                == {
-                    "guard_env": "DSE_M37C_EVALUATION",
-                    "variant_env": "DSE_M37C_CONTEXT_VARIANT",
-                    "ordinary_production": "control",
-                }
-                and admission.get("prompt_fixture_sha256")
-                == file_hash(
-                    ROOT / MANIFEST["prompt_fixture_contract"]["path"]
-                )
-            )
-        )
+        == RESOURCES["runs_per_task"]
         and live_contract.get("formal_arms")
         == RESOURCES["formal_arms"]
         and live_contract.get("schedule_start_position") == 1
@@ -8740,14 +7915,7 @@ def preflight(
         "rust-toolchain.toml",
         "config.example.toml",
     )
-    if CAMPAIGN == "m37c":
-        require(
-            production_diff == "crates/context/src/prompts.rs",
-            "candidate_production_delta_invalid",
-            {"production_diff": production_diff},
-        )
-    else:
-        require(not production_diff, "candidate_production_delta_detected")
+    require(not production_diff, "candidate_production_delta_detected")
     authority_paths = {
         "product_plan": ROOT / "docs/product/PRODUCT_PLAN.md",
         "roadmap": ROOT / "docs/product/ROADMAP.md",
@@ -8821,11 +7989,6 @@ def preflight(
             else None
         ),
         "fixture_hashes": fixture_hashes,
-        "prompt_fixture_sha256": (
-            file_hash(ROOT / MANIFEST["prompt_fixture_contract"]["path"])
-            if CAMPAIGN == "m37c"
-            else None
-        ),
         "verifier_environment_contract": (
             verifier_environment_contract()
         ),
@@ -8899,7 +8062,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
+                    if CAMPAIGN == "m30"
                     else {
                         "interactive": requires_live_continuity(
                             task_id
@@ -8915,19 +8078,6 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
         "schedule": formal_schedule(),
         "arms": RESOURCES["formal_arms"],
         "runs_per_task": RESOURCES["runs_per_task"],
-        **(
-            {
-                "variants": list(MANIFEST["variants"]),
-                "runs_per_task_variant": RESOURCES[
-                    "runs_per_task_variant"
-                ],
-                "prompt_fixture_sha256": file_hash(
-                    ROOT / MANIFEST["prompt_fixture_contract"]["path"]
-                ),
-            }
-            if CAMPAIGN == "m37c"
-            else {}
-        ),
         "suite_cost_ceiling_usd": float(
             RESOURCES["suite_known_cost_ceiling_usd"]
         ),
@@ -9682,8 +8832,7 @@ def run_self_test() -> int:
             for task_id in TASKS
             if requires_live_continuity(task_id)
         }
-        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
-            expected_continuity_tasks = 1 if CAMPAIGN == "m37c" else 3
+        if CAMPAIGN == "m30":
             require(
                 all(
                     controls["interactive"] is (task_id in required)
@@ -9697,7 +8846,7 @@ def run_self_test() -> int:
                     }
                     for task_id, controls in continuity_controls.items()
                 )
-                and len(required) == expected_continuity_tasks,
+                and len(required) == 3,
                 "self_test_continuity_control_scope_invalid",
             )
         else:
@@ -9716,9 +8865,6 @@ def run_self_test() -> int:
             task = TASKS[scheduled["task_id"]]
             safety = task["lane"] == "safety"
             continuity = scheduled["task_id"] in required
-            candidate = (
-                scheduled.get("variant") == "single_project_projection"
-            )
             synthetic_arms.append(
                 {
                     **scheduled,
@@ -9729,47 +8875,15 @@ def run_self_test() -> int:
                     "lane_audit": {"valid": True},
                     "accounting": {
                         "requests": 2,
-                        "runtime_retries": 0,
-                        "cost_nanousd": 8 if candidate else 10,
+                        "cost_nanousd": 1,
                         "tokens": {
-                            "input_tokens": 82 if candidate else 102,
+                            "input_tokens": 10,
                             "output_tokens": 2,
-                            "cache_hit_tokens": 2,
-                            "cache_miss_tokens": 80 if candidate else 100,
+                            "cache_hit_tokens": 0,
+                            "cache_miss_tokens": 10,
                         },
                     },
                     "wall_time_ms": 100,
-                    **(
-                        {
-                            "prompt_variant_audit": {
-                                "valid": True,
-                                "assembled_model_visible_bytes": (
-                                    800 if candidate else 1000
-                                ),
-                                "stable_prefix_bytes": (
-                                    700 if candidate else 900
-                                ),
-                                "observations": [
-                                    {
-                                        "project_payload_count": (
-                                            1 if candidate else 2
-                                        )
-                                    }
-                                ],
-                            },
-                            "long_horizon_reopen_valid": (
-                                True if continuity else None
-                            ),
-                            "writer_completion_valid": (
-                                True if task["lane"] == "writer" else None
-                            ),
-                            "host_receipt_audit": {
-                                "valid": not safety
-                            },
-                        }
-                        if CAMPAIGN == "m37c"
-                        else {}
-                    ),
                     "truth": {
                         "behavior": {
                             "status": (
@@ -9782,7 +8896,7 @@ def run_self_test() -> int:
                             "loss_code": None,
                             **(
                                 {"owner_code": None}
-                                if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS
+                                if CAMPAIGN == "m30"
                                 else {}
                             ),
                         },
@@ -9810,66 +8924,49 @@ def run_self_test() -> int:
                 }
             )
         synthetic_summary = aggregate(synthetic_arms)
-        if CAMPAIGN == "m37c":
-            require(
-                synthetic_summary["complete"] is True
-                and synthetic_summary["quality_gate"] is True
-                and synthetic_summary["benefit_gate"] is True
-                and synthetic_summary["decision"]
-                == "keep_minimal_candidate_and_delete_replaced_path"
-                and synthetic_summary["arms"] == 36
-                and synthetic_summary["verified_success"] == 30
-                and synthetic_summary["correct_rejection"] == 6
-                and synthetic_summary["false_success"] == 0
-                and len(synthetic_summary["paired_outcomes"]) == 18
-                and synthetic_summary["cache_miss_reduction"] >= 0.19,
-                "self_test_m37c_aggregate_invalid",
-                {"summary": synthetic_summary},
-            )
-        else:
-            expected_behavior = (
-                {
-                    "correct_safety_rejection": 3,
-                    "verified_success": 17,
-                }
-                if CAMPAIGN == "m30"
-                else {
-                    "correct_safety_rejection": 9,
-                    "verified_success": 51,
-                }
-            )
-            expected_accounting = {
-                "complete": RESOURCES["formal_arms"]
+        expected_behavior = (
+            {
+                "correct_safety_rejection": 3,
+                "verified_success": 17,
             }
-            require(
-                synthetic_summary["complete"] is True
-                and synthetic_summary["pass_at_1"] == 1.0
-                and synthetic_summary["behavior_statuses"]
-                == expected_behavior
-                and synthetic_summary["accounting_statuses"]
-                == expected_accounting
-                and synthetic_summary["goal_constraint_loss"] == 0
-                and synthetic_summary["resume_count"]
-                == len(required) * RESOURCES["runs_per_task"]
-                and (
-                    (
-                        CAMPAIGN == "m30"
-                        and synthetic_summary["decision"]
-                        == "insufficient_repeated_current_loss"
-                        and synthetic_summary["loss_matrix"][
-                            "result_class"
-                        ]
-                        == "insufficient_repeated_current_loss"
-                        and "pass_power_3_tasks"
-                        not in synthetic_summary
-                    )
-                    or (
-                        CAMPAIGN == "m23b"
-                        and synthetic_summary["pass_power_3_tasks"] == 17
-                    )
-                ),
-                "self_test_hardness_aggregate_invalid",
-            )
+            if CAMPAIGN == "m30"
+            else {
+                "correct_safety_rejection": 9,
+                "verified_success": 51,
+            }
+        )
+        expected_accounting = {
+            "complete": RESOURCES["formal_arms"]
+        }
+        require(
+            synthetic_summary["complete"] is True
+            and synthetic_summary["pass_at_1"] == 1.0
+            and synthetic_summary["behavior_statuses"]
+            == expected_behavior
+            and synthetic_summary["accounting_statuses"]
+            == expected_accounting
+            and synthetic_summary["goal_constraint_loss"] == 0
+            and synthetic_summary["resume_count"]
+            == len(required) * RESOURCES["runs_per_task"]
+            and (
+                (
+                    CAMPAIGN == "m30"
+                    and synthetic_summary["decision"]
+                    == "insufficient_repeated_current_loss"
+                    and synthetic_summary["loss_matrix"][
+                        "result_class"
+                    ]
+                    == "insufficient_repeated_current_loss"
+                    and "pass_power_3_tasks"
+                    not in synthetic_summary
+                )
+                or (
+                    CAMPAIGN == "m23b"
+                    and synthetic_summary["pass_power_3_tasks"] == 17
+                )
+            ),
+            "self_test_hardness_aggregate_invalid",
+        )
     print(
         json.dumps(
             {
@@ -10593,7 +9690,6 @@ def parse_args() -> argparse.Namespace:
             "m20b",
             "m23b",
             "m30",
-            "m37c",
         ),
         default="m9c",
     )
@@ -10640,7 +9736,6 @@ def main() -> int:
         if args.freeze_report:
             return run_freeze_report()
         if args.trajectory_report:
-            require(CAMPAIGN != "m37c", "m37c_trajectory_report_not_applicable")
             return run_trajectory_report()
         if args.observer_conformance:
             return run_observer_conformance()

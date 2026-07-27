@@ -18,37 +18,6 @@ use std::sync::{LazyLock, Mutex};
 
 const DEEPSEEK_SYSTEM_BLOCK_SEPARATOR: &str = "\n\n---\n\n";
 const M37_BUNDLED_CORE_MAX_BYTES: usize = 3_300;
-const M37C_EVALUATION_GUARD_ENV: &str = "DSE_M37C_EVALUATION";
-const M37C_CONTEXT_VARIANT_ENV: &str = "DSE_M37C_CONTEXT_VARIANT";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum M37cContextVariant {
-    Control,
-    SingleProjectProjection,
-}
-
-fn parse_m37c_context_variant(
-    guard: Option<&str>,
-    variant: Option<&str>,
-) -> Result<M37cContextVariant, ()> {
-    match (guard, variant) {
-        (None, None) | (Some("1"), Some("control")) => Ok(M37cContextVariant::Control),
-        (Some("1"), Some("single_project_projection")) => {
-            Ok(M37cContextVariant::SingleProjectProjection)
-        }
-        _ => Err(()),
-    }
-}
-
-fn m37c_context_variant() -> M37cContextVariant {
-    let guard = std::env::var(M37C_EVALUATION_GUARD_ENV).ok();
-    let variant = std::env::var(M37C_CONTEXT_VARIANT_ENV).ok();
-    parse_m37c_context_variant(guard.as_deref(), variant.as_deref()).unwrap_or_else(|()| {
-        panic!(
-            "invalid temporary M37-C context selector; set {M37C_EVALUATION_GUARD_ENV}=1 with {M37C_CONTEXT_VARIANT_ENV}=control|single_project_projection"
-        )
-    })
-}
 
 /// Complete input for the canonical production system prompt.
 #[derive(Debug)]
@@ -253,15 +222,8 @@ pub struct ProductionPromptBuild {
 /// request-volatile execution-posture block.
 #[must_use]
 pub fn production_system_prompt(request: ProductionPromptRequest<'_>) -> SystemPrompt {
-    production_system_prompt_for_variant(request, m37c_context_variant())
-}
-
-fn production_system_prompt_for_variant(
-    request: ProductionPromptRequest<'_>,
-    variant: M37cContextVariant,
-) -> SystemPrompt {
     let posture = execution_posture(request.tool_mode);
-    let mut build = assemble_system_prompt(&request, false, variant);
+    let mut build = assemble_system_prompt(&request, false);
     build.prompt.blocks.push(SystemBlock {
         text: posture,
         cache_control: PromptCacheControl::Volatile,
@@ -285,20 +247,8 @@ pub fn production_system_prompt_with_audit(
     request: ProductionPromptRequest<'_>,
     capability_audit: Option<PromptCapabilityAuditInput<'_>>,
 ) -> ProductionPromptBuild {
-    production_system_prompt_with_audit_for_variant(
-        request,
-        capability_audit,
-        m37c_context_variant(),
-    )
-}
-
-fn production_system_prompt_with_audit_for_variant(
-    request: ProductionPromptRequest<'_>,
-    capability_audit: Option<PromptCapabilityAuditInput<'_>>,
-    variant: M37cContextVariant,
-) -> ProductionPromptBuild {
     let posture = execution_posture(request.tool_mode);
-    let mut build = assemble_system_prompt(&request, true, variant);
+    let mut build = assemble_system_prompt(&request, true);
     let mut posture_entry = prompt_ledger_entry(
         PromptContextLayer::ExecutionPosture,
         "builtin:execution_posture",
@@ -795,7 +745,6 @@ fn apply_static_prompt_composer(
 fn assemble_system_prompt(
     request: &ProductionPromptRequest<'_>,
     capture_ledger: bool,
-    variant: M37cContextVariant,
 ) -> ProductionPromptBuild {
     let default_layers = compose_default_static_layers(Personality::Calm, request.model);
     let mode_prompt = apply_static_prompt_composer(
@@ -818,15 +767,11 @@ fn assemble_system_prompt(
     // `load_project_context_with_parents` generates an in-memory bounded
     // overview when no context file exists, so the fallback should usually be
     // available without writing project-local files.
-    let mut generated_project_payload_sha256 = None;
     if let Some(project_block) = project_context.as_system_block() {
         let source = project_context.source_path.as_ref().map_or_else(
             || "generated:bounded_project_overview".to_owned(),
             |path| path.display().to_string(),
         );
-        generated_project_payload_sha256 =
-            prompt_fragment_payload(PromptContextLayer::ProjectContext, &source, &project_block)
-                .map(|payload| sha256_prefixed(payload.as_bytes()));
         stable_layers.push((
             PromptContextLayer::ProjectContext,
             source,
@@ -849,20 +794,12 @@ fn assemble_system_prompt(
     }
 
     if let Some(pack) = crate::project_context::generate_project_context_pack(request.workspace) {
-        let pack_source = "generated:project_context_pack";
-        let pack_payload_sha256 =
-            prompt_fragment_payload(PromptContextLayer::ProjectContextPack, pack_source, &pack)
-                .map(|payload| sha256_prefixed(payload.as_bytes()));
-        let repeats_generated_overview = generated_project_payload_sha256.is_some()
-            && generated_project_payload_sha256 == pack_payload_sha256;
-        if variant == M37cContextVariant::Control || !repeats_generated_overview {
-            stable_layers.push((
-                PromptContextLayer::ProjectContextPack,
-                pack_source.to_owned(),
-                PromptContextScope::Workspace,
-                pack,
-            ));
-        }
+        stable_layers.push((
+            PromptContextLayer::ProjectContextPack,
+            "generated:project_context_pack".to_owned(),
+            PromptContextScope::Workspace,
+            pack,
+        ));
     }
 
     if is_concise_verbosity(request.verbosity) {
@@ -1436,137 +1373,6 @@ mod tests {
                 }
             }),
         }
-    }
-
-    #[test]
-    fn m37c_candidate_removes_only_the_same_payload_wrapper() {
-        let contract: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../eval/fixtures/m37-c-context-dedup-ab-v1.json"
-        ))
-        .expect("M37-C context-dedup fixture");
-        assert_eq!(
-            parse_m37c_context_variant(None, None),
-            Ok(M37cContextVariant::Control)
-        );
-        assert_eq!(
-            parse_m37c_context_variant(Some("1"), Some("control")),
-            Ok(M37cContextVariant::Control)
-        );
-        assert_eq!(
-            parse_m37c_context_variant(Some("1"), Some("single_project_projection")),
-            Ok(M37cContextVariant::SingleProjectProjection)
-        );
-        assert!(parse_m37c_context_variant(None, Some("control")).is_err());
-        assert!(parse_m37c_context_variant(Some("1"), None).is_err());
-        assert!(parse_m37c_context_variant(Some("1"), Some("unknown")).is_err());
-
-        let fixture = std::env::temp_dir().join(format!(
-            "dse-context-m37c-dedup-fixture-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&fixture);
-        fs::create_dir_all(fixture.join("src")).expect("M37-C fixture workspace");
-        fs::write(
-            fixture.join("README.md"),
-            "# Fixture\n\nOPAQUE_M37C_SHARED_PROJECT_PAYLOAD\n",
-        )
-        .expect("M37-C README");
-        fs::write(fixture.join("src/lib.rs"), "pub fn m37c_fixture() {}\n").expect("M37-C source");
-        let preferences = PromptPreferences {
-            show_thinking: false,
-        };
-        let skills_dir = fixture.join(".dse/skills");
-        let request = || ProductionPromptRequest {
-            workspace: &fixture,
-            model: "deepseek-v4-pro",
-            preferences: &preferences,
-            instructions: &[],
-            skills_dir: Some(&skills_dir),
-            verbosity: None,
-            skills_scan_dse_only: true,
-            shell_binary: "/fixture/bin/zsh",
-            tool_mode: true,
-        };
-
-        let normal = production_system_prompt(request());
-        let control = production_system_prompt_with_audit_for_variant(
-            request(),
-            None,
-            M37cContextVariant::Control,
-        );
-        let candidate = production_system_prompt_with_audit_for_variant(
-            request(),
-            None,
-            M37cContextVariant::SingleProjectProjection,
-        );
-        assert_eq!(normal, control.prompt);
-        let control_text = system_prompt_flat_text(&control.prompt);
-        let candidate_text = system_prompt_flat_text(&candidate.prompt);
-        assert_eq!(
-            control_text
-                .matches("OPAQUE_M37C_SHARED_PROJECT_PAYLOAD")
-                .count(),
-            contract["offline_parity"]["control_serialized_payload_count"]
-                .as_u64()
-                .expect("control payload count") as usize
-        );
-        assert_eq!(
-            candidate_text
-                .matches("OPAQUE_M37C_SHARED_PROJECT_PAYLOAD")
-                .count(),
-            contract["offline_parity"]["candidate_serialized_payload_count"]
-                .as_u64()
-                .expect("candidate payload count") as usize
-        );
-        assert!(control_text.contains("<project_context_pack>"));
-        assert!(!candidate_text.contains("<project_context_pack>"));
-        assert_eq!(control.ledger.duplicate_relations.len(), 1);
-        assert!(candidate.ledger.duplicate_relations.is_empty());
-        assert_eq!(
-            control
-                .ledger
-                .entries
-                .iter()
-                .filter(|entry| entry.layer == PromptContextLayer::ProjectContextPack)
-                .count(),
-            1
-        );
-        assert_eq!(
-            candidate
-                .ledger
-                .entries
-                .iter()
-                .filter(|entry| entry.layer == PromptContextLayer::ProjectContextPack)
-                .count(),
-            0
-        );
-        assert!(
-            candidate.ledger.assembled_model_visible_bytes
-                < control.ledger.assembled_model_visible_bytes
-        );
-        assert_eq!(candidate.ledger.bundled_core.total_bytes, 3_300);
-        assert!(candidate.ledger.bundled_core.within_limit);
-        for block_index in 1..control.prompt.blocks.len() {
-            assert_eq!(
-                control.prompt.blocks[block_index],
-                candidate.prompt.blocks[block_index]
-            );
-        }
-        assert!(!candidate_text.contains(M37C_EVALUATION_GUARD_ENV));
-        assert!(!candidate_text.contains(M37C_CONTEXT_VARIANT_ENV));
-
-        fs::write(fixture.join("AGENTS.md"), "OPAQUE_M37C_PROJECT_AUTHORITY\n")
-            .expect("M37-C explicit authority");
-        let explicit_control =
-            production_system_prompt_for_variant(request(), M37cContextVariant::Control);
-        let explicit_candidate = production_system_prompt_for_variant(
-            request(),
-            M37cContextVariant::SingleProjectProjection,
-        );
-        assert_eq!(explicit_control, explicit_candidate);
-        assert!(system_prompt_flat_text(&explicit_candidate).contains("<project_context_pack>"));
-
-        fs::remove_dir_all(&fixture).expect("remove M37-C fixture workspace");
     }
 
     #[test]
