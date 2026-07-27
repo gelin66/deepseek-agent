@@ -29,6 +29,7 @@ aggregate 均不成立。
 - live admission commit：`2b1169dbe`
 - read-only incomplete-acquisition analysis：`5ea14c63b`
 - temporary consumer deletion：`f97e21661`
+- test-only raw SSE fixture stabilization：`55a70c9af`
 - acquisition candidate/tree：`e2ed02c3a805118d06399eb2b01d15f36789f033` /
   `e4b67767b396013982af23e44f37ea7f9f4cd49d`
 - immutable `dse`：
@@ -142,6 +143,12 @@ Clippy/test、public repository checker 和 `git diff --check`。
 M40 self-test及历史 M9-C/M23-B/M30 report回归通过。临时 consumer 删除后再次执行最终
 focused、fmt、strict Clippy、workspace tests、public checker 和 diff check；最终结果记录在
 本 Goal clean checkpoint。
+
+首次 final workspace test 还暴露一个 test-only platform race：nonblocking listener 接受的
+socket 在 macOS 上可能继承 `O_NONBLOCK`，handler 偶发在请求头到达前得到 `WouldBlock`，
+把预期 `stream_stall` 换成无关 connection reset。fixture 现显式将 accepted socket 切回带
+有限 read/write timeout 的 blocking mode；目标用例连续 10/10 通过，随后 workspace test
+全绿。该修改不进入 production binary、Runtime 或 transport。
 
 ## 官方协议复核
 
