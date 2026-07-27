@@ -4287,6 +4287,19 @@ ambiguity、unsafe evidence 或 cost ceiling 时，本 campaign 立即停止且�
 即使 repeated-loss 门通过，也不能直接改 production。ADR-0015 的 web/browser/search/vision
 方向不属于本评测，production delta 继续为 0。
 
+正式 acquisition 已从 immutable `a0847c5c1c04` binary、position 1 完成 3/3 arms，
+maximum reruns=0：2 个 verified success、1 个 measurement-valid product failure、false
+success=0。三臂 accounting 均为 `complete`，合计 38 requests、input/output
+`196,296 / 19,773` tokens、cache hit/miss `116,864 / 79,432` tokens、known cost
+`$0.113726632`、wall time `541,642 ms`。唯一 loss 为
+`writer_header_policy -> orchestrator:writer_integration`；另外两个 fresh Writer task 均完成
+seal/integrate/latest-revision receipt/cleanup，因此同因只覆盖一个独立 task_id，机械结果为
+`keep_current_harness_no_repeated_loss`。没有 candidate、没有 production treatment、没有
+后续 A/B。M36-A2 temporary campaign consumer 已从 corrected Harness 删除；frozen raw
+SHA-256 为 `5a43e4a0ccb5b5b8bba5a5907ae0affbd65c3c8c00f85354ac37fda9c724d4b6`，
+ignored `0600`，8,025,420 bytes。完整身份、单臂事实与删除证据见
+[M36-A2 summary](../../eval/summaries/m36-a2-writer-loss-confirmation-2026-07-27.md)。
+
 ##### 1. 基线任务层
 
 每个基线 manifest 必须从以下任务层中选择与候选 owner 相关的 fresh、人工复核任务：

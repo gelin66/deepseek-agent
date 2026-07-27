@@ -2835,17 +2835,19 @@ M38 没有修改 production crate、Prompt、DeepSeek request、RuntimeEvent、R
 permission 或 Writer behavior；Run API 15、RuntimeEvent 22、State v28、exec-stream v6 保持
 不变。M37-C frozen evidence 没有读取、修改、续跑或拼接；Key 未读取，official API 请求为 0。
 
-M36-A2 当前只增加 eval contract/Harness consumer 和 3 个 fresh explicit Writer fixture；
-production crate delta 仍为 0。三个 task 分别覆盖 Python retry-accounting、Rust bounded
-header policy 与 TypeScript fixed-route codec，均已由离线 hidden verifier 证明 initial fail、
-reference pass，并绑定同一 deterministic fixture tree/base commit。唯一 corrected Harness
-使用 current 三字段 permission controls、one isolated Writer、latest-root verifier、cleanup、
-behavior/accounting truth 与 credential-free reopen；历史 M36 raw 不作为输入。
+M36-A2 已从 immutable `a0847c5c1c04` binary 完成 3 个 fresh explicit Writer control-only
+arms。Python retry-accounting 与 TypeScript fixed-route task 完成 isolated Writer seal、root
+integration、latest-revision receipt、external verifier 和 cleanup；Rust bounded-header task
+因 agent call/cardinality 未形成 sealed diff，Host 正确 blocked 且没有 false completion。
+三臂 behavior/accounting 均闭合，false success=0；唯一
+`orchestrator:writer_integration` 只覆盖一个 fresh task_id，低于两个独立 task 的 frozen
+门槛。结果为 `keep_current_harness_no_repeated_loss`，production crate/Runtime/RunStore/
+Prompt/tools/permission/Writer behavior delta=0，也没有准入 treatment 或 A/B。
 
-当前只冻结 repeated-loss 判定：本次 fresh set 中至少两个不同 task_id 同时产生
-`orchestrator:writer_integration` 才允许后续审计 `crates/orchestrator` 的 bounded
-verify -> repair -> reverify；0/1 个则删除 campaign consumer 并保持 production 不变。
-ADR-0015 仍是 implementation-not-admitted，当前没有 browser/search/vision production 路径。
+M36-A2 temporary Harness consumer 已删除并恢复到 pre-campaign exact blob `d3916654f`；只
+保留 frozen manifest/admission/fixture/reference、ignored `0600` raw 与 summary。历史 M36
+raw 没有作为输入。ADR-0015 仍是 implementation-not-admitted，当前没有 browser/search/
+vision production 路径。
 
 ## 8. 明确非结论
 
@@ -2857,8 +2859,9 @@ ADR-0015 仍是 implementation-not-admitted，当前没有 browser/search/vision
   production treatment；
 
 - M36-A 的 16/17 positive pass@1 可外推为所有仓库、语言或公开 benchmark，或一个
-  `writer_envelope` loss 已证明 Writer owner 需要 treatment；同一
-  `orchestrator:writer_integration` 尚未跨两个独立 task_id 重复，因此 M36-B/C 未准入；
+  `writer_envelope` loss 已证明 Writer owner 需要 treatment；M36-A2 fresh set 中同一
+  `orchestrator:writer_integration` 只出现一次，且合同禁止把 M36-A 历史单例拼入 fresh
+  threshold，因此 M36-B/C 未准入；
 
 - M35 已测得 official timeout/429/5xx/partial failure incidence 或 live recovery rate；
   24 个独立 Run 没有触发模型故障，只证明当次成功路径、latency、accounting 与 reopen

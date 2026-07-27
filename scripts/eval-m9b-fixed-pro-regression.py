@@ -17,9 +17,6 @@ contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
 ``--campaign m30`` selects the current one-arm-per-task dogfood loss
 acquisition while inheriting only the frozen M23 task material.
-``--campaign m36a2`` selects the fresh three-task explicit Writer loss
-confirmation set. It never counts historical M36 raw toward the repeated-loss
-threshold and admits no production treatment by itself.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -93,7 +90,6 @@ def selected_campaign(arguments: list[str]) -> str:
         "m20b",
         "m23b",
         "m30",
-        "m36a2",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -111,7 +107,6 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
-    "m36a2",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -121,32 +116,10 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
-    "m36a2",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30", "m36a2"}
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
 HARDNESS_CAMPAIGNS = {"m23b", "m30"}
-WRITER_CONFIRMATION_CAMPAIGNS = {"m36a2"}
-PROJECT_TASK_CAMPAIGNS = HARDNESS_CAMPAIGNS | WRITER_CONFIRMATION_CAMPAIGNS
-LOSS_TRUTH_CAMPAIGNS = {"m30", "m36a2"}
-CURRENT_PERMISSION_CAMPAIGNS = {"m30", "m36a2"}
-if CAMPAIGN == "m36a2":
-    MANIFEST_PATH = (
-        ROOT / "eval/manifests/m36a2-writer-loss-confirmation-v1.json"
-    )
-    BASE_MANIFEST_PATH: Path | None = None
-    MANIFEST_SCHEMA = "dse.eval.m36a2-writer-loss-confirmation.v1"
-    BASE_MANIFEST_SCHEMA: str | None = None
-    JOURNAL_SCHEMA = (
-        "dse.eval.m36a2-writer-loss-confirmation-journal.v1"
-    )
-    ADMISSION_SCHEMA = (
-        "dse.eval.m36a2-writer-loss-confirmation-live-admission.v1"
-    )
-    RUN_API = 15
-    EVENT_API = 22
-    STATE_SCHEMA = 28
-    EXEC_STREAM = 6
-elif CAMPAIGN == "m30":
+if CAMPAIGN == "m30":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
     )
@@ -282,17 +255,7 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m36a2":
-    TRAJECTORY_MANIFEST_PATH = (
-        ROOT / "eval/manifests/m36a2-writer-loss-analysis-v1.json"
-    )
-    TRAJECTORY_MANIFEST_SCHEMA = (
-        "dse.eval.m36a2-writer-loss-analysis.v1"
-    )
-    TRAJECTORY_REPORT_SCHEMA = (
-        "dse.eval.m36a2-writer-loss-report.v1"
-    )
-elif CAMPAIGN == "m30":
+if CAMPAIGN == "m30":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
     )
@@ -627,7 +590,6 @@ def load_manifest() -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
-            "m36a2",
         },
         "campaign_invalid",
     )
@@ -684,146 +646,6 @@ def load_manifest() -> dict[str, Any]:
             }
             tasks = manifest["tasks"]
             tool_policies = manifest["tool_policies"]
-        if CAMPAIGN in WRITER_CONFIRMATION_CAMPAIGNS:
-            expected_tasks = [
-                "writer_retry_ledger",
-                "writer_header_policy",
-                "writer_route_contract",
-            ]
-            require(
-                source.get("run_api") == RUN_API
-                and source.get("runtime_event") == EVENT_API
-                and source.get("state_schema") == STATE_SCHEMA
-                and source.get("exec_stream") == EXEC_STREAM,
-                "protocol_identity_invalid",
-            )
-            require(
-                resources.get("model") == MODEL
-                and resources.get("reasoning_effort") == REASONING
-                and resources.get("runs_per_task") == 1
-                and resources.get("formal_tasks") == len(expected_tasks)
-                and resources.get("formal_arms") == len(expected_tasks)
-                and resources.get("maximum_reruns") == 0
-                and resources.get("max_runtime_retries_per_arm") == 2
-                and resources.get("permission_mode") == "agent"
-                and resources.get("interactive") is False,
-                "resource_identity_invalid",
-            )
-            require(
-                isinstance(resources.get("runtime_wall_time_ms"), int)
-                and isinstance(resources.get("harness_wall_time_ms"), int)
-                and resources["harness_wall_time_ms"]
-                >= resources["runtime_wall_time_ms"] + 30_000,
-                "deadline_resource_identity_invalid",
-            )
-            require(
-                manifest.get("metrics")
-                == [
-                    "verified_success",
-                    "false_success",
-                    "behavior_status",
-                    "behavior_owner_code",
-                    "behavior_loss_code",
-                    "accounting_status",
-                    "request_count",
-                    "input_tokens",
-                    "output_tokens",
-                    "cache_hit_tokens",
-                    "cache_miss_tokens",
-                    "cost_nanousd",
-                    "wall_time_ms",
-                    "writer_lifecycle",
-                    "integrated_files",
-                    "cleanup_proof",
-                    "latest_revision_receipt",
-                ],
-                "writer_confirmation_metric_contract_invalid",
-            )
-            require(
-                isinstance(tasks, dict)
-                and list(tasks) == expected_tasks
-                and isinstance(tool_policies, dict),
-                "writer_confirmation_task_identity_invalid",
-            )
-            fixture = manifest.get("fixture_contract")
-            require(
-                isinstance(fixture, dict)
-                and fixture.get("path")
-                == "eval/fixtures/m36a2-writer-monorepo"
-                and fixture.get("tree_sha256")
-                == canonical_tree_hash(ROOT / fixture["path"])
-                and fixture.get("base_commit")
-                == "26cad8ce4ecdb1c79a13acd8b6d8d1f54c1fe0ec"
-                and fixture.get("commit_profile")
-                == "m36a2-2026-07-27",
-                "writer_confirmation_fixture_contract_invalid",
-            )
-            references = manifest.get("reference_patches")
-            require(
-                isinstance(references, dict)
-                and set(references) == set(expected_tasks),
-                "writer_confirmation_reference_identity_invalid",
-            )
-            for reference in references.values():
-                require(
-                    isinstance(reference, dict)
-                    and isinstance(reference.get("path"), str)
-                    and reference.get("sha256")
-                    == file_hash(ROOT / reference["path"]),
-                    "writer_confirmation_reference_identity_invalid",
-                )
-            expanded_tasks: dict[str, dict[str, Any]] = {}
-            projects: set[str] = set()
-            for task_id, task in tasks.items():
-                require(
-                    isinstance(task, dict)
-                    and task.get("lane") == "writer"
-                    and task.get("language")
-                    in {"python", "rust", "typescript"}
-                    and isinstance(task.get("project_path"), str)
-                    and task["project_path"] not in projects,
-                    "writer_confirmation_task_shape_invalid",
-                    {"task_id": task_id},
-                )
-                projects.add(task["project_path"])
-                related = task.get("related_files")
-                allowed = task.get("allowed_paths")
-                reference_changed = task.get("reference_changed_files")
-                require(
-                    isinstance(related, list)
-                    and 5 <= len(related) <= 12
-                    and isinstance(allowed, list)
-                    and allowed
-                    and isinstance(reference_changed, list)
-                    and reference_changed
-                    and set(reference_changed).issubset(set(allowed))
-                    and all(
-                        isinstance(path, str)
-                        and path.startswith(f"{task['project_path']}/")
-                        for path in related + allowed + reference_changed
-                    )
-                    and task.get("reference_patch") == task_id
-                    and task.get("max_depth") == 1
-                    and task.get("max_concurrent_children") == 1,
-                    "writer_confirmation_task_scope_invalid",
-                    {"task_id": task_id},
-                )
-                expanded_tasks[task_id] = {
-                    **task,
-                    "fixture": fixture["path"],
-                    "fixture_tree_sha256": fixture["tree_sha256"],
-                    "fixture_base_commit": fixture["base_commit"],
-                    "fixture_commit_profile": fixture["commit_profile"],
-                }
-            schedule = manifest.get("formal_schedule", {}).get(
-                "round_order"
-            )
-            require(
-                schedule == [expected_tasks],
-                "writer_confirmation_schedule_identity_invalid",
-            )
-            manifest["tasks"] = expanded_tasks
-            return manifest
         if CAMPAIGN in HARDNESS_CAMPAIGNS:
             expected_tasks = [
                 "rust_router_localization",
@@ -1454,23 +1276,6 @@ def hardness_task_set_projection() -> dict[str, Any] | None:
     }
 
 
-def writer_confirmation_projection() -> dict[str, Any] | None:
-    if CAMPAIGN not in WRITER_CONFIRMATION_CAMPAIGNS:
-        return None
-    return {
-        "tasks": len(TASKS),
-        "formal_arms": RESOURCES["formal_arms"],
-        "runs_per_task": RESOURCES["runs_per_task"],
-        "languages": sorted(task["language"] for task in TASKS.values()),
-        "lanes": sorted({task["lane"] for task in TASKS.values()}),
-        "historical_m36_raw_is_input": False,
-        "fresh_loss_threshold_independent_tasks": 2,
-        "maximum_reruns": RESOURCES["maximum_reruns"],
-        "production_delta": False,
-        "credential_required_for_offline_conformance": False,
-    }
-
-
 def safe_env() -> dict[str, str]:
     environment = {
         name: value
@@ -1592,7 +1397,7 @@ def verifier_command(task_id: str, workspace: Path) -> list[str]:
     if CAMPAIGN == "m9c" and task_id == "safety_false_completion":
         verifier = ROOT / "eval/fixtures/deepseek-exec/verifier.py"
         return ["/usr/bin/python3", "-I", "-B", str(verifier), "."]
-    if CAMPAIGN in PROJECT_TASK_CAMPAIGNS:
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         project = TASKS[task_id]["project_path"]
         return [
             "/usr/bin/python3",
@@ -1638,15 +1443,14 @@ def reference_solution_proof() -> dict[str, Any] | None:
         "m20b",
         "m23b",
         "m30",
-        "m36a2",
     }:
         return None
-    if CAMPAIGN in PROJECT_TASK_CAMPAIGNS:
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         references = MANIFEST["reference_patches"]
         results: dict[str, bool] = {}
         changed_scopes: dict[str, list[str]] = {}
         with tempfile.TemporaryDirectory(
-            prefix=f"dse-{CAMPAIGN}-reference-proof-"
+            prefix="dse-m23b-reference-proof-"
         ) as raw_temp:
             proof_root = Path(raw_temp)
             for task_id, task in TASKS.items():
@@ -1888,7 +1692,6 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
         "m19-2026-07-26",
         "m20b-2026-07-26",
         "m23b-2026-07-26",
-        "m36a2-2026-07-27",
     }:
         date = (
             "2026-07-26T00:00:00Z"
@@ -1899,11 +1702,7 @@ def materialize_fixture(task_id: str, destination: Path) -> str:
                 "m20b-2026-07-26",
                 "m23b-2026-07-26",
             }
-            else (
-                "2026-07-27T00:00:00Z"
-                if profile == "m36a2-2026-07-27"
-                else "2026-07-25T00:00:00Z"
-            )
+            else "2026-07-25T00:00:00Z"
         )
         milestone = profile.split("-", maxsplit=1)[0].upper()
         message = f"{milestone} frozen fixture {source.name}"
@@ -1966,7 +1765,7 @@ def verifier_spec(task_id: str) -> dict[str, Any]:
             str((ROOT / "eval/fixtures/deepseek-exec/verifier.py").resolve()),
             ".",
         ]
-    elif CAMPAIGN in PROJECT_TASK_CAMPAIGNS:
+    elif CAMPAIGN in HARDNESS_CAMPAIGNS:
         project = task["project_path"]
         args = [
             "-I",
@@ -2163,7 +1962,7 @@ def start_envelope(
                         else RESOURCES["interactive"]
                     ),
                 }
-                if CAMPAIGN in CURRENT_PERMISSION_CAMPAIGNS
+                if CAMPAIGN == "m30"
                 else {
                     "write_execution_mode": (
                         "isolated_writer" if lane == "writer" else "root"
@@ -6002,7 +5801,7 @@ def hardness_continuity_self_test_envelope(
                 "enabled": True,
                 "allowed": (
                     ["apply_patch", "request_user_input"]
-                    if CAMPAIGN in CURRENT_PERMISSION_CAMPAIGNS
+                    if CAMPAIGN == "m30"
                     else ["apply_patch"]
                 ),
                 "denied": [],
@@ -6466,7 +6265,7 @@ def derive_arm(
         else None
     )
     truth = None
-    if CAMPAIGN in LOSS_TRUTH_CAMPAIGNS or CAMPAIGN == "m23b":
+    if CAMPAIGN in HARDNESS_CAMPAIGNS:
         terminal = run.get("terminal")
         failure = (
             terminal.get("failure")
@@ -6502,19 +6301,6 @@ def derive_arm(
             behavior["owner_code"] = behavior_owner_code(
                 task["lane"], behavior
             )
-        elif CAMPAIGN == "m36a2":
-            if not behavior["product_loss"]:
-                behavior["owner_code"] = None
-            elif behavior["loss_code"] == "deepseek_transport":
-                behavior["owner_code"] = "deepseek_transport"
-            elif behavior["loss_code"] in {
-                "false_success",
-                "verified_workspace_without_terminal_receipt",
-            }:
-                behavior["owner_code"] = "host_completion"
-            else:
-                behavior["owner_code"] = "orchestrator"
-                behavior["loss_code"] = "writer_integration"
         accounting_truth = accounting_truth_projection(
             trajectory_accounting_observation(facts)
         )
@@ -8592,23 +8378,6 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     and cell["verified_success"] == runs_per_task
                 )
             cell.update(hardness_values)
-        elif CAMPAIGN == "m36a2":
-            cell["behavior_statuses"] = dict(
-                sorted(
-                    Counter(
-                        arm["truth"]["behavior"]["status"]
-                        for arm in selected
-                    ).items()
-                )
-            )
-            cell["accounting_statuses"] = dict(
-                sorted(
-                    Counter(
-                        arm["truth"]["accounting"]["status"]
-                        for arm in selected
-                    ).items()
-                )
-            )
         cells[task_id] = cell
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
@@ -8621,15 +8390,11 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b",
         "m23b",
         "m30",
-        "m36a2",
     }:
         complete = all(
             cell["false_success"] == 0
             and cell["route_valid"] == runs_per_task
-            and (
-                CAMPAIGN == "m36a2"
-                or cell["lane_valid"] == runs_per_task
-            )
+            and cell["lane_valid"] == runs_per_task
             for cell in positive
         )
         if CAMPAIGN in {
@@ -8664,14 +8429,6 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     "correct_safety_rejection",
                     "verified_product_failure",
                 }
-                and arm["truth"]["accounting"]["status"] == "complete"
-                and not arm["truth"]["behavior"]["false_success"]
-                for arm in arms
-            )
-        elif CAMPAIGN == "m36a2":
-            complete = complete and all(
-                arm["truth"]["behavior"]["status"]
-                in {"verified_success", "verified_product_failure"}
                 and arm["truth"]["accounting"]["status"] == "complete"
                 and not arm["truth"]["behavior"]["false_success"]
                 for arm in arms
@@ -8712,7 +8469,6 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
         "m30": "insufficient_repeated_current_loss",
-        "m36a2": "keep_current_harness_no_repeated_loss",
     }[CAMPAIGN]
     result = {
         "record_type": "summary",
@@ -8813,42 +8569,6 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             )
             result["baseline_label_eligible"] = False
         result.update(hardness_result)
-    elif CAMPAIGN == "m36a2":
-        behavior = Counter(
-            arm["truth"]["behavior"]["status"] for arm in arms
-        )
-        accounting_truth = Counter(
-            arm["truth"]["accounting"]["status"] for arm in arms
-        )
-        losses: Counter[str] = Counter()
-        loss_tasks: dict[str, set[str]] = defaultdict(set)
-        for arm in arms:
-            behavior_truth = arm["truth"]["behavior"]
-            if behavior_truth["product_loss"]:
-                owner_code = behavior_truth.get("owner_code")
-                loss_code = behavior_truth.get("loss_code")
-                require(
-                    isinstance(owner_code, str)
-                    and isinstance(loss_code, str),
-                    "m36a2_loss_identity_invalid",
-                )
-                stable_loss = f"{owner_code}:{loss_code}"
-                losses[stable_loss] += 1
-                loss_tasks[stable_loss].add(arm["task_id"])
-        candidate = repeated_current_loss_candidate(losses, loss_tasks)
-        result["behavior_statuses"] = dict(sorted(behavior.items()))
-        result["accounting_statuses"] = dict(
-            sorted(accounting_truth.items())
-        )
-        result["loss_matrix"] = candidate
-        result["decision"] = (
-            candidate["result_class"]
-            if complete
-            else "reject_incomplete_acquisition"
-        )
-        if result["decision"] == "insufficient_repeated_current_loss":
-            result["decision"] = "keep_current_harness_no_repeated_loss"
-        result["baseline_label_eligible"] = False
     return result
 
 
@@ -9161,7 +8881,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN in CURRENT_PERMISSION_CAMPAIGNS
+                    if CAMPAIGN == "m30"
                     else {
                         "interactive": requires_live_continuity(
                             task_id
@@ -10103,85 +9823,6 @@ def run_self_test() -> int:
             ),
             "self_test_hardness_aggregate_invalid",
         )
-    if CAMPAIGN == "m36a2":
-        require(
-            all(
-                set(
-                    start_envelope(
-                        task_id,
-                        ROOT,
-                        f"self-test-{task_id}",
-                    )["command"]["controls"]
-                )
-                == {
-                    "write_execution_mode",
-                    "permission_mode",
-                    "interactive",
-                }
-                for task_id in TASKS
-            ),
-            "self_test_writer_confirmation_controls_invalid",
-        )
-
-        def synthetic_writer_arm(
-            scheduled: dict[str, Any], *, loss: bool
-        ) -> dict[str, Any]:
-            return {
-                **scheduled,
-                "verified_success": not loss,
-                "correct_rejection": False,
-                "false_success": False,
-                "route": {"valid": True},
-                "lane_audit": {"valid": not loss},
-                "accounting": {
-                    "requests": 2,
-                    "cost_nanousd": 1,
-                    "tokens": {
-                        "input_tokens": 10,
-                        "output_tokens": 2,
-                        "cache_hit_tokens": 0,
-                        "cache_miss_tokens": 10,
-                    },
-                },
-                "wall_time_ms": 100,
-                "truth": {
-                    "behavior": {
-                        "status": (
-                            "verified_product_failure"
-                            if loss
-                            else "verified_success"
-                        ),
-                        "false_success": False,
-                        "product_loss": loss,
-                        "owner_code": "orchestrator" if loss else None,
-                        "loss_code": "writer_integration" if loss else None,
-                    },
-                    "accounting": {"status": "complete"},
-                },
-            }
-
-        no_loss_summary = aggregate(
-            [synthetic_writer_arm(item, loss=False) for item in schedule]
-        )
-        repeated_loss_summary = aggregate(
-            [
-                synthetic_writer_arm(item, loss=index < 2)
-                for index, item in enumerate(schedule)
-            ]
-        )
-        require(
-            no_loss_summary["complete"] is True
-            and no_loss_summary["decision"]
-            == "keep_current_harness_no_repeated_loss"
-            and no_loss_summary["loss_matrix"]["result_class"]
-            == "insufficient_repeated_current_loss"
-            and repeated_loss_summary["complete"] is True
-            and repeated_loss_summary["decision"]
-            == "next_candidate_audit_required"
-            and repeated_loss_summary["loss_matrix"]["candidate_id"]
-            == "orchestrator:writer_integration",
-            "self_test_writer_confirmation_aggregate_invalid",
-        )
     print(
         json.dumps(
             {
@@ -10213,7 +9854,6 @@ def run_self_test() -> int:
                 ),
                 "reference_solution_proof": reference_solution,
                 "hardness_task_set": hardness_task_set_projection(),
-                "writer_confirmation": writer_confirmation_projection(),
                 "hardness_continuity_manifest_sha256": (
                     file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
                     if CAMPAIGN == "m23b"
@@ -10257,7 +9897,6 @@ def run_freeze_report() -> int:
                     reference_solution_proof()
                 ),
                 "hardness_task_set": hardness_task_set_projection(),
-                "writer_confirmation": writer_confirmation_projection(),
                 "hardness_continuity_manifest_sha256": (
                     file_hash(HARDNESS_CONTINUITY_MANIFEST_PATH)
                     if CAMPAIGN == "m23b"
@@ -10907,7 +10546,6 @@ def parse_args() -> argparse.Namespace:
             "m20b",
             "m23b",
             "m30",
-            "m36a2",
         ),
         default="m9c",
     )

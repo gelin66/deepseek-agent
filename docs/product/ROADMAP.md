@@ -6107,8 +6107,8 @@ production deadline 或行为。frozen manifest/admission/analysis/raw 与
 
 #### M36-A2：fresh explicit Writer repeated-loss confirmation
 
-- 状态：**合同与 3 个 held-out fixture 已冻结；等待 offline candidate identity 与正式
-  control-only acquisition**
+- 状态：**已完成，决定 `keep_current_harness_no_repeated_loss`；production delta=0，
+  temporary campaign consumer 已删除**
 - 真实问题：M36-A 只有 `writer_envelope -> orchestrator:writer_integration` 一个独立
   task_id 失败，尚不足以说明 Orchestrator 存在可泛化 production 缺陷；继续凭单例开发
   verify/repair 状态机会造成无证据复杂度。
@@ -6142,6 +6142,19 @@ manifest、raw、summary 与可复核身份。
 controls、Writer lifecycle/cleanup observer、hash-chained journal 四个 SIGKILL 窗口、exact
 SQLite reopen、synthetic 0/1 与 2-task threshold、focused/full workspace gate。ADR-0015
 仍为 implementation-not-admitted；M36-A2 不开发 browser/search/vision。
+
+正式 acquisition 使用 immutable `a0847c5c1c04` binary，从 position 1 按冻结顺序完成
+3/3 arms，maximum reruns=0。`writer_retry_ledger` 与 `writer_route_contract` verified
+success；`writer_header_policy` 是 measurement-valid
+`orchestrator:writer_integration` product failure。false success=0，三臂 behavior/accounting
+均闭合，38 个 physical model requests，input/output `196,296 / 19,773` tokens，known cost
+`$0.113726632`，wall time `541,642 ms`。失败只覆盖一个 fresh task_id，未达到两个独立
+task 的准入门；不实现、也不评测 verify -> repair -> reverify treatment。唯一 corrected
+Harness 的 M36-A2 selector/loader/observer/aggregate/self-test/CLI consumer 已物理删除并恢复
+到 M36-A2 前 exact blob `d3916654f`；frozen manifest、admission、fixture/reference、ignored
+`0600` raw 与
+[M36-A2 summary](../../eval/summaries/m36-a2-writer-loss-confirmation-2026-07-27.md)
+保留审计。M36-B/C 继续不准入。
 
 #### M36-B：DeepSeek effort 与 context control-only
 
