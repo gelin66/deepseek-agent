@@ -1333,6 +1333,10 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
     use dse_context::compaction::{ContextInput, effective_context};
+    use dse_context::{
+        ProductionPromptRequest, PromptAuditActor, PromptCapabilityAuditInput,
+        PromptToolClaimParity, production_system_prompt, production_system_prompt_with_audit,
+    };
     use dse_deepseek::{
         ApiSurface, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
         OFFICIAL_V4_MAX_OUTPUT_TOKENS, RuntimeChatPlanInput, StrictSchemaIssue, ToolSurfaceReason,
@@ -2629,6 +2633,74 @@ mod tests {
             root_agent.input_schema["properties"]["workspace_access"]["enum"],
             json!(["read_only"])
         );
+        let read_only_catalog = runtime.tool_definitions(
+            &ToolPolicy::default(),
+            None,
+            ModelToolAuthority::ReadOnly,
+            1,
+            4,
+            false,
+        );
+        let writer_catalog = runtime.tool_definitions(
+            &ToolPolicy::default(),
+            None,
+            ModelToolAuthority::IsolatedWriter,
+            1,
+            4,
+            false,
+        );
+        let prompt_config = ProductionPromptConfig::default();
+        let request = || ProductionPromptRequest {
+            workspace: temp.path(),
+            model: DEEPSEEK_PRO_MODEL,
+            preferences: &prompt_config.preferences,
+            instructions: &prompt_config.instructions,
+            skills_dir: prompt_config.skills_dir.as_deref(),
+            verbosity: prompt_config.verbosity.as_deref(),
+            skills_scan_dse_only: prompt_config.skills_scan_dse_only,
+            shell_binary: &prompt_config.shell_binary,
+            tool_mode: true,
+        };
+        let unchanged_prompt = production_system_prompt(request());
+        for (actor, tools, expected) in [
+            (
+                PromptAuditActor::Root,
+                catalog.as_slice(),
+                PromptToolClaimParity::Match,
+            ),
+            (
+                PromptAuditActor::WriterCoordinator,
+                coordinator_catalog.as_slice(),
+                PromptToolClaimParity::Mismatch,
+            ),
+            (
+                PromptAuditActor::ReadOnlyChild,
+                read_only_catalog.as_slice(),
+                PromptToolClaimParity::Match,
+            ),
+            (
+                PromptAuditActor::ExplicitWriter,
+                writer_catalog.as_slice(),
+                PromptToolClaimParity::ToolUnavailable,
+            ),
+        ] {
+            let audited = production_system_prompt_with_audit(
+                request(),
+                Some(PromptCapabilityAuditInput { actor, tools }),
+            );
+            assert_eq!(audited.prompt, unchanged_prompt);
+            assert_eq!(audited.ledger.audit_actor, Some(actor));
+            assert_eq!(
+                audited
+                    .ledger
+                    .entries
+                    .last()
+                    .expect("execution posture")
+                    .tool_schema_claims[0]
+                    .parity,
+                expected
+            );
+        }
         let conservative_tokens = serde_json::to_vec(&catalog)
             .expect("serialize fixed catalog")
             .len()
@@ -4523,6 +4595,37 @@ mod tests {
         let strict_request = prepared_request(&strict_before);
         let reopened_request = prepared_request(&strict_reopened);
         assert_eq!(reopened_request, strict_request);
+        let prompt_config = ProductionPromptConfig::default();
+        let prompt_request = || ProductionPromptRequest {
+            workspace: &workspace,
+            model: DEEPSEEK_PRO_MODEL,
+            preferences: &prompt_config.preferences,
+            instructions: &prompt_config.instructions,
+            skills_dir: prompt_config.skills_dir.as_deref(),
+            verbosity: prompt_config.verbosity.as_deref(),
+            skills_scan_dse_only: prompt_config.skills_scan_dse_only,
+            shell_binary: &prompt_config.shell_binary,
+            tool_mode: !strict_request.tools.is_empty(),
+        };
+        let before_prompt_audit = production_system_prompt_with_audit(
+            prompt_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::Root,
+                tools: &strict_request.tools,
+            }),
+        );
+        let reopened_prompt_audit = production_system_prompt_with_audit(
+            prompt_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::Root,
+                tools: &reopened_request.tools,
+            }),
+        );
+        assert_eq!(reopened_prompt_audit, before_prompt_audit);
+        assert_eq!(
+            reopened_prompt_audit.prompt,
+            strict_reopened.snapshot.request.system_prompt
+        );
         assert_eq!(
             strict_reopened
                 .snapshot
@@ -4636,6 +4739,7 @@ mod tests {
             store.clone(),
         );
         let mut originals = Vec::new();
+        let prompt_config = ProductionPromptConfig::default();
 
         for lane in ["root", "read_only_child", "explicit_writer"] {
             let run_id = RunId::from(format!("m7i-{lane}"));
@@ -4730,6 +4834,30 @@ mod tests {
                 request.limits.max_depth,
                 request.environment.interactive,
             );
+            let audit_actor = match lane {
+                "root" => PromptAuditActor::Root,
+                "read_only_child" => PromptAuditActor::ReadOnlyChild,
+                "explicit_writer" => PromptAuditActor::ExplicitWriter,
+                _ => unreachable!(),
+            };
+            let prompt_audit = production_system_prompt_with_audit(
+                ProductionPromptRequest {
+                    workspace: &workspace,
+                    model: &request.model,
+                    preferences: &prompt_config.preferences,
+                    instructions: &prompt_config.instructions,
+                    skills_dir: prompt_config.skills_dir.as_deref(),
+                    verbosity: prompt_config.verbosity.as_deref(),
+                    skills_scan_dse_only: prompt_config.skills_scan_dse_only,
+                    shell_binary: &prompt_config.shell_binary,
+                    tool_mode: !tools.is_empty(),
+                },
+                Some(PromptCapabilityAuditInput {
+                    actor: audit_actor,
+                    tools: &tools,
+                }),
+            );
+            request.system_prompt = prompt_audit.prompt.clone();
             request.environment.tool_catalog_sha256 = Some(canonical_tool_catalog_sha256(&tools));
             let created = store
                 .create(request.clone())
@@ -4786,13 +4914,19 @@ mod tests {
                 .release(&created.lease)
                 .await
                 .expect("release actor run");
-            originals.push((lane, run_id, prepared, context.estimated_tokens));
+            originals.push((
+                lane,
+                run_id,
+                prepared,
+                context.estimated_tokens,
+                prompt_audit.ledger,
+            ));
         }
 
         drop(runtime);
         drop(store);
         let reopened = StateStore::open(Some(state_path)).expect("reopen state store");
-        for (lane, run_id, original, original_estimate) in originals {
+        for (lane, run_id, original, original_estimate, original_ledger) in originals {
             let replay = reopened
                 .load(&run_id)
                 .await
@@ -4809,6 +4943,37 @@ mod tests {
                 })
                 .expect("prepared actor request");
             assert_eq!(persisted, &original);
+            let audit_actor = match lane {
+                "root" => PromptAuditActor::Root,
+                "read_only_child" => PromptAuditActor::ReadOnlyChild,
+                "explicit_writer" => PromptAuditActor::ExplicitWriter,
+                _ => unreachable!(),
+            };
+            let reopened_prompt_audit = production_system_prompt_with_audit(
+                ProductionPromptRequest {
+                    workspace: &workspace,
+                    model: &persisted.model,
+                    preferences: &prompt_config.preferences,
+                    instructions: &prompt_config.instructions,
+                    skills_dir: prompt_config.skills_dir.as_deref(),
+                    verbosity: prompt_config.verbosity.as_deref(),
+                    skills_scan_dse_only: prompt_config.skills_scan_dse_only,
+                    shell_binary: &prompt_config.shell_binary,
+                    tool_mode: !persisted.tools.is_empty(),
+                },
+                Some(PromptCapabilityAuditInput {
+                    actor: audit_actor,
+                    tools: &persisted.tools,
+                }),
+            );
+            assert_eq!(
+                reopened_prompt_audit.ledger, original_ledger,
+                "{lane} prompt provenance must reopen exactly"
+            );
+            assert_eq!(
+                reopened_prompt_audit.prompt, persisted.system_prompt,
+                "{lane} model-visible prompt must reopen exactly"
+            );
             let effective = effective_context(ContextInput {
                 transcript: &replay.snapshot.transcript,
                 projection: replay.snapshot.context_projection.as_ref(),

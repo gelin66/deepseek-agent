@@ -1,0 +1,61 @@
+{
+  "schema": "dse.m37_a.prompt_projection_fixture.v1",
+  "model_visible_delta": 0,
+  "bundled_core_max_bytes": 3300,
+  "deepseek_system_block_separator": "\n\n---\n\n",
+  "required_workspace_cases": [
+    "small_no_agents",
+    "small_with_agents",
+    "medium_repo",
+    "rules_heavy",
+    "skills_heavy",
+    "large_repo"
+  ],
+  "required_actor_cases": [
+    "root",
+    "writer_coordinator",
+    "read_only_child",
+    "explicit_writer"
+  ],
+  "required_reopen_cases": [
+    "sqlite_exact_request_reopen"
+  ],
+  "required_source_ordering_cases": [
+    "agents_before_compatibility_sources",
+    "configured_instructions_declared_order",
+    "explicit_constitution_override_source"
+  ],
+  "expected_current_findings": [
+    {
+      "code": "same_payload_wrapper",
+      "first_fragment_id": "project_context",
+      "duplicate_fragment_id": "project_context_pack",
+      "condition": "workspace_has_no_project_instruction_source"
+    },
+    {
+      "code": "tool_schema_claim_mismatch",
+      "claim_id": "execution_posture.agent_workspace_access",
+      "actor": "writer_coordinator",
+      "claimed_values": [
+        "read_only"
+      ],
+      "actual_values": [
+        "read_only",
+        "isolated_write"
+      ]
+    }
+  ],
+  "forbidden_deltas": [
+    "constitution_bytes",
+    "output_bytes",
+    "language_bytes",
+    "execution_posture_bytes",
+    "project_context_projection",
+    "deepseek_request",
+    "runtime",
+    "run_store",
+    "tool_catalog",
+    "permission",
+    "writer_behavior"
+  ]
+}

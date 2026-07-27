@@ -1308,6 +1308,7 @@ version = "0.8.68"
 dependencies = [
  "async-stream",
  "async-trait",
+ "dse-config",
  "dse-context",
  "dse-runtime",
  "futures-util",

@@ -7,13 +7,17 @@
 use crate::project_context::load_project_context_with_parents;
 use dse_config::PromptPreferences;
 use dse_protocol::agent_runtime::{
-    PromptCacheControl, SystemPrompt, SystemPromptBlock as SystemBlock,
+    PromptCacheControl, SystemPrompt, SystemPromptBlock as SystemBlock, ToolDefinition,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+
+const DEEPSEEK_SYSTEM_BLOCK_SEPARATOR: &str = "\n\n---\n\n";
+const M37_BUNDLED_CORE_MAX_BYTES: usize = 3_300;
 
 /// Complete input for the canonical production system prompt.
 #[derive(Debug)]
@@ -63,27 +67,148 @@ pub enum PromptContextStability {
     Volatile,
 }
 
+/// Module that owns the semantics of a model-visible prompt fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptFragmentOwner {
+    Context,
+    HostComposition,
+    ProjectAuthority,
+    UserConfiguration,
+}
+
+/// Authority carried by a prompt fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAuthorityClass {
+    StableSemanticContract,
+    ScopedProjectAuthority,
+    UserAuthority,
+    GeneratedProjectFact,
+    ExternalReference,
+    HostFact,
+    OperationalClaim,
+}
+
+/// Trust provenance of the fragment bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptTrustClass {
+    ProductOwned,
+    UserConfigured,
+    ProjectConfigured,
+    HostDerived,
+    WorkspaceDerived,
+    UntrustedExternalContent,
+}
+
+/// Why two fragments carry duplicate semantic payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDuplicateKind {
+    ExactBytes,
+    SamePayloadWrapper,
+}
+
+/// One deterministic duplicate relation between ordered prompt fragments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptDuplicateRelation {
+    pub first_fragment_id: String,
+    pub duplicate_fragment_id: String,
+    pub kind: PromptDuplicateKind,
+    pub payload_sha256: String,
+}
+
+/// Actor catalog used only to audit model-visible capability claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAuditActor {
+    Root,
+    WriterCoordinator,
+    ReadOnlyChild,
+    ExplicitWriter,
+}
+
+/// Result of comparing a prompt capability claim with the actual tool schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptToolClaimParity {
+    Match,
+    Mismatch,
+    ToolUnavailable,
+    SchemaMissing,
+    NotAudited,
+}
+
+/// One model-visible capability claim and its actual actor-scoped schema fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptToolSchemaClaim {
+    pub claim_id: String,
+    pub tool_name: String,
+    pub claimed_values: Vec<String>,
+    pub actual_values: Vec<String>,
+    pub parity: PromptToolClaimParity,
+}
+
+/// Actual actor-scoped catalog facts supplied by an offline audit caller.
+#[derive(Debug, Clone, Copy)]
+pub struct PromptCapabilityAuditInput<'a> {
+    pub actor: PromptAuditActor,
+    pub tools: &'a [ToolDefinition],
+}
+
+/// Mechanical no-growth gate for the bundled stable core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptCoreBudget {
+    pub constitution_bytes: usize,
+    pub output_bytes: usize,
+    pub language_bytes: usize,
+    pub total_bytes: usize,
+    pub max_bytes: usize,
+    pub within_limit: bool,
+    pub sha256: String,
+}
+
 /// Read-only identity and size facts for one canonical prompt layer.
 ///
 /// The ledger is derived while composing the existing `SystemPrompt`; it is
 /// not persisted as another prompt truth and never enters model-visible bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PromptContextLedgerEntry {
+    pub fragment_id: String,
     pub layer: PromptContextLayer,
     pub source: String,
+    pub owner: PromptFragmentOwner,
+    pub authority_class: PromptAuthorityClass,
+    pub trust_class: PromptTrustClass,
     pub scope: PromptContextScope,
     pub stability: PromptContextStability,
     pub sha256: String,
+    pub payload_sha256: Option<String>,
     pub byte_len: usize,
     pub estimated_tokens: u64,
+    pub duplicate_of: Option<String>,
+    pub duplicate_kind: Option<PromptDuplicateKind>,
+    pub model_visible: bool,
+    pub tool_schema_claims: Vec<PromptToolSchemaClaim>,
 }
 
 /// Complete read-only ledger for one composed production prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PromptContextLedger {
     pub entries: Vec<PromptContextLedgerEntry>,
+    pub duplicate_relations: Vec<PromptDuplicateRelation>,
+    pub audit_actor: Option<PromptAuditActor>,
     pub prompt_block_bytes: usize,
     pub prompt_block_estimated_tokens: u64,
+    pub assembled_model_visible_bytes: usize,
+    pub assembled_model_visible_estimated_tokens: u64,
+    pub assembled_model_visible_sha256: String,
+    pub stable_prefix_block_count: usize,
+    pub stable_prefix_bytes: usize,
+    pub stable_prefix_estimated_tokens: u64,
+    pub stable_prefix_sha256: String,
+    pub bundled_core: PromptCoreBudget,
 }
 
 /// Canonical prompt plus its derived, non-model-visible layer ledger.
@@ -111,20 +236,36 @@ pub fn production_system_prompt(request: ProductionPromptRequest<'_>) -> SystemP
 pub fn production_system_prompt_with_ledger(
     request: ProductionPromptRequest<'_>,
 ) -> ProductionPromptBuild {
+    production_system_prompt_with_audit(request, None)
+}
+
+/// Build the exact production prompt and audit its claims against an actual
+/// actor-scoped tool catalog. The catalog is read-only input and is never
+/// projected into model-visible bytes.
+#[must_use]
+pub fn production_system_prompt_with_audit(
+    request: ProductionPromptRequest<'_>,
+    capability_audit: Option<PromptCapabilityAuditInput<'_>>,
+) -> ProductionPromptBuild {
     let posture = execution_posture(request.tool_mode);
     let mut build = assemble_system_prompt(&request, true);
-    build.ledger.entries.push(prompt_ledger_entry(
+    let mut posture_entry = prompt_ledger_entry(
         PromptContextLayer::ExecutionPosture,
         "builtin:execution_posture",
         PromptContextScope::Run,
         PromptContextStability::Volatile,
         &posture,
-    ));
+    );
+    posture_entry.tool_schema_claims =
+        execution_posture_tool_claims(request.tool_mode, capability_audit);
+    build.ledger.audit_actor = capability_audit.map(|audit| audit.actor);
+    build.ledger.entries.push(posture_entry);
     build.prompt.blocks.push(SystemBlock {
         text: posture,
         cache_control: PromptCacheControl::Volatile,
     });
     refresh_prompt_ledger_totals(&mut build.ledger, &build.prompt);
+    refresh_duplicate_relations(&mut build.ledger);
     build
 }
 
@@ -614,7 +755,7 @@ fn assemble_system_prompt(
     );
     let mut stable_layers = vec![(
         PromptContextLayer::Base,
-        "builtin:constitution+output".to_owned(),
+        static_prompt_source().to_owned(),
         PromptContextScope::Global,
         mode_prompt,
     )];
@@ -714,26 +855,16 @@ fn assemble_system_prompt(
         .map(|(_, _, _, text)| text.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let mut ledger = PromptContextLedger {
-        entries: if capture_ledger {
-            stable_layers
-                .iter()
-                .map(|(layer, source, scope, text)| {
-                    prompt_ledger_entry(
-                        *layer,
-                        source,
-                        *scope,
-                        PromptContextStability::Stable,
-                        text,
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        },
-        prompt_block_bytes: 0,
-        prompt_block_estimated_tokens: 0,
-    };
+    let mut ledger = prompt_context_ledger(if capture_ledger {
+        stable_layers
+            .iter()
+            .map(|(layer, source, scope, text)| {
+                prompt_ledger_entry(*layer, source, *scope, PromptContextStability::Stable, text)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    });
 
     // ── Volatile-content boundary → WorldState fragments ──────────────────
     // Constitution (`full_prompt`) stays the cache-stable Blocks[0] prefix.
@@ -799,6 +930,24 @@ fn assemble_system_prompt(
     ProductionPromptBuild { prompt, ledger }
 }
 
+fn prompt_context_ledger(entries: Vec<PromptContextLedgerEntry>) -> PromptContextLedger {
+    PromptContextLedger {
+        entries,
+        duplicate_relations: Vec::new(),
+        audit_actor: None,
+        prompt_block_bytes: 0,
+        prompt_block_estimated_tokens: 0,
+        assembled_model_visible_bytes: 0,
+        assembled_model_visible_estimated_tokens: 0,
+        assembled_model_visible_sha256: sha256_prefixed(&[]),
+        stable_prefix_block_count: 0,
+        stable_prefix_bytes: 0,
+        stable_prefix_estimated_tokens: 0,
+        stable_prefix_sha256: sha256_prefixed(&[]),
+        bundled_core: bundled_core_budget(),
+    }
+}
+
 fn prompt_ledger_entry(
     layer: PromptContextLayer,
     source: impl Into<String>,
@@ -806,21 +955,28 @@ fn prompt_ledger_entry(
     stability: PromptContextStability,
     content: &str,
 ) -> PromptContextLedgerEntry {
-    let digest = Sha256::digest(content.as_bytes());
-    let mut sha256 = String::with_capacity("sha256:".len() + digest.len() * 2);
-    sha256.push_str("sha256:");
-    for byte in digest {
-        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
-    }
+    let source = source.into();
+    let (owner, authority_class, trust_class) = prompt_fragment_provenance(layer, &source);
+    let payload_sha256 = prompt_fragment_payload(layer, &source, content)
+        .map(|payload| sha256_prefixed(payload.as_bytes()));
     PromptContextLedgerEntry {
+        fragment_id: prompt_fragment_id(layer),
         layer,
-        source: source.into(),
+        source,
+        owner,
+        authority_class,
+        trust_class,
         scope,
         stability,
-        sha256,
+        sha256: sha256_prefixed(content.as_bytes()),
+        payload_sha256,
         byte_len: content.len(),
         estimated_tokens: u64::try_from(crate::compaction::estimate_text_tokens(content))
             .unwrap_or(u64::MAX),
+        duplicate_of: None,
+        duplicate_kind: None,
+        model_visible: true,
+        tool_schema_claims: Vec::new(),
     }
 }
 
@@ -833,6 +989,248 @@ fn refresh_prompt_ledger_totals(ledger: &mut PromptContextLedger, prompt: &Syste
             u64::try_from(crate::compaction::estimate_text_tokens(&block.text)).unwrap_or(u64::MAX)
         })
         .sum();
+    let assembled = prompt
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join(DEEPSEEK_SYSTEM_BLOCK_SEPARATOR);
+    ledger.assembled_model_visible_bytes = assembled.len();
+    ledger.assembled_model_visible_estimated_tokens =
+        u64::try_from(crate::compaction::estimate_text_tokens(&assembled)).unwrap_or(u64::MAX);
+    ledger.assembled_model_visible_sha256 = sha256_prefixed(assembled.as_bytes());
+
+    let stable_blocks = prompt
+        .blocks
+        .iter()
+        .take_while(|block| block.cache_control == PromptCacheControl::Stable)
+        .collect::<Vec<_>>();
+    ledger.stable_prefix_block_count = stable_blocks.len();
+    let stable_prefix = stable_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join(DEEPSEEK_SYSTEM_BLOCK_SEPARATOR);
+    ledger.stable_prefix_bytes = stable_prefix.len();
+    ledger.stable_prefix_estimated_tokens =
+        u64::try_from(crate::compaction::estimate_text_tokens(&stable_prefix)).unwrap_or(u64::MAX);
+    ledger.stable_prefix_sha256 = sha256_prefixed(stable_prefix.as_bytes());
+}
+
+fn sha256_prefixed(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut sha256 = String::with_capacity("sha256:".len() + digest.len() * 2);
+    sha256.push_str("sha256:");
+    for byte in digest {
+        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    sha256
+}
+
+fn prompt_fragment_id(layer: PromptContextLayer) -> String {
+    serde_json::to_value(layer)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{layer:?}").to_ascii_lowercase())
+}
+
+fn prompt_fragment_provenance(
+    layer: PromptContextLayer,
+    source: &str,
+) -> (PromptFragmentOwner, PromptAuthorityClass, PromptTrustClass) {
+    match layer {
+        PromptContextLayer::Base if source.starts_with("override:") => (
+            PromptFragmentOwner::UserConfiguration,
+            PromptAuthorityClass::UserAuthority,
+            PromptTrustClass::UserConfigured,
+        ),
+        PromptContextLayer::Base
+        | PromptContextLayer::OutputDiscipline
+        | PromptContextLayer::Language => (
+            PromptFragmentOwner::Context,
+            PromptAuthorityClass::StableSemanticContract,
+            PromptTrustClass::ProductOwned,
+        ),
+        PromptContextLayer::ProjectContext if source.starts_with("generated:") => (
+            PromptFragmentOwner::Context,
+            PromptAuthorityClass::GeneratedProjectFact,
+            PromptTrustClass::WorkspaceDerived,
+        ),
+        PromptContextLayer::ProjectContext => (
+            PromptFragmentOwner::ProjectAuthority,
+            PromptAuthorityClass::ScopedProjectAuthority,
+            PromptTrustClass::ProjectConfigured,
+        ),
+        PromptContextLayer::UserConstitution => (
+            PromptFragmentOwner::UserConfiguration,
+            PromptAuthorityClass::UserAuthority,
+            PromptTrustClass::UserConfigured,
+        ),
+        PromptContextLayer::ProjectContextPack => (
+            PromptFragmentOwner::Context,
+            PromptAuthorityClass::GeneratedProjectFact,
+            PromptTrustClass::WorkspaceDerived,
+        ),
+        PromptContextLayer::SkillsCatalog => (
+            PromptFragmentOwner::Context,
+            PromptAuthorityClass::ExternalReference,
+            PromptTrustClass::UntrustedExternalContent,
+        ),
+        PromptContextLayer::Environment | PromptContextLayer::Route => (
+            PromptFragmentOwner::HostComposition,
+            PromptAuthorityClass::HostFact,
+            PromptTrustClass::HostDerived,
+        ),
+        PromptContextLayer::ConfiguredInstructions => (
+            PromptFragmentOwner::UserConfiguration,
+            PromptAuthorityClass::UserAuthority,
+            PromptTrustClass::UserConfigured,
+        ),
+        PromptContextLayer::ExecutionPosture => (
+            PromptFragmentOwner::Context,
+            PromptAuthorityClass::OperationalClaim,
+            PromptTrustClass::ProductOwned,
+        ),
+    }
+}
+
+fn static_prompt_source() -> &'static str {
+    if STATIC_PROMPT_COMPOSER.get().is_some() {
+        "override:static_prompt_composer"
+    } else if BASE_PROMPT_OVERRIDE.get().is_some() {
+        "override:constitution"
+    } else {
+        "builtin:constitution+output"
+    }
+}
+
+fn prompt_fragment_payload<'a>(
+    layer: PromptContextLayer,
+    source: &str,
+    content: &'a str,
+) -> Option<&'a str> {
+    if !matches!(
+        layer,
+        PromptContextLayer::ProjectContext | PromptContextLayer::ProjectContextPack
+    ) || !source.starts_with("generated:")
+    {
+        return None;
+    }
+    let start = content.find('{')?;
+    let end = content.rfind('}')?;
+    (start <= end).then(|| &content[start..=end])
+}
+
+fn refresh_duplicate_relations(ledger: &mut PromptContextLedger) {
+    ledger.duplicate_relations.clear();
+    for entry in &mut ledger.entries {
+        entry.duplicate_of = None;
+        entry.duplicate_kind = None;
+    }
+
+    let mut exact_first = BTreeMap::<String, String>::new();
+    let mut payload_first = BTreeMap::<String, String>::new();
+    for index in 0..ledger.entries.len() {
+        let entry = &ledger.entries[index];
+        let relation = if let Some(first) = exact_first.get(&entry.sha256) {
+            Some((
+                first.clone(),
+                PromptDuplicateKind::ExactBytes,
+                entry.sha256.clone(),
+            ))
+        } else if let Some(payload) = entry.payload_sha256.as_ref() {
+            payload_first.get(payload).map(|first| {
+                (
+                    first.clone(),
+                    PromptDuplicateKind::SamePayloadWrapper,
+                    payload.clone(),
+                )
+            })
+        } else {
+            None
+        };
+
+        if let Some((first_fragment_id, kind, payload_sha256)) = relation {
+            let duplicate_fragment_id = ledger.entries[index].fragment_id.clone();
+            ledger.entries[index].duplicate_of = Some(first_fragment_id.clone());
+            ledger.entries[index].duplicate_kind = Some(kind);
+            ledger.duplicate_relations.push(PromptDuplicateRelation {
+                first_fragment_id,
+                duplicate_fragment_id,
+                kind,
+                payload_sha256,
+            });
+        } else {
+            exact_first.insert(entry.sha256.clone(), entry.fragment_id.clone());
+            if let Some(payload) = entry.payload_sha256.as_ref() {
+                payload_first.insert(payload.clone(), entry.fragment_id.clone());
+            }
+        }
+    }
+}
+
+fn bundled_core_budget() -> PromptCoreBudget {
+    let mut combined = Vec::with_capacity(
+        BASE_PROMPT
+            .len()
+            .saturating_add(OUTPUT_PROMPT.len())
+            .saturating_add(LANGUAGE_PROMPT.len()),
+    );
+    combined.extend_from_slice(BASE_PROMPT.as_bytes());
+    combined.extend_from_slice(OUTPUT_PROMPT.as_bytes());
+    combined.extend_from_slice(LANGUAGE_PROMPT.as_bytes());
+    let total_bytes = combined.len();
+    PromptCoreBudget {
+        constitution_bytes: BASE_PROMPT.len(),
+        output_bytes: OUTPUT_PROMPT.len(),
+        language_bytes: LANGUAGE_PROMPT.len(),
+        total_bytes,
+        max_bytes: M37_BUNDLED_CORE_MAX_BYTES,
+        within_limit: total_bytes <= M37_BUNDLED_CORE_MAX_BYTES,
+        sha256: sha256_prefixed(&combined),
+    }
+}
+
+fn execution_posture_tool_claims(
+    tool_mode: bool,
+    audit: Option<PromptCapabilityAuditInput<'_>>,
+) -> Vec<PromptToolSchemaClaim> {
+    if !tool_mode {
+        return Vec::new();
+    }
+    let mut claim = PromptToolSchemaClaim {
+        claim_id: "execution_posture.agent_workspace_access".to_owned(),
+        tool_name: "agent".to_owned(),
+        claimed_values: vec!["read_only".to_owned()],
+        actual_values: Vec::new(),
+        parity: PromptToolClaimParity::NotAudited,
+    };
+    let Some(audit) = audit else {
+        return vec![claim];
+    };
+    let Some(agent) = audit.tools.iter().find(|tool| tool.name == "agent") else {
+        claim.parity = PromptToolClaimParity::ToolUnavailable;
+        return vec![claim];
+    };
+    let Some(values) = agent
+        .input_schema
+        .pointer("/properties/workspace_access/enum")
+        .and_then(serde_json::Value::as_array)
+    else {
+        claim.parity = PromptToolClaimParity::SchemaMissing;
+        return vec![claim];
+    };
+    claim.actual_values = values
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    claim.parity = if claim.actual_values == claim.claimed_values {
+        PromptToolClaimParity::Match
+    } else {
+        PromptToolClaimParity::Mismatch
+    };
+    vec![claim]
 }
 
 /// Flatten a system prompt to joined text (tests + debug inspectors).
@@ -902,8 +1300,10 @@ pub fn world_state_from_session_facts(
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::process::Command;
 
     use super::*;
+    use serde_json::json;
     use sha2::{Digest, Sha256};
 
     struct EnvGuard {
@@ -959,8 +1359,70 @@ mod tests {
         )
     }
 
+    fn agent_tool_definition(workspace_access: &[&str]) -> ToolDefinition {
+        ToolDefinition {
+            name: "agent".to_owned(),
+            description: "fixture".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workspace_access": {
+                        "type": "string",
+                        "enum": workspace_access,
+                    }
+                }
+            }),
+        }
+    }
+
+    #[test]
+    fn exact_duplicate_relation_is_deterministic() {
+        let mut ledger = prompt_context_ledger(vec![
+            prompt_ledger_entry(
+                PromptContextLayer::Base,
+                "fixture:first",
+                PromptContextScope::Global,
+                PromptContextStability::Stable,
+                "OPAQUE_EXACT_DUPLICATE",
+            ),
+            prompt_ledger_entry(
+                PromptContextLayer::Language,
+                "fixture:second",
+                PromptContextScope::Global,
+                PromptContextStability::Stable,
+                "OPAQUE_EXACT_DUPLICATE",
+            ),
+        ]);
+        refresh_duplicate_relations(&mut ledger);
+        assert_eq!(
+            ledger.duplicate_relations,
+            [PromptDuplicateRelation {
+                first_fragment_id: "base".to_owned(),
+                duplicate_fragment_id: "language".to_owned(),
+                kind: PromptDuplicateKind::ExactBytes,
+                payload_sha256: sha256_prefixed(b"OPAQUE_EXACT_DUPLICATE"),
+            }]
+        );
+        assert_eq!(
+            ledger.entries[1].duplicate_kind,
+            Some(PromptDuplicateKind::ExactBytes)
+        );
+    }
+
     #[test]
     fn production_prompt_fixture_enforces_structure_language_and_provenance() {
+        let m37_contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../eval/fixtures/m37-a-prompt-projection-audit-v1.json"
+        ))
+        .expect("M37-A prompt projection fixture");
+        assert_eq!(
+            m37_contract["bundled_core_max_bytes"],
+            M37_BUNDLED_CORE_MAX_BYTES
+        );
+        assert_eq!(
+            m37_contract["deepseek_system_block_separator"],
+            DEEPSEEK_SYSTEM_BLOCK_SEPARATOR
+        );
         let fixture = production_prompt_fixture_root();
         let _ = fs::remove_dir_all(&fixture);
         let home = fixture.join("home");
@@ -1083,6 +1545,13 @@ mod tests {
                 "machine contract was changed or omitted: {machine_contract}"
             );
         }
+        assert!(
+            flat.find("OPAQUE_FILE_INSTRUCTION")
+                .expect("file instruction")
+                < flat
+                    .find("OPAQUE_INLINE_INSTRUCTION")
+                    .expect("inline instruction")
+        );
         for removed_framework_text in [
             "## Environment",
             "## Project Context Pack",
@@ -1240,7 +1709,405 @@ mod tests {
                 })
                 .sum::<u64>()
         );
+        assert_eq!(with_pack.ledger.bundled_core.constitution_bytes, 2_629);
+        assert_eq!(with_pack.ledger.bundled_core.output_bytes, 360);
+        assert_eq!(with_pack.ledger.bundled_core.language_bytes, 311);
+        assert_eq!(with_pack.ledger.bundled_core.total_bytes, 3_300);
+        assert_eq!(with_pack.ledger.bundled_core.max_bytes, 3_300);
+        assert!(with_pack.ledger.bundled_core.within_limit);
+        assert_eq!(with_pack.ledger.stable_prefix_block_count, 1);
+        assert_eq!(
+            with_pack.ledger.stable_prefix_bytes,
+            with_pack.prompt.blocks[0].text.len()
+        );
+        let assembled = with_pack
+            .prompt
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join(DEEPSEEK_SYSTEM_BLOCK_SEPARATOR);
+        assert_eq!(
+            with_pack.ledger.assembled_model_visible_bytes,
+            assembled.len()
+        );
+        assert_eq!(
+            with_pack.ledger.assembled_model_visible_sha256,
+            sha256_prefixed(assembled.as_bytes())
+        );
+        assert_eq!(
+            with_pack.ledger.duplicate_relations,
+            [PromptDuplicateRelation {
+                first_fragment_id: "project_context".to_owned(),
+                duplicate_fragment_id: "project_context_pack".to_owned(),
+                kind: PromptDuplicateKind::SamePayloadWrapper,
+                payload_sha256: generated_pack
+                    .payload_sha256
+                    .clone()
+                    .expect("generated pack payload identity"),
+            }]
+        );
+        assert_eq!(
+            generated_overview.payload_sha256,
+            generated_pack.payload_sha256
+        );
+        assert_eq!(
+            generated_pack.duplicate_of.as_deref(),
+            Some("project_context")
+        );
+        assert_eq!(
+            generated_pack.duplicate_kind,
+            Some(PromptDuplicateKind::SamePayloadWrapper)
+        );
+
+        let read_only_agent = agent_tool_definition(&["read_only"]);
+        let audited_root = production_system_prompt_with_audit(
+            fallback_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::Root,
+                tools: std::slice::from_ref(&read_only_agent),
+            }),
+        );
+        assert_eq!(audited_root.prompt, with_pack.prompt);
+        assert_eq!(
+            audited_root
+                .ledger
+                .entries
+                .last()
+                .expect("posture")
+                .tool_schema_claims[0]
+                .parity,
+            PromptToolClaimParity::Match
+        );
+
+        let writer_capable_agent = agent_tool_definition(&["read_only", "isolated_write"]);
+        let audited_coordinator = production_system_prompt_with_audit(
+            fallback_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::WriterCoordinator,
+                tools: std::slice::from_ref(&writer_capable_agent),
+            }),
+        );
+        assert_eq!(audited_coordinator.prompt, with_pack.prompt);
+        let stale_claim = &audited_coordinator
+            .ledger
+            .entries
+            .last()
+            .expect("posture")
+            .tool_schema_claims[0];
+        assert_eq!(
+            stale_claim.actual_values,
+            ["read_only".to_owned(), "isolated_write".to_owned()]
+        );
+        assert_eq!(stale_claim.parity, PromptToolClaimParity::Mismatch);
+
+        let audited_read_only = production_system_prompt_with_audit(
+            fallback_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::ReadOnlyChild,
+                tools: std::slice::from_ref(&read_only_agent),
+            }),
+        );
+        assert_eq!(audited_read_only.prompt, with_pack.prompt);
+        assert_eq!(
+            audited_read_only
+                .ledger
+                .entries
+                .last()
+                .expect("posture")
+                .tool_schema_claims[0]
+                .parity,
+            PromptToolClaimParity::Match
+        );
+        let audited_writer = production_system_prompt_with_audit(
+            fallback_request(),
+            Some(PromptCapabilityAuditInput {
+                actor: PromptAuditActor::ExplicitWriter,
+                tools: &[],
+            }),
+        );
+        assert_eq!(audited_writer.prompt, with_pack.prompt);
+        assert_eq!(
+            audited_writer
+                .ledger
+                .entries
+                .last()
+                .expect("posture")
+                .tool_schema_claims[0]
+                .parity,
+            PromptToolClaimParity::ToolUnavailable
+        );
+
+        let rules_workspace = fixture.join("rules-workspace");
+        fs::create_dir_all(rules_workspace.join(".dse/rules")).expect("DSE rules directory");
+        fs::create_dir_all(rules_workspace.join(".claude/rules"))
+            .expect("compatibility rules directory");
+        fs::create_dir_all(rules_workspace.join("src")).expect("rules source directory");
+        fs::write(
+            rules_workspace.join("AGENTS.md"),
+            "OPAQUE_CANONICAL_AGENTS\n",
+        )
+        .expect("canonical project authority");
+        fs::write(
+            rules_workspace.join("CLAUDE.md"),
+            "OPAQUE_COMPATIBILITY_DECOY\n",
+        )
+        .expect("compatibility project authority");
+        fs::write(
+            rules_workspace.join(".dse/rules/10-native.md"),
+            "OPAQUE_NATIVE_RULE\n",
+        )
+        .expect("native rule");
+        fs::write(
+            rules_workspace.join(".claude/rules/20-compat.md"),
+            "OPAQUE_COMPAT_RULE\n",
+        )
+        .expect("compatibility rule");
+        fs::write(
+            rules_workspace.join("src/lib.rs"),
+            "pub fn rules_fixture() {}\n",
+        )
+        .expect("rules source");
+        let rules_skills_dir = rules_workspace.join(".dse/skills");
+        let rules_build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: &rules_workspace,
+            model: "deepseek-v4-pro",
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: Some(&rules_skills_dir),
+            verbosity: None,
+            skills_scan_dse_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+        let rules_text = system_prompt_flat_text(&rules_build.prompt);
+        assert!(rules_text.contains("OPAQUE_CANONICAL_AGENTS"));
+        assert!(!rules_text.contains("OPAQUE_COMPATIBILITY_DECOY"));
+        let native_rule = rules_text.find("OPAQUE_NATIVE_RULE").expect("native rule");
+        let compatibility_rule = rules_text
+            .find("OPAQUE_COMPAT_RULE")
+            .expect("compatibility rule");
+        assert!(native_rule < compatibility_rule);
+        let project_authority = rules_build
+            .ledger
+            .entries
+            .iter()
+            .find(|entry| entry.layer == PromptContextLayer::ProjectContext)
+            .expect("project authority entry");
+        assert_eq!(
+            project_authority.authority_class,
+            PromptAuthorityClass::ScopedProjectAuthority
+        );
+        assert_eq!(
+            project_authority.trust_class,
+            PromptTrustClass::ProjectConfigured
+        );
+
+        let skills_workspace = fixture.join("skills-workspace");
+        fs::create_dir_all(skills_workspace.join(".dse/skills")).expect("skills catalog directory");
+        fs::create_dir_all(skills_workspace.join("src")).expect("skills source directory");
+        fs::write(
+            skills_workspace.join("AGENTS.md"),
+            "OPAQUE_SKILLS_PROJECT_AUTHORITY\n",
+        )
+        .expect("skills project authority");
+        fs::write(
+            skills_workspace.join("src/lib.rs"),
+            "pub fn skills_fixture() {}\n",
+        )
+        .expect("skills source");
+        for index in 0..20 {
+            let skill = skills_workspace
+                .join(".dse/skills")
+                .join(format!("skill-{index:02}"));
+            fs::create_dir_all(&skill).expect("skill directory");
+            fs::write(
+                skill.join("SKILL.md"),
+                format!(
+                    "---\nname: skill-{index:02}\ndescription: OPAQUE_SKILL_DESCRIPTION_{index:02}\n---\nOPAQUE_SKILL_BODY_{index:02}\n"
+                ),
+            )
+            .expect("skill metadata");
+        }
+        let skills_build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: &skills_workspace,
+            model: "deepseek-v4-pro",
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: Some(&skills_workspace.join(".dse/skills")),
+            verbosity: None,
+            skills_scan_dse_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+        let skills_text = system_prompt_flat_text(&skills_build.prompt);
+        assert!(skills_text.contains("OPAQUE_SKILL_DESCRIPTION_00"));
+        assert!(skills_text.contains("OPAQUE_SKILL_DESCRIPTION_19"));
+        assert!(!skills_text.contains("OPAQUE_SKILL_BODY_00"));
+        assert!(!skills_text.contains("OPAQUE_SKILL_BODY_19"));
+        let skills_entry = skills_build
+            .ledger
+            .entries
+            .iter()
+            .find(|entry| entry.layer == PromptContextLayer::SkillsCatalog)
+            .expect("skills ledger entry");
+        assert_eq!(
+            skills_entry.trust_class,
+            PromptTrustClass::UntrustedExternalContent
+        );
+
+        let medium_workspace = fixture.join("medium-workspace");
+        fs::create_dir_all(medium_workspace.join("src")).expect("medium source directory");
+        for index in 0..40 {
+            fs::write(
+                medium_workspace
+                    .join("src")
+                    .join(format!("module_{index:03}.rs")),
+                format!("pub const MODULE_{index}: usize = {index};\n"),
+            )
+            .expect("medium fixture source");
+        }
+        let medium_skills = medium_workspace.join(".dse/skills");
+        let medium_build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: &medium_workspace,
+            model: "deepseek-v4-pro",
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: Some(&medium_skills),
+            verbosity: None,
+            skills_scan_dse_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+
+        let large_workspace = fixture.join("large-workspace");
+        fs::create_dir_all(large_workspace.join("src")).expect("large source directory");
+        for index in 0..260 {
+            fs::write(
+                large_workspace
+                    .join("src")
+                    .join(format!("module_{index:03}.rs")),
+                format!("pub const MODULE_{index}: usize = {index};\n"),
+            )
+            .expect("large fixture source");
+        }
+        let large_skills = large_workspace.join(".dse/skills");
+        let large_build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: &large_workspace,
+            model: "deepseek-v4-pro",
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: Some(&large_skills),
+            verbosity: None,
+            skills_scan_dse_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+        assert!(
+            medium_build.ledger.assembled_model_visible_bytes
+                > with_pack.ledger.assembled_model_visible_bytes
+        );
+        assert!(
+            large_build.ledger.assembled_model_visible_bytes
+                > medium_build.ledger.assembled_model_visible_bytes
+        );
+        assert_eq!(large_build.ledger.duplicate_relations.len(), 1);
+        assert_eq!(
+            large_build.ledger.duplicate_relations[0].kind,
+            PromptDuplicateKind::SamePayloadWrapper
+        );
+        assert!(
+            large_build
+                .ledger
+                .entries
+                .iter()
+                .all(|entry| entry.model_visible)
+        );
+        let configured_entry = with_pack
+            .ledger
+            .entries
+            .iter()
+            .find(|entry| entry.layer == PromptContextLayer::ExecutionPosture)
+            .expect("execution posture entry");
+        assert_eq!(
+            configured_entry.authority_class,
+            PromptAuthorityClass::OperationalClaim
+        );
 
         fs::remove_dir_all(&fixture).expect("remove fixture");
+    }
+
+    #[test]
+    fn config_override_provenance_is_audited_in_an_isolated_process() {
+        const CHILD_ROOT: &str = "DSE_M37_OVERRIDE_CHILD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let config_dir = root.join("config");
+            let workspace = root.join("workspace");
+            fs::create_dir_all(config_dir.join("prompts")).expect("override prompt directory");
+            fs::create_dir_all(workspace.join("src")).expect("override workspace");
+            fs::write(
+                config_dir.join(CONSTITUTION_OVERRIDE_FILE),
+                "OVERRIDE_STABLE_SEMANTIC_CONTRACT\n",
+            )
+            .expect("override constitution");
+            fs::write(
+                workspace.join("src/lib.rs"),
+                "pub fn override_fixture() {}\n",
+            )
+            .expect("override source");
+            assert_eq!(
+                load_config_dir_prompt_overrides(&config_dir),
+                ["constitution"]
+            );
+            let preferences = PromptPreferences::default();
+            let request = || ProductionPromptRequest {
+                workspace: &workspace,
+                model: "deepseek-v4-pro",
+                preferences: &preferences,
+                instructions: &[],
+                skills_dir: None,
+                verbosity: None,
+                skills_scan_dse_only: true,
+                shell_binary: "/fixture/bin/zsh",
+                tool_mode: false,
+            };
+            let ordinary = production_system_prompt(request());
+            let audited = production_system_prompt_with_ledger(request());
+            assert_eq!(audited.prompt, ordinary);
+            let base = audited
+                .ledger
+                .entries
+                .iter()
+                .find(|entry| entry.layer == PromptContextLayer::Base)
+                .expect("override base ledger entry");
+            assert_eq!(base.source, "override:constitution");
+            assert_eq!(base.owner, PromptFragmentOwner::UserConfiguration);
+            assert_eq!(base.authority_class, PromptAuthorityClass::UserAuthority);
+            assert_eq!(base.trust_class, PromptTrustClass::UserConfigured);
+            assert!(
+                ordinary.blocks[0]
+                    .text
+                    .contains("OVERRIDE_STABLE_SEMANTIC_CONTRACT")
+            );
+            assert_eq!(audited.ledger.bundled_core.total_bytes, 3_300);
+            assert!(audited.ledger.bundled_core.within_limit);
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("override subprocess root");
+        let status = Command::new(std::env::current_exe().expect("current test binary"))
+            .args([
+                "--exact",
+                "prompts::tests::config_override_provenance_is_audited_in_an_isolated_process",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, root.path())
+            .env(BASE_PROMPT_OVERRIDE_OPT_IN_ENV, "1")
+            .env("HOME", root.path().join("home"))
+            .env("DSE_HOME", root.path().join("home/.dse"))
+            .status()
+            .expect("run isolated override fixture");
+        assert!(status.success(), "isolated override fixture failed");
     }
 }

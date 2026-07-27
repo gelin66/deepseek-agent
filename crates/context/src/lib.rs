@@ -13,7 +13,10 @@ pub mod prompts;
 pub mod skills;
 
 pub use prompts::{
-    InstructionSource, ProductionPromptBuild, ProductionPromptRequest, PromptContextLayer,
-    PromptContextLedger, PromptContextLedgerEntry, PromptContextScope, PromptContextStability,
-    production_system_prompt, production_system_prompt_with_ledger,
+    InstructionSource, ProductionPromptBuild, ProductionPromptRequest, PromptAuditActor,
+    PromptAuthorityClass, PromptCapabilityAuditInput, PromptContextLayer, PromptContextLedger,
+    PromptContextLedgerEntry, PromptContextScope, PromptContextStability, PromptCoreBudget,
+    PromptDuplicateKind, PromptDuplicateRelation, PromptFragmentOwner, PromptToolClaimParity,
+    PromptToolSchemaClaim, PromptTrustClass, production_system_prompt,
+    production_system_prompt_with_audit, production_system_prompt_with_ledger,
 };

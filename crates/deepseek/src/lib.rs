@@ -949,9 +949,11 @@ fn strict_enum_values_match(
 
 #[cfg(test)]
 mod tests {
+    use dse_config::PromptPreferences;
     use dse_context::compaction::{
         ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
     };
+    use dse_context::{ProductionPromptRequest, production_system_prompt_with_ledger};
     use dse_runtime::{
         AgentActor, CanonicalTranscript, ContextPolicy, ModelToolCall, PromptCacheControl, RunId,
         SystemPromptBlock, TaskContract, TaskDefinition, TaskGenerationId, ToolArguments,
@@ -1092,6 +1094,67 @@ mod tests {
                 .expect("serialize request body")
                 .contains("cache_control")
         );
+    }
+
+    #[test]
+    fn canonical_context_ledger_matches_the_single_deepseek_system_message() {
+        let workspace = std::env::temp_dir().join(format!(
+            "dse-m37-deepseek-prompt-projection-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(workspace.join("src")).expect("fixture workspace");
+        std::fs::write(workspace.join("src/lib.rs"), "pub fn fixture() {}\n")
+            .expect("fixture source");
+        let preferences = PromptPreferences::default();
+        let build = production_system_prompt_with_ledger(ProductionPromptRequest {
+            workspace: &workspace,
+            model: "deepseek-v4-pro",
+            preferences: &preferences,
+            instructions: &[],
+            skills_dir: None,
+            verbosity: None,
+            skills_scan_dse_only: true,
+            shell_binary: "/fixture/bin/zsh",
+            tool_mode: true,
+        });
+        let mut request = runtime_request(false);
+        request.system_prompt = build.prompt.clone();
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: false,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .expect("canonical context prompt has a deterministic Chat plan");
+        let wire_system = plan.body["messages"][0]["content"]
+            .as_str()
+            .expect("single wire system message");
+        let expected = build
+            .prompt
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+        assert_eq!(wire_system, expected);
+        assert_eq!(
+            wire_system.len(),
+            build.ledger.assembled_model_visible_bytes
+        );
+        assert_eq!(
+            plan.body["messages"]
+                .as_array()
+                .expect("wire messages")
+                .iter()
+                .filter(|message| message["role"] == "system")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&workspace).expect("remove fixture");
     }
 
     #[test]

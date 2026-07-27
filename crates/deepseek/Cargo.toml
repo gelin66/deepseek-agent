@@ -19,5 +19,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+dse-config = { path = "../config", version = "0.8.68" }
 dse-context = { path = "../context", version = "0.8.68" }
 rustls.workspace = true

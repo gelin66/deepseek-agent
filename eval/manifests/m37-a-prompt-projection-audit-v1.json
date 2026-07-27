@@ -1,0 +1,35 @@
+{
+  "schema": "dse.m37_a.prompt_projection_manifest.v1",
+  "milestone": "M37-A",
+  "baseline_commit": "4057028967ce62ec72eb60b17eb20456741732c2",
+  "authority": {
+    "adr": "docs/decisions/0014-model-visible-contract-and-harness-control.md",
+    "roadmap": "docs/product/ROADMAP.md#35-m37模型可见契约减法与-harness-控制边界",
+    "evaluation": "docs/product/EVALUATION.md#m37-model-visible-contract-and-harness-control-contract"
+  },
+  "real_problem": "The canonical prompt ledger does not freeze final assembled identity, owner/authority/trust, duplicate relations, stable-prefix facts, core no-growth, or actor-scoped tool-schema claim parity.",
+  "acceptance": [
+    "derive every audit fact from the existing canonical composer",
+    "keep normal production SystemPrompt bytes byte-identical",
+    "freeze source, owner, authority, trust, stability, hash, bytes and deterministic token estimates",
+    "report exact and same-payload-wrapper duplicates without changing production",
+    "compare execution-posture claims with actual actor-scoped agent schema",
+    "cover root, writer coordinator, read-only child, explicit Writer and SQLite reopen",
+    "enforce the bundled 3300-byte core no-growth gate"
+  ],
+  "single_owner": "crates/context",
+  "replaced_old_path": "the incomplete read-only PromptContextLedger shape",
+  "deletion": [
+    "replace the old ledger fields in place; do not retain a second audit type",
+    "delete temporary fixture-only helpers if they gain no production audit consumer",
+    "do not delete or modify any model-visible fragment in M37-A"
+  ],
+  "fixture": "eval/fixtures/m37-a-prompt-projection-audit-v1.json",
+  "credential_read": false,
+  "official_api_requests": 0,
+  "maximum_reruns": 0,
+  "allowed_decisions": [
+    "keep_current_no_material_loss",
+    "hold_insufficient_or_incomplete_evidence"
+  ]
+}
