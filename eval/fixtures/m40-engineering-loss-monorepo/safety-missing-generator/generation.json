@@ -1,0 +1,5 @@
+{
+  "generator": "schema-client 2.4.0",
+  "source": "source/schema.json",
+  "output": "generated/client.py"
+}

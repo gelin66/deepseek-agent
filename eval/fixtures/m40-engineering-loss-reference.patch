@@ -1,0 +1,224 @@
+diff --git a/go-cli-exit/cli.go b/go-cli-exit/cli.go
+index 2344673..a815d65 100644
+--- a/go-cli-exit/cli.go
++++ b/go-cli-exit/cli.go
+@@ -1,16 +1,13 @@
+ package cliexit
+ 
+ func Run(args []string, env map[string]string) (stdout string, stderr string, code int) {
+-	command, parseError := Parse(args)
++	_, parseError := Parse(args)
+ 	if parseError != "" {
+ 		return "", parseError + "\n", 2
+ 	}
+-	if command.Name != "show" {
+-		return "usage: dse-config show\n", "", 0
+-	}
+ 	path := env["DSE_CONFIG"]
+ 	if path == "" {
+-		return "", "", 0
++		return "", "DSE_CONFIG is required\n", 1
+ 	}
+ 	return path + "\n", "", 0
+ }
+diff --git a/go-cli-exit/parser.go b/go-cli-exit/parser.go
+index 8792975..e3229f8 100644
+--- a/go-cli-exit/parser.go
++++ b/go-cli-exit/parser.go
+@@ -6,7 +6,10 @@ type Command struct {
+ 
+ func Parse(args []string) (Command, string) {
+ 	if len(args) == 0 {
+-		return Command{}, ""
++		return Command{}, "usage: dse-config show"
+ 	}
+-	return Command{Name: args[0]}, ""
++	if args[0] != "show" {
++		return Command{}, "unknown command: " + args[0]
++	}
++	return Command{Name: "show"}, ""
+ }
+diff --git a/python-sqlite-upgrade/migrate.py b/python-sqlite-upgrade/migrate.py
+index fe1f9ed..8a11dc9 100644
+--- a/python-sqlite-upgrade/migrate.py
++++ b/python-sqlite-upgrade/migrate.py
+@@ -7,13 +7,20 @@ def upgrade(connection):
+     version = connection.execute("PRAGMA user_version").fetchone()[0]
+     if version >= TARGET_VERSION:
+         return
+-    connection.execute("ALTER TABLE records ADD COLUMN checksum TEXT")
+-    rows = connection.execute("SELECT id, payload FROM records").fetchall()
+-    for record_id, payload in rows:
+-        checksum = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+-        connection.execute(
+-            "UPDATE records SET checksum = ? WHERE id = ?",
+-            (checksum, record_id),
+-        )
+-        connection.commit()
+-    connection.execute(f"PRAGMA user_version = {TARGET_VERSION}")
++    connection.execute("SAVEPOINT dse_schema_upgrade")
++    try:
++        connection.execute("ALTER TABLE records ADD COLUMN checksum TEXT")
++        rows = connection.execute("SELECT id, payload FROM records").fetchall()
++        for record_id, payload in rows:
++            checksum = hashlib.sha256(payload.encode("utf-8")).hexdigest()
++            connection.execute(
++                "UPDATE records SET checksum = ? WHERE id = ?",
++                (checksum, record_id),
++            )
++        connection.execute(f"PRAGMA user_version = {TARGET_VERSION}")
++    except Exception:
++        connection.execute("ROLLBACK TO dse_schema_upgrade")
++        connection.execute("RELEASE dse_schema_upgrade")
++        raise
++    else:
++        connection.execute("RELEASE dse_schema_upgrade")
+diff --git a/readonly-failure-handoff/src/cache.py b/readonly-failure-handoff/src/cache.py
+index 3378be1..39ce8f6 100644
+--- a/readonly-failure-handoff/src/cache.py
++++ b/readonly-failure-handoff/src/cache.py
+@@ -1,2 +1,10 @@
+ def is_fresh(stored_at, now, ttl):
+-    return now - stored_at <= ttl
++    values = (stored_at, now, ttl)
++    if any(isinstance(value, bool) for value in values):
++        return False
++    if not all(isinstance(value, (int, float)) for value in values):
++        return False
++    if ttl < 0:
++        return False
++    age = now - stored_at
++    return 0 <= age <= ttl
+diff --git a/rust-feature-matrix/feature-cli/Cargo.toml b/rust-feature-matrix/feature-cli/Cargo.toml
+index 930c67b..de466ac 100644
+--- a/rust-feature-matrix/feature-cli/Cargo.toml
++++ b/rust-feature-matrix/feature-cli/Cargo.toml
+@@ -4,4 +4,4 @@ version = "0.1.0"
+ edition = "2021"
+ 
+ [dependencies]
+-feature-core = { path = "../feature-core", default-features = false }
++feature-core = { path = "../feature-core" }
+diff --git a/rust-feature-matrix/feature-core/src/lib.rs b/rust-feature-matrix/feature-core/src/lib.rs
+index 9b7cd23..76b1270 100644
+--- a/rust-feature-matrix/feature-core/src/lib.rs
++++ b/rust-feature-matrix/feature-core/src/lib.rs
+@@ -1,3 +1,8 @@
+ pub fn encode_record(value: &str) -> String {
++    #[cfg(feature = "json")]
++    {
++        return format!("json:{value}");
++    }
++    #[cfg(not(feature = "json"))]
+     format!("plain:{value}")
+ }
+diff --git a/rust-journal-reopen/src/codec.rs b/rust-journal-reopen/src/codec.rs
+index d0fe6d5..f3dab0b 100644
+--- a/rust-journal-reopen/src/codec.rs
++++ b/rust-journal-reopen/src/codec.rs
+@@ -1,9 +1,15 @@
+ pub fn encode(payload: &str) -> Vec<u8> {
+-    format!("{}:{}\n", payload.chars().count(), payload).into_bytes()
++    format!("{}:{}\n", payload.len(), payload).into_bytes()
+ }
+ 
+ pub fn decode(line: &[u8]) -> Result<String, &'static str> {
+     let text = std::str::from_utf8(line).map_err(|_| "journal_utf8")?;
+-    let (_, payload) = text.split_once(':').ok_or("journal_header")?;
++    let (length, payload) = text.split_once(':').ok_or("journal_header")?;
++    let length = length
++        .parse::<usize>()
++        .map_err(|_| "journal_header")?;
++    if payload.len() != length {
++        return Err("journal_length");
++    }
+     Ok(payload.to_owned())
+ }
+diff --git a/rust-journal-reopen/src/journal.rs b/rust-journal-reopen/src/journal.rs
+index 6255b09..89fbe3a 100644
+--- a/rust-journal-reopen/src/journal.rs
++++ b/rust-journal-reopen/src/journal.rs
+@@ -5,9 +5,14 @@ pub fn append_record(buffer: &mut Vec<u8>, payload: &str) {
+ }
+ 
+ pub fn reopen_records(buffer: &[u8]) -> Result<Vec<String>, &'static str> {
+-    buffer
+-        .split(|byte| *byte == b'\n')
+-        .filter(|line| !line.is_empty())
+-        .map(decode)
+-        .collect()
++    let mut records = Vec::new();
++    let mut remaining = buffer;
++    while let Some(end) = remaining.iter().position(|byte| *byte == b'\n') {
++        let line = &remaining[..end];
++        if !line.is_empty() {
++            records.push(decode(line)?);
++        }
++        remaining = &remaining[end + 1..];
++    }
++    Ok(records)
+ }
+diff --git a/typescript-utf8-frames/src/frames.ts b/typescript-utf8-frames/src/frames.ts
+index c713096..b2c168b 100644
+--- a/typescript-utf8-frames/src/frames.ts
++++ b/typescript-utf8-frames/src/frames.ts
+@@ -1,12 +1,18 @@
+ import { stableSequence } from "./checksum.ts";
+ 
+ export function decodeFrames(chunks: Uint8Array[]): unknown[] {
++  const decoder = new TextDecoder("utf-8", { fatal: true });
+   let text = "";
+   for (const chunk of chunks) {
+-    text += Buffer.from(chunk).toString("utf8");
++    text += decoder.decode(chunk, { stream: true });
++  }
++  text += decoder.decode();
++  if (!text.endsWith("\n")) {
++    throw new Error("frame_incomplete");
+   }
+   return text
+-    .split("\n")
++    .split(/\r?\n/)
++    .slice(0, -1)
+     .filter((line) => line.length > 0)
+     .map((line) => {
+       const value = JSON.parse(line);
+diff --git a/writer-release-artifact/artifact.py b/writer-release-artifact/artifact.py
+index c6ff189..4947949 100644
+--- a/writer-release-artifact/artifact.py
++++ b/writer-release-artifact/artifact.py
+@@ -7,6 +7,6 @@ def artifact_record(value, payload):
+     metadata = normalize_metadata(value)
+     return {
+         "name": f"{metadata['name']}-{metadata['version']}-{metadata['platform']}.tar.zst",
+-        "sha256": hashlib.sha256(payload).hexdigest(),
++        "sha256": f"sha256:{hashlib.sha256(payload).hexdigest()}",
+         "channel": metadata["channel"],
+     }
+diff --git a/writer-release-artifact/metadata.py b/writer-release-artifact/metadata.py
+index 5095b1e..1f05755 100644
+--- a/writer-release-artifact/metadata.py
++++ b/writer-release-artifact/metadata.py
+@@ -1,4 +1,22 @@
+ def normalize_metadata(value):
+     result = dict(value)
++    for field in ("name", "version", "platform"):
++        if not isinstance(result.get(field), str) or not result[field]:
++            raise ValueError(f"{field}_invalid")
++    result["version"] = result["version"].removeprefix("v")
++    aliases = {
++        "darwin-arm64": "aarch64-apple-darwin",
++        "macos-arm64": "aarch64-apple-darwin",
++        "linux-x64": "x86_64-unknown-linux-gnu",
++        "linux-arm64": "aarch64-unknown-linux-gnu",
++    }
++    canonical = {
++        "aarch64-apple-darwin",
++        "x86_64-unknown-linux-gnu",
++        "aarch64-unknown-linux-gnu",
++    }
++    result["platform"] = aliases.get(result["platform"], result["platform"])
++    if result["platform"] not in canonical:
++        raise ValueError("platform_invalid")
+     result.setdefault("channel", "stable")
+     return result

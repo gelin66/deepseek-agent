@@ -1,0 +1,8 @@
+{
+  "name": "utf8-frames",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types test/frames.test.ts"
+  }
+}

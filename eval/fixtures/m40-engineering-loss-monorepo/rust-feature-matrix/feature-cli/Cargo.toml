@@ -1,0 +1,7 @@
+[package]
+name = "feature-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+feature-core = { path = "../feature-core", default-features = false }

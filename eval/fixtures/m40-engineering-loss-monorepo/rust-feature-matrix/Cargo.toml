@@ -1,0 +1,3 @@
+[workspace]
+members = ["feature-core", "feature-cli"]
+resolver = "2"
