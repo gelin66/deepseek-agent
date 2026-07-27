@@ -2818,6 +2818,23 @@ consumer 并已删除；只保留 frozen fixture/contract/admission、ignored `0
 RuntimeEvent 22、State schema 28、exec-stream 6、DeepSeek sender、Runtime/RunStore、工具、
 权限和 Writer behavior 均未改变。M37-D/E 没有由该 incomplete result 准入。
 
+M38 随后只修复 corrected Harness 的 observer truth。pending interaction 现在从 canonical
+`UserInteractionPrompt` kind/payload 派生，并验证 typed response compatibility；campaign
+名称不再决定 approval 或 `request_user_input`。root 的两类 interactive request 可被正确
+投影，read-only child 与 explicit Writer 继续按非交互 profile fail closed。
+
+当 observer 在 durable RunStore checkpoint 后拒绝 trajectory 时，Harness 先追加
+hash-chained `observer_abort_snapshot`，保存 event-prefix identity、terminal boundary、
+physical request、runtime retry、known usage/cost 和 accounting status，再写 abort；raw model
+content/reasoning/tool arguments/credential 不进入 snapshot。14-case fixture、四个 SIGKILL
+窗口、exact reopen、partial-tail/tamper rejection 和 M9-C/M30 byte-identical report 已离线
+闭合。true pre-header provider billing ambiguity 仍是 `billing_unknown`，没有被本地 projection
+伪造为已闭合。
+
+M38 没有修改 production crate、Prompt、DeepSeek request、RuntimeEvent、RunStore、tools、
+permission 或 Writer behavior；Run API 15、RuntimeEvent 22、State v28、exec-stream v6 保持
+不变。M37-C frozen evidence 没有读取、修改、续跑或拼接；Key 未读取，official API 请求为 0。
+
 ## 8. 明确非结论
 
 当前源码不证明：

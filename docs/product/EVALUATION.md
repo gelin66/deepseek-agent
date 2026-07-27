@@ -4600,3 +4600,77 @@ eval/
 - 结果摘要；
 - 保留、重做/缩小、删除/推迟结论；
 - 下一步。
+
+### M38 typed interaction and durable observer-abort contract
+
+M38 是 credential-free Harness correctness slice，不是产品 treatment，也不重开 M37-C。
+source identity 固定为 `b91d10780bbd714d845dbbf28dada27791509f5a`、tree
+`23c8a201d955e3786da135e84c3a0011d51e357e`，production crates、Prompt、model、tools、
+permission、Runtime、RunStore 和 Writer behavior delta 必须为 0。
+
+#### 1. Typed interaction matrix
+
+fixture 必须至少覆盖：
+
+```text
+root: approval pending/resolved
+root: user_input pending/resolved
+malformed prompt / incompatible response / multiple pending -> reject
+read-only child and explicit Writer: no interaction -> valid
+non-interactive child interaction -> reject
+SQLite exact reopen -> identical; event drift -> reject
+known usage/cost before observer abort -> retained
+provider billing_unknown -> remains fail closed
+```
+
+approval 与 `request_user_input` 的 admission/response 必须仅由 canonical prompt kind 和
+payload compatibility 决定。M9-C、M30 或未来 campaign 名称不得进入此判断。fixture
+identity、case count、expected result 和 report hash 都必须冻结；historical raw 不是输入。
+
+#### 2. Durable abort boundary
+
+observer validation error 发生在 durable checkpoint 之后时，journal 顺序必须为：
+
+```text
+plan -> observer_abort_snapshot -> abort
+```
+
+snapshot 只允许包含 canonical event-prefix hash/count、terminal boundary、physical request
+counts、runtime retries、known usage/cost 和 accounting truth；不得保存 raw model content、
+reasoning、tool arguments 或 credential。before/mid/unfsynced/after snapshot 的 SIGKILL
+fixture 必须证明 hash-chain/partial-tail 可恢复且不会把半条 record 当成事实。修改 snapshot
+后必须由 journal hash 验证拒绝。
+
+#### 3. Accounting decision
+
+M38 必须区分：
+
+- `locally_available_accounting_lost`：Harness defect，必须修复并持久化；
+- `provider_request_billing_unknown`：官方没有逐物理请求 reconciliation identity 或
+  settlement bound 时保持 unknown，不推断为零或已计费。
+
+Chat response/chunk 的 completion id、stream usage、account balance 和 monthly API-key usage
+export 均按复核日官方合同解释；account aggregate 不能替代单 request truth。M38 不读取
+Key、不调用官方 API、不修改 frozen paid evidence。
+
+#### 4. Keep/delete gate
+
+只有同时满足以下条件才保留：
+
+1. 14-case typed matrix 与四个 crash window 全部通过；
+2. M9-C/M30 M38 report byte-identical；
+3. M14/M16/M23 observer truth 与 M9-C/M30 self-test 无回退；
+4. known usage/cost 在 observer abort 前后相同；
+5. billing unknown 没有被弱化；
+6. production crate/source delta 为 0；
+7. campaign-name interaction 分支和旧错误码已物理删除。
+
+允许结果只有：
+
+```text
+keep_typed_interaction_observer_and_durable_abort_snapshot
+reject_and_delete_m38_observer_candidate
+```
+
+M38 通过不构成 M37-C continuation、Prompt 收益、billing provider 修复或新 production
+treatment 准入。

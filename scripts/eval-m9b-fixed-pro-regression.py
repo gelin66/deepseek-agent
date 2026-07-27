@@ -21,7 +21,9 @@ acquisition while inheriting only the frozen M23 task material.
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
 ``--acceptance-conformance`` runs the credential-free M16 acceptance-
-equivalence corpus. ``--truth-conformance`` runs the credential-free M23
+equivalence corpus. ``--interaction-conformance`` runs the credential-free
+M38 typed interaction and durable observer-abort corpus.
+``--truth-conformance`` runs the credential-free M23
 behavior/accounting orthogonality corpus. ``--hardness-conformance`` runs the
 credential-free M23-B2 metric and real mid-run continuity observer corpus. Live
 campaigns exercise temporary Git repositories through canonical
@@ -34,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -350,6 +353,18 @@ ACCEPTANCE_MANIFEST_SCHEMA = (
 )
 ACCEPTANCE_CORPUS_SCHEMA = (
     "codewhale.eval.m16-acceptance-equivalence-observer-corpus.v1"
+)
+INTERACTION_MANIFEST_PATH = (
+    ROOT / "eval/manifests/m38-typed-interaction-observer-v1.json"
+)
+INTERACTION_MANIFEST_SCHEMA = (
+    "dse.eval.m38-typed-interaction-observer.v1"
+)
+INTERACTION_CORPUS_SCHEMA = (
+    "dse.eval.m38-typed-interaction-observer-corpus.v1"
+)
+INTERACTION_REPORT_SCHEMA = (
+    "dse.eval.m38-typed-interaction-observer-report.v1"
 )
 TRUTH_MANIFEST_PATH = (
     ROOT / "eval/manifests/m23-behavior-accounting-truth-v1.json"
@@ -1985,8 +2000,19 @@ def query_envelope(kind: str, run_id: str, request_id: str) -> dict[str, Any]:
 
 
 def resolve_interaction_envelope(
-    run_id: str, interaction_id: str, request_id: str
+    interaction: dict[str, Any], request_id: str
 ) -> dict[str, Any]:
+    run_id = interaction.get("run_id")
+    interaction_id = interaction.get("interaction_id")
+    response = interaction.get("response")
+    require(
+        isinstance(run_id, str)
+        and run_id
+        and isinstance(interaction_id, str)
+        and interaction_id
+        and isinstance(response, dict),
+        "interaction_resolution_projection_invalid",
+    )
     return {
         "schema_version": RUN_API,
         "request_id": request_id,
@@ -1994,20 +2020,7 @@ def resolve_interaction_envelope(
             "kind": "resolve_interaction",
             "run_id": run_id,
             "interaction_id": interaction_id,
-            "response": (
-                {
-                    "kind": "answered",
-                    "answers": [
-                        {
-                            "id": "continue",
-                            "label": "继续",
-                            "value": "继续",
-                        }
-                    ],
-                }
-                if CAMPAIGN == "m30"
-                else {"kind": "approved"}
-            ),
+            "response": response,
         },
     }
 
@@ -2350,7 +2363,196 @@ def fetch_store_facts(
     }
 
 
-def pending_interactions(facts: dict[str, Any]) -> list[dict[str, str]]:
+def interaction_prompt_projection(
+    request: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    for field in ("interaction_id", "operation_id", "call_id", "tool_name"):
+        require(
+            isinstance(request.get(field), str) and request[field].strip(),
+            "interaction_request_invalid",
+            {"field": field},
+        )
+    prompt = request.get("prompt")
+    require(isinstance(prompt, dict), "interaction_request_invalid")
+    kind = prompt.get("kind")
+    if kind == "approval":
+        approval = prompt.get("prompt")
+        require(
+            isinstance(approval, dict)
+            and all(
+                isinstance(approval.get(field), str)
+                and approval[field].strip()
+                for field in ("title", "description")
+            )
+            and approval.get("risk")
+            in {"routine", "elevated", "critical"}
+            and "arguments" in prompt,
+            "interaction_approval_invalid",
+        )
+        return kind, {"kind": "approved"}
+    require(kind == "user_input", "interaction_prompt_kind_invalid")
+    user_input = prompt.get("request")
+    questions = (
+        user_input.get("questions")
+        if isinstance(user_input, dict)
+        else None
+    )
+    require(
+        isinstance(questions, list) and 1 <= len(questions) <= 3,
+        "interaction_user_input_invalid",
+    )
+    question_ids: set[str] = set()
+    answers: list[dict[str, str]] = []
+    for question in questions:
+        require(
+            isinstance(question, dict)
+            and all(
+                isinstance(question.get(field), str)
+                and question[field].strip()
+                for field in ("header", "id", "question")
+            )
+            and isinstance(question.get("options"), list)
+            and 2 <= len(question["options"]) <= 4
+            and isinstance(question.get("allow_free_text", False), bool)
+            and isinstance(question.get("multi_select", False), bool),
+            "interaction_user_input_invalid",
+        )
+        question_id = question["id"]
+        require(
+            question_id not in question_ids,
+            "interaction_user_input_invalid",
+        )
+        question_ids.add(question_id)
+        labels: set[str] = set()
+        for option in question["options"]:
+            require(
+                isinstance(option, dict)
+                and isinstance(option.get("label"), str)
+                and option["label"].strip()
+                and isinstance(option.get("description"), str)
+                and option["description"].strip()
+                and option["label"] not in labels,
+                "interaction_user_input_invalid",
+            )
+            labels.add(option["label"])
+        first = question["options"][0]
+        answers.append(
+            {
+                "id": question_id,
+                "label": first["label"],
+                "value": first["label"],
+            }
+        )
+    return kind, {"kind": "answered", "answers": answers}
+
+
+def validate_interaction_response(
+    request: dict[str, Any], response: dict[str, Any]
+) -> None:
+    prompt_kind, _ = interaction_prompt_projection(request)
+    response_kind = response.get("kind")
+    if prompt_kind == "approval":
+        require(
+            response_kind in {"approved", "denied", "cancelled"},
+            "interaction_response_kind_invalid",
+        )
+        if response_kind == "denied":
+            reason = response.get("reason")
+            require(
+                reason is None or isinstance(reason, str),
+                "interaction_response_invalid",
+            )
+        return
+    require(
+        response_kind in {"answered", "cancelled"},
+        "interaction_response_kind_invalid",
+    )
+    if response_kind == "cancelled":
+        return
+    prompt = request["prompt"]["request"]
+    questions = prompt["questions"]
+    answers = response.get("answers")
+    require(isinstance(answers, list), "interaction_response_invalid")
+    seen: set[tuple[str, str]] = set()
+    for answer in answers:
+        require(
+            isinstance(answer, dict)
+            and all(
+                isinstance(answer.get(field), str) and answer[field].strip()
+                for field in ("id", "label", "value")
+            ),
+            "interaction_response_invalid",
+        )
+        question = next(
+            (
+                candidate
+                for candidate in questions
+                if candidate["id"] == answer["id"]
+            ),
+            None,
+        )
+        require(question is not None, "interaction_response_invalid")
+        key = (answer["id"], answer["label"])
+        require(key not in seen, "interaction_response_invalid")
+        seen.add(key)
+        option = next(
+            (
+                candidate
+                for candidate in question["options"]
+                if candidate["label"] == answer["label"]
+            ),
+            None,
+        )
+        require(
+            (
+                option is not None
+                and answer["value"] == option["label"]
+            )
+            or (
+                option is None
+                and question.get("allow_free_text", False)
+            ),
+            "interaction_response_invalid",
+        )
+    for question in questions:
+        count = sum(answer["id"] == question["id"] for answer in answers)
+        require(
+            count >= 1
+            and (question.get("multi_select", False) or count == 1),
+            "interaction_response_invalid",
+        )
+
+
+def interaction_actor_profile(
+    events: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    created = event_values(events, "run_created")
+    require(
+        len(created) == 1 and isinstance(created[0].get("request"), dict),
+        "interaction_actor_invalid",
+    )
+    request = created[0]["request"]
+    actor = request.get("actor")
+    environment = request.get("environment")
+    require(
+        isinstance(actor, dict)
+        and actor.get("kind") in {"root", "child"}
+        and isinstance(environment, dict)
+        and isinstance(environment.get("interactive"), bool),
+        "interaction_actor_invalid",
+    )
+    if actor["kind"] == "root":
+        profile = "root"
+    elif environment.get("write_execution_mode") == "isolated_writer":
+        profile = "writer_child"
+    else:
+        profile = "read_only_child"
+    return profile, environment["interactive"]
+
+
+def pending_interactions(
+    facts: dict[str, Any],
+) -> list[dict[str, Any]]:
     streams = [
         (facts["run"], facts["root_events"]),
         *[
@@ -2358,40 +2560,111 @@ def pending_interactions(facts: dict[str, Any]) -> list[dict[str, str]]:
             for child in facts["children"]
         ],
     ]
-    pending: list[dict[str, str]] = []
+    pending: list[dict[str, Any]] = []
     for run, events in streams:
         run_id = run.get("run_id")
         require(isinstance(run_id, str) and run_id, "run_id_missing")
-        resolved = {
-            event.get("interaction_id")
-            for event in event_values(events, "interaction_resolved")
-            if isinstance(event.get("interaction_id"), str)
-        }
+        actor_profile, interactive = interaction_actor_profile(events)
+        requested: dict[str, dict[str, Any]] = {}
         for event in event_values(events, "interaction_requested"):
             request = event.get("request")
             require(
-                isinstance(request, dict)
-                and isinstance(request.get("interaction_id"), str)
-                and request["interaction_id"],
+                isinstance(request, dict),
                 "interaction_request_invalid",
             )
-            if request["interaction_id"] in resolved:
-                continue
-            prompt = request.get("prompt")
+            prompt_kind, response = interaction_prompt_projection(request)
+            interaction_id = request["interaction_id"]
             require(
-                isinstance(prompt, dict)
-                and prompt.get("kind")
-                == ("user_input" if CAMPAIGN == "m30" else "approval"),
-                "hardness_user_input_not_admitted",
+                interaction_id not in requested,
+                "interaction_request_duplicate",
             )
+            requested[interaction_id] = request
             pending.append(
                 {
                     "run_id": run_id,
-                    "interaction_id": request["interaction_id"],
+                    "interaction_id": interaction_id,
+                    "prompt_kind": prompt_kind,
+                    "actor_profile": actor_profile,
+                    "response": response,
                 }
             )
+        resolved: set[str] = set()
+        for event in event_values(events, "interaction_resolved"):
+            interaction_id = event.get("interaction_id")
+            response = event.get("response")
+            require(
+                isinstance(interaction_id, str)
+                and interaction_id in requested
+                and interaction_id not in resolved
+                and isinstance(response, dict),
+                "interaction_resolution_invalid",
+            )
+            validate_interaction_response(
+                requested[interaction_id], response
+            )
+            resolved.add(interaction_id)
+        if requested:
+            require(interactive, "interaction_noninteractive_actor")
+        pending = [
+            interaction
+            for interaction in pending
+            if not (
+                interaction["run_id"] == run_id
+                and interaction["interaction_id"] in resolved
+            )
+        ]
     require(len(pending) <= 1, "multiple_pending_interactions")
     return pending
+
+
+def durable_observer_abort_snapshot(
+    facts: dict[str, Any],
+) -> dict[str, Any]:
+    """Project only safe canonical facts available before observer abort."""
+
+    streams = trajectory_event_streams(facts)
+    accounting = trajectory_accounting_observation(facts)
+    run = facts.get("run")
+    require(isinstance(run, dict), "observer_abort_run_invalid")
+    terminal = run.get("terminal")
+    terminal_state = (
+        terminal.get("state") if isinstance(terminal, dict) else None
+    )
+    require(
+        terminal_state is None or isinstance(terminal_state, str),
+        "observer_abort_terminal_invalid",
+    )
+    return {
+        "schema": "dse.eval.harness-durable-abort-snapshot.v1",
+        "source": "canonical_runstore_projection",
+        "event_prefix_sha256": canonical_hash(streams),
+        "event_count": sum(len(stream) for stream in streams),
+        "terminal_present": terminal is not None,
+        "terminal_state": terminal_state,
+        "accounting": accounting,
+        "accounting_truth": accounting_truth_projection(accounting),
+        "raw_model_content_retained": False,
+        "raw_reasoning_retained": False,
+        "raw_tool_arguments_retained": False,
+        "credential_retained": False,
+    }
+
+
+def attach_durable_observer_abort(
+    error: EvaluationError, facts: dict[str, Any]
+) -> dict[str, Any] | None:
+    existing = error.details.get("durable_abort_snapshot")
+    if isinstance(existing, dict):
+        return existing
+    try:
+        snapshot = durable_observer_abort_snapshot(facts)
+    except EvaluationError as snapshot_error:
+        error.details.setdefault(
+            "durable_abort_snapshot_error", snapshot_error.code
+        )
+        return None
+    error.details["durable_abort_snapshot"] = snapshot
+    return snapshot
 
 
 def wait_terminal_or_interaction(
@@ -2399,7 +2672,7 @@ def wait_terminal_or_interaction(
     run: dict[str, Any],
     deadline: float,
     suffix: str,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, str] | None]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     run_id = run.get("run_id")
     require(isinstance(run_id, str) and run_id, "run_id_missing")
     poll = 0
@@ -2415,7 +2688,11 @@ def wait_terminal_or_interaction(
         facts = fetch_store_facts(
             client, run, f"checkpoint-facts-{suffix}-{poll}"
         )
-        interactions = pending_interactions(facts)
+        try:
+            interactions = pending_interactions(facts)
+        except EvaluationError as error:
+            attach_durable_observer_abort(error, facts)
+            raise
         if interactions:
             return run, facts, interactions[0]
         if run.get("terminal") is not None:
@@ -2440,8 +2717,7 @@ def drive_interactions_until_terminal(
             return run, facts, approvals
         result = client.call(
             resolve_interaction_envelope(
-                interaction["run_id"],
-                interaction["interaction_id"],
+                interaction,
                 f"approve-{suffix}-{approvals}",
             ),
             min(30.0, max(1.0, deadline - time.monotonic())),
@@ -3767,6 +4043,481 @@ def run_acceptance_conformance() -> int:
             for result in results
         ),
         "results_sha256": canonical_hash(results),
+        "historical_raw_read": False,
+        "key_accessed": False,
+        "network_accessed": False,
+    }
+    print(
+        json.dumps(
+            report,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
+def interaction_case_facts(
+    corpus: dict[str, Any],
+    case: dict[str, Any],
+    *,
+    reopened: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    profiles = corpus.get("accounting_profiles")
+    requests = corpus.get("requests")
+    require(
+        isinstance(profiles, dict) and isinstance(requests, dict),
+        "interaction_corpus_schema_invalid",
+    )
+    profile_name = case.get("accounting_profile")
+    require(
+        isinstance(profile_name, str)
+        and isinstance(profiles.get(profile_name), dict),
+        "interaction_accounting_profile_invalid",
+    )
+    accounting = copy.deepcopy(profiles[profile_name])
+    actor_profile = case.get("actor_profile")
+    interactive = case.get("interactive")
+    interactions = case.get("interactions")
+    require(
+        actor_profile in {"root", "read_only_child", "writer_child"}
+        and isinstance(interactive, bool)
+        and isinstance(interactions, list),
+        "interaction_case_shape_invalid",
+    )
+    if actor_profile != "root":
+        accounting["child"] = accounting["root"]
+        accounting["root"] = {
+            "started": 0,
+            "completed": 0,
+            "in_flight": 0,
+        }
+
+    terminal = (
+        {"state": "completed"}
+        if profile_name == "complete"
+        and all(item.get("state") == "resolved" for item in interactions)
+        else None
+    )
+    root_run = {
+        "run_id": "root-run",
+        "terminal": terminal,
+        "accounting": accounting,
+    }
+    root_events: list[dict[str, Any]] = [
+        {
+            "event": {
+                "kind": "run_created",
+                "request": {
+                    "actor": {"kind": "root", "depth": 0},
+                    "environment": {
+                        "interactive": (
+                            interactive if actor_profile == "root" else True
+                        ),
+                        "write_execution_mode": "root",
+                    },
+                },
+            }
+        }
+    ]
+    children: list[dict[str, Any]] = []
+    target_run = root_run
+    target_events = root_events
+    if actor_profile != "root":
+        target_run = {
+            "run_id": "child-run",
+            "terminal": terminal,
+        }
+        target_events = [
+            {
+                "event": {
+                    "kind": "run_created",
+                    "request": {
+                        "actor": {"kind": "child", "depth": 1},
+                        "environment": {
+                            "interactive": interactive,
+                            "write_execution_mode": (
+                                "isolated_writer"
+                                if actor_profile == "writer_child"
+                                else "root"
+                            ),
+                        },
+                    },
+                }
+            }
+        ]
+        children.append({"run": target_run, "events": target_events})
+
+    for interaction in interactions:
+        require(isinstance(interaction, dict), "interaction_case_shape_invalid")
+        request_ref = interaction.get("request_ref")
+        if request_ref is None:
+            request = copy.deepcopy(interaction.get("request"))
+        else:
+            require(
+                isinstance(request_ref, str)
+                and isinstance(requests.get(request_ref), dict),
+                "interaction_request_ref_invalid",
+            )
+            request = copy.deepcopy(requests[request_ref])
+        require(isinstance(request, dict), "interaction_request_invalid")
+        target_events.append(
+            {
+                "event": {
+                    "kind": "interaction_requested",
+                    "request": request,
+                }
+            }
+        )
+        state = interaction.get("state")
+        require(
+            state in {"pending", "resolved"},
+            "interaction_case_state_invalid",
+        )
+        if state == "resolved":
+            response = interaction.get("response")
+            require(
+                isinstance(response, dict),
+                "interaction_response_invalid",
+            )
+            target_events.append(
+                {
+                    "event": {
+                        "kind": "interaction_resolved",
+                        "interaction_id": request.get("interaction_id"),
+                        "response": copy.deepcopy(response),
+                    }
+                }
+            )
+
+    facts = {
+        "run": root_run,
+        "root_events": root_events,
+        "children": children,
+    }
+    reopened_facts = copy.deepcopy(facts)
+    if reopened and case.get("reopen") == "event_drift":
+        reopened_target = (
+            reopened_facts["root_events"]
+            if actor_profile == "root"
+            else reopened_facts["children"][0]["events"]
+        )
+        reopened_target.append(
+            {
+                "event": {
+                    "kind": "model_content_delta",
+                    "attempt_id": "attempt-drift",
+                    "index": 0,
+                    "delta": "observer drift fixture",
+                }
+            }
+        )
+    return reopened_facts, (
+        reopened_facts["root_events"]
+        if actor_profile == "root"
+        else reopened_facts["children"][0]["events"]
+    )
+
+
+def interaction_case_projection(
+    corpus: dict[str, Any], case: dict[str, Any]
+) -> dict[str, Any]:
+    facts, target_events = interaction_case_facts(
+        corpus, case, reopened=False
+    )
+    snapshot = durable_observer_abort_snapshot(facts)
+    try:
+        pending = pending_interactions(facts)
+        reopened, _ = interaction_case_facts(
+            corpus, case, reopened=True
+        )
+        require(
+            canonical_bytes(facts) == canonical_bytes(reopened),
+            "interaction_reopen_mismatch",
+        )
+        actor_profile, _ = interaction_actor_profile(target_events)
+        response_kind = None
+        pending_kind = None
+        if pending:
+            envelope = resolve_interaction_envelope(
+                pending[0], "m38-resolution"
+            )
+            response = envelope["command"]["response"]
+            response_kind = response.get("kind")
+            pending_kind = pending[0]["prompt_kind"]
+        result: dict[str, Any] = {
+            "status": "admitted",
+            "actor_profile": actor_profile,
+            "pending_count": len(pending),
+            "pending_kind": pending_kind,
+            "response_kind": response_kind,
+            "reopen_exact": True,
+            "accounting_status": snapshot["accounting_truth"]["status"],
+        }
+    except EvaluationError as error:
+        attach_durable_observer_abort(error, facts)
+        error_snapshot = error.details.get("durable_abort_snapshot")
+        require(
+            isinstance(error_snapshot, dict),
+            "interaction_abort_snapshot_missing",
+        )
+        snapshot = error_snapshot
+        result = {
+            "status": "rejected",
+            "error_code": error.code,
+            "accounting_status": snapshot["accounting_truth"]["status"],
+        }
+    known_usage = snapshot["accounting"]["known_usage"]
+    result.update(
+        {
+            "known_input_tokens": known_usage["input_tokens"],
+            "known_output_tokens": known_usage["output_tokens"],
+            "known_cost_nanousd": snapshot["accounting"]["cost_nanousd"],
+            "abort_snapshot_sha256": canonical_hash(snapshot),
+        }
+    )
+    return result
+
+
+def run_interaction_journal_conformance(
+    snapshot: dict[str, Any], directory: Path
+) -> dict[str, Any]:
+    faults = (
+        "before_observer_abort",
+        "mid_observer_abort",
+        "unfsynced_observer_abort",
+        "after_observer_abort",
+    )
+    fault_results: list[dict[str, Any]] = []
+    for fault in faults:
+        output = directory / f"{fault}.jsonl"
+        completed = subprocess.run(
+            [
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                str(Path(__file__).resolve()),
+                "--campaign",
+                CAMPAIGN,
+                "--fault-child",
+                fault,
+                "--output",
+                str(output),
+                "--self-test-fault",
+            ],
+            cwd=ROOT,
+            env=safe_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        require(
+            completed.returncode == -signal.SIGKILL,
+            "interaction_fault_exit_invalid",
+            {"fault": fault, "returncode": completed.returncode},
+        )
+        audit = read_journal(output, allow_partial_tail=True)
+        types = [
+            record["payload"].get("record_type")
+            for record in audit["records"]
+        ]
+        require(types and types[0] == "plan", "interaction_fault_plan_missing")
+        if fault == "before_observer_abort":
+            require(types == ["plan"], "interaction_fault_order_invalid")
+        elif fault == "mid_observer_abort":
+            require(
+                types == ["plan"] and audit["partial_tail_bytes"] > 0,
+                "interaction_fault_partial_tail_invalid",
+            )
+        else:
+            require(
+                "observer_abort_snapshot" in types,
+                "interaction_fault_snapshot_missing",
+            )
+        fault_results.append(
+            {
+                "fault": fault,
+                "record_types": types,
+                "partial_tail_present": audit["partial_tail_bytes"] > 0,
+            }
+        )
+
+    complete = directory / "complete-observer-abort.jsonl"
+    with Journal.claim(
+        complete,
+        enforce_results_scope=False,
+    ) as journal:
+        journal.emit(
+            {
+                "record_type": "plan",
+                "key_accessed": False,
+                "network_accessed": False,
+            }
+        )
+        journal.emit(
+            {
+                "record_type": "observer_abort_snapshot",
+                "error_code": "interaction_prompt_kind_invalid",
+                "snapshot": snapshot,
+                "snapshot_sha256": canonical_hash(snapshot),
+                "key_accessed": False,
+                "network_accessed": False,
+            }
+        )
+        journal.emit(
+            {
+                "record_type": "abort",
+                "error_code": "interaction_prompt_kind_invalid",
+                "details": {"durable_abort_snapshot": snapshot},
+                "key_accessed": False,
+                "network_accessed": False,
+            }
+        )
+    audit = read_journal(complete, allow_partial_tail=False)
+    types = [
+        record["payload"].get("record_type")
+        for record in audit["records"]
+    ]
+    require(
+        types == ["plan", "observer_abort_snapshot", "abort"],
+        "interaction_abort_journal_order_invalid",
+    )
+    tampered = directory / "tampered-observer-abort.jsonl"
+    lines = complete.read_bytes().splitlines()
+    value = json.loads(lines[1])
+    value["payload"]["snapshot"]["accounting"]["cost_nanousd"] += 1
+    tampered.write_bytes(
+        lines[0] + b"\n" + canonical_bytes(value) + b"\n" + lines[2] + b"\n"
+    )
+    os.chmod(tampered, 0o600)
+    try:
+        read_journal(tampered, allow_partial_tail=False)
+    except EvaluationError as error:
+        require(
+            error.code == "journal_hash_invalid",
+            "interaction_journal_tamper_rejection_invalid",
+        )
+    else:
+        raise EvaluationError("interaction_journal_tamper_accepted")
+    return {
+        "faults": fault_results,
+        "complete_record_types": types,
+        "tamper_rejected": True,
+    }
+
+
+def run_interaction_conformance() -> int:
+    manifest = read_json_object(
+        INTERACTION_MANIFEST_PATH,
+        "interaction_manifest_unavailable",
+    )
+    require(
+        manifest.get("schema") == INTERACTION_MANIFEST_SCHEMA,
+        "interaction_manifest_schema_invalid",
+    )
+    source = manifest.get("source_identity")
+    corpus_contract = manifest.get("corpus")
+    require(
+        isinstance(source, dict)
+        and source.get("run_api") == 15
+        and source.get("runtime_event") == 22
+        and source.get("state_schema") == 28
+        and source.get("exec_stream") == 6
+        and isinstance(corpus_contract, dict)
+        and corpus_contract.get("historical_raw_is_input") is False
+        and corpus_contract.get("credential_required") is False
+        and corpus_contract.get("network_required") is False,
+        "interaction_manifest_contract_invalid",
+    )
+    corpus_path_value = corpus_contract.get("path")
+    require(
+        isinstance(corpus_path_value, str),
+        "interaction_corpus_path_invalid",
+    )
+    corpus_path = (ROOT / corpus_path_value).resolve()
+    require(
+        repository_relative(
+            corpus_path, "interaction_corpus_path_invalid"
+        )
+        == corpus_path_value
+        and file_hash(corpus_path) == corpus_contract.get("file_sha256"),
+        "interaction_corpus_identity_invalid",
+    )
+    corpus = read_json_object(
+        corpus_path, "interaction_corpus_unavailable"
+    )
+    cases = corpus.get("cases")
+    require(
+        corpus.get("schema") == INTERACTION_CORPUS_SCHEMA
+        and corpus_contract.get("schema") == INTERACTION_CORPUS_SCHEMA
+        and isinstance(cases, list)
+        and len(cases) == corpus_contract.get("case_count"),
+        "interaction_corpus_schema_invalid",
+    )
+    case_ids = [
+        case.get("case_id") for case in cases if isinstance(case, dict)
+    ]
+    require(
+        len(case_ids) == len(cases)
+        and all(isinstance(case_id, str) and case_id for case_id in case_ids)
+        and len(case_ids) == len(set(case_ids)),
+        "interaction_case_identity_invalid",
+    )
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        projection = interaction_case_projection(corpus, case)
+        expected = case.get("expected")
+        require(
+            isinstance(expected, dict)
+            and all(
+                projection.get(field) == value
+                for field, value in expected.items()
+            ),
+            "interaction_case_result_mismatch",
+            {"case_id": case["case_id"], "projection": projection},
+        )
+        results.append(
+            {"case_id": case["case_id"], "projection": projection}
+        )
+    snapshot_case = next(
+        case
+        for case in cases
+        if case["case_id"]
+        == "known_usage_and_cost_survive_observer_abort"
+    )
+    snapshot_facts, _ = interaction_case_facts(
+        corpus, snapshot_case, reopened=False
+    )
+    snapshot = durable_observer_abort_snapshot(snapshot_facts)
+    with tempfile.TemporaryDirectory(
+        prefix="dse-m38-interaction-journal-"
+    ) as raw_temp:
+        journal = run_interaction_journal_conformance(
+            snapshot, Path(raw_temp)
+        )
+    report = {
+        "schema": INTERACTION_REPORT_SCHEMA,
+        "status": "pass",
+        "manifest_sha256": file_hash(INTERACTION_MANIFEST_PATH),
+        "corpus_sha256": file_hash(corpus_path),
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "cases": len(results),
+        "admitted_cases": sum(
+            result["projection"]["status"] == "admitted"
+            for result in results
+        ),
+        "rejected_cases": sum(
+            result["projection"]["status"] == "rejected"
+            for result in results
+        ),
+        "results_sha256": canonical_hash(results),
+        "journal_sha256": canonical_hash(journal),
+        "campaign_name_controls_interaction_kind": False,
+        "known_usage_and_cost_preserved": True,
+        "provider_billing_unknown_weakened": False,
         "historical_raw_read": False,
         "key_accessed": False,
         "network_accessed": False,
@@ -5219,8 +5970,7 @@ def run_hardness_continuity_self_test(
             )
             resolved = client.call(
                 resolve_interaction_envelope(
-                    interaction["run_id"],
-                    interaction["interaction_id"],
+                    interaction,
                     "m23b-continuity-resolve",
                 )
             )
@@ -6196,11 +6946,44 @@ def trajectory_accounting_observation(
         and billing_unknown_attempts >= 0,
         "trajectory_accounting_invalid",
     )
+    usage = accounting.get("usage")
+    require(isinstance(usage, dict), "trajectory_accounting_invalid")
+    known_usage: dict[str, int] = {}
+    for field in USAGE_FIELDS:
+        value = usage.get(field)
+        require(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0,
+            "trajectory_accounting_invalid",
+            {"field": field},
+        )
+        known_usage[field] = value
+    counters: dict[str, int] = {}
+    for field in (
+        "runtime_retries",
+        "usage_responses",
+        "usage_missing_responses",
+        "incomplete_responses",
+        "cost_nanousd",
+        "cost_nanocny",
+    ):
+        value = accounting.get(field)
+        require(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0,
+            "trajectory_accounting_invalid",
+            {"field": field},
+        )
+        counters[field] = value
     return {
         "physical_requests_started": started,
         "physical_requests_completed": completed,
         "physical_requests_in_flight": in_flight,
         "billing_unknown_attempts": billing_unknown_attempts,
+        **counters,
+        "known_usage": known_usage,
         "sealed": accounting.get("sealed"),
         "complete": accounting.get("complete"),
         "usage_complete": accounting.get("usage_complete"),
@@ -7225,8 +8008,7 @@ def execute_arm(
                         run = resumed["run"]
                         resolution = client.call(
                             resolve_interaction_envelope(
-                                interaction["run_id"],
-                                interaction["interaction_id"],
+                                interaction,
                                 f"continuity-resolve-{evaluation_id}",
                             )
                         )
@@ -7334,6 +8116,43 @@ def execute_arm(
                         "network_accessed": True,
                     }
                 )
+        except EvaluationError as error:
+            snapshot = (
+                error.details.get("durable_abort_snapshot")
+                if isinstance(error.details, dict)
+                else None
+            )
+            if not isinstance(snapshot, dict) and run:
+                try:
+                    abort_facts = fetch_store_facts(
+                        client,
+                        run,
+                        f"observer-abort-{evaluation_id}",
+                    )
+                except EvaluationError as snapshot_error:
+                    error.details.setdefault(
+                        "durable_abort_snapshot_error",
+                        snapshot_error.code,
+                    )
+                else:
+                    snapshot = attach_durable_observer_abort(
+                        error, abort_facts
+                    )
+            if isinstance(snapshot, dict):
+                journal.emit(
+                    {
+                        "record_type": "observer_abort_snapshot",
+                        "evaluation_id": evaluation_id,
+                        "error_code": error.code,
+                        "snapshot": snapshot,
+                        "snapshot_sha256": canonical_hash(snapshot),
+                        "reopened_without_credential": False,
+                        "key_accessed": True,
+                        "network_accessed": True,
+                        "maximum_reruns": 0,
+                    }
+                )
+            raise
         finally:
             stop_process(process)
         stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
@@ -8108,6 +8927,43 @@ def run_fault_child(
                 "network_accessed": False,
             }
         )
+        if fault in {
+            "before_observer_abort",
+            "mid_observer_abort",
+            "unfsynced_observer_abort",
+            "after_observer_abort",
+        }:
+            if fault == "before_observer_abort":
+                os.kill(os.getpid(), signal.SIGKILL)
+            journal.emit(
+                {
+                    "record_type": "observer_abort_snapshot",
+                    "error_code": "interaction_prompt_kind_invalid",
+                    "snapshot": {
+                        "schema": (
+                            "dse.eval.harness-durable-abort-snapshot.v1"
+                        ),
+                        "accounting_truth": {
+                            "status": "usage_incomplete",
+                            "aggregate_eligible": False,
+                        },
+                    },
+                    "key_accessed": False,
+                    "network_accessed": False,
+                },
+                fault=(
+                    "mid_write_kill"
+                    if fault == "mid_observer_abort"
+                    else (
+                        "after_write_before_fsync_kill"
+                        if fault == "unfsynced_observer_abort"
+                        else None
+                    )
+                ),
+            )
+            if fault == "after_observer_abort":
+                os.kill(os.getpid(), signal.SIGKILL)
+            return 0
         if fault == "before_terminal":
             os.kill(os.getpid(), signal.SIGKILL)
         journal.emit(
@@ -9699,6 +10555,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--trajectory-report", action="store_true")
     mode.add_argument("--observer-conformance", action="store_true")
     mode.add_argument("--acceptance-conformance", action="store_true")
+    mode.add_argument("--interaction-conformance", action="store_true")
     mode.add_argument("--truth-conformance", action="store_true")
     mode.add_argument("--hardness-conformance", action="store_true")
     mode.add_argument(
@@ -9741,6 +10598,8 @@ def main() -> int:
             return run_observer_conformance()
         if args.acceptance_conformance:
             return run_acceptance_conformance()
+        if args.interaction_conformance:
+            return run_interaction_conformance()
         if args.truth_conformance:
             return run_truth_conformance()
         if args.hardness_conformance:

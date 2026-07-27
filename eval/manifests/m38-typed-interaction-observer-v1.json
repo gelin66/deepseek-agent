@@ -1,0 +1,58 @@
+{
+  "schema": "dse.eval.m38-typed-interaction-observer.v1",
+  "suite_id": "m38-typed-interaction-observer-v1",
+  "frozen_at_utc": "2026-07-27T00:00:00Z",
+  "source_identity": {
+    "baseline_revision": "b91d10780bbd714d845dbbf28dada27791509f5a",
+    "baseline_tree": "23c8a201d955e3786da135e84c3a0011d51e357e",
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6
+  },
+  "slice_contract": {
+    "real_problem": "The sole corrected Harness still derives approval versus request_user_input from a campaign name. M37-C therefore rejected a canonical user-input interaction before persisting the already durable behavior/accounting boundary, leaving locally available usage and known cost absent from the journal.",
+    "acceptance": [
+      "approval and user_input are admitted only from the canonical UserInteractionPrompt kind and validated payload, never from a campaign name",
+      "root interactive requests are resolved with the matching typed response while read-only and Writer child profiles remain non-interactive and fail closed",
+      "any observer error after a durable RunStore checkpoint emits a hash-chained safe abort snapshot with event-prefix identity, terminal boundary, physical request counts, known usage/cost and accounting status before the final abort record",
+      "credential-free exact reopen reproduces the same interaction and abort snapshot; event drift, response-kind mismatch, malformed input, multiple pending requests and journal tampering fail closed",
+      "true pre-header provider billing ambiguity remains billing_unknown because the official contract exposes no request-level reconciliation identity or settlement bound",
+      "production crates, Prompt, RuntimeEvent, RunStore, tools, permission, Writer behavior and frozen M37-C evidence remain byte-unchanged"
+    ],
+    "single_owner": "scripts/eval-m9b-fixed-pro-regression.py remains the sole corrected Harness and observer owner",
+    "old_path_replaced": "pending_interactions and resolve_interaction_envelope campaign-name branching for interaction type plus abort records that omit an already available durable accounting boundary",
+    "offline_evidence": [
+      "M38 typed interaction corpus",
+      "root/read-only/Writer actor-profile conformance",
+      "approval/user_input response compatibility",
+      "credential-free exact reopen and drift rejection",
+      "observer-abort journal order, hash-chain, partial-tail and tamper rejection",
+      "existing M14/M16/M23 observer and Hardness continuity regressions"
+    ],
+    "cutover_deletion": [
+      "CAMPAIGN-based interaction prompt admission",
+      "CAMPAIGN-based approval versus answered response construction",
+      "hardness_user_input_not_admitted observer code",
+      "abort-without-durable-accounting projection for mid-Run observer failures"
+    ],
+    "failed_candidate_deletion": "delete the M38 mode, manifest, corpus and summary; do not rerun M37-C, modify frozen raw or weaken billing_unknown"
+  },
+  "corpus": {
+    "path": "eval/fixtures/m38-typed-interaction-observer-v1.json",
+    "file_sha256": "sha256:8f24adaecd6252b353fa903a0eafb63304cfdaee0f47ca3b66c8b26f5a11ac17",
+    "schema": "dse.eval.m38-typed-interaction-observer-corpus.v1",
+    "case_count": 14,
+    "historical_raw_is_input": false,
+    "credential_required": false,
+    "network_required": false
+  },
+  "official_boundary": {
+    "reviewed_on": "2026-07-27",
+    "chat_completion": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "balance": "https://api-docs.deepseek.com/api/get-user-balance/",
+    "usage_export": "https://api-docs.deepseek.com/faq/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "request_level_pre_header_reconciliation": false
+  }
+}

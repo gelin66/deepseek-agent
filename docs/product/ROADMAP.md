@@ -6414,3 +6414,47 @@ transport，只有稳定语义误解才允许改 Prompt。测试发现问题，�
 - [M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)
 - [M17-F bilingual prompt A/B](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)
 - [M36-A DeepSeek-native baseline](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)
+
+## 36. M38：typed interaction observer 与 durable abort accounting
+
+- 状态：**已完成；保留 Harness 修复并删除 campaign-name interaction 语义**
+- 起始基线：M37-C clean checkpoint `b91d10780`
+- owner：既有 corrected Harness `scripts/eval-m9b-fixed-pro-regression.py`
+- production delta：0；Run API v15、RuntimeEvent v22、State v28、exec-stream v6 不变
+
+### 36.1 真实问题与边界
+
+M37-C position 1 到达 canonical `request_user_input` checkpoint 后，Harness 仍用 campaign
+名称猜测 pending interaction 是 approval 还是 user input。它在 terminal/accounting
+snapshot 前中止，导致 RunStore 已持久化的 usage 与 known cost 没有进入 journal。这是
+observer owner 的本地事实丢失，不是 Prompt、Runtime、Provider 或产品能力失败。
+
+M38 只修复两个局部 owner 问题：
+
+1. pending interaction 从 canonical `UserInteractionPrompt` 的 typed kind/payload 派生；
+2. observer 在 durable RunStore checkpoint 后失败时，先写 hash-chained safe abort
+   snapshot，再写最终 abort。
+
+真正的 response-before-headers provider attempt 若没有 response id、usage 或逐请求账单
+对账合同，仍保持 `billing_unknown`。M38 不用 account-level balance 或 monthly API-key
+export 猜测单个物理请求是否计费。
+
+### 36.2 验收与 cutover
+
+冻结的 14-case corpus 覆盖 root approval/user input、resolved/malformed/mismatched/multiple
+interaction、read-only child、Writer、exact reopen/event drift、known usage/cost 和 provider
+billing unknown。observer-abort journal 另外覆盖 before/mid/unfsynced/after snapshot 四个
+SIGKILL 窗口、partial-tail 拒绝和 hash-chain tamper 拒绝。
+
+M9-C 与 M30 运行同一 M38 conformance 得到 byte-identical report，证明 campaign 名称不再
+决定 interaction kind。M9/M14/M16/M23/M30 既有 Harness conformance/self-test 保持通过。
+正式 cutover 删除：
+
+- `CAMPAIGN` 驱动的 approval/user-input admission；
+- `CAMPAIGN` 驱动的 approved/answered response construction；
+- `hardness_user_input_not_admitted` 历史 observer code；
+- durable Store facts 已存在时只写 abort、不保存 accounting boundary 的路径。
+
+M37-C frozen manifest/raw/summary 不修改、不续跑、不补 mate；M38 不读取 Key、不访问网络。
+结论为 `keep_typed_interaction_observer_and_durable_abort_snapshot`。完整证据见
+[M38 summary](../../eval/summaries/m38-typed-interaction-observer-2026-07-27.md)。

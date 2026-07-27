@@ -1,0 +1,255 @@
+{
+  "schema": "dse.eval.m38-typed-interaction-observer-corpus.v1",
+  "accounting_profiles": {
+    "known_unsealed": {
+      "root": {"started": 1, "completed": 1, "in_flight": 0},
+      "child": {"started": 0, "completed": 0, "in_flight": 0},
+      "runtime_retries": 0,
+      "sealed": false,
+      "complete": false,
+      "usage_complete": true,
+      "usage_missing": false,
+      "usage_incomplete": false,
+      "billing_unknown": false,
+      "billing_unknown_attempts": 0,
+      "unpriced": false,
+      "usage_responses": 1,
+      "usage_missing_responses": 0,
+      "incomplete_responses": 0,
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 24,
+        "cache_hit_tokens": 80,
+        "cache_miss_tokens": 40,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 12,
+        "reasoning_replay_tokens": 0
+      },
+      "cost_nanousd": 38400,
+      "cost_nanocny": 0
+    },
+    "complete": {
+      "root": {"started": 1, "completed": 1, "in_flight": 0},
+      "child": {"started": 0, "completed": 0, "in_flight": 0},
+      "runtime_retries": 0,
+      "sealed": true,
+      "complete": true,
+      "usage_complete": true,
+      "usage_missing": false,
+      "usage_incomplete": false,
+      "billing_unknown": false,
+      "billing_unknown_attempts": 0,
+      "unpriced": false,
+      "usage_responses": 1,
+      "usage_missing_responses": 0,
+      "incomplete_responses": 0,
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 24,
+        "cache_hit_tokens": 80,
+        "cache_miss_tokens": 40,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 12,
+        "reasoning_replay_tokens": 0
+      },
+      "cost_nanousd": 38400,
+      "cost_nanocny": 0
+    },
+    "billing_unknown": {
+      "root": {"started": 1, "completed": 1, "in_flight": 0},
+      "child": {"started": 0, "completed": 0, "in_flight": 0},
+      "runtime_retries": 0,
+      "sealed": true,
+      "complete": false,
+      "usage_complete": true,
+      "usage_missing": false,
+      "usage_incomplete": false,
+      "billing_unknown": true,
+      "billing_unknown_attempts": 1,
+      "unpriced": false,
+      "usage_responses": 1,
+      "usage_missing_responses": 0,
+      "incomplete_responses": 0,
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 24,
+        "cache_hit_tokens": 80,
+        "cache_miss_tokens": 40,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 12,
+        "reasoning_replay_tokens": 0
+      },
+      "cost_nanousd": 38400,
+      "cost_nanocny": 0
+    }
+  },
+  "requests": {
+    "approval": {
+      "interaction_id": "interaction-approval",
+      "operation_id": "operation-approval",
+      "call_id": "call-approval",
+      "tool_name": "exec_shell",
+      "prompt": {
+        "kind": "approval",
+        "prompt": {
+          "title": "External command",
+          "description": "Run one exact command",
+          "risk": "elevated"
+        },
+        "arguments": {"command": "curl https://example.invalid"}
+      }
+    },
+    "user_input": {
+      "interaction_id": "interaction-user-input",
+      "operation_id": "operation-user-input",
+      "call_id": "call-user-input",
+      "tool_name": "request_user_input",
+      "prompt": {
+        "kind": "user_input",
+        "request": {
+          "questions": [
+            {
+              "header": "Continue",
+              "id": "continue",
+              "question": "Continue after the durable checkpoint?",
+              "options": [
+                {"label": "Continue", "description": "Resume the same Run."},
+                {"label": "Stop", "description": "Cancel the Run."}
+              ],
+              "allow_free_text": false,
+              "multi_select": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "root_approval_pending_is_typed",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "approval", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 1, "pending_kind": "approval", "response_kind": "approved", "reopen_exact": true, "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "root_user_input_pending_is_typed",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "user_input", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 1, "pending_kind": "user_input", "response_kind": "answered", "reopen_exact": true, "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "resolved_approval_is_not_pending",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "complete",
+      "interactions": [{"request_ref": "approval", "state": "resolved", "response": {"kind": "approved"}}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 0, "pending_kind": null, "response_kind": null, "reopen_exact": true, "accounting_status": "complete"}
+    },
+    {
+      "case_id": "resolved_user_input_is_not_pending",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "complete",
+      "interactions": [{"request_ref": "user_input", "state": "resolved", "response": {"kind": "answered", "answers": [{"id": "continue", "label": "Continue", "value": "Continue"}]}}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 0, "pending_kind": null, "response_kind": null, "reopen_exact": true, "accounting_status": "complete"}
+    },
+    {
+      "case_id": "approval_rejects_answered_response",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "complete",
+      "interactions": [{"request_ref": "approval", "state": "resolved", "response": {"kind": "answered", "answers": [{"id": "continue", "label": "Continue", "value": "Continue"}]}}],
+      "reopen": "exact",
+      "expected": {"status": "rejected", "error_code": "interaction_response_kind_invalid", "accounting_status": "complete"}
+    },
+    {
+      "case_id": "malformed_user_input_is_rejected",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request": {"interaction_id": "interaction-malformed", "operation_id": "operation-malformed", "call_id": "call-malformed", "tool_name": "request_user_input", "prompt": {"kind": "user_input", "request": {"questions": []}}}, "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "rejected", "error_code": "interaction_user_input_invalid", "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "multiple_pending_interactions_are_rejected",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "approval", "state": "pending"}, {"request_ref": "user_input", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "rejected", "error_code": "multiple_pending_interactions", "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "read_only_child_without_interaction_is_valid",
+      "actor_profile": "read_only_child",
+      "interactive": false,
+      "accounting_profile": "complete",
+      "interactions": [],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 0, "pending_kind": null, "response_kind": null, "reopen_exact": true, "accounting_status": "complete"}
+    },
+    {
+      "case_id": "writer_child_without_interaction_is_valid",
+      "actor_profile": "writer_child",
+      "interactive": false,
+      "accounting_profile": "complete",
+      "interactions": [],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 0, "pending_kind": null, "response_kind": null, "reopen_exact": true, "accounting_status": "complete"}
+    },
+    {
+      "case_id": "read_only_child_cannot_request_approval",
+      "actor_profile": "read_only_child",
+      "interactive": false,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "approval", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "rejected", "error_code": "interaction_noninteractive_actor", "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "writer_child_cannot_request_user_input",
+      "actor_profile": "writer_child",
+      "interactive": false,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "user_input", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "rejected", "error_code": "interaction_noninteractive_actor", "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "sqlite_reopen_drift_is_rejected",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "user_input", "state": "pending"}],
+      "reopen": "event_drift",
+      "expected": {"status": "rejected", "error_code": "interaction_reopen_mismatch", "accounting_status": "usage_incomplete"}
+    },
+    {
+      "case_id": "known_usage_and_cost_survive_observer_abort",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "known_unsealed",
+      "interactions": [{"request_ref": "user_input", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 1, "pending_kind": "user_input", "response_kind": "answered", "reopen_exact": true, "accounting_status": "usage_incomplete", "known_input_tokens": 120, "known_output_tokens": 24, "known_cost_nanousd": 38400}
+    },
+    {
+      "case_id": "provider_unknown_remains_fail_closed",
+      "actor_profile": "root",
+      "interactive": true,
+      "accounting_profile": "billing_unknown",
+      "interactions": [{"request_ref": "approval", "state": "pending"}],
+      "reopen": "exact",
+      "expected": {"status": "admitted", "pending_count": 1, "pending_kind": "approval", "response_kind": "approved", "reopen_exact": true, "accounting_status": "billing_unknown", "known_input_tokens": 120, "known_output_tokens": 24, "known_cost_nanousd": 38400}
+    }
+  ]
+}
