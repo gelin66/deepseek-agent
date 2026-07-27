@@ -121,7 +121,7 @@
     "credential_mode": "0600",
     "credential_contents_read_before_admission": false,
     "official_api_requests_before_admission": 0,
-    "proposed_authorization_scope": "M32 only: twenty position-1 fixed-Pro/high control arms, USD 0.50 per arm and USD 10.00 suite ceilings, maximum_reruns=0"
+    "authorization_scope": "M32 only: twenty position-1 fixed-Pro/high control arms, USD 0.50 per arm and USD 10.00 suite ceilings, maximum_reruns=0"
   },
   "official_protocol_revalidated_on": "2026-07-27",
   "official_sources": [
@@ -133,15 +133,16 @@
     "https://api-docs.deepseek.com/guides/tool_calls/"
   ],
   "authorization": {
-    "credential_authorized": false,
-    "official_model_request_authorized": false,
-    "authorized_on": null,
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
     "per_arm_cost_ceiling_usd": 0.5,
     "suite_cost_ceiling_usd": 10.0,
     "maximum_reruns": 0,
-    "pending_exact_user_authorization": true
+    "pending_exact_user_authorization": false
   },
   "offline_gates_passed": true,
-  "live_api_admitted": false,
-  "prepared_at_utc": "2026-07-27T04:02:22Z"
+  "live_api_admitted": true,
+  "prepared_at_utc": "2026-07-27T04:02:22Z",
+  "admitted_at_utc": "2026-07-27T04:07:14Z"
 }
