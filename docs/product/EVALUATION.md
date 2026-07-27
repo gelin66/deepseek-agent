@@ -3854,6 +3854,31 @@ checker 与 diff check 全绿。当前协议 identity 为 Run API v14 / RuntimeE
 State v27；Key/API 调用仍为 0。该结果只准入新的两任务 live admission，不是 keep
 结论。
 
+正式 acquisition 使用独立 commit `b2d0c21fd` 的 admission、immutable
+`dbfbb8a58899817a1ac7f7d896808fbea68c66bb` binary 和冻结顺序，只执行两条
+fixed-Pro/high Ask continuity arm，`maximum_reruns=0`。结果为：
+
+```text
+verified success             2 / 2
+false success                0
+latest-revision receipt      2 / 2
+continuity + SQLite reopen   2 / 2
+additional approvals         0
+accounting complete          2 / 2
+physical requests            17
+input / output tokens        254,746 / 14,443
+known cost                   USD 0.030561824
+decision                     keep_contract_verifier_grant
+```
+
+因此 typed exact grant 接管 production；ordinary external path、network、cwd、explicit
+deny、hard invariant 与 sandbox 仍由原 policy fail closed。临时 M31 Harness consumer
+在决定后物理删除，frozen manifest/admission、ignored `0600` raw 与 summary 保留。
+raw SHA-256 为
+`efcfe2846952d13416910a9980b7b37a88e7ec1480587db69f1960fb1b0c5570`，21 records，
+无 partial tail。完整结论见
+[M31 contract-bound verifier permission treatment](../../eval/summaries/m31-contract-verifier-permission-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

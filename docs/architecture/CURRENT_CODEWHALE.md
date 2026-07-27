@@ -1084,7 +1084,10 @@ M4-C foreground 切换后还已物理删除：
   canonical `VerifierSpec` digest 重新验证。该 grant 只让 exact verifier executable
   program 通过 generic external-path 分类；external cwd、普通外部路径、network、write
   root、explicit deny 和现有 OS sandbox 均未放宽。State v27 退休缺少该 grant 的旧
-  materialized Run，只保留能按当前 Start command 无损恢复的 pending intent。
+  materialized Run，只保留能按当前 Start command 无损恢复的 pending intent。M31 的
+  两项 fixed-Pro/high Ask continuity task 均取得 latest-revision failed→write→pass
+  receipt、false success=0、exact SIGKILL/SQLite reopen 和完整 accounting，因此该
+  grant 已保留；临时 M31 Harness consumer 已物理删除。
 - `dse-execpolicy` 已收缩为 production 与 `execpolicy check` 共用的 TOML allow/deny
   matcher。TUI 私有 snapshot/parser、tools duplicate matcher、richer ask/session/network
   amendment 类型和旧 bool/trust/sandbox/elevation reader 已物理删除。Run API v14、

@@ -5476,12 +5476,12 @@ authority，才允许审计 permission/verifier integration；本次 raw 不授�
 
 ## 29. M31：contract-bound Host verifier 最小执行授权
 
-- 状态：**offline candidate 全绿；两任务 live treatment 尚未授权/执行**
+- 状态：**complete；`keep_contract_verifier_grant`**
 - 基线：M30 clean checkpoint `401545971`
 - owner：`crates/runtime` 派生并重放 exact grant，`crates/tools` 作最终授权与 sandbox
   判定，`crates/protocol`/`crates/state` 只承载唯一 typed durable fact
-- production delta：candidate `dbfbb8a58` 已建立 typed exact grant；是否保留仍由两任务
-  live gate 决定
+- production delta：candidate `dbfbb8a58` 的 typed exact grant 已由两任务 live gate
+  保留；临时 M31 Harness consumer 已删除
 
 ### 29.1 可重复 production defect
 
@@ -5532,5 +5532,26 @@ path 只在 canonical spec digest 完全一致时忽略 verifier `commands[].pro
 receipt、SQLite exact reopen、prepared/authorized/in-flight/outcome-committed 四个 SIGKILL
 窗口、root/read-only/Writer、CLI/TUI/app-server、双语 PTY、focused、fmt、strict
 workspace Clippy/test、public checker 与 diff check 全绿。该 checkpoint 未读取 Key、未
-请求 official API；下一步只允许冻结 immutable `dbfbb8a58` binary 与新的 M31 live
-admission，取得本 Goal 专属授权后各执行两个原任务一次。
+请求 official API；后续 live acquisition 只使用 immutable `dbfbb8a58` binary 与独立
+M31 admission，并按专属授权各执行两个原任务一次。
+
+### 29.4 Live keep 与 cutover
+
+专属 admission commit `b2d0c21fd` 冻结两项 fixed-Pro/high、Ask/interactive continuity
+treatment，`maximum_reruns=0`、`$0.50/arm`、`$1.00/suite`。正式 Harness 正常退出 0：
+
+- 两项均为 verified success，false success=0；
+- 两项都形成 verifier fail→workspace mutation→latest-revision pass receipt；
+- 两次 interaction commit 后 SIGKILL 均从 exact event prefix 恢复，终态 SQLite reopen
+  与 Store snapshot 一致，额外 approval 为 0；
+- accounting 2/2 complete，17 requests、254,746 input tokens、14,443 output tokens、
+  known cost `$0.030561824`；
+- raw 是 21-record、无 partial tail、`0600` hash-chain journal，SHA-256
+  `efcfe2846952d13416910a9980b7b37a88e7ec1480587db69f1960fb1b0c5570`。
+
+结论为 `keep_contract_verifier_grant`。保留 exact grant、digest、Runtime derivation、
+tools validation 与 State v27 retirement；删除临时 `--campaign m31` loader、aggregate、
+preflight、continuity/live runner 分支，corrected Harness 恢复 pre-M31 blob
+`90ffb72bbd830ec7e1e66c685768bea37b37e0c3`。frozen contract/treatment/admission、
+ignored `0600` raw 与 summary 保留作审计证据。完整结论见
+[M31 contract-bound verifier permission treatment](../../eval/summaries/m31-contract-verifier-permission-2026-07-27.md)。
