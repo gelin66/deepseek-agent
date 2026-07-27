@@ -1,0 +1,134 @@
+{
+  "schema": "dse.eval.m39a-context-loss-acquisition-live-admission.v1",
+  "admitted_at_utc": "2026-07-27T16:37:55Z",
+  "contract_manifest": "eval/manifests/m39a-context-loss-acquisition-v1.json",
+  "contract_manifest_sha256": "sha256:720147221774806071f74c46d87eafa69aec0120dabe1c52727fbbb0c1406153",
+  "inherited_contract_manifest": null,
+  "inherited_contract_manifest_sha256": null,
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "4f93060fe2ee2e4ba750b3a53357dfce86fc0d30",
+  "candidate_tree": "b8b7e75de479fbe7ada556407c3c0c3afe08eeb5",
+  "candidate_binary": "/private/tmp/dse-m39a-target/release/dse",
+  "candidate_binary_sha256": "sha256:1697002a9135ea3939d1510e124e053cc0da3549219b8eb1787818aac26c5063",
+  "candidate_binary_size_bytes": 15694416,
+  "candidate_binary_version": "dse 0.8.68 (4f93060fe2ee)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:a8712cb17809702b17b1d56f396c921255d6e8bb4f5a75b0ebcb62f073c040c1",
+  "schedule_sha256": "sha256:4e35c38e238f5f674eeda593cf0c9a9ec6bafb6812a7a93976a19e43672d9e8e",
+  "task_contracts_sha256": "sha256:162df9e0877813929d70945f2f16fa0e6f28cb12ad0bcc9ee36477600103bde2",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:ac1d2e4d0b4aaa2e45179f6dd62ba7b66fca2f4c37588ad337c2c4dfa3e5dec6",
+  "freeze_report_sha256": "sha256:60da5adcba96f3d83d2def79baa86de5639b025cefc7839788ca3e018883b015",
+  "dry_run_sha256": "sha256:15dad7da31fc5d0e5ab90d1e148baab1b5d83c1c88ff23fed26ce9572869954e",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:c08a2fe2142b859b7d54e1d88f72b5ddb140a4a003f91aa698fc3cb7d80c2c42",
+  "interaction_conformance_sha256": "sha256:3ad5f8aa6b2af646b63a3fa576896ea869973d5a9127e86b5ed32089d9f14e2a",
+  "truth_conformance_sha256": "sha256:c9a278e201c4ace7bdfa08ec06354c36c134973909f429b5bc0fcd9f031bed80",
+  "hardness_conformance_sha256": null,
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "fresh six-task position-1 current pack-on context/localization loss acquisition"
+  },
+  "offline_gates": [
+    {
+      "gate": "fresh six-task fixture, initial failures, five reference solutions, one safety counterexample and exact changed scopes",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "hash-chain journal, four write crash windows, exact threshold and conservative M39 canonical loss projection",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary and credential-free dry-run with fixed actor controls",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "tool trajectory, acceptance equivalence, M38 typed interaction and behavior/accounting truth conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace clippy/test, process SIGKILL/reopen, surface parity, public checker and diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek V4, ChatCompletions, Thinking, Tool Calls, streaming usage and pricing revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "rust_header_localization": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d",
+    "typescript_protocol_localization": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d",
+    "python_config_crossfile": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d",
+    "readonly_module_handoff": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d",
+    "writer_record_migration": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d",
+    "safety_tenant_claim": "sha256:9f3952dcf4ac5c8f75f65d5572695066b98798e5c76f836f3bb1333e16895e2d"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 1,
+    "formal_arms": 6,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 3.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m39a-context-loss-4f93060fe2ee-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized current fixed-Pro/high fresh loss acquisition under the frozen USD 3.00 suite ceiling"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 3.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
