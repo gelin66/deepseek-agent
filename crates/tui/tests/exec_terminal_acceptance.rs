@@ -7,6 +7,9 @@
 //! Official RequestPlan ownership is covered separately by planner/accounting
 //! tests and the cost-bounded live canary.
 
+#[path = "support/model_fault_proxy.rs"]
+mod model_fault_proxy;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -26,6 +29,8 @@ use tempfile::TempDir;
 use wait_timeout::ChildExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+use model_fault_proxy::{FaultScript, ModelFaultProxy};
 
 // Use a priced production model id so a nominal success must also prove exact
 // cost attribution; a made-up id would correctly fail `cost_complete`.
@@ -63,6 +68,7 @@ struct ExecOutput {
 struct NonAgentExecOptions<'a> {
     json_output: bool,
     stream_json: bool,
+    language: Option<&'a str>,
     allowed_tools: Option<&'a str>,
     disallowed_tools: Option<&'a str>,
 }
@@ -1657,6 +1663,234 @@ async fn partial_sse_eof_is_a_typed_failure_not_success() {
     assert_eq!(chat_request_count(&server).await, 1);
 }
 
+#[test]
+fn plain_exec_reports_response_header_timeout_before_recovery() {
+    let proxy = ModelFaultProxy::start(FaultScript::HeaderTimeoutThenSuccess);
+    let (command, _workspace, _home) = prepare_non_agent_exec(
+        &proxy.uri(),
+        "exercise visible response header timeout recovery",
+        NonAgentExecOptions {
+            language: Some("en"),
+            allowed_tools: Some("read_file"),
+            ..NonAgentExecOptions::default()
+        },
+    );
+    let output = run_with_timeout(command, Duration::from_secs(65));
+
+    assert!(
+        output.status.success(),
+        "timeout recovery must complete\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(
+        proxy.attempts(),
+        2,
+        "response-header timeout must cause exactly one retry"
+    );
+    assert!(output.stdout.contains("M34_RECOVERED"), "{}", output.stdout);
+    for fact in ["DeepSeek", "request timeout", "retry 1/2", "1s"] {
+        assert!(
+            output.stderr.contains(fact),
+            "stderr omitted timeout fact {fact:?}\nstdout:\n{}\nstderr:\n{}",
+            output.stdout,
+            output.stderr
+        );
+    }
+}
+
+#[test]
+fn plain_exec_reports_retry_progress_on_stderr_and_keeps_stdout_for_model_output() {
+    let proxy = ModelFaultProxy::start(FaultScript::RateLimitThenSuccess);
+    let (command, _workspace, _home) = prepare_non_agent_exec(
+        &proxy.uri(),
+        "exercise visible retry recovery",
+        NonAgentExecOptions {
+            language: Some("zh-Hans"),
+            allowed_tools: Some("read_file"),
+            ..NonAgentExecOptions::default()
+        },
+    );
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
+
+    assert!(
+        output.status.success(),
+        "retry recovery must complete\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(proxy.attempts(), 2, "429 must cause exactly one retry");
+    assert!(
+        output.stdout.contains("M34_RECOVERED"),
+        "final model output belongs on stdout:\n{}",
+        output.stdout
+    );
+    for fact in ["DeepSeek", "限流", "重试 1/2", "2 秒"] {
+        assert!(
+            output.stderr.contains(fact),
+            "stderr omitted retry fact {fact:?}\nstdout:\n{}\nstderr:\n{}",
+            output.stdout,
+            output.stderr
+        );
+    }
+    assert!(
+        !output.stdout.contains("重试 1/2"),
+        "human progress must not contaminate stdout:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn stream_json_projects_each_canonical_model_failure_before_terminal() {
+    let proxy = ModelFaultProxy::start(FaultScript::ServiceUnavailableExhausted);
+    let output = run_exec_at(
+        &proxy.uri(),
+        20,
+        "exercise typed failure stream projection",
+        "",
+        None,
+    );
+
+    assert!(
+        !output.status.success(),
+        "exhausted 503 must fail\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(
+        proxy.attempts(),
+        3,
+        "initial request plus two retries\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    let events = parse_strict_ndjson(&output.stdout);
+    let failures = events
+        .iter()
+        .filter(|event| event["type"] == "model_request_failed")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        failures.len(),
+        3,
+        "machine stream must expose every canonical failed attempt: {events:#?}"
+    );
+    for failure in failures {
+        assert_eq!(failure["schema"], "dse.exec-stream");
+        assert_eq!(failure["failure"]["category"], "service");
+        assert!(failure["sequence"].as_u64().is_some());
+        assert!(failure["attempt_id"].as_str().is_some());
+        assert!(
+            failure.get("runtime_event").is_none(),
+            "bounded retry projection must not duplicate the full ModelRequest"
+        );
+        let serialized = serde_json::to_string(failure).expect("serialize bounded failure event");
+        assert!(!serialized.contains("system_prompt"), "{serialized}");
+        assert!(!serialized.contains("\"tools\""), "{serialized}");
+        assert!(
+            serialized.len() < 5_000,
+            "typed failure projection unexpectedly expanded to {} bytes",
+            serialized.len()
+        );
+    }
+    let metadata = assert_terminal_tail(&events, Some("deepseek_model_error"));
+    assert_eq!(metadata["runtime_retry_count"], 2);
+    assert_eq!(metadata["api_request_count"], 3);
+}
+
+#[test]
+fn reset_recovery_and_permanent_auth_failure_keep_attempts_and_decisions_exact() {
+    let reset_proxy = ModelFaultProxy::start(FaultScript::ResetResetThenSuccess);
+    let reset_output = run_exec_at(
+        &reset_proxy.uri(),
+        20,
+        "exercise two reset recoveries",
+        "",
+        None,
+    );
+    assert!(
+        reset_output.status.success(),
+        "reset recovery must complete\nstdout:\n{}\nstderr:\n{}",
+        reset_output.stdout,
+        reset_output.stderr
+    );
+    assert_eq!(reset_proxy.attempts(), 3);
+    let reset_events = parse_strict_ndjson(&reset_output.stdout);
+    assert_eq!(
+        reset_events
+            .iter()
+            .filter(|event| event["type"] == "model_request_failed")
+            .count(),
+        2
+    );
+    let reset_metadata = assert_terminal_tail(&reset_events, None);
+    assert_eq!(reset_metadata["status"], "completed");
+    assert_eq!(reset_metadata["runtime_retry_count"], 2);
+    assert_eq!(reset_metadata["api_request_count"], 3);
+
+    let auth_proxy = ModelFaultProxy::start(FaultScript::Unauthorized);
+    let auth_output = run_exec_at(
+        &auth_proxy.uri(),
+        10,
+        "exercise permanent authentication failure",
+        "",
+        None,
+    );
+    assert!(
+        !auth_output.status.success(),
+        "401 must fail without retry\nstdout:\n{}\nstderr:\n{}",
+        auth_output.stdout,
+        auth_output.stderr
+    );
+    assert_eq!(auth_proxy.attempts(), 1);
+    let auth_events = parse_strict_ndjson(&auth_output.stdout);
+    let failure = auth_events
+        .iter()
+        .find(|event| event["type"] == "model_request_failed")
+        .expect("typed 401 model failure");
+    assert_eq!(failure["failure"]["category"], "authentication");
+    assert_eq!(failure["retry"]["decision"], "stop");
+    assert_eq!(failure["retry"]["reason"], "not_retryable");
+    let auth_metadata = assert_terminal_tail(&auth_events, Some("deepseek_model_error"));
+    assert_eq!(auth_metadata["runtime_retry_count"], 0);
+    assert_eq!(auth_metadata["api_request_count"], 1);
+}
+
+#[test]
+fn plain_exec_explains_why_partial_output_is_not_retried() {
+    let proxy = ModelFaultProxy::start(FaultScript::PartialContentClose);
+    let (command, _workspace, _home) = prepare_non_agent_exec(
+        &proxy.uri(),
+        "exercise partial output stop feedback",
+        NonAgentExecOptions {
+            language: Some("zh-Hans"),
+            allowed_tools: Some("read_file"),
+            ..NonAgentExecOptions::default()
+        },
+    );
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
+
+    assert!(
+        !output.status.success(),
+        "partial SSE must fail\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(proxy.attempts(), 1, "partial output must never be resent");
+    assert!(
+        output.stdout.contains("M34_PARTIAL"),
+        "already received content remains observable:\n{}",
+        output.stdout
+    );
+    for fact in ["DeepSeek", "停止重试", "已收到可执行输出"] {
+        assert!(
+            output.stderr.contains(fact),
+            "stderr omitted partial-stop fact {fact:?}\nstdout:\n{}\nstderr:\n{}",
+            output.stdout,
+            output.stderr
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watchdog_cancels_a_hung_request_and_emits_one_failure_terminal() {
     let _serial = EXEC_TEST_LOCK.lock().await;
@@ -2164,10 +2398,11 @@ fn prepare_non_agent_exec(
         .current_dir(workspace.path())
         .arg("--workspace")
         .arg(workspace.path())
-        .arg("--no-project-config")
-        .arg("exec")
-        .arg("--model")
-        .arg(TEST_MODEL);
+        .arg("--no-project-config");
+    if let Some(language) = options.language {
+        command.arg("--language").arg(language);
+    }
+    command.arg("exec").arg("--model").arg(TEST_MODEL);
     if options.json_output {
         command.arg("--json");
     }
@@ -2383,7 +2618,7 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                 )
             });
             assert_eq!(event["schema"], "dse.exec-stream");
-            assert_eq!(event["schema_version"], 5);
+            assert_eq!(event["schema_version"], 6);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",

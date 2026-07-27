@@ -10,6 +10,8 @@
 
 #![cfg(unix)]
 
+#[path = "support/model_fault_proxy.rs"]
+mod model_fault_proxy;
 #[path = "support/qa_harness/mod.rs"]
 mod qa_harness;
 
@@ -19,6 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use model_fault_proxy::{FaultScript, ModelFaultProxy};
 use qa_harness::harness::{Harness, make_sealed_workspace};
 use qa_harness::keys;
 
@@ -360,6 +363,106 @@ fn viewport_origin_stays_row_zero_after_failed_turn() -> anyhow::Result<()> {
     h.wait_for_text("✕ 失败", Duration::from_secs(15))?;
     assert_viewport_starts_at_top(h.frame());
 
+    let _ = h.shutdown();
+    Ok(())
+}
+
+#[test]
+fn model_retry_progress_and_terminal_stop_are_bilingual_and_persistent() -> anyhow::Result<()> {
+    let _guard = qa_pty_test_lock();
+    for (language, ready, category, retry_ordinal, wait) in [
+        (
+            "en",
+            ENGLISH_COMPOSER_READY_TEXT,
+            "rate limited",
+            "retry 1/2",
+            "2s",
+        ),
+        (
+            "zh-Hans",
+            COMPOSER_READY_TEXT,
+            "请求限流",
+            "重试 1/2",
+            "2 秒",
+        ),
+    ] {
+        let proxy = ModelFaultProxy::start(FaultScript::RateLimitThenSuccess);
+        let ws = make_sealed_workspace()?;
+        let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
+            .cwd(ws.workspace())
+            .clear_env()
+            .seal_home(ws.home())
+            .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+            .env("DEEPSEEK_BASE_URL", proxy.uri())
+            .env("NO_ANIMATIONS", "1")
+            .env("RUST_LOG", "warn")
+            .args([
+                "--workspace",
+                ws.workspace().to_str().expect("utf-8 workspace path"),
+                "--language",
+                language,
+                "--no-project-config",
+                "--skip-onboarding",
+            ])
+            .size(12, 48)
+            .spawn()?;
+        h.wait_for_text(ready, BOOT_TIMEOUT)?;
+        assert!(
+            h.frame().row(0).to_ascii_lowercase().contains("deepseek"),
+            "{language} header must retain provider identity:\n{}",
+            h.debug_dump()
+        );
+        h.paste("exercise visible retry recovery")?;
+        h.send(keys::key::enter())?;
+        h.wait_for_text(category, Duration::from_secs(10))?;
+        h.wait_for_text(retry_ordinal, Duration::from_secs(10))?;
+        assert!(
+            h.frame().contains(wait),
+            "{language} retry wait missing:\n{}",
+            h.debug_dump()
+        );
+        h.wait_for_text("M34_RECOVERED", Duration::from_secs(10))?;
+        assert_eq!(proxy.attempts(), 2, "{language} 429 attempt count");
+        assert!(
+            !h.frame().contains("✕ 失败") && !h.frame().contains("✕ Failed"),
+            "{language} successful recovery left false terminal failure:\n{}",
+            h.debug_dump()
+        );
+        let _ = h.shutdown();
+    }
+
+    let proxy = ModelFaultProxy::start(FaultScript::ServiceUnavailableExhausted);
+    let ws = make_sealed_workspace()?;
+    let mut h = Harness::builder(Harness::cargo_bin("dse-tui"))
+        .cwd(ws.workspace())
+        .clear_env()
+        .seal_home(ws.home())
+        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+        .env("DEEPSEEK_BASE_URL", proxy.uri())
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--language",
+            "zh-Hans",
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(40, 140)
+        .spawn()?;
+    h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+    h.paste("exercise persistent retry exhaustion")?;
+    h.send(keys::key::enter())?;
+    h.wait_for_text("✕ 失败", Duration::from_secs(12))?;
+    h.wait_for_text("停止重试：", KEY_TIMEOUT)?;
+    h.wait_for_text("重新提交或继续任务", KEY_TIMEOUT)?;
+    assert_eq!(
+        proxy.attempts(),
+        3,
+        "503 exhaustion must reach the fixed retry limit:\n{}",
+        h.debug_dump()
+    );
     let _ = h.shutdown();
     Ok(())
 }

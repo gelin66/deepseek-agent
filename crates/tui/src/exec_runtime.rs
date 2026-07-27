@@ -33,8 +33,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::{Config, MAX_SUBAGENTS};
-use crate::exec_lifecycle_stream::{agent_lifecycle_stream_line, is_agent_lifecycle_event};
+use crate::exec_lifecycle_stream::{
+    agent_lifecycle_stream_line, is_agent_lifecycle_event, model_request_failed_stream_line,
+};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
+use crate::model_failure_presentation::model_request_failed_message;
 use dse_localization::{MessageId, ProductLanguage, process_language, tr, tr_in};
 
 use super::{
@@ -1120,6 +1123,7 @@ impl<'a> RuntimeEventProjection<'a> {
             json_output,
             render,
         } = self;
+        let mut write_to_stderr = false;
         let bytes = match &event.event {
             RuntimeEventKind::RunCreated { request } => {
                 *transcript = request.transcript.clone();
@@ -1148,6 +1152,32 @@ impl<'a> RuntimeEventProjection<'a> {
                     tool_calls: model.tool_calls.clone(),
                 });
                 None
+            }
+            RuntimeEventKind::ModelRequestFailed { failure, retry, .. } => {
+                if format == ExecOutputFormat::StreamJson {
+                    model_request_failed_stream_line(event).ok()
+                } else if !json_output {
+                    write_to_stderr = true;
+                    let mut line = match retry {
+                        dse_protocol::agent_runtime::ModelRetryDecision::Retry { .. } => {
+                            format!(
+                                "DeepSeek · {}",
+                                crate::model_failure_presentation::model_request_status_message(
+                                    process_language(),
+                                    failure,
+                                    retry,
+                                )
+                            )
+                        }
+                        dse_protocol::agent_runtime::ModelRetryDecision::Stop { .. } => {
+                            model_request_failed_message(process_language(), failure, retry)
+                        }
+                    };
+                    line.push('\n');
+                    Some(line.into_bytes())
+                } else {
+                    None
+                }
             }
             RuntimeEventKind::ContentDelta { delta, .. } => {
                 summary.output.push_str(delta);
@@ -1301,7 +1331,6 @@ impl<'a> RuntimeEventProjection<'a> {
             }
             RuntimeEventKind::ModelRequestPrepared { .. }
             | RuntimeEventKind::ModelRequestInFlight { .. }
-            | RuntimeEventKind::ModelRequestFailed { .. }
             | RuntimeEventKind::ContextCompactionCommitted { .. }
             | RuntimeEventKind::ReasoningDelta { .. }
             | RuntimeEventKind::ToolExecutionStarted { .. } => None,
@@ -1309,7 +1338,13 @@ impl<'a> RuntimeEventProjection<'a> {
         if !render {
             return None;
         }
-        bytes.map(|bytes| output.write_stdout(bytes))
+        bytes.map(move |bytes| async move {
+            if write_to_stderr {
+                output.enqueue_stderr(bytes).await?.wait().await
+            } else {
+                output.write_stdout(bytes).await
+            }
+        })
     }
 }
 
@@ -1998,7 +2033,10 @@ mod tests {
             1_025,
         );
         let value = crate::exec_stream_value(&stream).unwrap();
-        assert_eq!(value["schema_version"], 5);
+        assert_eq!(
+            value["schema_version"],
+            crate::exec_lifecycle_stream::EXEC_STREAM_SCHEMA_VERSION
+        );
         assert_eq!(value["type"], "tool_result");
         assert_eq!(value["failure_code"], "stale_read");
         assert_eq!(value["invocation_status"], "accepted");

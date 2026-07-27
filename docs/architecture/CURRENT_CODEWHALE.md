@@ -232,7 +232,7 @@
   M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
   Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
   Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
-- 当前协议：Run API v15、RuntimeEvent v22、State schema v28、exec-stream v5。产品默认
+- 当前协议：Run API v15、RuntimeEvent v22、State schema v28、exec-stream v6。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 ## 1. 当前结论
@@ -2724,6 +2724,17 @@ preflight 因缺少 sibling `dse-tui` 在网络前停止（官方请求 0）；�
 一个 Pro/high 请求完成，physical started/completed/in-flight 为 `1/1/0`，
 runtime retry 0，usage/cost complete，billing unknown 0。该 canary 只证明当前普通成功
 路径与 accounting，没有用真实服务故障替代确定性的 retry safety matrix。
+
+M34 没有改变上述 retry policy、backoff、protocol event 或 State truth。真实
+production binary 经 loopback 注入 response-header timeout、两次 connection reset、
+429 + `Retry-After`、连续 503、401 与 partial SSE close 后，证明重复缺口只在客户端
+投影：plain exec 不显示 attempt/wait，stream-json 不显示逐次失败，TUI terminal 又会
+覆盖停止原因。当前 CLI 将 transient progress 写入 stderr、模型输出保持 stdout；TUI
+使用同一双语 category/ordinal/wait，在窄终端保留 typed warning，并把最终停止原因写入
+history。exec-stream v6 新增 bounded `model_request_failed` 投影，只携带 stored
+failure、retry decision 与紧凑 accounting，不复制完整 system prompt、transcript 或
+tool catalog。app-server 继续原样投影 canonical stored event；sequence reconnect、
+same-Run resume 与 upstream retry 仍是三个不同机制。
 
 ## 8. 明确非结论
 

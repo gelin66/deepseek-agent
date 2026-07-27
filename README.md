@@ -29,7 +29,7 @@ DSE is deliberately narrow:
   request or translation model.
 
 The current protocol identities are Run API v15, RuntimeEvent v22,
-State schema v28, and exec-stream v5.
+State schema v28, and exec-stream v6.
 
 ## Fixed model profiles
 

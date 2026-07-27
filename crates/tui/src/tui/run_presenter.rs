@@ -7,18 +7,21 @@
 use std::{borrow::Cow, time::Instant};
 
 use dse_localization::{MessageId, ProductLanguage, tr_in};
+#[cfg(test)]
+use dse_protocol::agent_runtime::WriterCleanupMetadataState;
 use dse_protocol::agent_runtime::{
-    DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
-    ModelOutput, ModelRetryDecision, ModelRetryStopReason,
+    DurableControlAction, InteractionId, ModelAccounting, ModelOutput,
     ReasoningEffort as CanonicalReasoningEffort, RuntimeEventKind, TerminalState, ToolArguments,
     ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
     WriterCleanupResult, WriterIntegrationStatus,
 };
-#[cfg(test)]
-use dse_protocol::agent_runtime::{ModelResponseEvidence, WriterCleanupMetadataState};
 use serde_json::Value;
 
-use super::app::{App, ReasoningEffort};
+use crate::model_failure_presentation::{
+    model_request_failed_message, model_request_status_message,
+};
+
+use super::app::{App, ReasoningEffort, StatusToastLevel};
 use super::history::{
     GenericToolCell, HistoryCell, ToolStatus, output_looks_like_diff, summarize_tool_args,
     summarize_tool_output,
@@ -126,11 +129,26 @@ fn present_canonical_event(
         }
         RuntimeEventKind::ModelRequestFailed { failure, retry, .. } => {
             discard_uncommitted_streams(app);
-            app.status_message = Some(
-                tr_in(language, MessageId::RunModelRequestFailed)
-                    .replace("{failure}", &model_failure_label(language, &failure))
-                    .replace("{retry}", &model_retry_label(language, &retry)),
-            );
+            match &retry {
+                dse_protocol::agent_runtime::ModelRetryDecision::Retry { prepared } => {
+                    let message = model_request_status_message(language, &failure, &retry);
+                    app.status_message = Some(message.clone());
+                    // The typed retry decision, rather than localized keyword
+                    // parsing, marks this transient fact important enough for
+                    // the narrow terminal tier.
+                    app.last_status_message_seen = Some(message.clone());
+                    app.push_status_toast(
+                        message,
+                        StatusToastLevel::Warning,
+                        Some(prepared.backoff_ms.saturating_add(1_000)),
+                    );
+                }
+                dse_protocol::agent_runtime::ModelRetryDecision::Stop { .. } => {
+                    let message = model_request_failed_message(language, &failure, &retry);
+                    app.status_message = Some(message.clone());
+                    app.add_message(HistoryCell::System { content: message });
+                }
+            }
             None
         }
         RuntimeEventKind::ModelResponseCommitted {
@@ -750,69 +768,6 @@ fn terminal_label(language: ProductLanguage, terminal: &TerminalState) -> Cow<'s
     }
 }
 
-fn model_failure_label(language: ProductLanguage, failure: &ModelAttemptFailure) -> String {
-    tr_in(language, MessageId::RunModelFailureDetail)
-        .replace("{message}", &failure.message)
-        .replace("{code}", &failure.code)
-        .replace(
-            "{category}",
-            &model_error_category_label(language, failure.category),
-        )
-}
-
-fn model_error_category_label(
-    language: ProductLanguage,
-    category: ModelErrorCategory,
-) -> Cow<'static, str> {
-    match category {
-        ModelErrorCategory::Transport => tr_in(language, MessageId::RunModelCategoryTransport),
-        ModelErrorCategory::Timeout => tr_in(language, MessageId::RunModelCategoryTimeout),
-        ModelErrorCategory::StreamStall => tr_in(language, MessageId::RunModelCategoryStreamStall),
-        ModelErrorCategory::RateLimit => tr_in(language, MessageId::RunModelCategoryRateLimit),
-        ModelErrorCategory::Authentication => {
-            tr_in(language, MessageId::RunModelCategoryAuthentication)
-        }
-        ModelErrorCategory::Protocol => tr_in(language, MessageId::RunModelCategoryProtocol),
-        ModelErrorCategory::Service => tr_in(language, MessageId::RunModelCategoryService),
-        ModelErrorCategory::Cancelled => tr_in(language, MessageId::RunModelCategoryCancelled),
-        ModelErrorCategory::Unknown => tr_in(language, MessageId::RunModelCategoryUnknown),
-    }
-}
-
-fn model_retry_label(language: ProductLanguage, retry: &ModelRetryDecision) -> String {
-    match retry {
-        ModelRetryDecision::Stop { reason } => tr_in(language, MessageId::RunRetryStopped).replace(
-            "{reason}",
-            &model_retry_stop_reason_label(language, *reason),
-        ),
-        ModelRetryDecision::Retry { prepared } => tr_in(language, MessageId::RunRetryPrepared)
-            .replace("{attempt}", &prepared.request.attempt.to_string())
-            .replace("{max_retries}", &prepared.max_retries.to_string())
-            .replace(
-                "{seconds}",
-                &prepared.backoff_ms.div_ceil(1_000).to_string(),
-            ),
-    }
-}
-
-fn model_retry_stop_reason_label(
-    language: ProductLanguage,
-    reason: ModelRetryStopReason,
-) -> Cow<'static, str> {
-    match reason {
-        ModelRetryStopReason::ActionableOutput => {
-            tr_in(language, MessageId::RunRetryActionableOutput)
-        }
-        ModelRetryStopReason::UnsafeReplay => tr_in(language, MessageId::RunRetryUnsafeReplay),
-        ModelRetryStopReason::NotRetryable => tr_in(language, MessageId::RunRetryNotRetryable),
-        ModelRetryStopReason::FailureChanged => tr_in(language, MessageId::RunRetryFailureChanged),
-        ModelRetryStopReason::RetryLimitReached => tr_in(language, MessageId::RunRetryLimitReached),
-        ModelRetryStopReason::ModelRequestBudgetExceeded => {
-            tr_in(language, MessageId::RunRetryBudgetExceeded)
-        }
-    }
-}
-
 fn control_action_label(
     language: ProductLanguage,
     action: DurableControlAction,
@@ -830,11 +785,13 @@ mod tests {
     use dse_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentOutcome, AgentTaskId,
         AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, CommandId, DurableControlAction,
-        ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
-        PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
-        RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
-        TerminalState, ToolFailureCode, ToolInvocation, ToolRetryDisposition, ToolSideEffectStatus,
-        TranscriptEntry, Usage, WorkspaceAccess, WriterIntegrationStatus, WriterResourceState,
+        ModelAccounting, ModelAttemptFailure, ModelErrorCategory, ModelFinishReason, ModelOutput,
+        ModelRequest, ModelResponseEvidence, ModelRetryDecision, ModelRetryStopReason,
+        ModelToolCall, OperationId, PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity,
+        RecoveryAmbiguityPhase, RunId, RunRequest, RuntimeEventId, RuntimeFailure,
+        StoredRuntimeEvent, SystemPrompt, TerminalState, ToolFailureCode, ToolInvocation,
+        ToolRetryDisposition, ToolSideEffectStatus, TranscriptEntry, Usage, WorkspaceAccess,
+        WriterIntegrationStatus, WriterResourceState,
     };
     use dse_protocol::task::{
         AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
@@ -1622,7 +1579,7 @@ mod tests {
         let status = app.status_message.expect("失败状态");
         assert_eq!(
             status,
-            "DeepSeek 请求失败：connection reset by peer（代码：deepseek_transport；类别：传输错误）；停止重试：已达到重试上限"
+            "DeepSeek 请求失败：connection reset by peer（代码：deepseek_transport；类别：传输错误）；停止重试：已达到重试上限。请检查上方原因，然后重新提交或继续任务。"
         );
         for leaked in [
             "ModelAttemptFailure",
@@ -1631,6 +1588,71 @@ mod tests {
             "RetryLimitReached",
         ] {
             assert!(!status.contains(leaked), "泄漏了协议枚举名：{leaked}");
+        }
+    }
+
+    #[test]
+    fn stopped_model_failure_remains_in_history_after_terminal() {
+        let run_id = RunId::from("persistent-failure-run");
+        let failure = ModelAttemptFailure {
+            code: "deepseek_service".to_owned(),
+            category: ModelErrorCategory::Service,
+            message: "503 Service Unavailable".to_owned(),
+            retryable: true,
+            retry_after_ms: None,
+            retry_safe: true,
+            actionable_output: false,
+            response: ModelResponseEvidence::default(),
+        };
+        for (language, expected) in [
+            (
+                ProductLanguage::SimplifiedChinese,
+                "停止重试：已达到重试上限",
+            ),
+            (
+                ProductLanguage::English,
+                "Retry stopped: retry limit reached",
+            ),
+        ] {
+            let mut app = app_in(language);
+            apply_events(
+                &mut app,
+                vec![
+                    created(&run_id, Vec::new()),
+                    stored(
+                        &run_id,
+                        2,
+                        RuntimeEventKind::ModelRequestFailed {
+                            attempt_id: AttemptId("attempt-final".to_owned()),
+                            failure: failure.clone(),
+                            accounting: Box::new(ModelAccounting::default()),
+                            retry: ModelRetryDecision::Stop {
+                                reason: ModelRetryStopReason::RetryLimitReached,
+                            },
+                        },
+                    ),
+                    terminal_with_state(
+                        &run_id,
+                        3,
+                        TerminalState::Failed {
+                            failure: RuntimeFailure::Model {
+                                code: "deepseek_service".to_owned(),
+                                category: ModelErrorCategory::Service,
+                                message: "503 Service Unavailable".to_owned(),
+                                retryable: true,
+                            },
+                        },
+                    ),
+                ],
+            );
+
+            assert!(
+                app.history.iter().any(|cell| {
+                    matches!(cell, HistoryCell::System { content } if content.contains(expected))
+                }),
+                "{language:?} terminal erased the durable stop explanation: {:?}",
+                app.history
+            );
         }
     }
 
@@ -1659,13 +1681,42 @@ mod tests {
                 max_retries: 2,
             },
         };
+        let failure = ModelAttemptFailure {
+            code: "deepseek_rate_limited".to_owned(),
+            category: ModelErrorCategory::RateLimit,
+            message: "HTTP 429".to_owned(),
+            retryable: true,
+            retry_after_ms: Some(2_000),
+            retry_safe: true,
+            actionable_output: false,
+            response: ModelResponseEvidence::default(),
+        };
         assert_eq!(
-            model_retry_label(ProductLanguage::SimplifiedChinese, &retry),
+            crate::model_failure_presentation::model_retry_label(
+                ProductLanguage::SimplifiedChinese,
+                &retry
+            ),
             "第 2/2 次重试 · 2 秒后继续"
         );
         assert_eq!(
-            model_retry_label(ProductLanguage::English, &retry),
+            crate::model_failure_presentation::model_retry_label(ProductLanguage::English, &retry),
             "retry 2/2 · continuing in 2s"
+        );
+        assert_eq!(
+            crate::model_failure_presentation::model_request_status_message(
+                ProductLanguage::SimplifiedChinese,
+                &failure,
+                &retry
+            ),
+            "请求限流 · 重试 2/2 · 2 秒"
+        );
+        assert_eq!(
+            crate::model_failure_presentation::model_request_status_message(
+                ProductLanguage::English,
+                &failure,
+                &retry
+            ),
+            "rate limited · retry 2/2 · 2s"
         );
         assert_eq!(
             control_action_label(

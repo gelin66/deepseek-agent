@@ -4,11 +4,11 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
 - 状态：M8-J legacy Thread truth 已删除，canonical RunStore 是唯一持久状态
-- 更新日期：2026-07-24
-- schema：`Run API`（`schema_version = 12`）、`RuntimeEvent`（writer/reader v18）、
-  `State`（schema v24）、`codewhale.exec-stream`（v3）
+- 更新日期：2026-07-27
+- schema：`Run API`（`schema_version = 15`）、`RuntimeEvent`（writer/reader v22）、
+  `State`（schema v28）、`dse.exec-stream`（v6）
 
-`codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
+`dse app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
 `crates/app::AgentApplication`，并原样投影 SQLite `RunStore` 中的 canonical event。
 
@@ -36,19 +36,19 @@ SQLite RunStore          唯一持久事实
 ### HTTP/SSE
 
 ```bash
-codewhale app-server \
+dse app-server \
   --host 127.0.0.1 \
   --port 7878 \
   --auth-token "$TOKEN"
 ```
 
 默认监听 `127.0.0.1:7878`。也可以通过
-`CODEWHALE_APP_SERVER_TOKEN` 提供 token。
+`DSE_APP_SERVER_TOKEN` 提供 token。
 
 本机开发可显式关闭认证：
 
 ```bash
-codewhale app-server --insecure-no-auth
+dse app-server --insecure-no-auth
 ```
 
 无认证模式只能绑定 loopback 地址，不能与 `--auth-token` 同时使用。服务不会生成、打印
@@ -57,7 +57,7 @@ codewhale app-server --insecure-no-auth
 ### stdio
 
 ```bash
-codewhale app-server --stdio
+dse app-server --stdio
 ```
 
 stdio 每行接收一个 `RunCommandEnvelope`，每行返回一个 `RunCommandResponse`。它不是
@@ -77,7 +77,7 @@ HTTP 参数互斥。
   `codewhale-tui mcp add-self`；
 - JSON-RPC app-server control surface。
 
-CodeWhale 仍可作为 MCP client 消费外部工具服务，但不再提供自托管 MCP server。
+DSE 仍可作为 MCP client 消费外部工具服务，但不再提供自托管 MCP server。
 本地 Agent 控制面只使用 canonical app-server；不再提供绕过
 `AgentApplication`、`AgentRuntime` 和 `RunStore` 的 ACP 模型/会话服务。
 
@@ -373,6 +373,15 @@ sequence 重连即可。
 终态 event 是最后一个 event。终态 run 的 get/events/resume 只读 SQLite：不要求
 DeepSeek Key，不调用模型或工具，也不追加新事件。
 
+app-server 的 SSE/stdio 始终原样投影完整 stored event。`dse exec --output-format
+stream-json` 的 `dse.exec-stream` v6 另提供 bounded `model_request_failed` 客户端事件：
+它从同一 `ModelRequestFailed` 确定性投影 run/event/attempt identity、typed failure、
+retry/stop decision 与紧凑 accounting，但不复制完整 request、system prompt、transcript
+或 tool catalog。plain exec 把 transient retry progress 写到 stderr，模型内容继续只写
+stdout；交互 TUI 以同一 stored fact 投影双语状态。客户端 sequence reconnect、终止后的
+same-Run resume 与上游 DeepSeek request retry 是三种机制；当前协议不声称 partial SSE
+续传。
+
 RuntimeEvent v4 的控制事实为：
 
 - `InteractionRequested / InteractionResolved`：交互请求与 Host 响应；
@@ -423,7 +432,7 @@ prepared/in-flight/failed 生命周期。事件持久化精确 source projection
 
 RuntimeEvent v9 继续收缩协议：删除手动/threshold trigger、特殊 compaction ID、独立
 compaction purpose 和 compaction terminal。v10 当时直接替代 v9；当前 writer 与
-reducer/Store reader 只接受 v20，不保留旧 event schema 兼容路径。
+reducer/Store reader 只接受 v22，不保留旧 event schema 兼容路径。
 
 RuntimeEvent v10 建立唯一 Writer lifecycle：
 
@@ -474,22 +483,30 @@ TaskContract 的 exact acceptance ID 与 canonical `VerifierSpec` 派生的
 grant 不是第四个 permission 档位，也不授予普通 external path、cwd、network、write root
 或 explicit-deny 绕过。
 
+RuntimeEvent v22 把上游模型请求的安全重试收敛为唯一 durable Host 事实：
+`ModelRequestFailed` 原子携带 typed response evidence、accounting 与
+`Retry { prepared }` / `Stop { reason }`；prepared retry 冻结下一 attempt、1s/2s
+backoff、`not_before_unix_ms` 和 limit。DeepSeek transport 不再拥有 retry loop。
+prepared retry 重开只在 not-before 后发送一次；in-flight 重开因上游结果未知而
+`RecoveryRequired`，不会盲发。
+
 M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
 持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
 `strict_tools` policy。DeepSeek surface 与 fallback reason 不重复写入 State；SQLite 重开后
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v14 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+Run API v15 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v27 复用 canonical
+事件总线或兼容 alias。State schema v28 复用 canonical
 event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
 v22 再退役缺少 route audit 的 materialized run，v23 物理删除旧 `threads` metadata 表。
 v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 materialized run，只
 保留能按 v18 command 直接反序列化的 pending Start；v25 完成 DSE identity retirement；
 v26 不猜旧 bool/trust/sandbox/elevation tuple，直接退休无法无损映射为三档 permission
 contract 的旧 materialized Run 与 pending Start；v27 再退休缺少 typed execution grant
-的旧 materialized Run，只保留能按当前 Start command 无损反序列化的 pending intent。
+的旧 materialized Run；v28 退休无法无损重建 durable retry schedule 的旧 materialized
+Run，只保留能按当前 Start command 无损反序列化的 pending intent。
 旧 `session_index.jsonl`
 writer/reader 已删除；没有 compatibility reader 或 dual write。
 
@@ -543,10 +560,10 @@ RuntimeThreadStore
 关键门禁：
 
 ```bash
-cargo test -p codewhale-app-server --lib --locked
-cargo test -p codewhale-app-server --test process_crash_recovery --locked
-cargo test -p codewhale-tui --test run_surface_parity --locked
-cargo tree -p codewhale-app-server --locked
+cargo test -p dse-app-server --lib --locked
+cargo test -p dse-app-server --test process_crash_recovery --locked
+cargo test -p dse-tui --test run_surface_parity --locked
+cargo tree -p dse-app-server --locked
 ```
 
 跨入口 parity fixture 必须同时证明：exec/HTTP/SSE/stdio 的 normalized canonical event

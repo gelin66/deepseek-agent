@@ -4102,6 +4102,35 @@ new retry controller / setting / state truth 0
 `eval/manifests/m34-model-failure-feedback-v1.json` 和
 `eval/fixtures/m34-model-failure-feedback-v1.json`。
 
+#### M34 model failure feedback result
+
+结果为 `keep_minimal_model_failure_feedback`。control 在 429、503、partial SSE 和 TUI
+terminal 等独立 profile 重复缺失 retry ordinal/wait 或 durable stop reason，因此满足
+预注册 treatment admission。相同 frozen profiles 的 treatment 结果：
+
+```text
+applicable information rubric              100%
+timeout/reset/429 recovered                 3 / 3
+503/401/partial stopped safely              3 / 3
+prepared/in-flight reopen exact             2 / 2
+server attempts == physical accounting      pass
+partial/in-flight duplicate request         0
+false progress / false success              0 / 0
+exec terminal                               30 / 30
+en / zh-Hans PTY                            16 / 16
+new retry controller / setting / state truth 0
+```
+
+exec-stream v6 的 bounded `model_request_failed` 只投影 stored event identity、typed
+failure、retry/stop 与紧凑 accounting；第一次会复制完整 request/prompt/tools 的候选已
+删除。plain exec 的 transient progress 使用 stderr，TUI narrow tier 只放行 typed
+Warning/Error；最终 stop reason 与 next action 留在 history。app-server 仍原样投影
+canonical stored event，RuntimeEvent v22/State v28/M33 retry policy 不变。
+
+credential read=false、official API request=0；本结论不外推官方服务故障频率或 jitter
+收益。完整 control/treatment、删除与非结论见
+[M34 summary](../../eval/summaries/m34-model-failure-feedback-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

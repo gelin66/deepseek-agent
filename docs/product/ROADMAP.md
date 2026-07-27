@@ -5759,7 +5759,7 @@ app-server sequence reconnect、same-Run resume 与 upstream retry 仍是三种�
 
 ## 32. M34：模型故障反馈与恢复体验闭环
 
-- 状态：**contract frozen；baseline pending**
+- 状态：**completed；keep_minimal_model_failure_feedback**
 - 基线：M33 clean checkpoint `408611fb1`
 - 唯一重试决策 owner：既有 `crates/runtime::AgentRuntime`
 - 人类投影 owner：`crates/localization` + `crates/tui` / `crates/cli`
@@ -5834,3 +5834,26 @@ Runtime 没有测得并发惊群，因此保持 M33 可重放的确定性 1s/2s�
 `reject_and_delete_feedback_candidate`。M34 不需要故意攻击官方 DeepSeek 服务；如运行
 普通 official canary，只能验证成功路径，不能替代 controlled fault evidence。全程不
 访问 GitHub、不 push、不 release。
+
+### 32.4 结果
+
+M34 结论为 `keep_minimal_model_failure_feedback`。真实 production binary 的 frozen
+loopback profiles 覆盖 response-header timeout、两次 reset、429 + `Retry-After`、
+连续 503、401 与 partial SSE close；M33 的 fake-clock、prepared-retry SIGKILL/reopen、
+in-flight fail-closed 和三 actor conformance 同时复验。所有 server attempt 与 canonical
+physical/runtime-retry accounting 一致，partial/in-flight duplicate request=0，
+false progress/success=0/0。
+
+control 的重复缺口是客户端信息丢失：plain exec 静默、stream-json 缺逐次 failure、
+TUI terminal 覆盖 stop reason。cutover 后，plain exec 用 stderr 输出紧凑的
+provider/category/ordinal/wait，stdout 保持模型内容；TUI en/zh-Hans 在 12×48 仍显示
+typed retry warning，并把 stop reason/next action 留在 history；exec-stream v6 用 bounded
+`model_request_failed` 事件投影 stored failure、retry/stop 与紧凑 accounting，不复制
+完整 prompt/transcript/tool catalog。RuntimeEvent v22、State v28、M33 retry policy 与
+app-server exact stored-event replay 均未改变。
+
+第一次 full stored-event exec projection 和会截断 ordinal/wait 的长 status 候选已删除；
+旧 silent/ephemeral branches 已被真实 caller 替代。30/30 exec terminal、16/16 双语 PTY、
+focused、fmt、strict Clippy、workspace test、public checker 与 diff check 通过。没有读取
+Key、没有 official API request、没有 GitHub/push/release。完整证据见
+[M34 summary](../../eval/summaries/m34-model-failure-feedback-2026-07-27.md)。

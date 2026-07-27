@@ -66,7 +66,7 @@ README_IDENTIFIERS = (
     "Run API v15",
     "RuntimeEvent v22",
     "State schema v28",
-    "exec-stream v5",
+    "exec-stream v6",
     "dse exec --auto",
     "~/.dse/config.toml",
     "DSE_HOME",

@@ -40,6 +40,7 @@ mod logging;
 #[cfg(test)]
 mod m22_streaming_delta_benchmark;
 mod mcp;
+mod model_failure_presentation;
 mod palette;
 mod plugins;
 mod pricing;

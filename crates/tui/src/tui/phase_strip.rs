@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 use crate::tui::{
-    app::App,
+    app::{App, StatusToastLevel},
     shell::{ShellPhase, ShellTier, phase_marker},
 };
 
@@ -132,15 +132,26 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         left.push(Span::styled(detail, Style::default().fg(palette::DSE_INFO)));
     }
 
-    if tier != ShellTier::Compact
-        && phase != ShellPhase::Done
+    if phase != ShellPhase::Done
         && let Some(toast) = status_toast.filter(|toast| {
             !toast.text.trim().is_empty() && toast.text.trim() != phase_label.as_ref()
         })
+        && (tier != ShellTier::Compact
+            || matches!(
+                toast.level,
+                StatusToastLevel::Warning | StatusToastLevel::Error
+            ))
     {
         left.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
+        let toast_width = if tier == ShellTier::Compact {
+            usize::from(area.width)
+                .saturating_sub(span_width(&left))
+                .max(1)
+        } else {
+            40
+        };
         left.push(Span::styled(
-            truncate_to_width(toast.text.trim(), 40),
+            truncate_to_width(toast.text.trim(), toast_width),
             Style::default().fg(crate::tui::ui::status_color(toast.level)),
         ));
     }
@@ -297,5 +308,27 @@ mod tests {
             assert!(!text.contains("Alt+V"), "{text}");
             assert!(!text.contains("F1"), "{text}");
         }
+    }
+
+    #[test]
+    fn compact_band_keeps_typed_warning_but_hides_ordinary_info() {
+        fn render_status(level: StatusToastLevel, text: &str) -> String {
+            let mut app = test_app();
+            app.is_loading = true;
+            app.push_status_toast(text, level, Some(10_000));
+            let backend = TestBackend::new(48, 1);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| render(frame.area(), frame.buffer_mut(), &mut app))
+                .expect("draw");
+            buffer_row_text(terminal.backend().buffer(), Rect::new(0, 0, 48, 1))
+        }
+
+        let warning = render_status(StatusToastLevel::Warning, "rate limited · retry 1/2 · 2s");
+        assert!(warning.contains("retry 1/2"), "{warning}");
+        assert!(warning.contains("2s"), "{warning}");
+
+        let info = render_status(StatusToastLevel::Info, "ordinary transient info");
+        assert!(!info.contains("ordinary transient info"), "{info}");
     }
 }
