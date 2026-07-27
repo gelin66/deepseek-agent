@@ -10008,6 +10008,41 @@ def m35_allowed_tools(profile_id: str) -> list[str]:
     }[profile_id]
 
 
+def m35_exec_arguments(
+    frozen_binary: Path,
+    workspace: Path,
+    profile_id: str,
+    profile: dict[str, Any],
+    prompt: str,
+) -> list[str]:
+    arguments = [
+        str(frozen_binary),
+        "--workspace",
+        str(workspace),
+        "--skip-onboarding",
+        "--model",
+        "deepseek-v4-pro",
+        "exec",
+        "--reasoning-effort",
+        "high",
+        "--output-format",
+        "stream-json",
+        "--max-turns",
+        str(profile["max_turns"]),
+        "--max-api-requests",
+        str(profile["max_physical_requests"]),
+        "--max-runtime-secs",
+        str(profile["max_runtime_seconds"]),
+    ]
+    allowed_tools = m35_allowed_tools(profile_id)
+    if allowed_tools:
+        arguments.extend(
+            ["--auto", "--allowed-tools", ",".join(allowed_tools)]
+        )
+    arguments.append(prompt)
+    return arguments
+
+
 def m35_run_process(
     arguments: list[str],
     *,
@@ -10436,32 +10471,12 @@ def m35_execute_run(
         "DEEPSEEK_API_KEY": key,
         "NO_COLOR": "1",
     }
-    arguments = [
-        str(frozen_binary),
-        "--workspace",
-        str(workspace),
-        "--skip-onboarding",
-        "exec",
-        "--model",
-        "deepseek-v4-pro",
-        "--reasoning-effort",
-        "high",
-        "--output-format",
-        "stream-json",
-        "--max-turns",
-        str(profile["max_turns"]),
-        "--max-api-requests",
-        str(profile["max_physical_requests"]),
-        "--max-runtime-secs",
-        str(profile["max_runtime_seconds"]),
-    ]
-    allowed_tools = m35_allowed_tools(profile_id)
-    if allowed_tools:
-        arguments.extend(
-            ["--auto", "--allowed-tools", ",".join(allowed_tools)]
-        )
-    arguments.append(
-        m35_prompt(profile_id, marker, expected_counter)
+    arguments = m35_exec_arguments(
+        frozen_binary,
+        workspace,
+        profile_id,
+        profile,
+        m35_prompt(profile_id, marker, expected_counter),
     )
     secret = key.encode("utf-8")
     result = m35_run_process(
@@ -10475,6 +10490,16 @@ def m35_execute_run(
         secret not in result["stdout"] and secret not in result["stderr"],
         "m35_key_in_process_output",
     )
+    if not result["stdout"].strip():
+        raise EvaluationError(
+            "m35_exec_no_stream",
+            {
+                "returncode": result["returncode"],
+                "wall_time_ms": result["wall_time_ms"],
+                "stdout_sha256": sha256_bytes(result["stdout"]),
+                "stderr_sha256": sha256_bytes(result["stderr"]),
+            },
+        )
     parsed = m35_parse_stream(result["stdout"])
     metadata = parsed["metadata"]
     run_id = metadata.get("run_id")
@@ -10675,6 +10700,24 @@ def run_m35_self_test() -> int:
             "bounded_edit_marker": 6,
         },
         "m35_self_test_schedule_invalid",
+    )
+    arguments = m35_exec_arguments(
+        Path("/frozen/dse"),
+        Path("/fixture/workspace"),
+        "plain_chat_marker",
+        {
+            "max_turns": 1,
+            "max_physical_requests": 3,
+            "max_runtime_seconds": 300,
+        },
+        "M35_SELF_TEST",
+    )
+    require(
+        arguments.index("--model") < arguments.index("exec")
+        and arguments[arguments.index("--model") + 1]
+        == "deepseek-v4-pro"
+        and arguments[-1] == "M35_SELF_TEST",
+        "m35_self_test_exec_arguments_invalid",
     )
     synthetic = (
         canonical_bytes(
