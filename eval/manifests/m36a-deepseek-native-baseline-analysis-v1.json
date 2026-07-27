@@ -1,0 +1,102 @@
+{
+  "schema": "dse.eval.m36a-deepseek-native-baseline-analysis.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "candidate_revision": "03b40abe6dcced24318589999f8c101e46f2b7ad",
+    "candidate_tree": "3ae866c50237b4540b1e3fc2d07f083c06ea3b75",
+    "live_admission_revision": "d023e43a7d53a7c3ace77805d8ab96ba5082c386",
+    "analysis_correction_revision": "d0b4b7954fe12eb383a74638fe230bb4f04f7bed",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:2c56f9370f6b0082689182e3a0fc796da761817dfbaa8fa81ec7a6defbd56d3c",
+    "analysis_harness_sha256": "sha256:a0797c89ec6ba3252977d2b921b2c036fca61a178a4619753f5bb4a596d32601",
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6
+  },
+  "slice_contract": {
+    "real_problem": "The M36-A acquisition closed all twenty scheduled Store, reopen, verifier, behavior and accounting observations. One Writer task is a measurement-valid verified product failure, but the acquisition harness additionally required every positive lane audit to pass before setting complete=true, which incorrectly collapsed a current product loss into reject_incomplete_acquisition.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink 132-record hash-chained journal with no partial tail",
+      "derive exactly twenty canonical Store trajectories and twenty completed arm results",
+      "retain sixteen verified positive successes, three correct safety rejections and one verified product failure as twenty measurement-valid behavior observations",
+      "prove all twenty accounting observations are complete and false success remains zero",
+      "classify the Writer failure through the frozen M36 canonical loss taxonomy as orchestrator:writer_integration",
+      "require one identical canonical owner_code:loss_code across at least two independent task IDs before returning a candidate audit",
+      "expose only canonical counts, stable codes and task IDs; never expose prompt, reasoning, tool arguments/content, evaluation IDs or credential material",
+      "produce byte-identical canonical JSON across repeated runs without credential read, network access, raw mutation or an API rerun"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "using positive lane success as acquisition completeness and manually interpreting a measurement-valid product loss as an interrupted campaign",
+    "cutover": "retain immutable acquisition and analysis identities plus one read-only report; do not rerun any arm or implement a production treatment",
+    "failed_candidate_deletion": "because no canonical owner_code:loss_code repeats across two independent task IDs, production treatment delta remains zero and the temporary live campaign consumer is deleted after the decision is frozen"
+  },
+  "inputs": [
+    {
+      "campaign": "m36a-deepseek-native-baseline",
+      "path": "eval/results/m36a-deepseek-native-baseline-03b40abe6dcc-v1.jsonl",
+      "journal_schema": "dse.eval.m36a-deepseek-native-baseline-journal.v1",
+      "file_sha256": "sha256:aa78b5641782a9fee5c5a0f8daefab3fe178f9c8e7cede687555d7d60f454b2f",
+      "size_bytes": 35414849,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 20,
+    "completed_arm_results": 20,
+    "accounting_abort_records": 0,
+    "allowed_abort_code": null,
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "label_source": "behavior truth is derived independently from canonical terminal, latest Host receipt, lane, route, workspace and verifier facts; accounting truth is projected independently from canonical ModelAccounting",
+    "acquisition_summary_defect": "the acquisition journal's final summary reported complete=false only because the old aggregate coupled measurement completeness to positive lane validity; all twenty per-arm truth projections and accounting observations remained closed",
+    "product_loss": [
+      "false success",
+      "deterministic verifier failure",
+      "actor contract failure",
+      "verifier-passing workspace without a latest Host receipt",
+      "production terminal failure with closed identity and environment"
+    ],
+    "non_loss": [
+      "expected security rejection",
+      "initial verifier failure required by a frozen recovery task",
+      "measurement or evaluator interruption",
+      "accounting status as a behavior label",
+      "historical or deleted treatment evidence"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical canonical owner_code:loss_code across at least two distinct task IDs with complete accounting",
+    "owner_attribution_gate": "a single Writer task loss is retained as product evidence but cannot authorize a production owner treatment"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "single-task failure",
+      "expected security rejection",
+      "accounting status as a behavior label",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "keep_current_harness_no_repeated_loss"
+    ],
+    "m36_no_repeat_result_alias": "keep_current_harness_no_repeated_loss",
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
