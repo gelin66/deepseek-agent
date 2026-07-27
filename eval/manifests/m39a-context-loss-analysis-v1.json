@@ -1,0 +1,99 @@
+{
+  "schema": "dse.eval.m39a-context-loss-analysis.v1",
+  "frozen_at": "2026-07-27",
+  "source_identity": {
+    "candidate_revision": "4f93060fe2ee2e4ba750b3a53357dfce86fc0d30",
+    "candidate_tree": "b8b7e75de479fbe7ada556407c3c0c3afe08eeb5",
+    "live_admission_revision": "2c67cac8216d2fdbec47da5bd8bf336cacdef799",
+    "analysis_revision": "ea4ae3701cdd2a41697da5fc9c4cef7fca3727d9",
+    "corrected_harness": "scripts/eval-m9b-fixed-pro-regression.py",
+    "acquisition_harness_sha256": "sha256:a8712cb17809702b17b1d56f396c921255d6e8bb4f5a75b0ebcb62f073c040c1",
+    "analysis_harness_sha256": "sha256:ee35be4e637aaa093f05db6f81a155ec4c9ef8a763826bf8ecf36db89122fa37",
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6
+  },
+  "slice_contract": {
+    "real_problem": "The six-arm M39-A acquisition closed every behavior and accounting observation, but its frozen terminal summary incorrectly treated the Writer lane's deterministic actor-contract failure as evaluator incompleteness because the generic aggregate required lane_valid=true for every positive arm. A closed product failure must remain a loss without becoming either a success or an incomplete measurement.",
+    "acceptance": [
+      "validate the exact ignored 0600 regular non-symlink 39-record hash-chained journal with no partial tail",
+      "derive exactly six canonical Store trajectories and six complete arm labels without credential read or network access",
+      "classify four verified successes, one verified Writer product failure and one correct safety rejection with false_success=0",
+      "require complete accounting for all six observations and preserve exact SQLite reopen equality",
+      "count the Writer actor-contract failure as one orchestrator:writer_integration loss while never counting it as verified success",
+      "require one identical owner_code:loss_code across at least two independent task IDs before admitting any production audit",
+      "produce byte-identical canonical JSON across repeated runs and expose no prompt, reasoning, tool arguments/content, evaluation IDs or credential material"
+    ],
+    "owner": "the existing trajectory-report mode in scripts/eval-m9b-fixed-pro-regression.py",
+    "production_delta": "none",
+    "old_path_replaced": "manual raw inspection and the generic lane_valid completeness predicate for an otherwise closed M39 product failure",
+    "cutover": "retain immutable acquisition identity and one read-only report; do not edit or rerun the frozen raw campaign",
+    "failed_candidate_deletion": "when no repeated loss exists, delete the temporary M39 acquisition consumer after freezing the result and keep production unchanged"
+  },
+  "inputs": [
+    {
+      "campaign": "m39a-context-loss",
+      "path": "eval/results/m39a-context-loss-4f93060fe2ee-v1.jsonl",
+      "journal_schema": "dse.eval.m39a-context-loss-acquisition-journal.v1",
+      "file_sha256": "sha256:22dc9fe27a5187d5e65e63a8cc4f8af71561ef73ac9bfa94be35771b9dc4125d",
+      "size_bytes": 6580851,
+      "current_control_variant": null
+    }
+  ],
+  "expected_input_shape": {
+    "canonical_store_snapshots": 6,
+    "completed_arm_results": 6,
+    "accounting_abort_records": 0,
+    "allowed_abort_code": null,
+    "started_without_snapshot": 0,
+    "deadline_interruption_snapshots": 0,
+    "maximum_reruns": 0
+  },
+  "derivation": {
+    "canonical_source": "canonical_store_snapshot payload facts, matching credential-free sqlite_reopen_snapshot, external verifier snapshot and canonical Runtime events",
+    "label_source": "behavior truth is derived independently from canonical terminal, latest Host receipt, lane, route, workspace and verifier facts; accounting truth is projected independently from canonical ModelAccounting",
+    "frozen_summary_defect": "the acquisition journal's terminal summary is retained byte-for-byte but is not an analysis input because it used lane validity as both behavior evidence and measurement completeness",
+    "closed_writer_loss": "writer_record_migration has a closed failed terminal, route-valid root and child facts, deterministic verifier result, matching SQLite reopen, complete accounting and a lane failure caused by writer_child_not_verified with no integration or seal",
+    "product_loss": [
+      "false success",
+      "deterministic verifier failure",
+      "actor contract failure",
+      "verifier-passing workspace without a latest Host receipt",
+      "production terminal failure with closed identity and environment"
+    ],
+    "non_loss": [
+      "initial verifier failure required by the frozen task",
+      "expected security rejection",
+      "measurement or evaluator interruption",
+      "a closed behavior failure's lane_valid=false fact by itself"
+    ],
+    "independence": "distinct frozen task_id values",
+    "candidate_threshold": "one identical stable owner_code:loss_code across at least two distinct task IDs with complete accounting for every loss-bearing trajectory"
+  },
+  "candidate_rule": {
+    "minimum_independent_tasks": 2,
+    "quality_first": true,
+    "exclude": [
+      "single-task failure",
+      "expected security rejection",
+      "raw tool count without causal loss",
+      "historical or deleted treatment evidence",
+      "the frozen terminal summary's derived completeness bit"
+    ],
+    "result_classes": [
+      "next_candidate_audit_required",
+      "insufficient_repeated_current_loss"
+    ],
+    "next_candidate_is_not_automatic_implementation": true
+  },
+  "security": {
+    "credential_read": false,
+    "network_access": false,
+    "raw_prompt_output": false,
+    "raw_reasoning_output": false,
+    "raw_tool_argument_output": false,
+    "raw_tool_content_output": false,
+    "evaluation_id_output": false
+  }
+}
