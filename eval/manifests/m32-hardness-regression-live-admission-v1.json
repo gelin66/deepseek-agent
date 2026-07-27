@@ -1,0 +1,147 @@
+{
+  "schema": "dse.eval.m32-hardness-regression-live-admission.v1",
+  "contract_manifest": "eval/manifests/m32-hardness-regression-v1.json",
+  "contract_manifest_sha256": "sha256:3210430a0832e8f9c7e5028e625ed2a2795847e8328370ff4a27a40bfcf898cd",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "994e36d7bdfab57e47af4928b07f8c506ddd7b3a",
+  "candidate_tree": "0a5e0f20e4d93c9605c53f49be44fcfcfe2b1eef",
+  "candidate_binary": "/private/tmp/dse-m32-target/release/dse",
+  "candidate_binary_sha256": "sha256:7ed974b3927e446468d5d248c1dd76dfb16cb4d2f8bbeb6f0f7b88e1b81d0e5f",
+  "candidate_binary_size_bytes": 14354800,
+  "candidate_binary_version": "dse 0.8.68 (994e36d7bdfa)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:59b5b26bfc0c68d942224dd36a71adef9323ac55b11615b4d8683178425539a9",
+  "schedule_sha256": "sha256:621efff3ea6f5cc2ea34dc946145044f754dc87b5bbe51c79af2d5477a7e72a1",
+  "task_contracts_sha256": "sha256:7d71a8597adc1d628987e6eb1ee588c48c150f228322aec05658c663cd135c99",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:f25ecfea0d9943498070f6eec15265e73c7b082e4dfd70a698a320fd0c3c03b6",
+  "freeze_report_sha256": "sha256:6fb8caa8343dc4cce22622806a54190489ce6788703eba3f4915e42491fe79c5",
+  "dry_run_sha256": "sha256:0808908672e9fe33c38e3be1623ca1d258450ed4afa1483863b7763793cc38a0",
+  "continuity_process_report_sha256": "sha256:acbb75304c7bea2c5ceaf4801f5e00dca989533a21591068db0aaaf1297aaaa1",
+  "process_test_binary_sha256": "sha256:725ced96c0110c7a21c4aa25fd816a95d8a23ab233d98f57eeca923a526cf46e",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "fresh post-M31 position-1 20-task fixed-Pro/high current Hardness regression"
+  },
+  "offline_gates": [
+    {
+      "gate": "20-task current fixture, reference solutions, safety counterexamples, hash-chain journal and four SIGKILL write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "immutable release binary, credential-free dry-run and real request_user_input SIGKILL/reopen continuity",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "typed trajectory, acceptance equivalence, behavior/accounting truth and Hardness observer conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, bilingual PTY, surface parity, public repository checker and git diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "gate-only candidate delta is exactly one hash-bound process acceptance test; no release behavior path changed",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, V4, pricing, ChatCompletions, Thinking and Tool Calls revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false,
+      "documentation_network_accessed": true
+    },
+    {
+      "gate": "credential path is ignored, regular, non-symlink and owner-only 0600; contents remain unread before committed admission",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "go_health_api": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_jsonl_runtime": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_component_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_service_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_event_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_line_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_registry_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_router_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_export_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_tenant_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_dom_ui": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_forwarded_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_request_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_retry_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_route_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_policy_migration": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 20,
+    "runs_per_task": 1,
+    "formal_arms": 20,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 10.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m32-hardness-regression-994e36d7bdfa-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "proposed_authorization_scope": "M32 only: twenty position-1 fixed-Pro/high control arms, USD 0.50 per arm and USD 10.00 suite ceilings, maximum_reruns=0"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": false,
+    "official_model_request_authorized": false,
+    "authorized_on": null,
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 10.0,
+    "maximum_reruns": 0,
+    "pending_exact_user_authorization": true
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": false,
+  "prepared_at_utc": "2026-07-27T04:02:22Z"
+}
