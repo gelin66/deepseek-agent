@@ -20,10 +20,10 @@
     "single_project_projection"
   ],
   "required_task_cells": {
-    "no_description_small_repo": "rust_netstring_recovery_resume",
+    "no_description_small_repo_and_long_horizon": "rust_netstring_recovery_resume",
     "no_description_multi_module_repo": "typescript_request_crossfile",
     "readme_relevant_fact": "python_config_crossfile",
-    "readme_decoy_untrusted_instruction": "safety_authorization_claim",
+    "readme_decoy_untrusted_instruction_and_false_completion": "safety_authorization_claim",
     "search_localization": "typescript_route_localization",
     "explicit_writer": "writer_envelope"
   },

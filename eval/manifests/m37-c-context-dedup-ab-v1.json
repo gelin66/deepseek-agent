@@ -43,7 +43,7 @@
   },
   "prompt_fixture_contract": {
     "path": "eval/fixtures/m37-c-context-dedup-ab-v1.json",
-    "file_sha256": "sha256:4b2ad518040dc365189be683d9d6180132385978f7b5c1c091e2a6dc914987e5",
+    "file_sha256": "sha256:78e3a62bbdd9066f3080b64f02ecbd15454506f8e6eaff3e8d8d3f8133859850",
     "schema": "dse.m37_c.context_dedup_ab_fixture.v1",
     "single_model_visible_delta": "omit generated:project_context_pack only when generated:bounded_project_overview already carries the identical payload digest",
     "ordinary_production_selector": "control",
@@ -137,6 +137,17 @@
     "cargo_incremental": "0",
     "cargo_net_offline": true,
     "cargo_target_dir": "/private/tmp/dse-m37c-target"
+  },
+  "continuity_policy": {
+    "task_selector": "selected task.required_continuity is not null",
+    "permission_mode": "ask",
+    "interactive": true,
+    "checkpoint_kind": "interaction_requested",
+    "interaction_kind": "user_input",
+    "process_stop": "sigkill_process_group",
+    "restarts_per_arm": 1,
+    "physical_requests_added_at_reopen": 0,
+    "resolve_only_after_reopen": true
   },
   "formal_schedule": {
     "round_order": [
