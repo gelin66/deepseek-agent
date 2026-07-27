@@ -4333,6 +4333,201 @@ completion，且不增加 false success、错误安全放行、crash/reopen 不�
 
 ## 10. 结果与决策记录
 
+### M37 model-visible contract and Harness control contract
+
+M37 验证“减少 Prompt 债务、强化 Harness owner”是否产生真实正收益。它不把 Prompt 长度、
+cache hit 或规则数量当作产品指标，也不允许用单次失败直接创建全局条款。
+
+#### 0. Current identity
+
+每个 M37 manifest 必须冻结：
+
+- exact source revision、tree、immutable binary 和 bundled Constitution SHA；
+- complete assembled prompt provenance 与每个 fragment hash；
+- DeepSeek model/surface/reasoning、actor、tool catalog/authority；
+- task/fixture/workspace/TaskContract/verifier/observer identity；
+- request、Token、deadline、retry、permission 和 Harness rerun budget；
+- Run API、RuntimeEvent、State、exec-stream 与 credential-free reopen identity；
+- behavior/accounting status、known-cost ceiling 和 deletion decision。
+
+current baseline 至少包括：
+
+```text
+constitution.md     2,629 bytes
+output.md             360 bytes
+language.md           311 bytes
+bundled core total  3,300 bytes
+```
+
+M36-A `writer_envelope` 的 28,494-byte stable system blocks 是一个 current observation，
+不是所有仓库的固定上限。M37-A 必须重新对 small/medium/large、rules/skills、有/无
+`AGENTS.md` 和三个 actor profile 测量分布。
+
+#### 1. M37-A offline projection audit
+
+M37-A model-visible delta 必须为 0。扩展 ledger 的 fixture 至少验证：
+
+```text
+ordered fragment identity and final assembled hash
+source / owner / authority / trust / stability
+bytes and deterministic token estimate
+exact duplicate and same-payload wrapper relation
+tool-schema / actor-capability claim parity
+stable-prefix boundary
+root / read-only child / Writer provenance
+SQLite reopen equivalence
+override and compatibility source ordering
+```
+
+失败 fixture 只能形成 debt report，不能自动改 production bytes。ledger 不进入 RunStore、
+不产生第二 prompt truth，不在普通 production 请求增加模型 Token 或持久计算。
+
+M37-A 必须通过：
+
+- `cargo fmt --all -- --check`
+- `cargo test -p dse-context --locked`
+- owning app/deepseek prompt projection tests
+- `./scripts/dev-dse.sh focused`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `git diff --check`
+
+#### 2. Failure admission
+
+model-visible candidate 前必须给 loss 指定唯一分类：
+
+```text
+task_or_eval_defect
+model_capability_ceiling
+tool_or_aci_contract
+context_selection_or_pollution
+controller_or_recovery
+permission_or_sandbox
+verifier_or_completion
+provider_transport_or_accounting
+stable_semantic_misunderstanding
+```
+
+前八类不得通过全局 Prompt 修复。`stable_semantic_misunderstanding` 必须跨至少两个独立
+task_id 重复，且没有更窄的确定性 owner，才能新增语义 candidate。
+
+M36-A 的单个 `orchestrator:writer_integration` loss 不满足此门；M37 不修改 Writer
+recovery。M36-A2 若证明 repeated loss，也只能先审计 Orchestrator-owned treatment。
+
+#### 3. M37-B posture/schema candidate
+
+control 与 treatment 只允许以下 delta：
+
+```text
+control: current execution posture
+treatment: remove stale read-only-only agent capability sentence
+```
+
+不得同步修改 agent schema/description、Constitution、Runtime、Orchestrator、model、
+reasoning 或 task wording。正式矩阵至少覆盖：
+
+- root-only coding；
+- read-only child investigation/handoff；
+- two independent explicit Writer task families；
+- false-completion adversarial case。
+
+每个 cell 至少 3 次 fresh Run，maximum Harness reruns=0。若 treatment 没有 verified
+success/tool-selection/Writer completion 的明确收益，即使 Token 更少也不接管。
+
+#### 4. M37-C context-dedup successor
+
+M37-C 是 fresh evaluation，M10-A frozen raw 只用于历史事实，不进入 aggregate。矩阵至少：
+
+```text
+6 affected task families
+  x pack-on / single-projection
+  x 3 fresh runs
+  = 36 arms minimum
+```
+
+task families 必须包含：
+
+- 无说明文件的小仓库；
+- 无说明文件的多模块仓库；
+- README 含 relevant fact；
+- README 含 decoy/untrusted instruction；
+- search/localization；
+- explicit Writer 或 long-horizon recovery。
+
+主要门：
+
+```text
+identity valid
+false_success == 0
+correct safety rejection non-regression
+verified success non-regression
+hard/Writer/long-horizon non-regression
+```
+
+secondary metrics：
+
+```text
+stable and cache-miss input bytes/tokens
+first relevant file and first correct edit
+read/search repetition
+model requests
+cache tokens
+wall time
+known API cost
+code/concept delta
+```
+
+候选只有质量门全部通过且至少一个 secondary metric 有稳定净收益时接管。没有净收益或
+出现 treatment-only product loss 时 `reject_and_delete`。
+
+#### 5. Authority/budget and compact Constitution
+
+M37-D/E 必须各自拥有新的 manifest，不能与 M37-B/C 共用 treatment：
+
+- authority/budget candidate 只修改 fragment classification/projection/budget；
+- compact Constitution candidate 只修改 stable core semantics/structure；
+- 两者都不得同时改变 model、reasoning、tools、Runtime、Context retrieval 或 verifier；
+- compact candidate 的任务语言必须覆盖 English/`zh-Hans`；
+- current Chinese production baseline 在 candidate 胜出前保持唯一 production path。
+
+总 budget 不能按任意 Token 数拍板。必须冻结 current distribution、near-limit fixtures、
+compaction/reopen 和 DeepSeek effective behavior；active scoped rules、TaskContract、
+latest receipt 与 tool-call/result 原子性不得为满足预算被静默丢弃。
+
+#### 6. Decision order
+
+所有 M37 model-visible treatments 按词典序判断：
+
+```text
+1. identity / observer / prompt provenance valid
+2. false_success == 0
+3. correct safety rejection does not regress
+4. verified task success does not regress
+5. affected hard / Writer / long-horizon family does not regress
+6. tool and recovery correctness does not regress
+7. input / output / cache tokens and API cost
+8. wall time
+9. production code and concept complexity
+```
+
+后项不能补偿前项失败。unknown billing、usage incomplete、identity drift、observer
+ambiguity、task defect 或外部 interruption 按 ADR-0011 停止，不补 mate、不选择性 rerun、
+不拼接旧 raw。
+
+允许的最终决定只有：
+
+```text
+keep_current_no_material_loss
+keep_minimal_candidate_and_delete_replaced_path
+reject_and_delete_candidate
+hold_insufficient_or_incomplete_evidence
+hold_model_capability_ceiling
+```
+
+接管后必须删除旧 fragment/renderer/caller、eval-only selector、临时 config/fixture
+consumer 和失去消费者的 compatibility path；whole-release rollback 仍是唯一 prompt
+rollback owner。
+
 建议结果格式：
 
 ```text

@@ -6236,3 +6236,119 @@ M36 不准入：
 - [Codex sandbox](https://learn.chatgpt.com/docs/sandboxing)
 - [OpenHands V1 design principles](https://docs.openhands.dev/sdk/arch/design)
 - [OpenAI coding evaluation audit](https://openai.com/index/separating-signal-from-noise-coding-evaluations/)
+
+## 35. M37：模型可见契约减法与 Harness 控制边界
+
+- 状态：**方案已冻结；只准入 M37-A 离线 projection audit**
+- 起始基线：M36-A clean checkpoint `400ec0813`
+- 长期决策：[ADR-0014](../decisions/0014-model-visible-contract-and-harness-control.md)
+- owner：`crates/context`；工具、权限、Runtime、Orchestrator、Verifier 继续由现有模块拥有
+- 北极星：`verified task success / tokens / time / code complexity`
+
+### 35.1 目标与明确非目标
+
+M37 解决的不是“把 Prompt 改得更短”，而是阻止测试失败演变成 append-only Prompt debt，
+并把所有可确定执行的行为放回 Harness owner。M37 固定：
+
+```text
+Prompt = stable semantic contract
+Harness = enforceable policy + tools + state + evidence + recovery
+```
+
+当前 bundled core 69 行、3,300 bytes，不存在单向膨胀事实；M17-F 又为 current Chinese
+prompt 提供了正式 32-arm evidence。因此 M37 不直接替换 Constitution，不用五行候选覆盖
+current baseline，也不把一次 Writer 失败写成全局规则。
+
+M37 不修改 DeepSeek model/Thinking、tool catalog、permission、RuntimeEvent、RunStore、
+Writer state machine、TUI、Provider 或 external surface。M36-A2 Writer-loss confirmation
+是独立 Goal，不能混入 M37。
+
+### 35.2 已冻结的 current debt
+
+1. M36-A Writer 首请求的 stable system blocks 为 28,494 bytes，core/output/language 约
+   3.3 KB；
+2. 无项目说明文件时 fallback overview 与 Project Context Pack 使用同一 payload；
+3. execution posture 声称 `agent` 只支持只读 child，而 current schema 支持
+   `isolated_write`；
+4. prompt fragments 最终合并成单个 DeepSeek system message，项目事实与系统契约的
+   authority 需要显式审计；
+5. 现有 fragment ledger 没有统一 total budget、duplicate relation 和 tool-schema claim
+   parity；
+6. M10-A pack-off 因 accounting incomplete 停止，不能从旧 raw 推导删除收益。
+
+### 35.3 垂直切片
+
+#### M37-A：projection audit 与 no-growth 门
+
+- 扩展现有只读 fragment ledger，不创建第二 composer/Store；
+- 每段记录 source/owner/authority/trust/stability/hash/bytes/token estimate/duplicate；
+- 离线检查 Prompt 中 tool/actor capability claim 与真实 catalog/schema；
+- fixture 覆盖有/无 `AGENTS.md`、rules-heavy、skills-heavy、small/large repo，
+  root/read-only child/Writer 和 reopen；
+- 冻结 current assembled 分布、exact duplicate 和 system-authority 数据；
+- core stable bytes 暂不得高于 3,300；model-visible delta=0；
+- focused、context/deepseek/app targeted tests、workspace gates 通过后形成 clean checkpoint。
+
+M37-A 不读取 Key、不调用官方 API。它只建立观测与机械门，不因发现 debt 自动修改
+production prompt。
+
+#### M37-B：execution posture/schema parity
+
+只有 M37-A 证明 stale claim 的真实 source/caller 后才启动：
+
+- baseline 保持 current posture；
+- candidate 只删除“`agent` 只支持只读 child”的 tool-specific 句子；
+- tool schema、Constitution、Runtime、Orchestrator 和 actor route 不变；
+- root-only、read-only child、explicit Writer 使用 same-binary Pro/high A/B；
+- 无质量回退且工具选择/Writer completion 有明确净收益才 cutover；
+- 否则删除 candidate，不加补充解释或 compatibility branch。
+
+#### M37-C：fallback overview/pack 去重 successor
+
+它是 M10-A 的 fresh successor，不续跑或拼接旧 21 个完整 arms：
+
+- baseline=current pack-on，candidate=同一 project fact payload 只投影一次；
+- 不同时加入 ranked working set、RepoGraph、lazy rules 或新预算算法；
+- 至少 6 affected task families × 2 variants × 3 fresh runs；
+- false success=0、安全和 verified success 不回退是硬门；
+- secondary metrics 为 cache-miss input、首相关文件、read/search 重复、requests、wall/cost；
+- winner cutover 后删除第二 renderer/caller 与 eval-only selector；失败则恢复 pack-on。
+
+#### M37-D：authority 与总预算
+
+只有 M37-A/C 的分布或 repeated loss 证明必要性才进入。自动 README/tree/manifest 不与
+stable Constitution 共享未区分 authority；总预算从真实 fixture 和 A/B 导出，不拍脑袋
+设定。不得截断 active scoped rules、TaskContract、latest receipt 或 tool-call/result
+原子对，不增加第二 context store、RepoGraph 或 embedding。
+
+#### M37-E：最小 Constitution ablation
+
+默认不执行。只有 core 冲突或至少两个独立 `stable_semantic_misunderstanding` loss 才允许
+一个 compact candidate。English/`zh-Hans` 任务、Pro/high、工具、Context、Runtime、
+预算和 verifier 全部固定；质量非劣后才比较 Token/时间/成本。失败候选完整删除，production
+永远只保留一个 Prompt。
+
+### 35.4 准入、删除和停止门
+
+每个 model-visible candidate 必须满足
+[M37 evaluation contract](EVALUATION.md#m37-model-visible-contract-and-harness-control-contract)：
+
+1. 同一 owner 一次只改一个变量；
+2. prompt provenance、binary、task、workspace、model、effort、catalog、budget、verifier
+   和 observer 可复核；
+3. false success 为 0、安全不回退、verified success 不回退；
+4. 成本、cache、Token 和速度不能补偿质量损失；
+5. behavior/accounting 按 ADR-0011 正交闭合；
+6. 不补 mate、不选择性 rerun、不拼旧 raw；
+7. cutover 删除旧块、临时 selector/fixture consumer 和失去消费者的配置；
+8. 无净收益即 `reject_and_delete`，证据不完整即 hold。
+
+单次任务失败先归因 task/eval、model、ACI、context、controller、permission、verifier、
+transport，只有稳定语义误解才允许改 Prompt。测试发现问题，但不自动生成系统规则。
+
+### 35.5 研究输入
+
+- [ADR-0014 研究依据](../decisions/0014-model-visible-contract-and-harness-control.md#研究依据)
+- [M10-A scoped context pack](../../eval/summaries/m10-a-scoped-context-pack-2026-07-24.md)
+- [M17-F bilingual prompt A/B](../../eval/summaries/m17-f-bilingual-prompt-ab-2026-07-25.md)
+- [M36-A DeepSeek-native baseline](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)
