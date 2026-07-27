@@ -1,0 +1,130 @@
+{
+  "schema": "dse.eval.m31-contract-verifier-permission-live-admission.v1",
+  "contract_manifest": "eval/manifests/m31-contract-verifier-permission-treatment-v1.json",
+  "contract_manifest_sha256": "sha256:824083dd461612543ad67bdcc7364713c3e144495853489c4fbc2e49370cbde3",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "dbfbb8a58899817a1ac7f7d896808fbea68c66bb",
+  "candidate_tree": "9e825e7bd238ff0897e938db76e7e08c3383f128",
+  "candidate_binary": "/private/tmp/dse-m31-target/release/dse",
+  "candidate_binary_sha256": "sha256:3c4f6087504e5a511bfcee89f68746c288fe03b8cab54f65c4df7eb639616847",
+  "candidate_binary_size_bytes": 14354800,
+  "candidate_binary_version": "dse 0.8.68 (dbfbb8a58899)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:b8ddb85875ae0b2dd2f5ea89b6c2b1a9ed9c34c1fc90849cdc28e9369c14170e",
+  "schedule_sha256": "sha256:2d3e70865ff988279203c80b8e74e2b024788669198d474bce81e65511f13375",
+  "task_contracts_sha256": "sha256:800d99fa9472aba598f41c7bda27d836da2d6abd6fa402d44c204b2a74b8e946",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:e28b7048efcacff75c167a3be2bca89653584e3c152d2161c820b56b8ad050e3",
+  "freeze_report_sha256": "sha256:f08bf5be06e3b13cc17a8d33348da8db2de72279d4a5fa65f66574186f9351dc",
+  "dry_run_sha256": "sha256:88c0d9e3478d68e9ded2f0ebe97d8c449a8199fe3589e39fea882252bc9b5292",
+  "continuity_process_report_sha256": "sha256:88fc534312d15ce5e8c52244a3658bbd8c5e76798307ed0a29ed8fd1e15f99b5",
+  "process_test_binary_sha256": "sha256:0d8143ebf3890d54602138be1c7d5e9bf3176c2699dcff281d0e3a8583103799",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": true,
+    "treatment_label_delta": "Runtime derives an exact TaskContractVerifier grant from the acceptance-ID handle and frozen VerifierSpec digest; tools ignore only the validated verifier commands[].program in generic external-path classification"
+  },
+  "offline_gates": [
+    {
+      "gate": "typed VerifierSpec digest/grant, forged grant and spec-drift negative tests",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "16-case permission matrix with ordinary external path, cwd, network, explicit-deny and sandbox boundaries unchanged",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "Ask interactive/headless production failed-write-pass loopback, root/read-only/Writer and exact SQLite reopen",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "prepared, authorization-committed, execution-started and outcome-committed SIGKILL/reopen windows",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, CLI/TUI/app-server parity, bilingual PTY, public checker and diff check",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "two-task inherited fixture, exact schedule, hash-chain journal self-test, immutable release binary, dry-run and real request_user_input continuity",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, V4, pricing, ChatCompletions, Thinking and Tool Calls revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "official_api_accessed": false,
+      "documentation_network_accessed": true
+    }
+  ],
+  "fixture_hashes": {
+    "rust_line_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 2,
+    "runs_per_task": 1,
+    "formal_arms": 2,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "control_rerun": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 1,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m31-contract-verifier-permission-dbfbb8a58899-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "proposed_authorization_scope": "M31 only: two fixed-Pro/high Ask continuity arms, USD 0.50 per arm and USD 1.00 suite ceilings, maximum_reruns=0"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": false,
+    "official_model_request_authorized": false,
+    "authorized_on": null,
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 1,
+    "maximum_reruns": 0,
+    "pending_exact_user_authorization": true
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": false,
+  "prepared_at_utc": "2026-07-27T02:36:12Z"
+}
