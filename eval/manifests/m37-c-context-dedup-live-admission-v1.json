@@ -1,0 +1,138 @@
+{
+  "schema": "dse.eval.m37c-context-dedup-ab-live-admission.v1",
+  "admitted_at_utc": "2026-07-27T13:38:01Z",
+  "contract_manifest": "eval/manifests/m37-c-context-dedup-ab-v1.json",
+  "contract_manifest_sha256": "sha256:c31adfa17c954ea45dfb344be5892c9bbeb6ce54eb59754fd39c6547b91766e6",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "241941733dd5e1bc0818fa3c4f32f01b685ccfb5",
+  "candidate_tree": "e606f4e642322bd0afad29e4f95a9e3ff9d917e3",
+  "candidate_binary": "/private/tmp/dse-m37c-target/debug/dse",
+  "candidate_binary_sha256": "sha256:f807319e703f311200caa557680971a0595940ae82cbffd22ecff1480c7d748c",
+  "candidate_binary_size_bytes": 79389928,
+  "candidate_binary_version": "dse 0.8.68 (241941733dd5)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:954258a8fc8d056b10d7468d07be48abe31eb5fb5982283de1d8690c50dee160",
+  "schedule_sha256": "sha256:b75ef7f35710b7a718ab21da518d7256418334714ad89699891ed0a23f6aad86",
+  "task_contracts_sha256": "sha256:82b0360fde82159655d2dc6a41be4df13fc118ef181a151eab73658694ec8bfe",
+  "prompt_fixture_sha256": "sha256:78e3a62bbdd9066f3080b64f02ecbd15454506f8e6eaff3e8d8d3f8133859850",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:ab5d907d5fcc21ce104c14a94464cd29760f58b8227879dcd026a9f4cab02cae",
+  "freeze_report_sha256": "sha256:c79d326c1e47db490a8f7a779e8a17a1b07382042eedd3b2b4e4868085b4a349",
+  "dry_run_sha256": "sha256:ac5012ac0869f0124bf191ac672d11e4ed0eda5a8f574bdb4ed64c88bd513b6d",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": {
+      "owner": "crates/context",
+      "fragment_id": "project_context_pack",
+      "operation": "omit_same_payload_wrapper",
+      "variants": [
+        "control",
+        "single_project_projection"
+      ]
+    }
+  },
+  "offline_gates": [
+    {
+      "gate": "exact same-payload digest guard, explicit-authority negative control, 3300-byte core ceiling and canonical composer parity",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "six reviewed task families, balanced 36-arm schedule, deterministic verifier, hash-chain journal and crash write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, process crash/reopen, surface parity and bilingual PTY",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable debug binary, credential-free freeze report, self-test and dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek ChatCompletions, Thinking, Tool Calls and pricing revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and was not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_request_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "typescript_route_localization": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 6,
+    "runs_per_task": 3,
+    "formal_variants": 2,
+    "formal_arms": 36,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "m10_a_raw_is_input": false,
+    "m37_b_raw_is_input": false,
+    "control_rerun": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 10.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m37-c-context-dedup-241941733dd5-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "variant_guard": {
+      "guard_env": "DSE_M37C_EVALUATION",
+      "variant_env": "DSE_M37C_CONTEXT_VARIANT",
+      "ordinary_production": "control"
+    },
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized M37-C same-binary fixed Pro/high context-dedup A/B under USD 0.50 per arm and USD 10.00 suite ceilings"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/",
+    "https://api-docs.deepseek.com/quick_start/pricing/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 10.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
