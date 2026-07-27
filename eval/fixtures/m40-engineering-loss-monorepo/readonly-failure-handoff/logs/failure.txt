@@ -1,0 +1,4 @@
+FAILED test_clock_rollback_is_stale
+assert is_fresh(stored_at=200, now=190, ttl=30) is False
+observed: True
+call path: retry.should_retry -> cache.is_fresh
