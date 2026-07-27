@@ -5558,7 +5558,7 @@ ignored `0600` raw 与 summary 保留作审计证据。完整结论见
 
 ## 30. M32：current Hardness 全量回归与剩余损失门
 
-- 状态：**in progress；contract freeze**
+- 状态：**complete；stop_incomplete_accounting / no treatment admitted**
 - 基线：M31 clean checkpoint `bfa8ec84f`
 - owner：唯一 corrected `scripts/eval-m9b-fixed-pro-regression.py` Harness
 - production delta：control acquisition 阶段为 0
@@ -5603,3 +5603,27 @@ M32 临时 live consumer，不开发 production treatment。若出现重复 loss
 problem/acceptance/owner/old-path/tests/deletion 新开一个单变量 candidate；失败即物理
 删除 candidate 与临时接线。历史 M23/M30/M31 evidence 不修改。全程不访问 GitHub、
 不 push、不 release。
+
+### 30.3 正式结果与收口
+
+用户在 immutable candidate、`$0.50/arm`、`$10/suite` 和 `maximum_reruns=0`
+冻结后明确授权。formal campaign 闭合 6 个 accounting-complete arm：5 个 verified
+success、1 个 `root_task_outcome:deterministic_verifier_failed`、false success 0。
+第 7 个 `writer_envelope` 的 root 首请求在 response headers 前得到 typed
+`deepseek_timeout`；terminal、Store、credential-free reopen 与 verifier facts 均保存，
+但 accounting 为
+`complete=false, usage_complete=true, billing_unknown=true, sealed=true`。
+
+Harness 按合同在第 8 arm 前写入 `accounting_incomplete` abort；没有重发、续跑后十三项
+或拼接历史 raw。只读 report 两次 byte-identical，确认 7 个 canonical trajectory、
+6 个 complete accounting observation、1 个 billing-unknown/route-invalid observation
+和 6 个 full-utility observation。唯一闭合 loss 只出现在
+`rust_router_localization`，未达到两个独立 task 的阈值，因此 loss gate 为
+`insufficient_repeated_current_loss`，不准入 treatment。
+
+这不是完整 20-task regression，也不能宣称 `no_repeated_current_loss` 或 M31 broad
+regression-safe。M32 以 `stop_incomplete_accounting` 收口；fixed actor route、M31 exact
+grant、唯一 Runtime/Store、canonical tools 与 production prompt 均不改变。临时 M32
+Harness consumer 已物理删除并恢复到 M32 前 blob `90ffb72b`，frozen
+contract/admission/analysis、ignored 0600 raw 与 summary 保留。完整事实见
+[M32 current Hardness regression](../../eval/summaries/m32-hardness-regression-2026-07-27.md)。

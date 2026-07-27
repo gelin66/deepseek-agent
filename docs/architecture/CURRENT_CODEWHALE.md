@@ -2680,16 +2680,23 @@ v14 / RuntimeEvent v21 / State v27 / exec-stream v4；两项原 loss task 均得
 latest-revision failed-write-pass receipt、exact reopen、false success 0 和完整 accounting。
 临时 M31 Harness consumer 已删除，frozen contract/admission/raw/summary 保留。
 
-M32 当前处于 contract-freeze 阶段，基线是 M31 clean checkpoint `bfa8ec84f`。M32 不修改
-production；它将由唯一 corrected Harness 对 M23 冻结的 20-task material 建立全新
-position-1 fixed-Pro/high control-only 回归，验证 M31 grant 在完整 task strata 上的
-回归安全性并定位剩余重复 loss。M30 的 partial raw/停止位置不作为输入，M31 的两任务
-treatment 结果也不冒充 broad regression。
+M32 已以 `stop_incomplete_accounting` 收口。它从 M31 clean checkpoint `bfa8ec84f`
+冻结新的 20-task position-1 fixed-Pro/high control-only contract；offline fixture、
+reference、continuity SIGKILL/reopen 与全仓门禁闭合后，用户在 `$10` suite ceiling 下
+明确授权。formal run 闭合 6 个 accounting-complete arm（5 verified success、1 verified
+product failure、false success 0），第 7 个 Writer arm 在 response headers 前得到
+typed `deepseek_timeout`，随后以 `usage_complete=true, billing_unknown=true` 停止。
+没有重跑或执行后十三项。
 
-当前尚无 M32 live admission、immutable campaign binary、Key read、official model
-request 或质量结论。credential-free contract/Harness/continuity/full gate 完成后仍需
-单独冻结明确授权和费用上界；没有跨独立 task 重复的 stable owner/cause 时，不开发新
-production feature。
+只读正交 report 保留 7 个 canonical trajectory、6 个 full-utility observation 和 1 个
+billing-unknown/route-invalid observation。唯一闭合 loss 只来自一个 task，结论为
+`insufficient_repeated_current_loss`；不准入 treatment，也不把 partial result 外推为
+完整 Hardness baseline、`no_repeated_current_loss` 或 M31 broad regression-safe。
+temporary M32 Harness consumer 已删除并恢复到 M32 前 blob；frozen
+contract/admission/analysis、ignored 0600 raw 与
+[M32 summary](../../eval/summaries/m32-hardness-regression-2026-07-27.md) 保留。current
+production 仍是 M31 exact TaskContract verifier grant、固定 actor route、唯一
+AgentRuntime/RunStore 与 canonical tools，没有 M32 production delta。
 
 ## 8. 明确非结论
 

@@ -3920,6 +3920,49 @@ decision is `no_repeated_current_loss`; with a repeated loss the only permitted 
 minimum unique-owner audit. M32 acquisition itself changes no Runtime, Store, Provider, route,
 prompt or tool catalog.
 
+#### M32 live result 与正交结论
+
+live admission `7b8e65b71` 绑定 candidate `994e36d7b`、immutable release binary、
+当前 Harness/schedule/task hash、ignored 0600 raw、用户明确授权和 `$10` suite ceiling。
+formal acquisition 闭合前 6 个 arm 后，在第 7 个 `writer_envelope` 保存 terminal、
+Store、credential-free SQLite reopen 与 verifier snapshot，再因
+`complete=false, usage_complete=true, billing_unknown=true` 写入
+`accounting_incomplete` abort；没有重跑或执行后十三个任务。
+
+前 6 个 complete observation 为 5 个 verified success、1 个 verified product failure、
+false success 0，已知费用 `USD 0.075418502`。这些 partial 数值不形成 20-task pass@1、
+safety、成本或 release-quality aggregate。
+
+只读 canonical report 的输入为 47-record、无 partial tail、SHA-256
+`4f7ed8b09122ab613b31e2b1b1b4b108df85df1f69a257aec2c478f57b914521`
+的 journal。两次 report byte-identical，SHA-256 均为
+`b6e780949dd9d88c233e6bfee8a07a8f003f065986d63d75012c4f90bbada6d8`：
+
+```text
+canonical trajectories        7
+completed arm results         6
+behavior:
+  verified success            5
+  verified product failure    1
+  invalid                     1
+  false success               0
+accounting:
+  complete                    6
+  billing unknown             1
+full utility observations     6
+```
+
+唯一 accounting-complete loss 为单个
+`root_task_outcome:deterministic_verifier_failed`；没有第二个独立 task，因此结果是
+`insufficient_repeated_current_loss`，不授权 candidate audit 或 production treatment。
+由于 acquisition 未完整闭合，也不能声明 `no_repeated_current_loss` 或 M31 在所有 strata
+上 broad regression-safe。
+
+M32 最终为 `stop_incomplete_accounting`。临时 `--campaign m32` consumer 和 gate-only
+adapter 已删除，Harness 恢复到 M32 前 blob `90ffb72b`；production 不变。完整身份、
+partial metric、删除和非结论见
+[M32 current Hardness regression](../../eval/summaries/m32-hardness-regression-2026-07-27.md)。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
