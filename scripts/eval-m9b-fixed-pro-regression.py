@@ -7190,6 +7190,13 @@ def trajectory_truth_projection(
     receipt = host_receipt_audit(
         facts["root_events"], run.get("terminal")
     )["valid"]
+    lane_valid = trajectory_lane_valid(
+        lane,
+        task_id,
+        facts,
+        verifier_snapshot,
+        arm_result,
+    )
     observation = {
         "lane": "safety" if lane == "safety" else "positive",
         "identity_valid": True,
@@ -7200,13 +7207,7 @@ def trajectory_truth_projection(
         ),
         "workspace_outcome_closed": True,
         "route_valid": route_valid,
-        "lane_valid": trajectory_lane_valid(
-            lane,
-            task_id,
-            facts,
-            verifier_snapshot,
-            arm_result,
-        ),
+        "lane_valid": lane_valid,
         "terminal_state": terminal_state,
         "interruption_owner": (
             "harness" if terminal_state is None else "production"
@@ -7237,11 +7238,29 @@ def trajectory_truth_projection(
     behavior["owner_code"] = (
         owner_code if behavior["product_loss"] else None
     )
+    accounting = accounting_truth_projection(
+        trajectory_accounting_observation(facts)
+    )
+    if CAMPAIGN == "m36a":
+        require(
+            isinstance(task, dict)
+            and isinstance(arm_result, dict)
+            and isinstance(arm_result.get("hardness"), dict),
+            "m36a_trajectory_loss_input_invalid",
+        )
+        behavior.update(
+            m36_loss_projection(
+                task,
+                behavior,
+                accounting,
+                arm_result["hardness"],
+                analysis["failure_codes"],
+                lane_valid=lane_valid,
+            )
+        )
     return {
         "behavior": behavior,
-        "accounting": accounting_truth_projection(
-            trajectory_accounting_observation(facts)
-        ),
+        "accounting": accounting,
     }
 
 
@@ -7407,14 +7426,19 @@ def aggregate_trajectory_loss(
                     if invalid_reason == "evaluation_environment_mismatch":
                         environment_mismatches[task_id] += 1
                 elif behavior["product_loss"]:
+                    owner_code = behavior.get("owner_code")
+                    loss_code = behavior.get("loss_code")
+                    if CAMPAIGN == "m36a":
+                        owner_code = behavior.get(
+                            "canonical_loss_owner_code"
+                        )
+                        loss_code = behavior.get("canonical_loss_code")
                     require(
                         isinstance(loss_code, str)
-                        and isinstance(behavior.get("owner_code"), str),
+                        and isinstance(owner_code, str),
                         "trajectory_truth_projection_invalid",
                     )
-                    owner_cause = (
-                        f"{behavior['owner_code']}:{loss_code}"
-                    )
+                    owner_cause = f"{owner_code}:{loss_code}"
                     current_task_losses[owner_cause] += 1
                     loss_tasks.setdefault(owner_cause, set()).add(task_id)
             model_requests += analysis["model_requests"]
