@@ -4232,6 +4232,61 @@ truth 均已闭合。read-only analysis manifest 分别绑定 acquisition/analys
 credential、不访问 network、不修改 raw、不补跑。正式身份、修正与删除证据见
 [M36-A summary](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)。
 
+##### 0.1 M36-A2 explicit Writer confirmation
+
+M36-A2 是 fresh control-only repeated-loss acquisition，不是 M36-A continuation、历史 raw
+重算或 production treatment。唯一 corrected Harness 读取
+`eval/manifests/m36a2-writer-loss-confirmation-v1.json`；历史 M36 `writer_envelope` 只提供
+待复核假设，**不计入**本次 threshold。
+
+冻结身份必须同时满足：
+
+- exact clean source、tree、immutable `dse` binary、Run API v15、RuntimeEvent v22、State
+  v28、exec-stream v6；
+- 3 个全新 task_id、fixture tree/base commit、各自 reference patch、hidden deterministic
+  verifier、allowed scope 与 one-Writer actor contract；
+- current `deepseek-v4-pro/high`、Standard streaming ChatCompletions、current Prompt/tools、
+  `permission_mode=agent`、`interactive=false`；
+- normal Runtime safe retry 2、Harness rerun 0、每 task 一个 position-1 arm；
+- 每 arm 新 Git repository、isolated Writer worktree、DSE home、SQLite RunStore、external
+  verifier HOME 和 credential-free terminal reopen；
+- `$1.00` per-arm、`$3.00` suite known-cost ceiling；unknown billing/incomplete usage 在下一
+  arm 前 fail closed。
+
+离线 fixture 必须证明：
+
+```text
+writer_retry_ledger: initial fail, canonical v2 reference pass
+writer_header_policy: initial fail, bounded Rust policy reference pass
+writer_route_contract: initial fail, exact v1 read/v2 write reference pass
+```
+
+每条正式 observation 必须闭合 behavior status、false success、route、完整 Writer lifecycle、
+sealed diff、root integration、latest revision receipt、external verifier、cleanup、physical
+request/retry/usage/cache/cost 和无 credential reopen。Writer task 的 verified product failure
+仅在 identity/environment/workspace outcome 已闭合后归入
+`orchestrator:writer_integration`；真实 `deepseek_transport`、Host completion、Harness 或
+infrastructure interruption 不得伪归因。
+
+机械决策门：
+
+```text
+0 or 1 fresh task with orchestrator:writer_integration
+  -> keep_current_harness_no_repeated_loss
+  -> production delta = 0
+  -> delete temporary M36-A2 campaign consumer
+
+at least 2 distinct fresh task_ids with orchestrator:writer_integration
+  -> next_candidate_audit_required
+  -> audit only crates/orchestrator bounded verify->repair->reverify
+  -> freeze a separate held-out >=3 tasks x >=3 arms/cell A/B before treatment
+```
+
+出现 false success、unknown billing、incomplete accounting、identity mismatch、observer
+ambiguity、unsafe evidence 或 cost ceiling 时，本 campaign 立即停止且不得 rerun/mate/splice。
+即使 repeated-loss 门通过，也不能直接改 production。ADR-0015 的 web/browser/search/vision
+方向不属于本评测，production delta 继续为 0。
+
 ##### 1. 基线任务层
 
 每个基线 manifest 必须从以下任务层中选择与候选 owner 相关的 fresh、人工复核任务：

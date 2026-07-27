@@ -1,0 +1,70 @@
+diff --git a/writer-header-policy/src/lib.rs b/writer-header-policy/src/lib.rs
+index 25742a7..9dcdb4c 100644
+--- a/writer-header-policy/src/lib.rs
++++ b/writer-header-policy/src/lib.rs
+@@ -1,18 +1,31 @@
+ mod policy;
+
+-pub use policy::HeaderError;
++use std::collections::HashSet;
++
++pub use policy::{valid_member, HeaderError};
+
+ pub fn parse_forwarded_chain(
+     header: Option<&str>,
+     max_hops: usize,
+ ) -> Result<Vec<String>, HeaderError> {
+-    let header = header.ok_or(HeaderError::Missing)?;
+-    let values: Vec<String> = header
+-        .split(',')
+-        .map(|value| value.trim().to_string())
+-        .collect();
+-    if values.is_empty() || values.len() > max_hops {
++    if !(1..=8).contains(&max_hops) {
++        return Err(HeaderError::InvalidLimit);
++    }
++    let header = header.filter(|value| !value.is_empty()).ok_or(HeaderError::Missing)?;
++    let mut values = Vec::new();
++    let mut seen = HashSet::new();
++    for raw in header.split(',') {
++        let member = raw.trim_matches([' ', '\t']);
++        if !valid_member(member) {
++            return Err(HeaderError::InvalidMember);
++        }
++        if values.len() == max_hops {
+         return Err(HeaderError::TooManyHops);
+     }
++        if !seen.insert(member.to_string()) {
++            return Err(HeaderError::Duplicate);
++        }
++        values.push(member.to_string());
++    }
+     Ok(values)
+ }
+diff --git a/writer-header-policy/src/policy.rs b/writer-header-policy/src/policy.rs
+index 648cc8d..465cc36 100644
+--- a/writer-header-policy/src/policy.rs
++++ b/writer-header-policy/src/policy.rs
+@@ -8,5 +8,21 @@ pub enum HeaderError {
+ }
+
+ pub fn valid_member(value: &str) -> bool {
+-    !value.is_empty() && value.len() <= 63
++    if value.is_empty() || value.len() > 63 || !value.is_ascii() {
++        return false;
++    }
++    let mut previous_hyphen = true;
++    for byte in value.bytes() {
++        if byte == b'-' {
++            if previous_hyphen {
++                return false;
++            }
++            previous_hyphen = true;
++        } else if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
++            previous_hyphen = false;
++        } else {
++            return false;
++        }
++    }
++    !previous_hyphen
+ }

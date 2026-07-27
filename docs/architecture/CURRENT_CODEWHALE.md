@@ -2835,6 +2835,18 @@ M38 没有修改 production crate、Prompt、DeepSeek request、RuntimeEvent、R
 permission 或 Writer behavior；Run API 15、RuntimeEvent 22、State v28、exec-stream v6 保持
 不变。M37-C frozen evidence 没有读取、修改、续跑或拼接；Key 未读取，official API 请求为 0。
 
+M36-A2 当前只增加 eval contract/Harness consumer 和 3 个 fresh explicit Writer fixture；
+production crate delta 仍为 0。三个 task 分别覆盖 Python retry-accounting、Rust bounded
+header policy 与 TypeScript fixed-route codec，均已由离线 hidden verifier 证明 initial fail、
+reference pass，并绑定同一 deterministic fixture tree/base commit。唯一 corrected Harness
+使用 current 三字段 permission controls、one isolated Writer、latest-root verifier、cleanup、
+behavior/accounting truth 与 credential-free reopen；历史 M36 raw 不作为输入。
+
+当前只冻结 repeated-loss 判定：本次 fresh set 中至少两个不同 task_id 同时产生
+`orchestrator:writer_integration` 才允许后续审计 `crates/orchestrator` 的 bounded
+verify -> repair -> reverify；0/1 个则删除 campaign consumer 并保持 production 不变。
+ADR-0015 仍是 implementation-not-admitted，当前没有 browser/search/vision production 路径。
+
 ## 8. 明确非结论
 
 当前源码不证明：

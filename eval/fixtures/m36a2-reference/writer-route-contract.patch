@@ -1,0 +1,95 @@
+diff --git a/writer-route-contract/src/codec.ts b/writer-route-contract/src/codec.ts
+index 296a66a..7662f05 100644
+--- a/writer-route-contract/src/codec.ts
++++ b/writer-route-contract/src/codec.ts
+@@ -1,9 +1,56 @@
+ import type { Route } from "./route.ts";
+
+-export function decodeRoute(payload: any): Route {
+-  return {
+-    model: String(payload.model),
+-    effort: String(payload.reasoning),
+-    scopes: Array.from(payload.paths),
+-  };
++const MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
++const EFFORTS = new Set(["high", "max"]);
++
++function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
++  return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
++}
++
++function validScopes(value: unknown, canonical: boolean): value is string[] {
++  if (!Array.isArray(value) || value.length === 0) return false;
++  if (!value.every((path) =>
++    typeof path === "string" &&
++    path.length > 0 &&
++    !path.startsWith("/") &&
++    !path.split("/").some((part) => part === "" || part === "." || part === "..")
++  )) return false;
++  const normalized = [...new Set(value)].sort();
++  return normalized.length === value.length &&
++    (!canonical || normalized.every((path, index) => path === value[index]));
++}
++
++export function decodeRoute(payload: unknown): Route {
++  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
++    throw new TypeError("route must be an object");
++  }
++  const record = payload as Record<string, unknown>;
++  if (typeof record.version !== "number" || !Number.isInteger(record.version)) {
++    throw new TypeError("invalid version");
++  }
++  let model: unknown;
++  let effort: unknown;
++  let scopes: unknown;
++  if (record.version === 1 && exactKeys(record, ["version", "model", "reasoning", "paths"])) {
++    model = record.model;
++    effort = record.reasoning;
++    scopes = record.paths;
++    if (!validScopes(scopes, false)) throw new TypeError("invalid scopes");
++  } else if (record.version === 2 && exactKeys(record, ["version", "route", "scopes"])) {
++    if (typeof record.route !== "object" || record.route === null || Array.isArray(record.route)) {
++      throw new TypeError("invalid route");
++    }
++    const route = record.route as Record<string, unknown>;
++    if (!exactKeys(route, ["model", "effort"])) throw new TypeError("invalid route");
++    model = route.model;
++    effort = route.effort;
++    scopes = record.scopes;
++    if (!validScopes(scopes, true)) throw new TypeError("invalid scopes");
++  } else {
++    throw new TypeError("unsupported route record");
++  }
++  if (typeof model !== "string" || !MODELS.has(model) || typeof effort !== "string" || !EFFORTS.has(effort)) {
++    throw new TypeError("invalid fixed route");
++  }
++  return {model, effort, scopes: [...scopes]};
+ }
+diff --git a/writer-route-contract/src/route.ts b/writer-route-contract/src/route.ts
+index 883c021..1b5bff4 100644
+--- a/writer-route-contract/src/route.ts
++++ b/writer-route-contract/src/route.ts
+@@ -4,6 +4,21 @@ export type Route = {
+   scopes: string[];
+ };
+
+-export function encodeRoute(model: string, effort: string, scopes: string[]) {
+-  return { version: 1, model, reasoning: effort, paths: scopes };
++const MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
++const EFFORTS = new Set(["high", "max"]);
++
++export function encodeRoute(model: string, effort: string, scopes: string[]) {
++  if (!MODELS.has(model) || !EFFORTS.has(effort) || !Array.isArray(scopes) || scopes.length === 0) {
++    throw new TypeError("invalid fixed route");
++  }
++  const canonical = [...new Set(scopes)].sort();
++  if (!canonical.every((path) =>
++    typeof path === "string" && path.length > 0 && !path.startsWith("/") &&
++    !path.split("/").some((part) => part === "" || part === "." || part === "..")
++  )) throw new TypeError("invalid scope");
++  return {
++    version: 2,
++    route: {model, effort},
++    scopes: canonical,
++  };
+ }

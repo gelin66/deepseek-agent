@@ -1,0 +1,99 @@
+diff --git a/writer-retry-ledger/codec.py b/writer-retry-ledger/codec.py
+index 620809a..d54066d 100644
+--- a/writer-retry-ledger/codec.py
++++ b/writer-retry-ledger/codec.py
+@@ -5,4 +5,4 @@ from ledger import summarize_attempts
+
+
+ def encode_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+-    return {"version": 1, "summary": summarize_attempts(records)}
++    return {"version": 2, "accounting": dict(summarize_attempts(records))}
+diff --git a/writer-retry-ledger/ledger.py b/writer-retry-ledger/ledger.py
+index 12998e0..399bba1 100644
+--- a/writer-retry-ledger/ledger.py
++++ b/writer-retry-ledger/ledger.py
+@@ -1,15 +1,63 @@
+ from typing import Any
+
+
++EXPECTED_KEYS = {
++    "attempt_id",
++    "logical_id",
++    "status",
++    "input_tokens",
++    "output_tokens",
++    "cost_nanousd",
++}
++USAGE_KEYS = ("input_tokens", "output_tokens", "cost_nanousd")
++
++
++def _non_negative_integer(value: Any) -> bool:
++    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
++
++
+ def summarize_attempts(records: list[dict[str, Any]]) -> dict[str, Any]:
+-    completed = [record for record in records if record.get("status") == "completed"]
++    if not isinstance(records, list):
++        raise TypeError("records must be a list")
++    attempts: set[str] = set()
++    logical_requests: set[str] = set()
++    completed = 0
++    input_tokens = 0
++    output_tokens = 0
++    cost_nanousd = 0
++    for record in records:
++        if not isinstance(record, dict) or set(record) != EXPECTED_KEYS:
++            raise TypeError("attempt record has an invalid shape")
++        attempt_id = record["attempt_id"]
++        logical_id = record["logical_id"]
++        status = record["status"]
++        if not isinstance(attempt_id, str) or not attempt_id:
++            raise ValueError("attempt_id must be non-empty")
++        if not isinstance(logical_id, str) or not logical_id:
++            raise ValueError("logical_id must be non-empty")
++        if attempt_id in attempts:
++            raise ValueError("duplicate attempt_id")
++        if status not in {"started", "completed"}:
++            raise ValueError("invalid status")
++        attempts.add(attempt_id)
++        logical_requests.add(logical_id)
++        if status == "started":
++            if any(record[key] is not None for key in USAGE_KEYS):
++                raise ValueError("started attempt cannot contain usage")
++            continue
++        if not all(_non_negative_integer(record[key]) for key in USAGE_KEYS):
++            raise ValueError("completed usage must be non-negative integers")
++        completed += 1
++        input_tokens += record["input_tokens"]
++        output_tokens += record["output_tokens"]
++        cost_nanousd += record["cost_nanousd"]
+     return {
+         "physical_started": len(records),
+-        "physical_completed": len(completed),
+-        "physical_in_flight": len(records) - len(completed),
+-        "logical_requests": len({record.get("logical_id") for record in records}),
+-        "usage_complete": len(records) == len(completed),
+-        "input_tokens": sum(int(record.get("input_tokens") or 0) for record in completed),
+-        "output_tokens": sum(int(record.get("output_tokens") or 0) for record in completed),
+-        "cost_nanousd": sum(int(record.get("cost_nanousd") or 0) for record in completed),
++        "physical_completed": completed,
++        "physical_in_flight": len(records) - completed,
++        "logical_requests": len(logical_requests),
++        "usage_complete": len(records) == completed,
++        "input_tokens": input_tokens,
++        "output_tokens": output_tokens,
++        "cost_nanousd": cost_nanousd,
+     }
+diff --git a/writer-retry-ledger/test_ledger.py b/writer-retry-ledger/test_ledger.py
+index 41dc0c4..afedfc1 100644
+--- a/writer-retry-ledger/test_ledger.py
++++ b/writer-retry-ledger/test_ledger.py
+@@ -17,7 +17,7 @@ class RetryLedgerTests(unittest.TestCase):
+             }
+         ]
+         self.assertEqual(summarize_attempts(records)["physical_completed"], 1)
+-        self.assertEqual(encode_summary(records)["version"], 1)
++        self.assertEqual(encode_summary(records)["version"], 2)
+
+
+ if __name__ == "__main__":

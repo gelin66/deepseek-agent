@@ -1,0 +1,331 @@
+{
+  "schema": "dse.eval.m36a2-writer-loss-confirmation.v1",
+  "suite_id": "m36a2-writer-loss-confirmation-v1",
+  "frozen_on": "2026-07-27",
+  "source_identity": {
+    "branch": "deepseek-agent",
+    "starting_revision": "3b43a41a356f45fc4f1ca13100361b286695c154",
+    "starting_tree": "1ca2b5c1923fde4f00e1f354e2949157fa813c00",
+    "required_clean_start": true,
+    "run_api": 15,
+    "runtime_event": 22,
+    "state_schema": 28,
+    "exec_stream": 6,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "node": "24.18.0",
+    "python": "3.9.6",
+    "cargo_lock_sha256": "sha256:e1ae90d04fc2d2ea31fab2f8c30f9b613cc3d51662c68ad4da68d5ea163e427f",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "authority_sha256": {
+    "product_plan": "sha256:7c5af39c5b2c11fdfba76b5f0ba36c75cb7e532e38ffcda3195e37cb69f6d9b0",
+    "roadmap": "sha256:c6afa606d8874e0bae801b2ba3cebb085b01cebd8bec0cedb7376c0c419dcde4",
+    "evaluation": "sha256:fd8a355888d646da8b3f53b663a95abb59e261c934f677e5f52eb300c3f59e6a",
+    "current_architecture": "sha256:eaf31b9617f6d38dfa8fa10707f0988be37f153705de2edc766145ead1d6498d"
+  },
+  "fixture_contract": {
+    "path": "eval/fixtures/m36a2-writer-monorepo",
+    "tree_sha256": "sha256:b13990beefb69c5bfe99156296cb6cf876896e564ebc890c609f8548323bc4fc",
+    "base_commit": "26cad8ce4ecdb1c79a13acd8b6d8d1f54c1fe0ec",
+    "commit_profile": "m36a2-2026-07-27",
+    "workspace_per_arm": "fresh_independent_git_repository",
+    "reference_material_model_visible": false
+  },
+  "reference_patches": {
+    "writer_header_policy": {
+      "path": "eval/fixtures/m36a2-reference/writer-header-policy.patch",
+      "sha256": "sha256:8517e321247b8a2655746dcfdfbe3ab1859a082a80220bf67d30536eb202ee33"
+    },
+    "writer_retry_ledger": {
+      "path": "eval/fixtures/m36a2-reference/writer-retry-ledger.patch",
+      "sha256": "sha256:0158466c5c2708a135af2eb4b915d06eff1c41b26080bcb96ef6988d0c8e5445"
+    },
+    "writer_route_contract": {
+      "path": "eval/fixtures/m36a2-reference/writer-route-contract.patch",
+      "sha256": "sha256:ea2e411d4ea760130493e59bcd176a9ef43884cc464787ab5fc52e1ba4c2d7e3"
+    }
+  },
+  "resources": {
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "formal_tasks": 3,
+    "formal_arms": 3,
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "transport_max_retries_per_request": 0,
+    "max_runtime_retries_per_arm": 2,
+    "max_output_tokens_per_request": 32768,
+    "model_event_idle_ms": 180000,
+    "runtime_wall_time_ms": 1200000,
+    "harness_wall_time_ms": 1320000,
+    "production_verifier_timeout_ms": 600000,
+    "external_verifier_timeout_seconds": 180,
+    "per_arm_known_cost_ceiling_usd": "1.00",
+    "suite_known_cost_ceiling_usd": "3.00",
+    "permission_mode": "agent",
+    "interactive": false,
+    "cargo_incremental": "0",
+    "cargo_net_offline": true,
+    "cargo_target_dir": "/private/tmp/dse-m36a2-target"
+  },
+  "metrics": [
+    "verified_success",
+    "false_success",
+    "behavior_status",
+    "behavior_owner_code",
+    "behavior_loss_code",
+    "accounting_status",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+    "cost_nanousd",
+    "wall_time_ms",
+    "writer_lifecycle",
+    "integrated_files",
+    "cleanup_proof",
+    "latest_revision_receipt"
+  ],
+  "tool_policies": {
+    "root_tools": [
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "root_with_agent_tools": [
+      "agent",
+      "apply_patch",
+      "edit_file",
+      "file_search",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "read_only_child_tools": [
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file"
+    ],
+    "writer_child_tools": [
+      "apply_patch",
+      "edit_file",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ]
+  },
+  "formal_schedule": {
+    "round_order": [
+      [
+        "writer_retry_ledger",
+        "writer_header_policy",
+        "writer_route_contract"
+      ]
+    ],
+    "schedule_semantics": "three fresh held-out explicit Writer tasks; one immutable fixed-Pro/high position-1 arm per task; maximum_reruns=0; historical M36 raw is not input"
+  },
+  "tasks": {
+    "writer_retry_ledger": {
+      "lane": "writer",
+      "language": "python",
+      "stratum": "explicit Writer retry-accounting migration",
+      "project_path": "writer-retry-ledger",
+      "objective": "把 retry ledger v1 迁移为 README 规定的 canonical v2 accounting contract；必须由唯一 isolated Writer 完成跨文件实现与测试，Host 集成后在 latest root revision 复验并清理 worktree。",
+      "constraints": [
+        "root 不直接写",
+        "只允许一个 isolated Writer",
+        "严格校验 physical attempt 与 usage truth，不做隐式 coercion",
+        "latest-root verifier 与 cleanup 必须闭合"
+      ],
+      "non_goals": [
+        "第二 Writer",
+        "网络账单推断",
+        "兼容 dual write"
+      ],
+      "acceptance_id": "m36a2-writer-retry-ledger",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "writer-retry-ledger/codec.py",
+        "writer-retry-ledger/ledger.py",
+        "writer-retry-ledger/test_ledger.py"
+      ],
+      "reference_changed_files": [
+        "writer-retry-ledger/codec.py",
+        "writer-retry-ledger/ledger.py",
+        "writer-retry-ledger/test_ledger.py"
+      ],
+      "related_files": [
+        "writer-retry-ledger/README.md",
+        "writer-retry-ledger/_eval_verifier.py",
+        "writer-retry-ledger/codec.py",
+        "writer-retry-ledger/ledger.py",
+        "writer-retry-ledger/test_ledger.py"
+      ],
+      "reference_patch": "writer_retry_ledger",
+      "expected_artifact": "isolated Writer retry-ledger diff, latest-root verifier receipt and cleanup proof",
+      "child_wall_time_secs": 420,
+      "max_api_requests": 18,
+      "max_tool_calls": 60,
+      "max_depth": 1,
+      "max_concurrent_children": 1
+    },
+    "writer_header_policy": {
+      "lane": "writer",
+      "language": "rust",
+      "stratum": "explicit Writer bounded-header migration",
+      "project_path": "writer-header-policy",
+      "objective": "实现 README 冻结的 canonical forwarded-member policy；必须由唯一 isolated Writer 完成 Rust 跨模块修改，Host 集成后在 latest root revision 复验并清理 worktree。",
+      "constraints": [
+        "root 不直接写",
+        "只允许一个 isolated Writer",
+        "不增加 dependency 或兼容 parser",
+        "latest-root verifier 与 cleanup 必须闭合"
+      ],
+      "non_goals": [
+        "第二 Writer",
+        "网络访问",
+        "宽松 header alias"
+      ],
+      "acceptance_id": "m36a2-writer-header-policy",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "writer-header-policy/src/lib.rs",
+        "writer-header-policy/src/policy.rs",
+        "writer-header-policy/tests/public.rs"
+      ],
+      "reference_changed_files": [
+        "writer-header-policy/src/lib.rs",
+        "writer-header-policy/src/policy.rs"
+      ],
+      "related_files": [
+        "writer-header-policy/Cargo.toml",
+        "writer-header-policy/README.md",
+        "writer-header-policy/_eval_verifier.py",
+        "writer-header-policy/src/lib.rs",
+        "writer-header-policy/src/policy.rs",
+        "writer-header-policy/tests/public.rs"
+      ],
+      "reference_patch": "writer_header_policy",
+      "expected_artifact": "isolated Writer header-policy diff, latest-root verifier receipt and cleanup proof",
+      "child_wall_time_secs": 420,
+      "max_api_requests": 18,
+      "max_tool_calls": 60,
+      "max_depth": 1,
+      "max_concurrent_children": 1
+    },
+    "writer_route_contract": {
+      "lane": "writer",
+      "language": "typescript",
+      "stratum": "explicit Writer fixed-route codec migration",
+      "project_path": "writer-route-contract",
+      "objective": "把 fixed actor route codec 迁移为 README 冻结的 canonical v2 writer/read contract；必须由唯一 isolated Writer 完成 TypeScript 跨模块修改，Host 集成后在 latest root revision 复验并清理 worktree。",
+      "constraints": [
+        "root 不直接写",
+        "只允许一个 isolated Writer",
+        "v1 只读、v2 单写且 exact keys",
+        "latest-root verifier 与 cleanup 必须闭合"
+      ],
+      "non_goals": [
+        "第二 Writer",
+        "Auto route",
+        "兼容 dual write"
+      ],
+      "acceptance_id": "m36a2-writer-route-contract",
+      "evidence_policy": "latest_pass",
+      "allowed_paths": [
+        "writer-route-contract/src/codec.ts",
+        "writer-route-contract/src/route.ts",
+        "writer-route-contract/test/route.test.ts"
+      ],
+      "reference_changed_files": [
+        "writer-route-contract/src/codec.ts",
+        "writer-route-contract/src/route.ts"
+      ],
+      "related_files": [
+        "writer-route-contract/README.md",
+        "writer-route-contract/_eval_verifier.py",
+        "writer-route-contract/package.json",
+        "writer-route-contract/src/codec.ts",
+        "writer-route-contract/src/route.ts",
+        "writer-route-contract/test/route.test.ts"
+      ],
+      "reference_patch": "writer_route_contract",
+      "expected_artifact": "isolated Writer route-contract diff, latest-root verifier receipt and cleanup proof",
+      "child_wall_time_secs": 420,
+      "max_api_requests": 18,
+      "max_tool_calls": 60,
+      "max_depth": 1,
+      "max_concurrent_children": 1
+    }
+  },
+  "slice_contract": {
+    "real_problem": "M36-A observed one writer_envelope -> orchestrator:writer_integration loss, but one task cannot admit a production treatment.",
+    "acceptance": "all three fresh tasks have closed behavior/accounting truth, false_success=0, exact reopen and writer lifecycle evidence; treatment admission requires orchestrator:writer_integration on at least two distinct fresh task IDs",
+    "owner": "eval Harness for acquisition; crates/orchestrator only if the repeated-loss gate passes",
+    "old_path": "no production path is replaced during acquisition",
+    "evidence": "three fresh deterministic Writer projects, hidden verifier, reference proof, canonical RunStore reopen and official fixed-Pro/high position-1 acquisition",
+    "deletion": "if the repeated-loss gate does not pass, delete the M36-A2 Harness selector/consumer and keep only frozen evidence; production delta remains zero"
+  },
+  "decision_rule": {
+    "complete_acquisition": "all 3 fresh arms have closed behavior truth and complete accounting with exact reopen and false_success=0",
+    "stop_incomplete": "stop before the next arm on unknown billing, incomplete usage, identity mismatch, observer ambiguity, false success, unsafe evidence, cost ceiling or infrastructure ambiguity; never rerun",
+    "candidate_threshold": "orchestrator:writer_integration on at least two distinct task IDs from this fresh three-task set; historical M36 writer_envelope does not count toward the threshold",
+    "candidate_action": "audit one Orchestrator-owned bounded verify-repair-reverify treatment, then freeze a separate held-out same-task A/B before implementation admission",
+    "no_repeated_loss": "keep_current_harness_no_repeated_loss",
+    "record_class": "m36a2_writer_loss_confirmation",
+    "product_metric_eligible": false,
+    "baseline_label_eligible": false
+  },
+  "official_review": {
+    "reviewed_on": "2026-07-27",
+    "sources": [
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/news/news260424/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://api-docs.deepseek.com/guides/tool_calls/"
+    ],
+    "frozen_facts": {
+      "openai_base_url": "https://api.deepseek.com",
+      "chat_endpoint": "/chat/completions",
+      "model": "deepseek-v4-pro",
+      "reasoning_effort": "high",
+      "chat_completions_retired": false,
+      "context_length_tokens": 1000000,
+      "maximum_output_tokens": 384000,
+      "cache_hit_input_usd_per_million": "0.003625",
+      "cache_miss_input_usd_per_million": "0.435",
+      "output_usd_per_million": "0.87",
+      "stream_usage_precedes_done": true,
+      "tool_call_reasoning_replay_required": true
+    }
+  },
+  "security": {
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_read_only_after_live_admission": true,
+    "credential_logged": false,
+    "raw_output": "ignored_0600_exclusive_hash_chained",
+    "github_access": false,
+    "push": false,
+    "release": false
+  },
+  "live_admission": "separate immutable binary identity, offline gate report, official protocol review and explicit cost acknowledgement required"
+}

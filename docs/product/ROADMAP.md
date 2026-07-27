@@ -6105,6 +6105,44 @@ production deadline 或行为。frozen manifest/admission/analysis/raw 与
 [M36-A summary](../../eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md)
 保留审计。
 
+#### M36-A2：fresh explicit Writer repeated-loss confirmation
+
+- 状态：**合同与 3 个 held-out fixture 已冻结；等待 offline candidate identity 与正式
+  control-only acquisition**
+- 真实问题：M36-A 只有 `writer_envelope -> orchestrator:writer_integration` 一个独立
+  task_id 失败，尚不足以说明 Orchestrator 存在可泛化 production 缺陷；继续凭单例开发
+  verify/repair 状态机会造成无证据复杂度。
+- 唯一 acquisition owner：现有 corrected
+  `scripts/eval-m9b-fixed-pro-regression.py`；只有 fresh loss 达门后，production 候选 owner
+  才允许是 `crates/orchestrator`。
+- production old path：本阶段不替代任何 production path，crate delta 必须为 0；历史
+  M36 raw/result 不是输入，也不计入 repeated-loss threshold。
+
+冻结 3 个全新、人工复核、初始必失败且 reference 必通过的 explicit Writer task：
+
+```text
+writer_retry_ledger      Python physical-attempt/accounting migration
+writer_header_policy     Rust bounded canonical header policy
+writer_route_contract    TypeScript fixed-route codec migration
+```
+
+每 task 只执行一个 fresh `deepseek-v4-pro/high` position-1 arm，使用新 Git repository、
+isolated Writer worktree、RunStore、DSE home、hidden deterministic verifier 和 latest-root
+receipt；normal Runtime safe retry 保持 2，Harness `maximum_reruns=0`。behavior 与 accounting
+继续按 ADR-0011 正交，unknown billing 在下一 arm 前停止，不补 mate、不重跑。
+
+只有本次 3-task fresh set 中至少两个不同 task_id 都产生精确
+`orchestrator:writer_integration`，才允许审计一个 Orchestrator-owned bounded
+verify -> repair -> reverify treatment。即使达到门槛，也必须另冻 held-out 同任务 A/B 后才可
+改 production；本 acquisition 不自动准入实现。若 0/1 个任务出现该 loss，决定为
+`keep_current_harness_no_repeated_loss`，删除 M36-A2 Harness selector/consumer，只保留 frozen
+manifest、raw、summary 与可复核身份。
+
+最低离线证据为 3/3 reference proof、fixture/base-commit identity、current 三字段 permission
+controls、Writer lifecycle/cleanup observer、hash-chained journal 四个 SIGKILL 窗口、exact
+SQLite reopen、synthetic 0/1 与 2-task threshold、focused/full workspace gate。ADR-0015
+仍为 implementation-not-admitted；M36-A2 不开发 browser/search/vision。
+
 #### M36-B：DeepSeek effort 与 context control-only
 
 只做两个可归因控制实验，不同时改变 Prompt、工具或 Runtime：
