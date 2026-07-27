@@ -1,0 +1,135 @@
+{
+  "schema": "dse.eval.m37b-posture-schema-ab-live-admission.v1",
+  "admitted_at_utc": "2026-07-27T12:09:41Z",
+  "contract_manifest": "eval/manifests/m37-b-posture-schema-ab-v1.json",
+  "contract_manifest_sha256": "sha256:e25bee591c3c938eabecfb56d616fef371d2aa793fc5a95cec7170b5505b362e",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "78d8ddb2c20e2e919993e629e26e64c7bdebca94",
+  "candidate_tree": "dfe47501861d4671ac104ce9da7075646d3aed6a",
+  "candidate_binary": "/private/tmp/dse-m37b-target/debug/dse",
+  "candidate_binary_sha256": "sha256:fc5788056dc2574a387e15ca5d63a4dcee7061101ec5c60c2711047c57dfe688",
+  "candidate_binary_size_bytes": 87151960,
+  "candidate_binary_version": "dse 0.8.68 (78d8ddb2c20e)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:d4528393f6805101bddfb72d2f60cbda4a0d9f1a1936a91dff490fdfb6b19aa5",
+  "schedule_sha256": "sha256:e0d8eb11dbe6443f3f2d987d8e2207e424e26668b588a358acf07a9b7bdbe516",
+  "task_contracts_sha256": "sha256:e3931f4b4fc1194606d933be913dc8670e75a09c7ef0843d20d86a3fc1bb3c9f",
+  "prompt_fixture_sha256": "sha256:6ebf2746e55c9dab9ecdafc952bc45a9d8333ad3532b8daf520c8974a5bf24b9",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:5213ede111bf0351a19f36382c0af25468bd2171306da1249f03f8e1d566949b",
+  "freeze_report_sha256": "sha256:ea0927b36a17e6c30e429d664e79ba1e81c648617a334a9815ff35f80f02f5c0",
+  "dry_run_sha256": "sha256:f35efc7e566e42fefde628b1c2d2fb0e23359a8c03dc187264f23b2293f173e3",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": {
+      "owner": "crates/context",
+      "fragment_id": "execution_posture",
+      "operation": "delete_exact_60_utf8_bytes",
+      "variants": [
+        "control",
+        "remove_stale_readonly_claim"
+      ]
+    }
+  },
+  "offline_gates": [
+    {
+      "gate": "exact 60-byte canonical composer delta, no-tool negative control, 3300-byte core ceiling and prompt/schema parity fixture",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "five-task inherited fixture, reviewed reference solutions, balanced 30-arm schedule, hash-chain journal and crash write windows",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "focused, fmt, strict workspace Clippy/test, process crash/reopen, surface parity and bilingual PTY",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable debug binary, credential-free freeze report, self-test and dry-run",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek ChatCompletions, Thinking, Tool Calls and pricing revalidated on 2026-07-27",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential is ignored, regular, owner-only and was not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "readonly_service_graph": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_policy_migration": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 5,
+    "runs_per_task": 3,
+    "formal_variants": 2,
+    "formal_arms": 30,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "control_rerun": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 10.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/m37-b-posture-schema-78d8ddb2c20e-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "variant_guard": {
+      "guard_env": "DSE_M37B_EVALUATION",
+      "variant_env": "DSE_M37B_POSTURE_VARIANT",
+      "ordinary_production": "control"
+    },
+    "credential_path": "/Users/gelin/Desktop/codewhale/key.txt",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized M37-B same-binary Pro/high prompt posture A/B under USD 0.50 per arm and USD 10.00 suite ceilings"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/",
+    "https://api-docs.deepseek.com/quick_start/pricing/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-27",
+    "per_arm_cost_ceiling_usd": 0.5,
+    "suite_cost_ceiling_usd": 10.0,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
