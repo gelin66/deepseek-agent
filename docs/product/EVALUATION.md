@@ -3845,6 +3845,15 @@ accounting。其他结果一律 `reject_and_delete_contract_verifier_grant`，�
 弱化 Stop Gate、导入 external failure、raw verifier 参数或第二执行路径补救。冻结合同见
 `eval/manifests/m31-contract-verifier-permission-v1.json`。
 
+offline candidate `dbfbb8a58` 已通过冻结的 16-case matrix 与四个 tool SIGKILL/reopen
+窗口。Ask interactive/headless 的真实 production loopback 都得到两个 exact grant、
+零 approval、failed→write→pass receipt 和 SQLite byte-equivalent replay；ordinary raw
+调用、wrong digest、spec drift 继续 typed deny。root/read-only/isolated Writer、
+CLI/TUI/app-server、双语 PTY、focused、fmt、strict Clippy、workspace test、public
+checker 与 diff check 全绿。当前协议 identity 为 Run API v14 / RuntimeEvent v21 /
+State v27；Key/API 调用仍为 0。该结果只准入新的两任务 live admission，不是 keep
+结论。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

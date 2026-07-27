@@ -5476,11 +5476,12 @@ authority，才允许审计 permission/verifier integration；本次 raw 不授�
 
 ## 29. M31：contract-bound Host verifier 最小执行授权
 
-- 状态：**deterministic contract frozen；production treatment 尚未 cutover**
+- 状态：**offline candidate 全绿；两任务 live treatment 尚未授权/执行**
 - 基线：M30 clean checkpoint `401545971`
 - owner：`crates/runtime` 派生并重放 exact grant，`crates/tools` 作最终授权与 sandbox
   判定，`crates/protocol`/`crates/state` 只承载唯一 typed durable fact
-- production delta：当前为 0
+- production delta：candidate `dbfbb8a58` 已建立 typed exact grant；是否保留仍由两任务
+  live gate 决定
 
 ### 29.1 可重复 production defect
 
@@ -5517,3 +5518,19 @@ accounting/reopen 完整，候选才可保留。任一 ordinary authority 扩张
 evidence/accounting 失败或任一 task 未 verified success，typed grant 与所有候选接线
 完整删除。当前合同阶段不读 Key、不请求 official API、不访问 GitHub、不 push、不
 release。
+
+### 29.3 Offline candidate checkpoint
+
+candidate `dbfbb8a58` 把完整 `VerifierSpec` canonical digest、typed
+`ToolExecutionGrant::TaskContractVerifier`、Runtime exact derivation、tools final
+authorization 与 State v27 retirement/reopen 接入唯一 production 链。generic external
+path 只在 canonical spec digest 完全一致时忽略 verifier `commands[].program`；普通 raw
+参数、错误 digest、spec drift、external cwd、普通外部路径、network 与现有 sandbox
+边界不变。Run API / RuntimeEvent / State 当前 identity 为 v14 / v21 / v27。
+
+16-case matrix、Ask interactive/headless production loopback、failed→write→pass temporal
+receipt、SQLite exact reopen、prepared/authorized/in-flight/outcome-committed 四个 SIGKILL
+窗口、root/read-only/Writer、CLI/TUI/app-server、双语 PTY、focused、fmt、strict
+workspace Clippy/test、public checker 与 diff check 全绿。该 checkpoint 未读取 Key、未
+请求 official API；下一步只允许冻结 immutable `dbfbb8a58` binary 与新的 M31 live
+admission，取得本 Goal 专属授权后各执行两个原任务一次。
