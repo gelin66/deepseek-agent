@@ -1,0 +1,70 @@
+{
+  "schema": "dse.eval.m36a-deepseek-native-baseline-live-admission.v1",
+  "admitted_at": "2026-07-27",
+  "candidate_revision": "03b40abe6dcced24318589999f8c101e46f2b7ad",
+  "candidate_tree": "3ae866c50237b4540b1e3fc2d07f083c06ea3b75",
+  "candidate_binary": "/private/tmp/dse-m36-target/release/dse",
+  "candidate_binary_sha256": "sha256:c869bfc9ede5c17a66c2f13de53ec6e565b367f07bb346d0990a4206c6c0d2f1",
+  "candidate_binary_size_bytes": 14371344,
+  "candidate_binary_version": "dse 0.8.68 (03b40abe6dcc)",
+  "contract_manifest_sha256": "sha256:9d64cbacd47191b8e9f48f62f1e67244b7e3949d936b731d2c5c40f9e2253e61",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "harness_sha256": "sha256:2c56f9370f6b0082689182e3a0fc796da761817dfbaa8fa81ec7a6defbd56d3c",
+  "schedule_sha256": "sha256:621efff3ea6f5cc2ea34dc946145044f754dc87b5bbe51c79af2d5477a7e72a1",
+  "task_contracts_sha256": "sha256:8282784b864453301b21aceee00aeb4e23c75e4fb9b6ea5c218872cb67cee68a",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false
+  },
+  "live_contract": {
+    "output": "eval/results/m36a-deepseek-native-baseline-03b40abe6dcc-v1.jsonl",
+    "formal_tasks": 20,
+    "runs_per_task": 1,
+    "formal_arms": 20,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.5,
+    "suite_known_cost_ceiling_usd": 10.0,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "output_mode": "ignored_0600_exclusive_hash_chained"
+  },
+  "official_protocol_revalidated_on": "2026-07-27",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/news/news260424/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "offline_gates": [
+    "M36 reference solution proof 17 positive pass and 3 safety counterexamples remain fail",
+    "M36 loss taxonomy conformance 11/11 with all 10 stable loss codes",
+    "M36 extended metric observer deterministic projection",
+    "M36 corrected Harness self-test and hash-chained journal crash windows",
+    "M36 process SIGKILL/reopen continuity loopback",
+    "cargo fmt --all -- --check",
+    "./scripts/dev-dse.sh focused",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "cargo test --workspace --locked",
+    "public repository checker and git diff --check"
+  ],
+  "offline_gates_passed": true,
+  "live_api_admitted": true,
+  "authorization": {
+    "source": "user explicitly authorized direct use of the test key for subsequent real tests",
+    "cost_ceiling_usd": 10.0,
+    "github_access": false,
+    "push": false,
+    "release": false
+  }
+}
