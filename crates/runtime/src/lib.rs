@@ -64,45 +64,75 @@ pub(crate) fn named_verifier_acceptance(
         })
 }
 
+/// One deterministic resolution of a model-visible invocation into the exact
+/// execution request and its Host-derived authorization scope.
+pub(crate) struct ResolvedToolExecution {
+    pub invocation: Result<ToolInvocation, String>,
+    pub grant: ToolExecutionGrant,
+}
+
 /// Resolve the model-visible named-verifier handle into the exact frozen Host
-/// invocation. Both authorization and execution use this one derivation so
-/// the durable decision cannot bind only the abbreviated model arguments.
-pub(crate) fn resolve_named_verifier_invocation(
+/// invocation and the only narrow grant it may carry. Authorization, execution
+/// and Store replay all use this one derivation.
+pub(crate) fn resolve_tool_execution(
     contract: Option<&TaskContract>,
     invocation: &ToolInvocation,
-) -> Result<ToolInvocation, String> {
+) -> ResolvedToolExecution {
     let Some((acceptance_id, verifier)) = contract
         .map(|contract| &contract.definition)
         .and_then(named_verifier_acceptance)
     else {
-        return Ok(invocation.clone());
+        return ResolvedToolExecution {
+            invocation: Ok(invocation.clone()),
+            grant: ToolExecutionGrant::Ordinary,
+        };
     };
     if invocation.name != verifier.verifier_id {
-        return Ok(invocation.clone());
+        return ResolvedToolExecution {
+            invocation: Ok(invocation.clone()),
+            grant: ToolExecutionGrant::Ordinary,
+        };
     }
-    let arguments = invocation
+    let arguments = match invocation
         .arguments
         .parsed
         .as_ref()
         .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "冻结 verifier 只接受包含 verifier_id 的 JSON 对象".to_owned())?;
+    {
+        Some(arguments) => arguments,
+        None => {
+            return ResolvedToolExecution {
+                invocation: Err("冻结 verifier 只接受包含 verifier_id 的 JSON 对象".to_owned()),
+                grant: ToolExecutionGrant::Ordinary,
+            };
+        }
+    };
     if arguments.len() != 1
         || arguments
             .get("verifier_id")
             .and_then(serde_json::Value::as_str)
             != Some(acceptance_id.0.as_str())
     {
-        return Err(format!(
-            "只接受冻结 verifier ID '{}'，不得提交或覆盖完整 verifier 参数",
-            acceptance_id.0
-        ));
+        return ResolvedToolExecution {
+            invocation: Err(format!(
+                "只接受冻结 verifier ID '{}'，不得提交或覆盖完整 verifier 参数",
+                acceptance_id.0
+            )),
+            grant: ToolExecutionGrant::Ordinary,
+        };
     }
-    Ok(ToolInvocation {
-        run_id: invocation.run_id.clone(),
-        call_id: invocation.call_id.clone(),
-        name: verifier.verifier_id.clone(),
-        arguments: ToolArguments::from_value(verifier.parameters.clone()),
-    })
+    ResolvedToolExecution {
+        invocation: Ok(ToolInvocation {
+            run_id: invocation.run_id.clone(),
+            call_id: invocation.call_id.clone(),
+            name: verifier.verifier_id.clone(),
+            arguments: ToolArguments::from_value(verifier.parameters.clone()),
+        }),
+        grant: ToolExecutionGrant::TaskContractVerifier {
+            acceptance_id: acceptance_id.clone(),
+            verifier_sha256: verifier.sha256(),
+        },
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -308,11 +338,13 @@ pub trait ToolExecutor: Send + Sync {
     fn authorize(
         &self,
         mode: RunPermissionMode,
+        execution_grant: &ToolExecutionGrant,
         invocation: &ToolInvocation,
         workspace_state: &WorkspaceState,
     ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
         Ok(ToolAuthorizationDecision {
             mode,
+            execution_grant: execution_grant.clone(),
             tool_name: invocation.name.clone(),
             arguments_sha256: invocation.arguments_sha256(),
             workspace_state: workspace_state.clone(),

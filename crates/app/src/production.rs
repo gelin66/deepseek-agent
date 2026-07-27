@@ -1378,8 +1378,8 @@ mod tests {
         ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
         ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
         RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolAuthorizationDecision,
-        ToolAuthorizationDisposition, ToolDefinition, ToolFailureCode, ToolInvocation, ToolOutcome,
-        ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
+        ToolAuthorizationDisposition, ToolDefinition, ToolExecutionGrant, ToolFailureCode,
+        ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -2147,6 +2147,7 @@ mod tests {
                     operation_id: operation_id.clone(),
                     decision: ToolAuthorizationDecision {
                         mode: created.replay.snapshot.request.environment.permission_mode,
+                        execution_grant: ToolExecutionGrant::Ordinary,
                         tool_name: invocation.name.clone(),
                         arguments_sha256: invocation.arguments_sha256(),
                         workspace_state: created.replay.snapshot.workspace_state.clone(),
@@ -3430,6 +3431,175 @@ mod tests {
         assert_eq!(reopened_replay.events, replay.events);
         assert_eq!(reopened_replay.snapshot, replay.snapshot);
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m31_ask_contract_verifier_grant_closes_failed_write_pass_without_approval() {
+        for interactive in [false, true] {
+            let server = MockDeepSeekServer::start(vec![
+                tool_response(
+                    "deepseek-v4-pro",
+                    "read-value",
+                    "read_file",
+                    json!({"path":"value.txt"}),
+                    10,
+                    2,
+                ),
+                tool_response(
+                    "deepseek-v4-pro",
+                    "verify-before",
+                    "run_verifiers",
+                    json!({"verifier_id":"exact-check"}),
+                    11,
+                    2,
+                ),
+                tool_response(
+                    "deepseek-v4-pro",
+                    "edit-fixed",
+                    "edit_file",
+                    json!({"path":"value.txt","search":"before","replace":"after"}),
+                    12,
+                    3,
+                ),
+                tool_response(
+                    "deepseek-v4-pro",
+                    "verify-after",
+                    "run_verifiers",
+                    json!({"verifier_id":"exact-check"}),
+                    13,
+                    2,
+                ),
+                thinking_response("deepseek-v4-pro", "证据闭合，任务完成", 14, 3),
+            ])
+            .await;
+            let temp = tempfile::tempdir().expect("temp root");
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir_all(&workspace).expect("workspace");
+            std::fs::write(workspace.join("value.txt"), "before\n").expect("value fixture");
+            std::fs::write(
+                workspace.join("verify.py"),
+                "from pathlib import Path\nraise SystemExit(0 if Path('value.txt').read_text() == 'after\\n' else 1)\n",
+            )
+            .expect("verifier fixture");
+            initialize_git_fixture(&workspace);
+
+            let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+            command.task = caller_authored_verifier_task();
+            let TaskAcceptance::Verifier {
+                evidence_policy, ..
+            } = &mut command.task.acceptance[0]
+            else {
+                panic!("expected verifier acceptance");
+            };
+            *evidence_policy = dse_protocol::task::VerifierEvidencePolicy::FailedWritePass;
+            command.controls.permission_mode = RunPermissionMode::Ask;
+            command.controls.interactive = interactive;
+            command.limits.wall_time_ms = Some(30_000);
+
+            let state_path = temp.path().join("state.db");
+            let app = AgentApplication::production(config(
+                &state_path,
+                connection(&server.root, false),
+                true,
+            ))
+            .expect("production app");
+            let run = run_result(
+                app.execute(envelope(
+                    if interactive {
+                        "m31-ask-interactive"
+                    } else {
+                        "m31-ask-headless"
+                    },
+                    RunCommand::Start(command),
+                ))
+                .await,
+            );
+            let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+            assert!(
+                matches!(
+                    replay
+                        .snapshot
+                        .terminal
+                        .as_ref()
+                        .map(|outcome| &outcome.terminal),
+                    Some(TerminalState::Completed { .. })
+                ),
+                "interactive={interactive}: {:#?}",
+                replay.snapshot.terminal
+            );
+            assert_eq!(
+                std::fs::read(workspace.join("value.txt")).expect("final bytes"),
+                b"after\n"
+            );
+            assert!(
+                !replay.events.iter().any(|event| matches!(
+                    event.event,
+                    RuntimeEventKind::InteractionRequested { .. }
+                ))
+            );
+            let decisions = replay
+                .events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    RuntimeEventKind::ToolAuthorizationCommitted { decision, .. }
+                        if matches!(
+                            decision.execution_grant,
+                            ToolExecutionGrant::TaskContractVerifier { .. }
+                        ) =>
+                    {
+                        Some(decision)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(decisions.len(), 2);
+            assert!(decisions.iter().all(|decision| {
+                decision.disposition == ToolAuthorizationDisposition::Allow
+                    && decision.matched_rule.as_deref() == Some("task_contract_verifier_exact")
+            }));
+            let verifier_outcomes = replay
+                .events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                        if name == "run_verifiers" =>
+                    {
+                        Some(
+                            outcome
+                                .verifier_observation
+                                .as_ref()
+                                .map(|value| value.verdict),
+                        )
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                verifier_outcomes,
+                vec![
+                    Some(dse_protocol::task::VerifierVerdict::Failed),
+                    Some(dse_protocol::task::VerifierVerdict::Passed)
+                ]
+            );
+            assert!(matches!(
+                replay
+                    .snapshot
+                    .evidence_receipts
+                    .last()
+                    .map(|receipt| &receipt.lineage),
+                Some(dse_protocol::task::EvidenceLineage::FailedWritePass { .. })
+            ));
+            assert_eq!(server.finish().await.len(), 5);
+
+            drop(app);
+            let reopened = StateStore::open(Some(state_path)).expect("reopen StateStore");
+            let reopened_replay = reopened
+                .load(&run.run_id)
+                .await
+                .expect("load reopened run")
+                .expect("reopened run exists");
+            assert_eq!(reopened_replay, replay);
+        }
     }
 
     #[tokio::test]

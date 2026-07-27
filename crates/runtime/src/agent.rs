@@ -1393,10 +1393,10 @@ impl AgentRuntime {
             &call,
             matches!(authority, ModelToolAuthority::Coordinator),
         );
-        let execution_invocation = resolve_named_verifier_invocation(
-            state.snapshot.request.task_contract.as_ref(),
-            &invocation,
-        );
+        let resolved_execution =
+            resolve_tool_execution(state.snapshot.request.task_contract.as_ref(), &invocation);
+        let execution_invocation = &resolved_execution.invocation;
+        let execution_grant = &resolved_execution.grant;
         let workspace_access = if let Ok(Some(RuntimeBuiltinInput::Agent(launch))) = &builtin_input
         {
             match launch.workspace_access {
@@ -1581,26 +1581,27 @@ impl AgentRuntime {
                 None => {
                     let workspace_state = state.snapshot.workspace_state.clone();
                     let mode = state.snapshot.request.environment.permission_mode;
-                    let decision =
-                        match self
-                            .tools
-                            .authorize(mode, execution_invocation, &workspace_state)
-                        {
-                            Ok(decision) => decision,
-                            Err(error) => {
-                                return self
-                                    .commit_tool_outcome(
-                                        state,
-                                        operation_id,
-                                        &call,
-                                        ToolOutcome::rejected(
-                                            format!("工具授权预检失败：{}", error.message),
-                                            ToolRetryDisposition::NotRetryable,
-                                        ),
-                                    )
-                                    .await;
-                            }
-                        };
+                    let decision = match self.tools.authorize(
+                        mode,
+                        execution_grant,
+                        execution_invocation,
+                        &workspace_state,
+                    ) {
+                        Ok(decision) => decision,
+                        Err(error) => {
+                            return self
+                                .commit_tool_outcome(
+                                    state,
+                                    operation_id,
+                                    &call,
+                                    ToolOutcome::rejected(
+                                        format!("工具授权预检失败：{}", error.message),
+                                        ToolRetryDisposition::NotRetryable,
+                                    ),
+                                )
+                                .await;
+                        }
+                    };
                     self.publish(
                         state,
                         RuntimeEventKind::ToolAuthorizationCommitted {
@@ -5890,9 +5891,30 @@ mod actor_capability_tests {
             name: "run_verifiers".to_owned(),
             arguments: ToolArguments::from_value(json!({"verifier_id": "frozen-check"})),
         };
-        let resolved = resolve_named_verifier_invocation(Some(&contract), &invocation)
-            .expect("resolve frozen verifier");
-        assert_eq!(resolved.arguments.parsed, Some(json!({"profile": "exact"})));
+        let resolved = resolve_tool_execution(Some(&contract), &invocation);
+        assert_eq!(
+            resolved
+                .invocation
+                .expect("resolve frozen verifier")
+                .arguments
+                .parsed,
+            Some(json!({"profile": "exact"}))
+        );
+        assert_eq!(
+            resolved.grant,
+            ToolExecutionGrant::TaskContractVerifier {
+                acceptance_id: AcceptanceId::from("frozen-check"),
+                verifier_sha256: named_contract()
+                    .definition
+                    .acceptance
+                    .iter()
+                    .find_map(|acceptance| match acceptance {
+                        TaskAcceptance::Verifier { verifier, .. } => Some(verifier.sha256()),
+                        TaskAcceptance::Host { .. } => None,
+                    })
+                    .expect("named verifier"),
+            }
+        );
 
         let raw_override = ToolInvocation {
             arguments: ToolArguments::from_value(json!({
@@ -5901,7 +5923,9 @@ mod actor_capability_tests {
             })),
             ..invocation
         };
-        assert!(resolve_named_verifier_invocation(Some(&contract), &raw_override).is_err());
+        let rejected = resolve_tool_execution(Some(&contract), &raw_override);
+        assert!(rejected.invocation.is_err());
+        assert_eq!(rejected.grant, ToolExecutionGrant::Ordinary);
     }
 }
 

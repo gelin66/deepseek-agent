@@ -35,9 +35,9 @@ use dse_runtime::{
     RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent,
     SurfaceUsage, TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact,
     ToolAuthorizationDecision, ToolAuthorizationDisposition, ToolDefinition, ToolEvidence,
-    ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolFailureCode, ToolInvocation,
-    ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload, WorkspaceState,
-    WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
+    ToolEvidenceStatus, ToolExecutionError, ToolExecutionGrant, ToolExecutor, ToolFailureCode,
+    ToolInvocation, ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload,
+    WorkspaceState, WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
     WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
     WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState,
     WriterSeal, reduce_events, writer_path_set_sha256,
@@ -134,7 +134,11 @@ fn writer_verifier_spec() -> VerifierSpec {
 fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
     matches!(
         scenario,
-        CrashScenario::HostVerificationPrepared
+        CrashScenario::ContractVerifierPrepared
+            | CrashScenario::ContractVerifierAuthorized
+            | CrashScenario::ContractVerifierInFlight
+            | CrashScenario::ContractVerifierOutcomeCommitted
+            | CrashScenario::HostVerificationPrepared
             | CrashScenario::HostVerificationInFlight
             | CrashScenario::HostVerificationCommitted
             | CrashScenario::TemporalFailureCommitted
@@ -152,6 +156,16 @@ fn is_temporal_verification_scenario(scenario: CrashScenario) -> bool {
             | CrashScenario::TemporalRejectionCommitted
             | CrashScenario::TemporalMutationCommitted
             | CrashScenario::TemporalHostVerificationCommitted
+    )
+}
+
+fn is_contract_verifier_scenario(scenario: CrashScenario) -> bool {
+    matches!(
+        scenario,
+        CrashScenario::ContractVerifierPrepared
+            | CrashScenario::ContractVerifierAuthorized
+            | CrashScenario::ContractVerifierInFlight
+            | CrashScenario::ContractVerifierOutcomeCommitted
     )
 }
 
@@ -193,6 +207,10 @@ enum CrashScenario {
     ToolInFlight,
     ToolInFlightControlRequested,
     ToolOutcomeCommitted,
+    ContractVerifierPrepared,
+    ContractVerifierAuthorized,
+    ContractVerifierInFlight,
+    ContractVerifierOutcomeCommitted,
     ModelResponseCommitted,
     TerminalModelResponseCommitted,
     InteractionRequested,
@@ -237,6 +255,10 @@ impl CrashScenario {
             Self::ToolInFlight => "tool_in_flight",
             Self::ToolInFlightControlRequested => "tool_in_flight_control_requested",
             Self::ToolOutcomeCommitted => "tool_outcome_committed",
+            Self::ContractVerifierPrepared => "contract_verifier_prepared",
+            Self::ContractVerifierAuthorized => "contract_verifier_authorized",
+            Self::ContractVerifierInFlight => "contract_verifier_in_flight",
+            Self::ContractVerifierOutcomeCommitted => "contract_verifier_outcome_committed",
             Self::ModelResponseCommitted => "model_response_committed",
             Self::TerminalModelResponseCommitted => "terminal_model_response_committed",
             Self::InteractionRequested => "interaction_requested",
@@ -281,6 +303,10 @@ impl CrashScenario {
             "tool_in_flight" => Self::ToolInFlight,
             "tool_in_flight_control_requested" => Self::ToolInFlightControlRequested,
             "tool_outcome_committed" => Self::ToolOutcomeCommitted,
+            "contract_verifier_prepared" => Self::ContractVerifierPrepared,
+            "contract_verifier_authorized" => Self::ContractVerifierAuthorized,
+            "contract_verifier_in_flight" => Self::ContractVerifierInFlight,
+            "contract_verifier_outcome_committed" => Self::ContractVerifierOutcomeCommitted,
             "model_response_committed" => Self::ModelResponseCommitted,
             "terminal_model_response_committed" => Self::TerminalModelResponseCommitted,
             "interaction_requested" => Self::InteractionRequested,
@@ -604,6 +630,20 @@ impl ModelPort for MarkerModel {
                     id: "temporal-write-call".to_owned(),
                     name: TEMPORAL_WRITE_TOOL.to_owned(),
                     arguments: ToolArguments::parse("{}"),
+                }],
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: one_usage(),
+            }
+        } else if is_contract_verifier_scenario(self.scenario) && request_number == 0 {
+            ModelOutput {
+                content: String::new(),
+                reasoning_content: Some("运行 TaskContract 中冻结的 verifier".to_owned()),
+                tool_calls: vec![ModelToolCall {
+                    id: "contract-verifier-call".to_owned(),
+                    name: TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({
+                        "verifier_id": HOST_VERIFIER_ACCEPTANCE_ID
+                    })),
                 }],
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: one_usage(),
@@ -1305,10 +1345,12 @@ impl ToolExecutor for MarkerTools {
     fn authorize(
         &self,
         mode: RunPermissionMode,
+        execution_grant: &ToolExecutionGrant,
         invocation: &ToolInvocation,
         workspace_state: &WorkspaceState,
     ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
         let asks = invocation.name == TOOL_NAME
+            && !is_contract_verifier_scenario(self.scenario)
             && !self.abort_after_side_effect
             && self.cancel_control.is_none()
             && !matches!(
@@ -1317,6 +1359,7 @@ impl ToolExecutor for MarkerTools {
             );
         Ok(ToolAuthorizationDecision {
             mode,
+            execution_grant: execution_grant.clone(),
             tool_name: invocation.name.clone(),
             arguments_sha256: invocation.arguments_sha256(),
             workspace_state: workspace_state.clone(),
@@ -1437,7 +1480,7 @@ impl ToolExecutor for MarkerTools {
                 self.abort_marker
                     .as_ref()
                     .expect("tool crash requires abort marker"),
-                "tool_in_flight",
+                self.scenario.as_str(),
             );
             wait_for_parent_kill().await;
         }
@@ -1512,6 +1555,27 @@ impl RuntimeEventSink for CrashSink {
             CrashScenario::ToolPrepared => {
                 matches!(event.event, RuntimeEventKind::ToolPrepared { .. })
             }
+            CrashScenario::ContractVerifierPrepared => matches!(
+                event.event,
+                RuntimeEventKind::ToolPrepared {
+                    ref invocation, ..
+                } if invocation.call_id == "contract-verifier-call"
+            ),
+            CrashScenario::ContractVerifierAuthorized => matches!(
+                event.event,
+                RuntimeEventKind::ToolAuthorizationCommitted {
+                    ref decision, ..
+                } if matches!(
+                    decision.execution_grant,
+                    ToolExecutionGrant::TaskContractVerifier { .. }
+                )
+            ),
+            CrashScenario::ContractVerifierInFlight => false,
+            CrashScenario::ContractVerifierOutcomeCommitted => matches!(
+                event.event,
+                RuntimeEventKind::ToolOutcomeCommitted { ref call_id, .. }
+                    if call_id == "contract-verifier-call"
+            ),
             CrashScenario::ModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
             }
@@ -2131,7 +2195,10 @@ fn process_crash_helper() {
         .then(|| Arc::new(Mutex::new(None)));
         let tools = Arc::new(MarkerTools::new(
             tool_marker,
-            scenario == CrashScenario::ToolInFlight,
+            matches!(
+                scenario,
+                CrashScenario::ToolInFlight | CrashScenario::ContractVerifierInFlight
+            ),
             Some(abort_marker.clone()),
             (scenario == CrashScenario::ToolInFlightControlRequested)
                 .then(|| control_slot.as_ref().expect("control slot").clone()),
@@ -2423,6 +2490,108 @@ async fn tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen() {
         .expect("load resumed outcome run")
         .expect("resumed outcome run exists");
     assert_tool_lifecycle_counts(&replay, 1, 1, 1, 1);
+}
+
+#[tokio::test]
+async fn contract_verifier_grant_is_exact_across_all_tool_sigkill_windows() {
+    for (scenario, prefix_started, prefix_outcome, completes) in [
+        (CrashScenario::ContractVerifierPrepared, 0, 0, true),
+        (CrashScenario::ContractVerifierAuthorized, 0, 0, true),
+        (CrashScenario::ContractVerifierInFlight, 1, 0, false),
+        (CrashScenario::ContractVerifierOutcomeCommitted, 1, 1, true),
+    ] {
+        let fixture = CrashFixture::new();
+        fixture.crash_child(scenario);
+        assert_eq!(
+            marker_line_count(&fixture.tool_marker, "side-effect"),
+            usize::from(prefix_started > 0),
+            "{scenario:?}"
+        );
+
+        let prefix_store = StateStore::open(Some(fixture.db.clone())).expect("open grant prefix");
+        let prefix = prefix_store
+            .load(&RunId::from(RUN_ID))
+            .await
+            .expect("load verifier grant prefix")
+            .expect("verifier grant run exists");
+        assert_tool_lifecycle_counts(&prefix, 1, prefix_started, prefix_outcome, 0);
+        let authorizations = prefix
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeEventKind::ToolAuthorizationCommitted { decision, .. } => Some(decision),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if scenario == CrashScenario::ContractVerifierPrepared {
+            assert!(authorizations.is_empty());
+        } else {
+            assert_eq!(authorizations.len(), 1, "{scenario:?}");
+            assert_eq!(
+                authorizations[0].execution_grant,
+                ToolExecutionGrant::TaskContractVerifier {
+                    acceptance_id: AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID),
+                    verifier_sha256: host_verifier_spec().sha256(),
+                }
+            );
+        }
+        drop(prefix_store);
+
+        let (runtime, store) = fixture.reopen(scenario);
+        let outcome = runtime
+            .resume(RunId::from(RUN_ID))
+            .wait()
+            .await
+            .expect("resume exact verifier grant");
+        if completes {
+            assert!(
+                matches!(outcome.terminal, TerminalState::Completed { .. }),
+                "{scenario:?}: {outcome:?}"
+            );
+        } else {
+            assert!(matches!(
+                outcome.terminal,
+                TerminalState::RecoveryRequired {
+                    ambiguity: dse_runtime::RecoveryAmbiguity {
+                        phase: RecoveryAmbiguityPhase::ToolExecution,
+                        ..
+                    }
+                }
+            ));
+        }
+        assert_eq!(
+            marker_line_count(&fixture.tool_marker, "side-effect"),
+            1,
+            "{scenario:?}"
+        );
+
+        let replay = store
+            .load(&RunId::from(RUN_ID))
+            .await
+            .expect("load exact verifier grant replay")
+            .expect("exact verifier grant replay exists");
+        assert_tool_lifecycle_counts(
+            &replay,
+            1,
+            1,
+            usize::from(scenario != CrashScenario::ContractVerifierInFlight),
+            1,
+        );
+        assert_eq!(
+            event_count(&replay, |event| matches!(
+                event,
+                RuntimeEventKind::ToolAuthorizationCommitted {
+                    decision: ToolAuthorizationDecision {
+                        execution_grant: ToolExecutionGrant::TaskContractVerifier { .. },
+                        ..
+                    },
+                    ..
+                }
+            )),
+            1,
+            "{scenario:?}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -533,6 +533,7 @@ impl ToolExecutor for MockTools {
     fn authorize(
         &self,
         mode: RunPermissionMode,
+        execution_grant: &ToolExecutionGrant,
         invocation: &ToolInvocation,
         workspace_state: &WorkspaceState,
     ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
@@ -540,6 +541,7 @@ impl ToolExecutor for MockTools {
         let denied = invocation.name == "denied";
         Ok(ToolAuthorizationDecision {
             mode,
+            execution_grant: execution_grant.clone(),
             tool_name: invocation.name.clone(),
             arguments_sha256: invocation.arguments_sha256(),
             workspace_state: workspace_state.clone(),
@@ -1010,6 +1012,7 @@ async fn append_authorization(
             operation_id,
             decision: ToolAuthorizationDecision {
                 mode: snapshot.request.environment.permission_mode,
+                execution_grant: ToolExecutionGrant::Ordinary,
                 tool_name: invocation.name.clone(),
                 arguments_sha256: invocation.arguments_sha256(),
                 workspace_state: snapshot.workspace_state,
@@ -4458,6 +4461,25 @@ async fn model_named_verifier_persists_only_the_id_and_executes_frozen_parameter
     assert_eq!(
         prepared.arguments.parsed,
         Some(json!({"verifier_id": "tests"}))
+    );
+    let authorization = replay
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::ToolAuthorizationCommitted { decision, .. }
+                if decision.tool_name == "run_tests" =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .expect("model verifier authorization is durable");
+    assert_eq!(
+        authorization.execution_grant,
+        ToolExecutionGrant::TaskContractVerifier {
+            acceptance_id: AcceptanceId::from("tests"),
+            verifier_sha256: exact_run_tests_spec().sha256(),
+        }
     );
 }
 

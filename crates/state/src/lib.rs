@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 26;
+const STATE_SCHEMA_VERSION: u32 = 27;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -339,6 +339,25 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-permission-policy canonical run state")?;
         }
+        if user_version < 27 {
+            // RuntimeEvent v21 binds each committed tool authorization to an
+            // explicit Host-derived execution grant. A v20 materialized Run
+            // cannot prove whether an exact TaskContract verifier grant was
+            // present, so retire it instead of inferring Ordinary authority.
+            // Run Start input itself is unchanged; preserve only canonical
+            // pending Start intents and retire finalized/continuation rows.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire pre-verifier-grant creation state")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-verifier-grant creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-verifier-grant canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -532,6 +551,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 26)
                 .context("failed to commit typed permission policy state cutover")?;
             user_version = 26;
+        }
+        if user_version < 27 {
+            tx.pragma_update(None, "user_version", 27)
+                .context("failed to commit TaskContract verifier grant state cutover")?;
+            user_version = 27;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

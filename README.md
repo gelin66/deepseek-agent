@@ -28,8 +28,8 @@ DSE is deliberately narrow:
 - complete `en` and `zh-Hans` human interfaces without a language-classifier
   request or translation model.
 
-The current protocol identities are Run API v13, RuntimeEvent v20,
-State schema v26, and exec-stream v4.
+The current protocol identities are Run API v14, RuntimeEvent v21,
+State schema v27, and exec-stream v4.
 
 ## Fixed model profiles
 

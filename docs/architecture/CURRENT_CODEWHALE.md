@@ -232,7 +232,7 @@
   M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
   Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
   Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
-- 当前协议：Run API v13、RuntimeEvent v20、State schema v26、exec-stream v4。产品默认
+- 当前协议：Run API v14、RuntimeEvent v21、State schema v27、exec-stream v4。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 ## 1. 当前结论
@@ -291,7 +291,7 @@ custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢�
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v20 与 State schema v26 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v21 与 State schema v27 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -401,7 +401,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v20 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+当前 RuntimeEvent v21 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
 Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -476,7 +476,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v20 / State v26 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v21 / State v27 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -621,9 +621,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v13 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v14 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v20；
+  writer/reader 为 v21；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -1078,10 +1078,17 @@ M4-C foreground 切换后还已物理删除：
   子进程内部 I/O 只声明 OS sandbox 基线，不从 Shell 字符串伪推导。Agent 的
   Host-critical 调用仍 Ask，FullAccess 无动态 prompt，但 explicit execpolicy deny 与
   hard invariant 始终优先。
+- RuntimeEvent v21 的 `ToolAuthorizationDecision` 还必须绑定 typed
+  `ToolExecutionGrant`。普通模型调用只有 `Ordinary`；Runtime 只会从 exact
+  acceptance-ID handle 和 frozen TaskContract 派生 contract-verifier grant，tools 会用
+  canonical `VerifierSpec` digest 重新验证。该 grant 只让 exact verifier executable
+  program 通过 generic external-path 分类；external cwd、普通外部路径、network、write
+  root、explicit deny 和现有 OS sandbox 均未放宽。State v27 退休缺少该 grant 的旧
+  materialized Run，只保留能按当前 Start command 无损恢复的 pending intent。
 - `dse-execpolicy` 已收缩为 production 与 `execpolicy check` 共用的 TOML allow/deny
   matcher。TUI 私有 snapshot/parser、tools duplicate matcher、richer ask/session/network
-  amendment 类型和旧 bool/trust/sandbox/elevation reader 已物理删除。Run API v13、
-  RuntimeEvent v20、State schema v26；v26 不猜旧 tuple，无法无损映射的旧 materialized
+  amendment 类型和旧 bool/trust/sandbox/elevation reader 已物理删除。Run API v14、
+  RuntimeEvent v21、State schema v27；v26 不猜旧 tuple，无法无损映射的旧 materialized
   Run 与 pending Start 一次性 fail-closed retirement，之后只保留新 reader/writer。
 - 可自由组合 policy/network/writable roots、且不产生 canonical Run/authorization/RunStore
   事实的 `dse-tui sandbox run` 直接执行旁路及其专属 parser/双语文案已删除；底层 sandbox

@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use dse_execpolicy::{ExecPolicy, ExecPolicyDisposition};
 use dse_protocol::agent_runtime::{
     ApprovalRisk, RunPermissionMode, ToolApprovalPrompt, ToolAuthorizationDecision,
-    ToolAuthorizationDisposition, ToolDefinition, ToolFailureCode, ToolOperationStatus,
-    ToolRetryDisposition, ToolSideEffectStatus, WorkspaceAccess,
+    ToolAuthorizationDisposition, ToolDefinition, ToolExecutionGrant, ToolFailureCode,
+    ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus, WorkspaceAccess,
 };
 use dse_protocol::task::{VerifierSpec, WorkspaceState};
 use dse_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
@@ -263,6 +263,7 @@ fn non_secret_sha256_bytes(value: &[u8]) -> String {
 
 struct AuthorizationDecisionBuilder<'a> {
     mode: RunPermissionMode,
+    execution_grant: &'a ToolExecutionGrant,
     invocation: &'a ToolInvocation,
     workspace_state: &'a WorkspaceState,
 }
@@ -278,6 +279,7 @@ impl AuthorizationDecisionBuilder<'_> {
     ) -> ToolAuthorizationDecision {
         ToolAuthorizationDecision {
             mode: self.mode,
+            execution_grant: self.execution_grant.clone(),
             tool_name: self.invocation.name.clone(),
             arguments_sha256: self.invocation.arguments_sha256(),
             workspace_state: self.workspace_state.clone(),
@@ -294,6 +296,7 @@ fn invocation_has_external_path(
     tool_name: &str,
     input: &Value,
     context: &ProductionToolContext,
+    allow_external_verifier_program: bool,
 ) -> bool {
     let direct = ["path", "cwd"]
         .into_iter()
@@ -317,7 +320,8 @@ fn invocation_has_external_path(
         .into_iter()
         .flatten()
         .filter_map(|command| command.get("program").and_then(Value::as_str))
-        .filter(|program| !program.is_empty());
+        .filter(|program| !program.is_empty())
+        .filter(|_| !allow_external_verifier_program);
     let mut patch_paths = (tool_name == "apply_patch")
         .then(|| preflight_apply_patch(input).ok())
         .flatten()
@@ -581,6 +585,7 @@ impl ToolExecutor for ProductionToolExecutor {
     fn authorize(
         &self,
         mode: RunPermissionMode,
+        execution_grant: &ToolExecutionGrant,
         invocation: &ToolInvocation,
         workspace_state: &WorkspaceState,
     ) -> Result<ToolAuthorizationDecision, ToolExecutionError> {
@@ -596,14 +601,44 @@ impl ToolExecutor for ProductionToolExecutor {
                 "tool authorization requires parsed arguments",
             )
         })?;
+        execution_grant
+            .validate()
+            .map_err(|message| ToolExecutionError::new("execution_grant_invalid", message))?;
         let decision = AuthorizationDecisionBuilder {
             mode,
+            execution_grant,
             invocation,
             workspace_state,
         };
 
-        if invocation_has_external_path(&invocation.name, input, &self.context)
-            && !self.context.allows_external_paths()
+        let allow_external_verifier_program = match execution_grant {
+            ToolExecutionGrant::Ordinary => false,
+            ToolExecutionGrant::TaskContractVerifier {
+                verifier_sha256, ..
+            } => self
+                .resolve_verifier_spec(&invocation.name, input.clone())
+                .is_ok_and(|verifier| verifier.sha256() == *verifier_sha256),
+        };
+        if matches!(
+            execution_grant,
+            ToolExecutionGrant::TaskContractVerifier { .. }
+        ) && !allow_external_verifier_program
+        {
+            return Ok(decision.build(
+                ToolAuthorizationDisposition::Deny,
+                ApprovalRisk::Elevated,
+                Some("task_contract_verifier_grant_invalid".to_owned()),
+                "冻结 verifier 执行授权与当前 canonical verifier 不一致",
+                None,
+            ));
+        }
+
+        if invocation_has_external_path(
+            &invocation.name,
+            input,
+            &self.context,
+            allow_external_verifier_program,
+        ) && !self.context.allows_external_paths()
         {
             return Ok(decision.build(
                 ToolAuthorizationDisposition::Deny,
@@ -727,6 +762,16 @@ impl ToolExecutor for ProductionToolExecutor {
                     }),
                 ));
             }
+        }
+
+        if allow_external_verifier_program {
+            return Ok(decision.build(
+                ToolAuthorizationDisposition::Allow,
+                ApprovalRisk::Routine,
+                Some("task_contract_verifier_exact".to_owned()),
+                "Host 冻结的 TaskContract verifier 与 canonical 执行计划完全一致",
+                None,
+            ));
         }
 
         Ok(decision.build(
@@ -1227,7 +1272,12 @@ mod tests {
                     .with_permission_mode(mode)
                     .with_shell_policy(ShellPolicy::Full),
             )
-            .authorize(mode, &invocation, &workspace_state())
+            .authorize(
+                mode,
+                &ToolExecutionGrant::Ordinary,
+                &invocation,
+                &workspace_state(),
+            )
             .unwrap()
         };
 
@@ -1365,7 +1415,12 @@ allow = ["git push"]
                     .with_shell_policy(ShellPolicy::Full)
                     .with_exec_policy(Some(high_risk_allow.clone())),
             )
-            .authorize(mode, &invocation, &workspace_state())
+            .authorize(
+                mode,
+                &ToolExecutionGrant::Ordinary,
+                &invocation,
+                &workspace_state(),
+            )
             .unwrap();
             assert_eq!(
                 decision.disposition, expected,
@@ -1373,6 +1428,133 @@ allow = ["git push"]
             );
             assert_eq!(decision.matched_rule.as_deref(), Some(expected_rule));
         }
+    }
+
+    #[test]
+    fn m31_exact_contract_verifier_grant_is_narrow_and_matrix_bound() {
+        let frozen: Value = serde_json::from_str(include_str!(
+            "../../../eval/fixtures/m31-contract-verifier-permission-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(frozen["cases"].as_array().unwrap().len(), 16);
+        assert_eq!(frozen["replay_windows"].as_array().unwrap().len(), 4);
+
+        let workspace = tempfile::tempdir().unwrap();
+        let exact_input = json!({
+            "profile": "exact",
+            "commands": [{
+                "name": "exact",
+                "program": "/usr/bin/python3",
+                "args": ["-I", "-B", "verify.py", "."],
+                "cwd": ""
+            }]
+        });
+        for mode in [
+            RunPermissionMode::Ask,
+            RunPermissionMode::Agent,
+            RunPermissionMode::FullAccess,
+        ] {
+            let executor = ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path())
+                    .with_permission_mode(mode)
+                    .with_shell_policy(ShellPolicy::Full),
+            );
+            let verifier = executor
+                .resolve_verifier_spec("run_verifiers", exact_input.clone())
+                .unwrap();
+            let exact_invocation = invocation("run_verifiers", exact_input.clone());
+            let grant = ToolExecutionGrant::TaskContractVerifier {
+                acceptance_id: dse_protocol::task::AcceptanceId::from("frozen-check"),
+                verifier_sha256: verifier.sha256(),
+            };
+            let allowed = executor
+                .authorize(mode, &grant, &exact_invocation, &workspace_state())
+                .unwrap();
+            assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
+            assert_eq!(
+                allowed.matched_rule.as_deref(),
+                Some("task_contract_verifier_exact")
+            );
+
+            if mode == RunPermissionMode::Ask {
+                let ordinary = executor
+                    .authorize(
+                        mode,
+                        &ToolExecutionGrant::Ordinary,
+                        &exact_invocation,
+                        &workspace_state(),
+                    )
+                    .unwrap();
+                assert_eq!(ordinary.disposition, ToolAuthorizationDisposition::Deny);
+                assert_eq!(
+                    ordinary.matched_rule.as_deref(),
+                    Some("ask_external_path_fail_closed")
+                );
+
+                let wrong_digest = ToolExecutionGrant::TaskContractVerifier {
+                    acceptance_id: dse_protocol::task::AcceptanceId::from("frozen-check"),
+                    verifier_sha256: format!("sha256:{}", "0".repeat(64)),
+                };
+                let rejected = executor
+                    .authorize(mode, &wrong_digest, &exact_invocation, &workspace_state())
+                    .unwrap();
+                assert_eq!(rejected.disposition, ToolAuthorizationDisposition::Deny);
+                assert_eq!(
+                    rejected.matched_rule.as_deref(),
+                    Some("task_contract_verifier_grant_invalid")
+                );
+
+                let drifted = invocation(
+                    "run_verifiers",
+                    json!({
+                        "profile": "exact",
+                        "commands": [{
+                            "name": "exact",
+                            "program": "/usr/bin/python3",
+                            "args": ["-I", "-B", "different.py", "."],
+                            "cwd": ""
+                        }]
+                    }),
+                );
+                assert_eq!(
+                    executor
+                        .authorize(mode, &grant, &drifted, &workspace_state())
+                        .unwrap()
+                        .disposition,
+                    ToolAuthorizationDisposition::Deny
+                );
+            }
+        }
+
+        let writer = tempfile::tempdir().unwrap();
+        let writer_executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+        let writer_verifier = writer_executor
+            .resolve_verifier_spec("run_verifiers", exact_input.clone())
+            .unwrap();
+        let writer_grant = ToolExecutionGrant::TaskContractVerifier {
+            acceptance_id: dse_protocol::task::AcceptanceId::from("writer-check"),
+            verifier_sha256: writer_verifier.sha256(),
+        };
+        let writer_decision = writer_executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &writer_grant,
+                &invocation("run_verifiers", exact_input),
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            writer_decision.disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        assert_eq!(
+            writer_decision.matched_rule.as_deref(),
+            Some("task_contract_verifier_exact")
+        );
     }
 
     #[test]
@@ -1947,7 +2129,12 @@ allow = ["git push"]
             ),
         ] {
             let decision = writer_executor
-                .authorize(RunPermissionMode::Agent, &invocation, &workspace_state())
+                .authorize(
+                    RunPermissionMode::Agent,
+                    &ToolExecutionGrant::Ordinary,
+                    &invocation,
+                    &workspace_state(),
+                )
                 .unwrap();
             assert_eq!(decision.disposition, ToolAuthorizationDisposition::Deny);
         }
@@ -2286,6 +2473,7 @@ allow = ["git push"]
         let decision = executor
             .authorize(
                 RunPermissionMode::FullAccess,
+                &ToolExecutionGrant::Ordinary,
                 &invocation,
                 &workspace_state(),
             )

@@ -465,28 +465,39 @@ matched rule、risk 和 allow/ask/deny disposition。Ask 只有 exact durable in
 resolve 后才能 start；deny 永不 start；reopen 复用已提交 decision，不能重新匹配当前
 配置或重复副作用。
 
+RuntimeEvent v21 让每个 `ToolAuthorizationCommitted` 必须绑定一个 typed
+`ToolExecutionGrant`。普通模型工具只有 `Ordinary`；只有 Runtime 从 frozen
+TaskContract 的 exact acceptance ID 与 canonical `VerifierSpec` 派生的
+`TaskContractVerifier { acceptance_id, verifier_sha256 }` 才能请求 contract verifier
+授权。tools 重新解析同一 spec，Store 在 reopen 时从 prepared abbreviated invocation
+和 frozen contract 重建 exact invocation/grant；模型不能提供、扩张或伪造该事实。该
+grant 不是第四个 permission 档位，也不授予普通 external path、cwd、network、write root
+或 explicit-deny 绕过。
+
 M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalog 的唯一完整
 持久事实，Run environment 另存 catalog hash，execution fingerprint 绑定当时的
 `strict_tools` policy。DeepSeek surface 与 fallback reason 不重复写入 State；SQLite 重开后
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v13 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+Run API v14 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v26 复用 canonical
+事件总线或兼容 alias。State schema v27 复用 canonical
 event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
 v22 再退役缺少 route audit 的 materialized run，v23 物理删除旧 `threads` metadata 表。
 v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 materialized run，只
 保留能按 v18 command 直接反序列化的 pending Start；v25 完成 DSE identity retirement；
 v26 不猜旧 bool/trust/sandbox/elevation tuple，直接退休无法无损映射为三档 permission
-contract 的旧 materialized Run 与 pending Start。旧 `session_index.jsonl`
+contract 的旧 materialized Run 与 pending Start；v27 再退休缺少 typed execution grant
+的旧 materialized Run，只保留能按当前 Start command 无损反序列化的 pending intent。
+旧 `session_index.jsonl`
 writer/reader 已删除；没有 compatibility reader 或 dual write。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v26（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v27（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved

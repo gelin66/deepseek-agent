@@ -23,7 +23,7 @@ DSE 刻意保持边界收敛：
 - 原子、workspace-scoped 工具返回 typed outcome，以及 retry/side-effect 事实；
 - `en` 与 `zh-Hans` 人类界面完整覆盖，不增加语言分类请求或翻译模型。
 
-当前协议身份为 Run API v13、RuntimeEvent v20、State schema v26、exec-stream v4。
+当前协议身份为 Run API v14、RuntimeEvent v21、State schema v27、exec-stream v4。
 
 ## 固定模型 profile
 

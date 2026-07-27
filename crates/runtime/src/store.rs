@@ -841,19 +841,18 @@ pub fn apply_event(
         } => {
             let workspace_state = snapshot.workspace_state.clone();
             let permission_mode = snapshot.request.environment.permission_mode;
-            let execution_invocation = {
+            let resolved_execution = {
                 let pending = snapshot.pending_tool.as_ref().ok_or_else(|| {
                     corrupt(
                         &run_id,
                         "tool authorization committed without a prepared invocation",
                     )
                 })?;
-                resolve_named_verifier_invocation(
-                    snapshot.request.task_contract.as_ref(),
-                    &pending.invocation,
-                )
-                .map_err(|message| corrupt(&run_id, message))?
+                resolve_tool_execution(snapshot.request.task_contract.as_ref(), &pending.invocation)
             };
+            let execution_invocation = resolved_execution
+                .invocation
+                .map_err(|message| corrupt(&run_id, message))?;
             let pending = pending_tool_mut(snapshot, &run_id, operation_id)?;
             if pending.state != DurableActionState::Prepared {
                 return Err(corrupt(
@@ -868,7 +867,11 @@ pub fn apply_event(
                 ));
             }
             decision
-                .validate_for(&execution_invocation, &workspace_state)
+                .validate_for(
+                    &resolved_execution.grant,
+                    &execution_invocation,
+                    &workspace_state,
+                )
                 .map_err(|message| corrupt(&run_id, message))?;
             if decision.mode != permission_mode {
                 return Err(corrupt(
@@ -4519,17 +4522,18 @@ mod tests {
             {
                 let snapshot =
                     reduce_events(&events).expect("prepared authorization fixture prefix");
-                let execution_invocation = resolve_named_verifier_invocation(
-                    snapshot.request.task_contract.as_ref(),
-                    &invocation,
-                )
-                .expect("fixture verifier resolution");
+                let resolved_execution =
+                    resolve_tool_execution(snapshot.request.task_contract.as_ref(), &invocation);
+                let execution_invocation = resolved_execution
+                    .invocation
+                    .expect("fixture verifier resolution");
                 push(
                     &mut events,
                     RuntimeEventKind::ToolAuthorizationCommitted {
                         operation_id,
                         decision: ToolAuthorizationDecision {
                             mode: snapshot.request.environment.permission_mode,
+                            execution_grant: resolved_execution.grant,
                             tool_name: execution_invocation.name.clone(),
                             arguments_sha256: execution_invocation.arguments_sha256(),
                             workspace_state: snapshot.workspace_state,
@@ -4632,6 +4636,28 @@ mod tests {
             error,
             RunStoreError::Corrupt { message, .. }
                 if message.contains("exact deterministic execution")
+        ));
+    }
+
+    #[test]
+    fn task_contract_verifier_authorization_rejects_a_forged_grant() {
+        let mut events = stored_events(temporal_failure_kinds());
+        let decision = events
+            .iter_mut()
+            .find_map(|event| match &mut event.event {
+                RuntimeEventKind::ToolAuthorizationCommitted { decision, .. } => Some(decision),
+                _ => None,
+            })
+            .expect("temporal fixture authorization");
+        decision.execution_grant = ToolExecutionGrant::TaskContractVerifier {
+            acceptance_id: AcceptanceId::from("temporal"),
+            verifier_sha256: format!("sha256:{}", "0".repeat(64)),
+        };
+
+        assert!(matches!(
+            reduce_events(&events),
+            Err(RunStoreError::Corrupt { message, .. })
+                if message.contains("does not bind the exact invocation")
         ));
     }
 

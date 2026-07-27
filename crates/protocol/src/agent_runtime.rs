@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 20;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 20;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 21;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 21;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -2573,6 +2573,42 @@ pub enum ToolAuthorizationDisposition {
     Deny,
 }
 
+/// Narrow Host-derived authority attached to one exact tool authorization.
+///
+/// `TaskContractVerifier` is never model input and does not change the Run's
+/// permission mode. Runtime derives it only from the exact acceptance handle;
+/// the concrete tool executor validates the frozen verifier digest before it
+/// may use the grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolExecutionGrant {
+    Ordinary,
+    TaskContractVerifier {
+        acceptance_id: AcceptanceId,
+        verifier_sha256: String,
+    },
+}
+
+impl ToolExecutionGrant {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Ordinary => Ok(()),
+            Self::TaskContractVerifier {
+                acceptance_id,
+                verifier_sha256,
+            } => {
+                require_agent_text("verifier execution grant acceptance id", &acceptance_id.0)?;
+                let Some(hex) = verifier_sha256.strip_prefix("sha256:") else {
+                    return Err(
+                        "verifier execution grant digest must use the sha256: prefix".to_owned(),
+                    );
+                };
+                validate_sha256("verifier execution grant digest", hex)
+            }
+        }
+    }
+}
+
 /// Host-owned authorization fact for one exact invocation.
 ///
 /// The decision is committed before any approval interaction or tool side
@@ -2583,6 +2619,7 @@ pub enum ToolAuthorizationDisposition {
 #[serde(deny_unknown_fields)]
 pub struct ToolAuthorizationDecision {
     pub mode: RunPermissionMode,
+    pub execution_grant: ToolExecutionGrant,
     pub tool_name: String,
     pub arguments_sha256: String,
     pub workspace_state: WorkspaceState,
@@ -2598,13 +2635,16 @@ pub struct ToolAuthorizationDecision {
 impl ToolAuthorizationDecision {
     pub fn validate_for(
         &self,
+        execution_grant: &ToolExecutionGrant,
         invocation: &ToolInvocation,
         workspace_state: &WorkspaceState,
     ) -> Result<(), String> {
         require_agent_text("authorization tool name", &self.tool_name)?;
         require_agent_text("authorization reason", &self.reason)?;
+        self.execution_grant.validate()?;
         self.workspace_state.validate()?;
-        if self.tool_name != invocation.name
+        if &self.execution_grant != execution_grant
+            || self.tool_name != invocation.name
             || self.arguments_sha256 != invocation.arguments_sha256()
             || &self.workspace_state != workspace_state
         {
@@ -3487,8 +3527,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 20);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 20);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 21);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 21);
     }
 
     #[test]
@@ -4258,6 +4298,55 @@ mod tests {
             serde_json::from_value::<RunEnvironment>(value).is_err(),
             "RuntimeEvent v20 must not retain a hidden legacy permission reader"
         );
+    }
+
+    #[test]
+    fn tool_authorization_requires_an_exact_typed_execution_grant() {
+        let invocation = ToolInvocation {
+            run_id: RunId::from("grant-run"),
+            call_id: "grant-call".to_owned(),
+            name: "run_verifiers".to_owned(),
+            arguments: ToolArguments::from_value(serde_json::json!({"profile": "exact"})),
+        };
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:workspace".to_owned(),
+            },
+        };
+        let grant = ToolExecutionGrant::TaskContractVerifier {
+            acceptance_id: AcceptanceId::from("tests"),
+            verifier_sha256: format!("sha256:{}", "a".repeat(64)),
+        };
+        let decision = ToolAuthorizationDecision {
+            mode: RunPermissionMode::Ask,
+            execution_grant: grant.clone(),
+            tool_name: invocation.name.clone(),
+            arguments_sha256: invocation.arguments_sha256(),
+            workspace_state: workspace_state.clone(),
+            disposition: ToolAuthorizationDisposition::Allow,
+            risk: ApprovalRisk::Routine,
+            matched_rule: Some("fixture".to_owned()),
+            reason: "exact fixture authorization".to_owned(),
+            prompt: None,
+        };
+        assert!(
+            decision
+                .validate_for(&grant, &invocation, &workspace_state)
+                .is_ok()
+        );
+        assert!(
+            decision
+                .validate_for(&ToolExecutionGrant::Ordinary, &invocation, &workspace_state)
+                .is_err()
+        );
+
+        let mut serialized = serde_json::to_value(&decision).unwrap();
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_grant");
+        assert!(serde_json::from_value::<ToolAuthorizationDecision>(serialized).is_err());
     }
 
     #[test]

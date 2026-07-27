@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 const DEFAULT_HOST_ACCEPTANCE_DESCRIPTION: &str = "由 Host 明确接受完成候选";
 
@@ -232,6 +233,24 @@ impl VerifierSpec {
     pub fn canonicalized(mut self) -> Self {
         self.parameters = canonical_json(&self.parameters);
         self
+    }
+
+    /// Stable identity for the complete Host-resolved verifier contract.
+    ///
+    /// Parameters are canonicalized before hashing while the typed plan keeps
+    /// every executable, argument, cwd, environment and timeout field in the
+    /// identity. This digest is an audit binding, not a second verifier truth.
+    #[must_use]
+    pub fn sha256(&self) -> String {
+        let canonical = self.clone().canonicalized();
+        let bytes =
+            serde_json::to_vec(&canonical).expect("VerifierSpec JSON is always serializable");
+        let digest = Sha256::digest(bytes);
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("sha256:{hex}")
     }
 }
 
@@ -859,6 +878,21 @@ mod tests {
         }));
         assert_eq!(left, right);
         assert_ne!(left, different);
+    }
+
+    #[test]
+    fn verifier_digest_is_canonical_and_binds_the_execution_plan() {
+        let first = exact_test_spec();
+        let mut reordered = first.clone();
+        reordered.parameters = json!({
+            "all_features": false,
+            "args": ["--locked"]
+        });
+        assert_eq!(first.sha256(), reordered.sha256());
+
+        let mut drifted = first;
+        drifted.plan.steps[0].timeout_ms += 1;
+        assert_ne!(drifted.sha256(), reordered.sha256());
     }
 
     #[test]
