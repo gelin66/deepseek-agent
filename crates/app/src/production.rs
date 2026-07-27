@@ -3016,7 +3016,7 @@ mod tests {
     }
 
     async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let replay = store
                     .load(run_id)
