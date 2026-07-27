@@ -8308,7 +8308,18 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
     positive = [
         cell for cell in cells.values() if cell["lane"] != "safety"
     ]
-    if CAMPAIGN in {
+    if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
+        # A current-loss acquisition is complete when every scheduled arm has
+        # closed behavior and accounting truth. A verified product failure is
+        # an observed loss, not a measurement interruption; route identity
+        # mismatches remain invalid in behavior_truth_projection.
+        complete = all(
+            arm["truth"]["behavior"]["product_aggregate_eligible"]
+            and arm["truth"]["accounting"]["aggregate_eligible"]
+            and not arm["truth"]["behavior"]["false_success"]
+            for arm in arms
+        )
+    elif CAMPAIGN in {
         "m12",
         "m15",
         "m18",
@@ -8348,18 +8359,6 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     and safety["lane_valid"] == runs_per_task
                     for safety in safety_cells
                 )
-            )
-        if CAMPAIGN in CURRENT_HARDNESS_CAMPAIGNS:
-            complete = complete and all(
-                arm["truth"]["behavior"]["status"]
-                in {
-                    "verified_success",
-                    "correct_safety_rejection",
-                    "verified_product_failure",
-                }
-                and arm["truth"]["accounting"]["status"] == "complete"
-                and not arm["truth"]["behavior"]["false_success"]
-                for arm in arms
             )
     else:
         safety = cells["safety_false_completion"]
@@ -9655,6 +9654,7 @@ def run_self_test() -> int:
                                 if safety
                                 else "verified_success"
                             ),
+                            "product_aggregate_eligible": True,
                             "false_success": False,
                             "product_loss": False,
                             "loss_code": None,
@@ -9664,7 +9664,10 @@ def run_self_test() -> int:
                                 else {}
                             ),
                         },
-                        "accounting": {"status": "complete"},
+                        "accounting": {
+                            "status": "complete",
+                            "aggregate_eligible": True,
+                        },
                     },
                     "hardness": {
                         "first_relevant_file_ms": (
@@ -9739,6 +9742,82 @@ def run_self_test() -> int:
             ),
             "self_test_hardness_aggregate_invalid",
         )
+        if CAMPAIGN == "m36a":
+            product_failure_arms = list(synthetic_arms)
+            positive_index = next(
+                index
+                for index, arm in enumerate(product_failure_arms)
+                if arm["lane"] != "safety"
+            )
+            failed = product_failure_arms[positive_index]
+            product_failure_arms[positive_index] = {
+                **failed,
+                "verified_success": False,
+                "lane_audit": {"valid": False},
+                "truth": {
+                    "behavior": {
+                        "status": "verified_product_failure",
+                        "product_aggregate_eligible": True,
+                        "false_success": False,
+                        "product_loss": True,
+                        "loss_code": "deterministic_verifier_failed",
+                        "owner_code": "writer_integration",
+                    },
+                    "accounting": {
+                        "status": "complete",
+                        "aggregate_eligible": True,
+                    },
+                },
+                "hardness": {
+                    **failed["hardness"],
+                    "goal_constraint_loss": True,
+                    "canonical_loss_owner_code": "orchestrator",
+                    "canonical_loss_code": "writer_integration",
+                },
+            }
+            product_failure_summary = aggregate(product_failure_arms)
+            require(
+                product_failure_summary["complete"] is True
+                and product_failure_summary["verified_success"]
+                == len(
+                    [
+                        arm
+                        for arm in product_failure_arms
+                        if arm["lane"] != "safety"
+                    ]
+                )
+                - 1
+                and product_failure_summary["behavior_statuses"]
+                == {
+                    "correct_safety_rejection": 3,
+                    "verified_product_failure": 1,
+                    "verified_success": 16,
+                }
+                and product_failure_summary["decision"]
+                == "keep_current_harness_no_repeated_loss"
+                and product_failure_summary["loss_matrix"]
+                == {
+                    "candidate_id": None,
+                    "minimum_independent_tasks": 2,
+                    "observed_losses": [
+                        {
+                            "loss_code": (
+                                "orchestrator:writer_integration"
+                            ),
+                            "tasks": [
+                                product_failure_arms[positive_index][
+                                    "task_id"
+                                ]
+                            ],
+                            "trajectories": 1,
+                        }
+                    ],
+                    "result_class": (
+                        "keep_current_harness_no_repeated_loss"
+                    ),
+                },
+                "self_test_m36_product_loss_acquisition_invalid",
+            )
     print(
         json.dumps(
             {
