@@ -6239,7 +6239,8 @@ M36 不准入：
 
 ## 35. M37：模型可见契约减法与 Harness 控制边界
 
-- 状态：**M37-A 离线 projection audit 已完成；M37-B–E 未自动准入**
+- 状态：**M37-A 离线 projection audit 已完成；M37-B 正式 acquisition 因
+  unknown billing 停止且候选已删除；M37-C–E 未自动准入**
 - 起始基线：M36-A clean checkpoint `400ec0813`
 - 长期决策：[ADR-0014](../decisions/0014-model-visible-contract-and-harness-control.md)
 - owner：`crates/context`；工具、权限、Runtime、Orchestrator、Verifier 继续由现有模块拥有
@@ -6330,6 +6331,23 @@ M37-A 已在 `5fb2bc971` 完成：
 - root-only、read-only child、explicit Writer 使用 same-binary Pro/high A/B；
 - 无质量回退且工具选择/Writer completion 有明确净收益才 cutover；
 - 否则删除 candidate，不加补充解释或 compatibility branch。
+
+M37-B 已在同一 immutable binary `78d8ddb2c` 上启动 30-arm Pro/high 配对 A/B，正式
+raw 在 12 个完整 arm 后按合同停止。12/12 complete arms 为 9 个 positive verified
+success、3 个正确 safety rejection、`false_success=0`；已观察的 control/treatment 各
+6 个完整 arm，均没有 tool selection、Writer completion 或 verifier 回退，也没有形成
+可归因差异。第 13 个 control arm 最终完成并通过 external verifier，但首个物理请求在
+response headers 前发生 typed `deepseek_transport`；一次 durable 1 秒 Runtime retry
+成功后，最终仍有 `billing_unknown_attempts=1`。Harness 写入
+`abort(accounting_incomplete, completed_arms=12)`，没有启动 position 14、补 mate 或重跑。
+
+因此 formal 决定为 `hold_insufficient_or_incomplete_evidence`，不能形成 30-arm
+non-inferiority/benefit aggregate；production 候选按准入门执行
+`reject_and_delete_candidate`。原 execution posture 保持唯一 production 路径，临时
+selector、alternate prompt branch、M37-B Harness consumer 与专属测试均已物理删除；只
+保留 frozen contract/admission、ignored `0600` raw hash 和
+[M37-B summary](../../eval/summaries/m37-b-posture-schema-ab-2026-07-27.md)。M37-C 不由
+这些 partial observations 自动准入。
 
 #### M37-C：fallback overview/pack 去重 successor
 

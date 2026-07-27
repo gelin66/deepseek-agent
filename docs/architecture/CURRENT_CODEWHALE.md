@@ -2788,6 +2788,22 @@ posture、project pack、DeepSeek model/request、tool catalog、permission、Ru
 RunStore、TUI 或 Writer state machine；Key 未读取，official API 请求为 0。M37-B/C/D/E
 仍需独立单变量准入，M36-A 的单个 Writer loss 仍归 M36-A2。
 
+M37-B 随后只为 formal A/B 临时增加同 binary guarded selector：control 保持 current
+execution posture，treatment 只删除 60 UTF-8 bytes 的 stale read-only-only `agent`
+claim。immutable candidate `78d8ddb2c` 的 official Pro/high campaign 在 12 个完整 arm 后
+因第 13 个 control arm 的 pre-header `deepseek_transport` 留下
+`billing_unknown_attempts=1` 而 fail closed。该 arm 的 durable 一秒 Runtime retry、最终
+completion、SQLite reopen、verifier 和已收到 usage 均闭合，但无法证明失败物理 attempt
+是否计费，所以不能形成 30-arm product aggregate。
+
+current production 已恢复 M37-A checkpoint 的原 posture；M37-B environment selector、
+alternate composer branch、Harness campaign/aggregate 和专属测试没有 production
+consumer，均已物理删除。Run API 15、RuntimeEvent 22、State schema 28、exec-stream 6、
+DeepSeek sender、tool catalog、permission、actor route、Runtime 和 RunStore 无变化。frozen
+contract/admission、ignored `0600` raw hash 与
+[M37-B summary](../../eval/summaries/m37-b-posture-schema-ab-2026-07-27.md)只记录历史事实，
+不提供 continuation 或第二 prompt truth。M37-C 仍需独立 fresh 准入。
+
 ## 8. 明确非结论
 
 当前源码不证明：

@@ -4456,6 +4456,22 @@ reasoning 或 task wording。正式矩阵至少覆盖：
 每个 cell 至少 3 次 fresh Run，maximum Harness reruns=0。若 treatment 没有 verified
 success/tool-selection/Writer completion 的明确收益，即使 Token 更少也不接管。
 
+M37-B current result（2026-07-27）：same-binary candidate `78d8ddb2c` 的 formal
+30-arm schedule 只产生 12 个 complete `arm_result`，随后在第 13 个 control arm 后停止。
+完整前缀包含 9 个 positive verified success、3 个正确 safety rejection、
+`false_success=0`；control/treatment 各 6 个 complete arms，所有已观察 verifier、actor
+selection 和 Writer completion 均有效，但每 cell 尚未达到冻结的 3 次，不能判断收益。
+第 13 个任务 behavior/verifier 成功，首个 response-before-headers transport attempt 却
+留下 `billing_unknown_attempts=1`；usage complete 和后续 durable retry 成功不能证明该
+物理 attempt billed/unbilled。Harness 正确写入 `accounting_incomplete` abort，未启动
+position 14，也未补 mate 或重跑。
+
+acquisition 决定为 `hold_insufficient_or_incomplete_evidence`；production candidate 因
+未通过完整 non-inferiority/benefit 门而 `reject_and_delete_candidate`。临时 selector、
+candidate branch 和 Harness consumer 均删除，current posture 保持唯一 production bytes。
+完整身份、raw hash、指标与非结论见
+[M37-B summary](../../eval/summaries/m37-b-posture-schema-ab-2026-07-27.md)。
+
 #### 4. M37-C context-dedup successor
 
 M37-C 是 fresh evaluation，M10-A frozen raw 只用于历史事实，不进入 aggregate。矩阵至少：
