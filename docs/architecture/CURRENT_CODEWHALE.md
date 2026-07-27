@@ -2849,6 +2849,25 @@ M36-A2 temporary Harness consumer 已删除并恢复到 pre-campaign exact blob 
 raw 没有作为输入。ADR-0015 仍是 implementation-not-admitted，当前没有 browser/search/
 vision production 路径。
 
+M39-A 随后从 immutable `4f93060fe2ee` binary 完成六个 fresh current pack-on
+control-only tasks。四个正向任务 verified success，explicit Writer 因 child 未验证、无
+seal/integration/latest receipt 而被 Host 正确 blocked，一个 no-tool 安全反例正确拒绝；
+`false_success=0`，behavior/accounting 6/6 complete，known cost `$0.066798629`。
+
+唯一 canonical loss 为
+`writer_record_migration -> orchestrator:writer_integration`，只覆盖一个 fresh task_id；
+没有 `context:localization`，所以没有 production treatment。frozen raw 的错误
+`complete=false` 只来自 eval aggregate 把已闭合 Writer lane failure 误作 measurement
+incomplete；credential-free report 复用同一 M39 owner projection，对 exact raw 两次生成
+byte-identical 6/6 truth，没有修改 raw 或重调 API。
+
+M39 campaign selector、loader、live caller、aggregate/self-test 与 trajectory consumer 已
+删除，唯一 corrected Harness 恢复 exact blob `d3916654f`。production Prompt、Project
+Context Pack、DeepSeek request、RuntimeEvent、RunStore、tools、permission、actor route、
+Writer behavior、CLI/TUI/app-server 均无 delta。frozen contract/live admission/analysis、
+fixture/reference、ignored `0600` raw、summary 与 Git 历史保留。ADR-0015 仍为
+implementation-not-admitted，当前没有 browser/search/vision production 路径。
+
 ## 8. 明确非结论
 
 当前源码不证明：

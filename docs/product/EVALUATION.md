@@ -4807,3 +4807,27 @@ same owner_code:loss_code on at least 2 fresh task IDs
 即使 repeated loss 是 `context:localization`，也只准入一个 context owner audit；不得直接
 恢复已删除的 M37-C selector或宣称 pack 去重有效。ADR-0015 继续 implementation-not-admitted，
 M39 不开发/评测 browser、search 或 vision。
+
+#### M39-A formal result
+
+正式 acquisition 从 immutable `4f93060fe2ee` binary 和 fresh position 1 完成 6/6
+observations：`verified_success=4`、`verified_product_failure=1`、
+`correct_safety_rejection=1`、`false_success=0`；behavior/accounting/full-utility 均为 6/6。
+44 requests 的 input/output 为 `266,428/20,004`，cache hit/miss 为
+`184,064/82,364`，known cost `$0.066798629`，Harness rerun 0。
+
+唯一 stable loss 为
+`writer_record_migration -> orchestrator:writer_integration`，独立 task count=1；没有
+`context:localization`。机械结果为 `keep_current_harness_no_repeated_loss`，production
+delta=0，不准入 Prompt/context/Writer treatment。
+
+raw terminal summary 的 `complete=false` 是 evaluator aggregate defect：它把 closed Writer
+actor failure 的 `lane_valid=false` 误作 measurement incomplete。raw 保持 immutable；新的
+closed-loss regression 和 canonical M39 owner projection 对同一 hash-chained raw 做
+credential-free analysis，两次 report byte-identical，并保持 Writer 为 product failure、
+非 success。temporary M39 consumer 已按删除门物理删除，审计依赖 frozen manifest/raw/
+analysis/summary 与 Git 历史。
+
+完整身份、逐 task 结果、费用、门禁与非结论见
+[M39-A summary](../../eval/summaries/m39-a-context-loss-admission-2026-07-27.md)。ADR-0015
+仍未实施；本结果没有准入 browser/search/vision。

@@ -6512,11 +6512,11 @@ M37-C frozen manifest/raw/summary 不修改、不续跑、不补 mate；M38 不�
 
 ## 37. M39：fresh context/localization loss admission audit
 
-- 状态：**M39-A contract/fixture 实施中；production delta=0**
+- 状态：**M39-A 已完成；无 repeated loss，production delta=0，临时 consumer 已删除**
 - 起始基线：M36-A2 clean checkpoint `360e52cae`
 - acquisition owner：唯一 corrected
   `scripts/eval-m9b-fixed-pro-regression.py`
-- 潜在 production owner：只有 repeated loss 门通过后才允许审计 `crates/context`
+- production treatment：未准入；`crates/context` 保持 current pack-on 路径
 - 共享边界：ADR-0015 仍为 implementation-not-admitted；本里程碑不开发或评测
   browser/search/vision
 
@@ -6568,3 +6568,27 @@ public checker 与 `git diff --check`。
 M39-A 不证明 duplicate pack 有益或有害，不执行 M37-C successor，不修改 Prompt bytes、
 ContextBroker、RuntimeEvent、State、tool catalog、permission、Writer behavior 或 UI；不恢复
 Auto、FIM、RepoGraph、planner/critic、多 Writer或第二 Provider/Runtime/Store。
+
+### 37.4 正式结果与删除
+
+immutable `4f93060fe2ee` binary 从新 schedule position 1 完成 6/6 arms：四个正向任务
+verified success、一个 explicit Writer verified product failure、一个安全反例正确拒绝，
+`false_success=0`。behavior/accounting 6/6 闭合；44 个 model requests、input/output
+`266,428/20,004`、cache hit/miss `184,064/82,364`、known cost `$0.066798629`。
+
+唯一 loss 是 `writer_record_migration -> orchestrator:writer_integration`，只覆盖一个 fresh
+task_id；没有 `context:localization`，因此决定为
+`keep_current_harness_no_repeated_loss`。fallback overview/Project Context Pack 重复事实仍是
+debt，但没有达到 treatment 准入门。
+
+frozen raw 的末尾 summary 曾因 eval-only aggregate 把 Writer lane failure 同时当成
+measurement incompleteness 而写出 `complete=false`。绑定 acquisition/analysis Harness hash
+的 credential-free report 从同一 immutable raw、canonical Store/reopen/verifier/accounting
+事实两次生成 byte-identical 6/6 truth；raw 未修改，API 未重调。闭合失败现在计入 loss、
+永不计为 success。
+
+M39 temporary campaign selector、loader、live caller、aggregate/self-test 与 trajectory
+consumer 已物理删除，Harness 恢复 M39 前 exact blob `d3916654f`。保留 frozen
+contract/live admission/analysis、fixture/reference、ignored `0600` raw、
+[M39-A summary](../../eval/summaries/m39-a-context-loss-admission-2026-07-27.md)与 Git 历史。
+ADR-0015 继续 implementation-not-admitted；没有 browser/search/vision implementation。
