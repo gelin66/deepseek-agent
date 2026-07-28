@@ -698,6 +698,22 @@ public POST/upload/download/auth、用户 Chrome profile、截图/坐标/视觉�
 production sidecar、durable browser session truth 与第二 Runtime/Store/ledger 仍未准入。准入结果
 只冻结后续 focused Goal，不等于 W3 已实现。
 
+W3 focused Goal 现已完成。`crates/tools` 在同一 direct-CDP adapter 内为 exact-loopback
+`browser_navigate` observation 生成 Host-owned opaque `element_ref`，并只新增
+`browser_click(element_ref)`；public navigation 仍 one-shot teardown。ref 绑定 run、ephemeral browser
+identity、latest snapshot/page epoch，click 前重取 DOM/AX 身份，拒绝 stale/missing/hidden/disabled/
+detached/ambiguous/cross-run/cross-epoch 或 target drift。click 后旋转 epoch、snapshot id 与 refs，并
+返回 fresh bounded `external_untrusted` observation；dispatch 后无法闭合 observation 的路径进入既有
+`Indeterminate/Unsafe` 与 teardown，不能自动重试。
+
+两个冻结 exact-loopback task 已由 production Rust caller 得到各自预注册 post-click state，结果
+`2/2`、false allow=`0`。真实 AgentApplication loopback 中模型选择 navigate 后选择 click；committed
+outcome SQLite reopen 只重放，started-without-outcome reopen 为现有 `RecoveryRequired` 且 click replay
+为 `0`。旧 refs/action-tools=`0` assertion 与 eval-only Python + Node/Playwright oracle 已删除；冻结
+manifest/result/history 保留。RuntimeEvent、RunStore、State schema 和 DeepSeek wire delta=`0`，official
+requests=`0`、credential read=`false`、actual cost=`$0`。没有准入 fill/press/wait、public action、
+登录、Cookie/storage 持久化、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。
+
 ### Slice W4：ApplicationProbe 收敛（M45-A 已完成）
 
 M45-A 没有等待或引入 W2/W3，而是在 `crates/tools` 复用现有 managed-process、loopback HTTP、

@@ -26,7 +26,8 @@ use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::semantic_browser::{
     SemanticBrowserHarness, SystemSemanticBrowserHarness, browser_harness_identity,
-    execute_browser_navigate, preflight_browser_navigate,
+    execute_browser_click, execute_browser_navigate, preflight_browser_click,
+    preflight_browser_navigate,
 };
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
@@ -46,8 +47,9 @@ use crate::{
     validate_application_probe_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 14] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 15] = [
     "apply_patch",
+    "browser_click",
     "browser_navigate",
     "edit_file",
     "exec_shell",
@@ -408,7 +410,7 @@ fn invocation_has_external_path(
         || patch_paths.any(|path| context.path_is_external(&path))
 }
 
-/// Direct executor for the fixed fourteen-tool production surface.
+/// Direct executor for the fixed fifteen-tool production surface.
 pub struct ProductionToolExecutor {
     context: ProductionToolContext,
     shell: ExecShellOptions,
@@ -419,6 +421,12 @@ pub struct ProductionToolExecutor {
     web_fetch_network_allowed: bool,
     semantic_browser_harness: Arc<dyn SemanticBrowserHarness>,
     browser_local_origin: Option<String>,
+}
+
+impl Drop for ProductionToolExecutor {
+    fn drop(&mut self) {
+        self.semantic_browser_harness.shutdown();
+    }
 }
 
 impl ProductionToolExecutor {
@@ -623,13 +631,23 @@ impl ProductionToolExecutor {
 
     async fn dispatch(
         &self,
+        run_id: &str,
         name: &str,
         input: Value,
         context: &ProductionToolContext,
     ) -> Result<ToolOutcome, ToolError> {
         match name {
             "apply_patch" => execute_apply_patch(input, context),
+            "browser_click" => Ok(execute_browser_click(
+                run_id,
+                input,
+                Arc::clone(&self.semantic_browser_harness),
+                self.web_fetch_network_allowed,
+                context.cancellation_token().cloned().unwrap_or_default(),
+            )
+            .await),
             "browser_navigate" => Ok(execute_browser_navigate(
+                run_id,
                 input,
                 Arc::clone(&self.semantic_browser_harness),
                 self.web_fetch_network_allowed,
@@ -729,6 +747,9 @@ impl ToolExecutor for ProductionToolExecutor {
         }
         if invocation.name == "browser_navigate" {
             return preflight_browser_navigate(input, self.browser_local_origin.as_deref());
+        }
+        if invocation.name == "browser_click" {
+            return preflight_browser_click(input);
         }
         None
     }
@@ -921,7 +942,10 @@ impl ToolExecutor for ProductionToolExecutor {
             }
         }
 
-        if matches!(invocation.name.as_str(), "browser_navigate" | "web_fetch") {
+        if matches!(
+            invocation.name.as_str(),
+            "browser_click" | "browser_navigate" | "web_fetch"
+        ) {
             let sandbox_denies_network = self
                 .shell
                 .elevated_sandbox_policy
@@ -941,6 +965,24 @@ impl ToolExecutor for ProductionToolExecutor {
                     } else {
                         "当前 actor 的冻结执行边界禁止网络访问"
                     },
+                    None,
+                ));
+            }
+            if invocation.name == "browser_click" {
+                if self.browser_local_origin.is_none() {
+                    return Ok(decision.build(
+                        ToolAuthorizationDisposition::Deny,
+                        ApprovalRisk::Elevated,
+                        Some("browser_click_local_origin_missing".to_owned()),
+                        "browser_click 只允许 Host 绑定的 exact loopback disposable application origin",
+                        None,
+                    ));
+                }
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Allow,
+                    ApprovalRisk::Elevated,
+                    Some("exact_local_semantic_browser_click".to_owned()),
+                    "Host 只允许同一 Run 消费当前 ephemeral page epoch 的 opaque ref",
                     None,
                 ));
             }
@@ -1068,7 +1110,8 @@ impl ToolExecutor for ProductionToolExecutor {
 
         let tool_cancellation = TokioCancellationToken::new();
         let context = self.context.for_invocation(tool_cancellation.clone());
-        let execution = self.dispatch(&invocation.name, input, &context);
+        let run_id = invocation.run_id.to_string();
+        let execution = self.dispatch(&run_id, &invocation.name, input, &context);
         tokio::pin!(execution);
         tokio::select! {
             result = &mut execution => Ok(match result {
@@ -1109,8 +1152,13 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             apply_patch_schema(),
         ),
         definition(
+            "browser_click",
+            "点击 browser_navigate 为同一 Run、当前 Host-owned exact-loopback ephemeral page epoch 返回的 opaque element_ref；不接受 selector、坐标或脚本，action 后总是刷新有界 external_untrusted 语义 observation 并使旧 refs 失效。",
+            browser_click_schema(),
+        ),
+        definition(
             "browser_navigate",
-            "读取一个已知 public HTTP(S) URL 的 JavaScript 渲染结果，返回一次有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；只允许 GET/HEAD 式只读导航，不提供搜索、点击、输入、登录、Cookie/storage 持久化、下载、截图、视觉或任意脚本执行。",
+            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；exact-loopback observation 可包含只供同一 Run 最新 page epoch 使用的 opaque click refs。",
             browser_navigate_schema(),
         ),
         definition(
@@ -1359,6 +1407,10 @@ fn apply_patch_schema() -> Value {
 
 fn browser_navigate_schema() -> Value {
     json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_nodes":{"type":"integer","minimum":1,"maximum":256,"default":128},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
+}
+
+fn browser_click_schema() -> Value {
+    json!({"type":"object","properties":{"element_ref":{"type":"string","minLength":1}},"required":["element_ref"],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
@@ -1960,7 +2012,9 @@ allow = ["git push"]
 
     #[derive(Debug)]
     struct FixtureSemanticBrowser {
-        calls: std::sync::atomic::AtomicUsize,
+        navigate_calls: std::sync::atomic::AtomicUsize,
+        click_calls: std::sync::atomic::AtomicUsize,
+        shutdown_calls: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait]
@@ -1971,10 +2025,12 @@ allow = ["git push"]
 
         async fn navigate(
             &self,
+            _run_id: &str,
             _request: crate::BrowserNavigateRequest,
             _cancellation: TokioCancellationToken,
         ) -> ToolOutcome {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.navigate_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             ToolOutcome::json(&json!({
                 "requested_url":"https://example.com/app",
                 "final_url":"https://example.com/app",
@@ -1989,6 +2045,24 @@ allow = ["git push"]
                 "truncated":false
             }))
             .expect("fixture browser outcome")
+        }
+
+        async fn click(
+            &self,
+            _run_id: &str,
+            _request: crate::BrowserClickRequest,
+            _cancellation: TokioCancellationToken,
+        ) -> ToolOutcome {
+            self.click_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ToolOutcome::json(&json!({"action":{"kind":"click"},"trust":"external_untrusted"}))
+                .expect("fixture browser click outcome")
+                .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        fn shutdown(&self) {
+            self.shutdown_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -2023,7 +2097,9 @@ allow = ["git push"]
         );
 
         let harness = Arc::new(FixtureSemanticBrowser {
-            calls: std::sync::atomic::AtomicUsize::new(0),
+            navigate_calls: std::sync::atomic::AtomicUsize::new(0),
+            click_calls: std::sync::atomic::AtomicUsize::new(0),
+            shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
         });
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(workspace.path())
@@ -2048,7 +2124,12 @@ allow = ["git push"]
             .await
             .unwrap();
         assert!(outcome.is_success(), "{}", outcome.content);
-        assert_eq!(harness.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            harness
+                .navigate_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
         assert!(outcome.content.contains("Deployment ready"));
         assert!(outcome.content.contains("external_untrusted"));
 
@@ -2081,7 +2162,7 @@ allow = ["git push"]
             ProductionToolConfig::new(workspace.path())
                 .with_permission_mode(RunPermissionMode::Agent)
                 .with_browser_local_origin(Some(local_origin.to_owned()))
-                .with_semantic_browser_harness(harness),
+                .with_semantic_browser_harness(harness.clone()),
         );
         assert!(local_executor.preflight(&local).is_none());
         let local_allowed = local_executor
@@ -2105,6 +2186,102 @@ allow = ["git push"]
         assert_eq!(
             escaped.failure_code,
             Some(ToolFailureCode::InvocationRejected)
+        );
+
+        let click = invocation(
+            "browser_click",
+            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+        );
+        assert!(local_executor.preflight(&click).is_none());
+        assert_eq!(
+            local_executor.definition_workspace_access("browser_click"),
+            WorkspaceAccess::MayWrite
+        );
+        let click_allowed = local_executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &click,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            click_allowed.disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        assert_eq!(
+            click_allowed.matched_rule.as_deref(),
+            Some("exact_local_semantic_browser_click")
+        );
+        let clicked = local_executor
+            .execute(click, CancellationToken::default())
+            .await
+            .unwrap();
+        assert!(clicked.is_success(), "{}", clicked.content);
+        assert_eq!(clicked.side_effect, ToolSideEffectStatus::Applied);
+        assert_eq!(
+            harness
+                .click_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let public_click = invocation(
+            "browser_click",
+            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+        );
+        let public_click_denied = executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &public_click,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            public_click_denied.matched_rule.as_deref(),
+            Some("browser_click_local_origin_missing")
+        );
+        for forbidden in ["selector", "css", "xpath", "x", "y", "script"] {
+            let mut input = json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .insert(forbidden.to_owned(), Value::String("forbidden".to_owned()));
+            assert!(
+                local_executor
+                    .preflight(&invocation("browser_click", input))
+                    .is_some(),
+                "{forbidden}"
+            );
+        }
+
+        let writer = tempfile::tempdir().unwrap();
+        let isolated = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .with_browser_local_origin(Some(local_origin.to_owned()))
+                .with_semantic_browser_harness(harness.clone())
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+        let writer_denied = isolated
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &invocation(
+                    "browser_click",
+                    json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+                ),
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            writer_denied.disposition,
+            ToolAuthorizationDisposition::Deny
+        );
+        assert_eq!(
+            writer_denied.matched_rule.as_deref(),
+            Some("sandbox_network_denied")
         );
     }
 

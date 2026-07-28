@@ -630,13 +630,24 @@ sandbox 拒绝且不会继承 local-origin grant。现有 ToolOutcome、RuntimeE
 committed SQLite outcome reopen 只重放、不重新导航，protocol/state schema delta=0。Playwright 仍只
 存在于 frozen admission evaluator，未进入 production dependency graph。
 
-post-W2 interaction admission 仍是 eval-only：两个独立 exact-loopback task 都由 current
-`browser_navigate` 观察到可点击 role/name target，但 current snapshot 不含 `element_ref`，fixed
-catalog 也没有 click/fill/press/wait，所以不能产生 post-action state。external oracle 对每个 task
-执行一次 exact role/name click 后得到预注册状态，同一 `tools:browser_interaction:click` 为 `2/2`、
-false-success 为 `0`。该结果只准入后续单一 `browser_click` W3 Goal；当前 production 仍保持 14 个
-Host tools，action/ref-bearing session、Cargo dependency、RuntimeEvent、RunStore 与 State schema
-delta 均为 `0`。
+W3 已把 post-W2 repeated loss 收敛进同一个 direct-CDP owner：fixed production catalog 现为 15 个
+Host tools，唯一 action 是 `browser_click(element_ref)`。public `browser_navigate` 仍 one-shot、只读并
+在 outcome 前 teardown；只有 Host 注入的 exact literal-loopback origin 会保留一个内存内 ephemeral
+page。该 observation 为 button/switch target 生成随机、有界、不可由模型选择 selector/坐标的 opaque
+ref；ref 绑定同一 run、browser identity、latest snapshot 与 page epoch。每次 click 前重新取得
+DOM/AX 身份并拒绝 cross-run、stale、missing、hidden、disabled、detached、ambiguous 或 semantic
+identity drift；成功或可闭合失败后旋转 epoch/refs 并返回 fresh `external_untrusted` observation。
+
+`browser_click` 使用既有 `WorkspaceAccess::MayWrite` 只为无损表达 operation-start 后的外部 side-effect
+ambiguity：root catalog 可见；coordinator/read-only child 因既有 actor catalog 不可见；isolated Writer
+虽按既有写工具 catalog 可见，但 network-denied sandbox 和被清除的 local-origin grant 在授权阶段拒绝。
+click action phase 继续经 Fetch + connect-pinned proxy 阻止 origin escape、非 GET/HEAD、popup/worker、
+download、Cookie/auth header 与外部网络副作用；不加入 CSS/XPath/坐标/任意 JS input、fill/press/wait、
+截图、storage/Cookie 持久化或 public action。Host 在 replacement navigate、cancel/timeout ambiguity 和
+executor terminal/drop 清理 process tree、proxy 与 TempDir profile；live page/ref 从不写入 RunStore。
+committed click outcome 冷重开只重放，`ToolExecutionStarted` 后无 outcome 则复用现有
+`RecoveryRequired` 且绝不自动 click。RuntimeEvent v18、State v24、ToolOutcome 与 RunStore schema
+delta=`0`；production 未引入 Playwright/Node、第二 Runtime/Store 或 browser session ledger。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确

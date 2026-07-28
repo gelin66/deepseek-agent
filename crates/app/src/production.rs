@@ -1441,7 +1441,8 @@ mod tests {
         ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
         RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolAuthorizationDecision,
         ToolAuthorizationDisposition, ToolDefinition, ToolExecutionGrant, ToolFailureCode,
-        ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess, WriteExecutionMode,
+        ToolInvocation, ToolOutcome, ToolPolicy, ToolSideEffectStatus, Usage, WorkspaceAccess,
+        WriteExecutionMode,
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -1455,8 +1456,9 @@ mod tests {
         NullEventSink, RunLease, ToolExecutionError,
     };
     use dse_tools::{
-        BrowserCancellationToken, BrowserNavigateRequest, PRODUCTION_TOOL_NAMES,
-        SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
+        BrowserCancellationToken, BrowserClickRequest, BrowserNavigateRequest,
+        PRODUCTION_TOOL_NAMES, SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork,
+        WebFetchNetworkError,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1480,6 +1482,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct SemanticBrowserFixture {
         navigate_calls: AtomicUsize,
+        click_calls: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -1490,6 +1493,7 @@ mod tests {
 
         async fn navigate(
             &self,
+            _run_id: &str,
             _request: BrowserNavigateRequest,
             _cancellation: BrowserCancellationToken,
         ) -> ToolOutcome {
@@ -1532,6 +1536,114 @@ mod tests {
             }))
             .expect("semantic browser fixture outcome")
         }
+
+        async fn click(
+            &self,
+            _run_id: &str,
+            _request: BrowserClickRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.click_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "action":{"kind":"click","consumed_element_ref":"eref_fixture"},
+                "snapshot_id":"snapshot_fixture_2",
+                "page_epoch":2,
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Deployment approved",
+                    "text":"",
+                    "state":{"data-state":"approved"}
+                }],
+                "trust":"external_untrusted",
+                "session_live":true
+            }))
+            .expect("semantic browser click fixture outcome")
+            .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        fn shutdown(&self) {}
+    }
+
+    #[derive(Debug, Default)]
+    struct BrowserClickFixture {
+        navigate_calls: AtomicUsize,
+        click_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SemanticBrowserHarness for BrowserClickFixture {
+        fn identity(&self) -> String {
+            "m46-w3-production-browser-click-fixture-v1".to_owned()
+        }
+
+        async fn navigate(
+            &self,
+            _run_id: &str,
+            _request: BrowserNavigateRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.navigate_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "requested_url":"http://127.0.0.1:43111/",
+                "final_url":"http://127.0.0.1:43111/",
+                "title":"Deployment approval",
+                "snapshot_id":"snapshot_fixture_1",
+                "page_epoch":1,
+                "element_refs_returned":1,
+                "snapshot":[{
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "role":"button",
+                    "accessible_name":"Reveal deployment approval",
+                    "text":"Reveal deployment approval",
+                    "value":""
+                }],
+                "trust":"external_untrusted",
+                "session_scope":"same_run_in_memory_exact_loopback",
+                "session_live":true,
+                "teardown":{"attempted":false}
+            }))
+            .expect("click fixture navigation")
+        }
+
+        async fn click(
+            &self,
+            _run_id: &str,
+            request: BrowserClickRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            assert_eq!(
+                request.element_ref(),
+                "eref_0123456789abcdef0123456789abcdef"
+            );
+            self.click_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "action":{
+                    "kind":"click",
+                    "consumed_element_ref":"eref_0123456789abcdef0123456789abcdef"
+                },
+                "requested_url":"http://127.0.0.1:43111/",
+                "final_url":"http://127.0.0.1:43111/",
+                "title":"Deployment approval",
+                "snapshot_id":"snapshot_fixture_2",
+                "page_epoch":2,
+                "element_refs_returned":0,
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Deployment approved",
+                    "text":"Deployment approved",
+                    "value":"",
+                    "state":{"data-state":"approved"}
+                }],
+                "trust":"external_untrusted",
+                "session_scope":"same_run_in_memory_exact_loopback",
+                "session_live":true,
+                "teardown":{"attempted":false}
+            }))
+            .expect("click fixture outcome")
+            .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        fn shutdown(&self) {}
     }
 
     #[async_trait::async_trait]
@@ -2232,18 +2344,30 @@ mod tests {
         store: &dyn RunStore,
         request: RunRequest,
         writer_checkpoint: Option<bool>,
+        ordinary_tool: Option<(&str, Value, WorkspaceAccess)>,
     ) -> (RunReplay, Option<AgentTask>) {
         let run_id = request.run_id.clone().expect("root run id");
         let task = writer_checkpoint.map(|_| writer_task(&request));
         let call_id = task
             .as_ref()
             .map_or_else(|| "ordinary-call".to_owned(), |task| task.call_id.clone());
-        let name = task
-            .as_ref()
-            .map_or_else(|| "read_file".to_owned(), |_| AGENT_TOOL_NAME.to_owned());
+        let name = task.as_ref().map_or_else(
+            || {
+                ordinary_tool
+                    .as_ref()
+                    .map_or("read_file", |(name, _, _)| *name)
+                    .to_owned()
+            },
+            |_| AGENT_TOOL_NAME.to_owned(),
+        );
         let created = store.create(request).await.expect("create fixture root");
         let arguments = task.as_ref().map_or_else(
-            || ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+            || {
+                ToolArguments::from_value(ordinary_tool.as_ref().map_or_else(
+                    || json!({"path": "src/lib.rs"}),
+                    |(_, input, _)| input.clone(),
+                ))
+            },
             |_| {
                 ToolArguments::from_value(json!({
                     "prompt": "修改唯一允许的文件并给出证据",
@@ -2343,11 +2467,14 @@ mod tests {
             RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
                 invocation: invocation.clone(),
-                workspace_access: if task.is_some() {
-                    WorkspaceAccess::MayWrite
-                } else {
-                    WorkspaceAccess::ReadOnly
-                },
+                workspace_access: task.as_ref().map_or_else(
+                    || {
+                        ordinary_tool
+                            .as_ref()
+                            .map_or(WorkspaceAccess::ReadOnly, |(_, _, access)| *access)
+                    },
+                    |_| WorkspaceAccess::MayWrite,
+                ),
             },
         )
         .await;
@@ -2489,7 +2616,7 @@ mod tests {
                 WriteExecutionMode::IsolatedWriter,
             );
             let (replay, _) =
-                seed_in_flight_tool(store.as_ref(), request, Some(workspace_created)).await;
+                seed_in_flight_tool(store.as_ref(), request, Some(workspace_created), None).await;
             assert!(resume_needs_live_model(&replay));
             let error = match composition
                 .resume(run_id, replay, store.clone(), Arc::new(NullEventSink))
@@ -2521,7 +2648,8 @@ mod tests {
             resume_accounting(1, 0, 10),
             WriteExecutionMode::IsolatedWriter,
         );
-        let (mut replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
+        let (mut replay, task) =
+            seed_in_flight_tool(store.as_ref(), request, Some(true), None).await;
         let task = task.expect("writer task");
         mark_writer_finished(
             &mut replay,
@@ -2602,7 +2730,7 @@ mod tests {
             resume_accounting(1, 0, 10),
             WriteExecutionMode::Root,
         );
-        let (replay, _) = seed_in_flight_tool(store.as_ref(), request, None).await;
+        let (replay, _) = seed_in_flight_tool(store.as_ref(), request, None, None).await;
         assert!(!resume_needs_live_model(&replay));
 
         let run = composition
@@ -2618,6 +2746,48 @@ mod tests {
             TerminalState::RecoveryRequired { .. }
         ));
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn browser_click_started_without_outcome_reopens_recovery_required_without_replay() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("browser-click-in-flight");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+            WriteExecutionMode::Root,
+        );
+        let (replay, _) = seed_in_flight_tool(
+            store.as_ref(),
+            request,
+            None,
+            Some((
+                "browser_click",
+                json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+                WorkspaceAccess::MayWrite,
+            )),
+        )
+        .await;
+        assert!(!resume_needs_live_model(&replay));
+
+        let run = composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+            .expect("browser click ambiguity composes without a Key")
+            .ready()
+            .await
+            .expect("resume acquires canonical run");
+        let outcome = run.wait().await.expect("ambiguity settles locally");
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::RecoveryRequired { .. }
+        ));
+        assert_eq!(accepted.await.expect("browser click was not replayed"), 0);
     }
 
     #[tokio::test]
@@ -2638,7 +2808,7 @@ mod tests {
             parent_accounting.clone(),
             WriteExecutionMode::IsolatedWriter,
         );
-        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
+        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true), None).await;
         let task = task.expect("writer task");
         let acquired = store.acquire(&run_id).await.expect("acquire root");
         let lease = acquired.lease.expect("root lease");
@@ -2712,7 +2882,7 @@ mod tests {
             resume_accounting(1, 0, 10),
             WriteExecutionMode::IsolatedWriter,
         );
-        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(false)).await;
+        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(false), None).await;
         let task = task.expect("writer task");
         let child = store
             .create(child_request(
@@ -2914,6 +3084,22 @@ mod tests {
             1,
             4,
             false,
+        );
+        assert!(catalog.iter().any(|tool| tool.name == "browser_click"));
+        assert!(
+            !coordinator_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_click")
+        );
+        assert!(
+            !read_only_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_click")
+        );
+        assert!(
+            writer_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_click")
         );
         let prompt_config = ProductionPromptConfig::default();
         let request = || ProductionPromptRequest {
@@ -3160,13 +3346,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:4eba1fc77ac83cfe6fbb14a300dd656ecc8ccdd1f7b066affe9df6e1b5797814",
+                "sha256:4a93e176398a48f32e173a78a310c38dd527d205fc5b5a3936d1a295a7395cba",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:e183d6a3e272df04c436083593ca47ab6f5fc92b7076f14fc7889c672ba637e6",
+                "sha256:2710a4f26c7b91500030ac14f7619a6bc71ac1d86764a519d66ec9afb7d897fb",
             ),
             (
                 "coordinator",
@@ -3179,19 +3365,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:9904e7277c16837efd7547e75319baf76bea23cb35aa32e5235bd4dd5fda5b84",
+                "sha256:06f78f1505adad936e9a01b6ce81c1991ded07a5a9f25425f8044b9e665e76cc",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:8cf788f8d5915e1e30b09b90256f15fc6f03cbe98fb9d082277b9ca81755dd6e",
+                "sha256:c77513fb0f299f3c30b605b835fb85ab6ce5bd4120488445e6d2dd48b672b899",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("browser_navigate", "$/required", "all_properties_required")),
-                "sha256:3afe85a9ecda5af61ba504616213c48b96df34001327631380dae7473674c2dc",
+                "sha256:2a3451a0f510d40c83fa84e406dc444e573de1961bd80b2b2780b48990b9f02d",
             ),
             (
                 "isolated_writer",
@@ -3204,7 +3390,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:db538966a9f9360051ec649732c376d6ffd44627fa445063e1d6ecc4dcb9ae47",
+                "sha256:0ab673f095dfade5cc84518ad2b6e30b08a70f63102d27fab4b78f0984f1daec",
             ),
             (
                 "terminal_empty",
@@ -4186,6 +4372,177 @@ mod tests {
             browser.navigate_calls.load(Ordering::SeqCst),
             calls_before_reopen,
             "SQLite reopen must replay the committed outcome without navigation"
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m46_w3_agent_click_commits_and_sqlite_reopen_never_clicks_again() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "m46-w3-navigate",
+                "browser_navigate",
+                json!({
+                    "url":"http://127.0.0.1:43111/",
+                    "max_nodes":16,
+                    "max_chars":4_096
+                }),
+                40,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "m46-w3-click",
+                "browser_click",
+                json!({
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef"
+                }),
+                48,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "已点击 Host 返回的 opaque ref，并观察到 Deployment approved。",
+                56,
+                6,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let browser = Arc::new(BrowserClickFixture::default());
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_browser_local_origin(Some("http://127.0.0.1:43111".to_owned()))
+            .with_semantic_browser_harness(browser.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "打开 Host-owned deployment application，点击返回的 Reveal deployment approval ref，并报告 fresh post-click state",
+        );
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "m46-w3-production-browser-click",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(browser.navigate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(browser.click_calls.load(Ordering::SeqCst), 1);
+        let committed_click = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "browser_click" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed browser_click outcome");
+        assert!(committed_click.is_success(), "{}", committed_click.content);
+        assert_eq!(committed_click.side_effect, ToolSideEffectStatus::Applied);
+        let click_payload: Value =
+            serde_json::from_str(&committed_click.content).expect("click JSON");
+        assert_eq!(click_payload["page_epoch"], 2);
+        assert_eq!(
+            click_payload["snapshot"][0]["accessible_name"],
+            "Deployment approved"
+        );
+        assert_eq!(click_payload["trust"], "external_untrusted");
+
+        assert_eq!(requests.len(), 3);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        let click_definition = root_catalog
+            .iter()
+            .find(|tool| tool["function"]["name"] == "browser_click")
+            .expect("browser_click in root catalog");
+        assert_eq!(
+            click_definition["function"]["parameters"]["required"],
+            json!(["element_ref"])
+        );
+        assert_eq!(
+            click_definition["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        let click_replayed_to_model = requests[2].body["messages"]
+            .as_array()
+            .expect("third request messages")
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == "m46-w3-click")
+            .expect("committed click projected to model");
+        assert_eq!(click_replayed_to_model["content"], committed_click.content);
+
+        drop(app);
+        let calls_before_reopen = (
+            browser.navigate_calls.load(Ordering::SeqCst),
+            browser.click_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen production app without credential");
+        let reopened_view = run_result(
+            reopened
+                .execute(envelope(
+                    "m46-w3-reopen-get",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            reopened_view.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let reopened_events = reopened
+            .execute(envelope(
+                "m46-w3-reopen-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                browser.navigate_calls.load(Ordering::SeqCst),
+                browser.click_calls.load(Ordering::SeqCst),
+            ),
+            calls_before_reopen,
+            "committed click reopen must replay without navigation or click"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }

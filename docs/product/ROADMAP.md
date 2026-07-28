@@ -224,9 +224,11 @@
 - M46 admission audit 与只读 W2 production 已完成：两个独立 JS-only local task 的同一
   `tools:application_visibility` loss 已由一个 Rust-native、one-shot、Host-owned
   `browser_navigate + bounded DOM/AX snapshot + teardown` 闭合；action/search/视觉仍未启动。
-- M46 post-W2 interaction admission 已完成：两个独立 local task 的同一
-  `tools:browser_interaction:click` loss 达到 `2/2`、false-success=0，只准入下一独立
-  `browser_click` W3 focused Goal；production action/ref/session delta=0，W3 尚未实现。
+- M46 W3 已完成并 keep：`browser_navigate` 为 Host-owned exact-loopback ephemeral page 返回
+  same-run/latest-epoch opaque refs，唯一新增 `browser_click(element_ref)`；两个冻结 fixture 的
+  post-click state=`2/2`、负向 false allow=`0`，committed click reopen 不重放。production
+  protocol/state schema delta=0、official DeepSeek requests=0；下一阶段仍须重新按 loss 准入，
+  不自动启动 fill/press/wait、public action、视觉、搜索或 M47。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7214,3 +7216,33 @@ actual cost=`$0`、`product_metric_eligible=false`。这是能力准入证据，
 ceiling=`4,409` 行、最大 tools route=`2,212` 行、fixed boundary=`23/23`；tools=`385/0/5
 ignored`、DeepSeek=`61/0/1 ignored`、Runtime=`88/88`、app=`65/0/3 ignored`、app-server=`23/23`、
 exec=`30/30`、TUI run=`20/20`、PTY=`7/7`。本切片不运行 full。
+
+### 40.10 M46 W3 ref-based browser click（已完成）
+
+真实问题是 W2 已能看见两个 action target，但 Agent 仍不能取得 post-click state。唯一 owner 是
+`crates/tools`；旧路是 exact-loopback navigate 后无条件 teardown，以及仅供 admission 使用的
+Python + Node/Playwright role/name oracle。cutover 一次迁移为同一 direct-CDP lifecycle 的
+latest-epoch opaque ref 和唯一 `browser_click(element_ref)`；旧 refs/action-tools=`0` Rust assertion、
+Python evaluator 与 Node oracle 已删除，冻结 manifest/result/history 未改写。
+
+public navigate 继续 one-shot/read-only/settled teardown。只有 Host 注入的 exact loopback application
+origin 保留一个 same-run in-memory session；refs 绑定 random browser identity、snapshot 和 page epoch，
+不接受 CSS/XPath/坐标/script。click 前重取 DOM/AX 并对 cross-run、stale、missing、hidden、disabled、
+detached、ambiguous 和 identity drift fail closed；click 后强制 fresh bounded observation、旋转 epoch/
+snapshot/refs，旧 ref 不可再用。action egress 继续拒绝 origin escape、非 GET/HEAD、popup/worker、
+download、Cookie/auth 与 public side effect；不闭合的 post-dispatch path 使用既有
+`Indeterminate/Unsafe + RecoveryRequired`，不会自动 click。
+
+两个冻结 fixture 真实运行 `browser_navigate -> browser_click`，分别得到
+`status / Deployment approved / data-state=approved` 和
+`switch / Automatic retries enabled / aria-checked=true`：verified=`2/2`、false allow=`0`。真实
+AgentApplication loopback 中模型依次选择 navigate/click，committed click SQLite reopen 后调用计数
+保持 `1/1`；started-without-outcome reopen 为 RecoveryRequired、click replay=`0`。root 可见；
+coordinator/read-only child 由既有 actor catalog 排除；isolated Writer 由既有 network sandbox 拒绝。
+
+fixed Host catalog 从 14 增至 15；production dependency、DeepSeek wire/model-visible Prompt、
+AgentRuntime、RuntimeEvent、RunStore 和 State schema delta=`0`。official DeepSeek requests=`0`、
+credential read=`false`、actual cost=`$0`；费用仅记录状态，不作为准入理由。本切片没有加入
+fill/press/wait、public action、POST/upload/download/auth、登录、Cookie/storage 持久化、用户 Chrome
+profile、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。Risk 2 的 focused/full
+最终数字以本 checkpoint 的 gate 结果为准。

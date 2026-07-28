@@ -1,17 +1,12 @@
-use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
-use async_trait::async_trait;
-use dse_protocol::agent_runtime::{RunId, RunPermissionMode, ToolArguments, ToolInvocation};
+use dse_protocol::agent_runtime::{
+    RunId, RunPermissionMode, ToolArguments, ToolInvocation, ToolSideEffectStatus,
+};
 use dse_runtime::{CancellationToken, ToolExecutor};
 use dse_tools::shell::ShellPolicy;
-use dse_tools::{
-    PRODUCTION_TOOL_NAMES, ProductionToolConfig, ProductionToolExecutor, WebFetchHttpResponse,
-    WebFetchNetwork, WebFetchNetworkError,
-};
+use dse_tools::{PRODUCTION_TOOL_NAMES, ProductionToolConfig, ProductionToolExecutor};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -20,52 +15,6 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 const MANIFEST: &str = "eval/manifests/m46-browser-interaction-admission-v1.json";
 const LEASE_PLACEHOLDER: &str = "{{DSE_APPLICATION_PROBE_LEASE}}";
-
-#[derive(Debug)]
-struct FixtureNetwork {
-    expected_url: String,
-    body: Vec<u8>,
-}
-
-#[async_trait]
-impl WebFetchNetwork for FixtureNetwork {
-    fn identity(&self) -> &str {
-        "m46-browser-interaction-http-control-v1"
-    }
-
-    async fn resolve(
-        &self,
-        host: &str,
-        port: u16,
-    ) -> Result<Vec<SocketAddr>, WebFetchNetworkError> {
-        assert_eq!(host, "example.com");
-        assert_eq!(port, 443);
-        Ok(vec![
-            "93.184.216.34:443".parse().expect("public fixture address"),
-        ])
-    }
-
-    async fn get(
-        &self,
-        url: &reqwest::Url,
-        pinned_addresses: &[SocketAddr],
-        _timeout: Duration,
-    ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
-        assert_eq!(url.as_str(), self.expected_url);
-        assert_eq!(
-            pinned_addresses,
-            &["93.184.216.34:443".parse().expect("public fixture address")]
-        );
-        Ok(WebFetchHttpResponse::new(
-            200,
-            BTreeMap::from([(
-                "content-type".to_owned(),
-                "text/html; charset=utf-8".to_owned(),
-            )]),
-            self.body.clone(),
-        ))
-    }
-}
 
 struct LocalFixture {
     origin: String,
@@ -175,12 +124,12 @@ fn snapshot_contains(nodes: &[Value], expected: &Value) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Chrome for Testing; run only through the post-W2 admission evaluator"]
-async fn current_read_only_browser_cannot_complete_pre_registered_click_tasks() {
-    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 14);
+#[ignore = "requires repository-pinned Chrome for Testing; credential-free W3 fixture gate"]
+async fn ref_based_click_completes_both_pre_registered_exact_loopback_tasks() {
+    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 15);
     assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_navigate"));
+    assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_click"));
     for forbidden in [
-        "browser_click",
         "browser_fill",
         "browser_press",
         "browser_wait",
@@ -191,126 +140,125 @@ async fn current_read_only_browser_cannot_complete_pre_registered_click_tasks() 
 
     let root = repository_root();
     let manifest = load_manifest();
-    let tasks = manifest["tasks"]
-        .as_array()
-        .expect("interaction task matrix");
+    let tasks = manifest["tasks"].as_array().expect("interaction tasks");
     assert_eq!(tasks.len(), 2);
-    let mut matrix = Vec::new();
+    let mut results = Vec::new();
 
     for task in tasks {
         let task_id = task["task_id"].as_str().expect("task id");
-        let fixture = root.join(task["fixture_path"].as_str().expect("fixture path"));
-        let source = std::fs::read_to_string(&fixture).expect("read interaction fixture");
-        let expected = &task["expected_post_action_observation"];
-        let expected_name = expected["accessible_name"]
-            .as_str()
-            .expect("post-action accessible name");
-        assert!(
-            !source.contains(expected_name),
-            "{task_id}: post-action result must not occur literally in raw HTML"
-        );
-
+        let source = std::fs::read_to_string(
+            root.join(task["fixture_path"].as_str().expect("fixture path")),
+        )
+        .expect("read interaction fixture");
         let served = source.replace(
             LEASE_PLACEHOLDER,
             &format!("dse-browser-interaction:{task_id}"),
         );
         let local = LocalFixture::start(served.into_bytes()).await;
-        let public_url = format!("https://example.com/m46-interaction/{task_id}");
-        let network = Arc::new(FixtureNetwork {
-            expected_url: public_url.clone(),
-            body: source.into_bytes(),
-        });
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(root.as_path())
                 .with_permission_mode(RunPermissionMode::Agent)
                 .with_shell_policy(ShellPolicy::Full)
-                .with_web_fetch_network(network)
                 .with_browser_local_origin(Some(local.origin.clone())),
-        );
-
-        let fetched = executor
-            .execute(
-                invocation(
-                    task_id,
-                    &format!("control:web_fetch:{task_id}"),
-                    "web_fetch",
-                    json!({"url": public_url, "max_chars": 4096}),
-                ),
-                CancellationToken::default(),
-            )
-            .await
-            .expect("execute production web_fetch control");
-        assert!(fetched.is_success(), "{task_id}: {}", fetched.content);
-        let fetched_payload: Value =
-            serde_json::from_str(&fetched.content).expect("web_fetch JSON outcome");
-        let http_observed_result = fetched_payload["text"]
-            .as_str()
-            .expect("bounded fetch text")
-            .contains(expected_name);
-        assert!(
-            !http_observed_result,
-            "{task_id}: HTTP control false success"
         );
 
         let navigated = executor
             .execute(
                 invocation(
                     task_id,
-                    &format!("control:browser_navigate:{task_id}"),
+                    &format!("navigate:{task_id}"),
                     "browser_navigate",
                     json!({"url": format!("{}/", local.origin), "max_nodes":64, "max_chars":4096}),
                 ),
                 CancellationToken::default(),
             )
             .await
-            .expect("execute production browser_navigate control");
-        local.shutdown().await;
+            .expect("production navigate");
         assert!(navigated.is_success(), "{task_id}: {}", navigated.content);
-        let browser_payload: Value =
-            serde_json::from_str(&navigated.content).expect("browser JSON outcome");
-        assert_eq!(browser_payload["trust"], "external_untrusted");
-        assert_eq!(browser_payload["teardown"]["process_tree_settled"], true);
-        assert_eq!(browser_payload["teardown"]["proxy_settled"], true);
-        assert_eq!(browser_payload["teardown"]["profile_removed"], true);
-        let nodes = browser_payload["snapshot"]
-            .as_array()
-            .expect("bounded semantic snapshot");
-        let initial_target_observed = snapshot_contains(nodes, &task["action"]);
-        let post_action_observed = snapshot_contains(nodes, expected);
-        let element_refs_returned = nodes
-            .iter()
-            .filter(|node| node.get("element_ref").is_some())
-            .count();
-        assert!(initial_target_observed, "{task_id}: action target absent");
-        assert!(
-            !post_action_observed,
-            "{task_id}: semantic control false success"
+        let initial: Value = serde_json::from_str(&navigated.content).expect("navigate JSON");
+        assert_eq!(initial["trust"], "external_untrusted");
+        assert_eq!(initial["session_live"], true);
+        assert_eq!(
+            initial["session_scope"],
+            "same_run_in_memory_exact_loopback"
         );
-        assert_eq!(element_refs_returned, 0, "W2 must not invent W3 refs");
+        assert_eq!(initial["teardown"]["attempted"], false);
+        assert_eq!(initial["page_epoch"], 1);
+        let initial_nodes = initial["snapshot"].as_array().expect("initial snapshot");
+        let action = &task["action"];
+        let target = initial_nodes
+            .iter()
+            .find(|node| {
+                node["role"] == action["role"]
+                    && node["accessible_name"] == action["accessible_name"]
+            })
+            .expect("pre-registered action target");
+        let element_ref = target["element_ref"]
+            .as_str()
+            .expect("Host-generated opaque element_ref")
+            .to_owned();
+        assert!(element_ref.starts_with("eref_"));
+        assert!(element_ref.len() <= 40);
 
-        matrix.push(json!({
-            "task_id": task_id,
-            "independence_key": task["independence_key"],
-            "loss_code": task["loss_code"],
-            "action_family": task["action"]["family"],
-            "http_observed_post_action_state": http_observed_result,
-            "browser_initial_action_target_observed": initial_target_observed,
-            "browser_observed_post_action_state": post_action_observed,
-            "browser_element_refs_returned": element_refs_returned,
-            "browser_action_tools_visible": 0,
-            "browser_teardown": {
-                "process_tree_settled": browser_payload["teardown"]["process_tree_settled"],
-                "proxy_settled": browser_payload["teardown"]["proxy_settled"],
-                "profile_removed": browser_payload["teardown"]["profile_removed"]
-            },
-            "trust": browser_payload["trust"],
-            "control_verified": false,
-            "control_false_success": false
+        let clicked = executor
+            .execute(
+                invocation(
+                    task_id,
+                    &format!("click:{task_id}"),
+                    "browser_click",
+                    json!({"element_ref":element_ref}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("production click");
+        assert!(clicked.is_success(), "{task_id}: {}", clicked.content);
+        assert_eq!(clicked.side_effect, ToolSideEffectStatus::Applied);
+        let post: Value = serde_json::from_str(&clicked.content).expect("click JSON");
+        assert_eq!(post["action"]["kind"], "click");
+        assert_eq!(post["page_epoch"], 2);
+        assert_ne!(post["snapshot_id"], initial["snapshot_id"]);
+        assert_eq!(post["trust"], "external_untrusted");
+        assert!(snapshot_contains(
+            post["snapshot"].as_array().expect("fresh snapshot"),
+            &task["expected_post_action_observation"]
+        ));
+
+        let stale = executor
+            .execute(
+                invocation(
+                    task_id,
+                    &format!("stale:{task_id}"),
+                    "browser_click",
+                    json!({"element_ref":element_ref}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("stale click outcome");
+        assert!(!stale.is_success());
+        assert_eq!(stale.side_effect, ToolSideEffectStatus::NotApplied);
+        let stale_payload: Value = serde_json::from_str(&stale.content).expect("stale JSON");
+        assert_eq!(
+            stale_payload["failure"]["code"],
+            "browser_element_ref_stale"
+        );
+        assert_eq!(stale_payload["fresh_observation"]["page_epoch"], 3);
+
+        results.push(json!({
+            "task_id":task_id,
+            "initial_epoch":initial["page_epoch"],
+            "post_click_epoch":post["page_epoch"],
+            "post_action_observed":true,
+            "stale_reuse_side_effect":"not_applied",
+            "trust":post["trust"],
         }));
+        drop(executor);
+        local.shutdown().await;
     }
 
     println!(
-        "M46_INTERACTION_CONTROL_MATRIX={}",
-        serde_json::to_string(&matrix).expect("serialize interaction control matrix")
+        "M46_W3_BROWSER_CLICK_MATRIX={}",
+        serde_json::to_string(&results).expect("serialize W3 matrix")
     );
 }

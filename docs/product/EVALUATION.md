@@ -5596,3 +5596,51 @@ control 2/2、真实 caller/reopen regression 与唯一正式 evaluator 均通�
 boundary=`23/23`；tools=`385/0/5 ignored`、DeepSeek=`61/0/1 ignored`、Runtime=`88/88`、
 app=`65/0/3 ignored`、app-server=`23/23`、exec=`30/30`、TUI run=`20/20`、PTY=`7/7`。按
 production delta=0 的 Risk 0 admission 边界不运行 full。
+
+<a id="m46-browser-click-w3"></a>
+### M46 W3 ref-based browser click contract and result
+
+W3 只处理上一节已准入的 `tools:browser_interaction:click` repeated loss。owner 是
+`crates/tools`；old path 是 exact-loopback `browser_navigate` outcome 前无条件 teardown、refs=`0`、
+action tools=`0`，以及依赖 Node/Playwright role/name oracle 的 eval-only click 入口。production
+acceptance 固定为：同一 Run 的 Host-owned exact-loopback navigate 返回 latest-epoch opaque ref；唯一
+`browser_click(element_ref)` 产生 mandatory fresh bounded DOM/AX observation；两个冻结 task 都出现
+预注册 post-click state；任何 unsafe ref/action false allow 必须为 `0`。
+
+实现结果：
+
+| task_id | initial Host ref target | production post-click observation | result |
+|---|---|---|---:|
+| `m46_interaction_deployment_approval` | `button / Reveal deployment approval` | `status / Deployment approved / data-state=approved` | 1 |
+| `m46_interaction_retry_toggle` | `switch / Automatic retries disabled / aria-checked=false` | `switch / Automatic retries enabled / aria-checked=true` | 1 |
+
+两项均由 repository-pinned CfT `151.0.7922.47`、真实 `ProductionToolExecutor` 和真实 loopback HTTP
+fixture 执行 `browser_navigate -> browser_click -> fresh observation`；initial epoch=`1`，post-click
+epoch=`2`，snapshot id 与 refs 全部旋转，旧 ref 再用得到
+`browser_element_ref_stale + side_effect=not_applied` 和 epoch=`3` fresh observation。verified=`2/2`，
+false-success=`0`，mandatory negative matrix false allow=`0`。
+
+安全矩阵覆盖 malformed/oversized ref、cross-run、stale、missing、hidden/zero-layout、disabled、
+detached、ambiguous、target identity drift、non-click side-effect target、public action、Ask、Writer
+network sandbox、selector/CSS/XPath/coordinate/script fields、origin escape、POST 与 redirect bound。
+refs 最多随 256-node snapshot 返回，单 ref 最多 40 chars，stale tombstone 最多 512；observation 保持
+既有 50,000-char、network/decompression/CDP 和 15-second total bounds。action 后任何 blocked request
+均成为 fatal operation evidence；若 dispatch 后无法取得 fresh observation，则 outcome 是
+`Indeterminate/Unsafe`、session teardown，不能伪装成功或重试 click。
+
+真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RuntimeEvent ->
+SQLite RunStore` loopback 中，模型先选择 `browser_navigate`，再消费 ref 选择 `browser_click`，最后只从
+committed fresh observation 完成。冷重开 event prefix byte-equivalent，navigate/click call count 保持
+`1/1`。独立 started-without-outcome fixture 在 `browser_click` 的 `ToolExecutionStarted` 后重开为现有
+`RecoveryRequired`，模型请求和 click replay 都为 `0`。因此 ToolOutcome、RuntimeEvent v18、State
+v24 与 RunStore 已能无损表达，protocol/state delta=`0`。
+
+cutover 后已物理删除旧 refs/action-tools=`0` Rust assertion、eval-only Node/Playwright oracle 和其
+Python evaluator；冻结 manifest/result/summary 与 Git 历史未改写。production Cargo graph 没有
+Playwright/Node，也没有新增 Provider、Runtime、Store、session store、ledger、Manager/Factory/Service。
+未加入 fill、press、wait、snapshot tool、public action、POST/upload/download/auth、登录、持久
+Cookie/storage、用户 Chrome profile、截图、坐标、视觉或搜索。
+
+本 treatment 是 credential-free Risk 2 deterministic capability proof：official DeepSeek requests=`0`、
+credential read=`false`、actual cost=`$0`。它不做模型 A/B、不形成通用效率或产品指标声明；计费只
+是正交状态显示。
