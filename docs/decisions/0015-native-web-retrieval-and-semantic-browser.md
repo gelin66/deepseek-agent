@@ -1,13 +1,14 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
 - 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface，其他层仍按证据逐项准入
+  决策为等待 Chat surface；M46 repeated-loss gate 已通过但 W2 production 尚未启动
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
   已交付 Host-only `ApplicationProbe`，没有加入 browser 或模型工具
-- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；语义浏览器、browser action
-  与视觉仍未自动准入
+- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；两个独立 JS-only local task
+  已证明同一 `tools:application_visibility` loss，故只读 W2 的下一 Goal 合同已准入；browser
+  action、截图、视觉及 W2 production code 仍未准入或实现
 
 ## 文档权威与替代关系
 
@@ -614,6 +615,22 @@ W1 不引入 Chrome、search provider、browser types、视觉 placeholder 或�
 4. observation 只含 AX/DOM bounded text；
 5. 覆盖 stale document、redirect、prompt injection、process crash 与 exact ToolOutcome replay；
 6. 先用于 read-only local/public任务，不增加 action、search 或 screenshot。
+
+M46 admission audit 已在 clean M45-A baseline `997c67e20eb6` 上通过上述 repeated-loss 前置门，
+但没有启动本 Slice 的 production implementation。预注册的两个独立任务分别要求 JS hydration
+后出现 `status / Deployment ready / data-state=ready` 与
+`switch / Automatic retries enabled / aria-checked=true`。eval-only Playwright oracle 对 exact
+Host loopback origin 得到 `2/2` bounded DOM/accessibility observation；同一
+`ProductionToolExecutor` 的 `web_fetch` 不执行 script，`ApplicationProbe` 则在 app healthy 后
+均返回 typed `application_probe_body_mismatch`、failed verifier observation 与 settled teardown。
+同一 canonical `tools:application_visibility` 为 `2/2`、control false-success 为 `0`。
+
+因此只冻结下一 Goal：`crates/tools` owner 的 `browser_navigate`、bounded DOM/accessibility
+snapshot 与 Host-owned teardown。实现前仍必须完成 eval-only Rust CDP lifecycle/dependency
+spike、pinned Chrome for Testing identity/checksum、profile/process cleanup 与可强制的 public 或
+exact local-origin egress guard。当前 audit 不增加 browser tool、Cargo dependency、Chrome
+production dependency、action、search、screenshot、vision、Runtime/Store/session 或 accounting
+ledger；Playwright 只作为 evaluator oracle，不能流入 production。
 
 ### Slice W3：ref-based browser actions
 

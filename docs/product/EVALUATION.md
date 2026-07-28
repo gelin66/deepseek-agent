@@ -5406,3 +5406,57 @@ targeted correction 为同一 test binary 的 process fixtures 加单一 test lo
 376/376、all-features owner package 378/378、owner check 与 strict Clippy 全绿。按预注册约束没有
 重跑 full；这条原始 full false-negative 与 targeted closure 都保留在 authority 中，而不是只报告
 后一个绿色结果。
+
+<a id="m46-semantic-browser-admission"></a>
+### M46 read-only semantic browser admission contract and result
+
+M46 admission 是 credential-free、eval-only evidence gate，不是 production browser treatment、
+Prompt/route A/B 或产品指标。baseline 固定为 clean M45-A `997c67e20eb6`；当前 control 是 exact
+`ProductionToolExecutor` 的 public `web_fetch` 与 Host-only `application_probe`。准入前必须冻结：
+
+1. 恰好两个独立 task id 和 independence key；两者都是真实启动的 JS-only local application；
+2. 每个任务的 title、role、accessible name 与一个 state attribute/value；这些 rendered facts
+   不得以 literal 形式出现在 raw HTTP body；
+3. eval-only oracle 只允许 exact Host-assigned loopback origin，输出最多一个 node、4,096 bytes，
+   `trust=external_untrusted`，不保存 HTML、Cookie、storage、screenshot 或像素；
+4. `web_fetch` 必须继续不执行 script；ApplicationProbe 必须完成真实 process/health/HTTP/lease/
+   bounded response/teardown，不能因 body/status 绿色冒充 DOM evidence；
+5. 同一 `tools:javascript_rendering` 或 `tools:application_visibility` 必须跨两个独立 task 重复；
+   两类各一个不能拼接；任一 control false-success 都否决准入；
+6. official DeepSeek requests=0、credential read=false、actual cost `$0`，不建立 success/Token/time/
+   cost improvement claim；accounting 只作为正交状态显示。
+
+预注册 identity、fixture SHA-256、negative gates 与 expected decision 位于
+`eval/manifests/m46-semantic-browser-admission-v1.json`。唯一 evaluator 是
+`scripts/eval-m46-semantic-browser-admission.py`；它调用 test-only Rust production control caller，
+并使用 `scripts/eval-m46-dom-oracle.cjs` + Playwright `1.61.0` + 本机 Chrome
+`150.0.7871.187` 作为外部 oracle。该 Node/Playwright 路径不是 production sidecar/dependency。
+
+正式结果：
+
+| task_id | oracle | `web_fetch` | `application_probe` | canonical loss |
+|---|---|---|---|---|
+| `m46_js_status_hydration` | `status / Deployment ready / data-state=ready` | rendered fact absent | healthy + `body_mismatch` + failed verdict + exact latest revision + teardown settled | `tools:application_visibility` |
+| `m46_js_switch_state` | `switch / Automatic retries enabled / aria-checked=true` | rendered fact absent | healthy + `body_mismatch` + failed verdict + exact latest revision + teardown settled | `tools:application_visibility` |
+
+oracle=`2/2`、current control verified=`0/2`、false-success=`0`、same-loss observed/required=`2/2`。
+result JSON SHA-256 为
+`1b03f8047d032f35654f6481f506de7390393df0ff0a10c268305d2955fa2939`，决定为
+`admit_next_goal_read_only_semantic_browser_w2_contract_only`。第一次 evaluator implementation
+attempt 因 test-only observer 把预期的 typed failed verifier observation 错当成应为 `None` 而停止；
+它没有运行 oracle 或形成结果。修正 exact `VerifierVerdict::Failed` 断言后完整矩阵闭合，不能把
+首次 evaluator defect 计作 product loss。
+
+本结果只冻结下一 Goal 的 `crates/tools` owner 和三个 scope：`browser_navigate`、bounded
+DOM/accessibility snapshot、Host teardown。实现前必须完成 eval-only Rust CDP dependency/lifecycle
+spike、pinned Chrome for Testing identity/checksum、profile/process cleanup 与 enforceable public /
+exact-local egress guard。当前 production Rust/Cargo、model catalog、DeepSeek wire/Prompt、Runtime、
+RuntimeEvent、RunStore delta=0；browser action、search、screenshot、vision、登录/profile、第二
+session/Store/accounting ledger 都未准入。`product_metric_eligible=false`。
+
+manifest validate、5-case negative self-test、test-only Rust control compile/check/strict Clippy、
+Node syntax、正式 evaluator 与 final-source replay 均通过；两个 final-source 成功 result
+byte-identical，SHA-256 如上。canonical focused gate 同样全绿：authority 23/23、tools route
+2,131/4,409、`dse-tools` 376/0/2 ignored + M46 integration 1/1、DeepSeek 61/0/1 ignored、Runtime
+88/88、app 64/0/3 ignored、app-server 23/23、exec 30/30、TUI run 20/20、PTY 7/7。按 Risk-tier
+与显式边界未运行 full。

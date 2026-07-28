@@ -609,7 +609,15 @@ schema，也没有 Web session/store/accounting ledger。committed outcome 经 S
 因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess root 可执行，isolated
 Writer 继续由既有 network-denied sandbox 拒绝。
 
-production 仍没有 `web_search` 或 browser tool。M44 已删除没有 executor 的 TUI/config
+production 仍没有 `web_search` 或 browser tool。M46 admission audit 只加入 eval-only fixture、
+manifest、Playwright DOM/accessibility oracle 和 test-only `ProductionToolExecutor` caller：两个
+独立 JS-only local task 的 oracle 为 `2/2`，current `web_fetch + ApplicationProbe` control 为
+`0/2`，同一 `tools:application_visibility` 达到 `2/2` 且 false-success 为 0。这个结果只准入
+下一 Goal 的 `browser_navigate + bounded DOM/AX snapshot + Host teardown` 合同；当前 Cargo、
+production Rust、13-tool catalog、RuntimeEvent 与 RunStore 均无变化，Playwright/Chrome 没有进入
+production dependency 或生命周期。
+
+M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
 fail closed。MCP 配置与插件发现仍没有进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。
 

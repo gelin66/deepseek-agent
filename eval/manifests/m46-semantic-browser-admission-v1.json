@@ -1,0 +1,137 @@
+{
+  "schema": "dse.eval.m46-semantic-browser-admission.v1",
+  "frozen_at": "2026-07-28",
+  "baseline_commit": "997c67e20eb67b663eaf424e334b3ee80e914bee",
+  "slice_contract": {
+    "problem": "Determine whether current web_fetch plus the Host-only ApplicationProbe repeatedly cannot produce latest-revision bounded DOM/accessibility evidence for real JS-only local applications.",
+    "acceptance": "Run two independent credential-free local applications, require a real browser oracle to observe each pre-registered role/name/state, require both current controls to remain unable to claim that rendered observation, and admit only one later read-only W2 contract when the same canonical loss repeats on both task IDs with false-success zero.",
+    "owner": "evaluation authority with current crates/tools production controls",
+    "replaces": "anecdote-driven or feature-list-based semantic-browser admission",
+    "evidence": "exact ProductionToolExecutor web_fetch and application_probe control outcomes plus an eval-only, loopback-confined Playwright DOM/accessibility oracle",
+    "cutover_deletion": "do not add production browser code in this audit; remove temporary reports and keep only the frozen fixture, manifest, evaluator, summary, and test-only control caller"
+  },
+  "identity": {
+    "control_surface": [
+      "current_production_web_fetch",
+      "current_host_only_application_probe"
+    ],
+    "current_model_catalog_size": 13,
+    "model_visible_browser_tools": 0,
+    "official_deepseek_requests": 0,
+    "credential_read": false,
+    "external_network_allowed": false,
+    "maximum_reruns": 0,
+    "actual_cost_usd": 0,
+    "product_metric_eligible": false,
+    "quality_comparison_executed": false
+  },
+  "admission_rule": {
+    "minimum_independent_same_loss_tasks": 2,
+    "allowed_loss_codes": [
+      "tools:javascript_rendering",
+      "tools:application_visibility"
+    ],
+    "mixed_loss_codes_may_not_be_combined": true,
+    "oracle_must_pass": true,
+    "control_false_success_must_equal": 0
+  },
+  "ground_truth": {
+    "kind": "eval_only_playwright_dom_accessibility_oracle",
+    "runner": "scripts/eval-m46-semantic-browser-admission.py",
+    "node_runner": "scripts/eval-m46-dom-oracle.cjs",
+    "node_version": "v24.18.0",
+    "playwright_version": "1.61.0",
+    "playwright_node_path": "/opt/homebrew/lib/node_modules",
+    "chrome_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "chrome_version": "150.0.7871.187",
+    "network_policy": "abort every page request whose origin is not the exact Host-assigned loopback origin",
+    "max_observation_nodes": 1,
+    "max_observation_bytes": 4096,
+    "screenshots": false,
+    "production_dependency": false
+  },
+  "shared_fixture": {
+    "server_path": "eval/fixtures/m46-js-application-visibility/server.py",
+    "server_sha256": "sha256:f11185ab32b5e46a739a9cab692aa7870d1613fdf421dec60ba3fbc4a3c7fbd7"
+  },
+  "tasks": [
+    {
+      "task_id": "m46_js_status_hydration",
+      "fixture_path": "eval/fixtures/m46-js-application-visibility/status-hydration.html",
+      "fixture_sha256": "sha256:624bc1fda0117630c945cde514708cb96517776daeec90cda5c62666870167fe",
+      "loss_code": "tools:application_visibility",
+      "independence_key": "deployment-status-initial-hydration",
+      "task_contract": "Verify that the locally started deployment page exposes one initial status named Deployment ready with data-state=ready on the latest workspace revision.",
+      "expected_rendered_observation": {
+        "title": "Deployment status",
+        "role": "status",
+        "accessible_name": "Deployment ready",
+        "state_attribute": "data-state",
+        "state_value": "ready"
+      },
+      "expected_control": {
+        "web_fetch": "rendered_accessible_name_absent_after_script_suppression",
+        "application_probe_failure_code": "application_probe_body_mismatch",
+        "application_probe_health_ready": true,
+        "application_probe_teardown_settled": true
+      }
+    },
+    {
+      "task_id": "m46_js_switch_state",
+      "fixture_path": "eval/fixtures/m46-js-application-visibility/switch-state.html",
+      "fixture_sha256": "sha256:ee58f71dcde2832e79ef7779be4901e4315e05dc5ba183eed01dcf289fbf56f9",
+      "loss_code": "tools:application_visibility",
+      "independence_key": "retry-policy-initial-accessibility-state",
+      "task_contract": "Verify that the locally started retry-policy page exposes one initial switch named Automatic retries enabled with aria-checked=true on the latest workspace revision.",
+      "expected_rendered_observation": {
+        "title": "Retry policy",
+        "role": "switch",
+        "accessible_name": "Automatic retries enabled",
+        "state_attribute": "aria-checked",
+        "state_value": "true"
+      },
+      "expected_control": {
+        "web_fetch": "rendered_accessible_name_absent_after_script_suppression",
+        "application_probe_failure_code": "application_probe_body_mismatch",
+        "application_probe_health_ready": true,
+        "application_probe_teardown_settled": true
+      }
+    }
+  ],
+  "next_w2_contract_if_admitted": {
+    "owner": "crates/tools",
+    "scope": [
+      "browser_navigate",
+      "bounded_dom_accessibility_snapshot",
+      "host_owned_teardown"
+    ],
+    "required_preflight": [
+      "eval_only_rust_cdp_lifecycle_dependency_spike",
+      "pinned_chrome_for_testing_identity_and_sha256",
+      "process_profile_cleanup",
+      "enforceable_public_or_exact_local_origin_egress_guard"
+    ],
+    "forbidden": [
+      "browser_actions",
+      "search",
+      "screenshots",
+      "vision",
+      "login_or_user_profile",
+      "node_or_playwright_production_sidecar",
+      "second_runtime_store_session_or_accounting_ledger"
+    ],
+    "production_implementation_in_this_audit": false
+  },
+  "expected_result": {
+    "independent_tasks": 2,
+    "oracle_verified_tasks": 2,
+    "control_verified_tasks": 0,
+    "control_false_success": 0,
+    "repeated_loss_code": "tools:application_visibility",
+    "repeated_loss_threshold_met": true,
+    "decision": "admit_next_goal_read_only_semantic_browser_w2_contract_only",
+    "production_rust_delta": 0,
+    "official_deepseek_requests": 0,
+    "actual_cost_usd": 0
+  }
+}

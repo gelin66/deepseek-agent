@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Deployment status</title>
+  </head>
+  <body>
+    <main id="application" aria-busy="true"></main>
+    <template data-probe-identity>{{DSE_APPLICATION_PROBE_LEASE}}</template>
+    <script>
+      const decode = (values) => String.fromCharCode(...values);
+      queueMicrotask(() => {
+        const status = document.createElement("section");
+        status.setAttribute(decode([114, 111, 108, 101]), decode([115, 116, 97, 116, 117, 115]));
+        status.setAttribute(
+          decode([97, 114, 105, 97, 45, 108, 97, 98, 101, 108]),
+          decode([68, 101, 112, 108, 111, 121, 109, 101, 110, 116, 32, 114, 101, 97, 100, 121]),
+        );
+        status.setAttribute(decode([100, 97, 116, 97, 45, 115, 116, 97, 116, 101]), decode([114, 101, 97, 100, 121]));
+        status.textContent = status.getAttribute(decode([97, 114, 105, 97, 45, 108, 97, 98, 101, 108]));
+        const application = document.querySelector("#application");
+        application.replaceChildren(status);
+        application.removeAttribute("aria-busy");
+      });
+    </script>
+  </body>
+</html>

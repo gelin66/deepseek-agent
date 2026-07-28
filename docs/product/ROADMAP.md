@@ -218,9 +218,12 @@
   production Rust delta=0、official requests=0。
 - ADR-0017 W1.1 已完成并 keep：canonical `web_fetch` 已从 HTTPS-only 一次迁移为 public
   HTTP(S) + monotonic transport provenance，clean checkpoint 为 `5be131a1c`。
-- M45-A ApplicationProbe 已在本 checkpoint 完成：一次性、worktree-local 的 process start ->
-  loopback health/HTTP assertion -> bounded logs -> latest-revision receipt -> teardown/reopen 已接入
-  canonical Host verifier 主链；M46 尚未准入或启动。
+- M45-A ApplicationProbe 已在 clean checkpoint `997c67e20eb6` 完成：一次性、worktree-local 的
+  process start -> loopback health/HTTP assertion -> bounded logs -> latest-revision receipt ->
+  teardown/reopen 已接入 canonical Host verifier 主链。
+- M46 admission audit 已完成：两个独立 JS-only local task 都形成
+  `tools:application_visibility`，observed/required=`2/2`、control false-success=`0`。只读 W2 的
+  下一 Goal 合同已准入；production browser implementation 尚未启动。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -6832,7 +6835,8 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑冻结后续顺序；M42–M45-A 已形成实现或决策 checkpoint，M46 尚未准入或启动。
+这些里程碑冻结后续顺序；M42–M45-A 已形成实现或决策 checkpoint，M46 repeated-loss admission
+已完成，只读 W2 的下一 Goal 合同已准入但 production implementation 尚未启动。
 
 1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
    运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
@@ -6845,7 +6849,8 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
    fallback chain。
 4. **M45 ApplicationProbe（M45-A 已完成）**：已实现 worktree-local process、port/health、logs、
    HTTP assertion、latest-revision receipt 和 teardown/reopen；HTTP 已足够，本切片未启动 Chrome。
-5. **M46 只读语义浏览器**：只有 ApplicationProbe/真实 JS 页面证明 HTTP 不足时，使用
+5. **M46 只读语义浏览器（准入完成，实现未启动）**：两个独立真实 JS-only local task 已证明
+   ApplicationProbe/HTTP 不能产生预注册 DOM/accessibility evidence。下一 Goal 才可使用
    Rust/Tokio + CDP + pinned Chrome for Testing，实现 navigate、bounded AX/DOM snapshot 和
    Host teardown；action、登录、截图和视觉分别后置。
 
@@ -7069,3 +7074,46 @@ LOC，也不证明 DSE 在成功率、Token、费用或时间上优于 minimal l
 manifest/source validation 与六条 exact offline Rust gate 均通过；canonical Risk 0 authority/diff
 gate 通过。production Rust、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、
 RunStore 均无变化，official requests=0、actual cost `$0`、maximum reruns=0；M45/M46 未启动。
+
+### 40.7 M46 read-only semantic browser admission audit（已完成）
+
+真实问题不是“竞品有浏览器”，而是 M45-A 后 current `web_fetch + ApplicationProbe` 是否在至少
+两个独立、真实 JS-only local application task 上重复无法产生 latest-revision 对应的 bounded
+DOM/accessibility evidence。唯一审计 owner 是现有 Evaluation authority；control 直接调用
+`crates/tools::ProductionToolExecutor`，Playwright 只作为 credential-free、loopback-confined
+eval oracle，不进入 production dependency graph。
+
+本切片替代 anecdote/feature-list-driven browser admission。预注册 manifest
+`eval/manifests/m46-semantic-browser-admission-v1.json` 在执行前冻结 baseline
+`997c67e20eb6`、两个 task id、独立性 key、同一 loss code、role/name/state、fixture SHA-256、
+false-success=0 和 same-loss threshold=2：
+
+| task | eval-only rendered observation | current `web_fetch` | current `ApplicationProbe` | loss |
+|---|---|---|---|---|
+| `m46_js_status_hydration` | `status / Deployment ready / data-state=ready` | script suppressed；rendered name absent | healthy；`application_probe_body_mismatch`；failed verdict；teardown settled | `tools:application_visibility` |
+| `m46_js_switch_state` | `switch / Automatic retries enabled / aria-checked=true` | script suppressed；rendered name absent | healthy；`application_probe_body_mismatch`；failed verdict；teardown settled | `tools:application_visibility` |
+
+oracle verified=`2/2`、control verified=`0/2`、control false-success=`0`，两项 failed
+observation 都与 `ToolOutcome` 的 exact known workspace revision SHA 一致，因此
+observed/required=`2/2`，决定为
+`admit_next_goal_read_only_semantic_browser_w2_contract_only`。它只授权下一独立 Goal 在
+`crates/tools` 完成 eval-only Rust CDP lifecycle/dependency spike 后，交付
+`browser_navigate + bounded DOM/accessibility snapshot + Host-owned teardown`。该实现必须先冻结
+pinned Chrome for Testing identity/SHA-256、profile/process cleanup，以及可强制的 public 或
+exact local-origin egress guard；action、search、screenshot、vision、登录/user profile、
+Node/Playwright production sidecar 与第二 Runtime/Store/session/accounting ledger 继续禁止。
+
+第一次 evaluator implementation attempt 在第一个 ApplicationProbe control 后停止：production
+已正确返回 body mismatch，但 test-only observer 错误要求 failed verifier observation 完全不存在。
+current contract 实际会保留 typed `VerifierVerdict::Failed` 供 rework，且不能生成成功 receipt。
+断言修正为 exact failed verdict 后，完整预注册矩阵一次闭合；首次停止未运行 browser oracle、
+未形成准入结果，也没有被重解释为 product loss。
+
+本阶段以前不能以可复查证据启动 M46；现在下一 read-only W2 Goal 获得有界准入，但用户仍不能
+在 current production Agent 中浏览 JS 页面。production Rust/Cargo/DeepSeek wire/Prompt、13-tool
+catalog、AgentRuntime、RuntimeEvent、RunStore delta 均为 0；browser tools/dependencies added=0。
+DeepSeek Key 未读取、official/model requests=0、actual cost `$0`、`product_metric_eligible=false`；
+费用只是状态事实，不是准入原因。canonical focused gate 全绿：authority/public、`dse-tools`
+376/0/2 ignored、M46 integration 1/1、DeepSeek 61/0/1 ignored、Runtime conformance 88/88、app
+64/0/3 ignored、app-server 23/23、exec 30/30、TUI run 20/20、PTY 7/7 与 owner check 全部通过。
+没有 full gate，因为这是 production delta=0 的 eval-only admission/authority slice。
