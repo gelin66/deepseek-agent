@@ -221,9 +221,9 @@
 - M45-A ApplicationProbe 已在 clean checkpoint `997c67e20eb6` 完成：一次性、worktree-local 的
   process start -> loopback health/HTTP assertion -> bounded logs -> latest-revision receipt ->
   teardown/reopen 已接入 canonical Host verifier 主链。
-- M46 admission audit 已完成：两个独立 JS-only local task 都形成
-  `tools:application_visibility`，observed/required=`2/2`、control false-success=`0`。只读 W2 的
-  下一 Goal 合同已准入；production browser implementation 尚未启动。
+- M46 admission audit 与只读 W2 production 已完成：两个独立 JS-only local task 的同一
+  `tools:application_visibility` loss 已由一个 Rust-native、one-shot、Host-owned
+  `browser_navigate + bounded DOM/AX snapshot + teardown` 闭合；action/search/视觉仍未启动。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7117,3 +7117,55 @@ DeepSeek Key 未读取、official/model requests=0、actual cost `$0`、`product
 376/0/2 ignored、M46 integration 1/1、DeepSeek 61/0/1 ignored、Runtime conformance 88/88、app
 64/0/3 ignored、app-server 23/23、exec 30/30、TUI run 20/20、PTY 7/7 与 owner check 全部通过。
 没有 full gate，因为这是 production delta=0 的 eval-only admission/authority slice。
+
+### 40.8 M46 W2 read-only semantic browser（已完成）
+
+真实问题是 canonical `web_fetch` 不执行 script，而 ApplicationProbe 只验证 process/HTTP；root Agent
+因此无法读取 JS hydration 后才存在的 role/name/text/state。唯一 production owner 是
+`crates/tools`，旧路是依赖 eval-only Playwright oracle 或让模型从 raw script 猜 rendered state；
+cutover 后 Playwright 仍只属于 frozen admission evaluator，不是 production caller。
+
+W2 先在仓库外完成两条 Rust spike。`chromiumoxide 0.9.1` 因 standalone 161 dependency nodes、
+149 packages、约 2.64 GiB first-build peak RSS 与约 60K generated CDP types 被删除；选择 direct
+`tokio-tungstenite 0.30.0`，standalone dependency nodes 60、first-build peak RSS 约 237 MiB。
+production 只新增该 pinned WebSocket dependency，不引入 Node/Playwright sidecar。
+
+Chrome for Testing 固定为 mac-arm64 `151.0.7922.47`，archive SHA-256
+`9529990b6afd9867a862c7a5bff2a4a8eef84614d910acac22e4c5fa5c24daee`，executable SHA-256
+`e9e1c766953cf2ff5ea38c6cb63fa32b443a958c3fda7dcc3b60dd9b20436855`。Host 只验证预安装文件；
+不下载、不自动更新。每次调用创建独立 profile、loopback egress proxy 与 process-tree owner，完成、
+失败、取消和 deadline 后都回收。
+
+固定生产 catalog 从 13 增至 14，只加入 `browser_navigate(url, max_nodes?, max_chars?)`。public target
+限默认端口 HTTP(S)，exact local target 限 Host 注入的 literal-loopback origin；CDP interception +
+connect-pinned proxy 每个 request/DNS/connect/redirect 重验 SSRF/origin/method，并剥离 Cookie、auth、
+referer。跨 origin Document、非 GET/HEAD、下载、service worker、QUIC、非代理 WebRTC、private/
+metadata target 均 fail closed；额外 page/worker/popup target 通过 auto-attach 在启动暂停态由 Host 关闭，
+不能绕过 primary target interception；wire/decoded body、CDP frame、node、char、redirect、deadline 均有界。
+
+真实 pinned-CfT local fixture 从不含目标 literal 的 script 产生并读取
+`status / Deployment ready / data-state=ready` 与
+`switch / Automatic retries enabled / checked=true`；取消 fixture 的 process/proxy/profile teardown
+全为 true，fixture 的 `window.open` 也未产生任何 popup HTTP request。真实 `AgentApplication ->
+AgentRuntime -> ProductionToolExecutor -> ToolOutcome ->
+RuntimeEvent -> SQLite RunStore` loopback 中模型选择 `browser_navigate`，reopen 只重放且 navigate
+call count 保持 1。protocol/state、DeepSeek wire/model-visible Prompt delta=0；official DeepSeek
+requests=0、credential read=false、actual cost `$0`，不作效率或通用成功率声明。
+
+本地确定性门闭合后只执行一次 credential-free public HTTPS canary：production path 成功读取
+`https://example.com/` 并返回非空 bounded snapshot，process/proxy/profile teardown 全 settled；
+maximum reruns=0。它没有调用 DeepSeek，也不构成多站点或产品效率评测。
+
+W2 未加入 action、登录、Cookie/storage 持久化、截图、视觉、搜索、用户 Chrome profile、browser
+session/store/accounting ledger、第二 Runtime/Store 或后台 daemon。下一阶段不能自动启动 W3；只有
+W2 后新的重复 `browser_interaction` loss 才能另行准入 ref-based action Goal。
+
+canonical focused gate 全绿：authority tools route 2,174/4,409、fixed boundary 23/23、tools
+385/0/5 ignored、DeepSeek 61/0/1 ignored、Runtime 88/88、app 65/0/3 ignored、app-server 23/23、
+exec 30/30、TUI 20/20、PTY 7/7。三条 ignored W2 tests 另行按合同执行为 pinned local 2/2、
+credential-free public HTTPS 1/1；public canary 未重跑。
+
+本切片按 security/catalog production delta 运行一次 pre-integration full gate 并全绿，覆盖 workspace
+all-features、strict Clippy、crash/reopen、exec/TUI/PTY 与 doctests。其后人工审计补上 additional-target
+start-paused/close guard；最终 revision 的 pinned local 2/2、owner strict checks、caller/reopen 与 focused
+gate 全绿。遵守一次 full 上限，没有第二次 full。official DeepSeek requests 保持 0。

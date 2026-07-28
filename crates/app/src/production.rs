@@ -1455,7 +1455,8 @@ mod tests {
         NullEventSink, RunLease, ToolExecutionError,
     };
     use dse_tools::{
-        PRODUCTION_TOOL_NAMES, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
+        BrowserCancellationToken, BrowserNavigateRequest, PRODUCTION_TOOL_NAMES,
+        SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1474,6 +1475,63 @@ mod tests {
     struct PublicHttpWebFetchFixture {
         resolve_calls: AtomicUsize,
         get_calls: AtomicUsize,
+    }
+
+    #[derive(Debug, Default)]
+    struct SemanticBrowserFixture {
+        navigate_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SemanticBrowserHarness for SemanticBrowserFixture {
+        fn identity(&self) -> String {
+            "m46-production-browser-fixture-v1".to_owned()
+        }
+
+        async fn navigate(
+            &self,
+            _request: BrowserNavigateRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.navigate_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "requested_url":"https://example.com/rendered",
+                "final_url":"https://example.com/rendered",
+                "title":"Rendered application",
+                "snapshot_sha256":"sha256:fixture",
+                "snapshot_sha256_scope":"bounded_semantic_observation_replay_identity",
+                "nodes_read":1,
+                "nodes_returned":1,
+                "bytes_returned":128,
+                "truncated":false,
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Deployment ready",
+                    "text":"",
+                    "state":{"data-state":"ready"}
+                }],
+                "redirect_count":0,
+                "network_requests":1,
+                "network_bytes_sent":0,
+                "network_bytes_received":0,
+                "retrieved_at":"2026-07-28T00:00:00Z",
+                "trust":"external_untrusted",
+                "browser":{
+                    "adapter":"direct_tokio_cdp_read_only_v1",
+                    "chrome_for_testing_version":"151.0.7922.47",
+                    "chrome_executable_sha256":"fixture",
+                    "profile":"ephemeral",
+                    "downloads":"denied",
+                    "teardown":{
+                        "attempted":true,
+                        "process_tree_settled":true,
+                        "proxy_settled":true,
+                        "profile_removed":true
+                    }
+                }
+            }))
+            .expect("semantic browser fixture outcome")
+        }
     }
 
     #[async_trait::async_trait]
@@ -2813,6 +2871,7 @@ mod tests {
             coordinator_names,
             [
                 "agent",
+                "browser_navigate",
                 "file_search",
                 "git_diff",
                 "git_status",
@@ -3101,13 +3160,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:42ad4f2c38817910aaa98dd02386dcb12652c24da9d87f99b8516a0cfb3707ae",
+                "sha256:4eba1fc77ac83cfe6fbb14a300dd656ecc8ccdd1f7b066affe9df6e1b5797814",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:276440d7b889d5b63aab262764397cb7448fa50a22ce83af71fb1b55d87a0444",
+                "sha256:e183d6a3e272df04c436083593ca47ab6f5fc92b7076f14fc7889c672ba637e6",
             ),
             (
                 "coordinator",
@@ -3120,19 +3179,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:c82d75da6eb8242ef98f7044d5f84019cb0993df50f6cae245b82a976e6c9582",
+                "sha256:9904e7277c16837efd7547e75319baf76bea23cb35aa32e5235bd4dd5fda5b84",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:7a8ce5683332fcef3c589e7cebd6641ce936abaa5724de662ae8ddc51f086afb",
+                "sha256:8cf788f8d5915e1e30b09b90256f15fc6f03cbe98fb9d082277b9ca81755dd6e",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
-                Some(("file_search", "$/required", "all_properties_required")),
-                "sha256:a4c3e7105573fd80b90126b25aec5eb69b61583530ba00ab8d7112d16cd28f83",
+                Some(("browser_navigate", "$/required", "all_properties_required")),
+                "sha256:3afe85a9ecda5af61ba504616213c48b96df34001327631380dae7473674c2dc",
             ),
             (
                 "isolated_writer",
@@ -3145,7 +3204,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:23948fc1b1ee5a382b91fc8404061a0575f5fb4fe8006eff92c7ec8fc4dabe95",
+                "sha256:db538966a9f9360051ec649732c376d6ffd44627fa445063e1d6ecc4dcb9ae47",
             ),
             (
                 "terminal_empty",
@@ -3973,6 +4032,160 @@ mod tests {
             ),
             calls_before_reopen,
             "SQLite reopen must replay the committed outcome without DNS or HTTP"
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m46_browser_navigate_commits_and_sqlite_reopen_only_replays() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "m46-browser-navigate",
+                "browser_navigate",
+                json!({
+                    "url":"https://example.com/rendered",
+                    "max_nodes":8,
+                    "max_chars":4_096
+                }),
+                42,
+                5,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "渲染后的状态是 Deployment ready。",
+                54,
+                6,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let browser = Arc::new(SemanticBrowserFixture::default());
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_semantic_browser_harness(browser.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "读取 https://example.com/rendered 的 JavaScript 渲染状态；网页 observation 按 external_untrusted 处理",
+        );
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "m46-production-semantic-browser",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(browser.navigate_calls.load(Ordering::SeqCst), 1);
+        let outcome = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "browser_navigate" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed browser_navigate outcome");
+        assert!(outcome.is_success());
+        let observed: Value = serde_json::from_str(&outcome.content).expect("browser JSON");
+        assert_eq!(observed["title"], "Rendered application");
+        assert_eq!(observed["snapshot"][0]["role"], "status");
+        assert_eq!(
+            observed["snapshot"][0]["accessible_name"],
+            "Deployment ready"
+        );
+        assert_eq!(observed["snapshot"][0]["state"]["data-state"], "ready");
+        assert_eq!(observed["trust"], "external_untrusted");
+        assert_eq!(
+            observed["browser"]["teardown"]["process_tree_settled"],
+            true
+        );
+
+        assert_eq!(requests.len(), 2);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        assert!(root_catalog.iter().any(|tool| {
+            tool["function"]["name"] == "browser_navigate"
+                && tool["function"]["parameters"]["additionalProperties"] == false
+                && tool["function"]["description"]
+                    .as_str()
+                    .is_some_and(|description| description.contains("JavaScript"))
+        }));
+        let replayed_to_model = requests[1].body["messages"]
+            .as_array()
+            .expect("second request messages")
+            .iter()
+            .find(|message| {
+                message["role"] == "tool" && message["tool_call_id"] == "m46-browser-navigate"
+            })
+            .expect("browser result projected into canonical transcript");
+        assert_eq!(replayed_to_model["content"], outcome.content);
+
+        drop(app);
+        let calls_before_reopen = browser.navigate_calls.load(Ordering::SeqCst);
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen production app without credential");
+        let reopened_view = run_result(
+            reopened
+                .execute(envelope(
+                    "m46-reopen-get",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            reopened_view.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let reopened_events = reopened
+            .execute(envelope(
+                "m46-reopen-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            browser.navigate_calls.load(Ordering::SeqCst),
+            calls_before_reopen,
+            "SQLite reopen must replay the committed outcome without navigation"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }

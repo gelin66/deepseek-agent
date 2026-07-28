@@ -1,14 +1,15 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
 - 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface；M46 repeated-loss gate 已通过但 W2 production 尚未启动
+  决策为等待 Chat surface；M46 repeated-loss gate 与只读 W2 production 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
-  已交付 Host-only `ApplicationProbe`，没有加入 browser 或模型工具
+  已交付 Host-only `ApplicationProbe`；M46 W2 已加入一个 `browser_navigate` 模型工具和 Rust
+  direct-CDP adapter，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
 - 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；两个独立 JS-only local task
-  已证明同一 `tools:application_visibility` loss，故只读 W2 的下一 Goal 合同已准入；browser
-  action、截图、视觉及 W2 production code 仍未准入或实现
+  已证明同一 `tools:application_visibility` loss，并由 W2 的一次性 navigate + bounded DOM/AX
+  observation 闭合；browser action、截图、视觉、搜索及持久 session 仍未准入或实现
 
 ## 文档权威与替代关系
 
@@ -631,6 +632,39 @@ spike、pinned Chrome for Testing identity/checksum、profile/process cleanup �
 exact local-origin egress guard。当前 audit 不增加 browser tool、Cargo dependency、Chrome
 production dependency、action、search、screenshot、vision、Runtime/Store/session 或 accounting
 ledger；Playwright 只作为 evaluator oracle，不能流入 production。
+
+W2 production 实施结果（2026-07-28）：
+
+- eval-only Rust spike 比较了 `chromiumoxide 0.9.1` 与 direct `tokio-tungstenite 0.30.0`。
+  前者 standalone lock 149 packages、dependency nodes 161、首次编译 peak RSS 约 2.64 GiB，且
+  生成约 60K CDP types；后者 dependency nodes 60、首次编译 peak RSS 约 237 MiB。因此只保留
+  direct Tokio CDP，`chromiumoxide` 未进入 production/Cargo.lock，两个 spike 目录均不属于仓库。
+- production 固定 Chrome for Testing `151.0.7922.47` mac-arm64；官方 archive SHA-256 为
+  `9529990b6afd9867a862c7a5bff2a4a8eef84614d910acac22e4c5fa5c24daee`，可执行文件
+  SHA-256 为 `e9e1c766953cf2ff5ea38c6cb63fa32b443a958c3fda7dcc3b60dd9b20436855`。Host 只发现并验证
+  预安装 artifact，从不下载或自动升级；不支持的平台返回 typed `browser_unavailable`。
+- fixed catalog 从 13 增至 14，只新增 `browser_navigate(url, max_nodes?, max_chars?)`。每次调用
+  创建独立临时 profile、固定 loopback egress proxy 和 Chrome process tree；完成、失败、取消和
+  deadline 都由 Host teardown。没有第二个 `browser_snapshot` 工具、session/store 或后台 daemon。
+- public 只允许默认端口 HTTP(S)，local 只允许 Host 注入的 exact literal-loopback origin。CDP
+  request interception 与 connect-pinned proxy 共同阻止 userinfo、private/loopback/link-local/
+  multicast/metadata、跨 origin Document、非 GET/HEAD、Cookie/auth/referer、service worker、QUIC、
+  WebRTC 非代理出口和下载；每个 request、DNS/connect、redirect 都重新检查。额外 page/worker/popup
+  target 会被 auto-attach、在启动暂停态关闭且不 resume，不能绕过 primary target interception。
+  HTTP/HTTPS wire、decoded body、CDP message、节点、字符、redirect 和总 deadline 均有硬上限。
+- 成功 outcome 只含 requested/final URL、title、有界 role/name/text/value/state、snapshot replay
+  SHA-256、Chrome/CDP identity、network/body counters、retrieved time、`external_untrusted` 与完整
+  teardown facts；不保存 HTML、script、Cookie/storage、截图或像素。现有 ToolOutcome、RuntimeEvent、
+  SQLite RunStore 足以无损表达，protocol/state schema delta=0。
+- 真实 pinned-CfT exact-local fixture 从不含目标 literal 的 JS 源码生成并读出
+  `status / Deployment ready / data-state=ready` 与
+  `switch / Automatic retries enabled / checked=true`；独立取消 fixture 同样 reaps process/proxy/profile。
+  同一 fixture 的 `window.open` 没有到达 loopback server，固定了 additional-target negative gate。
+  真实 `AgentApplication -> AgentRuntime` loopback 由模型选择该工具，committed outcome 经 SQLite
+  reopen byte-exact replay，navigate call count 保持 1。
+
+W2 仍不准入 click/fill/press/action、登录、用户 Chrome profile、Cookie/storage 持久化、截图、视觉、
+search、Playwright/Node production sidecar、第二 Runtime/Store 或 browser accounting ledger。
 
 ### Slice W3：ref-based browser actions
 

@@ -24,6 +24,10 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 use crate::command_safety::{SafetyLevel, analyze_command, command_is_high_impact};
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
+use crate::semantic_browser::{
+    SemanticBrowserHarness, SystemSemanticBrowserHarness, browser_harness_identity,
+    execute_browser_navigate, preflight_browser_navigate,
+};
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
     command_likely_needs_network, execute_exec_shell, new_shared_shell_manager,
@@ -42,8 +46,9 @@ use crate::{
     validate_application_probe_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 13] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 14] = [
     "apply_patch",
+    "browser_navigate",
     "edit_file",
     "exec_shell",
     "file_search",
@@ -74,6 +79,8 @@ pub struct ProductionToolConfig {
     exec_policy: Option<ExecPolicy>,
     skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
+    semantic_browser_harness: Option<Arc<dyn SemanticBrowserHarness>>,
+    browser_local_origin: Option<String>,
 }
 
 #[derive(Clone)]
@@ -114,6 +121,8 @@ pub struct ProductionToolExecutionIdentity {
     pub exec_policy_sha256: Option<String>,
     pub skills_snapshot_sha256: String,
     pub web_fetch_network_sha256: String,
+    pub semantic_browser_harness_sha256: String,
+    pub browser_local_origin_sha256: Option<String>,
 }
 
 impl ProductionToolConfig {
@@ -133,6 +142,8 @@ impl ProductionToolConfig {
             exec_policy: None,
             skill_registry: Arc::new(SkillRegistry::default()),
             web_fetch_network: Arc::new(SystemWebFetchNetwork),
+            semantic_browser_harness: None,
+            browser_local_origin: None,
         }
     }
 
@@ -162,6 +173,7 @@ impl ProductionToolConfig {
         rebound.elevated_sandbox_policy = Some(ExecutionSandboxPolicy::isolated_writer(workspace));
         rebound.shell_network_denied_hint = Some("隔离 Writer Agent 禁止访问网络".to_owned());
         rebound.sandbox_backend = None;
+        rebound.browser_local_origin = None;
         rebound
     }
 
@@ -235,12 +247,31 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Replace the one-shot semantic browser seam for deterministic vertical
+    /// tests. Production uses the pinned Chrome for Testing implementation.
+    #[must_use]
+    pub fn with_semantic_browser_harness(
+        mut self,
+        harness: Arc<dyn SemanticBrowserHarness>,
+    ) -> Self {
+        self.semantic_browser_harness = Some(harness);
+        self
+    }
+
+    /// Bind the one exact loopback application origin assigned by the Host.
+    /// This authority is not model-visible and is dropped for Writer rebinds.
+    #[must_use]
+    pub fn with_browser_local_origin(mut self, origin: Option<String>) -> Self {
+        self.browser_local_origin = origin;
+        self
+    }
+
     /// Project this config into deterministic, serializable and non-secret
     /// fingerprint material. Live executor state is intentionally absent.
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 3,
+            schema: 4,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -263,6 +294,14 @@ impl ProductionToolConfig {
             }),
             skills_snapshot_sha256: self.skill_registry.snapshot_sha256(),
             web_fetch_network_sha256: non_secret_sha256(self.web_fetch_network.identity()),
+            semantic_browser_harness_sha256: non_secret_sha256(&browser_harness_identity(
+                self.semantic_browser_harness.as_deref(),
+                self.web_fetch_network.as_ref(),
+            )),
+            browser_local_origin_sha256: self
+                .browser_local_origin
+                .as_deref()
+                .map(non_secret_sha256),
         }
     }
 
@@ -369,7 +408,7 @@ fn invocation_has_external_path(
         || patch_paths.any(|path| context.path_is_external(&path))
 }
 
-/// Direct executor for the fixed thirteen-tool production surface.
+/// Direct executor for the fixed fourteen-tool production surface.
 pub struct ProductionToolExecutor {
     context: ProductionToolContext,
     shell: ExecShellOptions,
@@ -378,6 +417,8 @@ pub struct ProductionToolExecutor {
     skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
     web_fetch_network_allowed: bool,
+    semantic_browser_harness: Arc<dyn SemanticBrowserHarness>,
+    browser_local_origin: Option<String>,
 }
 
 impl ProductionToolExecutor {
@@ -411,6 +452,11 @@ impl ProductionToolExecutor {
                 .elevated_sandbox_policy
                 .as_ref()
                 .is_none_or(ExecutionSandboxPolicy::has_network_access);
+        let semantic_browser_harness = config.semantic_browser_harness.unwrap_or_else(|| {
+            Arc::new(SystemSemanticBrowserHarness::new(Arc::clone(
+                &config.web_fetch_network,
+            )))
+        });
         Self {
             context,
             shell,
@@ -421,6 +467,8 @@ impl ProductionToolExecutor {
             skill_registry: config.skill_registry,
             web_fetch_network: config.web_fetch_network,
             web_fetch_network_allowed,
+            semantic_browser_harness,
+            browser_local_origin: config.browser_local_origin,
         }
     }
 
@@ -581,6 +629,14 @@ impl ProductionToolExecutor {
     ) -> Result<ToolOutcome, ToolError> {
         match name {
             "apply_patch" => execute_apply_patch(input, context),
+            "browser_navigate" => Ok(execute_browser_navigate(
+                input,
+                Arc::clone(&self.semantic_browser_harness),
+                self.web_fetch_network_allowed,
+                self.browser_local_origin.as_deref(),
+                context.cancellation_token().cloned().unwrap_or_default(),
+            )
+            .await),
             "edit_file" => execute_edit_file(input, context),
             "exec_shell" => execute_exec_shell(input, context, &self.shell, &self.shell_host).await,
             "file_search" => execute_file_search(input, context).await,
@@ -614,16 +670,16 @@ impl ToolExecutor for ProductionToolExecutor {
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir"
-            | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
+            "browser_navigate" | "file_search" | "git_diff" | "git_status" | "grep_files"
+            | "list_dir" | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir"
-            | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
+            "browser_navigate" | "file_search" | "git_diff" | "git_status" | "grep_files"
+            | "list_dir" | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
@@ -670,6 +726,9 @@ impl ToolExecutor for ProductionToolExecutor {
         }
         if invocation.name == "web_fetch" {
             return preflight_web_fetch(input);
+        }
+        if invocation.name == "browser_navigate" {
+            return preflight_browser_navigate(input, self.browser_local_origin.as_deref());
         }
         None
     }
@@ -862,7 +921,7 @@ impl ToolExecutor for ProductionToolExecutor {
             }
         }
 
-        if invocation.name == "web_fetch" {
+        if matches!(invocation.name.as_str(), "browser_navigate" | "web_fetch") {
             let sandbox_denies_network = self
                 .shell
                 .elevated_sandbox_policy
@@ -881,6 +940,47 @@ impl ToolExecutor for ProductionToolExecutor {
                         "当前执行后端不能证明一次性网络授权范围，已安全拒绝"
                     } else {
                         "当前 actor 的冻结执行边界禁止网络访问"
+                    },
+                    None,
+                ));
+            }
+            if invocation.name == "browser_navigate" {
+                let exact_local = self.browser_local_origin.as_deref().is_some_and(|origin| {
+                    invocation
+                        .arguments
+                        .parsed
+                        .as_ref()
+                        .and_then(|input| input.get("url"))
+                        .and_then(Value::as_str)
+                        .and_then(|url| reqwest::Url::parse(url).ok())
+                        .is_some_and(|url| {
+                            let mut value = format!(
+                                "{}://{}",
+                                url.scheme(),
+                                url.host_str().unwrap_or_default()
+                            );
+                            if let Some(port) = url.port() {
+                                value.push_str(&format!(":{port}"));
+                            }
+                            value == origin.trim_end_matches('/')
+                                || url
+                                    .as_str()
+                                    .starts_with(&format!("{}/", origin.trim_end_matches('/')))
+                        })
+                });
+                return Ok(decision.build(
+                    ToolAuthorizationDisposition::Allow,
+                    ApprovalRisk::Routine,
+                    Some(if exact_local {
+                        "exact_local_semantic_browser"
+                    } else {
+                        "public_semantic_browser"
+                    }
+                    .to_owned()),
+                    if exact_local {
+                        "只读语义浏览由 Host exact-local-origin egress guard、GET/HEAD 与资源上限约束"
+                    } else {
+                        "只读 public 语义浏览由 Host URL/DNS/connect/redirect egress guard、GET/HEAD 与资源上限约束"
                     },
                     None,
                 ));
@@ -1007,6 +1107,11 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             "apply_patch",
             "用 unified diff 或 changes 完整内容修改工作区文件；每个文件原子发布，跨文件普通失败会回滚但崩溃窗口不是事务。patch 与 changes 二选一，path/fuzz/create_if_missing 仅适用于 patch。",
             apply_patch_schema(),
+        ),
+        definition(
+            "browser_navigate",
+            "读取一个已知 public HTTP(S) URL 的 JavaScript 渲染结果，返回一次有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；只允许 GET/HEAD 式只读导航，不提供搜索、点击、输入、登录、Cookie/storage 持久化、下载、截图、视觉或任意脚本执行。",
+            browser_navigate_schema(),
         ),
         definition(
             "edit_file",
@@ -1250,6 +1355,10 @@ fn validate_schema_value(value: &Value, schema: &Value, path: &str) -> Result<()
 
 fn apply_patch_schema() -> Value {
     json!({"type":"object","properties":{"path":{"type":"string","minLength":1},"patch":{"type":"string","minLength":1},"changes":{"type":"array","minItems":1,"items":{"type":"object","properties":{"path":{"type":"string","minLength":1},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}},"fuzz":{"type":"integer","minimum":0,"maximum":50,"default":3},"create_if_missing":{"type":"boolean"}},"oneOf":[{"required":["patch"]},{"required":["changes"]}],"additionalProperties":false})
+}
+
+fn browser_navigate_schema() -> Value {
+    json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_nodes":{"type":"integer","minimum":1,"maximum":256,"default":128},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
@@ -1502,7 +1611,7 @@ mod tests {
         let second_identity = ProductionToolConfig::new(workspace.path())
             .with_skill_registry(second)
             .execution_identity();
-        assert_eq!(first_identity.schema, 3);
+        assert_eq!(first_identity.schema, 4);
         assert_ne!(
             first_identity.skills_snapshot_sha256,
             second_identity.skills_snapshot_sha256
@@ -1846,6 +1955,156 @@ allow = ["git push"]
         assert_eq!(
             unsafe_port.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
             "web_http_port_denied"
+        );
+    }
+
+    #[derive(Debug)]
+    struct FixtureSemanticBrowser {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SemanticBrowserHarness for FixtureSemanticBrowser {
+        fn identity(&self) -> String {
+            "fixture_semantic_browser_v1".to_owned()
+        }
+
+        async fn navigate(
+            &self,
+            _request: crate::BrowserNavigateRequest,
+            _cancellation: TokioCancellationToken,
+        ) -> ToolOutcome {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "requested_url":"https://example.com/app",
+                "final_url":"https://example.com/app",
+                "title":"Ready",
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Deployment ready",
+                    "text":"",
+                    "state":{"data-state":"ready"}
+                }],
+                "trust":"external_untrusted",
+                "truncated":false
+            }))
+            .expect("fixture browser outcome")
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_navigate_schema_authorization_and_dispatch_are_host_owned() {
+        let workspace = tempfile::tempdir().unwrap();
+        let public = invocation(
+            "browser_navigate",
+            json!({"url":"https://example.com/app","max_nodes":1,"max_chars":4096}),
+        );
+        let ask = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Ask),
+        );
+        assert!(ask.preflight(&public).is_none());
+        assert_eq!(
+            ask.definition_workspace_access("browser_navigate"),
+            WorkspaceAccess::ReadOnly
+        );
+        let denied = ask
+            .authorize(
+                RunPermissionMode::Ask,
+                &ToolExecutionGrant::Ordinary,
+                &public,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(
+            denied.matched_rule.as_deref(),
+            Some("ask_network_fail_closed")
+        );
+
+        let harness = Arc::new(FixtureSemanticBrowser {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .with_semantic_browser_harness(harness.clone()),
+        );
+        let allowed = executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &public,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
+        assert_eq!(
+            allowed.matched_rule.as_deref(),
+            Some("public_semantic_browser")
+        );
+        let outcome = executor
+            .execute(public, CancellationToken::default())
+            .await
+            .unwrap();
+        assert!(outcome.is_success(), "{}", outcome.content);
+        assert_eq!(harness.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(outcome.content.contains("Deployment ready"));
+        assert!(outcome.content.contains("external_untrusted"));
+
+        for field in [
+            "headers",
+            "cookie",
+            "authorization",
+            "proxy",
+            "method",
+            "script",
+            "screenshot",
+        ] {
+            let mut input = json!({"url":"https://example.com/"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), Value::String("forbidden".to_owned()));
+            let rejected = executor
+                .preflight(&invocation("browser_navigate", input))
+                .expect("unsupported browser authority must fail schema preflight");
+            assert_eq!(rejected.failure_code, Some(ToolFailureCode::InvalidField));
+        }
+
+        let local_origin = "http://127.0.0.1:32123";
+        let local = invocation(
+            "browser_navigate",
+            json!({"url":"http://127.0.0.1:32123/app"}),
+        );
+        let local_executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .with_browser_local_origin(Some(local_origin.to_owned()))
+                .with_semantic_browser_harness(harness),
+        );
+        assert!(local_executor.preflight(&local).is_none());
+        let local_allowed = local_executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &local,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            local_allowed.matched_rule.as_deref(),
+            Some("exact_local_semantic_browser")
+        );
+        let escaped = local_executor
+            .preflight(&invocation(
+                "browser_navigate",
+                json!({"url":"http://127.0.0.1:32124/app"}),
+            ))
+            .expect("different loopback origin must fail before authorization");
+        assert_eq!(
+            escaped.failure_code,
+            Some(ToolFailureCode::InvocationRejected)
         );
     }
 

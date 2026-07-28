@@ -34,6 +34,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["rt"] }
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 tracing.workspace = true
 uuid.workspace = true
 wait-timeout = "0.2"

@@ -5460,3 +5460,79 @@ byte-identical，SHA-256 如上。canonical focused gate 同样全绿：authorit
 2,131/4,409、`dse-tools` 376/0/2 ignored + M46 integration 1/1、DeepSeek 61/0/1 ignored、Runtime
 88/88、app 64/0/3 ignored、app-server 23/23、exec 30/30、TUI run 20/20、PTY 7/7。按 Risk-tier
 与显式边界未运行 full。
+
+<a id="m46-semantic-browser-w2"></a>
+### M46 W2 read-only semantic browser contract and result
+
+本实现切片的 baseline 是 clean admission checkpoint
+`cf2ec7d7d41889b836015fcbc2fa11bc88dc106e`。问题、owner、旧路与 acceptance 预注册为：
+
+| 项 | 冻结合同 |
+|---|---|
+| problem | `web_fetch` 不执行 script，ApplicationProbe 不产生 rendered DOM/AX evidence |
+| owner | `crates/tools`；只允许必要 production caller/catalog parity 文档变化 |
+| replacement | root Agent 不再依赖 eval-only Playwright 或 raw script 猜 rendered state |
+| vertical acceptance | one-shot `browser_navigate` 读取 JS-only role/name/text/state；Host teardown；committed SQLite reopen 不重导航 |
+| negative acceptance | SSRF/origin/method/redirect、wire/decoded body/node/char/deadline、binary/process/profile、authorization/catalog typed fail closed |
+| prohibited | action、登录、Cookie/storage 持久化、截图、视觉、搜索、用户 profile、Node/Playwright production sidecar、第二 Runtime/Store/session/ledger |
+
+eval-only Rust dependency/lifecycle spike 在仓库外比较两个候选：
+
+| candidate | standalone dependency nodes | lock packages | first-build peak RSS | decision |
+|---|---:|---:|---:|---|
+| `chromiumoxide 0.9.1` | 161 | 149 | 2,642,886,656 bytes | reject/delete；约 60K generated CDP types，未进入 Cargo.lock |
+| direct `tokio-tungstenite 0.30.0` | 60 | — | 236,699,648 bytes | keep；最小 CDP lifecycle/AX/DOM 已闭合 |
+
+Chrome for Testing identity 固定为 `151.0.7922.47`、revision `1654411`、mac-arm64 official archive；
+archive SHA-256 为 `9529990b6afd9867a862c7a5bff2a4a8eef84614d910acac22e4c5fa5c24daee`，
+executable SHA-256 为
+`e9e1c766953cf2ff5ea38c6cb63fa32b443a958c3fda7dcc3b60dd9b20436855`。production 不下载；每次
+调用在启动前验证 ordinary non-symlink executable hash，并在 CDP handshake 后验证 exact
+`Chrome/151.0.7922.47` 与 protocol identity。
+
+deterministic result：
+
+1. `browser_navigate` 输入只有 `url`、optional `max_nodes`、optional `max_chars`；fixed catalog
+   13→14，definition/preflight/authorization/direct dispatch/read-only actor parity 已闭合。
+2. public 只允许 default-port HTTP(S)，local 只允许 Host exact literal-loopback origin。CDP Fetch
+   interception 与 pinned-connect proxy 重验每个 request/DNS/connect/redirect；private/metadata、
+   cross-origin Document、POST/PUT/PATCH/DELETE、Cookie/auth/referer、download/service-worker/QUIC/
+   non-proxied WebRTC 全部阻断。`Target.setAutoAttach(waitForDebuggerOnStart=true)` 还会让额外
+   page/worker/popup target 在运行前暂停并由 Host 关闭，避免其绕过 primary target interception；
+   false allow=0。
+3. 单 connection request/response 分别不超过 256 KiB/4 MiB；全调用 wire request/response 分别
+   不超过 1 MiB/8 MiB，decoded body 不超过 8 MiB，CDP message 2 MiB、redirect 5、deadline 20 s、
+   nodes 256、returned chars 50,000。HTML/XHTML Document 之外 fail closed。
+4. pinned-CfT exact-local integration 的 raw script 不含目标 literal，但渲染后得到
+   `status / Deployment ready / data-state=ready` 与
+   `switch / Automatic retries enabled / aria-checked=true`。成功与 cancellation 两条 fixture 的
+   process-tree/proxy/profile teardown 均为 true；同一 fixture 发起的 `window.open` 没有到达
+   loopback server，证明 additional target 默认关闭；output 不含 raw HTML/script/storage/pixel。
+5. 真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RuntimeEvent ->
+   SQLite RunStore` loopback 中 DeepSeek-compatible fixture 选择 `browser_navigate`；outcome 投影进下一
+   model turn，SQLite reopen 后 events byte-equal，fixture navigate count 仍为 1。
+6. production protocol/state schema delta=0；DeepSeek backend/wire/model-visible Prompt delta=0；
+   official DeepSeek requests=0、credential read=false、actual cost `$0`、accounting ledger delta=0。
+   这些只证明 deterministic vertical usability，不形成通用成功率、Token/time 或费用改善声明。
+7. 在本地 deterministic gates 闭合后，只执行一次 credential-free public transport canary：pinned
+   CfT 通过 production public DNS/pinned-connect/TLS proxy 读取 `https://example.com/`，有界 snapshot
+   非空且 teardown 全部 settled；maximum reruns=0。它不调用 DeepSeek，也不扩张为多站点评测。
+
+删除/未引入项：两个仓库外 spike 临时目录在记录结果后删除；`chromiumoxide`、generated CDP crate、
+Playwright/Node sidecar、browser action/snapshot session、用户 Chrome profile、Cookie/storage、截图、
+视觉、搜索、第二 Runtime/Store 与 browser accounting ledger 均不存在于 production。W3 不自动
+准入；必须在 W2 后重新得到跨两个独立 task 的同一 `browser_interaction` loss。
+
+focused gate 在 pre-integration revision 全绿：authority tools route 2,174/4,409、fixed boundary
+23/23、public check、`dse-tools` 385/0/5 ignored、DeepSeek 61/0/1 ignored、Runtime conformance
+88/88、app 65/0/3 ignored、app-server 23/23、exec 30/30、TUI run 20/20、PTY 7/7 与 owner check
+全部通过。三条 ignored W2 tests 在 canonical suite 外按合同执行：两条 pinned-CfT local
+integration 2/2，一条 credential-free public HTTPS canary 1/1；public canary 没有重跑。
+
+按 egress/security、model catalog 与 production capability delta 将本切片按 Risk 2 上限处理；
+pre-integration `./scripts/dev-dse.sh full` 对本切片只执行一次并全绿，覆盖 workspace all-features、
+strict Clippy、SQLite/process crash/reopen、exec/TUI/PTY 与 doctests。其后人工安全审计发现额外 CDP
+target 可能不经过 primary target interception；修正为 auto-attach + start-paused + close-without-resume，
+并在最终 revision 重跑 pinned-CfT local 2/2、`dse-tools` strict Clippy/check/test、真实 caller/reopen
+与 canonical focused gate，全部通过。遵守本切片一次 full 上限，没有第二次 full；没有 official
+DeepSeek 请求、付费 A/B 或产品效率声明。

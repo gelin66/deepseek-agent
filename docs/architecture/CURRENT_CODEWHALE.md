@@ -609,13 +609,26 @@ schema，也没有 Web session/store/accounting ledger。committed outcome 经 S
 因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess root 可执行，isolated
 Writer 继续由既有 network-denied sandbox 拒绝。
 
-production 仍没有 `web_search` 或 browser tool。M46 admission audit 只加入 eval-only fixture、
-manifest、Playwright DOM/accessibility oracle 和 test-only `ProductionToolExecutor` caller：两个
-独立 JS-only local task 的 oracle 为 `2/2`，current `web_fetch + ApplicationProbe` control 为
-`0/2`，同一 `tools:application_visibility` 达到 `2/2` 且 false-success 为 0。这个结果只准入
-下一 Goal 的 `browser_navigate + bounded DOM/AX snapshot + Host teardown` 合同；当前 Cargo、
-production Rust、13-tool catalog、RuntimeEvent 与 RunStore 均无变化，Playwright/Chrome 没有进入
-production dependency 或生命周期。
+production 仍没有 `web_search`，但 M46 W2 已把固定 catalog 从 13 增至 14，唯一新增模型工具是
+`browser_navigate(url, max_nodes?, max_chars?)`。它在 `crates/tools` 用 direct Tokio CDP 驱动 Host
+预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；每次调用创建独立临时 profile、
+loopback egress proxy 和 process-tree owner，返回有界 DOM/accessibility role/name/text/value/state 后
+立即 teardown。没有 browser session、第二 snapshot tool、后台 daemon、Runtime 或 Store。
+
+public target 只允许默认端口 HTTP(S)，local target 只允许 Host 注入的 exact literal-loopback
+origin。CDP Fetch interception 和 connect-pinned proxy 共同重验 request/DNS/connect/redirect，阻止
+private/metadata target、跨 origin Document、非 GET/HEAD、Cookie/auth/referer、download、service
+worker、QUIC 与非代理 WebRTC；额外 page/worker/popup target 通过 CDP auto-attach 在启动暂停态由 Host
+关闭，不会获得绕过 primary target interception 的执行窗口；wire/decoded body、CDP frame、node、
+char、redirect 和 deadline 都有硬上限。成功 outcome 标记 `external_untrusted`，只保存 bounded
+semantic observation、replay hash、Chrome/CDP/network identity 与 teardown facts，不保存
+HTML/script/storage/screenshot/pixel。
+
+root、coordinator 和 read-only child 按既有 read-only actor catalog 可见；Ask 仍因缺少 durable
+scoped network approval fail closed，Agent/FullAccess 可执行，isolated Writer 由既有 network-denied
+sandbox 拒绝且不会继承 local-origin grant。现有 ToolOutcome、RuntimeEvent v18 和 RunStore 足以表达；
+committed SQLite outcome reopen 只重放、不重新导航，protocol/state schema delta=0。Playwright 仍只
+存在于 frozen admission evaluator，未进入 production dependency graph。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
