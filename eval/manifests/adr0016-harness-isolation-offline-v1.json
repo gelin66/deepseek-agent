@@ -1,0 +1,209 @@
+{
+  "schema": "dse.eval.adr0016-harness-isolation-offline.v1",
+  "frozen_at": "2026-07-28",
+  "slice_contract": {
+    "problem": "Determine whether current durable continuation has a repeated production loss and establish a same-DeepSeek minimal-loop capability and concept-complexity baseline without changing production.",
+    "acceptance": "Audit admissible canonical evidence, require the same continuation loss on at least two independent tasks before a projection candidate, validate the current DSE guarantees against exact offline tests, and publish an explicitly non-quality baseline.",
+    "owner": "repository-guidance/evaluation with existing scripts/eval-*",
+    "replaces": "anecdote-driven continuation treatment admission and unbounded competitor feature comparison",
+    "evidence": "frozen M12, M13, and M36-A summaries plus exact current Rust conformance filters",
+    "cutover_deletion": "do not create VerifiedMilestoneProjection or a minimal-loop production/runtime scaffold when the repeated-loss threshold is not met"
+  },
+  "comparison_identity": {
+    "class": "harness_comparison_same_deepseek_model",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "surface": "Standard streaming ChatCompletions",
+    "held_constant_by_contract": [
+      "model",
+      "reasoning_effort",
+      "surface",
+      "task",
+      "budget",
+      "workspace"
+    ],
+    "official_requests": 0,
+    "maximum_reruns": 0,
+    "credential_read": false,
+    "product_metric_eligible": false,
+    "quality_comparison_executed": false,
+    "interpretation": "offline structural baseline only; it does not measure verified success, tokens, cost, wall time, or model quality"
+  },
+  "continuation_audit": {
+    "minimum_independent_same_loss_tasks": 2,
+    "observed_independent_same_loss_tasks": 0,
+    "admissible_current_continuation_losses": [],
+    "evidence": [
+      {
+        "id": "m12_current_loss_set_empty",
+        "path": "eval/summaries/m12-terminal-convergence-2026-07-25.md",
+        "admissible": true,
+        "required_text": [
+          "trajectory 决定：`close_hypothesis_no_repeated_product_loss`",
+          "current product loss 集合为空。",
+          "`observed_losses=[]`"
+        ]
+      },
+      {
+        "id": "m13_observer_contract_inadmissible",
+        "path": "eval/summaries/m13-long-task-loss-baseline-2026-07-25.md",
+        "admissible": false,
+        "required_text": [
+          "`closed_inadmissible_observer_contract_instability`",
+          "stable current product loss 没有被证明跨两个独立 task 重复"
+        ]
+      },
+      {
+        "id": "m36a_three_exact_long_horizon_resumes",
+        "path": "eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md",
+        "admissible": true,
+        "independent_long_horizon_tasks": 3,
+        "verified_long_horizon_tasks": 3,
+        "continuation_losses": 0,
+        "required_text": [
+          "exact long-horizon resume          3/3",
+          "三个 long-horizon",
+          "任务均在确定性 SIGKILL/reopen 后只继续一次并完成。",
+          "`keep_current_harness_no_repeated_loss`"
+        ]
+      }
+    ],
+    "task_identity_source": {
+      "path": "eval/manifests/m36a-deepseek-native-baseline-v1.json",
+      "task_ids": [
+        "rust_line_recovery_resume",
+        "rust_netstring_recovery_resume",
+        "typescript_retry_resume"
+      ],
+      "required_model": "deepseek-v4-pro",
+      "required_reasoning_effort": "high",
+      "required_restarts_per_arm": 1,
+      "required_physical_requests_added_at_reopen": 0
+    },
+    "decision": "reject_verified_milestone_no_repeated_loss"
+  },
+  "minimal_harness_contract": {
+    "definition": "The comparator stops at an official DeepSeek Chat loop with a process-local transcript, function dispatch, and Bash/file-edit workspace operations. Adding durable recovery, Host completion, typed authorization, or Writer lifecycle changes the comparator rather than silently crediting the minimal loop.",
+    "comparison_concepts": [
+      "deepseek_chat_transport_and_parser",
+      "process_local_transcript_loop",
+      "function_tool_dispatch",
+      "workspace_bash_and_file_edit"
+    ],
+    "durable_store": false,
+    "host_terminal_authority": false,
+    "actor_scoped_authorization": false,
+    "writer_worktree_lifecycle": false
+  },
+  "dse_current_contract": {
+    "base_comparison_concepts": [
+      "deepseek_chat_transport_and_parser",
+      "process_local_transcript_loop",
+      "function_tool_dispatch",
+      "workspace_bash_and_file_edit"
+    ],
+    "additional_comparison_concepts": [
+      "task_contract",
+      "canonical_runtime_event_protocol",
+      "run_store",
+      "typed_actor_authorization",
+      "latest_revision_evidence_receipt_and_host_completion",
+      "writer_worktree_lifecycle"
+    ],
+    "interpretation": "bounded concept inventory for this comparison surface, not total crate, type, or source-line complexity"
+  },
+  "capability_matrix": [
+    {
+      "id": "C01",
+      "capability": "basic_function_tool_loop",
+      "minimal_contract_capable": true,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/runtime/tests/conformance.rs",
+        "package": "dse-runtime",
+        "filter": "tool_commit_atomically_replays_typed_outcome_and_transcript"
+      }
+    },
+    {
+      "id": "C02",
+      "capability": "host_rejects_unverified_model_completion",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/runtime/tests/conformance.rs",
+        "package": "dse-runtime",
+        "filter": "model_completion_requires_the_frozen_host_verifier_receipt"
+      }
+    },
+    {
+      "id": "C03",
+      "capability": "committed_tool_outcome_reopens_without_reexecution",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/state/tests/process_crash_recovery.rs",
+        "package": "dse-state",
+        "filter": "tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen"
+      }
+    },
+    {
+      "id": "C04",
+      "capability": "in_flight_model_reopen_fails_closed_without_blind_reissue",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/runtime/tests/conformance.rs",
+        "package": "dse-runtime",
+        "filter": "resume_in_flight_model_requires_recovery_without_reissuing_request"
+      }
+    },
+    {
+      "id": "C05",
+      "capability": "typed_authorization_denial_is_durable_and_non_executing",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/runtime/tests/conformance.rs",
+        "package": "dse-runtime",
+        "filter": "denied_authorization_is_durable_and_never_starts_the_tool"
+      }
+    },
+    {
+      "id": "C06",
+      "capability": "writer_worktree_seal_integrate_verify_cleanup",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "crates/runtime/tests/writer_orchestration.rs",
+        "package": "dse-runtime",
+        "filter": "writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_evidence"
+      }
+    },
+    {
+      "id": "C07",
+      "capability": "interactive_sigkill_reopen_long_horizon_completion",
+      "minimal_contract_capable": false,
+      "dse_current_capable": true,
+      "evidence": {
+        "path": "eval/summaries/m36-a-deepseek-native-baseline-2026-07-27.md",
+        "required_text": "exact long-horizon resume          3/3"
+      }
+    }
+  ],
+  "decision_rule": {
+    "projection_admission": "only when the same current continuation owner_code:loss_code appears on at least two independent admissible tasks",
+    "quality_claim": "requires a fresh same-DeepSeek held-out execution with complete behavior and accounting; this offline baseline cannot make one",
+    "complexity_decision": "keep current deterministic guarantees, reject additional milestone-projection complexity, and do not infer that every current concept is globally minimal"
+  },
+  "expected_result": {
+    "continuation_loss_threshold_met": false,
+    "verified_milestone_projection": "reject_not_implemented",
+    "minimal_contract_capabilities": 1,
+    "dse_current_capabilities": 7,
+    "minimal_comparison_concepts": 4,
+    "dse_current_comparison_concepts": 10,
+    "decision": "keep_current_harness_reject_verified_milestone_no_repeated_loss",
+    "production_rust_delta": 0,
+    "official_requests": 0
+  }
+}

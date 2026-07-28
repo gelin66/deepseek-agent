@@ -5194,3 +5194,67 @@ authority/public/diff gate 通过，pre-integration full gate 对 final code/scr
 
 production Rust delta=0、DeepSeek official requests=0；Key 未读取。DeepSeek wire、
 model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、capability 和 M45/M46 均未改变。
+
+<a id="adr-0016-harness-isolation-evaluation"></a>
+#### ADR-0016 continuation and Harness-isolation offline contract
+
+这是 ADR-0016 首个实现 checkpoint 后的排序复核，不是 M45/M46，也不是新的付费 acquisition。
+真实问题、owner、replacement 和 deletion 冻结在
+`eval/manifests/adr0016-harness-isolation-offline-v1.json`；唯一 evaluator
+`scripts/eval-adr0016-harness-isolation.py` 只能读取仓库内冻结 summary/manifest 与 exact Rust
+test owner，不得读取 Key、访问 network、实现第二 Agent loop 或写 production state。
+
+continuation treatment 的机械准入条件仍是同一 current `owner_code:loss_code` 至少覆盖两个
+独立 admissible task。审计输入仅允许：
+
+1. M12 accounting-complete canonical report 的空 current loss set；
+2. M13 的 inadmissible observer-contract 关闭事实，三次部分 acquisition 不得拼接或改标签；
+3. M36-A 同一 `deepseek-v4-pro/high` identity 下三个独立 long-horizon task 的 exact
+   SIGKILL/reopen `3/3`，每 arm 一次 restart、reopen 新增 physical request 为 0。
+
+任何历史单例、evaluation environment mismatch、measurement incomplete 或 evaluator defect 都
+不能计入 threshold。若 observed 少于 2，必须得到
+`reject_verified_milestone_no_repeated_loss`，不实现或预建 `VerifiedMilestoneProjection`。
+
+Harness isolation 的模型、effort、surface、task、budget 与 workspace 按合同保持相同，只把
+Harness 分为两个结构 cell：
+
+```text
+minimal DeepSeek loop
+  = Standard Chat transport/parser
+  + process-local transcript
+  + function dispatch
+  + Bash/file edit
+
+DSE current
+  = minimal comparison concepts
+  + TaskContract
+  + canonical RuntimeEvent
+  + RunStore
+  + typed actor authorization
+  + latest-revision EvidenceReceipt / Host completion
+  + Writer worktree lifecycle
+```
+
+离线 capability matrix 固定七项：basic function tool loop、false-completion rejection、committed
+tool outcome reopen without reexecution、in-flight model fail-closed reopen、durable authorization
+denial、Writer lifecycle 和 interactive long-horizon SIGKILL/reopen。DSE 前六项分别绑定 exact
+current Rust test filter，第七项绑定 M36-A frozen `3/3`；minimal cell 只有 basic loop 属于其
+定义内能力。这个 matrix 测量 deterministic contract coverage 和有界 concept inventory，**不**
+执行 minimal implementation，不产生 verified success、Token、费用、wall-time 或模型质量比较。
+
+##### Formal result
+
+离线 evaluator 从三份冻结来源派生 observed/threshold `0/2`、admissible loss codes `[]`、
+long-horizon `3/3`。能力/复杂度结构结果为 minimal `1/7` capabilities、4 comparison concepts，
+DSE current `7/7` capabilities、10 comparison concepts。六条 exact Rust owner gate 全部通过，
+覆盖 Runtime conformance、State process-crash recovery 和 Writer vertical slice。
+
+决定为 `keep_current_harness_reject_verified_milestone_no_repeated_loss`：保留 current 的六个额外
+比较概念，因为它们分别拥有当前确定性保证；不增加 milestone projection 复杂度，也不从本次
+离线结果推断每个 current 概念已在所有任务上全局最小。future shrink/quality admission 仍需
+fresh same-DeepSeek held-out execution、false success 0 和完整 behavior/accounting。
+
+`product_metric_eligible=false`、`quality_comparison_executed=false`；production Rust delta=0，
+DeepSeek official requests=0、Key 未读取、actual cost `$0`、maximum reruns=0。DeepSeek wire、
+model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、M45 与 M46 均未改变或启动。

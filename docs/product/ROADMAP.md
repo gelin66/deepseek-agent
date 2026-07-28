@@ -213,8 +213,11 @@
   `hold_wait_for_chat_surface`。
 - ADR-0016 首个实现 Goal 已完成：有界 development authority、owner-scoped retrieval 与
   risk-tier gate 已切换；production Rust delta=0、official requests=0。
+- ADR-0016 排序后的 continuation/Harness 离线复核已完成：可准入的重复 continuation loss
+  为 0，`VerifiedMilestoneProjection` 不实施；same-DeepSeek structural baseline 已冻结，
+  production Rust delta=0、official requests=0。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；M45/M46 尚未启动。
-- 当前切片替换旧 unconditional full-read 和重复 full-gate 入口，完成前不并行启动后续项。
+- 当前 clean checkpoint 仍停在 ADR-0016；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6915,3 +6918,46 @@ Runtime/Event/Store 或产品 capability 变化，没有读取 Key 或启动 M45
 Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss
 acquisition。每个里程碑必须写出“以前用户不能 X，现在可以 X”，并在 3–5 个工作日内产生
 用户可见纵向结果，否则缩小或停止。
+
+### 40.5 ADR-0016 continuation/Harness 离线复核（已完成）
+
+真实问题是：current durable replay 是否仍在长任务 continuation 上重复丢失目标，以及 DSE
+当前 Harness 的额外复杂度相对 same-DeepSeek minimal loop 到底承担哪些可复查保证。owner 是
+现有 Evaluation/authority 与 `scripts/eval-*`；本切片不创建第二 Runtime、Store、planner 或
+production benchmark owner。
+
+continuation 准入门保持“同一 current loss 至少跨两个独立 admissible task”。历史证据复核为：
+
+- M12 的 11 条 canonical trajectory 得到 current product loss 空集合；
+- M13 三次采集由 evaluator contract instability 停止，不能重解释为 production loss；
+- M36-A 的三个独立 long-horizon task 均在一次 SIGKILL/reopen 后完成，exact resume `3/3`，
+  reopen 没有新增 physical request。
+
+因此 observed/required 是 `0/2`，决定
+`keep_current_harness_reject_verified_milestone_no_repeated_loss`。旧的 anecdote-driven candidate
+admission 被离线 manifest 的机械门替代；`VerifiedMilestoneProjection` 没有 production
+scaffold、selector、Store 字段或 caller 可保留，故不实施也不预建。
+
+same-DeepSeek baseline 固定 `deepseek-v4-pro/high` 与 Standard streaming ChatCompletions，比较
+面只改变 Harness。minimal contract 仅含 transport/parser、process-local transcript、function
+dispatch 与 Bash/file edit 四个概念；DSE current 在同一比较面增加 TaskContract、canonical
+RuntimeEvent、RunStore、typed actor authorization、latest-revision Host receipt/completion 与
+Writer worktree lifecycle 六个概念。结构化结果为：
+
+| cell | contract capabilities | comparison concepts | 证据边界 |
+|---|---:|---:|---|
+| same-DeepSeek minimal loop | 1/7 | 4 | comparator definition；未执行模型或质量测量 |
+| DSE current | 7/7 | 10 | 六条 exact Rust owner tests + M36-A long-horizon `3/3` |
+
+能力项是 basic tool loop、Host 拒绝未验证完成、committed outcome 无重执行 reopen、in-flight
+model fail closed、durable typed authorization、Writer seal/integrate/verify/cleanup 与 interactive
+SIGKILL/reopen completion。概念计数是这个 comparison surface 的有界 inventory，不是全项目
+LOC，也不证明 DSE 在成功率、Token、费用或时间上优于 minimal loop。要形成质量或效率结论，
+仍必须另行执行 fresh same-task/budget held-out comparison 和完整 accounting；本切片
+`product_metric_eligible=false`。
+
+冻结合同为 `eval/manifests/adr0016-harness-isolation-offline-v1.json`，唯一离线 evaluator 为
+`scripts/eval-adr0016-harness-isolation.py`，它不实现 Agent loop、不读 credential、不访问网络。
+manifest/source validation 与六条 exact offline Rust gate 均通过；canonical Risk 0 authority/diff
+gate 通过。production Rust、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、
+RunStore 均无变化，official requests=0、actual cost `$0`、maximum reruns=0；M45/M46 未启动。

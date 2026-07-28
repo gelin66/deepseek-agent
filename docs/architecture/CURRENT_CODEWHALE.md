@@ -3066,7 +3066,24 @@ bootstrap 基线、六个预注册问题、十一条 owner route、accepted ADR 
 `scripts/dev-dse.sh` 是唯一 executable gate owner；根 guide 只保存 Risk 0～4 分类，不重复
 full-gate 命令。该切片不修改 production Rust、DeepSeek wire/Prompt、RuntimeEvent 或 Store。
 
-当前实测 repository-guidance route 为 1,024 行，worst-case tools route 为 1,755 行，hard
-ceiling 为 4,409 行；固定边界 22/22 可达。旧 unconditional full-read 和根 guide 的重复
-command list 已删除。Risk 0 gate 与唯一一次 pre-integration full gate 均通过；full 后的结果
-投影只需重新运行 Risk 0 gate。
+首个 checkpoint 实测 repository-guidance route 为 1,024 行、worst-case tools route 为 1,755
+行；加入下述排序复核后当前值为 1,044 / 1,758 行，仍低于 4,409 行 hard ceiling，固定边界
+22/22 可达。旧 unconditional full-read 和根 guide 的重复 command list 已删除。Risk 0 gate 与
+首个 checkpoint 唯一一次 pre-integration full gate 均通过。
+
+ADR-0016 排序后的 continuation 复核没有发现可准入的 current loss：M12 current loss set 为空，
+M13 是 inadmissible evaluator-contract instability，M36-A 三个独立 long-horizon task exact
+SIGKILL/reopen `3/3`。observed/required 为 `0/2`，所以 current production 不存在
+`VerifiedMilestoneProjection`、milestone Store 字段、第二 progress truth 或对应 caller。
+
+仓库现有 `scripts/eval-adr0016-harness-isolation.py` 只是 credential-free offline evaluator，
+不是 production Agent runtime。它冻结 same `deepseek-v4-pro/high`/Standard Chat 的结构比较：
+minimal loop 的四个 comparison concepts 对 DSE current 的十个；DSE 增加的六个概念是
+TaskContract、canonical RuntimeEvent、RunStore、typed authorization、latest-revision Host
+receipt/completion 与 Writer worktree lifecycle。七项 capability contract 中 DSE current 为
+`7/7`，minimal definition 为 `1/7`；前者由六条 exact Rust owner tests 和 M36-A long-horizon
+`3/3` 支撑。该 inventory 不是 live minimal implementation 或质量/成本排名。
+
+当前决定为 `keep_current_harness_reject_verified_milestone_no_repeated_loss`。production Rust、
+DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore 均无 delta；official
+requests=0，M45/M46 仍未启动。

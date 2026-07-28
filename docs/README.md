@@ -88,7 +88,7 @@ Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
 
 ## 6. Current development fact
 
-M44 is a clean checkpoint and ADR-0016's first implementation Goal is complete. M45/M46 are not
-active. `scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk
-classification contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists
-are not allowed.
+M44 is a clean checkpoint. ADR-0016's bounded-authority implementation and its ordered offline
+continuation/Harness audit are complete; M45/M46 are not active. `scripts/dev-dse.sh` owns executable
+gates, while `AGENTS.md` owns the single risk classification contract. New parallel roadmaps,
+handoffs, trackers, or duplicated gate command lists are not allowed.
