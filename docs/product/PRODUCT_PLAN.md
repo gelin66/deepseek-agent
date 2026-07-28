@@ -35,6 +35,16 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 
 三个入口必须使用同一个 Agent 内核、工具语义、事件协议和状态真相。
 
+“编码 Agent”按完整真实工程任务定义，而不是按当前工具目录定义：DSE 最终必须覆盖仓库理解、
+编辑、构建、测试、静态检查、服务启动、日志/调试、diff/review/integrate、Web 研究、应用交互、
+长任务恢复和可验证交付。当前尚未实现的 search、完整语义交互、managed browser session、
+受控 upload/download 与选择性视觉观察是能力缺口，不是通过永久缺席获得的安全结论。
+
+安全是能力之上的 Host-owned 治理层。Read、sandbox 内可逆本地操作、external side effect 与
+destructive/financial/publish/security-sensitive 操作按风险逐级使用自动执行、exact preview、
+scoped approval、强确认、审计和恢复。详细长期决策见
+[ADR-0018](../decisions/0018-engineering-complete-capability-governance.md)。
+
 ## 2. 北极星指标
 
 所有新增、重构和删除决策都服务于：
@@ -56,6 +66,10 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 - worktree 冲突率；
 - 多 Agent 相对单 Agent 的净收益；
 - 用户完成常见任务所需的配置和操作步骤。
+
+usage、费用与 accounting 是这组指标中的状态和效率证据，不是产品中心。accounting 不完整会
+阻止成本/Token/效率声明和下一次付费请求，但不会抹掉由 deterministic verifier、真实 caller、
+reopen 和 Host receipt 已经闭合的行为事实。
 
 代码更多、概念更多或架构图更复杂，都不构成能力提升。
 
@@ -84,6 +98,8 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
     canonical Run 摘要闭合任务/活动/变更/验证/终态；短选择使用 bottom sheet，长内容使用
     full-screen room，审批使用 inline interruption。不得保留旧视觉模式、第二套 renderer、
     General Settings 或 TUI 私有进度/证据真相。
+17. DSE 以完整工程任务为能力边界，以 Host sandbox、权限、确认、隔离、审计、恢复和证据
+    治理执行风险；除永久架构/安全不变量外，不把当前缺少某类工具写成最终产品拒绝。
 
 ## 4. 第一性原理运行链
 
@@ -275,6 +291,11 @@ complete_task
 ```
 
 Skills 和 MCP 只先暴露元数据，需要时再加载完整定义。
+
+上面的名称是紧凑默认入口，不是永久封闭目录。完整工程能力可以增加一个 canonical
+`web_fetch`、一个 canonical `web_search` 和 Host-owned semantic browser action surface，但必须
+复用同一 `ProductionToolExecutor -> ToolOutcome -> RuntimeEvent -> RunStore` 主链，并按
+ADR-0012/ADR-0018 的风险层授权；不得用 Provider marketplace、第二 Runtime 或任意 eval 补齐能力。
 
 `ToolOutcome` 必须至少表达：
 

@@ -231,12 +231,18 @@
 - M46 post-W3 interaction admission 已完成：两个独立 exact-loopback text-entry task 产生同一
   `tools:browser_interaction:fill=2/2`，production control=`0/2`、false-success=`0`，Host teardown
   与 AgentApplication reopen regression 均通过；只准入后续单一 `browser_fill` focused Goal，
-  本阶段 production delta=0，press/wait/public action/视觉/搜索/M47 仍未启动。
+  该历史 checkpoint 的 production delta=0，press/wait/public action/视觉/搜索当时未启动；其
+  one-action 后续规则现由 ADR-0018 取代。
 - M46 W3.1 已完成并 keep：同一个 Host-owned direct-CDP lifecycle 现只为 eligible、非敏感、可编辑的
   `input[type=text|search]` 返回 fill-only opaque ref，并新增唯一
   `browser_fill(element_ref, value)`；两个冻结 fixture 的 fresh post-fill state=`2/2`、stale reuse
   与 mandatory negative matrix false allow=`0`。真实 AgentApplication committed fill reopen 不重放，
   started-without-outcome 进入既有 `RecoveryRequired`；protocol/state delta=0、official requests=0。
+- ADR-0018 工程完全体方向审计已完成：当前 W1～W3.1 安全机制继续保留，但 loopback-only、
+  click/fill-only、无 public action/login/session/upload/download/search/visual 被纠正为阶段性能力缺口，
+  不再作为永久安全边界；后续从 one-action/one-Goal 改为 capability cluster。首个 production
+  cluster 是 `Semantic Interaction + Public Action Governance`，本审计 production Rust delta=0、
+  official DeepSeek requests=0，尚未启动该实现。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -6848,8 +6854,9 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑冻结后续顺序；M42–M45-A 已形成实现或决策 checkpoint，M46 repeated-loss admission
-已完成，只读 W2 的下一 Goal 合同已准入但 production implementation 尚未启动。
+这些里程碑保存 M42～M46 的完成顺序；M46 W2/W3/W3.1 已形成 production checkpoint。
+ADR-0018 之后不再从这里机械派生一个 action 一个 Goal；active future order 由 40.13 的
+capability cluster 接管。
 
 1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
    运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
@@ -6862,10 +6869,9 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
    fallback chain。
 4. **M45 ApplicationProbe（M45-A 已完成）**：已实现 worktree-local process、port/health、logs、
    HTTP assertion、latest-revision receipt 和 teardown/reopen；HTTP 已足够，本切片未启动 Chrome。
-5. **M46 只读语义浏览器（准入完成，实现未启动）**：两个独立真实 JS-only local task 已证明
-   ApplicationProbe/HTTP 不能产生预注册 DOM/accessibility evidence。下一 Goal 才可使用
-   Rust/Tokio + CDP + pinned Chrome for Testing，实现 navigate、bounded AX/DOM snapshot 和
-   Host teardown；action、登录、截图和视觉分别后置。
+5. **M46 语义浏览器 W2/W3/W3.1（已完成）**：Rust/Tokio direct CDP + pinned Chrome for
+   Testing 已交付 bounded navigate、opaque ref click/fill、fresh observation、Host teardown 与
+   reopen；current action 仍只限 exact-loopback，完整交互和 public risk governance 转入 40.13。
 
 ### 40.1 M45-A ApplicationProbe pre-registration 与 formal result
 
@@ -7335,3 +7341,74 @@ delta=`0`。official DeepSeek requests=`0`、credential read=`false`、actual co
 没有加入 press/wait、登录、public action、POST/upload/download、Cookie/storage persistence、用户
 Chrome、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。Risk 2 最终 focused/full
 证据以 Evaluation W3.1 条目为准。
+
+### 40.13 ADR-0018 工程完全体方向审计与 capability-cluster cutover（已完成）
+
+#### 问题、owner、旧路与结果
+
+真实问题是：W1～W3.1 已证明 fetch/CDP/ref/replay 的底层安全机制，但 ADR-0015 又把每项初始
+exclusion 固化为长期拒绝，并形成 `one action -> admission audit -> implementation -> next action`
+循环。该路线可以持续增加负向测试，却不能在合理时间内形成完整工程 Agent。
+
+本 audit 的 single owner 是 product/repository authority；production crate delta 必须为 0。旧 active
+path 是 ADR-0015 的 loopback-only/per-action repeated-loss 后续规则、Roadmap 的下一个小 action
+派生和 Evaluation 对所有 baseline capability 的 mandatory off-A/B。cutover 后：
+
+- ADR-0018 是完整工程能力治理的 accepted decision；
+- Product Plan 明确 task completeness 与 risk governance；
+- ADR-0015 的 W1～W3.1 历史事实保留，但长期 blanket deny/one-action route 被部分 supersede；
+- Roadmap 只排 capability cluster；Evaluation 用真实端到端 task、人工介入、返工、恢复、receipt
+  和复杂度验收，不用测试数量冒充成果；
+- accounting 继续按 ADR-0011 作为正交状态：不完整会阻止费用/Token/效率声明和下一付费请求，
+  不删除已经闭合的 behavior evidence。
+
+审计对“当前能否形成可替代完整工程产品”的答案是 **不能**。current catalog 已有 16 个 Host
+tools 和强 replay/evidence 基础，但没有 canonical search、完整 semantic interaction、public action
+scoped grant、managed login/session、upload/download、selective visual observation，也没有把这些能力
+和 code/Writer/recovery 组成持续 production dogfood 的 release gate。费用显示不是 hold 原因。
+
+#### 永久边界与阶段性缺口
+
+永久保留：isolated profile/egress、opaque semantic ref、Host credential/redaction、typed
+side-effect/recovery、unknown side effect 不自动重放、fresh observation、latest-revision completion、
+resource bounds/teardown、high-risk confirmation 和 single Runtime/Event/Store。
+
+阶段性缺口：loopback-only、click/fill-only、无 press/wait/scroll/select/textarea/contenteditable/
+back/tab/multi-page、无 public action、managed session、login、upload/download、search 或 visual。
+这些 capability 在执行边界未闭合时暂时 fail closed，但不得继续写成最终 deny。
+
+继续拒绝的机制是 unrestricted eval/JS、无边界 shell/network、secret-to-model、默认个人 Chrome、
+unknown side-effect replay、无确认 destructive/financial/publish、第二 Runtime/Store、production
+Node/Playwright/Firecrawl sidecar、Provider marketplace 和空 Manager/Factory/Service/vision scaffold。
+
+#### 后续唯一顺序
+
+1. **Semantic Interaction + Public Action Governance**：首个 production cluster，owner=
+   `crates/tools`。一个 Goal/一个 matrix 完成 press、typed wait、scroll、select、textarea/
+   contenteditable、back/tab/multi-page、public reversible action，以及 exact preview/scoped approval/
+   result receipt；不再拆成每个 action 的 admission Goal。
+2. **Managed Browser Session**：复用同一 CDP/permission/outcome owner，加入 project-isolated
+   login/session、Host credential、Cookie/storage clear、workspace-granted upload 和 isolated/scanned
+   download；默认仍不读个人 Chrome。
+3. **Canonical Search/Research**：一个 `web_search` surface，与 `web_fetch`/browser 分工，完成
+   unknown question→source selection→read→cross-check→citation；不恢复 provider marketplace 或
+   search-HTML scraping 假合同。
+4. **Visual Re-entry**：仅在官方 DeepSeek production multimodal wire 同时闭合 tool/thinking/
+   stream/usage/replay 后，做 selective screenshot/visual vertical refactor；现在不预建接口。
+5. **Integration/Dogfood/Release**：不是最后才做的附录，而是每个 cluster 的水平门。持续运行跨
+   code、app、Web、Writer 和 crash/recovery 的真实任务，优先清理分支、重复 evaluator、过时
+   docs/tests 与无 consumer 路径。
+
+首簇 frozen task families、permission ladder、negative/recovery matrix、old-path deletion 和五步
+integration order 见 ADR-0018。若 3～5 天不能得到一个完整 vertical task family，缩小任务/matrix，
+不能退回 one-button/one-Goal，也不能放松永久边界。
+
+#### 本切片边界与验证
+
+本 audit 只修改 stable guide、Product Plan、accepted decision/index、唯一 Roadmap/Evaluation 和
+Current Architecture。production Rust/Cargo、DeepSeek wire/model-visible Prompt、AgentRuntime、
+RuntimeEvent、RunStore、State schema、catalog、UI 与 frozen manifest/raw/summary/history delta 均为
+`0`。official DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`；没有启动首个
+production cluster。Risk 0 authority gate 的 actual bootstrap 为 repository-guidance=`1,360` 行、
+worst-case tools=`2,639/4,409` 行、fixed boundary=`24/24`；link/authority check 通过。最终
+`git diff --check` 与 clean reviewable commit 由同一 checkpoint 闭合，不运行 full gate。

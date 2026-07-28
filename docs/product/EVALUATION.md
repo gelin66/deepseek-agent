@@ -140,6 +140,29 @@
 verified success、false success、安全拒绝、请求预算耗尽、请求数、Token、时间和成本；
 UI 双语验收不能替代该 A/B。
 
+### H. 工程完全体纵向任务
+
+ADR-0018 后，任务集必须覆盖完整真实工程工作，而不只覆盖单工具机制：
+
+- 多语言跨文件理解、编辑、build、test、static check、service start、bounded logs/debug、
+  diff/review/integrate 与 latest-revision completion；
+- root、read-only child、isolated Writer 的真实分工、返工、失败收敛、crash/reopen 和最终合并；
+- known URL fetch，以及 unknown question 的 search→source selection→read→cross-check→citation；
+- JS application 的 navigate、observe、press/wait/scroll/select/text editing/back/tab/multi-page；
+- public reversible action 的 exact preview/approval/receipt，以及未授权/destructive/financial/
+  publish/security-sensitive action 的正确拒绝；
+- managed isolated session、Host credential、Cookie/storage 清理、workspace-scoped upload 与 isolated
+  download；
+- DeepSeek 官方 multimodal contract 可用后，DOM/AX 不足任务的 selective visual observation；
+- 跨代码、应用、Web 和 Writer worktree 的 integration/dogfood/release workflow。
+
+明显属于上述 baseline 的 capability cluster 可以由已接受产品目标和冻结端到端任务直接准入，
+不要求先人为制造两次 missing-tool failure。一个 cluster 至少冻结三个彼此独立的真实任务，并
+覆盖受影响风险层、真实 production caller、latest-revision evidence、reopen/recovery 和旧路删除。
+若没有第二个可行 treatment，确定性 capability delivery 不为满足形式做随机 A/B；若要声明
+DeepSeek 选择/成功率的普遍提升、默认策略收益或效率优势，仍必须执行同模型 held-out/private
+task 评测和适用的 A/B。
+
 ## 4. 运行变体
 
 根据能力阶段选择，不要求每次运行全部组合：
@@ -196,6 +219,16 @@ verification_runs
 test_regressions
 resume_success
 worktree_conflicts
+human_confirmation_count
+human_attention_ms
+rework_cycles
+recovery_actions
+external_side_effects
+side_effect_receipts
+authoritative_sources_opened
+sources_cross_checked
+unsupported_claims
+local_browser_time_ms
 changed_files
 evidence
 ```
@@ -244,6 +277,13 @@ evidence
 - usage/cost 不完整、cell 未跑完、缺 baseline 或样本少于 3 次时，
   `product_metric_eligible=false`。
 
+这里的 A/B 约束用于有可比较 treatment 的模型行为、默认策略、优化和产品级泛化，不把
+“当前 catalog 根本没有一项已接受 baseline capability”变成必须先付费证明的前置条件。确定性
+capability cluster 可以报告 exact task-family 的 before=`cannot complete`、after=`verified complete`
+行为结果；它必须同时报告 false success、安全反例、人工确认、recovery、复杂度与删除量，但在
+没有同模型 held-out/private matrix 和完整 accounting 时不得外推普遍成功率、Token、费用、速度
+或竞品优势。
+
 ### 5.2 行为真相与 accounting 真相
 
 自 ADR-0011 起，正式 Harness 必须从同一 canonical observation 分别派生
@@ -273,8 +313,9 @@ identity、environment、workspace、route、evidence 或 observer 歧义都是 
 accounting 标签只来自 physical request/usage/pricing/seal ledger。非 `complete` 状态继续
 停止下一付费 request，不能进入 Token、费用、效率或完整 utility aggregate，也不能把未知
 费用记为零。行为 aggregate 可独立保留闭合的前三种 behavior status，但
-`measurement_interruption`/`invalid` 不得进入；任何 production treatment 的最终准入仍
-要求 false success 为零、预注册质量矩阵完成且 accounting 完整。
+`measurement_interruption`/`invalid` 不得进入。production behavior keep 仍要求 false success 为零、
+预注册质量矩阵和安全/恢复闭合；accounting 不完整时可以保留这些确定性行为结论，但必须停止
+下一付费请求，且不能形成 cost/Token/efficiency、完整 utility 或产品级泛化结论。
 
 旧 `product_metric_eligible=false` 仍表示不具备完整产品 utility/cost 结论，不再表示同一
 observation 必然没有行为真相。`maximum_reruns=0`、不补 mate、不选择性续跑、不拼接旧 raw
@@ -567,7 +608,8 @@ no_key_replay
 4. 失败模式明确且可恢复；
 5. 没有产生重复 Runtime、Store、Task 或产品概念；
 6. 生产复杂度与收益成比例；
-7. 有关闭能力的 A/B 对照；
+7. baseline deterministic capability 有冻结的 before/after task matrix；model-visible、可选或
+   默认策略 treatment 有关闭候选的 A/B 对照；
 8. 有回归测试和删除方案。
 
 若收益只存在于极少任务，应作为按需策略，而不是默认全局行为。
@@ -5780,3 +5822,50 @@ Runtime/Store 或 session ledger。
 ignored`，Runtime=`88/88`，app=`69/0/3 ignored`，app-server=`23/23`，exec=`30/30`，canonical
 TUI=`20/20`，PTY=`7/7`，owner strict Clippy 通过。pinned-CfT W3.1 fixture gate 另按合同显式执行一次为
 `1/1`（内部 task matrix=`2/2`）；无 credential、DeepSeek 或外部网络请求。
+
+<a id="engineering-complete-direction-audit"></a>
+### ADR-0018 工程完全体方向审计合同与结果
+
+本次是 Risk 0 authority/decision slice，不是新的 browser action、Prompt/route treatment 或产品
+成功率 campaign。输入为 clean W3.1 checkpoint、完整 Product Plan、Roadmap current window、
+repository-guidance/tools owner route，以及 ADR-0005/0011/0012/0014/0015/0016/0017 的冲突扩读。
+production source audit 冻结以下 current facts：
+
+- fixed catalog 为 16 个 Host tools；Web 只有 `web_fetch`、`browser_navigate`、`browser_click`、
+  `browser_fill`，没有 `web_search`、press/wait/scroll/select/session/upload/download/visual tool；
+- click/fill authorization 与执行要求 Host exact local origin；public navigate 仍 one-shot teardown；
+- Ask 下网络因缺少 enforceable scoped grant 而 fail closed；current app composition 对 root Agent/
+  FullAccess 使用 broad sandbox posture；
+- committed browser outcome reopen 与 started-without-outcome RecoveryRequired 已有确定性证据；
+  这些机制不需要重做。
+
+按“可替代完整工程 Agent”的冻结目标，审计结果为 `not_complete_current_product`。原因不是费用
+显示或缺少更多测试，而是 unknown-source research、完整 JS interaction、public reversible action、
+managed login/session、受控 upload/download、selective visual observation 和跨能力 production
+dogfood 都有确定性缺口。当前不能声明可替代 Codex/Claude Code/Cursor 一类完整工程产品。
+
+classification 结果：
+
+| class | result |
+|---|---|
+| permanent invariants | isolated profile/egress、opaque ref、Host secret、typed side-effect/recovery、fresh observation、latest-revision evidence、bounds/teardown、high-risk confirmation、single Runtime/Event/Store |
+| temporary gaps | loopback-only action、click/fill-only、无 public action/login/session/upload/download/search/visual |
+| rejected mechanisms | unrestricted eval/JS、unbounded shell/network、secret-to-model、default personal Chrome、unknown side-effect replay、unconfirmed destructive/financial/publish、second Runtime/Store、production sidecar/marketplace |
+
+ADR-0018 因而部分取代 ADR-0015 的长期 blanket deny、one-action/one-Goal 和基线 action repeated-loss
+门；W1～W3.1 的实现事实、安全矩阵与 frozen evidence 保持不变。repeated-loss 继续约束昂贵、可选、
+架构分叉、高不确定或 model-visible treatment，不再阻止显然属于完整工程 baseline 的 capability
+cluster。
+
+首个 production cluster 预注册为 `Semantic Interaction + Public Action Governance`，owner=
+`crates/tools`。它用一个 matrix 同时闭合完整 local SPA 交互、用户授权的 disposable public
+reversible workflow、external side-effect negative 和 crash/reopen recovery；必须报告 verified
+success、false success、人工确认、wall time、Token/request（如有）、返工、恢复、receipt、复杂度
+与删除量。旧 per-action admission evaluator、loopback-only action assertion 和 broad-access
+workaround 在真实 caller cutover 后删除，不保留 compatibility flag。
+
+本 audit 没有改变 production Rust/Cargo、DeepSeek wire/model-visible Prompt、AgentRuntime、
+RuntimeEvent、RunStore、State schema、catalog 或 UI；official DeepSeek requests=`0`、credential
+read=`false`、actual cost=`$0`，`product_metric_eligible=false`。费用只是正交状态，不是能力方向或
+hold 原因。authority/link/diff 的实际 final gate 结果记录在同一 checkpoint 的 Roadmap/current
+architecture，不创建第二 evaluator、roadmap、handoff、tracker 或 frozen evidence rewrite。

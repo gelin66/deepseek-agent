@@ -35,6 +35,8 @@ chat bridge, source splice, or speculative compatibility layer.
 - Writers use worktrees and converge through diff/review/verify/merge.
 - CLI, TUI, and local API are clients of the same application service.
 - Completion requires evidence for the latest workspace revision.
+- Security governs capability through sandbox, scoped permission, confirmation,
+  audit, recovery, and evidence; missing whole capability classes is not the goal.
 - A replacement slice deletes its old path after cutover.
 
 Changing one of these constraints requires evidence and a new ADR.
@@ -69,7 +71,8 @@ Each implementation slice must state:
 4. tests and evaluation evidence;
 5. cutover deletion.
 
-Build contract/test, the smallest vertical implementation, real caller
+Build contract/test, the smallest vertical implementation that completes the
+admitted task or capability cluster, real caller
 migration, old-path deletion, then benchmark and authority updates. Temporary
 adapters last at most one roadmap milestone and need a deletion point. Do not
 create empty crates or speculative Manager/Factory/Service traits.
@@ -116,7 +119,7 @@ behavior requires current official fixtures.
 | Risk 1 | deterministic tool, UI, config | contract/safety/caller/replay plus `./scripts/dev-dse.sh focused` |
 | Risk 2 | protocol, state, recovery, security | conformance/fault/reopen, focused, then `./scripts/dev-dse.sh full` once at pre-integration |
 | Risk 3 | model-visible Prompt, context, route | Risk 2 plus same-DeepSeek held-out A/B and false-success gate |
-| Risk 4 | product capability or efficiency claim | Risk 3 plus private real tasks and complete accounting |
+| Risk 4 | product-wide success or efficiency generalization | Risk 3 plus private real tasks; complete accounting for cost/Token/efficiency claims |
 
 Use owning-crate targeted checks while developing. Run the full gate at most
 once for the same workspace revision. Offline fixtures come before credentials;

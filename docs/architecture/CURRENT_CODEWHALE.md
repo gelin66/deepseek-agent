@@ -265,6 +265,12 @@ canonical Agent Run 的 terminal 也只在该 Runtime 提交。`StateStore` 是�
 物理删除；canonical Writer 的 worktree、Agent 模型循环、RunStore 与 terminal 没有另建
 兼容路径。
 
+这条统一主链已经具备强 coding/replay/evidence 基础，但 current capability surface 尚不是工程
+完全体：没有 canonical Web search、完整 semantic interaction、public action scoped grant、managed
+browser login/session、受控 upload/download 或 visual observation。ADR-0018 已把这些记录为当前
+能力缺口，而不是永久安全边界；当前源码仍保持 fail closed，后续只能经同一主链和风险分级
+权限补齐。
+
 旧生产例外 `workflow -> workflow-tool -> WorkflowTool -> SubAgentRuntime ->
 DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私有 JSON/JSONL
 写入链、TUI 面板/事件/审批/触发和专属 SubAgent adapter。没有建立兼容桥或双写。旧命令
@@ -679,6 +685,25 @@ without-outcome 的 model/fill replay=`0`。RuntimeEvent、RunStore 与 State sc
 DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`。current production 仍没有 press/
 wait、public action、POST/upload/download、登录、Cookie/storage persistence、截图/视觉、搜索、Node
 production sidecar、第二 Runtime/Store 或 session ledger。
+
+#### ADR-0018 后的 current capability boundary
+
+源码审计确认上述“没有”均是当前实现事实：fixed catalog 搜索不到 `web_search` 或
+`browser_press/wait/scroll/select`；click/fill preflight 要求 Host exact local origin；Ask 网络因缺少
+可强制 scoped grant 而拒绝；`crates/app` 当前对 root Agent/FullAccess 组合 broad sandbox posture。
+因此 current product 不能完成 unknown-source research、完整 public JS workflow、managed account
+workflow 或 visual-only task，也不能声称已可替代完整工程 Agent。
+
+长期不变量仍由现有代码与 authority 保留：public URL SSRF/egress、isolated ephemeral profile、
+opaque capability ref、fresh observation、external-untrusted、Host authorization、started/outcome/
+RecoveryRequired、committed reopen no-reexecution 和 single Runtime/Event/Store。ADR-0018 不改变这些
+事实，也没有修改 production Rust；它只把 loopback-only、click/fill-only、无 session/search/
+upload/download/visual 从长期拒绝改成后续 capability-cluster gap。
+
+下一 production cluster 尚未实现。它的 current accepted contract 是由 `crates/tools` 在同一
+direct-CDP/ref/epoch/outcome owner 中交付完整 semantic interaction 与 public reversible action
+risk governance；在真实 caller cutover 前，现有 exact-loopback deny 和 catalog 仍是实际行为，
+不能由文档冒充能力。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
@@ -3191,6 +3216,13 @@ receipt/completion 与 Writer worktree lifecycle。七项 capability contract �
 `7/7`，minimal definition 为 `1/7`；前者由六条 exact Rust owner tests 和 M36-A long-horizon
 `3/3` 支撑。该 inventory 不是 live minimal implementation 或质量/成本排名。
 
-当前决定为 `keep_current_harness_reject_verified_milestone_no_repeated_loss`。production Rust、
-DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore 均无 delta；official
-requests=0，M45/M46 仍未启动。
+该 checkpoint 的决定为 `keep_current_harness_reject_verified_milestone_no_repeated_loss`，当时
+production Rust、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore 均无
+delta 且 official requests=0。此后 M45-A 与 M46 W2/W3/W3.1 已完成；不能继续把旧 checkpoint 的
+“未启动”当成 current fact。
+
+ADR-0018 现已进入 accepted decision index。它保留 bounded authority/risk-tier gate，同时把后续
+product baseline 从 per-action repeated-loss audit 切到 capability cluster；Risk 0 本切片没有
+production Rust、DeepSeek wire/Prompt、Runtime/Event/Store、catalog 或 UI delta，也没有读取 Key 或
+发 official request。同一 authority checker 的 actual result 为 repository-guidance=`1,360` 行、
+worst-case tools=`2,639/4,409` 行、fixed boundary=`24/24`，链接与 authority contract 通过。

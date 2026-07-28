@@ -1,6 +1,6 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
-- 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
+- 状态：已接受；长期能力边界与后续准入粒度由 ADR-0018 部分取代；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
   决策为等待 Chat surface；M46 W2/W3、post-W3 admission 与 W3.1 fill-family 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
@@ -37,6 +37,13 @@ search/browser/vision production code delta = 0
 
 不得再通过聊天补充把本文拆成多个并行 backlog。需要调整本决策时，修改或 supersede 本
 ADR，并由 ROADMAP 安排一个切片；不要新增平行“浏览器方案”“补充计划”或 handoff 文档。
+
+2026-07-28 的产品方向审计接受
+[ADR-0018](0018-engineering-complete-capability-governance.md)。本 ADR 的 W1～W3.1 实施事实、
+Rust/CDP/ref/replay、egress、secret、fresh observation 与 side-effect recovery 继续有效；以下把
+loopback-only、one-action/one-Goal、无 public action/login/session/upload/download/search/visual
+写成长期拒绝或要求每个基线 action 先制造 repeated loss 的条款，不再是 active 路线。它们只
+描述当时的 initial slice scope。后续按完整 capability cluster 和风险分级权限交付。
 
 ## 真实问题
 
@@ -156,8 +163,9 @@ Playwright 可以继续作为 eval 中独立 DOM verifier，但不进入 product
 | 搜索发现 | 从问题找到候选来源 | 一个固定、可计费的 search surface | 页面交互、浏览器 session |
 | 语义浏览器 | JS、导航、表单、本地 UI | Rust CDP Browser Harness | 图像理解、坐标操作、通用脚本平台 |
 
-一次 ROADMAP 切片只能准入其中一个能力族。只有前一层无法解决同一重复 loss 时，才允许
-进入更高成本层；不得一次提交 `fetch + search + browser + vision`。
+一次 production cluster 仍应有一个 primary owner，优先使用能闭合任务的最低成本层；不能把
+`fetch + search + browser + vision` 作为无边界平台一次提交。明显属于完整工程 baseline 的层可由
+冻结端到端任务直接准入；只有可选、昂贵或架构分叉候选继续要求 repeated loss。
 
 ### 4. 当前不预留视觉接口
 
@@ -176,7 +184,7 @@ history、streaming、usage/accounting 和 replay 后，再基于真实请求/�
 
 ## 能力选择矩阵
 
-新 loss 先按下表路由，不得默认选择浏览器：
+新任务先按下表路由，不得默认选择成本最高的机制：
 
 | 已复现的任务缺口 | 应评测的最小候选 | 不应先做 |
 |---|---|---|
@@ -197,8 +205,8 @@ direct HTTP fetch
   -> only then reconsider visual observation
 ```
 
-优先级不是强制把所有层都实现；W1 已由明确产品需求直接准入，更高成本层仍须独立满足
-repeated-loss admission。
+优先级不是强制把所有层都实现；W1 已由明确产品需求直接准入，后续 baseline cluster 由
+ADR-0018 的真实任务与风险合同决定，可选/架构分叉 treatment 才继续使用 repeated-loss admission。
 
 ## `web_fetch` 候选合同
 
@@ -308,8 +316,9 @@ catalog，未被冒充为搜索能力。
 
 ## 语义浏览器工具面
 
-只有重复 loss 明确要求 JS/runtime/session 或本地 UI 行为时，才在实际 actor catalog 增加
-最小工具。初始候选不提供通用 `browser_eval`，而使用明确、可审计的小 schema：
+W2～W3.1 当时以重复 loss 准入 JS/runtime 与 click/fill，相关历史结果继续有效。后续明显属于
+完整工程基线的交互由 ADR-0018 capability cluster 直接冻结真实任务和风险合同，不再为每个
+key/button 单独制造 admission。工具仍不提供通用 `browser_eval`，而使用明确、可审计的小 schema：
 
 ```text
 browser_navigate(url)
@@ -322,7 +331,8 @@ browser_wait(condition, timeout_ms)
 
 `browser_close` 不需要成为模型工具；Host 在 terminal/cancel/timeout/cleanup 时拥有无条件
 teardown。back、tab、download、upload、dialog、Cookie、storage、auth、PDF 和 screenshot
-均不进入初始目录；只有独立重复 loss 才能扩展。
+均未进入 W2～W3.1 初始目录；它们不是永久拒绝，必须在后续 capability cluster 中以 managed
+isolation、scoped grant、确认、审计、recovery 和真实任务验收进入。
 
 若多工具 schema 的 catalog Token 或 DeepSeek 选择错误形成实际 loss，可以在后续单变量
 treatment 比较一个 action-discriminated tool；不能在没有轨迹前先造通用 `browser(op, ...)`
@@ -447,8 +457,8 @@ candidate 必须 `reject_and_delete`，不能以“Chrome 自身大致安全”�
 - local ApplicationProbe 可以在 disposable test workspace 内执行 TaskContract 明确要求的
   UI mutation，但仍不得访问真实外部账户、用户 profile 或未授权网络。
 
-未来若真实任务需要登录、持久 session、上传或外部写操作，必须新建独立 ADR；不能通过
-逐步放宽初始工具描述偷渡。
+登录、持久 session、上传、下载或外部写操作现在由 ADR-0018 的后续 capability cluster 与风险层
+治理；仍不能通过逐步放宽工具描述偷渡，也不能绕过 Host credential、scoped grant、确认与 receipt。
 
 ### Prompt injection 与秘密
 
@@ -557,8 +567,8 @@ console/network log 只有 TaskContract 明确要求时才采集有界摘要。�
 
 ## 实施准入与节奏
 
-以下是 ROADMAP 的执行协议。W1 已排队；W2–W5 仍是候选。任何时刻只允许一个
-in-progress production slice。
+以下保存 W1～W3.1 当时的执行协议和结果身份。当前后续顺序由 ADR-0018 与 ROADMAP 的
+capability cluster 接管；任何时刻仍只允许一个 in-progress production slice。
 
 ### Gate W0：冻结任务与安全合同，最多一个工作日
 
@@ -767,9 +777,10 @@ workspace revision、deterministic status/body/process-lease assertion 和 teard
 `AgentApplication` 冷重开只回收精确 lease 对应的 in-flight tree，既有 Runtime 随后形成
 `RecoveryRequired`，不重跑 verifier。模型 catalog 仍为 13 个工具，M46 仍需独立 loss 准入。
 
-### Slice W5：搜索发现
+### Slice W5：搜索发现（旧准入粒度由 ADR-0018 取代）
 
-只有 `search_discovery` 独立重复时执行，与 browser slice 分开：
+本段保留原 W5 边界；canonical search 仍与 browser 分工，但不再要求先制造两次工具缺失。新的
+真实 research task family 可以按 ADR-0018 capability map 直接准入一个且仅一个 search surface：
 
 1. 重新复核官方 DeepSeek 当前 search surface、usage 和 pricing；
 2. 冻结一个且仅一个候选 surface；
@@ -821,8 +832,8 @@ production lines / dependencies / new concepts
 最低保留条件：
 
 - W1 的 known-URL task、production caller、SSRF/redirect/truncation 反例和 reopen 全部通过；
-  若是搜索/浏览器/模型可见策略 treatment，affected family 仍须先有重复 loss，并按
-  EVALUATION 的正式 A/B 规则执行；
+  baseline search/browser capability cluster 可由产品目标与冻结真实任务直接准入；可选、昂贵、
+  架构分叉或 model-visible treatment 仍须 repeated loss/正式 A/B；
 - false success 为 0；
 - private-IP/metadata/redirect escape、stale ref、未授权跨 origin、blocked external
   side effect 的正确拒绝率为 100%；
@@ -853,10 +864,11 @@ hold_model_capability_ceiling
 - 把搜索、fetch、browser、MCP、IDE 和远程执行合成一个外部工具平台；
 - provider marketplace、fallback chain、自动 search/browser router；
 - 抓取搜索引擎 HTML 作为稳定默认搜索合同；
-- 用户 Chrome profile、Cookie、extension、登录态或系统 keychain 注入；
+- 未经显式可撤销 attach grant 读取用户 Chrome profile、Cookie、extension 或历史，以及把
+  credential/system keychain secret 注入模型或网页；
 - unrestricted JavaScript/eval、任意 Chrome flags、任意 header/proxy；
-- coordinate click、screenshot-every-step、视觉 placeholder 或 image blob store；
-- 自动 POST、购买、发布、发送消息、上传、下载打开或持久登录；
+- coordinate click、screenshot-every-step、视觉 placeholder 或无真实 consumer 的 image blob store；
+- 无 exact preview/授权/确认/receipt 的 POST、购买、发布、发送、删除、上传、下载打开或登录；
 - 用页面文字修改系统规则，或把搜索 snippet 直接当成最终来源；
 - 用模型自评、截图存在、工具调用成功或页面返回 200 冒充任务成功；
 - 为未来能力创建空 BrowserManager/WebProvider/VisionProvider/Factory/Service；
@@ -875,9 +887,9 @@ hold_model_capability_ceiling
   只能由一个经准入的 canonical surface 重新建立；
 - 视觉能力只有在官方 DeepSeek 真实 multimodal wire 可用后，才通过新 ADR 做完整纵向
   重构；
-- W1 已合入且 current tool catalog 为 13 个 Host 工具；M44 没有加入 search tool 或第二
-  DeepSeek wire。W2–W5 的其余候选在新的 ROADMAP 准入前不会改变 crate、Cargo dependency、
-  tool catalog、protocol、State schema、delivery artifact 或用户界面。
+- W1、W2、W3 与 W3.1 已合入，current catalog 为 16 个 Host 工具；M44 没有加入 search tool 或
+  第二 DeepSeek wire。下一 production 工作不再沿 one-action/one-Goal 排队，而由 ADR-0018 与
+  ROADMAP 的 capability cluster 决定。
 
 ## 研究依据（2026-07-28 复核）
 
