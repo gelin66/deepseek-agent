@@ -5314,3 +5314,95 @@ package 串行复核也 0 fail（773 unit、7 PTY、30 exec acceptance 及其余
 没有重跑，TUI source/test/gate delta=0；因此记录为 gate concurrency false-negative，而不是
 W1.1 behavior failure。HTTP candidate 的 keep/delete 条件全部成立，正式决定为
 `keep_public_http_web_fetch_with_explicit_plaintext_provenance`。
+
+### M45-A ApplicationProbe delivery contract
+
+M45-A 是 Risk 2 process/recovery/security slice，不是模型 Prompt/route treatment，也不授权
+browser、visual 或付费效率 A/B。冻结基线为 clean `5be131a1c`；唯一 production owner 是
+`crates/tools`，`crates/app` 只承担必要的真实 TaskContract resolution/reopen caller，
+`crates/orchestrator` 仍只拥有既有 Writer worktree binding。
+
+保留门按顺序为：
+
+1. exact program/argv、worktree-local cwd、受限 env 与 Host 分配 loopback port 在 spawn 前冻结；
+   shell string、public/LAN/foreign local target、caller-selected URL/port 与后台 handle fail closed；
+2. startup、health、overall、response、stdout/stderr 与 teardown 全部有硬边界；只允许 bounded GET，
+   禁止 redirect、header、Cookie、auth、proxy、request body、WebSocket 与 TLS 配置；
+3. readiness、预注册 status/body assertion、early exit、timeout、cancel、response/log truncation 和
+   process-tree teardown 产生稳定 typed result；app response/log 均标记 `external_untrusted`；
+4. verifier start/end workspace revision 相同且等于最新 Host observation 时，现有 inline
+   verification artifact 才能进入 `EvidenceReceipt`；revision drift 必须拒绝证据；
+5. success/failure committed outcome 经 SQLite reopen 只重放，不再 spawn 或 HTTP；真实 OS
+   `SIGKILL` 后 reopen 必须从 `HostVerificationPrepared` 已持久化的精确进程身份回收 owned tree，
+   不自动重跑 verifier；
+6. root production AgentApplication loopback 走同一 TaskContract -> Host verifier -> receipt 主链；
+   ApplicationProbe 不加入 model-visible catalog，Writer/network-denied actor 不获得旁路；
+7. `ToolOutcome`/artifact/receipt 能无损表达结果时 RuntimeEvent/State schema delta=0；不得增加
+   PID sidecar、第二 Runtime/Store/session、daemon、service registry 或完成权。
+
+offline matrix 必须覆盖 input/cwd/env/placeholder escape、owned-port reservation、pre-existing
+foreign listener/port race、readiness/status/body mismatch、redirect、early exit、startup/overall
+timeout、cancel、raw response/log bounds、UTF-8 lossy excerpt、revision drift、typed failure、catalog
+parity、success/failure reopen、process-tree teardown 与真实 `SIGKILL`/reopen cleanup。旧的
+foreground-server + standalone HTTP/curl + manual-kill 断言必须删除，不保留 adapter。
+
+完成 targeted owner tests 后运行 `./scripts/dev-dse.sh focused`；同一 workspace revision 只在
+pre-integration 运行一次 `./scripts/dev-dse.sh full`。离线门全部闭合后，最多一次 official
+DeepSeek local-service canary，maximum reruns=0、known-cost ceiling `$0.10`；凭据不可用则明确
+记录未执行。单次 canary 只证明 vertical usability，`product_metric_eligible=false`，不产生
+成功率、Token、速度或费用提升声明。任一 loopback/foreign-service false allow、revision 误绑、
+teardown leak 或 reopen 重执行都 `reject_and_delete` 整个 candidate。
+
+#### M45-A deterministic result and canary boundary
+
+M45-A 在冻结基线 `5be131a1c` 上完成最小纵向切换。Host resolver 生成 128-bit lease 并冻结 exact
+program/argv、worktree cwd、sanitized env 与所有 bounds；`{dse_probe_lease}` 必须作为一个 exact
+argv 字段出现，local application assertion 必须回显对应 marker。port reservation 与 assertion
+identity 分离，因此 port race 或 pre-existing/foreign listener 即使返回预期 status/body 也不能
+false pass。实际 HTTP client 只构造 Host loopback origin，no proxy、no redirect、GET-only，并受
+startup/health/overall 剩余 deadline 和 raw response bound 约束；invalid UTF-8 log 转换后的返回
+字节也不超过 log bound。
+
+10-case owner matrix 为 10 pass、0 fail，覆盖 resolver/plan tamper、cwd/URL/port/Host env escape、
+network-denied actor、status/body/foreign identity/redirect/early-exit/response bound、overall deadline、
+cancel/health timeout、ASCII 与 invalid UTF-8 log truncation、revision drift、normal teardown 和 exact
+lease recovery。完整 `dse-tools` 为 376 pass、0 fail、2 ignored，另有 integration 1 pass、doc 2
+pass/1 ignored；完整 `dse-app` 为 64 pass、0 fail、3 ignored。真实 production fixtures 证明：
+
+- DeepSeek fixture 的一个 completion proposal 触发 Host `ApplicationProbe`，latest revision receipt
+  seal，13-tool model catalog 不含 probe；terminal SQLite reopen events 完全相同且 network accept=0；
+- first probe 的 bounded `application_probe_body_mismatch`、`external_untrusted` excerpt 进入同一 root
+  Agent 下一请求；现有 `apply_patch` 修复后第二次 Host probe 通过；
+- 外部监督进程真实 `SIGKILL` AgentApplication；reopen 保留完整 event prefix，按 persisted exact
+  lease 回收 owned group，physical model request `1 -> 1`，不重新 spawn/HTTP，并只提交一个既有
+  `RecoveryRequired(HostVerification)` terminal。
+
+focused gate 在最终 canary-harness revision 通过：authority baseline 17,636 行、tools route 2,095
+行、ceiling 4,409 行、fixed boundary 23/23；public check、Runtime conformance 88/88、tools、app、
+app-server、exec 30/30、TUI run 20/20 与 PTY 7/7 均绿。protocol/state production delta=0；固定模型
+catalog 仍为 13；没有 browser、Chrome/CDP/Playwright、PID/port sidecar、第二 Runtime/Store/session、
+daemon、service registry 或新完成权。旧 foreground server + standalone curl/manual kill 不是
+canonical production caller，故 production adapter 删除数为 0，且没有保留平行入口。
+
+official DeepSeek canary 按预注册合同只执行一次：explicit `deepseek-v4-flash`、tools empty、physical
+admission limit 1、runtime retry 0、maximum reruns=0、output cap 64、known-cost ceiling `$0.10`。该次
+run 没有到达 `Completed`，所以不能证明 official vertical usability。第一次 harness 在 terminal
+断言前没有输出 durable accounting，临时 Store 随测试结束回收；实际 physical delivery、usage、
+billing taxonomy 与费用因而为 unknown，且没有第二次请求。按 ADR-0011，`accounting_complete=false`
+阻止精确费用/效率声明和下一 paid request，但不抹掉上述 deterministic behavior、teardown、receipt
+与 reopen 证据。harness 已切换为未来先打印 accounting 再断言，本 checkpoint 不重跑 canary；
+`product_metric_eligible=false`。
+
+pre-integration full gate 只执行一次。authority/public、fmt、workspace all-target strict Clippy 均
+通过；`cargo test --workspace --locked` 的唯一失败是 M45 owner test
+`assertion_cannot_overrun_the_overall_deadline` 在并发运行时得到安全 typed
+`application_probe_early_exit`，而 fixture 预期 `application_probe_overall_timeout`。根因是多个
+probe fixture 在 Host 释放 reserved port 到 Python bind 之间竞争同一临时端口；lease response
+identity 仍保证 foreign listener 不能 false pass，因此 production safety 没有变绿造假。
+
+targeted correction 为同一 test binary 的 process fixtures 加单一 test lock，并让 overall deadline
+明确先于独立 HTTP attempt cap；reqwest timeout 也从 generic `application_probe_http_failed`
+改为 typed `application_probe_http_timeout`。随后 exact regression 1/1、默认 owner package
+376/376、all-features owner package 378/378、owner check 与 strict Clippy 全绿。按预注册约束没有
+重跑 full；这条原始 full false-negative 与 targeted closure 都保留在 authority 中，而不是只报告
+后一个绿色结果。

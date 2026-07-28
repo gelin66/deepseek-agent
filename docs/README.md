@@ -89,7 +89,8 @@ Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
 
 ## 6. Current development fact
 
-M44 and ADR-0016 are clean checkpoints. ADR-0017 W1.1 has completed the public HTTP correction and
-is the next clean checkpoint; M45/M46 are not active. `scripts/dev-dse.sh` owns executable gates,
-while `AGENTS.md` owns the single risk classification contract. New parallel roadmaps, handoffs,
-trackers, or duplicated gate command lists are not allowed.
+M44, ADR-0016, and ADR-0017 W1.1 are clean checkpoints. M45-A has completed its Host-only
+ApplicationProbe implementation and deterministic acceptance; M46 is not admitted or active.
+`scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk classification
+contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists are not
+allowed.

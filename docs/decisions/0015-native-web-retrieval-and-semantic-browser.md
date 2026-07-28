@@ -4,10 +4,10 @@
   决策为等待 Chat surface，其他层仍按证据逐项准入
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
-- 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire，并删除
-  无 executor 的 TUI/config search-provider 管理面
-- 当前执行关系：M44 已完成 `hold_wait_for_chat_surface`；ROADMAP 的下一条候选是 M45
-  ApplicationProbe，语义浏览器、浏览器 action 与视觉仍未自动准入
+- 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
+  已交付 Host-only `ApplicationProbe`，没有加入 browser 或模型工具
+- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；语义浏览器、browser action
+  与视觉仍未自动准入
 
 ## 文档权威与替代关系
 
@@ -57,7 +57,7 @@ canonical `web_fetch`、`web_search` 或浏览器工具。由此可能出现五�
   tool；
 - `ToolOutcome -> RuntimeEvent -> RunStore` 已是唯一调用、结果、证据与恢复链；
 - `RunPermissionMode`、Host authorization 与 OS sandbox 已是唯一权限链；
-- `crates/orchestrator` 已有 evidence-gated `ApplicationProbe` 候选，但尚无重复 loss 准入；
+- `crates/tools` 已交付 evidence-gated、Host-only `ApplicationProbe`；它不进入模型 catalog；
 - M44 已删除只被配置/Doctor 使用、没有 canonical Agent executor 的多 search-provider 枚举；
 - 旧 `[vision_model]`、图片 attachment 和 `image_analyze` 因无 production consumer 已删除；
 - 当前 `ModelMessage` 和 DeepSeek wire 是文本内容，`ToolArtifact` 也没有 durable image blob
@@ -459,32 +459,34 @@ candidate 必须 `reject_and_delete`，不能以“Chrome 自身大致安全”�
 
 ## 本地 ApplicationProbe 集成
 
-本地 Web 应用是编码 Agent 最直接的浏览器用例，但只有 M36 定义的
-`application_visibility`/`verification_visibility` loss 跨独立任务重复才准入。
+本地 Web 应用是编码 Agent 最直接的运行态验证用例。M45-A 已按 ROADMAP 冻结的
+`application_visibility`/`verification_visibility` 缺口准入最小 process/health/log/HTTP
+闭环；这不准入 Chrome、CDP、页面 session 或 browser action。
 
 唯一分工：
 
 | owner | 职责 |
 |---|---|
-| `crates/orchestrator` | worktree-local app start、process group、port lease、health、log、teardown |
-| `crates/tools` | HTTP 获取或 semantic browser session/action |
-| `crates/protocol` | 最小 tool schema/outcome/evidence 字段，不定义 Browser Runtime |
+| `crates/tools` | exact app start、process-tree lease/recovery、loopback port/health、bounded log/HTTP assertion 与 teardown；未来 browser 仍需另行准入 |
+| `crates/orchestrator` | 只提供既有 Writer worktree ownership；不拥有 probe process/service lifecycle |
+| `crates/protocol` | 复用现有 outcome/artifact/evidence 字段，不定义 Application 或 Browser Runtime |
 | `crates/runtime` | 现有 tool loop、authorization、completion/replay |
 | `crates/state` | 现有 ToolPrepared/Started/Outcome 和 artifact replay，不建 browser 表 |
 | `crates/context` | bounded semantic observation projection，不建 page memory |
-| `crates/app` | capability composition 与 fixed actor catalog |
+| `crates/app` | exact TaskContract resolution 与 reopen cleanup caller；fixed model catalog 不增加 probe |
 
 推荐闭环：
 
 ```text
 workspace revision
-  -> worktree-local app start
-  -> exact process/port/health receipt
-  -> HTTP check
+  -> Host persists exact verifier + one-use process lease
+  -> worktree-local exact argv app start
+  -> Host-owned loopback port/health
+  -> bounded GET status/body/lease-identity assertion
   -> only if needed semantic browser observe/action
   -> deterministic DOM/URL/API assertion
   -> logs + verifier receipt bound to latest revision
-  -> guaranteed teardown
+  -> guaranteed teardown; SIGKILL reopen performs exact-lease cleanup without rerun
 ```
 
 HTTP/status/API assertion能验证时不得强制启动 Chrome。DOM assertion 应由 Host verifier
@@ -624,12 +626,13 @@ W1 不引入 Chrome、search provider、browser types、视觉 placeholder 或�
 5. local disposable ApplicationProbe 按 TaskContract 开放最小交互；
 6. stale ref、hidden/disabled、cross-origin、crash-after-start 负向测试必须 100% 拒绝。
 
-### Slice W4：ApplicationProbe 收敛
+### Slice W4：ApplicationProbe 收敛（M45-A 已完成）
 
-只有 local service/API/UI task 形成重复 `application_visibility` loss 时执行。它复用 W1/W2/
-W3 已被保留的最小能力，不创建第二 browser owner；若 W2/W3 从未准入，ApplicationProbe
-只能使用 process/health/log/HTTP。最终必须绑定 latest workspace revision、deterministic
-assertion 和 teardown receipt。
+M45-A 没有等待或引入 W2/W3，而是在 `crates/tools` 复用现有 managed-process、loopback HTTP、
+`ToolOutcome` 与 inline verification artifact，只交付 process/health/log/HTTP。结果绑定 latest
+workspace revision、deterministic status/body/process-lease assertion 和 teardown receipt；
+`AgentApplication` 冷重开只回收精确 lease 对应的 in-flight tree，既有 Runtime 随后形成
+`RecoveryRequired`，不重跑 verifier。模型 catalog 仍为 13 个工具，M46 仍需独立 loss 准入。
 
 ### Slice W5：搜索发现
 

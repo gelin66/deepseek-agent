@@ -31,9 +31,9 @@ use dse_protocol::run_api::{
 };
 use dse_protocol::task::{TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId};
 use dse_runtime::{
-    AgentRuntime, ChildRouteContext, ChildRunRoutePolicy, ChildRunRouteSelection, ModelPort,
-    ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun, ToolExecutor,
-    canonical_tool_catalog_sha256,
+    AgentRuntime, ChildRouteContext, ChildRunRoutePolicy, ChildRunRouteSelection,
+    DurableActionState, ModelPort, ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink,
+    RuntimeRun, ToolExecutor, canonical_tool_catalog_sha256,
 };
 use dse_state::StateStore;
 use dse_tools::sandbox::SandboxPolicy;
@@ -743,6 +743,22 @@ impl RunComposition for ProductionComposition {
                 },
             )?;
         }
+        if let Some(pending) = replay
+            .snapshot
+            .pending_host_verification
+            .as_ref()
+            .filter(|pending| pending.state == DurableActionState::InFlight)
+        {
+            concrete_tool_executor
+                .recover_inflight_verifier(&pending.verifier)
+                .await
+                .map_err(|error| {
+                    environment_mismatch(
+                        &run_id,
+                        format!("run_resume_application_probe_cleanup_failed：{error}"),
+                    )
+                })?;
+        }
         let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> = Arc::new(concrete_tool_executor);
         let accounting = recover_writer_accounting(&run_id, &replay, store.as_ref()).await?;
@@ -1279,14 +1295,12 @@ fn ensure_task_verifiers_exact(
     task: &TaskDefinition,
     tools: &ProductionToolExecutor,
 ) -> Result<(), dse_tools::ToolError> {
-    let resolved = resolve_task_verifiers(task.clone(), tools)?;
-    if resolved == *task {
-        Ok(())
-    } else {
-        Err(dse_tools::ToolError::invalid_input(
-            "persisted verifier specification differs from the production resolver",
-        ))
+    for acceptance in &task.acceptance {
+        if let TaskAcceptance::Verifier { verifier, .. } = acceptance {
+            tools.validate_verifier_spec_exact(verifier)?;
+        }
     }
+    Ok(())
 }
 
 fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunApiError> {
@@ -1444,7 +1458,7 @@ mod tests {
         PRODUCTION_TOOL_NAMES, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
     };
     use serde_json::{Value, json};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -1899,6 +1913,67 @@ mod tests {
             }]
         }))
         .expect("caller verifier task")
+    }
+
+    fn caller_authored_application_probe_task() -> TaskDefinition {
+        serde_json::from_value(json!({
+            "objective": "验证当前 workspace 的 local HTTP application",
+            "constraints": ["只允许 Host-owned loopback probe"],
+            "non_goals": ["不启动 browser"],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": "local-application",
+                "description": "local service health 与 HTTP assertion 通过",
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "application_probe",
+                    "parameters": {
+                        "program": "/usr/bin/python3",
+                        "args": ["-I", "-B", "server.py", "{dse_probe_lease}"],
+                        "health_path": "/health",
+                        "assertion_path": "/",
+                        "expected_status": 200,
+                        "body_contains": "production-ready",
+                        "startup_timeout_ms": 1000,
+                        "health_timeout_ms": 3000,
+                        "overall_timeout_ms": 5000,
+                        "max_log_bytes": 4096,
+                        "max_response_bytes": 4096
+                    },
+                    "plan": {"steps": [{
+                        "id": "caller-guess",
+                        "program": "false",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1
+                    }]}
+                }
+            }]
+        }))
+        .expect("caller application probe task")
+    }
+
+    fn sigkill_application_probe_task(marker: &Path) -> TaskDefinition {
+        let mut task = caller_authored_application_probe_task();
+        let TaskAcceptance::Verifier { verifier, .. } = &mut task.acceptance[0] else {
+            panic!("application probe task must use verifier acceptance");
+        };
+        verifier.parameters = json!({
+            "program": "/usr/bin/python3",
+            "args": ["-I", "-B", "slow_probe.py", "{dse_probe_lease}"],
+            "env": {"PROBE_STARTED_FILE": marker.display().to_string()},
+            "health_path": "/health",
+            "assertion_path": "/",
+            "expected_status": 200,
+            "body_contains": "never",
+            "startup_timeout_ms": 30000,
+            "health_timeout_ms": 30000,
+            "overall_timeout_ms": 60000,
+            "max_log_bytes": 4096,
+            "max_response_bytes": 4096
+        });
+        task
     }
 
     fn test_run_request(
@@ -4833,6 +4908,614 @@ mod tests {
             Some(&"1".to_owned())
         );
         assert_eq!(server.finish().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn m45_application_probe_seals_latest_receipt_and_terminal_reopen_only_replays() {
+        let server =
+            MockDeepSeekServer::start(vec![response("deepseek-v4-flash", "完成", 5, 2)]).await;
+        let temp = tempfile::tempdir().expect("temporary parent");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(
+            workspace.join("server.py"),
+            r#"import http.server
+import os
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"healthy" if self.path == "/health" else b"production-ready " + sys.argv[-1].encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        print(format % args, flush=True)
+
+server = http.server.ThreadingHTTPServer((os.environ["HOST"], int(os.environ["PORT"])), Handler)
+server.serve_forever()
+"#,
+        )
+        .expect("application fixture");
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "DSE Test"][..],
+            &["config", "user.email", "test@dse.local"][..],
+            &["add", "server.py"][..],
+            &["commit", "-m", "fixture"][..],
+        ] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-flash"));
+        command.task = caller_authored_application_probe_task();
+        let run = run_result(
+            app.execute(envelope(
+                "m45-application-probe",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        assert!(matches!(
+            replay.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        let (probe_outcome, receipt) = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } if outcome
+                    .verifier_observation
+                    .as_ref()
+                    .is_some_and(|observation| {
+                        observation.spec.verifier_id == "application_probe"
+                    }) =>
+                {
+                    Some((outcome.as_ref(), receipt.as_deref()))
+                }
+                _ => None,
+            })
+            .expect("committed application probe outcome");
+        assert!(probe_outcome.is_success(), "{}", probe_outcome.content);
+        let output: Value = serde_json::from_str(&probe_outcome.content).expect("probe JSON");
+        assert_eq!(output["success"], true);
+        assert_eq!(output["health_ready"], true);
+        assert_eq!(output["assertion"]["status"], 200);
+        assert_eq!(output["teardown"]["process_tree_settled"], true);
+        assert_eq!(output["trust"], "external_untrusted");
+        let receipt = receipt.expect("application probe receipt");
+        assert_eq!(receipt.verifier.verifier_id, "application_probe");
+        assert_eq!(
+            receipt.workspace_state.revision,
+            replay.snapshot.workspace_state.revision
+        );
+
+        let requests = server.finish().await;
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].body["tools"]
+                .as_array()
+                .expect("model tool catalog")
+                .iter()
+                .all(|tool| tool["function"]["name"] != "application_probe")
+        );
+
+        drop(app);
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(config(
+            &state_path,
+            connection(&quiet_root, false),
+            false,
+        ))
+        .expect("reopen production app without credential");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    "m45-terminal-reopen",
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                        expected_workspace: None,
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            resumed.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let after = reopened
+            .store
+            .load(&run.run_id)
+            .await
+            .expect("reload terminal")
+            .expect("terminal exists");
+        assert_eq!(after.events, replay.events);
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m45_application_probe_failure_facts_feed_the_existing_agent_rework_loop() {
+        let fixed_server = r#"import http.server
+import os
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"healthy" if self.path == "/health" else b"production-ready " + sys.argv[-1].encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        print(format % args, flush=True)
+
+server = http.server.ThreadingHTTPServer((os.environ["HOST"], int(os.environ["PORT"])), Handler)
+server.serve_forever()
+"#;
+        let failing_server = fixed_server.replace("production-ready ", "wrong ");
+        let server = MockDeepSeekServer::start(vec![
+            response("deepseek-v4-flash", "初次完成", 5, 2),
+            tool_response(
+                "deepseek-v4-flash",
+                "m45-fix-server",
+                "apply_patch",
+                json!({"changes":[{"path":"server.py","content":fixed_server}]}),
+                8,
+                3,
+            ),
+            response("deepseek-v4-flash", "修复后完成", 5, 2),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temporary parent");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(workspace.join("server.py"), failing_server)
+            .expect("failing application fixture");
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "DSE Test"][..],
+            &["config", "user.email", "test@dse.local"][..],
+            &["add", "server.py"][..],
+            &["commit", "-m", "fixture"][..],
+        ] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(output.status.success());
+        }
+        let app = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-flash"));
+        command.task = caller_authored_application_probe_task();
+        let run = run_result(
+            app.execute(envelope("m45-rework", RunCommand::Start(command)))
+                .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        assert!(matches!(
+            replay.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        let verifier_commits = replay
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeEventKind::HostVerificationCommitted { outcome, .. } => {
+                    Some(outcome.as_ref())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(verifier_commits.len(), 2);
+        assert_eq!(
+            verifier_commits[0].metadata.as_ref().unwrap()["application_probe_failure"],
+            "application_probe_body_mismatch"
+        );
+        assert!(!verifier_commits[0].is_success());
+        assert!(verifier_commits[1].is_success());
+
+        let requests = server.finish().await;
+        assert_eq!(requests.len(), 3);
+        let second_context = requests[1].body["messages"]
+            .as_array()
+            .expect("second model messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(second_context.contains("最近一次 verifier 失败"));
+        assert!(second_context.contains("application_probe_body_mismatch"));
+        assert!(second_context.contains("external_untrusted"));
+        assert!(second_context.contains("wrong dse-application-probe:"));
+    }
+
+    #[tokio::test]
+    #[ignore = "one official M45 canary; maximum_reruns=0 and known ceiling $0.10"]
+    async fn m45_application_probe_official_deepseek_canary() {
+        let api_key = std::env::var("DEEPSEEK_API_KEY")
+            .expect("M45 official canary requires DEEPSEEK_API_KEY");
+        let temp = tempfile::tempdir().expect("M45 official canary root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(
+            workspace.join("server.py"),
+            r#"import http.server
+import os
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"healthy" if self.path == "/health" else b"production-ready " + sys.argv[-1].encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer((os.environ["HOST"], int(os.environ["PORT"])), Handler)
+server.serve_forever()
+"#,
+        )
+        .expect("official canary application fixture");
+        initialize_git_fixture(&workspace);
+
+        let config = ProductionApplicationConfig::official()
+            .with_state_db_path(&state_path)
+            .with_composition_build_revision("m45-official-canary")
+            .with_default_max_api_requests(NonZeroU32::new(1).unwrap())
+            .with_api_key(api_key)
+            .expect("bind official credential");
+        let app = AgentApplication::production(config).expect("official production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-flash"));
+        command.task = caller_authored_application_probe_task();
+        command.task.objective =
+            "不要调用工具；直接提出完成，由 Host 验证已冻结的本地 HTTP 应用".to_owned();
+        command.reasoning_effort = ReasoningEffort::Off;
+        command.max_output_tokens = Some(64);
+        command.max_api_requests = Some(NonZeroU32::new(1).unwrap());
+        command.tool_policy.enabled = false;
+        command.limits = RunLimits {
+            max_turns: 1,
+            max_model_requests: 1,
+            max_model_retries: 0,
+            max_tool_calls: 0,
+            max_depth: 0,
+            max_concurrent_children: 0,
+            model_event_idle_ms: Some(120_000),
+            wall_time_ms: Some(180_000),
+        };
+
+        let run = run_result(
+            app.execute(envelope(
+                "m45-official-application-probe-canary",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = tokio::time::timeout(Duration::from_secs(180), async {
+            loop {
+                let replay = app
+                    .store
+                    .load(&run.run_id)
+                    .await
+                    .expect("load official canary")
+                    .expect("official canary run exists");
+                if replay.snapshot.terminal.is_some() {
+                    break replay;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("official canary reaches a bounded terminal");
+        let terminal_kind = match replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal)
+        {
+            Some(TerminalState::Completed { .. }) => "completed",
+            Some(TerminalState::Blocked { .. }) => "blocked",
+            Some(TerminalState::Failed { .. }) => "failed",
+            Some(TerminalState::Cancelled) => "cancelled",
+            Some(TerminalState::Interrupted) => "interrupted",
+            Some(TerminalState::RecoveryRequired { .. }) => "recovery_required",
+            None => "missing",
+        };
+        let accounting = &replay.snapshot.accounting;
+        println!(
+            "M45_CANARY terminal={terminal_kind} model=deepseek-v4-flash physical_requests={} runtime_retries={} usage_complete={} billing_unknown={} input_tokens={} output_tokens={} cost_nanousd={}",
+            accounting.total_started(),
+            accounting.runtime_retries,
+            accounting.usage_complete,
+            accounting.billing_unknown,
+            accounting.usage.input_tokens,
+            accounting.usage.output_tokens,
+            accounting.cost_nanousd,
+        );
+        assert_eq!(terminal_kind, "completed");
+        let probe = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } if outcome
+                    .verifier_observation
+                    .as_ref()
+                    .is_some_and(|observation| {
+                        observation.spec.verifier_id == "application_probe"
+                    }) =>
+                {
+                    Some((outcome.as_ref(), receipt.as_deref()))
+                }
+                _ => None,
+            })
+            .expect("official canary commits ApplicationProbe");
+        assert!(probe.0.is_success(), "{}", probe.0.content);
+        assert!(probe.1.is_some());
+
+        assert_eq!(accounting.hard_request_limit, Some(1));
+        assert_eq!(accounting.total_started(), 1);
+        assert_eq!(accounting.total_completed(), 1);
+        assert_eq!(accounting.total_in_flight(), 0);
+        assert_eq!(accounting.runtime_retries, 0);
+        assert_eq!(accounting.billing_unknown_attempts, 0);
+        assert!(
+            accounting.cost_nanousd <= 100_000_000,
+            "official canary exceeded the $0.10 ceiling"
+        );
+        println!("M45_CANARY receipt=true");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn m45_application_probe_sigkill_reopen_recovers_owned_tree_without_rerun() {
+        let server =
+            MockDeepSeekServer::start(vec![response("deepseek-v4-flash", "完成", 5, 2)]).await;
+        let temp = tempfile::tempdir().expect("M45 SIGKILL parent");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        let marker = temp.path().join("probe-started");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(
+            workspace.join("slow_probe.py"),
+            r#"import os
+import time
+
+with open(os.environ["PROBE_STARTED_FILE"], "w", encoding="utf-8") as marker:
+    marker.write(str(os.getpid()))
+    marker.flush()
+    os.fsync(marker.fileno())
+
+time.sleep(60)
+"#,
+        )
+        .expect("slow application fixture");
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "DSE Test"][..],
+            &["config", "user.email", "test@dse.local"][..],
+            &["add", "slow_probe.py"][..],
+            &["commit", "-m", "fixture"][..],
+        ] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "production::tests::m45_application_probe_sigkill_child",
+                "--nocapture",
+            ])
+            .env("M45_SIGKILL_STATE", &state_path)
+            .env("M45_SIGKILL_WORKSPACE", &workspace)
+            .env("M45_SIGKILL_ROOT", &server.root)
+            .env("M45_SIGKILL_MARKER", &marker)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn supervised production app");
+        let host_pid = child.id().expect("supervised host pid");
+        let stdout = child.stdout.take().expect("supervised stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let run_id = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("read supervised output")
+                    .expect("supervised process ended before run id");
+                if let Some(raw) = line.strip_prefix("M45_RUN_ID=") {
+                    break RunId::from(raw.to_owned());
+                }
+            }
+        })
+        .await
+        .expect("supervised run id timeout");
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !marker.is_file() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("application process start marker timeout");
+        let application_pid = std::fs::read_to_string(&marker)
+            .expect("application pid marker")
+            .parse::<u32>()
+            .expect("application pid");
+
+        assert!(
+            ProcessCommand::new("/bin/kill")
+                .args(["-9", &host_pid.to_string()])
+                .status()
+                .expect("send SIGKILL to supervised Host")
+                .success()
+        );
+        let host_status = child.wait().await.expect("reap supervised Host");
+        assert!(!host_status.success());
+
+        let before_store = StateStore::open(Some(state_path.clone())).expect("open crashed store");
+        let before = before_store
+            .load(&run_id)
+            .await
+            .expect("load crashed run")
+            .expect("crashed run exists");
+        let pending = before
+            .snapshot
+            .pending_host_verification
+            .as_ref()
+            .expect("in-flight Host verifier is durable");
+        assert_eq!(pending.state, DurableActionState::InFlight);
+        assert_eq!(pending.verifier.verifier_id, "application_probe");
+        assert!(before.snapshot.terminal.is_none());
+        drop(before_store);
+
+        let was_live_before_reopen = ProcessCommand::new("/bin/kill")
+            .args(["-0", &application_pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        let reopened = AgentApplication::production(config(
+            &state_path,
+            connection(&server.root, false),
+            false,
+        ))
+        .expect("reopen crashed production app without credential");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    "m45-sigkill-reopen",
+                    RunCommand::Resume {
+                        run_id: run_id.clone(),
+                        expected_workspace: None,
+                    },
+                ))
+                .await,
+        );
+        assert!(matches!(
+            resumed.terminal,
+            Some(TerminalState::RecoveryRequired {
+                ambiguity: RecoveryAmbiguity {
+                    phase: RecoveryAmbiguityPhase::HostVerification,
+                    ..
+                }
+            })
+        ));
+        let after = reopened
+            .store
+            .load(&run_id)
+            .await
+            .expect("load recovered run")
+            .expect("recovered run exists");
+        assert_eq!(
+            &after.events[..before.events.len()],
+            before.events.as_slice(),
+            "reopen must preserve the exact committed prefix"
+        );
+        assert_eq!(
+            after
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, RuntimeEventKind::Terminal { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !ProcessCommand::new("/bin/kill")
+                .args(["-0", &application_pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        );
+        assert_eq!(server.finish().await.len(), 1);
+        assert!(
+            was_live_before_reopen || cfg!(target_os = "linux"),
+            "macOS recovery fixture should remain live until durable reopen cleanup"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "spawned only by the external M45 SIGKILL recovery test"]
+    async fn m45_application_probe_sigkill_child() {
+        let Ok(state_path) = std::env::var("M45_SIGKILL_STATE") else {
+            return;
+        };
+        let workspace = PathBuf::from(std::env::var("M45_SIGKILL_WORKSPACE").unwrap());
+        let marker = PathBuf::from(std::env::var("M45_SIGKILL_MARKER").unwrap());
+        let root = std::env::var("M45_SIGKILL_ROOT").unwrap();
+        let app = AgentApplication::production(config(
+            Path::new(&state_path),
+            connection(&root, false),
+            true,
+        ))
+        .expect("production app in supervised child");
+        let mut command = start_command(&workspace, Some("deepseek-v4-flash"));
+        command.task = sigkill_application_probe_task(&marker);
+        let run = run_result(
+            app.execute(envelope(
+                "m45-sigkill-child-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        println!("M45_RUN_ID={}", run.run_id.0);
+        std::io::Write::flush(&mut std::io::stdout()).expect("flush supervised run id");
+        let _ = wait_terminal(app.store.as_ref(), &run.run_id).await;
     }
 
     #[tokio::test]

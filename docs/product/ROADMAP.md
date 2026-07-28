@@ -217,9 +217,11 @@
   为 0，`VerifiedMilestoneProjection` 不实施；same-DeepSeek structural baseline 已冻结，
   production Rust delta=0、official requests=0。
 - ADR-0017 W1.1 已完成并 keep：canonical `web_fetch` 已从 HTTPS-only 一次迁移为 public
-  HTTP(S) + monotonic transport provenance；M45/M46 未启动。
-- M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；M45/M46 尚未启动。
-- ADR-0017 W1.1 形成 M45 前的新 clean checkpoint；没有并行启动后续项。
+  HTTP(S) + monotonic transport provenance，clean checkpoint 为 `5be131a1c`。
+- M45-A ApplicationProbe 已在本 checkpoint 完成：一次性、worktree-local 的 process start ->
+  loopback health/HTTP assertion -> bounded logs -> latest-revision receipt -> teardown/reopen 已接入
+  canonical Host verifier 主链；M46 尚未准入或启动。
+- M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6830,7 +6832,7 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑冻结后续顺序；M42–M44 已形成实现或决策 checkpoint，M45–M46 尚未启动。
+这些里程碑冻结后续顺序；M42–M45-A 已形成实现或决策 checkpoint，M46 尚未准入或启动。
 
 1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
    运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
@@ -6841,13 +6843,74 @@ TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 a
    compatibility 的 server tool result、stream、thinking、usage、finish、来源和 replay；
    若需要第二 DeepSeek wire，必须新 ADR。无完整收益则等待 Chat surface，不建 provider
    fallback chain。
-4. **M45 ApplicationProbe**：先实现 worktree-local process、port/health、logs、HTTP assertion、
-   latest-revision receipt 和 teardown；HTTP 足够时不启动 Chrome。
+4. **M45 ApplicationProbe（M45-A 已完成）**：已实现 worktree-local process、port/health、logs、
+   HTTP assertion、latest-revision receipt 和 teardown/reopen；HTTP 已足够，本切片未启动 Chrome。
 5. **M46 只读语义浏览器**：只有 ApplicationProbe/真实 JS 页面证明 HTTP 不足时，使用
    Rust/Tokio + CDP + pinned Chrome for Testing，实现 navigate、bounded AX/DOM snapshot 和
    Host teardown；action、登录、截图和视觉分别后置。
 
-### 40.1 M42 formal result
+### 40.1 M45-A ApplicationProbe pre-registration 与 formal result
+
+真实问题不是缺少第二个通用 shell，而是 Agent 修改 local HTTP service 后，现有 Host verifier
+只能等待前台命令退出，不能在同一 canonical receipt 中证明 process start、loopback readiness、
+HTTP assertion、有界日志与 teardown。M45-A 的唯一 production owner 是 `crates/tools`；
+`crates/app` 只解析/冻结真实 TaskContract caller，`crates/orchestrator` 继续只拥有 Writer
+worktree，不新增进程服务或私有生命周期。
+
+切片必须复用 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome/Artifact
+-> EvidenceReceipt -> RuntimeEvent -> RunStore`。ApplicationProbe 是 Host-owned exact verifier，
+不加入模型可见 catalog；启动只接受 exact program/argv、worktree 内 cwd 与有界环境，HTTP 只访问
+Host 分配的 loopback port。成功或失败都要记录 status/body digest/excerpt、stdout/stderr bytes 与
+truncation、exit/timeout/cancel、revision before/after 和 teardown/reap 事实，所有应用输出均为
+`external_untrusted`。
+
+被替换的旧路是用 foreground `run_verifiers`/shell 等待永久 server、再用独立 curl 或人工 kill
+拼接证据；cutover 后不保留 background probe、PID sidecar、第二 Store/session 或兼容入口。
+M45-A 是 Risk 2：先完成 contract/safety/caller/reopen 与真实 OS `SIGKILL` fault matrix，再跑
+focused，并只在 pre-integration 对同一 revision 跑一次 full gate。HTTP 已足够时 M46 保持关闭。
+
+实现结果保留 `crates/tools` 单一 owner：新增的 `application_probe` 只由 Host verifier 调用，
+不计入或暴露到 13-tool DeepSeek catalog。Start resolver 用 Host 生成的 128-bit lease 替换 caller
+plan；exact argv marker、sanitized env、worktree cwd、Host 分配 loopback port 与 no-proxy/no-redirect
+GET 在 spawn 前冻结。应用 assertion 除预注册 status/body 外必须回显 exact lease identity，因此
+释放临时 listener 后的 port race/foreign listener 不能 false pass。Ask/isolated Writer 的既有
+network-denied sandbox 在 spawn 前拒绝；Agent/FullAccess root 走同一 canonical verifier 权限链。
+
+正常、失败、cancel 与 timeout 都执行 owned process-tree teardown/reap。真实外部 `SIGKILL` fixture
+证明 macOS/Linux reopen 从 `HostVerificationPrepared` 的 exact lease 回收 tree，保留原 event prefix，
+只提交一个既有 `RecoveryRequired(HostVerification)` terminal，physical model request 保持 `1 -> 1`，
+不重新 spawn/HTTP。terminal SQLite reopen 也保持 events byte-for-byte 相同且 quiet loopback accept
+count 为 0。成功 receipt 只在 verifier before/after 等于最新 workspace revision 时 seal；revision
+drift 为 stale。失败 body/status/log 的 bounded `external_untrusted` facts 进入同一 root Agent rework
+turn，并由第二次 Host probe 闭合，不新增完成权。
+
+deterministic M45 module matrix 为 10 pass、0 fail；完整 `dse-tools` 为 376 pass、0 fail、2 ignored，
+另有 1 个 integration 与 2 个 doc pass；完整 `dse-app` 为 64 pass、0 fail、3 ignored（两个
+process helper 加一个 one-shot official canary）。
+旧 foreground-server + standalone curl/manual-kill 从未是 canonical production 实现，因此可删除
+production adapter 数为 0；本切片也未引入 background handle、PID/port sidecar、第二 Runtime、
+Store、session、daemon、service registry、browser/Chrome/CDP/Playwright 或新 protocol/state 字段。
+
+最终 revision 的 focused gate 全绿：bounded authority 基线 17,636 行、tools owner route 2,095 行、
+ceiling 4,409 行，固定边界可达率 23/23；public、Runtime 88-case conformance、tools/app/app-server、
+exec、TUI/PTY 与 owner check 均通过。official DeepSeek Flash canary 只执行一次，冻结 physical
+request admission 1、runtime rerun 0、output cap 64，实际没有到达 `Completed`，且第一次 harness
+在 terminal 断言前未输出 durable accounting；按 maximum_reruns=0 没有再次请求。实际 usage、
+费用和失败 taxonomy 因而为 unknown，不能声称 vertical usability、费用或效率提升，也不能以
+该 canary 抹掉 deterministic behavior/reopen 证据。harness 已改为未来先输出 accounting 再断言，
+但本切片不重跑。
+
+pre-integration full gate 严格只运行一次。public/authority（最终 full 时 tools route 2,101 行、
+fixed boundary 23/23）、fmt 与 workspace strict Clippy 通过；workspace tests 的唯一失败是本切片
+`assertion_cannot_overrun_the_overall_deadline` 在并发 test binary 中，Python fixture 的释放后端口
+被另一 probe 抢占，安全地产生 `application_probe_early_exit` 而不是测试预期的
+`application_probe_overall_timeout`。这是 false deny/test isolation 问题，不是 timeout 越界或
+foreign-service false allow。修复把进程型 probe fixtures 在同一 binary 内串行化，并将 reqwest
+attempt timeout 从通用 `http_failed` 提升为 typed `application_probe_http_timeout`，同时保证测试
+overall deadline 先于独立 attempt cap。exact regression、默认 `dse-tools` 376/0/2 ignored、
+all-features owner package 378/0/2 ignored、owner check/strict Clippy 均随后通过；full 没有重跑。
+
+### 40.2 M42 formal result
 
 M42 已在现有 interactive TUI 中加入 full-screen Run Hub。无显式 `--resume`、无初始输入且
 当前 workspace 存在历史 root 时，冷启动先显示按 canonical `updated_at` 倒序的运行列表；
@@ -6869,7 +6932,7 @@ continuation source。`New run` 只清除进程内的 continuation 选择，下�
 付费 A/B 或 canary；Run API、RuntimeEvent 与 State schema 均未升级。`dse-tui` package、
 focused、严格 workspace Clippy、完整 workspace tests、fmt、check 与 diff gate 全部通过。
 
-### 40.2 M43 formal result
+### 40.3 M43 formal result
 
 M43 在 `crates/tools` 的固定 catalog 中加入第 13 个 Host 工具 `load_skill(name)`。一次
 production Start/Continue 只由 `crates/context` 发现一份不可变 `SkillRegistry`，同一快照同时
@@ -6898,7 +6961,7 @@ provider usage 补全的 accounting observation。现有 `ToolOutcome` 已能无
 RuntimeEvent、State schema 均未升级。MCP/plugin 继续不进入模型 catalog；marketplace、search、
 browser、第二 Runtime/Store/permission owner 和 M44 以后能力均未引入。
 
-### 40.3 M44 formal result
+### 40.4 M44 formal result
 
 M44 结论为 `hold_wait_for_chat_surface`，没有把 `web_search` 加入 production catalog。DeepSeek
 当前 ChatCompletions reference 明确只接受 function tools；官方 Anthropic compatibility 虽把
@@ -6933,7 +6996,7 @@ State version、ApplicationProbe、CDP/browser、视觉、MCP marketplace 或 M4
 `cargo check -p dse-deepseek --locked`、focused gate、strict workspace clippy、workspace tests、
 fmt check 与 diff check 均为绿色。
 
-### 40.4 ADR-0016 首个实现 Goal（已完成）
+### 40.5 ADR-0016 首个实现 Goal（已完成）
 
 真实问题是 M44 clean checkpoint 的默认 development bootstrap 仍需完整读取 Product Plan、
 全部 ADR、Roadmap、Evaluation 和 Current Architecture，共 17,636 行，并在根 guide 与脚本间
@@ -6964,7 +7027,7 @@ Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定�
 acquisition。每个里程碑必须写出“以前用户不能 X，现在可以 X”，并在 3–5 个工作日内产生
 用户可见纵向结果，否则缩小或停止。
 
-### 40.5 ADR-0016 continuation/Harness 离线复核（已完成）
+### 40.6 ADR-0016 continuation/Harness 离线复核（已完成）
 
 真实问题是：current durable replay 是否仍在长任务 continuation 上重复丢失目标，以及 DSE
 当前 Harness 的额外复杂度相对 same-DeepSeek minimal loop 到底承担哪些可复查保证。owner 是

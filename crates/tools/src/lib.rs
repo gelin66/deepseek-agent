@@ -3,6 +3,7 @@ use std::path::PathBuf;
 pub use dse_protocol::agent_runtime::ToolOutcome;
 use serde_json::Value;
 
+mod application_probe;
 mod apply_patch;
 mod atomic_write;
 pub mod child_env;
@@ -26,6 +27,11 @@ mod unified_diff;
 mod verification_artifact;
 mod web_fetch;
 
+pub use application_probe::ApplicationProbeRecovery;
+pub(crate) use application_probe::{
+    APPLICATION_PROBE_VERIFIER_ID, execute_application_probe, recover_application_probe,
+    resolve_application_probe_spec, validate_application_probe_spec,
+};
 pub(crate) use apply_patch::{execute_apply_patch, preflight_apply_patch};
 pub use atomic_write::write_atomic;
 pub(crate) use edit_file::execute_edit_file;

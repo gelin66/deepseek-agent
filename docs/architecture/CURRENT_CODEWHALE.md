@@ -376,6 +376,8 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 组合固定工具 executor 与本地执行策略；
 - 打开同一种 SQLite `RunStore`；
 - 绑定 physical request budget、model accounting 和 execution fingerprint；
+- 解析 Host-only `ApplicationProbe` TaskContract，并在冷重开进入 Runtime 前按已持久化 lease
+  回收 in-flight probe process tree；
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
@@ -482,7 +484,9 @@ retained，确定无副作用时精确清理。
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
 post-integration verification 都是当前 RuntimeEvent v22 / State v28 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
-完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
+完成判定，也不拥有 M45-A ApplicationProbe 的 process/port/health/log 生命周期。它只为 probe
+沿用调用方已经选定的 Writer worktree；一次性 probe 的实现、进程树 lease 与 cleanup 均在
+`crates/tools`。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
 
 当前明确 fail closed：dirty/non-Git/unborn/不受支持 Git 仓库、base 漂移、branch CAS
@@ -544,6 +548,32 @@ git_diff     git_status   grep_files   list_dir
 load_skill   read_file    run_tests    run_verifiers
 web_fetch
 ```
+
+M45-A 另有一个不计入这 13 个定义、不会发送给 DeepSeek 的 Host-only exact verifier
+`application_probe`。`crates/app` 在 Start 时把 caller 的 program/argv、worktree 内 cwd、受限
+env、health/assertion path、status/body 与各项 bounds 解析成 canonical `VerifierSpec`，并加入
+Host 生成的一次性 128-bit lease；caller plan、URL、host 与 port 都不能覆盖 Host 事实。argv 必须
+精确包含一次 `{dse_probe_lease}`，实际应用 response 必须回显对应
+`dse-application-probe:<lease>`，所以释放临时 port 后抢占该端口的 foreign listener 不能产生
+false pass。
+
+执行只构造 `http://127.0.0.1:<host-port>` 的 bounded GET；不接受 shell string、redirect、proxy、
+header、Cookie、auth、body、WebSocket 或 TLS 配置。startup/health/overall deadline、raw response、
+stdout/stderr 与 teardown 都有硬边界，response/log 统一标记 `external_untrusted`。正常成功、
+typed failure、cancel 和 timeout 都终止 owned process group/Job 并 reap；revision before/after
+不一致时既有 artifact 变为 stale，不能 seal receipt。Agent/FullAccess root 可按现有 sandbox
+执行；Ask 与 isolated Writer 的 network-denied policy 在 spawn 前拒绝。
+
+lease 已随 `HostVerificationPrepared` 的 frozen verifier 持久化，不增加 PID/port sidecar。
+进程级 `SIGKILL` 后，`AgentApplication` reopen 只按 exact argv marker 扫描并回收 owned process
+group；随后现有 Runtime 以 Host-verification ambiguity 形成一个 `RecoveryRequired` terminal，
+不重新 spawn、HTTP 或请求 DeepSeek。已 committed terminal reopen 只重放 SQLite outcome/receipt。
+`ToolOutcome`、inline artifact、`EvidenceReceipt`、RuntimeEvent 与 State schema 均未改变。
+
+一次 official Flash canary 按 physical admission 1、runtime rerun 0、64 output tokens 执行，但没有
+到达 `Completed`；首次 harness 又在断言前停止，未留下可引用的 request accounting。因此当前只
+保留 deterministic production caller/rework/reopen 事实，不声明 official vertical usability、
+精确费用或效率；没有为取得绿结果发出第二次请求。
 
 M43 已加入 canonical `load_skill(name)`。production Start/Continue 由 `crates/context` 发现一次
 不可变 Skill 快照，并把同一 `Arc<SkillRegistry>` 交给 prompt、root/child executor 与 execution

@@ -33,11 +33,13 @@ use crate::web_fetch::{
     SystemWebFetchNetwork, WebFetchNetwork, execute_web_fetch, preflight_web_fetch,
 };
 use crate::{
-    ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
+    APPLICATION_PROBE_VERIFIER_ID, ApplicationProbeRecovery, ProductionToolContext, ToolError,
+    ToolOutcome, capture_workspace_revision, execute_application_probe, execute_apply_patch,
     execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
     execute_grep_files, execute_list_dir, execute_load_skill, execute_read_file, execute_run_tests,
-    execute_run_verifiers, preflight_apply_patch, preflight_load_skill, resolve_run_tests_spec,
-    resolve_run_verifiers_spec,
+    execute_run_verifiers, preflight_apply_patch, preflight_load_skill, recover_application_probe,
+    resolve_application_probe_spec, resolve_run_tests_spec, resolve_run_verifiers_spec,
+    validate_application_probe_spec,
 };
 
 pub const PRODUCTION_TOOL_NAMES: [&str; 13] = [
@@ -430,6 +432,9 @@ impl ProductionToolExecutor {
         verifier_id: &str,
         parameters: Value,
     ) -> Result<VerifierSpec, ToolError> {
+        if verifier_id == APPLICATION_PROBE_VERIFIER_ID {
+            return resolve_application_probe_spec(parameters, &self.context);
+        }
         validate_production_input(verifier_id, &parameters)?;
         match verifier_id {
             "run_tests" => resolve_run_tests_spec(parameters),
@@ -445,6 +450,40 @@ impl ProductionToolExecutor {
             _ => Err(ToolError::invalid_input(format!(
                 "tool '{verifier_id}' cannot produce canonical Host verification evidence"
             ))),
+        }
+    }
+
+    /// Validate one already persisted Host verifier without regenerating its
+    /// durable process identity.
+    pub fn validate_verifier_spec_exact(&self, verifier: &VerifierSpec) -> Result<(), ToolError> {
+        if verifier.verifier_id == APPLICATION_PROBE_VERIFIER_ID {
+            validate_application_probe_spec(verifier, &self.context)
+        } else {
+            let resolved =
+                self.resolve_verifier_spec(&verifier.verifier_id, verifier.parameters.clone())?;
+            if resolved == *verifier {
+                Ok(())
+            } else {
+                Err(ToolError::invalid_input(
+                    "persisted verifier specification differs from the production resolver",
+                ))
+            }
+        }
+    }
+
+    /// Recover an in-flight one-shot verifier from facts already committed in
+    /// `HostVerificationPrepared`. Ordinary verifiers have no retained
+    /// process identity and therefore perform no cleanup here.
+    pub async fn recover_inflight_verifier(
+        &self,
+        verifier: &VerifierSpec,
+    ) -> Result<Option<ApplicationProbeRecovery>, ToolError> {
+        if verifier.verifier_id == APPLICATION_PROBE_VERIFIER_ID {
+            recover_application_probe(verifier, &self.context)
+                .await
+                .map(Some)
+        } else {
+            Ok(None)
         }
     }
 
@@ -553,6 +592,9 @@ impl ProductionToolExecutor {
             "read_file" => execute_read_file(input, context, self.prefer_external_pdftotext),
             "run_tests" => execute_run_tests(input, context, &self.shell).await,
             "run_verifiers" => execute_run_verifiers(input, context, &self.shell).await,
+            APPLICATION_PROBE_VERIFIER_ID => {
+                execute_application_probe(input, context, &self.shell).await
+            }
             "web_fetch" => Ok(execute_web_fetch(
                 input,
                 Arc::clone(&self.web_fetch_network),
@@ -901,7 +943,9 @@ impl ToolExecutor for ProductionToolExecutor {
         // represent callers that skipped preflight as an observed operation
         // failure rather than corrupting the lifecycle.
         let workspace_access = self.workspace_access(&invocation);
-        if !PRODUCTION_TOOL_NAMES.contains(&invocation.name.as_str()) {
+        let host_application_probe = invocation.name == APPLICATION_PROBE_VERIFIER_ID
+            && invocation.call_id.starts_with("host:");
+        if !PRODUCTION_TOOL_NAMES.contains(&invocation.name.as_str()) && !host_application_probe {
             return Ok(Self::execution_error_outcome(
                 ToolError::not_available(format!("工具 '{}' 不在固定生产目录中", invocation.name)),
                 workspace_access,
