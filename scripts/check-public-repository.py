@@ -12,6 +12,43 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 AGENT_GUIDE = Path("AGENTS.md")
+AUTHORITY_INDEX = Path("docs/README.md")
+PRODUCT_PLAN = Path("docs/product/PRODUCT_PLAN.md")
+ROADMAP = Path("docs/product/ROADMAP.md")
+EVALUATION = Path("docs/product/EVALUATION.md")
+CURRENT_ARCHITECTURE = Path("docs/architecture/CURRENT_CODEWHALE.md")
+DEV_GATE = Path("scripts/dev-dse.sh")
+
+# Frozen at the clean M44 checkpoint (801391577), before ADR-0016 entered this
+# worktree: Product Plan + Roadmap + Evaluation + Current Architecture + all
+# accepted ADRs required 17,636 lines of unconditional bootstrap reading.
+AUTHORITY_BOOTSTRAP_BASELINE_LINES = 17_636
+AUTHORITY_BOOTSTRAP_MAX_RATIO = 0.25
+AUTHORITY_ROUTE_START = "<!-- authority-routes:start -->"
+AUTHORITY_ROUTE_END = "<!-- authority-routes:end -->"
+BOOTSTRAP_QUESTION_START = "<!-- bootstrap-questions:start -->"
+BOOTSTRAP_QUESTION_END = "<!-- bootstrap-questions:end -->"
+EXPECTED_OWNER_ROUTES = {
+    "app",
+    "runtime",
+    "protocol",
+    "deepseek",
+    "context",
+    "tools",
+    "state",
+    "orchestrator",
+    "localization",
+    "clients",
+    "repository-guidance",
+}
+EXPECTED_BOOTSTRAP_QUESTIONS = {
+    "current_goal",
+    "owner",
+    "forbidden",
+    "focused_gate",
+    "full_gate",
+    "deletion",
+}
 
 MARKDOWN_FILES = (
     Path("README.md"),
@@ -117,10 +154,9 @@ AGENT_GUIDE_MAX_LINES = 140
 AGENT_GUIDE_MAX_BYTES = 9_000
 AGENT_GUIDE_REQUIRED_LINKS = (
     "docs/product/PRODUCT_PLAN.md",
+    "docs/README.md#owner-routes",
     "docs/decisions/",
-    "docs/product/ROADMAP.md",
-    "docs/product/EVALUATION.md",
-    "docs/architecture/CURRENT_CODEWHALE.md",
+    "docs/product/ROADMAP.md#current-execution-window",
 )
 AGENT_GUIDE_REQUIRED_RULES = (
     "One DeepSeek backend.",
@@ -128,6 +164,7 @@ AGENT_GUIDE_REQUIRED_RULES = (
     "one `RunStore`",
     "Changing one of these constraints requires evidence and a new ADR.",
     "Each implementation slice must state:",
+    "Do not read every ADR",
     "Never use broad `git clean`",
     "Preserve existing user and agent changes",
     "Do not push, release, force-push",
@@ -135,9 +172,11 @@ AGENT_GUIDE_REQUIRED_RULES = (
     "Audit against the official DeepSeek protocol",
     "Root and child agents must eventually pass the same conformance suite.",
     "read-only agents may share a view",
+    "./scripts/dev-dse.sh authority",
     "./scripts/dev-dse.sh focused",
-    "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "git diff --check",
+    "./scripts/dev-dse.sh full",
+    "Run the full gate at most",
+    "Offline fixtures come before credentials",
     "Update `ROADMAP.md` for milestone status",
 )
 CRATE_LEGACY_ALLOWLIST = {
@@ -193,6 +232,237 @@ def tracked_files(*pathspecs: str) -> tuple[Path, ...]:
     if proc.returncode != 0:
         fail(f"git ls-files failed: {proc.stderr.strip() or proc.returncode}")
     return tuple(Path(line) for line in proc.stdout.splitlines() if line)
+
+
+def marked_table_rows(body: str, start: str, end: str) -> dict[str, tuple[str, ...]]:
+    if body.count(start) != 1 or body.count(end) != 1:
+        fail(f"authority fixture markers must occur exactly once: {start}, {end}")
+    block = body.split(start, maxsplit=1)[1].split(end, maxsplit=1)[0]
+    rows: dict[str, tuple[str, ...]] = {}
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
+        if not cells or not cells[0].startswith("`") or not cells[0].endswith("`"):
+            continue
+        key = cells[0].strip("`")
+        if key in rows:
+            fail(f"duplicate authority fixture row: {key}")
+        rows[key] = cells
+    return rows
+
+
+def local_link_target(source: Path, raw_target: str) -> tuple[Path, str | None]:
+    target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+    path_text, separator, fragment = target.partition("#")
+    resolved = (ROOT / source if not path_text else ROOT / source.parent / path_text).resolve()
+    try:
+        relative = resolved.relative_to(ROOT.resolve())
+    except ValueError:
+        fail(f"{source}: authority link escapes repository: {raw_target}")
+    if not (ROOT / relative).is_file():
+        fail(f"{source}: authority link is not a file: {raw_target}")
+    return relative, fragment if separator else None
+
+
+def explicit_anchor_line(relative: Path, fragment: str) -> int:
+    marker = f'<a id="{fragment}"></a>'
+    lines = read(relative).splitlines()
+    matches = [index for index, line in enumerate(lines) if line.strip() == marker]
+    if len(matches) != 1:
+        fail(f"{relative}: expected one explicit authority anchor {marker}")
+    return matches[0]
+
+
+def authority_read_lines(relative: Path, fragment: str | None) -> int:
+    lines = read(relative).splitlines()
+    if fragment is None:
+        return len(lines)
+
+    anchor = explicit_anchor_line(relative, fragment)
+    heading_index = None
+    heading_level = None
+    for index in range(anchor + 1, len(lines)):
+        match = re.match(r"^(#{1,6})\s+", lines[index])
+        if match:
+            heading_index = index
+            heading_level = len(match.group(1))
+            break
+    if heading_index is None or heading_level is None:
+        fail(f"{relative}#{fragment}: anchor is not followed by a heading")
+
+    end = len(lines)
+    for index in range(heading_index + 1, len(lines)):
+        match = re.match(r"^(#{1,6})\s+", lines[index])
+        if match and len(match.group(1)) <= heading_level:
+            end = index
+            break
+    return end - anchor
+
+
+def authority_links_in_cell(source: Path, cell: str) -> tuple[tuple[Path, str | None], ...]:
+    links: list[tuple[Path, str | None]] = []
+    for raw_target in LINK_RE.findall(cell):
+        if "://" in raw_target or raw_target.startswith("mailto:"):
+            fail(f"{source}: owner route must use a local authority link: {raw_target}")
+        links.append(local_link_target(source, raw_target))
+    return tuple(links)
+
+
+def authority_read_set(
+    route_cells: tuple[str, ...],
+) -> tuple[tuple[Path, str | None], ...]:
+    if len(route_cells) != 5:
+        fail("authority route rows must have owner, code owner, ADR, current, evaluation columns")
+    mandatory: list[tuple[Path, str | None]] = [
+        (AGENT_GUIDE, None),
+        (AUTHORITY_INDEX, None),
+        (PRODUCT_PLAN, None),
+        (ROADMAP, "current-execution-window"),
+    ]
+    # Evaluation is deliberately conditional. Ordinary owner-scoped bootstrap
+    # reads the accepted decisions and current facts columns only.
+    mandatory.extend(authority_links_in_cell(AUTHORITY_INDEX, route_cells[2]))
+    mandatory.extend(authority_links_in_cell(AUTHORITY_INDEX, route_cells[3]))
+    unique: dict[tuple[Path, str | None], None] = {}
+    for target in mandatory:
+        unique[target] = None
+    return tuple(unique)
+
+
+def check_authority_contract() -> tuple[int, int, str, dict[str, tuple[tuple[Path, str | None], ...]]]:
+    agent_body = read(AGENT_GUIDE)
+    index_body = read(AUTHORITY_INDEX)
+    gate_body = read(DEV_GATE)
+
+    if "Read completely, in order, before changing the repository:" in agent_body:
+        fail("unconditional full-read bootstrap remains in AGENTS.md")
+    if "cargo clippy --workspace --all-targets --locked -- -D warnings" in agent_body:
+        fail("AGENTS.md duplicates the executable full gate owned by scripts/dev-dse.sh")
+
+    route_rows = marked_table_rows(index_body, AUTHORITY_ROUTE_START, AUTHORITY_ROUTE_END)
+    if set(route_rows) != EXPECTED_OWNER_ROUTES:
+        missing = sorted(EXPECTED_OWNER_ROUTES - set(route_rows))
+        extra = sorted(set(route_rows) - EXPECTED_OWNER_ROUTES)
+        fail(f"owner routes mismatch; missing={missing}, extra={extra}")
+    for owner, cells in route_rows.items():
+        if len(cells) != 5:
+            fail(f"authority route has wrong column count: {owner}")
+        for cell in cells[2:5]:
+            links = authority_links_in_cell(AUTHORITY_INDEX, cell)
+            if not links:
+                fail(f"authority route has an empty authority column: {owner}")
+            for relative, fragment in links:
+                if fragment is not None:
+                    explicit_anchor_line(relative, fragment)
+
+    question_rows = marked_table_rows(
+        index_body, BOOTSTRAP_QUESTION_START, BOOTSTRAP_QUESTION_END
+    )
+    if set(question_rows) != EXPECTED_BOOTSTRAP_QUESTIONS:
+        missing = sorted(EXPECTED_BOOTSTRAP_QUESTIONS - set(question_rows))
+        extra = sorted(set(question_rows) - EXPECTED_BOOTSTRAP_QUESTIONS)
+        fail(f"bootstrap questions mismatch; missing={missing}, extra={extra}")
+    for key, cells in question_rows.items():
+        if len(cells) != 2 or not authority_links_in_cell(AUTHORITY_INDEX, cells[1]):
+            fail(f"bootstrap question has no exact authority answer: {key}")
+
+    decision_files = tuple(
+        path.relative_to(ROOT)
+        for path in sorted(
+            (ROOT / "docs/decisions").glob("[0-9][0-9][0-9][0-9]-*.md")
+        )
+    )
+    for relative in decision_files:
+        decision_body = read(relative)
+        if "- 状态：已接受" not in decision_body and "- 状态：已被" not in decision_body:
+            fail(f"decision index contains an ADR without accepted/superseded status: {relative}")
+        expected_link = str(relative.relative_to(Path("docs")))
+        if f"]({expected_link})" not in index_body:
+            fail(f"accepted decision is not reachable from docs/README.md: {relative}")
+
+    required_anchors = (
+        (AGENT_GUIDE, "product-boundary"),
+        (AGENT_GUIDE, "owner-map"),
+        (AGENT_GUIDE, "development-method"),
+        (AGENT_GUIDE, "risk-tier-gate"),
+        (AUTHORITY_INDEX, "owner-routes"),
+        (ROADMAP, "current-execution-window"),
+    )
+    for relative, fragment in required_anchors:
+        explicit_anchor_line(relative, fragment)
+
+    reachability = {
+        "product_plan": "](docs/product/PRODUCT_PLAN.md)" in agent_body,
+        "owner_map": '<a id="owner-map"></a>' in agent_body,
+        "current_milestone": "](docs/product/ROADMAP.md#current-execution-window)" in agent_body,
+        "focused_gate": "./scripts/dev-dse.sh focused" in agent_body,
+        "full_gate": "./scripts/dev-dse.sh full" in agent_body,
+        "deletion_rule": "A replacement slice deletes its old path after cutover." in agent_body,
+    }
+    for relative in decision_files:
+        reachability[f"accepted:{relative.name}"] = (
+            f"]({relative.relative_to(Path('docs'))})" in index_body
+        )
+    missing_reachability = sorted(key for key, reachable in reachability.items() if not reachable)
+    if missing_reachability:
+        fail("fixed boundary is unreachable: " + ", ".join(missing_reachability))
+
+    for marker in ("Risk 0", "Risk 1", "Risk 2", "Risk 3", "Risk 4"):
+        if marker not in agent_body:
+            fail(f"risk-tier gate is missing {marker}")
+    for mode in ("authority)", "focused)", "full)"):
+        if mode not in gate_body:
+            fail(f"scripts/dev-dse.sh is missing canonical gate mode {mode[:-1]}")
+    for command in (
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
+        "cargo test --workspace --locked",
+        "git diff --check",
+    ):
+        if gate_body.count(command) != 1:
+            fail(f"full gate command must have one executable owner: {command}")
+
+    route_sets: dict[str, tuple[tuple[Path, str | None], ...]] = {}
+    route_lines: dict[str, int] = {}
+    for owner, cells in route_rows.items():
+        read_set = authority_read_set(cells)
+        route_sets[owner] = read_set
+        route_lines[owner] = sum(
+            authority_read_lines(relative, fragment) for relative, fragment in read_set
+        )
+    max_owner = max(route_lines, key=route_lines.__getitem__)
+    max_lines = route_lines[max_owner]
+    ceiling = int(AUTHORITY_BOOTSTRAP_BASELINE_LINES * AUTHORITY_BOOTSTRAP_MAX_RATIO)
+    if max_lines > ceiling:
+        fail(
+            f"owner-scoped bootstrap exceeds 25% ceiling: "
+            f"owner={max_owner}, lines={max_lines}, ceiling={ceiling}"
+        )
+
+    return len(reachability), max_lines, max_owner, route_sets
+
+
+def print_authority_report(
+    reachable: int,
+    max_lines: int,
+    max_owner: str,
+    route_sets: dict[str, tuple[tuple[Path, str | None], ...]],
+) -> None:
+    ceiling = int(AUTHORITY_BOOTSTRAP_BASELINE_LINES * AUTHORITY_BOOTSTRAP_MAX_RATIO)
+    for owner in sorted(route_sets):
+        read_set = route_sets[owner]
+        lines = sum(authority_read_lines(path, fragment) for path, fragment in read_set)
+        rendered = ", ".join(
+            f"{path}{'#' + fragment if fragment else ''}" for path, fragment in read_set
+        )
+        print(f"authority route {owner}: {lines} lines :: {rendered}")
+    print(
+        "authority bootstrap report: "
+        f"baseline={AUTHORITY_BOOTSTRAP_BASELINE_LINES}, ceiling={ceiling}, "
+        f"max_owner={max_owner}, max_lines={max_lines}"
+    )
+    print(f"fixed boundary reachability: {reachable}/{reachable} (100%)")
 
 
 def check_required_files() -> None:
@@ -425,6 +695,14 @@ def check_public_secret_placeholders() -> None:
 
 
 def main() -> int:
+    authority_report = check_authority_contract()
+    if sys.argv[1:] == ["--authority-only"]:
+        print_authority_report(*authority_report)
+        print("authority check passed")
+        return 0
+    if sys.argv[1:]:
+        fail("usage: check-public-repository.py [--authority-only]")
+
     check_required_files()
     check_agent_guide_contract()
     check_agent_guide_validator()
@@ -435,6 +713,7 @@ def main() -> int:
     check_bash_blocks()
     check_templates()
     check_public_secret_placeholders()
+    print_authority_report(*authority_report)
     print("public repository check passed")
     return 0
 

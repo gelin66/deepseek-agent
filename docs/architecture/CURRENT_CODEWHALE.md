@@ -235,6 +235,7 @@
 - 当前协议：Run API v15、RuntimeEvent v22、State schema v28、exec-stream v6。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
+<a id="current-core-facts"></a>
 ## 1. 当前结论
 
 Headless、本地 API 与交互 TUI foreground 已共用一条 Agent 执行链：
@@ -365,6 +366,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 
 ## 2. 已统一的生产链
 
+<a id="current-app"></a>
 ### Application service
 
 `crates/app` 是 exec 与 app-server 的唯一 application composition owner：
@@ -385,6 +387,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 active registry 只保存当前进程可投递的 control handle，不是第二个 lifecycle 或持久事实。
 run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
+<a id="current-runtime"></a>
 ### Agent runtime
 
 `crates/runtime` 是 UI、HTTP、DeepSeek transport 和 SQLite 无关的唯一根/子 Agent 内核。
@@ -448,6 +451,7 @@ headroom 派生的 hard input limit 时，Runtime 才在同一 root/child 本地
 before/after Token 重算，仍超限则 typed fail closed。该路径没有摘要模型请求、手动命令、
 提前阈值、独立 root 或第二状态机。
 
+<a id="current-orchestrator"></a>
 ### Agent orchestrator
 
 `crates/orchestrator` 是唯一生产 Writer 编排与 Git workspace owner。当前只支持：
@@ -485,6 +489,7 @@ EvidenceReceipt 可以满足 root TaskContract。
 变化、allowed path 越界、空 diff、缺失 artifact、verifier 失败和恢复歧义。M6-A 未实现
 多 Writer、通用 DAG、脏工作区快照、自动冲突修复或远程 worker。
 
+<a id="current-deepseek"></a>
 ### DeepSeek backend
 
 `crates/deepseek` 是官方 DeepSeek Chat 请求事实 owner：
@@ -527,6 +532,7 @@ finish/continuation、source 与 usage replay 的第二 wire，现有 `ModelMess
 parser 不能无损表达。M44 没有增加 `ApiSurface`、endpoint、DTO、parser、RuntimeEvent 或 State
 字段，正式结论是 `hold_wait_for_chat_surface`。
 
+<a id="current-tools"></a>
 ### Tools
 
 `crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
@@ -593,6 +599,7 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 删除。TUI 下仍编译的其他宽工具实现不代表 canonical production catalog 会自动扩大，
 其余无消费者模块按独立调用方切片继续清理。
 
+<a id="current-state"></a>
 ### State
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
@@ -640,6 +647,7 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 没有 compatibility reader 或双写。旧 Workflow/SubAgent JSON/JSONL 写入链也已随隐藏
 执行路径删除，没有迁为 `RunStore` 双写。
 
+<a id="current-clients"></a>
 ## 3. 当前入口
 
 ### `codewhale exec`
@@ -703,6 +711,7 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 因此三个保留 foreground 入口与所有生产可达根/只读子/Writer Agent 模型循环已经统一；
 M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 
+<a id="current-owner-snapshot"></a>
 ## 4. Crate responsibility snapshot
 
 | Crate | 当前生产职责 | 当前迁移债务 |
@@ -2629,6 +2638,7 @@ AgentRuntime/RunStore、fixed actor route、official DeepSeek ChatCompletions �
 tools 均保持不变。完整事实见
 [M25 agent-legibility cutover](../../eval/summaries/m25-agent-legibility-2026-07-26.md)。
 
+<a id="current-tui"></a>
 ## 7. 当前 TUI 表面系统（M28 complete）
 
 M28 已在 final cutover closure `07214e2ef`（首次 PTY cutover `1e420d9d7`，
@@ -3042,3 +3052,21 @@ implementation-not-admitted，当前没有 browser/search/vision production 路�
 
 这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
 决定保留或删除。
+
+<a id="current-development-authority"></a>
+## 9. Development authority 与验证入口
+
+M44 clean checkpoint 之后，repository guidance 由 ADR-0016 约束。根 `AGENTS.md` 只要求完整
+读取 Product Plan、Roadmap 当前窗口和一个 owner route 指定的 ADR/current-fact section；
+Evaluation 仅在修改评测合同或作 keep/delete 判断时读取。`docs/README.md` 是机械路由地图，
+不是第二份 Roadmap 或架构真相。
+
+`scripts/check-public-repository.py --authority-only` 冻结 M44 的 17,636 行 unconditional
+bootstrap 基线、六个预注册问题、十一条 owner route、accepted ADR 可达性和实际读取集合。
+`scripts/dev-dse.sh` 是唯一 executable gate owner；根 guide 只保存 Risk 0～4 分类，不重复
+full-gate 命令。该切片不修改 production Rust、DeepSeek wire/Prompt、RuntimeEvent 或 Store。
+
+当前实测 repository-guidance route 为 1,024 行，worst-case tools route 为 1,755 行，hard
+ceiling 为 4,409 行；固定边界 22/22 可达。旧 unconditional full-read 和根 guide 的重复
+command list 已删除。Risk 0 gate 与唯一一次 pre-integration full gate 均通过；full 后的结果
+投影只需重新运行 Risk 0 gate。

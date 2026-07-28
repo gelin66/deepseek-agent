@@ -3,19 +3,24 @@
 This is DSE's stable work directory. Milestone history, implementation
 inventories, and evaluation results belong in the linked authorities, not here.
 
-## Read first
+## Mandatory bootstrap
 
-Read completely, in order, before changing the repository:
+Use the bounded map before changing the repository:
 
-1. [Product plan](docs/product/PRODUCT_PLAN.md) — fixed scope and architecture.
-2. [Accepted decisions](docs/decisions/) — long-lived decisions and supersession.
-3. [Roadmap](docs/product/ROADMAP.md) — current milestone and deletion plan.
-4. [Evaluation](docs/product/EVALUATION.md) — evidence needed to keep a capability.
-5. [Current architecture](docs/architecture/CURRENT_CODEWHALE.md) — current facts,
-   not target design.
+1. Read the [Product plan](docs/product/PRODUCT_PLAN.md) completely; it fixes scope
+   and architecture.
+2. Read only the Roadmap's [current execution window](docs/product/ROADMAP.md#current-execution-window).
+3. Select the one matching [owner route](docs/README.md#owner-routes), then read
+   its linked [accepted decisions](docs/decisions/) and current-fact section.
+4. Read the linked [Evaluation](docs/product/EVALUATION.md) rules/current entry
+   only when changing an evaluation contract or making a keep/delete claim.
+5. Expand along the index only for a conflict or a fixed-architecture change.
 
-The product plan and accepted ADRs win over older documentation.
+Do not read every ADR, milestone history, Evaluation result, or the whole
+[Current architecture](docs/architecture/CURRENT_CODEWHALE.md) by default. The
+product plan and accepted ADRs still win over older documentation.
 
+<a id="product-boundary"></a>
 ## Product and architecture boundary
 
 Optimize for `verified task success / tokens / time / code complexity`. DSE is
@@ -34,6 +39,7 @@ chat bridge, source splice, or speculative compatibility layer.
 
 Changing one of these constraints requires evidence and a new ADR.
 
+<a id="owner-map"></a>
 ## Owner map
 
 | Concern | Owner |
@@ -52,6 +58,7 @@ Changing one of these constraints requires evidence and a new ADR.
 Current versions, cutovers, rejected candidates, and frozen evidence live in
 the authority documents and `eval/`, not in this guide.
 
+<a id="development-method"></a>
 ## Development method
 
 Each implementation slice must state:
@@ -98,32 +105,23 @@ behavior requires current official fixtures.
   writers require worktrees.
 - Do not add free-chat swarm behavior or duplicate team tools.
 
-## Validation
+<a id="risk-tier-gate"></a>
+## Risk-tier gate
 
-Focused gate:
+`scripts/dev-dse.sh` is the single executable gate owner:
 
-```bash
-./scripts/dev-dse.sh focused
-```
+| Risk | Change | Minimum sufficient evidence |
+|---|---|---|
+| Risk 0 | docs, authority, index, pure projection | links/fixtures plus `./scripts/dev-dse.sh authority` |
+| Risk 1 | deterministic tool, UI, config | contract/safety/caller/replay plus `./scripts/dev-dse.sh focused` |
+| Risk 2 | protocol, state, recovery, security | conformance/fault/reopen, focused, then `./scripts/dev-dse.sh full` once at pre-integration |
+| Risk 3 | model-visible Prompt, context, route | Risk 2 plus same-DeepSeek held-out A/B and false-success gate |
+| Risk 4 | product capability or efficiency claim | Risk 3 plus private real tasks and complete accounting |
 
-Targeted Rust work:
-
-```bash
-cargo fmt --all -- --check
-cargo test -p <owning-crate> --locked <filter>
-cargo check -p <owning-crate> --locked
-```
-
-Full pre-integration gate:
-
-```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-git diff --check
-```
-
-Credentialed DeepSeek tests are opt-in and cost-bounded; cover protocol behavior
-with offline fixtures first.
+Use owning-crate targeted checks while developing. Run the full gate at most
+once for the same workspace revision. Offline fixtures come before credentials;
+an official canary defaults to one request and zero reruns. Incomplete accounting
+blocks cost/efficiency claims and another paid request, not closed behavior proof.
 
 ## Documentation discipline
 

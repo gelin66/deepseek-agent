@@ -1,75 +1,94 @@
-# 文档入口
+# 文档与开发 authority 入口
 
-文档按职责分目录，避免产品目标、当前实现和导入资料混成一份事实。权威顺序和
-目录边界固定如下。
+本文件是从根 `AGENTS.md` 进入现有权威正文的机械地图，不是第二份 Roadmap、评测规范或
+架构真相。产品总纲和 accepted ADR 仍高于旧文档；Roadmap 仍是唯一执行顺序，Evaluation
+仍是唯一能力 keep/delete 合同，Current Architecture 仍只描述当前源码事实。
 
-## 1. 产品权威文档
+## 1. Mandatory bootstrap
 
-1. [product/PRODUCT_PLAN.md](product/PRODUCT_PLAN.md) — 唯一产品范围与目标架构。
-2. [decisions/](decisions/) — 已接受的长期架构决策。
-3. [product/ROADMAP.md](product/ROADMAP.md) — 唯一开发顺序、迁移与删除计划。
-4. [product/EVALUATION.md](product/EVALUATION.md) — 唯一能力评测和保留门槛。
+每次修改只读取：根 `AGENTS.md`、完整
+[Product Plan](product/PRODUCT_PLAN.md)、Roadmap 的
+[当前执行窗口](product/ROADMAP.md#current-execution-window)，以及下表中唯一匹配 owner 的
+accepted ADR 和 current-fact section。只有修改评测合同或判断 keep/delete 时才读取该行的
+Evaluation 入口；发生冲突或跨固定架构时才沿 accepted decision index 扩大。
 
-如果其他文档与以上内容冲突，以产品总纲和 ADR 为准。
+<a id="owner-routes"></a>
+## 2. Owner routes
 
-## 2. 目录职责
+`Owner key` 是 fixture identity；一项切片只有一个主行。`Evaluation` 列是条件读取，不进入
+普通 owner-scoped bootstrap 行数。
 
-- `product/`：产品总纲、路线与评测门槛；只有这三份文件。
-- `decisions/`：已接受 ADR；只有长期架构决定才新增。
-- `architecture/`：当前架构、协议和能力迁移输入，不代表目标已经完成。
-- `reference/`：与当前可执行代码对应的配置和使用参考。
-- `legacy/`：仍可能被旧代码引用、但禁止继续扩展的导入表面积。
-- `evidence/`：历史验证材料；不能替代当前评测结果。
+<!-- authority-routes:start -->
+| Owner key | Code/document owner | Accepted decisions | Current facts | Evaluation when needed |
+|---|---|---|---|---|
+| `app` | `crates/app` composition/routing | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0008](decisions/0008-fixed-deepseek-routing-and-auto-retirement.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [Application service](architecture/CURRENT_CODEWHALE.md#current-app) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `runtime` | `crates/runtime` loop/completion/replay/children | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md) | [Agent runtime](architecture/CURRENT_CODEWHALE.md#current-runtime) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `protocol` | `crates/protocol` commands/events/outcomes | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [core protocol facts](architecture/CURRENT_CODEWHALE.md#current-core-facts) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `deepseek` | `crates/deepseek` plan/transport/parser/accounting | [ADR-0001](decisions/0001-rust-deepseek-product.md), [ADR-0008](decisions/0008-fixed-deepseek-routing-and-auto-retirement.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md) | [DeepSeek backend](architecture/CURRENT_CODEWHALE.md#current-deepseek) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `context` | `crates/context` prompt/project context/compaction | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md), [ADR-0016](decisions/0016-lean-cognitive-control-plane.md) | [core context facts](architecture/CURRENT_CODEWHALE.md#current-core-facts) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `tools` | `crates/tools` catalog/edit/shell/verifier | [ADR-0005](decisions/0005-v1-evidence-gated-capability-scope.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0015](decisions/0015-native-web-retrieval-and-semantic-browser.md) | [Tools](architecture/CURRENT_CODEWHALE.md#current-tools) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `state` | `crates/state` SQLite/events/snapshots/reopen | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [State](architecture/CURRENT_CODEWHALE.md#current-state) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `orchestrator` | `crates/orchestrator` graph/Writer worktrees | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0003](decisions/0003-multi-agent-worktrees.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [Agent orchestrator](architecture/CURRENT_CODEWHALE.md#current-orchestrator) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `localization` | `crates/localization` human language | [ADR-0004](decisions/0004-fixed-simplified-chinese.md), [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md) | [human clients](architecture/CURRENT_CODEWHALE.md#current-clients) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `clients` | `crates/cli`, `crates/tui`, `crates/app-server` | [ADR-0009](decisions/0009-dse-product-identity.md), [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0013](decisions/0013-native-tui-surface-system.md) | [client entrypoints](architecture/CURRENT_CODEWHALE.md#current-clients), [TUI surface](architecture/CURRENT_CODEWHALE.md#current-tui) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
+| `repository-guidance` | root guidance + `docs/product`, `docs/architecture`, `docs/decisions`; mechanical checks in existing scripts | [ADR-0016](decisions/0016-lean-cognitive-control-plane.md) | [development authority](architecture/CURRENT_CODEWHALE.md#current-development-authority) | [ADR-0016 contract](product/EVALUATION.md#adr-0016-evaluation) |
+<!-- authority-routes:end -->
 
-关键迁移入口：
+## 3. Accepted decision index
 
-- [architecture/CURRENT_CODEWHALE.md](architecture/CURRENT_CODEWHALE.md)
-- [architecture/TOOL_SURFACE.md](architecture/TOOL_SURFACE.md)
-- [architecture/RUNTIME_API.md](architecture/RUNTIME_API.md)
-- [architecture/SUBAGENTS.md](architecture/SUBAGENTS.md)
-- [reference/CONFIGURATION.md](reference/CONFIGURATION.md)
-- [reference/ACCESSIBILITY.md](reference/ACCESSIBILITY.md)
-- [reference/MCP.md](reference/MCP.md)
-- [reference/OPERATIONS_RUNBOOK.md](reference/OPERATIONS_RUNBOOK.md)
-- [reference/SANDBOX.md](reference/SANDBOX.md)
-- [legacy/FLEET.md](legacy/FLEET.md)
+- Product/backend/state: [ADR-0001](decisions/0001-rust-deepseek-product.md),
+  [ADR-0002](decisions/0002-single-runtime-and-runstore.md),
+  [ADR-0003](decisions/0003-multi-agent-worktrees.md).
+- Product language/scope/release: [ADR-0004](decisions/0004-fixed-simplified-chinese.md),
+  [ADR-0005](decisions/0005-v1-evidence-gated-capability-scope.md),
+  [ADR-0006](decisions/0006-v1-release-benchmark-successor.md),
+  [ADR-0007](decisions/0007-v1-fixed-chinese-prompt-release-evidence.md).
+- Routing/identity/language/accounting: [ADR-0008](decisions/0008-fixed-deepseek-routing-and-auto-retirement.md),
+  [ADR-0009](decisions/0009-dse-product-identity.md),
+  [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md),
+  [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md).
+- Permission/TUI/Harness/Web/control plane:
+  [ADR-0012](decisions/0012-canonical-permission-policy.md),
+  [ADR-0013](decisions/0013-native-tui-surface-system.md),
+  [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md),
+  [ADR-0015](decisions/0015-native-web-retrieval-and-semantic-browser.md),
+  [ADR-0016](decisions/0016-lean-cognitive-control-plane.md).
 
-代码迁移完成后，应同步缩小或删除对应参考；禁止把 `legacy/` 中的概念重新写回
-产品权威文档。
+所有 ADR、里程碑历史和评测结果仍可查且不得改写；本索引只取消默认全量重放。
 
-## 3. 当前开发说明
+## 4. Pre-registered bootstrap questions
 
-- `dse exec`、`dse app-server` 与交互 TUI 已共用
-  `crates/app::AgentApplication`、`AgentRuntime` 和 SQLite `RunStore`。
-- M4 已关闭：旧 TUI engine/Classic shell、私有状态路径和第二模型循环均已删除；
-  Underwater 是唯一交互外壳。当前 Run API v15、RuntimeEvent v22、State schema v28、
-  exec-stream v6。
-- M5-A 已在 canonical protocol/runtime/state 中建立唯一 TaskContract、EvidenceReceipt
-  与 Host completion owner；代码、本地门禁和正式 DeepSeek 显式 verifier A/B 已完成。
-  M5-B evidence-aware ContextBroker 也已完成正式 A/B 并 shrink 为仅 hard-limit safety；
-  M6-A 单 Writer isolated worktree 已在唯一 Orchestrator 下完成真实 DeepSeek 闭环；M6-B
-  证据不准入双 Writer。M7-A 保持 `hold`；M7-B 已完成 Strict 目录准入与 typed 工具失败
-  恢复，因六个默认可执行 actor 均无 Strict treatment surface 而未执行 live A/B。
-  M8-H 已删除不可达 FIM production 半分支并保持 FIM re-entry 为 hold；M8-J 又删除旧
-  `codewhale thread`、SQLite `threads`/session index 第二真相和无消费者 protocol DTO，
-  V12 关闭。M17-A–F 已把当前 binary/config/protocol/delivery/CI/model identity 切为
-  DSE，建立 `en`/`zh-Hans` 唯一 localization owner 与完整人类投影，并完成 fixed-Pro
-  prompt 2×2 评测。production 只保留中文表达 prompt，按用户任务语言回答；当前进入
-  M17-G 公开仓库文档与治理收敛。
-- 本地 focused 检查脚本：`../scripts/dev-dse.sh`。
-- M1 离线能力基线：`../eval/README.md`。
-- 当前配置样例：`../config.example.toml`。
-- 本地包与安装生命周期：`../scripts/dse-delivery.sh`；
-  macOS/Linux 自测：`../scripts/test-dse-delivery.sh`。
+fresh Agent 必须能沿以下精确入口回答六个问题；checker 将问题 ID、链接和目标 anchor 作为
+fixture 验证。
 
-## 4. 历史和待清理资料
+<!-- bootstrap-questions:start -->
+| Question ID | Exact answer authority |
+|---|---|
+| `current_goal` | [Roadmap current execution window](product/ROADMAP.md#current-execution-window) |
+| `owner` | [owner routes](#owner-routes) |
+| `forbidden` | [product and architecture boundary](../AGENTS.md#product-boundary) |
+| `focused_gate` | [risk-tier gate](../AGENTS.md#risk-tier-gate) |
+| `full_gate` | [risk-tier gate](../AGENTS.md#risk-tier-gate) |
+| `deletion` | [development method](../AGENTS.md#development-method) |
+<!-- bootstrap-questions:end -->
 
-网站、VS Code scaffold、npm 发布包装、上游社区自动化、版本 dogfood/release、
-remote setup、腾讯云部署、Telegram/Feishu chat bridge 和未接入 Rust runtime 的
-WeCom/Weixin bridge 已从活动开发树移除。generic Provider 与 legacy Thread active path
-也已按真实调用图删除；导入 skills 和少量旧 evidence 仅作为受约束的能力输入/历史材料
-保留。canonical `provider="deepseek"` environment fact 仍用于 replay safety，不是产品
-模式。
+## 5. Directory roles
 
-新增文档时，应优先更新已有权威文件。只有新的长期架构决策才新增 ADR；不要创建
-新的平行 Roadmap、计划、handoff 或版本 tracker。
+- `product/`: product plan, one Roadmap and one Evaluation authority.
+- `decisions/`: accepted long-lived decisions and supersession.
+- `architecture/`: current implementation facts, not target completion claims.
+- `reference/`: executable configuration and usage reference.
+- `legacy/`: imported history that must not flow back into current architecture.
+- `evidence/` and `eval/`: historical/frozen evidence; never a substitute for current results.
+
+Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
+[Runtime API](architecture/RUNTIME_API.md), [Subagents](architecture/SUBAGENTS.md),
+[Configuration](reference/CONFIGURATION.md), [MCP](reference/MCP.md),
+[Operations](reference/OPERATIONS_RUNBOOK.md), and [Sandbox](reference/SANDBOX.md).
+
+## 6. Current development fact
+
+M44 is a clean checkpoint and ADR-0016's first implementation Goal is complete. M45/M46 are not
+active. `scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk
+classification contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists
+are not allowed.

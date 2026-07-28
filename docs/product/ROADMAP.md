@@ -206,9 +206,15 @@
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
 - 上次更新：2026-07-28
 
-- 当前执行指针（2026-07-28）：M44 DeepSeek 原生 Web Search 决策已完成，结论为
-  `hold_wait_for_chat_surface`；M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或
-  补样。下一条候选 production slice 是 M45；M46 只记录顺序，尚未启动。
+<a id="current-execution-window"></a>
+## 0. 当前执行窗口
+
+- M44 DeepSeek 原生 Web Search 决策已形成 clean checkpoint `801391577`，结论为
+  `hold_wait_for_chat_surface`。
+- ADR-0016 首个实现 Goal 已完成：有界 development authority、owner-scoped retrieval 与
+  risk-tier gate 已切换；production Rust delta=0、official requests=0。
+- M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；M45/M46 尚未启动。
+- 当前切片替换旧 unconditional full-read 和重复 full-gate 入口，完成前不并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6878,6 +6884,32 @@ State version、ApplicationProbe、CDP/browser、视觉、MCP marketplace 或 M4
 离线门已通过：M44 config targeted tests、`cargo check -p dse-tui --locked`、
 `cargo check -p dse-deepseek --locked`、focused gate、strict workspace clippy、workspace tests、
 fmt check 与 diff check 均为绿色。
+
+### 40.4 ADR-0016 首个实现 Goal（已完成）
+
+真实问题是 M44 clean checkpoint 的默认 development bootstrap 仍需完整读取 Product Plan、
+全部 ADR、Roadmap、Evaluation 和 Current Architecture，共 17,636 行，并在根 guide 与脚本间
+重复写出 full gate。唯一 owner 是 repository guidance 与现有 product/architecture/decision
+authority；机械检查只进入已有 `scripts/check-public-repository.py` 和 `scripts/dev-dse.sh`。
+
+首个纵向切换是：根有界地图 -> `docs/README.md` owner route -> accepted ADR/current facts ->
+根 Risk 0～4 contract -> 唯一 executable gate。真实 caller 切换后删除旧 unconditional
+full-read 和根 guide 的重复 command list；不压缩历史正文，不创建第二 Roadmap/tracker。
+
+最低证据为 M44 基线、六个预注册问题、十一条 owner route、actual read-set/line report、固定
+边界 100% 可达、Risk 0 focused gate 和同一 revision 仅一次 pre-integration full gate。
+production Rust delta=0、DeepSeek official requests=0；M45/M46 不启动。
+
+正式结果为 `keep_bounded_authority_and_risk_tier_gate`。repository-guidance 实际 mandatory
+bootstrap 为 1,024 行（基线的 5.81%），十一条 route 的 worst case 是 tools 1,755 行
+（基线的 9.95%，低于 4,409 行 hard ceiling）；六个预注册问题全部有精确 authority，固定
+边界 22/22 可达。M44 的 17,636 行 unconditional full-read 和根 guide 重复 full-gate
+command list 已删除，历史结果中的命令只作为已发生证据保留，不是 active caller。
+
+Risk 0 authority/public/diff gate 通过；canonical `./scripts/dev-dse.sh full` 对 final code/script
+candidate 只执行一次，fmt、strict workspace clippy、workspace tests 和 diff check 全部通过。
+full 后只增加本段结果投影并重新运行 Risk 0 gate。没有 Rust source、DeepSeek wire/Prompt、
+Runtime/Event/Store 或产品 capability 变化，没有读取 Key 或启动 M45/M46。
 
 在 M41–M46 期间继续停做：多 Writer/swarm、FIM、RepoGraph/LSP、视觉 placeholder、Firecrawl/
 Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss

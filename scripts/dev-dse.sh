@@ -31,6 +31,14 @@ run_public_repository_gate() {
   ./scripts/check-public-repository.py
 }
 
+run_authority_gate() {
+  ./scripts/check-public-repository.py --authority-only
+}
+
+run_diff_gate() {
+  git diff --check
+}
+
 run_focused_tests() {
   local filters=(
     "m8a_deepseek_only_entry_tests::canonical_cli_has_no_fleet_or_direct_sandbox_shell"
@@ -65,6 +73,10 @@ run_focused_tests() {
 }
 
 case "$mode" in
+  authority)
+    run_authority_gate
+    run_diff_gate
+    ;;
   focused)
     run_public_repository_gate
     cargo fmt --all -- --check
@@ -81,9 +93,10 @@ case "$mode" in
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
+    run_diff_gate
     ;;
   *)
-    echo "usage: $0 [focused|crate|full]" >&2
+    echo "usage: $0 [authority|focused|crate|full]" >&2
     exit 2
     ;;
 esac

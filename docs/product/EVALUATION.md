@@ -8,6 +8,7 @@
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
 
+<a id="evaluation-stable-rules"></a>
 ## 1. 评测目标
 
 北极星指标：
@@ -5159,3 +5160,37 @@ transport 均未改变。用户仍不能从未知问题搜索来源，但 UI/con
 离线证据已闭合：M44 config targeted tests、`cargo check -p dse-tui --locked`、
 `cargo check -p dse-deepseek --locked`、`./scripts/dev-dse.sh focused`、strict workspace clippy、
 workspace tests、`cargo fmt --all -- --check` 与 `git diff --check` 全部通过。
+
+<a id="adr-0016-evaluation"></a>
+### ADR-0016 bounded authority and risk-tier gate contract
+
+该切片是 Risk 0 repository-guidance 变化，production Rust delta=0、DeepSeek official
+requests=0。M44 clean checkpoint 的 mandatory full-read 实测基线为 17,636 行；owner-scoped
+bootstrap 的 worst-case hard gate 是其 25%，即 4,409 行。
+
+预注册 fixture 必须机械回答 `current_goal`、`owner`、`forbidden`、`focused_gate`、
+`full_gate`、`deletion` 六题，覆盖 Product Plan、ADR-0001～0016、owner map、当前窗口、两种
+gate timing 与 replacement deletion 的固定边界可达率必须为 100%。十一条 owner route 必须
+列出实际 mandatory read set；Evaluation 链接是 keep/delete 时的条件输入，不得偷偷计入
+普通 bootstrap。
+
+保留门是：旧 unconditional full-read 文案消失；full gate 的 executable command 只由
+`scripts/dev-dse.sh` 拥有；同一 revision 默认只在 pre-integration 执行一次 full gate；Risk 0
+不读取 Key、不做付费 A/B；protocol/state/security 与 model-visible change 的严格证据不降低。
+authority fixture、链接检查、Risk 0 focused gate 和一次 pre-integration full gate 必须通过。
+
+#### ADR-0016 formal result
+
+结论为 `keep_bounded_authority_and_risk_tier_gate`。M44 checkpoint 的 full-read 基线是 17,636
+行；repository-guidance route 实际 1,024 行（5.81%），worst-case tools route 1,755 行
+（9.95%），均低于 4,409 行 ceiling。十一条 route 列出 exact read set；六个预注册问题
+全部闭合，固定边界可达率为 22/22（100%）。
+
+旧根入口的 unconditional all-ADR/Roadmap/Evaluation/Current read 已物理删除，重复 full-gate
+command list 也从 guide 删除；`scripts/dev-dse.sh` 是唯一 executable gate owner。Risk 0
+authority/public/diff gate 通过，pre-integration full gate 对 final code/script candidate 只运行
+一次并通过 fmt、strict workspace clippy、workspace tests 与 diff check。其后仅写入本结果
+投影并重跑 Risk 0 gate，没有第二次 full gate。
+
+production Rust delta=0、DeepSeek official requests=0；Key 未读取。DeepSeek wire、
+model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、capability 和 M45/M46 均未改变。
