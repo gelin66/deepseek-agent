@@ -1,15 +1,16 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
 - 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface；M46 repeated-loss gate 与只读 W2 production 均已完成
+  决策为等待 Chat surface；M46 read-only W2 与 post-W2 click-family admission 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
   已交付 Host-only `ApplicationProbe`；M46 W2 已加入一个 `browser_navigate` 模型工具和 Rust
   direct-CDP adapter，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
-- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；两个独立 JS-only local task
-  已证明同一 `tools:application_visibility` loss，并由 W2 的一次性 navigate + bounded DOM/AX
-  observation 闭合；browser action、截图、视觉、搜索及持久 session 仍未准入或实现
+- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；W2 的一次性 navigate + bounded
+  DOM/AX observation 已闭合 `tools:application_visibility`。post-W2 两个独立 local task 又证明同一
+  `tools:browser_interaction:click` loss，因此只准入后续单一 click-family W3 Goal；production action、
+  ref-bearing session、截图、视觉与搜索仍未实现
 
 ## 文档权威与替代关系
 
@@ -676,6 +677,26 @@ search、Playwright/Node production sidecar、第二 Runtime/Store 或 browser a
 4. public POST/upload/download/auth 等副作用继续阻断；
 5. local disposable ApplicationProbe 按 TaskContract 开放最小交互；
 6. stale ref、hidden/disabled、cross-origin、crash-after-start 负向测试必须 100% 拒绝。
+
+post-W2 admission audit 已在 clean W2 checkpoint
+`83b8bf455bffbe492fbbe32ff2fe88dbb5631878` 上完成。恰好两个独立真实 loopback application task
+分别要求点击 `button / Reveal deployment approval` 和
+`switch / Automatic retries disabled`；current `web_fetch` 不包含交互后 state，current
+`browser_navigate` 能读取 target 但返回 element refs `0`、action tools `0`，不能观察预注册的
+post-click state。两次 production control 的 process/proxy/profile teardown 全 settled，既有真实
+AgentApplication SQLite regression 继续证明 committed outcome reopen 不重导航。
+
+eval-only Playwright oracle 在 exact literal-loopback origin 上每个 task 只按 role/name click 一次，
+分别得到 `status / Deployment approved / data-state=approved` 与
+`switch / Automatic retries enabled / aria-checked=true`。oracle=`2/2`、control verified=`0/2`、
+同一 `tools:browser_interaction:click=2/2`、false-success=`0`，所以只准入下一独立 Goal 的一个
+`browser_click` action family、latest-snapshot opaque ref 与 mandatory fresh post-action observation。
+
+本 audit production Rust/Cargo/catalog/RuntimeEvent/RunStore/session delta 均为 `0`，official DeepSeek
+requests=`0`、credential read=`false`、actual cost=`$0`。fill/press/wait、登录、Cookie/storage、
+public POST/upload/download/auth、用户 Chrome profile、截图/坐标/视觉、搜索、Node/Playwright
+production sidecar、durable browser session truth 与第二 Runtime/Store/ledger 仍未准入。准入结果
+只冻结后续 focused Goal，不等于 W3 已实现。
 
 ### Slice W4：ApplicationProbe 收敛（M45-A 已完成）
 

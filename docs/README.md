@@ -90,9 +90,11 @@ Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
 ## 6. Current development fact
 
 M44, ADR-0016, and ADR-0017 W1.1 are clean checkpoints. M45-A has completed its Host-only
-ApplicationProbe implementation and deterministic acceptance. The M46 admission audit has now
-proved the same `tools:application_visibility` loss on two independent JS-only local tasks, so only
-the next read-only W2 contract is admitted; no production browser implementation is active yet.
+ApplicationProbe implementation and deterministic acceptance. M46 W2 now provides one read-only,
+one-shot `browser_navigate` production tool. The post-W2 audit proved the same
+`tools:browser_interaction:click` loss on two independent local tasks, so only a later focused
+`browser_click` W3 Goal is admitted; no production action, ref-bearing session, search, screenshot,
+or vision implementation is active yet.
 `scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk classification
 contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists are not
 allowed.

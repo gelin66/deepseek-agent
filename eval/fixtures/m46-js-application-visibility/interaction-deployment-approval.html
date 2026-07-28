@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Deployment approval</title>
+  </head>
+  <body>
+    <main id="deployment"></main>
+    <template data-probe-identity>{{DSE_APPLICATION_PROBE_LEASE}}</template>
+    <script>
+      const decode = (values) => String.fromCharCode(...values);
+      const label = decode([97, 114, 105, 97, 45, 108, 97, 98, 101, 108]);
+      const role = decode([114, 111, 108, 101]);
+      const target = document.createElement(decode([98, 117, 116, 116, 111, 110]));
+      target.type = "button";
+      target.setAttribute(
+        label,
+        decode([82, 101, 118, 101, 97, 108, 32, 100, 101, 112, 108, 111, 121, 109, 101, 110, 116, 32, 97, 112, 112, 114, 111, 118, 97, 108]),
+      );
+      target.textContent = target.getAttribute(label);
+      target.addEventListener("click", () => {
+        const status = document.createElement("section");
+        status.setAttribute(role, decode([115, 116, 97, 116, 117, 115]));
+        status.setAttribute(
+          label,
+          decode([68, 101, 112, 108, 111, 121, 109, 101, 110, 116, 32, 97, 112, 112, 114, 111, 118, 101, 100]),
+        );
+        status.setAttribute(
+          decode([100, 97, 116, 97, 45, 115, 116, 97, 116, 101]),
+          decode([97, 112, 112, 114, 111, 118, 101, 100]),
+        );
+        status.textContent = status.getAttribute(label);
+        document.querySelector("#deployment").replaceChildren(status);
+      });
+      document.querySelector("#deployment").replaceChildren(target);
+    </script>
+  </body>
+</html>

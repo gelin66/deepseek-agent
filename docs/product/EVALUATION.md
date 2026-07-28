@@ -5536,3 +5536,63 @@ target 可能不经过 primary target interception；修正为 auto-attach + sta
 并在最终 revision 重跑 pinned-CfT local 2/2、`dse-tools` strict Clippy/check/test、真实 caller/reopen
 与 canonical focused gate，全部通过。遵守本切片一次 full 上限，没有第二次 full；没有 official
 DeepSeek 请求、付费 A/B 或产品效率声明。
+
+<a id="m46-browser-interaction-admission"></a>
+### M46 post-W2 browser interaction admission contract and result
+
+本 audit 是 credential-free、eval-only repeated-loss gate，不是 W3 production treatment、模型可见
+Prompt/route A/B 或产品指标。baseline 固定为 clean W2
+`83b8bf455bffbe492fbbe32ff2fe88dbb5631878`；current control 是 exact production `web_fetch` 与
+read-only `browser_navigate`。准入前冻结：
+
+1. 恰好两个 task id 和 independence key；两个真实启动的 loopback application 都必须先暴露
+   一个 exact role/name action target，再由一个 interaction 才产生预注册 state；
+2. 两个 task 必须是同一 canonical `tools:browser_interaction` 和同一 action family；click、fill、
+   press 不得拼接计数，本次只允许 `click`；
+3. action target 与 post-action accessible name 均不得以 literal 出现在 raw HTTP；`web_fetch` 和
+   current `browser_navigate` 不得观察或声称 post-action state；
+4. current W2 必须看到 action target，同时 element refs=`0`、model-visible action tools=`0`，否则
+   control identity 已变化；
+5. production control false-success 必须为 `0`，process/proxy/profile teardown 必须全 settled，
+   committed outcome SQLite reopen regression 必须继续只重放、不重导航；
+6. eval-only oracle 每个 task 只按 exact role/name click 一次，只允许 Host-assigned literal-loopback
+   origin，输出最多 2 nodes / 4,096 bytes，不使用 screenshot、coordinate、storage、Cookie 或外网；
+7. official DeepSeek requests=0、credential read=false、actual cost `$0`；production Rust/Cargo/
+   catalog/RuntimeEvent/RunStore/session delta=0，`product_metric_eligible=false`。
+
+预注册 manifest 是
+`eval/manifests/m46-browser-interaction-admission-v1.json`；唯一 evaluator 是
+`scripts/eval-m46-browser-interaction-admission.py`，test-only Rust caller 运行 exact
+`ProductionToolExecutor`，外部 oracle 使用
+`scripts/eval-m46-browser-interaction-oracle.cjs` + Playwright `1.61.0` + Node `v24.18.0` + pinned
+CfT `151.0.7922.47`。Playwright/Node 不是 production sidecar/dependency。
+
+正式结果：
+
+| task_id | W2 initial target | oracle post-click result | control verified | false success |
+|---|---|---|---:|---:|
+| `m46_interaction_deployment_approval` | `button / Reveal deployment approval` | `status / Deployment approved / data-state=approved` | 0 | 0 |
+| `m46_interaction_retry_toggle` | `switch / Automatic retries disabled / aria-checked=false` | `switch / Automatic retries enabled / aria-checked=true` | 0 | 0 |
+
+oracle=`2/2`、current control verified=`0/2`、同一
+`tools:browser_interaction:click=2/2`、control false-success=`0`、W2 teardown/replay regression 均
+通过。唯一正式 evaluator run 通过，maximum reruns=`0`；result JSON SHA-256 为
+`490a8ca323ad1433c5680c89da84463fdd4f34ddcab800fe063e3e8c41fe17aa`，决定为
+`admit_next_goal_ref_based_browser_click_w3_contract_only`。
+
+该决定只冻结下一独立 W3 Goal：owner=`crates/tools`，action family=`browser_click`，ref 必须由 Host
+生成并绑定 latest snapshot + page epoch，action 后必须返回 fresh semantic observation。下一 Goal
+必须以 stale/missing/hidden/disabled/detached/ambiguous ref、cross-origin、非 GET/外部副作用、
+crash-after-start、authorization/catalog 与 committed-outcome reopen 为 negative gates。
+
+本 audit 没有实现 W3，也没有加入 fill/press/wait、登录、Cookie/storage、public POST/upload/
+download/auth、用户 Chrome profile、截图/坐标/视觉、搜索、Node/Playwright production sidecar、
+durable browser session truth、第二 Runtime/Store 或 accounting ledger。行为真相已经闭合；费用仅是
+正交状态事实，不构成准入原因或工程能力声明。
+
+manifest validation、7-case negative self-test、Node syntax、test-only Rust strict Clippy、production
+control 2/2、真实 caller/reopen regression 与唯一正式 evaluator 均通过。canonical focused gate 一次
+通过：authority baseline=`17,636` 行、ceiling=`4,409` 行、最大 tools route=`2,212` 行、fixed
+boundary=`23/23`；tools=`385/0/5 ignored`、DeepSeek=`61/0/1 ignored`、Runtime=`88/88`、
+app=`65/0/3 ignored`、app-server=`23/23`、exec=`30/30`、TUI run=`20/20`、PTY=`7/7`。按
+production delta=0 的 Risk 0 admission 边界不运行 full。

@@ -630,6 +630,14 @@ sandbox 拒绝且不会继承 local-origin grant。现有 ToolOutcome、RuntimeE
 committed SQLite outcome reopen 只重放、不重新导航，protocol/state schema delta=0。Playwright 仍只
 存在于 frozen admission evaluator，未进入 production dependency graph。
 
+post-W2 interaction admission 仍是 eval-only：两个独立 exact-loopback task 都由 current
+`browser_navigate` 观察到可点击 role/name target，但 current snapshot 不含 `element_ref`，fixed
+catalog 也没有 click/fill/press/wait，所以不能产生 post-action state。external oracle 对每个 task
+执行一次 exact role/name click 后得到预注册状态，同一 `tools:browser_interaction:click` 为 `2/2`、
+false-success 为 `0`。该结果只准入后续单一 `browser_click` W3 Goal；当前 production 仍保持 14 个
+Host tools，action/ref-bearing session、Cargo dependency、RuntimeEvent、RunStore 与 State schema
+delta 均为 `0`。
+
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
 fail closed。MCP 配置与插件发现仍没有进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。

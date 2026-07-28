@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Retry controls</title>
+  </head>
+  <body>
+    <main id="retry-controls"></main>
+    <template data-probe-identity>{{DSE_APPLICATION_PROBE_LEASE}}</template>
+    <script>
+      const decode = (values) => String.fromCharCode(...values);
+      const label = decode([97, 114, 105, 97, 45, 108, 97, 98, 101, 108]);
+      const checked = decode([97, 114, 105, 97, 45, 99, 104, 101, 99, 107, 101, 100]);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.setAttribute(decode([114, 111, 108, 101]), decode([115, 119, 105, 116, 99, 104]));
+      toggle.setAttribute(
+        label,
+        decode([65, 117, 116, 111, 109, 97, 116, 105, 99, 32, 114, 101, 116, 114, 105, 101, 115, 32, 100, 105, 115, 97, 98, 108, 101, 100]),
+      );
+      toggle.setAttribute(checked, decode([102, 97, 108, 115, 101]));
+      toggle.textContent = toggle.getAttribute(label);
+      toggle.addEventListener("click", () => {
+        toggle.setAttribute(
+          label,
+          decode([65, 117, 116, 111, 109, 97, 116, 105, 99, 32, 114, 101, 116, 114, 105, 101, 115, 32, 101, 110, 97, 98, 108, 101, 100]),
+        );
+        toggle.setAttribute(checked, decode([116, 114, 117, 101]));
+        toggle.textContent = toggle.getAttribute(label);
+      });
+      document.querySelector("#retry-controls").replaceChildren(toggle);
+    </script>
+  </body>
+</html>

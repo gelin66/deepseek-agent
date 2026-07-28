@@ -1,0 +1,175 @@
+{
+  "schema": "dse.eval.m46-browser-interaction-admission.v1",
+  "frozen_at": "2026-07-28",
+  "baseline_commit": "83b8bf455bffbe492fbbe32ff2fe88dbb5631878",
+  "slice_contract": {
+    "problem": "Determine whether two independent local application tasks remain unverifiable after W2 because current production can observe a semantic action target but cannot perform a ref-based interaction and observe the resulting state.",
+    "acceptance": "Run exactly two credential-free, independently keyed local application tasks; require current web_fetch and browser_navigate to remain unable to claim the post-click state; require an exact-loopback eval-only oracle to perform exactly one role/name click and observe the pre-registered result; require false-success zero plus unchanged W2 teardown and committed-outcome replay before admitting only a later click-family W3 Goal.",
+    "owner": "evaluation authority using the current crates/tools production controls",
+    "replaces": "feature-list, single-demo, or mixed-action-family admission of browser actions",
+    "evidence": "exact ProductionToolExecutor web_fetch/browser_navigate outcomes, current AgentApplication SQLite reopen regression, and an eval-only loopback-confined role/name interaction oracle",
+    "cutover_deletion": "do not add a production action, ref, session, dependency, Runtime, Store, or ledger in this audit; keep only the frozen fixture, manifest, evaluator, summary, and test-only control caller"
+  },
+  "identity": {
+    "control_surface": [
+      "current_production_web_fetch",
+      "current_production_browser_navigate"
+    ],
+    "current_model_catalog_size": 14,
+    "model_visible_browser_action_tools": 0,
+    "official_deepseek_requests": 0,
+    "credential_read": false,
+    "external_network_allowed": false,
+    "maximum_formal_runs": 1,
+    "maximum_reruns": 0,
+    "actual_cost_usd": 0,
+    "product_metric_eligible": false,
+    "quality_comparison_executed": false
+  },
+  "admission_rule": {
+    "exact_task_count": 2,
+    "minimum_independent_same_loss_tasks": 2,
+    "allowed_loss_codes": [
+      "tools:browser_interaction"
+    ],
+    "allowed_action_families": [
+      "click",
+      "fill",
+      "press"
+    ],
+    "mixed_action_families_may_not_be_combined": true,
+    "oracle_must_pass": true,
+    "control_false_success_must_equal": 0,
+    "w2_teardown_and_replay_must_pass": true
+  },
+  "ground_truth": {
+    "kind": "eval_only_exact_role_name_interaction_oracle",
+    "runner": "scripts/eval-m46-browser-interaction-admission.py",
+    "runner_sha256": "sha256:ad7072918db533046963f15ee03756042bb478172d7cd9ba35d07383d1fbec44",
+    "node_runner": "scripts/eval-m46-browser-interaction-oracle.cjs",
+    "node_runner_sha256": "sha256:48a9fc7293c7d3cf79cffbdaddd4d16b26b12fe640b6273f5bd1e36cbbc1077d",
+    "control_caller": "crates/tools/tests/m46_browser_interaction_admission.rs",
+    "control_caller_sha256": "sha256:6cd674260674d98b66531459d75ea4af8ee5510162139a695073aebed7d330b1",
+    "node_version": "v24.18.0",
+    "playwright_version": "1.61.0",
+    "playwright_node_path": "/opt/homebrew/lib/node_modules",
+    "chrome_path": "/Users/gelin/Library/Caches/dse/chrome-for-testing/151.0.7922.47/mac-arm64/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    "chrome_version": "151.0.7922.47",
+    "chrome_executable_sha256": "sha256:e9e1c766953cf2ff5ea38c6cb63fa32b443a958c3fda7dcc3b60dd9b20436855",
+    "network_policy": "abort every oracle request whose origin is not the exact Host-assigned literal-loopback origin",
+    "action_policy": "one exact role/name click per task; no coordinates, fill, press, wait program, or arbitrary JavaScript",
+    "max_observation_nodes": 2,
+    "max_observation_bytes": 4096,
+    "screenshots": false,
+    "coordinates": false,
+    "production_dependency": false
+  },
+  "shared_fixture": {
+    "server_path": "eval/fixtures/m46-js-application-visibility/server.py",
+    "server_sha256": "sha256:f11185ab32b5e46a739a9cab692aa7870d1613fdf421dec60ba3fbc4a3c7fbd7"
+  },
+  "tasks": [
+    {
+      "task_id": "m46_interaction_deployment_approval",
+      "fixture_path": "eval/fixtures/m46-js-application-visibility/interaction-deployment-approval.html",
+      "fixture_sha256": "sha256:ba713a6d0f0a8b48fa598c730dd29dc4b819840d8a88f7f5fda5e521fab0ecc9",
+      "loss_code": "tools:browser_interaction",
+      "independence_key": "deployment-approval-disclosure-click",
+      "task_contract": "Verify that clicking the locally started deployment application's exact Reveal deployment approval button produces one status named Deployment approved with data-state=approved.",
+      "action": {
+        "family": "click",
+        "selector": "exact_role_name",
+        "role": "button",
+        "accessible_name": "Reveal deployment approval"
+      },
+      "expected_post_action_observation": {
+        "title": "Deployment approval",
+        "role": "status",
+        "accessible_name": "Deployment approved",
+        "state_attribute": "data-state",
+        "state_value": "approved"
+      },
+      "expected_control": {
+        "web_fetch_post_action_state": "absent",
+        "browser_initial_action_target": "present",
+        "browser_post_action_state": "absent",
+        "browser_element_refs": 0,
+        "browser_action_tools": 0,
+        "browser_teardown_settled": true
+      }
+    },
+    {
+      "task_id": "m46_interaction_retry_toggle",
+      "fixture_path": "eval/fixtures/m46-js-application-visibility/interaction-retry-toggle.html",
+      "fixture_sha256": "sha256:c7e76aa2b9b2f9339b5fb22ee2752e6f129329a408013fc1ac89d95e5d8eb98f",
+      "loss_code": "tools:browser_interaction",
+      "independence_key": "retry-policy-switch-click",
+      "task_contract": "Verify that clicking the locally started retry-policy switch changes it from Automatic retries disabled to Automatic retries enabled with aria-checked=true.",
+      "action": {
+        "family": "click",
+        "selector": "exact_role_name",
+        "role": "switch",
+        "accessible_name": "Automatic retries disabled"
+      },
+      "expected_post_action_observation": {
+        "title": "Retry controls",
+        "role": "switch",
+        "accessible_name": "Automatic retries enabled",
+        "state_attribute": "aria-checked",
+        "state_value": "true"
+      },
+      "expected_control": {
+        "web_fetch_post_action_state": "absent",
+        "browser_initial_action_target": "present",
+        "browser_post_action_state": "absent",
+        "browser_element_refs": 0,
+        "browser_action_tools": 0,
+        "browser_teardown_settled": true
+      }
+    }
+  ],
+  "next_w3_contract_if_admitted": {
+    "owner": "crates/tools",
+    "action_family": "click",
+    "scope": [
+      "Host-generated opaque element_ref bound to the latest snapshot and page epoch",
+      "one browser_click action family",
+      "mandatory fresh post-action semantic observation",
+      "Host-owned ephemeral lifecycle and teardown with no durable browser truth"
+    ],
+    "required_negative_gates": [
+      "stale_missing_hidden_disabled_detached_or_ambiguous_ref_denied",
+      "cross_origin_and_non_GET_side_effect_denied_before_action",
+      "crash_after_start_is_recovery_required_and_never_auto_replayed",
+      "committed_outcome_reopen_only_replays",
+      "root_child_writer_authorization_and_catalog_parity"
+    ],
+    "forbidden": [
+      "browser_fill_press_or_wait_action_families",
+      "login_cookie_or_storage_persistence",
+      "public_POST_upload_download_auth_or_external_account_side_effect",
+      "user_chrome_profile",
+      "screenshots_coordinates_or_vision",
+      "search",
+      "node_or_playwright_production_sidecar",
+      "second_runtime_store_or_accounting_ledger",
+      "durable_browser_session_truth"
+    ],
+    "production_implementation_in_this_audit": false
+  },
+  "expected_result": {
+    "independent_tasks": 2,
+    "oracle_verified_tasks": 2,
+    "control_verified_tasks": 0,
+    "control_false_success": 0,
+    "repeated_loss_code": "tools:browser_interaction",
+    "repeated_action_family": "click",
+    "repeated_loss_threshold_met": true,
+    "w2_teardown_passed": true,
+    "w2_replay_regression_passed": true,
+    "decision": "admit_next_goal_ref_based_browser_click_w3_contract_only",
+    "production_rust_delta": 0,
+    "official_deepseek_requests": 0,
+    "actual_cost_usd": 0
+  }
+}

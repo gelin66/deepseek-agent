@@ -224,6 +224,9 @@
 - M46 admission audit 与只读 W2 production 已完成：两个独立 JS-only local task 的同一
   `tools:application_visibility` loss 已由一个 Rust-native、one-shot、Host-owned
   `browser_navigate + bounded DOM/AX snapshot + teardown` 闭合；action/search/视觉仍未启动。
+- M46 post-W2 interaction admission 已完成：两个独立 local task 的同一
+  `tools:browser_interaction:click` loss 达到 `2/2`、false-success=0，只准入下一独立
+  `browser_click` W3 focused Goal；production action/ref/session delta=0，W3 尚未实现。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7169,3 +7172,45 @@ credential-free public HTTPS 1/1；public canary 未重跑。
 all-features、strict Clippy、crash/reopen、exec/TUI/PTY 与 doctests。其后人工审计补上 additional-target
 start-paused/close guard；最终 revision 的 pinned local 2/2、owner strict checks、caller/reopen 与 focused
 gate 全绿。遵守一次 full 上限，没有第二次 full。official DeepSeek requests 保持 0。
+
+### 40.9 M46 post-W2 browser interaction admission（已完成）
+
+真实问题是 W2 能读取 JavaScript 渲染后的语义状态，却只提供 one-shot observation：snapshot 没有
+`element_ref`，catalog 没有 click/fill/press/wait。单个 demo 或混合 action family 不足以准入 W3，
+因此本阶段只做 credential-free、eval-only repeated-loss audit，baseline 为 clean W2
+`83b8bf455bffbe492fbbe32ff2fe88dbb5631878`。
+
+预注册恰好两个独立真实 loopback application task，二者使用同一 `click` action family：
+
+| task | current W2 target | required post-click state |
+|---|---|---|
+| `m46_interaction_deployment_approval` | `button / Reveal deployment approval` | `status / Deployment approved / data-state=approved` |
+| `m46_interaction_retry_toggle` | `switch / Automatic retries disabled / aria-checked=false` | `switch / Automatic retries enabled / aria-checked=true` |
+
+raw HTTP 不含 action target 或 post-action accessible name literal。exact production `web_fetch` 的
+post-action observation 为 `0/2`；pinned-CfT production `browser_navigate` 对两个 target 均可见，但
+element refs=`0`、action tools=`0`、post-action observation=`0/2`，process/proxy/profile teardown
+全部 settled。现有 AgentApplication loopback/reopen regression 同时通过，committed outcome 不重导航。
+
+eval-only oracle 使用 Node `v24.18.0`、Playwright `1.61.0` 和 pinned CfT `151.0.7922.47`，只允许
+exact literal-loopback origin，每任务按 exact role/name click 一次；输出上限为 2 nodes / 4,096 bytes，
+截图与坐标为 0，context/browser 均关闭。正式矩阵只运行一次、reruns=0：oracle=`2/2`、control
+verified=`0/2`、同一 `tools:browser_interaction:click=2/2`、false-success=`0`、W2 teardown/replay
+regression 均通过；result SHA-256 为
+`490a8ca323ad1433c5680c89da84463fdd4f34ddcab800fe063e3e8c41fe17aa`。
+
+决定为 `admit_next_goal_ref_based_browser_click_w3_contract_only`。下一 Goal 只允许
+`crates/tools` owner 的 latest-snapshot/page-epoch opaque ref、单一 `browser_click` 和 mandatory
+fresh post-action observation，并必须先闭合 stale/hidden/disabled/detached/ambiguous ref、origin/
+side-effect、crash-after-start、authorization/catalog 与 reopen negative gates。本阶段没有实现 W3；
+fill/press/wait、登录、Cookie/storage、public POST/upload/download/auth、用户 profile、截图/坐标/
+视觉、搜索、Node/Playwright production sidecar、durable browser session truth 与第二
+Runtime/Store/ledger 仍禁止。
+
+production Rust、Cargo dependency、fixed catalog、DeepSeek wire/model-visible Prompt、RuntimeEvent、
+RunStore、State schema 与 UI delta 全为 `0`；official DeepSeek requests=0、credential read=false、
+actual cost=`$0`、`product_metric_eligible=false`。这是能力准入证据，不是 W3 实现、成功率、Token、
+时间或费用提升声明。Risk 0 canonical focused gate 一次通过：authority baseline=`17,636` 行、
+ceiling=`4,409` 行、最大 tools route=`2,212` 行、fixed boundary=`23/23`；tools=`385/0/5
+ignored`、DeepSeek=`61/0/1 ignored`、Runtime=`88/88`、app=`65/0/3 ignored`、app-server=`23/23`、
+exec=`30/30`、TUI run=`20/20`、PTY=`7/7`。本切片不运行 full。
