@@ -13,6 +13,7 @@ mod git;
 mod grep_files;
 mod image_ocr;
 mod list_dir;
+mod load_skill;
 mod production;
 mod production_context;
 mod read_file;
@@ -33,6 +34,7 @@ pub use git::{execute_git_diff, execute_git_status};
 pub use grep_files::execute_grep_files;
 pub use image_ocr::{ocr_available, ocr_image_path, resolve_tesseract};
 pub use list_dir::execute_list_dir;
+pub(crate) use load_skill::{execute_load_skill, preflight_load_skill};
 pub use production::{
     PRODUCTION_TOOL_NAMES, ProductionToolConfig, ProductionToolExecutionIdentity,
     ProductionToolExecutor, production_tool_definitions,

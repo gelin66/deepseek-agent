@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dse_context::skills::SkillRegistry;
 use dse_execpolicy::{ExecPolicy, ExecPolicyDisposition};
 use dse_protocol::agent_runtime::{
     ApprovalRisk, RunPermissionMode, ToolApprovalPrompt, ToolAuthorizationDecision,
@@ -34,12 +35,12 @@ use crate::web_fetch::{
 use crate::{
     ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
     execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
-    execute_grep_files, execute_list_dir, execute_read_file, execute_run_tests,
-    execute_run_verifiers, preflight_apply_patch, resolve_run_tests_spec,
+    execute_grep_files, execute_list_dir, execute_load_skill, execute_read_file, execute_run_tests,
+    execute_run_verifiers, preflight_apply_patch, preflight_load_skill, resolve_run_tests_spec,
     resolve_run_verifiers_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 12] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 13] = [
     "apply_patch",
     "edit_file",
     "exec_shell",
@@ -48,6 +49,7 @@ pub const PRODUCTION_TOOL_NAMES: [&str; 12] = [
     "git_status",
     "grep_files",
     "list_dir",
+    "load_skill",
     "read_file",
     "run_tests",
     "run_verifiers",
@@ -68,6 +70,7 @@ pub struct ProductionToolConfig {
     sandbox_backend: Option<Arc<dyn SandboxBackend>>,
     prefer_external_pdftotext: bool,
     exec_policy: Option<ExecPolicy>,
+    skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
 }
 
@@ -107,6 +110,7 @@ pub struct ProductionToolExecutionIdentity {
     pub prefer_external_pdftotext: bool,
     pub shell_network_denied_hint_sha256: Option<String>,
     pub exec_policy_sha256: Option<String>,
+    pub skills_snapshot_sha256: String,
     pub web_fetch_network_sha256: String,
 }
 
@@ -125,6 +129,7 @@ impl ProductionToolConfig {
             sandbox_backend: None,
             prefer_external_pdftotext: false,
             exec_policy: None,
+            skill_registry: Arc::new(SkillRegistry::default()),
             web_fetch_network: Arc::new(SystemWebFetchNetwork),
         }
     }
@@ -210,6 +215,15 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Bind the exact immutable Skill discovery snapshot shared with the
+    /// canonical prompt. Rebinding a Writer workspace intentionally preserves
+    /// this run-scoped grant instead of rediscovering filesystem state.
+    #[must_use]
+    pub fn with_skill_registry(mut self, registry: Arc<SkillRegistry>) -> Self {
+        self.skill_registry = registry;
+        self
+    }
+
     /// Replace only the stateless DNS/HTTP seam used by `web_fetch`.
     /// Production callers keep the pinned Rustls implementation; deterministic
     /// vertical tests use this to avoid depending on public network state.
@@ -224,7 +238,7 @@ impl ProductionToolConfig {
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 2,
+            schema: 3,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -245,6 +259,7 @@ impl ProductionToolConfig {
                     .expect("production exec policy snapshot is serializable");
                 non_secret_sha256_bytes(&bytes)
             }),
+            skills_snapshot_sha256: self.skill_registry.snapshot_sha256(),
             web_fetch_network_sha256: non_secret_sha256(self.web_fetch_network.identity()),
         }
     }
@@ -352,12 +367,13 @@ fn invocation_has_external_path(
         || patch_paths.any(|path| context.path_is_external(&path))
 }
 
-/// Direct executor for the fixed twelve-tool production surface.
+/// Direct executor for the fixed thirteen-tool production surface.
 pub struct ProductionToolExecutor {
     context: ProductionToolContext,
     shell: ExecShellOptions,
     prefer_external_pdftotext: bool,
     shell_host: ProductionExecShellHost,
+    skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
     web_fetch_network_allowed: bool,
 }
@@ -400,6 +416,7 @@ impl ProductionToolExecutor {
             shell_host: ProductionExecShellHost {
                 exec_policy: config.exec_policy,
             },
+            skill_registry: config.skill_registry,
             web_fetch_network: config.web_fetch_network,
             web_fetch_network_allowed,
         }
@@ -532,6 +549,7 @@ impl ProductionToolExecutor {
             "git_status" => execute_git_status(input, context),
             "grep_files" => execute_grep_files(input, context).await,
             "list_dir" => execute_list_dir(input, context).await,
+            "load_skill" => execute_load_skill(input, &self.skill_registry),
             "read_file" => execute_read_file(input, context, self.prefer_external_pdftotext),
             "run_tests" => execute_run_tests(input, context, &self.shell).await,
             "run_verifiers" => execute_run_verifiers(input, context, &self.shell).await,
@@ -554,16 +572,16 @@ impl ToolExecutor for ProductionToolExecutor {
 
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file"
-            | "web_fetch" => WorkspaceAccess::ReadOnly,
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir"
+            | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
-            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file"
-            | "web_fetch" => WorkspaceAccess::ReadOnly,
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir"
+            | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
             _ => WorkspaceAccess::MayWrite,
         }
     }
@@ -602,6 +620,11 @@ impl ToolExecutor for ProductionToolExecutor {
                 Ok(outcome) => outcome,
                 Err(error) => Some(Self::preflight_error_outcome(error)),
             };
+        }
+        if invocation.name == "load_skill"
+            && let Err(error) = preflight_load_skill(input, &self.skill_registry)
+        {
+            return Some(Self::preflight_error_outcome(error));
         }
         if invocation.name == "web_fetch" {
             return preflight_web_fetch(input);
@@ -958,6 +981,11 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             list_dir_schema(),
         ),
         definition(
+            "load_skill",
+            "按系统提示中列出的精确名称读取本次运行已冻结的完整 Skill 定义；拒绝别名、路径、未发现、不可读、过大或歧义的 Skill，返回来源哈希与 external_untrusted 信任标记。",
+            load_skill_schema(),
+        ),
+        definition(
             "read_file",
             "读取工作区内的 UTF-8 文本、PDF 或可 OCR 图像；大文件用 start_line/max_lines 分段，PDF 用 pages 指定页码。",
             read_file_schema(),
@@ -1189,6 +1217,10 @@ fn list_dir_schema() -> Value {
     json!({"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false})
 }
 
+fn load_skill_schema() -> Value {
+    json!({"type":"object","properties":{"name":{"type":"string","minLength":1}},"required":["name"],"additionalProperties":false})
+}
+
 fn read_file_schema() -> Value {
     json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"max_lines":{"type":"integer","minimum":1},"pages":{"type":"string"}},"required":["path"],"additionalProperties":false})
 }
@@ -1300,6 +1332,118 @@ mod tests {
         for forbidden in ["cancel", "shell_manager", "read_tracker", "api_key"] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[tokio::test]
+    async fn load_skill_is_exact_snapshot_backed_bounded_and_typed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let skill_dir = workspace.path().join("skills/exact-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let source = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &source,
+            "---\nname: exact-skill\ndescription: Load exactly\n---\n\n# Exact\n\nDo it safely.\n",
+        )
+        .unwrap();
+        let registry = Arc::new(SkillRegistry::discover(&workspace.path().join("skills")));
+        let snapshot_hash = registry.snapshot_sha256();
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path()).with_skill_registry(Arc::clone(&registry)),
+        );
+
+        let exact = invocation("load_skill", json!({"name":"exact-skill"}));
+        assert!(executor.preflight(&exact).is_none());
+        assert_eq!(
+            executor.definition_workspace_access("load_skill"),
+            WorkspaceAccess::ReadOnly
+        );
+        let authorization = executor
+            .authorize(
+                RunPermissionMode::Ask,
+                &ToolExecutionGrant::Ordinary,
+                &exact,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            authorization.disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        assert_eq!(authorization.risk, ApprovalRisk::Routine);
+        for invalid in [
+            invocation("load_skill", json!({"name":"Exact Skill"})),
+            invocation("load_skill", json!({"name":"missing"})),
+            invocation(
+                "load_skill",
+                json!({"name":"exact-skill","path":"/etc/passwd"}),
+            ),
+        ] {
+            let outcome = executor
+                .preflight(&invalid)
+                .expect("invalid load must fail before ToolExecutionStarted");
+            assert_eq!(outcome.invocation, ToolInvocationStatus::Rejected);
+            assert_eq!(outcome.operation, ToolOperationStatus::NotStarted);
+            assert_eq!(outcome.side_effect, ToolSideEffectStatus::NotApplied);
+            assert!(matches!(
+                outcome.failure_code,
+                Some(ToolFailureCode::InvalidField)
+            ));
+        }
+
+        std::fs::remove_file(&source).unwrap();
+        let outcome = executor
+            .execute(exact, CancellationToken::default())
+            .await
+            .unwrap();
+        assert!(outcome.is_success(), "{}", outcome.content);
+        let loaded: Value = serde_json::from_str(&outcome.content).unwrap();
+        assert_eq!(loaded["name"], "exact-skill");
+        assert_eq!(loaded["body"], "# Exact\n\nDo it safely.");
+        assert_eq!(loaded["trust"], "external_untrusted");
+        assert_eq!(loaded["truncated"], false);
+        assert!(
+            loaded["source_sha256"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert_eq!(
+            loaded["bytes_returned"],
+            loaded["body"].as_str().unwrap().len()
+        );
+        assert_eq!(registry.snapshot_sha256(), snapshot_hash);
+    }
+
+    #[test]
+    fn execution_identity_changes_with_skill_snapshot() {
+        let workspace = tempfile::tempdir().unwrap();
+        let skill_dir = workspace.path().join("skills/identity");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let source = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &source,
+            "---\nname: identity\ndescription: first\n---\nfirst\n",
+        )
+        .unwrap();
+        let first = Arc::new(SkillRegistry::discover(&workspace.path().join("skills")));
+        let first_identity = ProductionToolConfig::new(workspace.path())
+            .with_skill_registry(first)
+            .execution_identity();
+
+        std::fs::write(
+            source,
+            "---\nname: identity\ndescription: second\n---\nsecond\n",
+        )
+        .unwrap();
+        let second = Arc::new(SkillRegistry::discover(&workspace.path().join("skills")));
+        let second_identity = ProductionToolConfig::new(workspace.path())
+            .with_skill_registry(second)
+            .execution_identity();
+        assert_eq!(first_identity.schema, 3);
+        assert_ne!(
+            first_identity.skills_snapshot_sha256,
+            second_identity.skills_snapshot_sha256
+        );
     }
 
     #[test]

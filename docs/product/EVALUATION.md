@@ -5060,3 +5060,45 @@ ApplicationProbe、M46 browser 以及第二 Runtime/Store/Thread truth 均未引
 离线门为 `dse-tui` unit 772 passed / 2 existing ignored、canonical Run acceptance 20/20、
 真实 PTY 7/7；`cargo check -p dse-tui --locked`、`./scripts/dev-dse.sh focused`、严格 workspace
 Clippy、完整 workspace tests、fmt 与 diff check 全部通过。
+
+### M43 Skills reliable load delivery contract
+
+M43 是 exact Host grant 的 contract/security/caller/reopen 交付，不是 Prompt 策略 A/B。虽然
+model-visible Skill 使用说明从不可执行的外部 path 声明切换为真实 `load_skill`，评测对象仍是
+“模型能否只读取 Host 已发现并冻结的定义”，不为满足样本数读取 Key。
+
+最低证据分四层：
+
+1. **discovery contract**：只接纳完整、普通、UTF-8、大小有界的 `SKILL.md`；不可读、无效、
+   过大与归一化歧义 fail closed，prompt 不泄漏失效名称/path；
+2. **grant contract**：schema 只有 exact `name`，alias/path/extra/unknown 在 operation 前 typed
+   reject；成功结果完整、有 hash/bytes/provenance、`truncated=false` 且
+   `trust=external_untrusted`；
+3. **catalog/authorization parity**：同一 immutable registry 同时驱动 prompt 和 executor；
+   root、read-only child、isolated Writer 仅按 actual actor `ToolPolicy` 正向可见，隐藏工具时
+   同步隐藏 Skill catalog；snapshot identity 进入既有 execution fingerprint；
+4. **production/reopen**：真实 production loopback 选择工具、committed outcome 进入下一次
+   canonical request；SQLite reopen 只重放，源文件已删除也不重新读取或请求模型。
+
+keep gate 是以上反例 100% 正确、false availability=0、false success=0、live/reopen 通过，且
+没有第二 discovery/permission/store truth、marketplace 或 MCP 动态 catalog。现有 ToolOutcome
+若能无损承载 body/provenance 就不得升级 RuntimeEvent/State。
+
+#### M43 formal result
+
+结论为 `keep_exact_load_skill`。Host admission hard limit 为 128 KiB，完整文件在发现时读取并
+冻结；工具输出完整 body、source path、source bytes/SHA-256、returned bytes、
+`truncated=false` 和 `external_untrusted`。exact-name、大小写/空格 alias、unknown、path escape
+字段、discovery-root symlink escape、不可读、invalid UTF-8、oversize、同 cell collision、高优先级 ambiguity 和 snapshot
+change 均有确定性反例。当前 production actor catalog hashes 已更新；`load_skill` 为普通只读
+授权，不获取任意外部路径 authority。
+
+真实 loopback 使用同一 `AgentApplication -> AgentRuntime -> ProductionToolExecutor ->
+ToolOutcome -> RunStore`：第一个模型响应选择 `load_skill(known-skill)`，outcome committed 后
+作为 exact tool message 进入第二次请求并由 Host 完成。删除 `.dse/skills` 源目录后，以无
+credential application 重开，`Get/Events` 返回原 terminal/events，quiet loopback 接受请求 0。
+
+该切片没有付费 canary：它落在本文件明确的 exact Skill grant 例外，official requests=0、
+Key 未读取、actual cost `$0`、maximum reruns=0。没有 provider response，因而没有 incomplete
+usage 或 unknown billing；deterministic behavior evidence 与 accounting 正交闭合。MCP/plugin
+仍不进入模型 catalog，search/browser/marketplace/第二 Runtime/Store/permission owner 未引入。

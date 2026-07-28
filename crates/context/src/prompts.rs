@@ -222,8 +222,26 @@ pub struct ProductionPromptBuild {
 /// request-volatile execution-posture block.
 #[must_use]
 pub fn production_system_prompt(request: ProductionPromptRequest<'_>) -> SystemPrompt {
+    production_system_prompt_with_optional_skills(request, None)
+}
+
+/// Build the canonical prompt from the exact immutable skill snapshot shared
+/// with the production tool executor. This avoids a second discovery pass and
+/// guarantees prompt/catalog/load parity for the whole run.
+#[must_use]
+pub fn production_system_prompt_with_skill_registry(
+    request: ProductionPromptRequest<'_>,
+    skills: &crate::skills::SkillRegistry,
+) -> SystemPrompt {
+    production_system_prompt_with_optional_skills(request, Some(skills))
+}
+
+fn production_system_prompt_with_optional_skills(
+    request: ProductionPromptRequest<'_>,
+    skills: Option<&crate::skills::SkillRegistry>,
+) -> SystemPrompt {
     let posture = execution_posture(request.tool_mode);
-    let mut build = assemble_system_prompt(&request, false);
+    let mut build = assemble_system_prompt(&request, false, skills);
     build.prompt.blocks.push(SystemBlock {
         text: posture,
         cache_control: PromptCacheControl::Volatile,
@@ -248,7 +266,7 @@ pub fn production_system_prompt_with_audit(
     capability_audit: Option<PromptCapabilityAuditInput<'_>>,
 ) -> ProductionPromptBuild {
     let posture = execution_posture(request.tool_mode);
-    let mut build = assemble_system_prompt(&request, true);
+    let mut build = assemble_system_prompt(&request, true, None);
     let mut posture_entry = prompt_ledger_entry(
         PromptContextLayer::ExecutionPosture,
         "builtin:execution_posture",
@@ -745,6 +763,7 @@ fn apply_static_prompt_composer(
 fn assemble_system_prompt(
     request: &ProductionPromptRequest<'_>,
     capture_ledger: bool,
+    discovered_skills: Option<&crate::skills::SkillRegistry>,
 ) -> ProductionPromptBuild {
     let default_layers = compose_default_static_layers(Personality::Calm, request.model);
     let mode_prompt = apply_static_prompt_composer(
@@ -818,20 +837,25 @@ fn assemble_system_prompt(
     // `skills_dir` is configured, union it with the workspace view instead of
     // treating it as a fallback; the workspace view often returns Some and
     // would otherwise shadow the configured directory entirely.
-    let skill_discovery_mode =
-        crate::skills::SkillDiscoveryMode::from_dse_only(request.skills_scan_dse_only);
-    let skills_block = match request.skills_dir {
-        Some(dir) => {
-            crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode(
-                request.workspace,
-                dir,
-                skill_discovery_mode,
-            )
+    let skills_block = match discovered_skills {
+        Some(registry) => crate::skills::render_available_skills_context(registry),
+        None => {
+            let skill_discovery_mode =
+                crate::skills::SkillDiscoveryMode::from_dse_only(request.skills_scan_dse_only);
+            match request.skills_dir {
+                Some(dir) => {
+                    crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode(
+                        request.workspace,
+                        dir,
+                        skill_discovery_mode,
+                    )
+                }
+                None => crate::skills::render_available_skills_context_for_workspace_with_mode(
+                    request.workspace,
+                    skill_discovery_mode,
+                ),
+            }
         }
-        None => crate::skills::render_available_skills_context_for_workspace_with_mode(
-            request.workspace,
-            skill_discovery_mode,
-        ),
     };
     if let Some(block) = skills_block {
         stable_layers.push((
@@ -1580,7 +1604,7 @@ mod tests {
         assert_eq!(
             block_hashes,
             [
-                "559a4078671044495e7261dc69bb63ffbde2fc7a58b78367a041e90a89af3e4c",
+                "27d8994cc147713c5797df3592b09547cdaf4cd48ceb249f1c45f3279dd4f0a3",
                 "eb7b2001a9d73dca127881d763774646adc8884c1fcdff7508a3bd26e93a3632",
                 "5e8571dae69434e271da2bd3d9fe85418b40e0f6a254efd7e63df2f9c793b2f1",
                 "a2fd7cc81b3bf99e30e69ae0edf862c6c26dd2a3049501a92ba93226b22984a1",
@@ -1601,7 +1625,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "d7746692db36eea33da0305553499b708a4d8b2b7d9688633aba1673142d49c9"
+            "1915e8d0bc7f72ecf7853cee8c66ea44f7cd8da6c9c4dd8f29cc91457f60c59e"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {

@@ -25,7 +25,7 @@ Discovery paths, in precedence order:
 - `<workspace>/.cursor/skills`
 - `~/.agents/skills`
 - `~/.claude/skills`
-- `~/.deepseek/skills`
+- `~/.dse/skills`
 
 Use skills for model instructions, workflows, and lightweight conventions. Use
 MCP for live external APIs or durable tools. Use plugin folders only as
@@ -84,8 +84,8 @@ plain single-line values. Use lower-case hyphen-case names.
    - validation checks
    - safety notes
 6. Add companion files only when they reduce real complexity.
-7. Validate by loading the skill through `/skills` or by running the relevant
-   skill discovery tests if editing this repository.
+7. Validate by calling `load_skill` with the exact discovered name, or by
+   running the relevant skill discovery tests if editing this repository.
 
 ## Updating Existing Skills
 

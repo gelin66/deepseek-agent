@@ -1417,6 +1417,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dse-context",
  "dse-execpolicy",
  "dse-protocol",
  "dse-runtime",

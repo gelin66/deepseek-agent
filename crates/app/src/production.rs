@@ -7,7 +7,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dse_config::PromptPreferences;
-use dse_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
+use dse_context::skills::{
+    SkillDiscoveryMode, SkillRegistry, discover_for_workspace_and_dir_with_mode,
+    discover_in_workspace_with_mode,
+};
+use dse_context::{
+    InstructionSource, ProductionPromptRequest, production_system_prompt_with_skill_registry,
+};
 use dse_deepseek::{
     DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
     DeepSeekTransport, SharedApiRequestBudget, model_accounting_snapshot,
@@ -213,6 +219,7 @@ struct ProductionComposition {
 #[derive(Clone)]
 struct ProductionFixedRoutePolicy {
     prompt: ProductionPromptConfig,
+    skills: Arc<SkillRegistry>,
 }
 
 struct ProductionRootRoute {
@@ -224,8 +231,8 @@ struct ProductionRootRoute {
 }
 
 impl ProductionFixedRoutePolicy {
-    fn new(prompt: ProductionPromptConfig) -> Self {
-        Self { prompt }
+    fn new(prompt: ProductionPromptConfig, skills: Arc<SkillRegistry>) -> Self {
+        Self { prompt, skills }
     }
 
     fn resolve_root(
@@ -339,18 +346,33 @@ impl ProductionFixedRoutePolicy {
         Ok(())
     }
 
-    fn system_prompt(&self, workspace: &Path, model: &str, tool_mode: bool) -> SystemPrompt {
-        production_system_prompt(ProductionPromptRequest {
-            workspace,
-            model,
-            preferences: &self.prompt.preferences,
-            instructions: &self.prompt.instructions,
-            skills_dir: self.prompt.skills_dir.as_deref(),
-            verbosity: self.prompt.verbosity.as_deref(),
-            skills_scan_dse_only: self.prompt.skills_scan_dse_only,
-            shell_binary: &self.prompt.shell_binary,
-            tool_mode,
-        })
+    fn system_prompt(
+        &self,
+        workspace: &Path,
+        model: &str,
+        tool_mode: bool,
+        load_skill_available: bool,
+    ) -> SystemPrompt {
+        let no_skills = SkillRegistry::default();
+        let skills = if load_skill_available {
+            self.skills.as_ref()
+        } else {
+            &no_skills
+        };
+        production_system_prompt_with_skill_registry(
+            ProductionPromptRequest {
+                workspace,
+                model,
+                preferences: &self.prompt.preferences,
+                instructions: &self.prompt.instructions,
+                skills_dir: self.prompt.skills_dir.as_deref(),
+                verbosity: self.prompt.verbosity.as_deref(),
+                skills_scan_dse_only: self.prompt.skills_scan_dse_only,
+                shell_binary: &self.prompt.shell_binary,
+                tool_mode,
+            },
+            skills,
+        )
     }
 }
 
@@ -483,7 +505,12 @@ impl ChildRunRoutePolicy for ProductionFixedRoutePolicy {
         tool_mode: bool,
     ) -> Result<SystemPrompt, String> {
         let workspace = Path::new(task.workspace.execution_workspace());
-        Ok(self.system_prompt(workspace, &task.model, tool_mode))
+        Ok(self.system_prompt(
+            workspace,
+            &task.model,
+            tool_mode,
+            tool_mode && task.tool_policy.permits("load_skill"),
+        ))
     }
 }
 
@@ -574,7 +601,9 @@ impl RunComposition for ProductionComposition {
             .wall_time_ms
             .map(|duration| unix_ms_now().saturating_add(duration));
         let workspace = canonical_start_workspace(&command.workspace)?;
-        let tool_config = tool_config_for_run(&self.tools, &workspace, &command.controls)?;
+        let skills = self.discover_skills(&workspace);
+        let tool_config = tool_config_for_run(&self.tools, &workspace, &command.controls)?
+            .with_skill_registry(Arc::clone(&skills));
         let tool_identity = tool_config.execution_identity();
         let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
         ensure_task_verifiers_exact(&command.task, &concrete_tool_executor).map_err(|error| {
@@ -584,7 +613,10 @@ impl RunComposition for ProductionComposition {
             )
         })?;
 
-        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(
+            self.prompt.clone(),
+            Arc::clone(&skills),
+        ));
         let route = route_policy.resolve_root(
             command.model.as_deref(),
             command.reasoning_effort,
@@ -621,7 +653,15 @@ impl RunComposition for ProductionComposition {
             &tool_identity,
             &tool_catalog_sha256,
         );
-        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
+        let system_prompt = self.system_prompt(
+            &workspace,
+            &route.model,
+            !tool_catalog.is_empty(),
+            tool_catalog
+                .iter()
+                .any(|definition| definition.name == "load_skill"),
+            &skills,
+        );
         let accounting_baseline = model_accounting_snapshot(&request_budget);
         let request = RunRequest {
             run_id: Some(run_id.clone()),
@@ -681,11 +721,16 @@ impl RunComposition for ProductionComposition {
                 "持久化运行未绑定官方 DeepSeek Provider",
             ));
         }
-        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
-        route_policy.validate_persisted_route(&run_id, request)?;
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
+        let skills = self.discover_skills(&workspace);
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(
+            self.prompt.clone(),
+            Arc::clone(&skills),
+        ));
+        route_policy.validate_persisted_route(&run_id, request)?;
         let controls = controls_from_environment(&request.environment);
-        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
+        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?
+            .with_skill_registry(Arc::clone(&skills));
         let tool_identity = tool_config.execution_identity();
         let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
         if let Some(contract) = request.task_contract.as_ref() {
@@ -802,8 +847,6 @@ impl RunComposition for ProductionComposition {
                 "来源运行未绑定官方 DeepSeek Provider",
             ));
         }
-        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(self.prompt.clone()));
-        route_policy.validate_persisted_route(&source_run_id, source_request)?;
         if source_request
             .environment
             .execution_fingerprint_sha256
@@ -817,8 +860,15 @@ impl RunComposition for ProductionComposition {
         }
         let workspace =
             canonical_resume_workspace(&source_run_id, &source_request.environment.workspace)?;
+        let skills = self.discover_skills(&workspace);
+        let route_policy = Arc::new(ProductionFixedRoutePolicy::new(
+            self.prompt.clone(),
+            Arc::clone(&skills),
+        ));
+        route_policy.validate_persisted_route(&source_run_id, source_request)?;
         let controls = controls_from_environment(&source_request.environment);
-        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
+        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?
+            .with_skill_registry(Arc::clone(&skills));
         let tool_identity = tool_config.execution_identity();
         let concrete_tool_executor = ProductionToolExecutor::new(tool_config.clone());
         ensure_task_verifiers_exact(&task, &concrete_tool_executor).map_err(|error| {
@@ -872,7 +922,15 @@ impl RunComposition for ProductionComposition {
             &tool_identity,
             &tool_catalog_sha256,
         );
-        let system_prompt = self.system_prompt(&workspace, &route.model, !tool_catalog.is_empty());
+        let system_prompt = self.system_prompt(
+            &workspace,
+            &route.model,
+            !tool_catalog.is_empty(),
+            tool_catalog
+                .iter()
+                .any(|definition| definition.name == "load_skill"),
+            &skills,
+        );
         let mut transcript = source.snapshot.transcript.clone();
         match transcript.entries.first_mut() {
             Some(TranscriptEntry::System { prompt }) => *prompt = system_prompt.clone(),
@@ -933,6 +991,14 @@ impl RunComposition for ProductionComposition {
 }
 
 impl ProductionComposition {
+    fn discover_skills(&self, workspace: &Path) -> Arc<SkillRegistry> {
+        let mode = SkillDiscoveryMode::from_dse_only(self.prompt.skills_scan_dse_only);
+        Arc::new(match self.prompt.skills_dir.as_deref() {
+            Some(dir) => discover_for_workspace_and_dir_with_mode(workspace, dir, mode),
+            None => discover_in_workspace_with_mode(workspace, mode),
+        })
+    }
+
     fn production_orchestrator(
         &self,
         workspace: &Path,
@@ -975,18 +1041,29 @@ impl ProductionComposition {
         workspace: &Path,
         model: &str,
         tool_mode: bool,
+        load_skill_available: bool,
+        skills: &SkillRegistry,
     ) -> dse_protocol::agent_runtime::SystemPrompt {
-        production_system_prompt(ProductionPromptRequest {
-            workspace,
-            model,
-            preferences: &self.prompt.preferences,
-            instructions: &self.prompt.instructions,
-            skills_dir: self.prompt.skills_dir.as_deref(),
-            verbosity: self.prompt.verbosity.as_deref(),
-            skills_scan_dse_only: self.prompt.skills_scan_dse_only,
-            shell_binary: &self.prompt.shell_binary,
-            tool_mode,
-        })
+        let no_skills = SkillRegistry::default();
+        let skills = if load_skill_available {
+            skills
+        } else {
+            &no_skills
+        };
+        production_system_prompt_with_skill_registry(
+            ProductionPromptRequest {
+                workspace,
+                model,
+                preferences: &self.prompt.preferences,
+                instructions: &self.prompt.instructions,
+                skills_dir: self.prompt.skills_dir.as_deref(),
+                verbosity: self.prompt.verbosity.as_deref(),
+                skills_scan_dse_only: self.prompt.skills_scan_dse_only,
+                shell_binary: &self.prompt.shell_binary,
+                tool_mode,
+            },
+            skills,
+        )
     }
 
     fn execution_fingerprint_sha256(
@@ -1932,8 +2009,9 @@ mod tests {
         };
         request.accounting_baseline = accounting;
 
-        let tool_config =
-            tool_config_for_run(&composition.tools, &workspace, &controls).expect("tool config");
+        let tool_config = tool_config_for_run(&composition.tools, &workspace, &controls)
+            .expect("tool config")
+            .with_skill_registry(composition.discover_skills(&workspace));
         let tool_identity = tool_config.execution_identity();
         let catalog_runtime = AgentRuntime::new(
             Arc::new(ReplayOnlyModelPort),
@@ -2665,6 +2743,7 @@ mod tests {
                 "git_status",
                 "grep_files",
                 "list_dir",
+                "load_skill",
                 "read_file",
                 "request_user_input",
                 "web_fetch",
@@ -2762,6 +2841,72 @@ mod tests {
             conservative_tokens < CONTEXT_INPUT_SAFETY_TOKENS as usize,
             "fixed catalog must fit the production safety reserve"
         );
+    }
+
+    #[test]
+    fn skill_prompt_catalog_is_gated_by_the_actual_actor_tool_catalog() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let skill_dir = temp.path().join(".dse/skills/catalog-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill directory");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: catalog-skill\ndescription: Catalog parity fixture\n---\nbody\n",
+        )
+        .expect("skill fixture");
+        let composition = test_production_composition(
+            temp.path(),
+            connection("http://127.0.0.1:9/v1", false),
+            false,
+        );
+        let skills = composition.discover_skills(temp.path());
+        assert!(skills.get_exact("catalog-skill").is_some());
+        let executor = ProductionToolExecutor::new(
+            tool_config_for_run(
+                &composition.tools,
+                temp.path(),
+                &RunProductControls::default(),
+            )
+            .expect("tool config")
+            .with_skill_registry(Arc::clone(&skills)),
+        );
+        let runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(executor),
+            Arc::new(NullEventSink),
+            Arc::new(InMemoryRunStore::default()),
+        );
+
+        for (policy, expected_visible) in [
+            (ToolPolicy::default(), true),
+            (
+                ToolPolicy {
+                    denied: vec!["load_skill".to_owned()],
+                    ..ToolPolicy::default()
+                },
+                false,
+            ),
+        ] {
+            let catalog =
+                runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false);
+            let load_skill_available = catalog
+                .iter()
+                .any(|definition| definition.name == "load_skill");
+            assert_eq!(load_skill_available, expected_visible);
+            let prompt = composition.system_prompt(
+                temp.path(),
+                DEEPSEEK_PRO_MODEL,
+                !catalog.is_empty(),
+                load_skill_available,
+                &skills,
+            );
+            let flat = prompt
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(flat.contains("catalog-skill"), expected_visible);
+        }
     }
 
     #[tokio::test]
@@ -2881,13 +3026,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:9fae359e3bb8da5b6cbba7c34fd5f536b6ec50b2e5c9e71b526a779a3fe9e886",
+                "sha256:bff4a838b9d8afc1dc1c64f6d393a068a7729e24ed733b2f224f60e9fd0f2e32",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:af6ed33f7b6a511f1e482f5d38d222c7b898703733de5ff7fdab54058f5b975b",
+                "sha256:33cee5a639602b950318863ff6479367d444af521d990816f6f612a552144ffc",
             ),
             (
                 "coordinator",
@@ -2900,19 +3045,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:1631e91dd089ef13b54527ede7e67fea1c99417303aa393de9877fd3a053a91e",
+                "sha256:83bcc334345f0b7d5138ab055f9855dc11e111c05331072aaf7efa3e6a79593f",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:4e89d2bb5038f14b94cb731ab7470f72b517d2b8c26c81182e18c2c0d37c66d8",
+                "sha256:773955b8d18a32981c0bd5502fefa60d7e04bb35c4c9a6ba4027e1f2c96b6a73",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("file_search", "$/required", "all_properties_required")),
-                "sha256:5f94640a097b0b64ed4f5a03a0a9f9d639b1e93f24ad92b4aa13bca077d17db6",
+                "sha256:e7ff233a27bf2b6bc1ef1332d2c7f17c2c28997305a35f45f4bc16b8a3ba5ad5",
             ),
             (
                 "isolated_writer",
@@ -2925,7 +3070,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:3a822c8e5f7461cda79862083712ef67cdacab42b7fae491f5d532609a269642",
+                "sha256:1c4281a9482d46e91d16210591eaf7981803c6d78414477b30abd584654eb79c",
             ),
             (
                 "terminal_empty",
@@ -3369,6 +3514,222 @@ mod tests {
                 .expect("reopened child exists");
             assert_eq!(&after, before);
         }
+    }
+
+    #[tokio::test]
+    async fn m43_production_load_skill_commits_and_sqlite_reopen_only_replays() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "m43-load-skill",
+                "load_skill",
+                json!({"name": "known-skill"}),
+                31,
+                3,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "已按 Known Skill 的冻结说明完成。",
+                43,
+                5,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        let skill_dir = workspace.join(".dse/skills/known-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        let skill_path = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: known-skill\ndescription: Use the known deterministic workflow\n---\n\n# Known Skill\n\nReturn the frozen known result.\n",
+        )
+        .expect("skill fixture");
+        let state_path = temp.path().join("state.db");
+        let prompt = ProductionPromptConfig {
+            skills_scan_dse_only: true,
+            ..ProductionPromptConfig::default()
+        };
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true).with_prompt(prompt.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host("使用 known-skill 的可靠加载说明完成任务");
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "m43-production-load-skill",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        let outcome = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "load_skill" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed load_skill outcome");
+        assert!(outcome.is_success(), "{}", outcome.content);
+        let loaded: Value = serde_json::from_str(&outcome.content).expect("load_skill JSON");
+        assert_eq!(loaded["name"], "known-skill");
+        assert_eq!(
+            loaded["body"],
+            "# Known Skill\n\nReturn the frozen known result."
+        );
+        assert_eq!(loaded["trust"], "external_untrusted");
+        assert_eq!(loaded["truncated"], false);
+        assert!(
+            loaded["source_sha256"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+
+        assert_eq!(requests.len(), 2);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        assert!(root_catalog.iter().any(|tool| {
+            tool["function"]["name"] == "load_skill"
+                && tool["function"]["parameters"]
+                    == json!({
+                        "type":"object",
+                        "properties":{"name":{"type":"string","minLength":1}},
+                        "required":["name"],
+                        "additionalProperties":false
+                    })
+        }));
+        let first_messages = requests[0].body["messages"]
+            .as_array()
+            .expect("first request messages");
+        let system = first_messages
+            .iter()
+            .filter(|message| message["role"] == "system")
+            .filter_map(|message| message["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(system.contains("known-skill: Use the known deterministic workflow"));
+        assert!(system.contains("`load_skill`"));
+        assert!(!system.contains(&skill_path.display().to_string()));
+        let replayed_to_model = requests[1].body["messages"]
+            .as_array()
+            .expect("second request messages")
+            .iter()
+            .find(|message| {
+                message["role"] == "tool" && message["tool_call_id"] == "m43-load-skill"
+            })
+            .expect("load_skill result projected into canonical transcript");
+        assert_eq!(replayed_to_model["content"], outcome.content);
+
+        drop(app);
+        std::fs::remove_dir_all(workspace.join(".dse/skills")).expect("remove source after commit");
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_prompt(prompt),
+        )
+        .expect("reopen production app without credential or Skill source");
+        let reopened_view = run_result(
+            reopened
+                .execute(envelope(
+                    "m43-reopen-get",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            reopened_view.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let reopened_events = reopened
+            .execute(envelope(
+                "m43-reopen-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m43_skill_snapshot_change_fails_live_resume_before_model_request() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let skill_dir = temp.path().join(".dse/skills/resume-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill directory");
+        let source = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &source,
+            "---\nname: resume-skill\ndescription: first\n---\nfirst body\n",
+        )
+        .expect("first skill snapshot");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), true);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("m43-skill-resume-mismatch");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            ModelAccounting::default(),
+            WriteExecutionMode::Root,
+        );
+        let created = store.create(request).await.expect("seed active run");
+        store
+            .release(&created.lease)
+            .await
+            .expect("release active run");
+        let replay = store
+            .load(&run_id)
+            .await
+            .expect("load active run")
+            .expect("active run exists");
+
+        std::fs::write(
+            source,
+            "---\nname: resume-skill\ndescription: changed\n---\nchanged body\n",
+        )
+        .expect("mutate skill after persisted fingerprint");
+        let error = match composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+        {
+            Ok(_) => panic!("changed Skill snapshot must not resume live"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, RunApiErrorCode::RunEnvironmentMismatch);
+        assert_eq!(
+            error.reason,
+            Some(RunApiErrorReason::ExecutionFingerprintMismatch)
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }
 
     #[tokio::test]
@@ -4600,7 +4961,10 @@ mod tests {
 
     #[test]
     fn fixed_actor_policy_matrix_uses_only_typed_actor_authority_and_failure_facts() {
-        let policy = ProductionFixedRoutePolicy::new(ProductionPromptConfig::default());
+        let policy = ProductionFixedRoutePolicy::new(
+            ProductionPromptConfig::default(),
+            Arc::new(SkillRegistry::default()),
+        );
         let root = policy
             .resolve_root(None, ReasoningEffort::High, None, false)
             .expect("ordinary fixed root route");
@@ -5519,24 +5883,8 @@ mod tests {
         };
         let bound_tools =
             tool_config_for_run(&tools, &workspace, &controls).expect("bound tool config");
-        let tool_identity = bound_tools.execution_identity();
         let store =
             Arc::new(StateStore::open(Some(temp.path().join("state.db"))).expect("state store"));
-        let catalog_runtime = AgentRuntime::new(
-            Arc::new(ReplayOnlyModelPort),
-            Arc::new(ProductionToolExecutor::new(bound_tools)),
-            Arc::new(NullEventSink),
-            store.clone(),
-        );
-        let catalog = catalog_runtime.tool_definitions(
-            &ToolPolicy::default(),
-            None,
-            ModelToolAuthority::RootWrite,
-            0,
-            0,
-            false,
-        );
-        let catalog_sha256 = canonical_tool_catalog_sha256(&catalog);
         let composition = Arc::new(ProductionComposition {
             deepseek: connection,
             credential: Some(
@@ -5554,6 +5902,23 @@ mod tests {
             default_max_api_requests: NonZeroU32::new(DEFAULT_MAX_API_REQUESTS)
                 .expect("non-zero default"),
         });
+        let bound_tools = bound_tools.with_skill_registry(composition.discover_skills(&workspace));
+        let tool_identity = bound_tools.execution_identity();
+        let catalog_runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(bound_tools)),
+            Arc::new(NullEventSink),
+            store.clone(),
+        );
+        let catalog = catalog_runtime.tool_definitions(
+            &ToolPolicy::default(),
+            None,
+            ModelToolAuthority::RootWrite,
+            0,
+            0,
+            false,
+        );
+        let catalog_sha256 = canonical_tool_catalog_sha256(&catalog);
         let fingerprint = composition.execution_fingerprint_sha256(
             "deepseek-v4-pro",
             &ModelRouteAudit {

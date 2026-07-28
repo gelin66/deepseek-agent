@@ -206,9 +206,9 @@
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
 - 上次更新：2026-07-28
 
-- 当前执行指针（2026-07-28）：M42 TUI Run Hub 已完成；M40-A 继续保持
-  `reject_incomplete_acquisition`，不能续跑或补样。下一条候选 production slice 是 M43；
-  M44–M46 只记录顺序，尚未启动。
+- 当前执行指针（2026-07-28）：M43 Skills 可靠加载已完成；M40-A 继续保持
+  `reject_incomplete_acquisition`，不能续跑或补样。下一条候选 production slice 是 M44；
+  M45–M46 只记录顺序，尚未启动。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6776,11 +6776,11 @@ targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、C
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑冻结后续顺序；M42 已形成实现与证据 checkpoint，M43–M46 尚未启动。
+这些里程碑冻结后续顺序；M42–M43 已形成实现与证据 checkpoint，M44–M46 尚未启动。
 
 1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
    运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
-2. **M43 Skills 可靠加载**：提供 Host-owned exact `load_skill(name)` 或精确 discovered-path
+2. **M43 Skills 可靠加载（已完成）**：提供 Host-owned exact `load_skill(name)` 或精确 discovered-path
    grant；不能读取的全局 Skill 不再向模型宣称可用。MCP/plugin 未进入模型 catalog 前保持
    管理面或隐藏，不建设 marketplace。
 3. **M44 DeepSeek 原生 Web Search 决策**：最多两天、最多一到两个官方请求，验证 Anthropic
@@ -6814,6 +6814,35 @@ continuation source。`New run` 只清除进程内的 continuation 选择，下�
 证明历史查看没有再次访问模型。M42 没有 material model-visible treatment，不读取 Key、不做
 付费 A/B 或 canary；Run API、RuntimeEvent 与 State schema 均未升级。`dse-tui` package、
 focused、严格 workspace Clippy、完整 workspace tests、fmt、check 与 diff gate 全部通过。
+
+### 40.2 M43 formal result
+
+M43 在 `crates/tools` 的固定 catalog 中加入第 13 个 Host 工具 `load_skill(name)`。一次
+production Start/Continue 只由 `crates/context` 发现一份不可变 `SkillRegistry`，同一快照同时
+驱动 root/child prompt、root/read-only child/isolated Writer executor 和 production execution
+fingerprint；没有第二 discovery owner、Skill session/store 或 permission ledger。prompt 不再
+暴露磁盘路径或建议用 `read_file` 读取全局文件，只列出当前 actor catalog 真正提供
+`load_skill` 时可加载的精确名称和说明。
+
+Host 在发现时完整读取普通 UTF-8 `SKILL.md`，128 KiB 为 admission hard limit；不可读、无效、
+过大以及同一 precedence cell 归一化后歧义的定义都不进入 prompt 或 loader。跨 discovery root
+继续使用既有显式 precedence，但更高优先级 cell 的歧义会阻止同名低优先级 fallback。
+`load_skill` schema 只有 `name`，拒绝大小写/空格别名、任意 path 和额外字段；成功返回完整未
+截断 body、精确 source path、完整 source byte count/SHA-256、returned bytes 和
+`trust=external_untrusted`。文件在 run 内变化或删除不改变已冻结结果；live resume 重新发现后的
+snapshot hash 不同则由既有 execution fingerprint fail closed。
+
+真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RunStore`
+loopback 中模型选择 `load_skill`，committed JSON outcome 原样进入下一次 model request。提交后
+删除源 Skill，再以无凭据、零请求 application reopen，`Get/Events` 与原 SQLite events 完全
+相同。actor catalog hash/parity、ToolPolicy 隐藏时 prompt 同步隐藏、typed preflight failure、
+普通只读 authorization、不可变快照和 system-skill 安装升级均有确定性测试。
+
+该切片属于 EVALUATION 已准入的 exact Skill grant，不是成功率/效率 treatment；Key 未读取，
+official DeepSeek requests=0、actual canary cost `$0`，没有 Token/费用/效率声明，也没有产生需
+provider usage 补全的 accounting observation。现有 `ToolOutcome` 已能无损表达结果，Run API、
+RuntimeEvent、State schema 均未升级。MCP/plugin 继续不进入模型 catalog；marketplace、search、
+browser、第二 Runtime/Store/permission owner 和 M44 以后能力均未引入。
 
 在 M41–M46 期间继续停做：多 Writer/swarm、FIM、RepoGraph/LSP、视觉 placeholder、Firecrawl/
 Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss

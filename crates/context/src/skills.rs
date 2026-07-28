@@ -1,13 +1,18 @@
 //! Skill discovery and registry used by the canonical prompt owner.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
 
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 280;
 const MAX_AVAILABLE_SKILLS_CHARS: usize = 12_000;
 const MAX_SKILL_NAME_CHARS: usize = 64;
+/// A discovered skill is admitted only when its complete UTF-8 definition fits
+/// this Host-owned bound. `load_skill` therefore never truncates instructions.
+pub const MAX_SKILL_SOURCE_BYTES: u64 = 128 * 1024;
 
 // === Defaults ===
 
@@ -61,6 +66,10 @@ pub struct Skill {
     /// description for non-English sessions (saves prompt tokens; see #3354).
     pub localized_descriptions: HashMap<String, String>,
     pub body: String,
+    /// Hash and byte count of the complete admitted `SKILL.md` source. These
+    /// are captured during discovery so later loads never race the filesystem.
+    pub source_sha256: String,
+    pub source_bytes: u64,
     /// On-disk path to the `SKILL.md` this was loaded from. The directory
     /// name can differ from the frontmatter `name` for community installs
     /// or manually-placed skills, so callers must use this rather than
@@ -111,6 +120,10 @@ impl Skill {
 pub struct SkillRegistry {
     skills: Vec<Skill>,
     warnings: Vec<String>,
+    /// Names that were ambiguous inside one discovery-precedence cell. A
+    /// higher-precedence ambiguity blocks lower-precedence definitions instead
+    /// of silently selecting one.
+    ambiguous_names: HashSet<String>,
 }
 
 impl SkillRegistry {
@@ -135,9 +148,9 @@ impl SkillRegistry {
     /// are skipped to avoid descending into VCS / cache trees like
     /// `.git/`. The provided `dir` itself is always honored, even if
     /// hidden — that's what the user explicitly configured.
-    /// Symlinked directories are followed when they resolve to directories,
-    /// with canonical path tracking plus [`Self::MAX_DISCOVERY_DEPTH`] keeping
-    /// the walk finite when a skills layout contains cycles.
+    /// Symlinked directories are followed only when their canonical target
+    /// remains inside the configured discovery root, with canonical path
+    /// tracking plus [`Self::MAX_DISCOVERY_DEPTH`] keeping the walk finite.
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
@@ -149,7 +162,7 @@ impl SkillRegistry {
         }
 
         let mut visited = HashSet::new();
-        Self::discover_recursive(dir, 0, &mut registry, &mut visited);
+        Self::discover_recursive(dir, &canonical_dir, 0, &mut registry, &mut visited);
         registry
             .skills
             .sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
@@ -158,6 +171,7 @@ impl SkillRegistry {
 
     fn discover_recursive(
         dir: &Path,
+        canonical_root: &Path,
         depth: usize,
         registry: &mut Self,
         visited: &mut HashSet<PathBuf>,
@@ -207,75 +221,147 @@ impl SkillRegistry {
             if !metadata.is_dir() {
                 continue;
             }
+            let Ok(canonical_path) = fs::canonicalize(&path) else {
+                continue;
+            };
+            if !canonical_path.starts_with(canonical_root) {
+                registry.push_warning(format!(
+                    "技能路径 {} 解析到发现根目录之外，已拒绝。",
+                    path.display()
+                ));
+                continue;
+            }
 
             let skill_path = path.join("SKILL.md");
-            match fs::read_to_string(&skill_path) {
-                Ok(content) => match Self::parse_skill(&skill_path, &content) {
-                    Ok(mut skill) => {
-                        if !Self::mark_discovered_dir(&path, visited) {
+            match Self::read_skill_source(&skill_path, canonical_root) {
+                Ok(Some((content, canonical_source))) => {
+                    match Self::parse_skill(&skill_path, &content) {
+                        Ok(mut skill) => {
+                            if !Self::mark_discovered_dir(&path, visited) {
+                                continue;
+                            }
+                            skill.path = canonical_source;
+                            skill.source_bytes = u64::try_from(content.len()).unwrap_or(u64::MAX);
+                            skill.source_sha256 = sha256(content.as_bytes());
+                            registry.normalize_skill_name(&mut skill, &skill_path);
+                            // Two definitions in the same precedence cell that
+                            // normalize to one exact name are ambiguous. Remove the
+                            // first and block the name so neither can be advertised
+                            // or loaded.
+                            let shadowed_index = registry
+                                .skills
+                                .iter()
+                                .position(|candidate| candidate.name == skill.name);
+                            if let Some(existing_index) = shadowed_index {
+                                let existing = registry.skills.remove(existing_index);
+                                registry.ambiguous_names.insert(skill.name.clone());
+                                registry.push_warning(format!(
+                                    "技能名 `{}` 在 {} 与 {} 之间存在歧义，均未加载。",
+                                    skill.name,
+                                    existing.path.display(),
+                                    skill.path.display()
+                                ));
+                            } else if registry.ambiguous_names.contains(&skill.name) {
+                                registry.push_warning(format!(
+                                    "技能名 `{}` 已存在歧义，{} 未加载。",
+                                    skill.name,
+                                    skill.path.display()
+                                ));
+                            } else {
+                                registry.skills.push(skill);
+                            }
+                            // This directory IS a skill. Don't descend further:
+                            // any nested `SKILL.md` would be a fixture or
+                            // example bundled with the parent skill, not a
+                            // separately-installable skill.
                             continue;
                         }
-                        skill.path = skill_path.clone();
-                        registry.normalize_skill_name(&mut skill, &skill_path);
-                        // Two sibling directories under the same root can
-                        // normalize to the same command name (e.g. `My Skill/`
-                        // and `my_skill/` both slugify to `my-skill`). Keep the
-                        // first (matching the cross-root merge in
-                        // `discover_from_directories`) and warn instead of
-                        // silently pushing an unreachable duplicate (#3919).
-                        let shadowed_by = registry
-                            .skills
-                            .iter()
-                            .find(|s| s.name == skill.name)
-                            .map(|s| s.path.clone());
-                        if let Some(existing_path) = shadowed_by {
+                        Err(reason) => {
+                            if !Self::mark_discovered_dir(&path, visited) {
+                                continue;
+                            }
                             registry.push_warning(format!(
-                                "技能 `{}`（{}）被同名技能 {} 覆盖。",
-                                skill.name,
-                                skill.path.display(),
-                                existing_path.display()
+                                "无法解析 {}：{reason}",
+                                skill_path.display()
                             ));
-                        } else {
-                            registry.skills.push(skill);
-                        }
-                        // This directory IS a skill. Don't descend further:
-                        // any nested `SKILL.md` would be a fixture or
-                        // example bundled with the parent skill, not a
-                        // separately-installable skill.
-                        continue;
-                    }
-                    Err(reason) => {
-                        if !Self::mark_discovered_dir(&path, visited) {
+                            // Still treat this directory as "claimed" — a
+                            // malformed SKILL.md shouldn't cause us to
+                            // double-load nested fixtures as skills.
                             continue;
                         }
-                        registry
-                            .push_warning(format!("无法解析 {}：{reason}", skill_path.display()));
-                        // Still treat this directory as "claimed" — a
-                        // malformed SKILL.md shouldn't cause us to
-                        // double-load nested fixtures as skills.
-                        continue;
                     }
-                },
-                Err(err) if skill_path.exists() => {
+                }
+                Err(reason) => {
                     if !Self::mark_discovered_dir(&path, visited) {
                         continue;
                     }
-                    registry.push_warning(format!("无法读取 {}：{err}", skill_path.display()));
+                    registry.push_warning(format!("无法读取 {}：{reason}", skill_path.display()));
                     continue;
                 }
-                Err(_) => {
+                Ok(None) => {
                     // No SKILL.md here — recurse to look for nested
                     // skill directories (e.g. `<vendor>/<skill>/SKILL.md`).
                 }
             }
 
-            Self::discover_recursive(&path, depth + 1, registry, visited);
+            Self::discover_recursive(&path, canonical_root, depth + 1, registry, visited);
         }
     }
 
     fn mark_discovered_dir(dir: &Path, visited: &mut HashSet<PathBuf>) -> bool {
         let key = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         visited.insert(key)
+    }
+
+    fn read_skill_source(
+        path: &Path,
+        canonical_root: &Path,
+    ) -> Result<Option<(String, PathBuf)>, String> {
+        let canonical_source = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if !canonical_source.starts_with(canonical_root) {
+            return Err("文件解析到发现根目录之外".to_owned());
+        }
+        if canonical_source.to_str().is_none() {
+            return Err("文件路径不是有效 UTF-8，无法提供精确来源".to_owned());
+        }
+        let mut file = match fs::File::open(&canonical_source) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("不是普通文件".to_owned());
+        }
+        if metadata.len() > MAX_SKILL_SOURCE_BYTES {
+            return Err(format!(
+                "文件大小 {} bytes 超过上限 {MAX_SKILL_SOURCE_BYTES} bytes",
+                metadata.len()
+            ));
+        }
+
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(metadata.len().min(MAX_SKILL_SOURCE_BYTES)).unwrap_or_default(),
+        );
+        file.by_ref()
+            .take(MAX_SKILL_SOURCE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SKILL_SOURCE_BYTES {
+            return Err(format!("读取内容超过上限 {MAX_SKILL_SOURCE_BYTES} bytes"));
+        }
+        String::from_utf8(bytes)
+            .map(|content| Some((content, canonical_source)))
+            .map_err(|error| {
+                format!(
+                    "不是有效 UTF-8（offset {}）",
+                    error.utf8_error().valid_up_to()
+                )
+            })
     }
 
     fn push_warning(&mut self, warning: String) {
@@ -468,6 +554,8 @@ impl SkillRegistry {
                 description,
                 localized_descriptions,
                 body: body.trim().to_string(),
+                source_sha256: String::new(),
+                source_bytes: 0,
                 // Filled in by `discover` after parse succeeds; default to an
                 // empty path so direct constructors (e.g. tests) compile.
                 path: PathBuf::new(),
@@ -489,6 +577,8 @@ impl SkillRegistry {
             description: String::new(),
             localized_descriptions: HashMap::new(),
             body: content.trim().to_string(),
+            source_sha256: String::new(),
+            source_bytes: 0,
             path: PathBuf::new(),
         })
     }
@@ -497,6 +587,50 @@ impl SkillRegistry {
     pub fn get(&self, name: &str) -> Option<&Skill> {
         let normalized = normalize_skill_name_for_lookup(name);
         self.skills.iter().find(|s| s.name == normalized)
+    }
+
+    /// Lookup only the exact model-visible name. This is the production load
+    /// contract; convenience normalization remains limited to management code.
+    #[must_use]
+    pub fn get_exact(&self, name: &str) -> Option<&Skill> {
+        self.skills.iter().find(|skill| skill.name == name)
+    }
+
+    /// Stable identity of the complete immutable discovery snapshot, including
+    /// source provenance and warnings that explain fail-closed exclusions.
+    #[must_use]
+    pub fn snapshot_sha256(&self) -> String {
+        let mut hasher = Sha256::new();
+        let mut skills = self.skills.iter().collect::<Vec<_>>();
+        skills.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        for skill in skills {
+            hash_frame(&mut hasher, skill.name.as_bytes());
+            hash_frame(&mut hasher, stable_path(&skill.path).as_bytes());
+            hash_frame(&mut hasher, skill.source_sha256.as_bytes());
+            hash_frame(&mut hasher, &skill.source_bytes.to_le_bytes());
+            hash_frame(&mut hasher, skill.description.as_bytes());
+            let mut localized = skill.localized_descriptions.iter().collect::<Vec<_>>();
+            localized.sort_by_key(|(locale, _)| *locale);
+            for (locale, description) in localized {
+                hash_frame(&mut hasher, locale.as_bytes());
+                hash_frame(&mut hasher, description.as_bytes());
+            }
+        }
+        let mut warnings = self.warnings.iter().collect::<Vec<_>>();
+        warnings.sort();
+        for warning in warnings {
+            hash_frame(&mut hasher, warning.as_bytes());
+        }
+        let mut ambiguous = self.ambiguous_names.iter().collect::<Vec<_>>();
+        ambiguous.sort();
+        for name in ambiguous {
+            hash_frame(&mut hasher, name.as_bytes());
+        }
+        prefixed_hex(&hasher.finalize())
     }
 
     /// Return all loaded skills.
@@ -722,8 +856,19 @@ pub fn discover_from_directories(dirs: impl IntoIterator<Item = PathBuf>) -> Ski
     let mut merged = SkillRegistry::default();
     for dir in dirs {
         let registry = SkillRegistry::discover(&dir);
+        for name in &registry.ambiguous_names {
+            if merged.skills.iter().all(|skill| skill.name != *name) {
+                merged.ambiguous_names.insert(name.clone());
+            }
+        }
         for skill in registry.skills {
-            if let Some(existing) = merged.skills.iter().find(|s| s.name == skill.name) {
+            if merged.ambiguous_names.contains(&skill.name) {
+                merged.push_warning(format!(
+                    "技能 `{}`（{}）被更高优先级的歧义定义阻止。",
+                    skill.name,
+                    skill.path.display()
+                ));
+            } else if let Some(existing) = merged.skills.iter().find(|s| s.name == skill.name) {
                 merged.push_warning(format!(
                     "技能 `{}`（{}）被同名技能 {} 覆盖。",
                     skill.name,
@@ -751,7 +896,7 @@ pub fn render_available_skills_context_for_workspace_with_mode(
     mode: SkillDiscoveryMode,
 ) -> Option<String> {
     let registry = discover_in_workspace_with_mode(workspace, mode);
-    render_skills_block(&registry)
+    render_available_skills_context(&registry)
 }
 
 #[must_use]
@@ -761,10 +906,10 @@ pub fn render_available_skills_context_for_workspace_and_dir_with_mode(
     mode: SkillDiscoveryMode,
 ) -> Option<String> {
     let registry = discover_for_workspace_and_dir_with_mode(workspace, skills_dir, mode);
-    render_skills_block(&registry)
+    render_available_skills_context(&registry)
 }
 
-fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
+pub fn render_available_skills_context(registry: &SkillRegistry) -> Option<String> {
     if registry.is_empty() {
         return None;
     }
@@ -772,30 +917,21 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     let mut out = String::new();
     out.push_str("## 技能\n");
     out.push_str(
-        "技能是存放在 `SKILL.md` 中的本地操作说明。下面只列出本次会话可用技能的名称、\
-说明和路径；需要使用某个技能时再打开对应文件。\n\n",
+        "技能是 Host 在本次运行开始时发现并冻结的本地操作说明。下面只列出本次运行\
+真实可加载的精确名称和说明；需要正文时调用 `load_skill`。\n\n",
     );
     out.push_str("### 可用技能\n");
 
     let mut omitted = 0usize;
     for skill in registry.list() {
-        // Use the real on-disk path captured at discovery — the directory
-        // name can differ from the frontmatter `name` for community
-        // installs, in which case `<dir>/<name>/SKILL.md` would not exist
-        // and the model would fail to open it.
         let description = truncate_for_prompt(
             skill.description_for_locale("zh-Hans"),
             MAX_SKILL_DESCRIPTION_CHARS,
         );
         let line = if description.is_empty() {
-            format!("- {}: (file: {})\n", skill.name, skill.path.display())
+            format!("- {}\n", skill.name)
         } else {
-            format!(
-                "- {}: {} (file: {})\n",
-                skill.name,
-                description,
-                skill.path.display()
-            )
+            format!("- {}: {}\n", skill.name, description)
         };
 
         if out.chars().count() + line.chars().count() > MAX_AVAILABLE_SKILLS_CHARS {
@@ -811,24 +947,39 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         ));
     }
 
-    if !registry.warnings().is_empty() {
-        out.push_str("\n### 技能加载警告\n");
-        for warning in registry.warnings().iter().take(8) {
-            out.push_str("- ");
-            out.push_str(&truncate_for_prompt(warning, MAX_SKILL_DESCRIPTION_CHARS));
-            out.push('\n');
-        }
-    }
-
     out.push_str(
         "\n### 使用规则\n\
-- 技能正文位于列出的路径。任务匹配时只打开该技能的 `SKILL.md` 及其明确引用的必要文件。\n\
-- 用户点名技能（`$SkillName`、`/skill <name>` 或自然语言）或任务明显匹配描述时使用；下一轮未再次提及时不要自动沿用。\n\
-- 点名技能缺失或不可读时简要说明，并使用最佳替代方案继续。\n\
+- 任务匹配时，用目录中显示的精确名称调用 `load_skill`；不要用 `read_file` 猜测 Skill 路径。\n\
+- 用户点名技能（`$SkillName` 或自然语言）或任务明显匹配描述时使用；下一轮未再次提及时不要自动沿用。\n\
+- `load_skill` 拒绝名称时，说明该 Skill 本次不可用，并使用最佳替代方案继续；不要猜测别名或路径。\n\
 - 未经用户明确要求或信任，不要执行社区技能附带的脚本。\n",
     );
 
     Some(out)
+}
+
+fn stable_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+fn hash_frame(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    prefixed_hex(&Sha256::digest(bytes))
+}
+
+fn prefixed_hex(bytes: &[u8]) -> String {
+    let digest = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{digest}")
 }
 
 fn truncate_for_prompt(value: &str, max_chars: usize) -> String {
@@ -843,4 +994,153 @@ fn truncate_for_prompt(value: &str, max_chars: usize) -> String {
         .collect::<String>();
     truncated.push('…');
     truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_skill(root: &Path, directory: &str, name: &str, body: &str) -> PathBuf {
+        let skill_dir = root.join(directory);
+        fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join("SKILL.md");
+        fs::write(
+            &path,
+            format!("---\nname: {name}\ndescription: Exact test skill\n---\n\n{body}\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn exact_lookup_and_render_hide_paths_and_require_load_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        write_skill(temp.path(), "one", "exact-skill", "Do the exact work.");
+        let registry = SkillRegistry::discover(temp.path());
+
+        assert!(registry.get_exact("exact-skill").is_some());
+        assert!(registry.get_exact("Exact Skill").is_none());
+        assert!(registry.get("Exact Skill").is_some());
+        let rendered = render_available_skills_context(&registry).unwrap();
+        assert!(rendered.contains("- exact-skill: Exact test skill"));
+        assert!(rendered.contains("`load_skill`"));
+        assert!(!rendered.contains(&temp.path().display().to_string()));
+        assert!(!rendered.contains("`/skill"));
+        assert!(rendered.contains("不要用 `read_file` 猜测"));
+    }
+
+    #[test]
+    fn oversized_and_non_utf8_sources_are_not_advertised() {
+        let oversized = tempfile::tempdir().unwrap();
+        let oversized_dir = oversized.path().join("large");
+        fs::create_dir_all(&oversized_dir).unwrap();
+        fs::write(
+            oversized_dir.join("SKILL.md"),
+            vec![b'x'; usize::try_from(MAX_SKILL_SOURCE_BYTES + 1).unwrap()],
+        )
+        .unwrap();
+        let invalid = oversized.path().join("invalid");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(invalid.join("SKILL.md"), [0xff, 0xfe, 0xfd]).unwrap();
+
+        let registry = SkillRegistry::discover(oversized.path());
+        assert!(registry.is_empty());
+        assert_eq!(registry.warnings().len(), 2);
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("超过上限"))
+        );
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("UTF-8"))
+        );
+    }
+
+    #[test]
+    fn normalized_collision_fails_closed_and_blocks_lower_precedence() {
+        let high = tempfile::tempdir().unwrap();
+        let low = tempfile::tempdir().unwrap();
+        write_skill(high.path(), "a", "My Skill", "first");
+        write_skill(high.path(), "b", "my_skill", "second");
+        write_skill(low.path(), "only", "my-skill", "lower");
+
+        let registry =
+            discover_from_directories([high.path().to_path_buf(), low.path().to_path_buf()]);
+        assert!(registry.get_exact("my-skill").is_none());
+        assert!(registry.is_empty());
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("存在歧义"))
+        );
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("更高优先级的歧义定义"))
+        );
+    }
+
+    #[test]
+    fn admitted_snapshot_is_complete_immutable_and_change_sensitive() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = write_skill(temp.path(), "stable", "stable-skill", "first body");
+        let first = SkillRegistry::discover(temp.path());
+        let first_hash = first.snapshot_sha256();
+        let admitted = first.get_exact("stable-skill").unwrap();
+        assert_eq!(admitted.body, "first body");
+        assert!(!admitted.source_sha256.is_empty());
+        assert!(admitted.source_bytes <= MAX_SKILL_SOURCE_BYTES);
+
+        fs::write(
+            path,
+            "---\nname: stable-skill\ndescription: Exact test skill\n---\n\nsecond body\n",
+        )
+        .unwrap();
+        let second = SkillRegistry::discover(temp.path());
+        assert_eq!(first.get_exact("stable-skill").unwrap().body, "first body");
+        assert_eq!(
+            second.get_exact("stable-skill").unwrap().body,
+            "second body"
+        );
+        assert_ne!(first_hash, second.snapshot_sha256());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_and_source_cannot_escape_discovery_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write_skill(outside.path(), "escaped", "escaped-skill", "secret");
+        symlink(
+            outside.path().join("escaped"),
+            root.path().join("escaped-dir"),
+        )
+        .unwrap();
+
+        let inside = root.path().join("inside");
+        fs::create_dir_all(&inside).unwrap();
+        symlink(
+            outside.path().join("escaped/SKILL.md"),
+            inside.join("SKILL.md"),
+        )
+        .unwrap();
+
+        let registry = SkillRegistry::discover(root.path());
+        assert!(registry.is_empty());
+        assert!(registry.warnings().len() >= 2);
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .all(|warning| warning.contains("之外"))
+        );
+    }
 }

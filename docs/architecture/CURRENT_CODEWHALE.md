@@ -523,13 +523,28 @@ Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache
 ### Tools
 
 `crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
-当前 12 个 Host 工具为：
+当前 13 个 Host 工具为：
 
 ```text
 apply_patch  edit_file    exec_shell   file_search
 git_diff     git_status   grep_files   list_dir
-read_file    run_tests    run_verifiers web_fetch
+load_skill   read_file    run_tests    run_verifiers
+web_fetch
 ```
+
+M43 已加入 canonical `load_skill(name)`。production Start/Continue 由 `crates/context` 发现一次
+不可变 Skill 快照，并把同一 `Arc<SkillRegistry>` 交给 prompt、root/child executor 与 execution
+fingerprint。prompt 只在 actual actor catalog 含 `load_skill` 时列出精确名称/说明，不再暴露
+文件路径或建议用 workspace `read_file` 猜测全局 Skill。tool schema 不接受 path、alias 或额外
+字段；返回完整 body、source path、source bytes/SHA-256、returned bytes、
+`truncated=false` 和 `trust=external_untrusted`。
+
+发现 admission 只接受不超过 128 KiB 的完整普通 UTF-8 `SKILL.md`，canonical source 必须留在
+本次显式 discovery root 内；不可读、无效、过大及同一
+precedence cell 的归一化歧义均不向模型宣称可用。已接纳 body 在 run 内冻结，执行时不重读
+文件；live resume 的重新发现若改变 snapshot hash，会由既有 production execution fingerprint
+拒绝。SQLite terminal reopen 只重放 committed `ToolOutcome`。它没有增加 Skill session/store、
+第二权限 owner、RuntimeEvent 或 State schema。
 
 M41 已在 `crates/tools` 加入 canonical `web_fetch(url, max_chars?)`。它只读取 public HTTPS，
 每一跳都重新执行 URL、DNS/IP、connect pin 与 redirect 安全门；system proxy、自动 redirect、
@@ -1932,7 +1947,8 @@ corrected Harness；当时预注册的五个独立候选缺口为：
   或 TaskContract-scoped service/UI runtime artifacts；M10-E 已证明 current fixed-Pro
   轨迹没有可由它们修复的 measured loss，因此这不是已准入缺口。
 
-skills 已经只把 name/description/path 放入 prompt，正文按需读取；single Writer
+skills 已经只把当前 actor 可通过 `load_skill` 读取的 exact name/description 放入 prompt，
+正文由 Host 从 run-scoped immutable snapshot 按需返回；single Writer
 worktree、latest-revision Stop Gate、RunStore exact replay、atomic tools 和 stable-prefix/
 accounting 均已有，不能在 M10 重复建设。A→E 只有通过各自证据门才允许增强上述现有
 owner；M10-A 至 M10-E 的实际结果以下列 current facts 为准。

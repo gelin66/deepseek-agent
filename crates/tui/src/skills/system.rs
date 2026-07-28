@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-const BUNDLED_SKILL_VERSION: &str = "4";
+const BUNDLED_SKILL_VERSION: &str = "5";
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
 const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");

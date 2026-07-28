@@ -19,4 +19,5 @@ pub use prompts::{
     PromptDuplicateKind, PromptDuplicateRelation, PromptFragmentOwner, PromptToolClaimParity,
     PromptToolSchemaClaim, PromptTrustClass, production_system_prompt,
     production_system_prompt_with_audit, production_system_prompt_with_ledger,
+    production_system_prompt_with_skill_registry,
 };
