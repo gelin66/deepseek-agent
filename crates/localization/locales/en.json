@@ -135,8 +135,6 @@
   "DoctorSourceInteractiveDefault": "interactive default",
   "DoctorWorkspaceTrusted": "Workspace is trusted",
   "DoctorWorkspaceNotTrusted": "Workspace trust is not elevated",
-  "DoctorSearchProvider": "Search provider: {provider} (source: {source}{hint})",
-  "DoctorSearchProviderSwitchHint": "; set [search] provider = \"bing\" | \"tavily\" | \"bocha\" to switch",
   "DoctorSourcePersisted": "SAVED",
   "DoctorSourceDerived": "derived",
   "DoctorAutonomyUnspecified": "unspecified",

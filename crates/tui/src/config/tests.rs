@@ -200,3 +200,16 @@ fn m8g_interactive_config_rejects_retired_fleet_table() {
     let error = config.validate().expect_err("fleet table must be retired");
     assert!(error.to_string().contains("fleet"));
 }
+
+#[test]
+fn m44_interactive_config_rejects_retired_search_management() {
+    let parsed: ConfigFile =
+        toml::from_str("[search]\nprovider = \"duckduckgo\"\napi_key = \"not-a-real-key\"\n")
+            .expect("parse retired search table");
+    let config = apply_profile(parsed, None).expect("merge config");
+    let error = config
+        .validate()
+        .expect_err("search provider management must fail closed");
+    assert!(error.to_string().contains("search"));
+    assert!(!include_str!("../../../../config.example.toml").contains("[search]"));
+}

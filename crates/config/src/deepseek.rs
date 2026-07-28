@@ -67,6 +67,7 @@ const RETIRED_ROOT_KEYS: &[&str] = &[
     "allow_sandbox_elevation",
     "permission_mode",
     "permissions",
+    "search",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -645,6 +646,11 @@ fn reject_retired_table_keys(
 ) -> Result<()> {
     for key in RETIRED_ROOT_KEYS {
         if table.contains_key(*key) {
+            if *key == "search" {
+                bail!(
+                    "配置项 '{path}.search' 已删除；DSE 当前没有 production web_search 工具或可选搜索提供方"
+                );
+            }
             bail!(
                 "配置项 '{path}.{key}' 已删除；DSE 固定使用官方 DeepSeek，不再读取 Provider 兼容配置"
             );
@@ -672,6 +678,9 @@ fn reject_retired_extra_keys(extras: &BTreeMap<String, toml::Value>) -> Result<(
 fn reject_retired_config_key(key: &str) -> Result<()> {
     let root = key.split('.').next().unwrap_or(key);
     if RETIRED_ROOT_KEYS.contains(&key) || RETIRED_ROOT_KEYS.contains(&root) {
+        if root == "search" {
+            bail!("配置项 '{key}' 已删除；DSE 当前没有 production web_search 工具或可选搜索提供方");
+        }
         bail!("配置项 '{key}' 已删除；请使用 api_key、base_url 或 default_text_model");
     }
     Ok(())

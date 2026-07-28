@@ -520,6 +520,13 @@ surface。M8-H 证明旧 planner 没有 canonical caller，sender 不拥有它�
 Host-owned parser/apply/accounting/reopen 候选先成立，FIM 才能按新垂直切片重开。
 Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache API。
 
+M44 复核后，production DeepSeek surface 仍只有上述 Standard/Strict Chat。当前官方 Chat
+reference 的 tool 类型只有 function；Web Search 只在独立 `/anthropic` compatibility 中出现。
+采用它需要 Messages request/response/SSE、server-tool content blocks、thinking signature、
+finish/continuation、source 与 usage replay 的第二 wire，现有 `ModelMessage/ModelOutput` 和 Chat
+parser 不能无损表达。M44 没有增加 `ApiSurface`、endpoint、DTO、parser、RuntimeEvent 或 State
+字段，正式结论是 `hold_wait_for_chat_surface`。
+
 ### Tools
 
 `crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
@@ -560,8 +567,9 @@ SQLite reopen 只重放，不重新 DNS/HTTP。root、coordinator 和 read-only 
 catalog 获得定义；Ask 因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess
 root 可执行，isolated Writer 继续由既有 network-denied sandbox 拒绝。
 
-production 仍没有 `web_search` 或 browser tool。TUI 的 MCP/search-provider 配置与插件发现没有
-进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。
+production 仍没有 `web_search` 或 browser tool。M44 已删除没有 executor 的 TUI/config
+search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
+fail closed。MCP 配置与插件发现仍没有进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。
 
 Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启动的 child 仍是同一个
 `AgentRuntime`，不是另一套 swarm loop。
@@ -1137,7 +1145,8 @@ M4-C foreground 切换后还已物理删除：
 - `[features].exec_policy` 曾只让 TUI 忽略规则、不能同步 app-server，形成 caller 分叉；
   M27 已删除该开关，所有 production surface 都读取同一可选 `execpolicy.toml`。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
-  删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
+  删除；M44 又删除了同样没有 executor 的 typed search-provider resolution 与 Doctor 投影。
+  生产 DeepSeek retry projection 不受影响。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有
   真实测试 caller，现已删除；新增断言直接经过 `render_footer_from -> FooterProps` 保护
   canonical context-percent 与 session-cost 路由，生产 `FooterWidget`/phase strip 未改动。
@@ -1515,8 +1524,8 @@ TUI 的 `ApiProvider`、provider-specific OAuth、model catalog/provider lake、
 billing/scorecard 和第二份 capability/pricing route 已删除。`crates/config` 的
 `ProviderKind`、Providers tables、catalog、pricing、models.dev、model reference、fallback
 与整棵 generic route resolver 已删除。保留的 `crates/tui::pricing` 只展示 canonical
-DeepSeek usage/cost，不选择模型或路由；`[search].provider` 只选择 retrieval adapter。
-MCP OAuth 只认证 MCP transport，不认证模型后端。
+DeepSeek usage/cost，不选择模型或路由。M44 已删除没有 canonical executor 的 `[search]`
+retrieval adapter 配置及 Doctor projection；MCP OAuth 只认证 MCP transport，不认证模型后端。
 
 旧 `provider = "deepseek"`、`[providers.deepseek]` 与 camel-case model keys 也 fail closed；
 没有兼容 reader、dual write 或 Provider 模式。当前 `config.example.toml` 同时通过

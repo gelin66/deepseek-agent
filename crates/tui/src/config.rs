@@ -29,8 +29,6 @@ use paths::{
     dse_home_dir, env_config_path, expand_pathbuf, home_config_path, workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
-mod search;
-pub use search::*;
 mod subagent_limits;
 pub use subagent_limits::*;
 
@@ -145,8 +143,6 @@ pub struct Config {
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
-    pub search: Option<SearchConfig>,
-    #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
     #[serde(flatten)]
     pub(crate) extra: HashMap<String, toml::Value>,
@@ -185,7 +181,13 @@ impl Config {
                 );
             }
         }
-        for name in ["DSE_APPROVAL_POLICY", "DSE_SANDBOX_MODE"] {
+        for name in [
+            "DSE_APPROVAL_POLICY",
+            "DSE_SANDBOX_MODE",
+            "DSE_SEARCH_PROVIDER",
+            "DSE_SEARCH_API_KEY",
+            "DSE_SEARCH_BASE_URL",
+        ] {
             if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
                 anyhow::bail!("{}", tr(MessageId::ConfigRetiredKey).replace("{key}", name));
             }
@@ -230,6 +232,7 @@ impl Config {
             "permissions",
             "yolo",
             "retry",
+            "search",
         ] {
             if self.extra.contains_key(retired) {
                 if retired == "context" {
@@ -508,28 +511,6 @@ impl Config {
             .insert(key.to_string(), enabled);
         Ok(())
     }
-
-    #[must_use]
-    pub fn search_provider_resolution(&self) -> SearchProviderResolution {
-        if let Ok(raw) = std::env::var("DSE_SEARCH_PROVIDER")
-            && let Some(provider) = SearchProvider::parse(&raw)
-        {
-            return SearchProviderResolution {
-                provider,
-                source: SearchProviderSource::EnvOverride,
-            };
-        }
-        if let Some(provider) = self.search.as_ref().and_then(|search| search.provider) {
-            return SearchProviderResolution {
-                provider,
-                source: SearchProviderSource::Config,
-            };
-        }
-        SearchProviderResolution {
-            provider: SearchProvider::default(),
-            source: SearchProviderSource::Default,
-        }
-    }
 }
 
 fn reject_foreign_provider_declarations(contents: &str) -> Result<()> {
@@ -632,7 +613,6 @@ fn merge_config(base: Config, selected: Config) -> Config {
         tui: selected.tui.or(base.tui),
         ui: base.ui,
         skills: selected.skills.or(base.skills),
-        search: selected.search.or(base.search),
         subagents: selected.subagents.or(base.subagents),
         extra,
     }
@@ -683,18 +663,6 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Some(value) = dse_env("DSE_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
-    }
-    if let Some(value) = dse_env("DSE_SEARCH_API_KEY") {
-        config
-            .search
-            .get_or_insert_with(SearchConfig::default)
-            .api_key = Some(value);
-    }
-    if let Some(value) = dse_env("DSE_SEARCH_BASE_URL") {
-        config
-            .search
-            .get_or_insert_with(SearchConfig::default)
-            .base_url = Some(value);
     }
     if let Some(value) = dse_env("DSE_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()

@@ -1,11 +1,12 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
-- 状态：已接受；W1 `web_fetch` 已准入，其他层仍按证据逐项准入
+- 状态：已接受；W1 `web_fetch` 已交付，M44 search 决策为等待 Chat surface，其他层仍按证据逐项准入
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
-- 当前 production delta：0（W1 尚未合入）
-- 当前执行关系：ROADMAP 已将 W1 作为下一条且唯一 in-progress production slice；搜索、
-  ApplicationProbe、语义浏览器、浏览器 action 与视觉仍未随 W1 自动准入
+- 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire，并删除
+  无 executor 的 TUI/config search-provider 管理面
+- 当前执行关系：M44 已完成 `hold_wait_for_chat_surface`；ROADMAP 的下一条候选是 M45
+  ApplicationProbe，语义浏览器、浏览器 action 与视觉仍未自动准入
 
 ## 文档权威与替代关系
 
@@ -51,12 +52,12 @@ canonical `web_fetch`、`web_search` 或浏览器工具。由此可能出现五�
 当前源码还冻结了以下事实：
 
 - production model backend 只有官方 DeepSeek ChatCompletions；
-- fixed Host catalog 只有 11 个代码工具，没有 `web_search` 或 browser tool；
+- fixed Host catalog 有 13 个工具，包含 `web_fetch` 与 `load_skill`，没有 `web_search` 或 browser
+  tool；
 - `ToolOutcome -> RuntimeEvent -> RunStore` 已是唯一调用、结果、证据与恢复链；
 - `RunPermissionMode`、Host authorization 与 OS sandbox 已是唯一权限链；
 - `crates/orchestrator` 已有 evidence-gated `ApplicationProbe` 候选，但尚无重复 loss 准入；
-- TUI 仍有只被配置/Doctor 使用的多 search-provider 枚举，它没有 canonical Agent executor，
-  不是现有 Web 能力，也不能直接升级为 production 架构；
+- M44 已删除只被配置/Doctor 使用、没有 canonical Agent executor 的多 search-provider 枚举；
 - 旧 `[vision_model]`、图片 attachment 和 `image_analyze` 因无 production consumer 已删除；
 - 当前 `ModelMessage` 和 DeepSeek wire 是文本内容，`ToolArtifact` 也没有 durable image blob
   store。
@@ -240,9 +241,9 @@ Host 必须执行：
 ## 搜索发现候选合同
 
 搜索是独立的外部检索能力，不是 `web_fetch` 的一个 provider mode。当前不选定 production
-search provider，也不把现存 TUI/Doctor 的 Bing、DuckDuckGo、Tavily、Bocha、Metaso、
-SearXNG、Baidu、Volcengine、Sofya 枚举提升为 Agent 架构；它当前没有 canonical executor，
-是 caller audit 对象。
+search provider。M44 已删除原先只由 TUI/config/Doctor 读取、没有 canonical executor 的
+Bing、DuckDuckGo、Tavily、Bocha、Metaso、SearXNG、Baidu、Volcengine、Sofya 枚举；它们从未
+构成 Agent 架构或 production Web 能力。
 
 W1 交付后，只有真实任务仍因未知 URL 无法完成时，搜索才进入一个最多两天的协议决策；
 该决策必须先比较：
@@ -266,6 +267,36 @@ provider/source identity、rank 和 retrieval time；snippet 是发现线索，�
 若外部 search 或 DeepSeek Web Search 产生独立费用、额外模型请求或 Token，必须进入同一
 canonical accounting observation。任何 unknown billing、usage incomplete 或无法按请求
 归因的费用继续按 ADR-0011 fail closed；不得把套餐余额、credits 或“免费额度”记作零成本。
+
+### M44 DeepSeek 原生 Web Search 决策（2026-07-28）
+
+M44 对当前官方文档、production caller 和 canonical 类型完成逐项审计，结论为
+`hold_wait_for_chat_surface`：
+
+| 合同项 | 官方/current 事实 | 无损接入结论 |
+|---|---|---|
+| request | ChatCompletions 的 `tools` 明确只接受 `type="function"`；Web Search 只在独立 `/anthropic` compatibility 被标为支持 | 必须增加 Messages request projector、endpoint/header owner 和第三种 `ApiSurface`，属于第二 DeepSeek wire |
+| result/source | compatibility 只声明 `server_tool_use` 与 `web_search_tool_result` supported，同时声明 citations ignored、`search_result` input unsupported；没有给出 DeepSeek 的结果子字段 fixture | 当前 `ModelOutput` 只有 string content、reasoning 与 client function calls，无法保存 server-owned call/result、source identity、rank、URL/snippet 或原始 block 顺序 |
+| stream/finish | compatibility 声明 `stream` supported，但没有发布 Web Search 的 DeepSeek SSE frame、terminal/stop mapping 或 `pause_turn` 行为 | 现有 parser 只接受 Chat `choices[].delta`、受支持 `finish_reason` 与 `[DONE]`，不能把 Messages content-block lifecycle 当作 Chat 增量重放 |
+| thinking/replay | `thinking` block supported、`redacted_thinking` not supported，但 DeepSeek 没有规定 signature 与 server-tool turn 的逐字节 replay 合同 | 当前 canonical assistant history 只有一个 `reasoning_content` string；不能无损保存 opaque signature、block interleaving 或 server loop continuation |
+| usage/cost | DeepSeek pricing 只公布模型 input/cache/output Token 价；compatibility 没有定义 `server_tool_use.web_search_requests`、搜索单价或失败计费 | 当前只能把搜索计数/费用标记为 unavailable，不能声称精确费用；这项显示缺口不替代协议与工程能力判断 |
+
+因此这不是给现有 Chat parser 增加两个 JSON variant 的小改。它同时需要第二 request/response/SSE
+协议、content-block transcript、server-tool lifecycle、finish/retry/replay 规则与独立费用映射；若
+未来仍要采用，必须先由新 ADR 明确改变“单 Chat transport”边界。M44 没有创建该 ADR，也没有
+为未知协议预建 enum、DTO、parser、RuntimeEvent 或 State 字段。
+
+本机没有可用 DeepSeek credential，因此 M44 的可选真实 canary 未执行：official requests=0、
+Key 未读取、actual cost `$0`、maximum reruns=0。零请求不是成功 canary。M44 的 hold 原因是
+当前 Chat surface 没有 Web Search、而 compatibility 路线需要未经 ADR 授权且尚无 DeepSeek
+完整 fixture 的第二 wire；不是因为费用显示本身。若未来 canary 的 usage 不完整，只停止精确
+费用声明和后续付费重试，不抹掉已闭合的行为证据。现有 `web_fetch` 继续读取已知 public HTTPS
+URL，但用户仍不能让 Agent 从未知问题发现来源。
+
+同一切片删除 TUI/config 中没有 canonical executor 的 Bing、DuckDuckGo、Tavily、Bocha、
+Metaso、SearXNG、Baidu、Volcengine、Sofya 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor
+projection；遗留配置明确 fail closed。通用历史/工具卡对外部工具名的呈现不进入 production
+catalog，未被冒充为搜索能力。
 
 ## 语义浏览器工具面
 
@@ -699,20 +730,21 @@ hold_model_capability_ceiling
 - semantic AX/DOM observation 适配当前 text-only DeepSeek，不为未发布的视觉能力制造债；
 - permission、egress、provenance、ToolOutcome、RunStore、latest-revision verifier 和
   accounting 继续是唯一真相；
-- 当前多 search-provider 配置不被视为已有能力；未来切片必须审计并删除或替代其无 caller
-  路径；
+- M44 已删除无 canonical executor 的多 search-provider 配置与 Doctor projection；未来 search
+  只能由一个经准入的 canonical surface 重新建立；
 - 视觉能力只有在官方 DeepSeek 真实 multimodal wire 可用后，才通过新 ADR 做完整纵向
   重构；
-- W1 已由 ROADMAP 准入，但在实现合入前 current tool catalog 仍保持 11 个 Host 工具；
-  W2–W5 在新的 ROADMAP 准入前不会改变 crate、Cargo dependency、tool catalog、protocol、
-  State schema、delivery artifact 或用户界面。
+- W1 已合入且 current tool catalog 为 13 个 Host 工具；M44 没有加入 search tool 或第二
+  DeepSeek wire。W2–W5 的其余候选在新的 ROADMAP 准入前不会改变 crate、Cargo dependency、
+  tool catalog、protocol、State schema、delivery artifact 或用户界面。
 
-## 研究依据（2026-07-27 复核）
+## 研究依据（2026-07-28 复核）
 
 - [DeepSeek：V4 Coding Agent integrations（text-only）](https://api-docs.deepseek.com/quick_start/agent_integrations/github_copilot/)
 - [DeepSeek：Anthropic API compatibility](https://api-docs.deepseek.com/guides/anthropic_api)
 - [DeepSeek：Claude Code integration 与 Web Search](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code)
 - [DeepSeek：Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)
+- [DeepSeek：Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)
 - [DeepSeek：Thinking Mode 与 tool-call replay](https://api-docs.deepseek.com/guides/thinking_mode/)
 - [Microsoft：Playwright MCP](https://github.com/microsoft/playwright-mcp)
 - [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)

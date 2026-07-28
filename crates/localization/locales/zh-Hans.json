@@ -135,8 +135,6 @@
     "DoctorSourceInteractiveDefault": "交互默认值",
     "DoctorWorkspaceTrusted": "工作区已信任",
     "DoctorWorkspaceNotTrusted": "工作区尚未提升信任",
-    "DoctorSearchProvider": "搜索提供方：{provider}（来源：{source}{hint}）",
-    "DoctorSearchProviderSwitchHint": "；可设置 [search] provider = \"bing\" | \"tavily\" | \"bocha\" 切换",
     "DoctorSourcePersisted": "已保存",
     "DoctorSourceDerived": "自动推导",
     "DoctorAutonomyUnspecified": "未指定",

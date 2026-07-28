@@ -5102,3 +5102,60 @@ credential application 重开，`Get/Events` 返回原 terminal/events，quiet l
 Key 未读取、actual cost `$0`、maximum reruns=0。没有 provider response，因而没有 incomplete
 usage 或 unknown billing；deterministic behavior evidence 与 accounting 正交闭合。MCP/plugin
 仍不进入模型 catalog，search/browser/marketplace/第二 Runtime/Store/permission owner 未引入。
+
+### M44 DeepSeek native Web Search decision contract
+
+M44 是最多两天的 protocol/admission 决策，不是预先承诺交付 `web_search`。核心指标是
+DeepSeek + DSE engineering chain 能否无损、可验证、可重放地取得未知 URL 的来源；费用字段只
+是状态观察，不能代替行为判断，也不能用不完整 usage 抹掉已闭合的 deterministic evidence。
+
+最低证据分四层：
+
+1. **official surface**：确认当前 ChatCompletions 是否原生提供 server Web Search；若只有
+   Anthropic compatibility，逐项冻结 request、result/source、SSE、thinking、finish、usage
+   和 continuation/replay，而不是套用 generic Anthropic 假设；
+2. **lossless canonical mapping**：把官方 block/event 与当前 `RequestPlan`、`ModelMessage`、
+   `ModelOutput`、`ModelStreamEvent`、`TranscriptEntry`、RuntimeEvent、RunStore 对照；任何来源、
+   block 顺序、opaque replay token、finish 或 server-tool lifecycle 丢失都不得伪装成小 parser
+   扩展；
+3. **real caller/reopen**：只有 contract 可冻结时，才允许最多 1–2 个 official requests 验证
+   server tool result、来源和 SQLite reopen；maximum reruns=0，不能为补齐漂亮结果重跑；
+4. **engineering/deletion**：若需要第二 DeepSeek wire，必须新 ADR；未获得完整收益时保持
+   Chat-only，并删除没有 executor 却对用户宣称 search provider 的管理面，不建设 fallback
+   chain、search HTML scraper、browser 或第二 Runtime/Store。
+
+可接受结果只有 `keep_single_native_search_surface`、`hold_wait_for_chat_surface` 或经新 ADR 后
+另开完整第二-wire slice。credential 不可用允许 0 次 official request，但必须明确写成
+`canary_not_run`，不能当成功证据。usage 不完整只阻止精确费用显示/声明与下一付费请求；协议、
+来源、replay 和真实 caller 证据继续独立判定。
+
+#### M44 formal result
+
+结论为 `hold_wait_for_chat_surface`。2026-07-28 的 DeepSeek 官方 ChatCompletions reference 明确
+只支持 function tools，没有 server Web Search request/result。独立 Anthropic compatibility
+页面只把 `server_tool_use`、`web_search_tool_result`、stream 与 thinking 标为 supported；它
+没有提供 Web Search result 子字段、SSE/finish fixture、thinking signature/server-loop replay
+或 search-specific usage/price，并明确 citations ignored、`search_result` input unsupported。
+
+当前 production 只有 Standard/Strict Chat request planning、Chat endpoint、Chat ordinary/SSE
+parser 与 Chat usage ledger。canonical assistant/transcript 只有 string content、单一
+`reasoning_content` 和 Host client function calls；不能无损承载 server-owned call/result、
+source fields、content-block order、opaque thinking signature、`pause_turn` 或 Messages finish/
+usage。因此 Anthropic compatibility 不是同 wire feature flag，而是需要 request/response/SSE、
+transcript/replay 和 accounting mapping 的第二 DeepSeek wire；按 ADR-0015 必须先新 ADR，本切片
+不实现或预留。
+
+credential preflight 只检查存在性且没有读取 secret value；结果为 unavailable，所以 optional
+canary 未执行。official requests=0、Key 未读取、actual cost `$0`、maximum reruns=0；没有
+provider behavior/usage 可宣称。计费不是 hold 的核心理由，最终决定来自 current Chat surface
+无能力、第二 wire 未授权和 DeepSeek 官方 fixture 不足。
+
+旧 TUI/config search-provider 九选一枚举、`[search]`、`DSE_SEARCH_*` reader 与 Doctor 文本/
+JSON projection 已删除；两条 config owner 都把遗留 `search` 表/command 明确拒绝。production
+catalog 仍为 13 个 Host 工具且无 `web_search`，Run API、RuntimeEvent、State schema、DeepSeek
+transport 均未改变。用户仍不能从未知问题搜索来源，但 UI/config 不再把不存在的 adapter 冒充
+能力；现有 `web_fetch` 继续服务已知 public HTTPS URL。
+
+离线证据已闭合：M44 config targeted tests、`cargo check -p dse-tui --locked`、
+`cargo check -p dse-deepseek --locked`、`./scripts/dev-dse.sh focused`、strict workspace clippy、
+workspace tests、`cargo fmt --all -- --check` 与 `git diff --check` 全部通过。

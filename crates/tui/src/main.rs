@@ -1969,8 +1969,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         "  {}",
         tr(MessageId::DoctorWorkspace).replace("{path}", &crate::utils::display_path(workspace))
     );
-    println!("  {}", doctor_search_provider_line(config));
-
     // Canonical product state root
     println!();
     println!("{}", tr(MessageId::DoctorSectionStateRoot).bold());
@@ -3286,7 +3284,6 @@ fn run_doctor_json(
             "provider": tls_status.provider,
             "message": tls_status.message,
         },
-        "search_provider": doctor_search_provider_json(config),
         "mcp": mcp_summary,
         "skills": {
             "selected": selected_skills_dir.display().to_string(),
@@ -3422,36 +3419,6 @@ fn doctor_api_key_source_label(source: ApiKeySource) -> &'static str {
         ApiKeySource::Keyring => "keyring",
         ApiKeySource::Missing => "missing",
     }
-}
-
-fn doctor_search_provider_line(config: &Config) -> String {
-    let search_provider = config.search_provider_resolution();
-    let switch_hint = if matches!(
-        (search_provider.provider, search_provider.source),
-        (
-            crate::config::SearchProvider::DuckDuckGo,
-            crate::config::SearchProviderSource::Default
-        )
-    ) {
-        tr(MessageId::DoctorSearchProviderSwitchHint)
-    } else {
-        Cow::Borrowed("")
-    };
-
-    tr(MessageId::DoctorSearchProvider)
-        .replace("{provider}", search_provider.provider.as_str())
-        .replace("{source}", search_provider.source.as_str())
-        .replace("{hint}", switch_hint.as_ref())
-}
-
-fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
-    use serde_json::json;
-
-    let search_provider = config.search_provider_resolution();
-    json!({
-        "provider": search_provider.provider.as_str(),
-        "source": search_provider.source.as_str(),
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

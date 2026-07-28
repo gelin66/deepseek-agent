@@ -368,6 +368,19 @@ fn m8g_rejects_retired_fleet_configuration() {
 }
 
 #[test]
+fn m44_rejects_retired_search_configuration_and_commands() {
+    let config: ConfigToml = toml::from_str("[search]\nprovider = \"duckduckgo\"\n").unwrap();
+    let error = config
+        .validate()
+        .expect_err("search management without a production executor must be retired");
+    assert!(error.to_string().contains("search"));
+
+    let mut config = ConfigToml::default();
+    assert!(config.set_value("search.provider", "tavily").is_err());
+    assert!(!include_str!("../../../config.example.toml").contains("[search]"));
+}
+
+#[test]
 fn comments_survive_a_deepseek_only_config_update() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.toml");

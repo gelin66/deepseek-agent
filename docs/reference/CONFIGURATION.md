@@ -279,15 +279,13 @@ Root, read-only child, and explicitly admitted Writer children use the same
 `AgentRuntime`. A Writer still requires explicit admission and an isolated Git
 worktree. No configuration enables default multi-Writer or a second runtime.
 
-## Search
+## Web retrieval
 
-```toml
-[search]
-provider = "duckduckgo"
-```
-
-The word `provider` inside `[search]` selects a retrieval adapter only. It
-cannot change the DeepSeek model backend or route.
+The canonical `web_fetch` tool reads a user-supplied public HTTPS URL and has
+no selectable provider. DSE does not currently expose a production
+`web_search` tool. The former `[search]` table and `DSE_SEARCH_*` environment
+variables had no executor and are rejected instead of being silently treated
+as an Agent capability.
 
 ## Named profiles
 

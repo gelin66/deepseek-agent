@@ -206,9 +206,9 @@
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
 - 上次更新：2026-07-28
 
-- 当前执行指针（2026-07-28）：M43 Skills 可靠加载已完成；M40-A 继续保持
-  `reject_incomplete_acquisition`，不能续跑或补样。下一条候选 production slice 是 M44；
-  M45–M46 只记录顺序，尚未启动。
+- 当前执行指针（2026-07-28）：M44 DeepSeek 原生 Web Search 决策已完成，结论为
+  `hold_wait_for_chat_surface`；M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或
+  补样。下一条候选 production slice 是 M45；M46 只记录顺序，尚未启动。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6776,14 +6776,14 @@ targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、C
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑冻结后续顺序；M42–M43 已形成实现与证据 checkpoint，M44–M46 尚未启动。
+这些里程碑冻结后续顺序；M42–M44 已形成实现或决策 checkpoint，M45–M46 尚未启动。
 
 1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
    运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
 2. **M43 Skills 可靠加载（已完成）**：提供 Host-owned exact `load_skill(name)` 或精确 discovered-path
    grant；不能读取的全局 Skill 不再向模型宣称可用。MCP/plugin 未进入模型 catalog 前保持
    管理面或隐藏，不建设 marketplace。
-3. **M44 DeepSeek 原生 Web Search 决策**：最多两天、最多一到两个官方请求，验证 Anthropic
+3. **M44 DeepSeek 原生 Web Search 决策（已完成，hold）**：最多两天、最多一到两个官方请求，验证 Anthropic
    compatibility 的 server tool result、stream、thinking、usage、finish、来源和 replay；
    若需要第二 DeepSeek wire，必须新 ADR。无完整收益则等待 Chat surface，不建 provider
    fallback chain。
@@ -6843,6 +6843,41 @@ official DeepSeek requests=0、actual canary cost `$0`，没有 Token/费用/效
 provider usage 补全的 accounting observation。现有 `ToolOutcome` 已能无损表达结果，Run API、
 RuntimeEvent、State schema 均未升级。MCP/plugin 继续不进入模型 catalog；marketplace、search、
 browser、第二 Runtime/Store/permission owner 和 M44 以后能力均未引入。
+
+### 40.3 M44 formal result
+
+M44 结论为 `hold_wait_for_chat_surface`，没有把 `web_search` 加入 production catalog。DeepSeek
+当前 ChatCompletions reference 明确只接受 function tools；官方 Anthropic compatibility 虽把
+`server_tool_use`、`web_search_tool_result`、stream 与 thinking 标为 supported，却没有发布
+Web Search 的 DeepSeek result 子字段、SSE/finish fixture、thinking signature/replay 规则或
+search-specific usage/price 合同，并明确忽略 citations、拒绝 `search_result` input。
+
+production audit 证明当前 `ApiSurface` 只有 Standard/Strict Chat，sender 只拥有
+`/chat/completions` 与 `/beta/chat/completions`，parser 只接受 Chat `choices/message/delta`，而
+canonical `ModelMessage/ModelOutput/TranscriptEntry` 只能无损保存 string content、单一
+`reasoning_content` 和 Host client function calls。Anthropic server-tool call/result、content
+block 顺序、来源、opaque thinking signature、`pause_turn` 与 Messages usage/finish 不能经这条
+链无损表达。采用该路线需要新的 request/response/SSE wire 与 transcript/replay/accounting
+映射，触发 ADR-0015 要求的新 ADR；M44 没有授权或预建这些结构。
+
+本机没有可用 DeepSeek credential，因此可选 canary 未执行：official requests=0、Key 未读取、
+actual cost `$0`、maximum reruns=0。费用仅作为状态记录，不是本次产品 hold 的核心理由；若
+未来 usage 不完整，只停止精确费用声明与后续付费重试，不抹掉已闭合的 behavior evidence。
+本次决定由 Chat surface 缺口、第二 wire 成本和无法冻结 DeepSeek 官方 replay fixture 共同产生。
+
+M44 同时删除没有 executor 的 TUI/config search-provider 枚举、`[search]`、`DSE_SEARCH_*`
+reader 以及文本/JSON Doctor projection；遗留配置明确 fail closed。它没有增加 provider
+fallback chain、search HTML scraping、Anthropic production transport、Runtime/Store、protocol/
+State version、ApplicationProbe、CDP/browser、视觉、MCP marketplace 或 M45 以后能力。
+
+用户此前不能让 Agent 从未知问题发现公开来源；M44 后仍不能，不能把 decision slice 冒充能力
+交付。实际改善是配置与 Doctor 不再显示一条不存在的搜索能力，且未来只在 DeepSeek Chat
+提供可冻结、可重放的 search surface，或新 ADR 接受完整第二 wire 后重开。下一候选是 M45，
+本切片不启动它。
+
+离线门已通过：M44 config targeted tests、`cargo check -p dse-tui --locked`、
+`cargo check -p dse-deepseek --locked`、focused gate、strict workspace clippy、workspace tests、
+fmt check 与 diff check 均为绿色。
 
 在 M41–M46 期间继续停做：多 Writer/swarm、FIM、RepoGraph/LSP、视觉 placeholder、Firecrawl/
 Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss

@@ -49,11 +49,6 @@ enabled = true
 max_concurrent = 4
 max_depth = 3
 
-# Search has its own retrieval adapter vocabulary. This setting does not
-# select or alter the model provider.
-[search]
-provider = "duckduckgo"
-
 # Named profiles may override non-model TUI/local settings only. They cannot
 # contain api_key, base_url, default_text_model, provider, or providers tables.
 [profiles.quiet]
