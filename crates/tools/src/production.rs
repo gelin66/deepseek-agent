@@ -25,9 +25,10 @@ use crate::command_safety::{SafetyLevel, analyze_command, command_is_high_impact
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::semantic_browser::{
-    SemanticBrowserHarness, SystemSemanticBrowserHarness, browser_harness_identity,
-    execute_browser_click, execute_browser_fill, execute_browser_navigate, preflight_browser_click,
-    preflight_browser_fill, preflight_browser_navigate,
+    BrowserInteractRequest, SemanticBrowserHarness, SystemSemanticBrowserHarness,
+    browser_harness_identity, execute_browser_interact, execute_browser_navigate,
+    parse_browser_interact_for_authorization, preflight_browser_interact,
+    preflight_browser_navigate,
 };
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
@@ -47,10 +48,9 @@ use crate::{
     validate_application_probe_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 16] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 15] = [
     "apply_patch",
-    "browser_click",
-    "browser_fill",
+    "browser_interact",
     "browser_navigate",
     "edit_file",
     "exec_shell",
@@ -250,7 +250,7 @@ impl ProductionToolConfig {
         self
     }
 
-    /// Replace the one-shot semantic browser seam for deterministic vertical
+    /// Replace the bounded live-session semantic browser seam for deterministic vertical
     /// tests. Production uses the pinned Chrome for Testing implementation.
     #[must_use]
     pub fn with_semantic_browser_harness(
@@ -274,7 +274,7 @@ impl ProductionToolConfig {
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 4,
+            schema: 5,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -419,7 +419,7 @@ pub struct ProductionToolExecutor {
     shell_host: ProductionExecShellHost,
     skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
-    web_fetch_network_allowed: bool,
+    controlled_network_allowed: bool,
     semantic_browser_harness: Arc<dyn SemanticBrowserHarness>,
     browser_local_origin: Option<String>,
 }
@@ -442,6 +442,7 @@ impl ProductionToolExecutor {
             Some(ExecutionSandboxPolicy::IsolatedWriter { workspace }) => Some(workspace.clone()),
             _ => None,
         };
+        let controlled_network_allowed = isolated_writer_workspace.is_none();
         let mut context = ProductionToolContext::new(config.workspace.clone())
             .with_external_path_authority(config.allow_external_paths)
             .with_follow_symlinks(config.follow_symlinks)
@@ -456,11 +457,6 @@ impl ProductionToolExecutor {
         shell.elevated_sandbox_policy = config.elevated_sandbox_policy;
         shell.shell_network_denied_hint = config.shell_network_denied_hint;
         shell.sandbox_backend = config.sandbox_backend;
-        let web_fetch_network_allowed = config.permission_mode != RunPermissionMode::Ask
-            && shell
-                .elevated_sandbox_policy
-                .as_ref()
-                .is_none_or(ExecutionSandboxPolicy::has_network_access);
         let semantic_browser_harness = config.semantic_browser_harness.unwrap_or_else(|| {
             Arc::new(SystemSemanticBrowserHarness::new(Arc::clone(
                 &config.web_fetch_network,
@@ -475,7 +471,7 @@ impl ProductionToolExecutor {
             },
             skill_registry: config.skill_registry,
             web_fetch_network: config.web_fetch_network,
-            web_fetch_network_allowed,
+            controlled_network_allowed,
             semantic_browser_harness,
             browser_local_origin: config.browser_local_origin,
         }
@@ -639,19 +635,11 @@ impl ProductionToolExecutor {
     ) -> Result<ToolOutcome, ToolError> {
         match name {
             "apply_patch" => execute_apply_patch(input, context),
-            "browser_click" => Ok(execute_browser_click(
+            "browser_interact" => Ok(execute_browser_interact(
                 run_id,
                 input,
                 Arc::clone(&self.semantic_browser_harness),
-                self.web_fetch_network_allowed,
-                context.cancellation_token().cloned().unwrap_or_default(),
-            )
-            .await),
-            "browser_fill" => Ok(execute_browser_fill(
-                run_id,
-                input,
-                Arc::clone(&self.semantic_browser_harness),
-                self.web_fetch_network_allowed,
+                self.controlled_network_allowed,
                 context.cancellation_token().cloned().unwrap_or_default(),
             )
             .await),
@@ -659,7 +647,7 @@ impl ProductionToolExecutor {
                 run_id,
                 input,
                 Arc::clone(&self.semantic_browser_harness),
-                self.web_fetch_network_allowed,
+                self.controlled_network_allowed,
                 self.browser_local_origin.as_deref(),
                 context.cancellation_token().cloned().unwrap_or_default(),
             )
@@ -681,7 +669,7 @@ impl ProductionToolExecutor {
             "web_fetch" => Ok(execute_web_fetch(
                 input,
                 Arc::clone(&self.web_fetch_network),
-                self.web_fetch_network_allowed,
+                self.controlled_network_allowed,
             )
             .await),
             _ => unreachable!("validated production tool missing direct dispatch: {name}"),
@@ -757,11 +745,8 @@ impl ToolExecutor for ProductionToolExecutor {
         if invocation.name == "browser_navigate" {
             return preflight_browser_navigate(input, self.browser_local_origin.as_deref());
         }
-        if invocation.name == "browser_click" {
-            return preflight_browser_click(input);
-        }
-        if invocation.name == "browser_fill" {
-            return preflight_browser_fill(input);
+        if invocation.name == "browser_interact" {
+            return preflight_browser_interact(input);
         }
         None
     }
@@ -956,52 +941,92 @@ impl ToolExecutor for ProductionToolExecutor {
 
         if matches!(
             invocation.name.as_str(),
-            "browser_click" | "browser_fill" | "browser_navigate" | "web_fetch"
+            "browser_interact" | "browser_navigate" | "web_fetch"
         ) {
-            let sandbox_denies_network = self
-                .shell
-                .elevated_sandbox_policy
-                .as_ref()
-                .is_some_and(|policy| !policy.has_network_access());
-            if mode == RunPermissionMode::Ask || sandbox_denies_network {
+            if !self.controlled_network_allowed {
                 return Ok(decision.build(
                     ToolAuthorizationDisposition::Deny,
                     ApprovalRisk::Elevated,
-                    Some(if mode == RunPermissionMode::Ask {
-                        "ask_network_fail_closed".to_owned()
-                    } else {
-                        "sandbox_network_denied".to_owned()
-                    }),
-                    if mode == RunPermissionMode::Ask {
-                        "当前执行后端不能证明一次性网络授权范围，已安全拒绝"
-                    } else {
-                        "当前 actor 的冻结执行边界禁止网络访问"
-                    },
+                    Some("actor_controlled_network_denied".to_owned()),
+                    "当前 actor 的冻结边界禁止 Host-controlled 网络访问",
                     None,
                 ));
             }
-            if matches!(invocation.name.as_str(), "browser_click" | "browser_fill") {
-                if self.browser_local_origin.is_none() {
+            if invocation.name == "browser_interact" {
+                let request =
+                    parse_browser_interact_for_authorization(input).map_err(|message| {
+                        ToolExecutionError::new("browser_interact_authorization_invalid", message)
+                    })?;
+                let preview = self
+                    .semantic_browser_harness
+                    .authorization_preview(&invocation.run_id.to_string(), &request);
+                let local_fixture = preview.is_none() && self.browser_local_origin.is_some();
+                if preview.is_none() && !local_fixture {
                     return Ok(decision.build(
                         ToolAuthorizationDisposition::Deny,
                         ApprovalRisk::Elevated,
-                        Some(format!("{}_local_origin_missing", invocation.name)),
-                        format!(
-                            "{} 只允许 Host 绑定的 exact loopback disposable application origin",
-                            invocation.name
-                        ),
+                        Some("browser_session_scope_missing".to_owned()),
+                        "browser_interact 没有同一 Run 的 live scoped browser session",
                         None,
                     ));
                 }
-                let action = invocation.name.strip_prefix("browser_").unwrap_or_default();
+                if local_fixture {
+                    if matches!(request, BrowserInteractRequest::Submit(_)) {
+                        return Ok(decision.build(
+                            ToolAuthorizationDisposition::Deny,
+                            ApprovalRisk::Critical,
+                            Some("browser_local_submit_not_admitted".to_owned()),
+                            "local semantic interaction 不把 form submit 冒充可逆本地动作",
+                            None,
+                        ));
+                    }
+                    return Ok(decision.build(
+                        ToolAuthorizationDisposition::Allow,
+                        ApprovalRisk::Routine,
+                        Some("exact_local_semantic_interaction".to_owned()),
+                        "Host exact-loopback session 只消费同一 Run 当前 page epoch 的 typed opaque ref",
+                        None,
+                    ));
+                }
+                let preview = preview.expect("checked public browser authorization preview");
+                let risk = if preview.external_side_effect {
+                    ApprovalRisk::Elevated
+                } else {
+                    ApprovalRisk::Routine
+                };
+                let needs_approval = preview.external_side_effect
+                    && mode != RunPermissionMode::FullAccess
+                    || preview.public && mode == RunPermissionMode::Ask;
+                let description = format!(
+                    "exact origin: {}\nexact target: {}\nparameters: {}\nimpact: {}\n批准只绑定本次 invocation 与当前 workspace revision。",
+                    preview.origin, preview.target, preview.parameters, preview.impact
+                );
                 return Ok(decision.build(
-                    ToolAuthorizationDisposition::Allow,
-                    ApprovalRisk::Elevated,
-                    Some(format!("exact_local_semantic_browser_{action}")),
-                    format!(
-                        "Host 只允许同一 Run 消费当前 ephemeral page epoch 的 opaque {action} ref"
+                    if needs_approval {
+                        ToolAuthorizationDisposition::Ask
+                    } else {
+                        ToolAuthorizationDisposition::Allow
+                    },
+                    risk,
+                    Some(
+                        if preview.external_side_effect {
+                            "scoped_public_reversible_side_effect"
+                        } else {
+                            "scoped_public_semantic_interaction"
+                        }
+                        .to_owned(),
                     ),
-                    None,
+                    description.clone(),
+                    needs_approval.then_some(ToolApprovalPrompt {
+                        title: if preview.external_side_effect {
+                            "确认可撤销的公开站点写操作"
+                        } else {
+                            "确认公开站点交互"
+                        }
+                        .to_owned(),
+                        description,
+                        risk,
+                    }),
                 ));
             }
             if invocation.name == "browser_navigate" {
@@ -1028,21 +1053,37 @@ impl ToolExecutor for ProductionToolExecutor {
                                     .starts_with(&format!("{}/", origin.trim_end_matches('/')))
                         })
                 });
+                let requested_url = input.get("url").and_then(Value::as_str).unwrap_or_default();
+                let needs_approval = !exact_local && mode == RunPermissionMode::Ask;
+                let description = if exact_local {
+                    "只读语义浏览由 Host exact-local-origin egress guard、GET/HEAD 与资源上限约束"
+                        .to_owned()
+                } else {
+                    format!(
+                        "exact target: {requested_url}\nimpact: 读取 public external_untrusted 页面；Host 强制 URL/DNS/connect/redirect、origin 与资源边界。"
+                    )
+                };
                 return Ok(decision.build(
-                    ToolAuthorizationDisposition::Allow,
-                    ApprovalRisk::Routine,
-                    Some(if exact_local {
-                        "exact_local_semantic_browser"
+                    if needs_approval {
+                        ToolAuthorizationDisposition::Ask
                     } else {
-                        "public_semantic_browser"
-                    }
-                    .to_owned()),
-                    if exact_local {
-                        "只读语义浏览由 Host exact-local-origin egress guard、GET/HEAD 与资源上限约束"
-                    } else {
-                        "只读 public 语义浏览由 Host URL/DNS/connect/redirect egress guard、GET/HEAD 与资源上限约束"
+                        ToolAuthorizationDisposition::Allow
                     },
-                    None,
+                    ApprovalRisk::Routine,
+                    Some(
+                        if exact_local {
+                            "exact_local_semantic_browser"
+                        } else {
+                            "public_semantic_browser"
+                        }
+                        .to_owned(),
+                    ),
+                    description.clone(),
+                    needs_approval.then_some(ToolApprovalPrompt {
+                        title: "确认读取公开网页".to_owned(),
+                        description,
+                        risk: ApprovalRisk::Routine,
+                    }),
                 ));
             }
             let plaintext_http = invocation
@@ -1053,8 +1094,23 @@ impl ToolExecutor for ProductionToolExecutor {
                 .and_then(Value::as_str)
                 .and_then(|url| reqwest::Url::parse(url).ok())
                 .is_some_and(|url| url.scheme() == "http");
+            let requested_url = input.get("url").and_then(Value::as_str).unwrap_or_default();
+            let needs_approval = mode == RunPermissionMode::Ask;
+            let reason = if plaintext_http {
+                format!(
+                    "exact target: {requested_url}\nimpact: 读取不受传输保护的 public HTTP external_untrusted 内容；Host 强制 URL/DNS/connect/redirect 边界。"
+                )
+            } else {
+                format!(
+                    "exact target: {requested_url}\nimpact: 读取 public HTTPS external_untrusted 内容；Host 强制 URL/DNS/connect/redirect 边界。"
+                )
+            };
             return Ok(decision.build(
-                ToolAuthorizationDisposition::Allow,
+                if needs_approval {
+                    ToolAuthorizationDisposition::Ask
+                } else {
+                    ToolAuthorizationDisposition::Allow
+                },
                 ApprovalRisk::Routine,
                 Some(
                     if plaintext_http {
@@ -1064,12 +1120,12 @@ impl ToolExecutor for ProductionToolExecutor {
                     }
                     .to_owned(),
                 ),
-                if plaintext_http {
-                    "只读 public HTTP fetch 由 Host URL/DNS/connect/redirect 安全门约束，结果明确标记为明文传输"
-                } else {
-                    "只读 public HTTPS fetch 由 Host URL/DNS/connect/redirect 安全门约束"
-                },
-                None,
+                reason.clone(),
+                needs_approval.then_some(ToolApprovalPrompt {
+                    title: "确认读取公开 URL".to_owned(),
+                    description: reason,
+                    risk: ApprovalRisk::Routine,
+                }),
             ));
         }
 
@@ -1170,18 +1226,13 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             apply_patch_schema(),
         ),
         definition(
-            "browser_click",
-            "点击 browser_navigate 为同一 Run、当前 Host-owned exact-loopback ephemeral page epoch 返回的 opaque element_ref；不接受 selector、坐标或脚本，action 后总是刷新有界 external_untrusted 语义 observation 并使旧 refs 失效。",
-            browser_click_schema(),
-        ),
-        definition(
-            "browser_fill",
-            "用一个非空有界 UTF-8 value 填写 browser_navigate 为同一 Run、当前 Host-owned exact-loopback ephemeral page epoch 返回的 fill-only opaque element_ref；仅支持非敏感 input[type=text|search]，action 后总是刷新 external_untrusted observation 并使旧 refs 失效。",
-            browser_fill_schema(),
+            "browser_interact",
+            "在同一 Run 的 Host-owned ephemeral browser session 中执行一个枚举化 semantic action：click/fill/press/wait/scroll/select/back/tab_open/tab_switch/tab_close/submit。element/page ref 只能来自最新 observation；不接受 selector、坐标、脚本、header、Cookie 或认证。每个 action 后返回 fresh bounded external_untrusted observation；public interaction 使用 exact origin scope，external submit 仅允许可撤销 draft 并在执行前由 Host 展示 exact target/parameters/impact、取得 scoped approval，结果返回 receipt。",
+            browser_interact_schema(),
         ),
         definition(
             "browser_navigate",
-            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；exact-loopback observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque click/fill refs。",
+            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot、page state 与 external_untrusted 信任标记；observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque refs，并保留一个 Host-egress-scoped memory-only session 供 browser_interact 使用。",
             browser_navigate_schema(),
         ),
         definition(
@@ -1432,12 +1483,8 @@ fn browser_navigate_schema() -> Value {
     json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_nodes":{"type":"integer","minimum":1,"maximum":256,"default":128},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
 }
 
-fn browser_click_schema() -> Value {
-    json!({"type":"object","properties":{"element_ref":{"type":"string","minLength":1}},"required":["element_ref"],"additionalProperties":false})
-}
-
-fn browser_fill_schema() -> Value {
-    json!({"type":"object","properties":{"element_ref":{"type":"string","minLength":1},"value":{"type":"string","minLength":1}},"required":["element_ref","value"],"additionalProperties":false})
+fn browser_interact_schema() -> Value {
+    json!({"type":"object","properties":{"action":{"type":"string","enum":["click","fill","press","wait","scroll","select","back","tab_open","tab_switch","tab_close","submit"]},"element_ref":{"type":"string","minLength":1},"value":{"type":"string"},"key":{"type":"string","enum":["enter","escape","tab","arrow_up","arrow_down","space"]},"condition":{"type":"string","enum":["document_ready","text_present","text_absent","url_equals"]},"timeout_ms":{"type":"integer","minimum":1,"maximum":10000},"direction":{"type":"string","enum":["up","down"]},"amount":{"type":"integer","minimum":1,"maximum":2000},"url":{"type":"string","minLength":1},"page_ref":{"type":"string","minLength":1}},"required":["action"],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
@@ -1690,7 +1737,7 @@ mod tests {
         let second_identity = ProductionToolConfig::new(workspace.path())
             .with_skill_registry(second)
             .execution_identity();
-        assert_eq!(first_identity.schema, 4);
+        assert_eq!(first_identity.schema, 5);
         assert_ne!(
             first_identity.skills_snapshot_sha256,
             second_identity.skills_snapshot_sha256
@@ -1929,7 +1976,7 @@ allow = ["git push"]
             ask.definition_workspace_access("web_fetch"),
             WorkspaceAccess::ReadOnly
         );
-        let denied = ask
+        let requested = ask
             .authorize(
                 RunPermissionMode::Ask,
                 &ToolExecutionGrant::Ordinary,
@@ -1937,10 +1984,17 @@ allow = ["git push"]
                 &workspace_state(),
             )
             .unwrap();
-        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(requested.disposition, ToolAuthorizationDisposition::Ask);
         assert_eq!(
-            denied.matched_rule.as_deref(),
-            Some("ask_network_fail_closed")
+            requested.matched_rule.as_deref(),
+            Some("public_plaintext_http_web_fetch")
+        );
+        assert!(
+            requested
+                .prompt
+                .unwrap()
+                .description
+                .contains("exact target")
         );
 
         for mode in [RunPermissionMode::Agent, RunPermissionMode::FullAccess] {
@@ -1981,7 +2035,7 @@ allow = ["git push"]
         assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
         assert_eq!(
             denied.matched_rule.as_deref(),
-            Some("sandbox_network_denied")
+            Some("actor_controlled_network_denied")
         );
 
         for field in [
@@ -2043,6 +2097,7 @@ allow = ["git push"]
         click_calls: std::sync::atomic::AtomicUsize,
         fill_calls: std::sync::atomic::AtomicUsize,
         shutdown_calls: std::sync::atomic::AtomicUsize,
+        public_preview: bool,
     }
 
     #[async_trait]
@@ -2102,6 +2157,27 @@ allow = ["git push"]
                 .with_side_effect(ToolSideEffectStatus::Applied)
         }
 
+        fn authorization_preview(
+            &self,
+            _run_id: &str,
+            request: &BrowserInteractRequest,
+        ) -> Option<crate::semantic_browser::BrowserAuthorizationPreview> {
+            self.public_preview
+                .then(|| crate::semantic_browser::BrowserAuthorizationPreview {
+                    public: true,
+                    origin: "https://example.com".to_owned(),
+                    target: "https://example.com/drafts/save".to_owned(),
+                    parameters: "sha256:fixture-parameters".to_owned(),
+                    impact: if matches!(request, BrowserInteractRequest::Submit(_)) {
+                        "reversible_draft_write"
+                    } else {
+                        "ephemeral_page_state_only"
+                    }
+                    .to_owned(),
+                    external_side_effect: matches!(request, BrowserInteractRequest::Submit(_)),
+                })
+        }
+
         fn shutdown(&self) {
             self.shutdown_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2124,7 +2200,7 @@ allow = ["git push"]
             ask.definition_workspace_access("browser_navigate"),
             WorkspaceAccess::ReadOnly
         );
-        let denied = ask
+        let requested = ask
             .authorize(
                 RunPermissionMode::Ask,
                 &ToolExecutionGrant::Ordinary,
@@ -2132,10 +2208,17 @@ allow = ["git push"]
                 &workspace_state(),
             )
             .unwrap();
-        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(requested.disposition, ToolAuthorizationDisposition::Ask);
         assert_eq!(
-            denied.matched_rule.as_deref(),
-            Some("ask_network_fail_closed")
+            requested.matched_rule.as_deref(),
+            Some("public_semantic_browser")
+        );
+        assert!(
+            requested
+                .prompt
+                .unwrap()
+                .description
+                .contains("exact target")
         );
 
         let harness = Arc::new(FixtureSemanticBrowser {
@@ -2143,6 +2226,7 @@ allow = ["git push"]
             click_calls: std::sync::atomic::AtomicUsize::new(0),
             fill_calls: std::sync::atomic::AtomicUsize::new(0),
             shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
+            public_preview: false,
         });
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(workspace.path())
@@ -2232,12 +2316,12 @@ allow = ["git push"]
         );
 
         let click = invocation(
-            "browser_click",
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+            "browser_interact",
+            json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
         );
         assert!(local_executor.preflight(&click).is_none());
         assert_eq!(
-            local_executor.definition_workspace_access("browser_click"),
+            local_executor.definition_workspace_access("browser_interact"),
             WorkspaceAccess::MayWrite
         );
         let click_allowed = local_executor
@@ -2254,7 +2338,7 @@ allow = ["git push"]
         );
         assert_eq!(
             click_allowed.matched_rule.as_deref(),
-            Some("exact_local_semantic_browser_click")
+            Some("exact_local_semantic_interaction")
         );
         let clicked = local_executor
             .execute(click, CancellationToken::default())
@@ -2270,15 +2354,16 @@ allow = ["git push"]
         );
 
         let fill = invocation(
-            "browser_fill",
+            "browser_interact",
             json!({
+                "action":"fill",
                 "element_ref":"eref_0123456789abcdef0123456789abcdef",
                 "value":"canary"
             }),
         );
         assert!(local_executor.preflight(&fill).is_none());
         assert_eq!(
-            local_executor.definition_workspace_access("browser_fill"),
+            local_executor.definition_workspace_access("browser_interact"),
             WorkspaceAccess::MayWrite
         );
         let fill_allowed = local_executor
@@ -2295,7 +2380,7 @@ allow = ["git push"]
         );
         assert_eq!(
             fill_allowed.matched_rule.as_deref(),
-            Some("exact_local_semantic_browser_fill")
+            Some("exact_local_semantic_interaction")
         );
         let full_executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(workspace.path())
@@ -2308,8 +2393,9 @@ allow = ["git push"]
                 RunPermissionMode::FullAccess,
                 &ToolExecutionGrant::Ordinary,
                 &invocation(
-                    "browser_fill",
+                    "browser_interact",
                     json!({
+                        "action":"fill",
                         "element_ref":"eref_0123456789abcdef0123456789abcdef",
                         "value":"canary"
                     }),
@@ -2332,13 +2418,13 @@ allow = ["git push"]
             1
         );
         for invalid in [
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":""}),
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":"line\nfeed"}),
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":"canary","selector":"input"}),
+            json!({"action":"fill","element_ref":"eref_0123456789abcdef0123456789abcdef","value":""}),
+            json!({"action":"fill","element_ref":"eref_0123456789abcdef0123456789abcdef","value":"line\nfeed"}),
+            json!({"action":"fill","element_ref":"eref_0123456789abcdef0123456789abcdef","value":"canary","selector":"input"}),
         ] {
             assert!(
                 local_executor
-                    .preflight(&invocation("browser_fill", invalid))
+                    .preflight(&invocation("browser_interact", invalid))
                     .is_some()
             );
         }
@@ -2349,8 +2435,8 @@ allow = ["git push"]
         );
 
         let public_click = invocation(
-            "browser_click",
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+            "browser_interact",
+            json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
         );
         let public_click_denied = executor
             .authorize(
@@ -2362,15 +2448,16 @@ allow = ["git push"]
             .unwrap();
         assert_eq!(
             public_click_denied.matched_rule.as_deref(),
-            Some("browser_click_local_origin_missing")
+            Some("browser_session_scope_missing")
         );
         let public_fill_denied = executor
             .authorize(
                 RunPermissionMode::Agent,
                 &ToolExecutionGrant::Ordinary,
                 &invocation(
-                    "browser_fill",
+                    "browser_interact",
                     json!({
+                        "action":"fill",
                         "element_ref":"eref_0123456789abcdef0123456789abcdef",
                         "value":"canary"
                     }),
@@ -2380,17 +2467,18 @@ allow = ["git push"]
             .unwrap();
         assert_eq!(
             public_fill_denied.matched_rule.as_deref(),
-            Some("browser_fill_local_origin_missing")
+            Some("browser_session_scope_missing")
         );
         for forbidden in ["selector", "css", "xpath", "x", "y", "script"] {
-            let mut input = json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"});
+            let mut input =
+                json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"});
             input
                 .as_object_mut()
                 .unwrap()
                 .insert(forbidden.to_owned(), Value::String("forbidden".to_owned()));
             assert!(
                 local_executor
-                    .preflight(&invocation("browser_click", input))
+                    .preflight(&invocation("browser_interact", input))
                     .is_some(),
                 "{forbidden}"
             );
@@ -2410,6 +2498,7 @@ allow = ["git push"]
             "path",
         ] {
             let mut input = json!({
+                "action":"fill",
                 "element_ref":"eref_0123456789abcdef0123456789abcdef",
                 "value":"canary"
             });
@@ -2419,7 +2508,7 @@ allow = ["git push"]
                 .insert(forbidden.to_owned(), Value::String("forbidden".to_owned()));
             assert!(
                 local_executor
-                    .preflight(&invocation("browser_fill", input))
+                    .preflight(&invocation("browser_interact", input))
                     .is_some(),
                 "{forbidden}"
             );
@@ -2438,8 +2527,8 @@ allow = ["git push"]
                 RunPermissionMode::Agent,
                 &ToolExecutionGrant::Ordinary,
                 &invocation(
-                    "browser_click",
-                    json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+                    "browser_interact",
+                    json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
                 ),
                 &workspace_state(),
             )
@@ -2450,15 +2539,16 @@ allow = ["git push"]
         );
         assert_eq!(
             writer_denied.matched_rule.as_deref(),
-            Some("sandbox_network_denied")
+            Some("actor_controlled_network_denied")
         );
         let writer_fill_denied = isolated
             .authorize(
                 RunPermissionMode::Agent,
                 &ToolExecutionGrant::Ordinary,
                 &invocation(
-                    "browser_fill",
+                    "browser_interact",
                     json!({
+                        "action":"fill",
                         "element_ref":"eref_0123456789abcdef0123456789abcdef",
                         "value":"canary"
                     }),
@@ -2472,8 +2562,77 @@ allow = ["git push"]
         );
         assert_eq!(
             writer_fill_denied.matched_rule.as_deref(),
-            Some("sandbox_network_denied")
+            Some("actor_controlled_network_denied")
         );
+    }
+
+    #[test]
+    fn public_semantic_interaction_authorization_is_exact_mode_and_impact_scoped() {
+        let workspace = tempfile::tempdir().unwrap();
+        let harness = Arc::new(FixtureSemanticBrowser {
+            navigate_calls: std::sync::atomic::AtomicUsize::new(0),
+            click_calls: std::sync::atomic::AtomicUsize::new(0),
+            fill_calls: std::sync::atomic::AtomicUsize::new(0),
+            shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
+            public_preview: true,
+        });
+        let click = invocation(
+            "browser_interact",
+            json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+        );
+        let submit = invocation(
+            "browser_interact",
+            json!({"action":"submit","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+        );
+        for (mode, invocation, disposition, rule) in [
+            (
+                RunPermissionMode::Ask,
+                &click,
+                ToolAuthorizationDisposition::Ask,
+                "scoped_public_semantic_interaction",
+            ),
+            (
+                RunPermissionMode::Agent,
+                &click,
+                ToolAuthorizationDisposition::Allow,
+                "scoped_public_semantic_interaction",
+            ),
+            (
+                RunPermissionMode::Agent,
+                &submit,
+                ToolAuthorizationDisposition::Ask,
+                "scoped_public_reversible_side_effect",
+            ),
+            (
+                RunPermissionMode::FullAccess,
+                &submit,
+                ToolAuthorizationDisposition::Allow,
+                "scoped_public_reversible_side_effect",
+            ),
+        ] {
+            let executor = ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path())
+                    .with_permission_mode(mode)
+                    .with_semantic_browser_harness(harness.clone()),
+            );
+            let decision = executor
+                .authorize(
+                    mode,
+                    &ToolExecutionGrant::Ordinary,
+                    invocation,
+                    &workspace_state(),
+                )
+                .unwrap();
+            assert_eq!(decision.disposition, disposition, "{mode:?}:{rule}");
+            assert_eq!(decision.matched_rule.as_deref(), Some(rule));
+            if disposition == ToolAuthorizationDisposition::Ask {
+                let prompt = decision.prompt.expect("exact public action prompt");
+                assert!(prompt.description.contains("https://example.com"));
+                assert!(prompt.description.contains("exact target"));
+                assert!(prompt.description.contains("parameters"));
+                assert!(prompt.description.contains("impact"));
+            }
+        }
     }
 
     #[test]

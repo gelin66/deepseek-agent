@@ -15,6 +15,7 @@ use reqwest::header::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::net::TcpStream;
 
 use crate::{ToolOutcome, optional_u64, required_str};
 use dse_protocol::agent_runtime::{
@@ -191,6 +192,19 @@ pub trait WebFetchNetwork: Send + Sync {
         pinned_addresses: &[SocketAddr],
         timeout: Duration,
     ) -> Result<WebFetchHttpResponse, WebFetchNetworkError>;
+
+    /// Connect to one address already selected by the caller's DNS/IP gate.
+    /// The default is the production connect-pinned behavior; deterministic
+    /// browser fixtures may override only this transport seam while retaining
+    /// the public-address validation assertions.
+    async fn connect(&self, address: SocketAddr) -> Result<TcpStream, WebFetchNetworkError> {
+        TcpStream::connect(address).await.map_err(|error| {
+            WebFetchNetworkError::new(
+                "web_connect_failed",
+                format!("连接已验证地址 {address} 失败：{error}"),
+            )
+        })
+    }
 }
 
 /// Production DNS + Rustls implementation. Redirects, proxies, cookies and

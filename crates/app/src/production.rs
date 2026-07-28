@@ -1338,7 +1338,13 @@ fn tool_config_for_run(
             exclude_tmpdir: false,
             exclude_slash_tmp: false,
         },
-        RunPermissionMode::Agent | RunPermissionMode::FullAccess => SandboxPolicy::DangerFullAccess,
+        RunPermissionMode::Agent => SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        },
+        RunPermissionMode::FullAccess => SandboxPolicy::DangerFullAccess,
     };
     config = config.with_elevated_sandbox_policy(policy);
     Ok(config)
@@ -1441,8 +1447,8 @@ mod tests {
         ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
         RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolAuthorizationDecision,
         ToolAuthorizationDisposition, ToolDefinition, ToolExecutionGrant, ToolFailureCode,
-        ToolInvocation, ToolOutcome, ToolPolicy, ToolSideEffectStatus, Usage, WorkspaceAccess,
-        WriteExecutionMode,
+        ToolInvocation, ToolOutcome, ToolPolicy, ToolSideEffectStatus, Usage,
+        UserInteractionResponse, WorkspaceAccess, WriteExecutionMode,
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -1456,9 +1462,9 @@ mod tests {
         NullEventSink, RunLease, ToolExecutionError,
     };
     use dse_tools::{
-        BrowserCancellationToken, BrowserClickRequest, BrowserFillRequest, BrowserNavigateRequest,
-        PRODUCTION_TOOL_NAMES, SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork,
-        WebFetchNetworkError,
+        BrowserAuthorizationPreview, BrowserCancellationToken, BrowserClickRequest,
+        BrowserFillRequest, BrowserInteractRequest, BrowserNavigateRequest, PRODUCTION_TOOL_NAMES,
+        SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1724,6 +1730,125 @@ mod tests {
             }))
             .expect("fill fixture outcome")
             .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        fn shutdown(&self) {}
+    }
+
+    #[derive(Debug, Default)]
+    struct PublicActionFixture {
+        navigate_calls: AtomicUsize,
+        submit_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SemanticBrowserHarness for PublicActionFixture {
+        fn identity(&self) -> String {
+            "semantic-public-action-runtime-fixture-v1".to_owned()
+        }
+
+        async fn navigate(
+            &self,
+            _run_id: &str,
+            _request: BrowserNavigateRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.navigate_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "requested_url":"https://example.com/review",
+                "final_url":"https://example.com/review",
+                "title":"Disposable draft",
+                "snapshot_id":"snapshot_public_1",
+                "page_epoch":1,
+                "snapshot":[{
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "role":"button",
+                    "accessible_name":"Save draft",
+                    "capabilities":["submit"]
+                }],
+                "trust":"external_untrusted",
+                "session_scope":"same_run_in_memory_public_origin",
+                "session_live":true
+            }))
+            .expect("public navigation fixture")
+        }
+
+        async fn click(
+            &self,
+            _run_id: &str,
+            _request: BrowserClickRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            ToolOutcome::error("public fixture expects typed submit")
+        }
+
+        async fn fill(
+            &self,
+            _run_id: &str,
+            _request: BrowserFillRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            ToolOutcome::error("public fixture expects typed submit")
+        }
+
+        async fn interact(
+            &self,
+            _run_id: &str,
+            request: BrowserInteractRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            let BrowserInteractRequest::Submit(request) = request else {
+                return ToolOutcome::error("public fixture expects submit");
+            };
+            assert_eq!(
+                request.element_ref(),
+                "eref_0123456789abcdef0123456789abcdef"
+            );
+            self.submit_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "action":{
+                    "kind":"submit",
+                    "consumed_element_ref":request.element_ref(),
+                    "receipt":{
+                        "target_url":"https://example.com/drafts/save",
+                        "method":"POST",
+                        "status":200,
+                        "parameters_sha256":"sha256:fixture-parameters",
+                        "impact":"reversible_draft_write",
+                        "remote_receipt":"draft-receipt-runtime-001",
+                        "observed_at":"2026-07-28T00:00:00.000Z"
+                    }
+                },
+                "snapshot_id":"snapshot_public_2",
+                "page_epoch":2,
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Draft saved",
+                    "state":{"data-receipt":"draft-receipt-runtime-001"}
+                }],
+                "trust":"external_untrusted",
+                "session_scope":"same_run_in_memory_public_origin",
+                "session_live":true
+            }))
+            .expect("public submit fixture")
+            .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        fn authorization_preview(
+            &self,
+            _run_id: &str,
+            request: &BrowserInteractRequest,
+        ) -> Option<BrowserAuthorizationPreview> {
+            matches!(request, BrowserInteractRequest::Submit(_)).then(|| {
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin: "https://example.com".to_owned(),
+                    target: "https://example.com/drafts/save".to_owned(),
+                    parameters: "sha256:fixture-parameters".to_owned(),
+                    impact: "reversible_draft_write".to_owned(),
+                    external_side_effect: true,
+                }
+            })
         }
 
         fn shutdown(&self) {}
@@ -2832,12 +2957,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_click_started_without_outcome_reopens_recovery_required_without_replay() {
+    async fn browser_interact_click_started_without_outcome_reopens_recovery_required_without_replay()
+     {
         let temp = tempfile::tempdir().expect("temp workspace");
         let (root, accepted) = quiet_loopback().await;
         let composition = test_production_composition(temp.path(), connection(&root, false), false);
         let store = Arc::new(InMemoryRunStore::default());
-        let run_id = RunId::from("browser-click-in-flight");
+        let run_id = RunId::from("browser-interact-click-in-flight");
         let request = exact_resume_request(
             &composition,
             temp.path(),
@@ -2850,8 +2976,8 @@ mod tests {
             request,
             None,
             Some((
-                "browser_click",
-                json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
+                "browser_interact",
+                json!({"action":"click","element_ref":"eref_0123456789abcdef0123456789abcdef"}),
                 WorkspaceAccess::MayWrite,
             )),
         )
@@ -2874,12 +3000,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_fill_started_without_outcome_reopens_recovery_required_without_replay() {
+    async fn browser_interact_fill_started_without_outcome_reopens_recovery_required_without_replay()
+     {
         let temp = tempfile::tempdir().expect("temp workspace");
         let (root, accepted) = quiet_loopback().await;
         let composition = test_production_composition(temp.path(), connection(&root, false), false);
         let store = Arc::new(InMemoryRunStore::default());
-        let run_id = RunId::from("browser-fill-in-flight");
+        let run_id = RunId::from("browser-interact-fill-in-flight");
         let request = exact_resume_request(
             &composition,
             temp.path(),
@@ -2892,8 +3019,9 @@ mod tests {
             request,
             None,
             Some((
-                "browser_fill",
+                "browser_interact",
                 json!({
+                    "action":"fill",
                     "element_ref":"eref_0123456789abcdef0123456789abcdef",
                     "value":"canary"
                 }),
@@ -3213,37 +3341,21 @@ mod tests {
             4,
             false,
         );
-        assert!(catalog.iter().any(|tool| tool.name == "browser_click"));
-        assert!(catalog.iter().any(|tool| tool.name == "browser_fill"));
+        assert!(catalog.iter().any(|tool| tool.name == "browser_interact"));
         assert!(
             !coordinator_catalog
                 .iter()
-                .any(|tool| tool.name == "browser_click")
-        );
-        assert!(
-            !coordinator_catalog
-                .iter()
-                .any(|tool| tool.name == "browser_fill")
+                .any(|tool| tool.name == "browser_interact")
         );
         assert!(
             !read_only_catalog
                 .iter()
-                .any(|tool| tool.name == "browser_click")
-        );
-        assert!(
-            !read_only_catalog
-                .iter()
-                .any(|tool| tool.name == "browser_fill")
+                .any(|tool| tool.name == "browser_interact")
         );
         assert!(
             writer_catalog
                 .iter()
-                .any(|tool| tool.name == "browser_click")
-        );
-        assert!(
-            writer_catalog
-                .iter()
-                .any(|tool| tool.name == "browser_fill")
+                .any(|tool| tool.name == "browser_interact")
         );
         let prompt_config = ProductionPromptConfig::default();
         let request = || ProductionPromptRequest {
@@ -3490,13 +3602,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:52e587667fffd84ca7c1c6046389941ac2d7ef0cafd7989fe762c1aeafb33be9",
+                "sha256:32db1cbf5cf68a2a92d5c2c2d5b9a614d138f327beb0a3564b39e226c027f545",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:dd41ab1d1b6a9200539e6e1978ab02f79af9439e6d17b03eaa4bd1cf160974c6",
+                "sha256:5e9f7c1e2db873266ba62f9c3c1628edf85823355442d69caca553abd9488983",
             ),
             (
                 "coordinator",
@@ -3509,19 +3621,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:f010e9c53c55e9987aa6b63d5e6feeea238c6a2a323330721eb71d2e78cc880c",
+                "sha256:0595347f699be75e76f7ba9bac278e7cf871cf5ee4d7ab00c462868983b3214a",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:dba1cf43cd518399dc74d96e51d5d552dab4e4b6122f0a7969f5eee2233708ad",
+                "sha256:5f8e495745c8f48ffe0e4f01cf40b78f4a3df1eb4a8a97adddaa56a7ecbceccb",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("browser_navigate", "$/required", "all_properties_required")),
-                "sha256:506ee3a5f89112cb086e8bf618f4f4d43aebecf5014effa051743175c196b5b4",
+                "sha256:8e67b1d0a3ea46c80648061907349c07aa17e9f45a189c1d1c8fc35921ad5e83",
             ),
             (
                 "isolated_writer",
@@ -3534,7 +3646,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:8735b0202db5134da89b8135d8a822c40571dc36cc215f380e2403f7280f641e",
+                "sha256:b4e35c4a13044391a17472d08537c28a072399dd1c10f691f7d154e81c1a4c66",
             ),
             (
                 "terminal_empty",
@@ -4521,7 +4633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m46_w3_agent_click_commits_and_sqlite_reopen_never_clicks_again() {
+    async fn semantic_interact_click_commits_and_sqlite_reopen_never_reexecutes() {
         let server = MockDeepSeekServer::start(vec![
             tool_response(
                 "deepseek-v4-pro",
@@ -4538,8 +4650,9 @@ mod tests {
             tool_response(
                 "deepseek-v4-pro",
                 "m46-w3-click",
-                "browser_click",
+                "browser_interact",
                 json!({
+                    "action":"click",
                     "element_ref":"eref_0123456789abcdef0123456789abcdef"
                 }),
                 48,
@@ -4597,13 +4710,13 @@ mod tests {
             .iter()
             .find_map(|event| match &event.event {
                 RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
-                    if name == "browser_click" =>
+                    if name == "browser_interact" =>
                 {
                     Some(outcome.as_ref().clone())
                 }
                 _ => None,
             })
-            .expect("committed browser_click outcome");
+            .expect("committed browser_interact click outcome");
         assert!(committed_click.is_success(), "{}", committed_click.content);
         assert_eq!(committed_click.side_effect, ToolSideEffectStatus::Applied);
         let click_payload: Value =
@@ -4621,11 +4734,11 @@ mod tests {
             .expect("root production catalog");
         let click_definition = root_catalog
             .iter()
-            .find(|tool| tool["function"]["name"] == "browser_click")
-            .expect("browser_click in root catalog");
+            .find(|tool| tool["function"]["name"] == "browser_interact")
+            .expect("browser_interact in root catalog");
         assert_eq!(
             click_definition["function"]["parameters"]["required"],
-            json!(["element_ref"])
+            json!(["action"])
         );
         assert_eq!(
             click_definition["function"]["parameters"]["additionalProperties"],
@@ -4692,7 +4805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m46_w3_1_agent_fill_commits_and_sqlite_reopen_never_fills_again() {
+    async fn semantic_interact_fill_commits_and_sqlite_reopen_never_reexecutes() {
         let server = MockDeepSeekServer::start(vec![
             tool_response(
                 "deepseek-v4-pro",
@@ -4709,8 +4822,9 @@ mod tests {
             tool_response(
                 "deepseek-v4-pro",
                 "m46-w3-1-fill",
-                "browser_fill",
+                "browser_interact",
                 json!({
+                    "action":"fill",
                     "element_ref":"eref_0123456789abcdef0123456789abcdef",
                     "value":"canary"
                 }),
@@ -4778,13 +4892,13 @@ mod tests {
             .iter()
             .find_map(|event| match &event.event {
                 RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
-                    if name == "browser_fill" =>
+                    if name == "browser_interact" =>
                 {
                     Some(outcome.as_ref().clone())
                 }
                 _ => None,
             })
-            .expect("committed browser_fill outcome");
+            .expect("committed browser_interact fill outcome");
         assert!(committed_fill.is_success(), "{}", committed_fill.content);
         assert_eq!(committed_fill.side_effect, ToolSideEffectStatus::Applied);
         let fill_payload: Value = serde_json::from_str(&committed_fill.content).expect("fill JSON");
@@ -4801,11 +4915,11 @@ mod tests {
             .expect("root production catalog");
         let fill_definition = root_catalog
             .iter()
-            .find(|tool| tool["function"]["name"] == "browser_fill")
-            .expect("browser_fill in root catalog");
+            .find(|tool| tool["function"]["name"] == "browser_interact")
+            .expect("browser_interact in root catalog");
         assert_eq!(
             fill_definition["function"]["parameters"]["required"],
-            json!(["element_ref", "value"])
+            json!(["action"])
         );
         assert_eq!(
             fill_definition["function"]["parameters"]["additionalProperties"],
@@ -4869,6 +4983,178 @@ mod tests {
             "committed fill reopen must replay without navigation or fill"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn public_submit_requires_exact_approval_commits_receipt_and_reopens_without_reexecution()
+    {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "public-navigate",
+                "browser_navigate",
+                json!({"url":"https://example.com/review","max_nodes":16,"max_chars":4096}),
+                40,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "public-submit",
+                "browser_interact",
+                json!({
+                    "action":"submit",
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef"
+                }),
+                48,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "草稿保存已由 Host receipt 和 fresh observation 证实。",
+                56,
+                6,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let browser = Arc::new(PublicActionFixture::default());
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_semantic_browser_harness(browser.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "打开 disposable public review 页面，保存草稿；只在 Host 展示 exact target/parameters/impact 后批准，并报告 receipt",
+        );
+        command.controls.permission_mode = RunPermissionMode::Agent;
+        command.controls.interactive = true;
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "semantic-public-action-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let interaction = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let replay = app
+                    .store
+                    .load(&run.run_id)
+                    .await
+                    .expect("load public action run")
+                    .expect("public action run exists");
+                if let Some(request) = replay.events.iter().find_map(|event| match &event.event {
+                    RuntimeEventKind::InteractionRequested { request } => Some(request.clone()),
+                    _ => None,
+                }) {
+                    return request;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("public submit requests approval");
+        assert_eq!(interaction.tool_name, "browser_interact");
+        let dse_protocol::agent_runtime::UserInteractionPrompt::Approval { prompt, arguments } =
+            &interaction.prompt
+        else {
+            panic!("public action must request an approval prompt")
+        };
+        assert!(
+            prompt
+                .description
+                .contains("https://example.com/drafts/save")
+        );
+        assert!(prompt.description.contains("parameters"));
+        assert!(prompt.description.contains("reversible_draft_write"));
+        assert_eq!(arguments["action"], "submit");
+        assert_eq!(browser.submit_calls.load(Ordering::SeqCst), 0);
+
+        let resolved = app
+            .execute(envelope(
+                "semantic-public-action-approve",
+                RunCommand::ResolveInteraction {
+                    run_id: run.run_id.clone(),
+                    interaction_id: interaction.interaction_id,
+                    response: UserInteractionResponse::Approved,
+                },
+            ))
+            .await;
+        assert!(matches!(resolved.result, RunCommandResult::Accepted { .. }));
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(browser.navigate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(browser.submit_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(requests.len(), 3);
+        let committed = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "browser_interact"
+                        && outcome.content.contains("draft-receipt-runtime-001") =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("durable public action receipt");
+        assert_eq!(committed.side_effect, ToolSideEffectStatus::Applied);
+        assert!(
+            replay
+                .events
+                .iter()
+                .any(|event| matches!(event.event, RuntimeEventKind::InteractionResolved { .. }))
+        );
+
+        drop(app);
+        let calls_before_reopen = (
+            browser.navigate_calls.load(Ordering::SeqCst),
+            browser.submit_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen public action run without credential");
+        let reopened_events = reopened
+            .execute(envelope(
+                "semantic-public-action-reopen",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                browser.navigate_calls.load(Ordering::SeqCst),
+                browser.submit_calls.load(Ordering::SeqCst),
+            ),
+            calls_before_reopen,
+            "SQLite reopen replays the receipt without navigation or duplicate POST"
+        );
+        assert_eq!(accepted.await.expect("quiet reopen"), 0);
     }
 
     #[tokio::test]
@@ -7650,7 +7936,15 @@ time.sleep(60)
                     exclude_slash_tmp: false,
                 },
             ),
-            (RunPermissionMode::Agent, SandboxPolicy::DangerFullAccess),
+            (
+                RunPermissionMode::Agent,
+                SandboxPolicy::WorkspaceWrite {
+                    writable_roots: vec![workspace.clone()],
+                    network_access: true,
+                    exclude_tmpdir: false,
+                    exclude_slash_tmp: false,
+                },
+            ),
             (
                 RunPermissionMode::FullAccess,
                 SandboxPolicy::DangerFullAccess,

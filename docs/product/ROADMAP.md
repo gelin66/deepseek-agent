@@ -238,11 +238,11 @@
   `browser_fill(element_ref, value)`；两个冻结 fixture 的 fresh post-fill state=`2/2`、stale reuse
   与 mandatory negative matrix false allow=`0`。真实 AgentApplication committed fill reopen 不重放，
   started-without-outcome 进入既有 `RecoveryRequired`；protocol/state delta=0、official requests=0。
-- ADR-0018 工程完全体方向审计已完成：当前 W1～W3.1 安全机制继续保留，但 loopback-only、
-  click/fill-only、无 public action/login/session/upload/download/search/visual 被纠正为阶段性能力缺口，
-  不再作为永久安全边界；后续从 one-action/one-Goal 改为 capability cluster。首个 production
-  cluster 是 `Semantic Interaction + Public Action Governance`，本审计 production Rust delta=0、
-  official DeepSeek requests=0，尚未启动该实现。
+- ADR-0018 工程完全体方向审计与首个 production cluster 已完成：W1～W3.1 安全机制继续保留，
+  `browser_click`/`browser_fill` 已由一个 `browser_interact` 替换；同一 direct-CDP owner 现闭合完整
+  semantic interaction、最多三页状态、public reversible draft POST、exact approval/receipt 和
+  caller/reopen/recovery。catalog 从 16 收敛为 15；protocol/state/DeepSeek Prompt delta=0，official
+  DeepSeek requests=0。managed session/login/upload/download/search/visual 仍是后续 capability gap。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7412,3 +7412,58 @@ RuntimeEvent、RunStore、State schema、catalog、UI 与 frozen manifest/raw/su
 production cluster。Risk 0 authority gate 的 actual bootstrap 为 repository-guidance=`1,360` 行、
 worst-case tools=`2,639/4,409` 行、fixed boundary=`24/24`；link/authority check 通过。最终
 `git diff --check` 与 clean reviewable commit 由同一 checkpoint 闭合，不运行 full gate。
+
+### 40.14 Semantic Interaction + Public Action Governance（已完成）
+
+#### 问题、owner、旧路与 cutover
+
+真实问题是：W3.1 之后 root Agent 仍只能在 exact loopback page 上 click/fill，不能编辑 textarea 或
+contenteditable，不能 press/wait/scroll/select/back/tab，也不能在 public origin 上完成即使可撤销且经
+用户授权的工程动作。验收不是新增按钮数量，而是一个 local SPA 与一个 disposable public workflow
+都通过真实 production chain，external negative false allow=`0`，committed reopen 不访问网络，started-
+without-outcome 不重放。
+
+single owner 是 `crates/tools`；`crates/app` 只迁移 composition 与真实 caller。cutover 把 fixed catalog
+从 16 收敛为 15：物理删除独立 `browser_click`/`browser_fill` catalog/schema/dispatch 和两个旧 integration
+test path，由唯一 `browser_interact` tagged schema 接管。同一 Rust direct-CDP harness/ref registry/page
+epoch/egress/ToolOutcome owner 被复用；没有 compatibility flag、第二 Runtime/Store、Provider、browser
+Agent、Node/Playwright/Firecrawl sidecar、Manager/Factory/Service 或新依赖。
+
+#### 纵向结果与权限治理
+
+`browser_interact` 一次交付 click、fill、press、typed wait、bounded scroll、native select、back、
+tab open/switch/close、最多三页状态与 Host-classified submit；textarea/contenteditable 进入既有 opaque
+capability ref/fresh-observation 闭环。password/file/login/secret/token/credential/OTP 不获得敏感能力；
+模型没有 selector、坐标、任意 key、JS/eval、header、Cookie、认证、proxy、Chrome flag 或路径输入。
+
+public routine action 绑定 same-origin/current epoch：Ask 显示 exact origin/target/parameters/impact 后批准，
+Agent 自动执行。只有 same-origin reversible draft POST 获得 submit ref；Ask/Agent 在执行前必须批准，
+FullAccess 才可直接执行。publish/delete/purchase/buy/send/message、origin/scope escape、非 exact POST 与
+敏感非空 successful control 均 fail closed。批准绑定一次 invocation、workspace revision、canonical
+non-sensitive parameter hash 与 impact；成功保存 HTTP status、header receipt、semantic receipt、fresh
+observation 和 observed time。
+
+`crates/app` 删除 root Agent 的 broad full-access workaround：Ask/Agent 现均是 workspace-write，只有
+Agent 的 sandbox network bit 为 true；受控 Web 工具仍由 Host URL/egress/authorization owner 执行，
+isolated Writer 由 `actor_controlled_network_denied` 拒绝。RuntimeEvent、RunStore、State schema、
+DeepSeek wire/model-visible Prompt delta=`0`。
+
+#### 实际证据、返工与剩余边界
+
+repository-pinned CfT `151.0.7922.47` 的 credential-free test 在 7.21 秒内完成 local text editing、
+press/select/scroll/wait/back/tab/multi-page 与 mapped-public draft POST；task families=`2/2`、negative false
+allow=`0`，transport/semantic receipt 均为 `draft-receipt-001`。真实 AgentApplication public submit 先产生
+exact Runtime approval，再执行一次；committed SQLite reopen 的 submit count 不增加。click/fill 两个
+started-without-outcome fixture 均 reopen 为 `RecoveryRequired`，model/tool replay=`0`。
+
+development rework 实际关闭四类纵向缺陷：macOS native virtual key 误路由、backend/front-end DOM node
+identity 混用、Host synthetic submit capability 导致的假 stale，以及 form successful-controls canonical
+parameter drift。最终实现完全删除 native/windows virtual key code，并在 CDP async continuation error、
+敏感空字段和双 receipt 上增加确定性证据。
+
+official DeepSeek requests=`0`、credential read=`false`、actual model cost=`$0`；没有付费 A/B，也不声明
+Token/费用/通用效率提升。accounting 只是正交状态，未阻止已闭合 behavior evidence。current remaining
+gaps 是 managed login/session、Cookie/storage、workspace-granted upload、isolated/scanned download、
+canonical search 与 selective visual；本切片没有启动后续 cluster。focused/full pre-integration gate 与
+复杂度/删除 actual 已通过并记录在 Evaluation 同名条目；full gate 只调用一次且 exit=`0`，不改 frozen
+manifest/raw/summary/history。

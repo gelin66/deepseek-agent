@@ -611,99 +611,86 @@ truncation、final transport、完整 trajectory/integrity、redirect count、up
 真实性。Web-specific stable failure 及同一 transport provenance 放入现有
 `ToolOutcome.metadata`，生命周期仍使用 canonical typed fields。没有改变 RuntimeEvent 或 State
 schema，也没有 Web session/store/accounting ledger。committed outcome 经 SQLite reopen 只重放，
-不重新 DNS/HTTP。root、coordinator 和 read-only child 依现有 read-only catalog 获得定义；Ask
-因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess root 可执行，isolated
-Writer 继续由既有 network-denied sandbox 拒绝。
+不重新 DNS/HTTP。root、coordinator 和 read-only child 依现有 read-only catalog 获得定义；Ask 对
+exact URL 形成一次性 Host approval prompt，Agent/FullAccess root 可执行，isolated Writer 继续由
+`actor_controlled_network_denied` 拒绝。
 
-production 仍没有 `web_search`，但 M46 W2 已把固定 catalog 从 13 增至 14，唯一新增模型工具是
-`browser_navigate(url, max_nodes?, max_chars?)`。它在 `crates/tools` 用 direct Tokio CDP 驱动 Host
-预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；每次调用创建独立临时 profile、
-loopback egress proxy 和 process-tree owner，返回有界 DOM/accessibility role/name/text/value/state 后
-立即 teardown。没有 browser session、第二 snapshot tool、后台 daemon、Runtime 或 Store。
+production 仍没有 `web_search`。M46 首个 capability cluster 把 fixed catalog 从 W3.1 的 16 个收敛为
+15 个 Host tools：`browser_click` 与 `browser_fill` 已由唯一 `browser_interact` 取代，Web surface 现为
+`web_fetch`、`browser_navigate`、`browser_interact`。owner 仍是 `crates/tools` 的 direct Tokio CDP，驱动
+Host 预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；同一 Run 只保留一个有界、内存内、
+最多三页的 isolated session，replacement navigate、terminal/drop 与 ambiguity teardown process tree、
+loopback proxy 和 TempDir profile。没有第二 snapshot tool、后台 daemon、Runtime、Store 或 session ledger。
 
-public target 只允许默认端口 HTTP(S)，local target 只允许 Host 注入的 exact literal-loopback
-origin。CDP Fetch interception 和 connect-pinned proxy 共同重验 request/DNS/connect/redirect，阻止
-private/metadata target、跨 origin Document、非 GET/HEAD、Cookie/auth/referer、download、service
-worker、QUIC 与非代理 WebRTC；额外 page/worker/popup target 通过 CDP auto-attach 在启动暂停态由 Host
-关闭，不会获得绕过 primary target interception 的执行窗口；wire/decoded body、CDP frame、node、
-char、redirect 和 deadline 都有硬上限。成功 outcome 标记 `external_untrusted`，只保存 bounded
-semantic observation、replay hash、Chrome/CDP/network identity 与 teardown facts，不保存
-HTML/script/storage/screenshot/pixel。
+public target 只允许默认端口 HTTP(S)，local target 只允许 Host 注入的 exact literal-loopback origin。
+CDP Fetch interception 与 connect-pinned proxy 对每次 request/DNS/connect/redirect 重验，继续阻止
+private/metadata、cross-origin Document、Cookie/auth/referer、download、service worker、QUIC 与非代理
+WebRTC。额外 worker/popup 仍在启动暂停态关闭；只有 Host typed `tab_open` 可在同一 egress scope 内增加
+受管 page。wire/decoded body、CDP frame、node、char、redirect、page count 与 deadline 都有硬上限；
+outcome 只保存 bounded `external_untrusted` semantic observation、replay hash、Chrome/CDP/network identity
+与 receipt，不保存 HTML、script、storage、screenshot 或 pixel。
 
-root、coordinator 和 read-only child 按既有 read-only actor catalog 可见；Ask 仍因缺少 durable
-scoped network approval fail closed，Agent/FullAccess 可执行，isolated Writer 由既有 network-denied
-sandbox 拒绝且不会继承 local-origin grant。现有 ToolOutcome、RuntimeEvent v18 和 RunStore 足以表达；
-committed SQLite outcome reopen 只重放、不重新导航，protocol/state schema delta=0。Playwright 仍只
-存在于 frozen admission evaluator，未进入 production dependency graph。
+`browser_navigate` 仍按既有 read-only actor catalog 可见：exact-local 自动执行，public Ask 显示 exact
+target/read impact 后一次性批准，Agent/FullAccess 可执行；isolated Writer 不继承 local-origin grant，
+Host-controlled network 由既有 actor policy 拒绝。现有 ToolOutcome、RuntimeEvent v18 和 RunStore 足以
+无损表达 catalog、approval、started/outcome/recovery 与 receipt；committed SQLite outcome reopen 只
+重放、不重新导航或 POST，protocol/state schema delta=0。Playwright 仍未进入 production dependency graph。
 
-W3 已把 post-W2 repeated loss 收敛进同一个 direct-CDP owner：fixed production catalog 现为 15 个
-Host tools，唯一 action 是 `browser_click(element_ref)`。public `browser_navigate` 仍 one-shot、只读并
-在 outcome 前 teardown；只有 Host 注入的 exact literal-loopback origin 会保留一个内存内 ephemeral
-page。该 observation 为 button/switch target 生成随机、有界、不可由模型选择 selector/坐标的 opaque
-ref；ref 绑定同一 run、browser identity、latest snapshot 与 page epoch。每次 click 前重新取得
-DOM/AX 身份并拒绝 cross-run、stale、missing、hidden、disabled、detached、ambiguous 或 semantic
-identity drift；成功或可闭合失败后旋转 epoch/refs 并返回 fresh `external_untrusted` observation。
+`browser_interact` 的 tagged schema 一次覆盖 `click`、`fill`、whitelisted `press`、typed `wait`、bounded
+`scroll`、native `select`、`back`、`tab_open/switch/close` 与 Host-classified `submit`。textarea、普通
+input 和 contenteditable 可获得 fill/press capability；password/file/login/secret/token/credential/OTP
+不获得敏感能力。模型仍不能提供 selector、CSS/XPath、坐标、任意 key、JavaScript/eval、header、Cookie、
+认证、proxy、Chrome flag 或文件路径。键盘事件只发送 Web `key/code`，不再注入 native/windows virtual
+key code；select 使用确定性的 Host CDP DOM identity 操作，不执行模型脚本。
 
-`browser_click` 使用既有 `WorkspaceAccess::MayWrite` 只为无损表达 operation-start 后的外部 side-effect
-ambiguity：root catalog 可见；coordinator/read-only child 因既有 actor catalog 不可见；isolated Writer
-虽按既有写工具 catalog 可见，但 network-denied sandbox 和被清除的 local-origin grant 在授权阶段拒绝。
-click action phase 继续经 Fetch + connect-pinned proxy 阻止 origin escape、非 GET/HEAD、popup/worker、
-download、Cookie/auth header 与外部网络副作用；不加入 CSS/XPath/坐标/任意 JS input、fill/press/wait、
-截图、storage/Cookie 持久化或 public action。Host 在 replacement navigate、cancel/timeout ambiguity 和
-executor terminal/drop 清理 process tree、proxy 与 TempDir profile；live page/ref 从不写入 RunStore。
-committed click outcome 冷重开只重放，`ToolExecutionStarted` 后无 outcome 则复用现有
-`RecoveryRequired` 且绝不自动 click。RuntimeEvent v18、State v24、ToolOutcome 与 RunStore schema
-delta=`0`；production 未引入 Playwright/Node、第二 Runtime/Store 或 browser session ledger。
+每个 capability ref 仍是随机 opaque token，绑定同一 run、browser、backend DOM identity、active page、
+latest snapshot/page epoch 与 exact action set。每次动作前重取 DOM/AX/layout identity，拒绝 cross-run、
+stale、missing、hidden、disabled、readonly、detached、ambiguous、semantic/capability drift；动作后必须返回
+fresh observation 并旋转 refs/epoch。Host synthetic `submit` capability 不参与页面 semantic fingerprint，
+但 exact target/form parameters/impact 的任何变化都会使 durable preview stale。live page/ref 从不写入
+RunStore；cancel/timeout/transport ambiguity 仍 teardown，未知副作用不自动 replay。
 
-post-W3 admission 的历史 audit 曾证明 root 能观察 `textbox / Release channel` 与
-`searchbox / Test filter`，但当时 click-only ref policy 不给 text-entry target 发 ref，15-tool catalog
-也没有 `browser_fill`；eval-only oracle 形成同一 `tools:browser_interaction:fill=2/2`、control=`0/2`、
-false-success=`0`，从而准入 W3.1。该冻结 manifest/summary/fixtures/history 保留，eval-only Python/Node
-oracle 与 test-only missing-tool control 已在 production cutover 后删除。
+W3/W3.1 的 frozen manifest/summary/fixtures/history 保留；production cutover 已物理删除分立
+`browser_click`/`browser_fill` catalog/schema/dispatch 与两个旧 integration test path，改为一个 cluster
+test。没有 compatibility flag、one-action admission evaluator、Node/Playwright production sidecar 或第二
+browser owner。
 
-W3.1 仍由同一个 `crates/tools` direct-CDP adapter 和同一个 Host in-memory exact-loopback session
-拥有。fixed production catalog 现为 16 个 Host tools，新增且仅新增
-`browser_fill(element_ref, value)`。navigate snapshot 只给 visible、enabled、非 readonly、非敏感的
-`input[type=text|search]` 生成 fill-only ref；password/file/date/color/number、textarea、contenteditable
-以及 login/secret/token/API-key/credential/OTP target 不生成 ref。value 由 Host preflight 限为非空
-UTF-8、最多 1,024 chars / 4,096 bytes，并拒绝 NUL、C0/C1、DEL 与换行；没有 selector、坐标、script、
-任意 key/Enter/submit、header、Cookie、认证或路径参数。
+public routine interaction 只在当前 same-origin session/current epoch 消费 typed ref：Ask 显示 exact
+origin/target/parameters/impact 并请求批准，Agent/FullAccess 自动执行；external side effect 只给明确的
+same-origin reversible draft POST target 生成 `submit` ref，Ask/Agent 必须批准，FullAccess 才可直接执行。
+`publish/delete/purchase/buy/send/message`、origin/scope escape 与非 exact POST 永不获得 grant。敏感/file
+成功控件不进入 durable preview，只有实际提交值为空才可被 Host 从 canonical comparison 排除；非空值
+立即 `browser_method_denied`。
 
-每个 ref 在 memory-only registry 中绑定 run、browser、backend DOM node、latest snapshot/page epoch
-与 exact click/fill capability，两个 action 不能交叉消费。fill action 固定为
-`DOM.focus -> replace current value -> Input.insertText`；前置 Host validation 重新取得 DOM/AX/layout
-identity 并拒绝 cross-run、stale、missing、hidden、disabled、readonly、detached、ambiguous、semantic
-drift 与 capability drift。成功或可闭合失败都返回 fresh bounded `external_untrusted` observation 并
-旋转全部 refs/epoch；首次 focus 后的 crash/cancel/timeout/transport ambiguity 使用既有
-`Indeterminate/Unsafe`、teardown 与 `RecoveryRequired`，不自动 replay。
+批准只绑定一次 invocation、当前 workspace revision、exact target、canonical non-sensitive parameters
+SHA-256 与 `reversible_draft_write` impact。执行前持久化既有 `ToolExecutionStarted`，成功 outcome 同时
+保存 HTTP status、transport header receipt、页面 `data-receipt`、observed time 与 fresh observation；
+request 已开始而 receipt 不闭合则为 Unsafe/Indeterminate，不伪造成功。root catalog 默认可见；
+coordinator/read-only child 仍因既有 MayWrite actor catalog 不可见；isolated Writer 即使可见也由
+`actor_controlled_network_denied` 拒绝。
 
-root catalog 可见 fill；coordinator/read-only child 因既有 MayWrite actor catalog 不可见；isolated
-Writer 虽按既有写工具 catalog 可见，但 network-denied sandbox 和清除后的 local-origin grant 在授权
-阶段拒绝。两个冻结 fixture 的 production navigate/fill/post-state=`2/2`、stale reuse false allow=`0`；
-真实 AgentApplication committed outcome SQLite reopen 的 navigate/fill counts 保持 `1/1`，started-
-without-outcome 的 model/fill replay=`0`。RuntimeEvent、RunStore 与 State schema delta=`0`，official
-DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`。current production 仍没有 press/
-wait、public action、POST/upload/download、登录、Cookie/storage persistence、截图/视觉、搜索、Node
-production sidecar、第二 Runtime/Store 或 session ledger。
+真实 pinned-CfT task 在 7.21 秒内完成 local text editing/press/select/scroll/wait/back/tab/multi-page 和
+credential-free mapped-public draft POST，verified task families=`2/2`、negative false allow=`0`，receipt=
+`draft-receipt-001`。真实 `AgentApplication -> AgentRuntime` 中 public submit 先投影 exact approval，批准后
+只执行一次；committed SQLite reopen 不重新导航/POST，click/fill `ToolExecutionStarted` 无 outcome 的
+reopen 均为 `RecoveryRequired` 且 replay=`0`。RuntimeEvent、RunStore、State schema、DeepSeek wire/
+model-visible Prompt delta=`0`；official DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`。
 
 #### ADR-0018 后的 current capability boundary
 
-源码审计确认上述“没有”均是当前实现事实：fixed catalog 搜索不到 `web_search` 或
-`browser_press/wait/scroll/select`；click/fill preflight 要求 Host exact local origin；Ask 网络因缺少
-可强制 scoped grant 而拒绝；`crates/app` 当前对 root Agent/FullAccess 组合 broad sandbox posture。
-因此 current product 不能完成 unknown-source research、完整 public JS workflow、managed account
-workflow 或 visual-only task，也不能声称已可替代完整工程 Agent。
+首个 cluster 已闭合 semantic interaction 与 public reversible action，且将 `crates/app` 的 root Agent
+从 broad full-access workaround 改为 workspace-write + Host-controlled network。current product 仍没有
+canonical `web_search`、managed login/session、Cookie/storage persistence、workspace-granted upload、
+isolated/scanned download 或 visual observation，因此仍不能完成 unknown-source research、managed
+account workflow 或 visual-only task，也不能声称已可替代完整工程 Agent。
 
-长期不变量仍由现有代码与 authority 保留：public URL SSRF/egress、isolated ephemeral profile、
-opaque capability ref、fresh observation、external-untrusted、Host authorization、started/outcome/
-RecoveryRequired、committed reopen no-reexecution 和 single Runtime/Event/Store。ADR-0018 不改变这些
-事实，也没有修改 production Rust；它只把 loopback-only、click/fill-only、无 session/search/
-upload/download/visual 从长期拒绝改成后续 capability-cluster gap。
+长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
+Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
+RecoveryRequired、committed reopen no-reexecution、bounds/teardown 和 single Runtime/Event/Store。
 
-下一 production cluster 尚未实现。它的 current accepted contract 是由 `crates/tools` 在同一
-direct-CDP/ref/epoch/outcome owner 中交付完整 semantic interaction 与 public reversible action
-risk governance；在真实 caller cutover 前，现有 exact-loopback deny 和 catalog 仍是实际行为，
-不能由文档冒充能力。
+下一 capability cluster 仍按 ADR-0018 顺序是 Managed Browser Session；当前切片未启动它。受控登录、
+Cookie/session、upload/download、高风险 publish/delete/purchase、搜索与视觉仍 fail closed，不能由文档
+或已有 draft grant 冒充能力。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确

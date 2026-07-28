@@ -1,9 +1,8 @@
 //! Ephemeral semantic browser backed by pinned Chrome for Testing.
 //!
-//! Public navigation remains one-shot and read-only. An exact Host-owned
-//! loopback navigation may retain one in-memory page long enough for the same
-//! run to consume an opaque latest-snapshot ref through `browser_click` or
-//! `browser_fill`.
+//! Public and exact Host-owned loopback navigation retain one bounded,
+//! in-memory session long enough for the same run to consume opaque
+//! latest-snapshot refs through the typed `browser_interact` action surface.
 //! Neither the live page nor its refs become durable truth, and there is no
 //! screenshot, selector, coordinate input, arbitrary JavaScript, or second
 //! browser store.
@@ -40,7 +39,7 @@ use dse_protocol::agent_runtime::{
 };
 
 const TRUST: &str = "external_untrusted";
-const ADAPTER_ID: &str = "direct_tokio_cdp_ref_click_fill_v3";
+const ADAPTER_ID: &str = "direct_tokio_cdp_semantic_interaction_v4";
 const PINNED_CFT_VERSION: &str = "151.0.7922.47";
 const DEFAULT_MAX_NODES: usize = 128;
 const MAX_MAX_NODES: usize = 256;
@@ -65,11 +64,16 @@ const PROXY_TEARDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_ELEMENT_REF_CHARS: usize = 40;
 const MAX_FILL_VALUE_CHARS: usize = 1_024;
 const MAX_FILL_VALUE_BYTES: usize = 4_096;
+const MAX_INTERACTION_VALUE_CHARS: usize = 2_048;
+const MAX_WAIT_MILLIS: u64 = 10_000;
+const DEFAULT_WAIT_MILLIS: u64 = 3_000;
+const MAX_SCROLL_AMOUNT: u64 = 2_000;
 #[cfg(target_os = "macos")]
 const SELECT_ALL_MODIFIERS: u8 = 4;
 #[cfg(not(target_os = "macos"))]
 const SELECT_ALL_MODIFIERS: u8 = 2;
 const MAX_STALE_REFS: usize = MAX_MAX_NODES * 2;
+const MAX_BROWSER_PAGES: usize = 3;
 
 /// Cancellation signal accepted by deterministic browser harness fixtures.
 pub type BrowserCancellationToken = CancellationToken;
@@ -100,7 +104,7 @@ impl Origin {
             return Err(BrowserFailure::rejected(
                 "browser_scheme_denied",
                 "url",
-                "browser_navigate 只允许 HTTP(S) URL",
+                format!("browser_navigate 只允许 HTTP(S) URL；收到 scheme={scheme}"),
             ));
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -167,6 +171,79 @@ pub struct BrowserFillRequest {
     value: String,
 }
 
+/// Canonical typed interaction request. This is intentionally an enum rather
+/// than a model-provided script or selector language.
+#[derive(Debug, Clone)]
+pub enum BrowserInteractRequest {
+    Click(BrowserClickRequest),
+    Fill(BrowserFillRequest),
+    Press {
+        element_ref: String,
+        key: BrowserKey,
+    },
+    Wait {
+        condition: BrowserWaitCondition,
+        value: Option<String>,
+        timeout: Duration,
+    },
+    Scroll {
+        element_ref: String,
+        direction: BrowserScrollDirection,
+        amount: u64,
+    },
+    Select {
+        element_ref: String,
+        value: String,
+    },
+    Back,
+    TabOpen {
+        url: Url,
+    },
+    TabSwitch {
+        page_ref: String,
+    },
+    TabClose {
+        page_ref: String,
+    },
+    Submit(BrowserClickRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserKey {
+    Enter,
+    Escape,
+    Tab,
+    ArrowUp,
+    ArrowDown,
+    Space,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserWaitCondition {
+    DocumentReady,
+    TextPresent,
+    TextAbsent,
+    UrlEquals,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserScrollDirection {
+    Up,
+    Down,
+}
+
+/// Host-derived information used only to create a durable authorization
+/// prompt. Page text cannot choose the permission mode or broaden this scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserAuthorizationPreview {
+    pub public: bool,
+    pub origin: String,
+    pub target: String,
+    pub parameters: String,
+    pub impact: String,
+    pub external_side_effect: bool,
+}
+
 impl BrowserFillRequest {
     #[must_use]
     pub fn element_ref(&self) -> &str {
@@ -212,6 +289,36 @@ pub trait SemanticBrowserHarness: Send + Sync {
         request: BrowserFillRequest,
         cancellation: BrowserCancellationToken,
     ) -> ToolOutcome;
+
+    async fn interact(
+        &self,
+        run_id: &str,
+        request: BrowserInteractRequest,
+        cancellation: BrowserCancellationToken,
+    ) -> ToolOutcome {
+        match request {
+            BrowserInteractRequest::Click(request) => {
+                self.click(run_id, request, cancellation).await
+            }
+            BrowserInteractRequest::Fill(request) => self.fill(run_id, request, cancellation).await,
+            _ => ToolOutcome::error(
+                "semantic browser fixture does not implement this typed interaction",
+            )
+            .with_failure_code(ToolFailureCode::OperationFailed)
+            .with_side_effect(ToolSideEffectStatus::NotApplied),
+        }
+    }
+
+    /// Return the exact current public-session target used by Host
+    /// authorization. The system harness derives this from memory-only
+    /// session state; deterministic fixtures may leave it unavailable.
+    fn authorization_preview(
+        &self,
+        _run_id: &str,
+        _request: &BrowserInteractRequest,
+    ) -> Option<BrowserAuthorizationPreview> {
+        None
+    }
 
     /// Synchronous fail-safe used when the owning production executor drops.
     /// Implementations must not leave a live process, proxy, or profile behind.
@@ -263,7 +370,7 @@ fn default_cft_path() -> Option<PathBuf> {
     }
 }
 
-/// Default one-shot system harness. It never downloads or upgrades Chrome.
+/// Default bounded live-session system harness. It never downloads or upgrades Chrome.
 pub struct SystemSemanticBrowserHarness {
     binary: Option<PinnedChromeForTesting>,
     resolver: Arc<dyn WebFetchNetwork>,
@@ -305,6 +412,263 @@ impl SystemSemanticBrowserHarness {
             })
     }
 
+    fn public_authorization_preview(
+        &self,
+        run_id: &str,
+        request: &BrowserInteractRequest,
+    ) -> Option<BrowserAuthorizationPreview> {
+        let session = self.session.lock().ok()?;
+        let session = session.as_ref()?;
+        if session.run_id != run_id || !matches!(session.request.scope, BrowserTargetScope::Public)
+        {
+            return None;
+        }
+        let origin = session.egress.initial_origin.canonical();
+        let current = session.observation.final_url.clone();
+        let ref_target = |element_ref: &str, capability: ElementCapability| {
+            let target = session.refs.get(element_ref)?;
+            target.capabilities.contains(&capability).then_some(target)
+        };
+        let preview = match request {
+            BrowserInteractRequest::Click(request) => {
+                let target = ref_target(request.element_ref(), ElementCapability::Click)?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("{}#{}:{}", current, target.role, target.accessible_name),
+                    parameters: "action=click".to_owned(),
+                    impact: "reversible_ephemeral_page_interaction; same-origin GET/HEAD only"
+                        .to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::Fill(request) => {
+                let target = ref_target(request.element_ref(), ElementCapability::Fill)?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("{}#{}:{}", current, target.role, target.accessible_name),
+                    parameters: format!("value={:?}", request.value()),
+                    impact: "ephemeral_page_state_only; submit not implied".to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::Press { element_ref, key } => {
+                let target = ref_target(element_ref, ElementCapability::Press)?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("{}#{}:{}", current, target.role, target.accessible_name),
+                    parameters: format!("key={}", browser_key_name(*key)),
+                    impact: "bounded keyboard interaction; non-granted POST remains blocked"
+                        .to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::Wait {
+                condition, value, ..
+            } => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: current,
+                parameters: format!(
+                    "condition={}; value={:?}",
+                    wait_condition_name(*condition),
+                    value
+                ),
+                impact: "read-only bounded wait".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::Scroll {
+                element_ref,
+                direction,
+                amount,
+            } => {
+                let target = ref_target(element_ref, ElementCapability::Scroll)?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("{}#{}:{}", current, target.role, target.accessible_name),
+                    parameters: format!(
+                        "direction={}; amount={amount}",
+                        scroll_direction_name(*direction)
+                    ),
+                    impact: "ephemeral viewport movement".to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::Select { element_ref, value } => {
+                let target = ref_target(element_ref, ElementCapability::Select)?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("{}#{}:{}", current, target.role, target.accessible_name),
+                    parameters: format!("value={value:?}"),
+                    impact: "ephemeral selection; non-granted POST remains blocked".to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::Back => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: current,
+                parameters: "action=back".to_owned(),
+                impact: "same-origin history navigation".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::TabOpen { url } => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: url.to_string(),
+                parameters: "action=tab_open".to_owned(),
+                impact: "open one bounded same-origin page in the ephemeral session".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::TabSwitch { page_ref } => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: page_ref.clone(),
+                parameters: "action=tab_switch".to_owned(),
+                impact: "switch active ephemeral page".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::TabClose { page_ref } => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: page_ref.clone(),
+                parameters: "action=tab_close".to_owned(),
+                impact: "close one ephemeral page".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::Submit(request) => {
+                let target = ref_target(request.element_ref(), ElementCapability::Submit)?;
+                let external = target.external_preview.as_ref()?;
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin: external.origin.clone(),
+                    target: format!("POST {}", external.target_url),
+                    parameters: format!(
+                        "{}; {}",
+                        serde_json::to_string(&external.parameters).ok()?,
+                        external.parameters_sha256
+                    ),
+                    impact: external.impact.to_owned(),
+                    external_side_effect: true,
+                }
+            }
+        };
+        Some(preview)
+    }
+
+    async fn run_extended_interaction(
+        &self,
+        run_id: &str,
+        request: BrowserInteractRequest,
+        cancellation: BrowserCancellationToken,
+    ) -> ToolOutcome {
+        let _guard = match self.begin_operation() {
+            Ok(guard) => guard,
+            Err(failure) => return interact_operation_outcome(failure, false),
+        };
+        let Some(mut session) = self.session.lock().expect("browser session lock").take() else {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_session_missing",
+                    "session",
+                    "browser_interact requires a live browser_navigate observation",
+                ),
+                false,
+            );
+        };
+        enum Completion {
+            Finished(Box<ToolOutcome>),
+            Cancelled,
+            TimedOut,
+        }
+        let completion = {
+            let execution = execute_live_extended_interaction(
+                &mut session,
+                run_id,
+                &request,
+                cancellation.clone(),
+            );
+            tokio::pin!(execution);
+            tokio::select! {
+                outcome = &mut execution => Completion::Finished(Box::new(outcome)),
+                () = cancellation.cancelled() => Completion::Cancelled,
+                () = tokio::time::sleep(OVERALL_DEADLINE) => Completion::TimedOut,
+            }
+        };
+        match completion {
+            Completion::Finished(outcome) => {
+                let mut outcome = *outcome;
+                if outcome.side_effect == ToolSideEffectStatus::Indeterminate {
+                    let teardown = session.teardown().await;
+                    if let Some(metadata) = outcome.metadata.as_mut()
+                        && let Some(browser) = metadata
+                            .get_mut("semantic_browser")
+                            .and_then(Value::as_object_mut)
+                    {
+                        browser.insert(
+                            "teardown".to_owned(),
+                            serde_json::to_value(teardown)
+                                .expect("browser teardown facts serialize"),
+                        );
+                    }
+                } else {
+                    *self.session.lock().expect("browser session lock") = Some(session);
+                }
+                outcome
+            }
+            Completion::Cancelled | Completion::TimedOut => {
+                let dispatched = session.egress.action_started.load(Ordering::SeqCst);
+                session.egress.end_action();
+                let failure = match completion {
+                    Completion::Cancelled => BrowserFailure {
+                        code: "browser_cancelled",
+                        stage: "cancellation",
+                        message: "browser_interact was cancelled".to_owned(),
+                        transport: false,
+                        retry: if dispatched {
+                            ToolRetryDisposition::Unsafe
+                        } else {
+                            ToolRetryDisposition::Safe
+                        },
+                    },
+                    Completion::TimedOut => BrowserFailure::transport(
+                        "browser_deadline_exceeded",
+                        "deadline",
+                        format!(
+                            "browser_interact exceeded {} ms",
+                            OVERALL_DEADLINE.as_millis()
+                        ),
+                    ),
+                    Completion::Finished(_) => unreachable!(),
+                };
+                if dispatched {
+                    let teardown = session.teardown().await;
+                    let mut outcome = interact_operation_outcome(failure, true);
+                    if let Some(metadata) = outcome.metadata.as_mut()
+                        && let Some(browser) = metadata
+                            .get_mut("semantic_browser")
+                            .and_then(Value::as_object_mut)
+                    {
+                        browser.insert(
+                            "teardown".to_owned(),
+                            serde_json::to_value(teardown)
+                                .expect("browser teardown facts serialize"),
+                        );
+                    }
+                    outcome
+                } else {
+                    let outcome = interact_operation_outcome(failure, false);
+                    *self.session.lock().expect("browser session lock") = Some(session);
+                    outcome
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     async fn await_last_teardown(&self) -> Option<TeardownFacts> {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -322,6 +686,33 @@ impl SystemSemanticBrowserHarness {
         })
         .await
         .ok()
+    }
+}
+
+fn browser_key_name(key: BrowserKey) -> &'static str {
+    match key {
+        BrowserKey::Enter => "enter",
+        BrowserKey::Escape => "escape",
+        BrowserKey::Tab => "tab",
+        BrowserKey::ArrowUp => "arrow_up",
+        BrowserKey::ArrowDown => "arrow_down",
+        BrowserKey::Space => "space",
+    }
+}
+
+fn wait_condition_name(condition: BrowserWaitCondition) -> &'static str {
+    match condition {
+        BrowserWaitCondition::DocumentReady => "document_ready",
+        BrowserWaitCondition::TextPresent => "text_present",
+        BrowserWaitCondition::TextAbsent => "text_absent",
+        BrowserWaitCondition::UrlEquals => "url_equals",
+    }
+}
+
+fn scroll_direction_name(direction: BrowserScrollDirection) -> &'static str {
+    match direction {
+        BrowserScrollDirection::Up => "up",
+        BrowserScrollDirection::Down => "down",
     }
 }
 
@@ -402,12 +793,16 @@ struct SemanticNode {
     value: String,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     state: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    capabilities: Vec<&'static str>,
     #[serde(skip)]
     backend_dom_node_id: Option<u64>,
     #[serde(skip)]
     click_safety: Option<ClickSafety>,
     #[serde(skip)]
     fill_safety: Option<FillSafety>,
+    #[serde(skip)]
+    dom: Option<DomFacts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -436,6 +831,8 @@ struct BrowserResult {
     snapshot: Vec<SemanticNode>,
     snapshot_id: String,
     page_epoch: u64,
+    active_page_ref: String,
+    pages: Vec<BrowserPageSummary>,
     element_refs_returned: usize,
     snapshot_sha256: String,
     snapshot_sha256_scope: &'static str,
@@ -464,9 +861,36 @@ struct BrowserResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct BrowserPageSummary {
+    page_ref: String,
+    url: String,
+    title: String,
+    page_epoch: u64,
+    active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct BrowserActionResult {
     kind: &'static str,
-    consumed_element_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    consumed_element_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt: Option<ExternalActionReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalActionReceipt {
+    target_url: String,
+    method: &'static str,
+    status: u16,
+    parameters_sha256: String,
+    impact: &'static str,
+    remote_receipt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_receipt: Option<String>,
+    observed_at: String,
 }
 
 pub(crate) fn browser_harness_identity(
@@ -520,82 +944,267 @@ pub(crate) async fn execute_browser_navigate(
     harness.navigate(run_id, request, cancellation).await
 }
 
-pub(crate) fn preflight_browser_click(input: &Value) -> Option<ToolOutcome> {
-    match parse_click_request(input) {
+pub(crate) fn preflight_browser_interact(input: &Value) -> Option<ToolOutcome> {
+    match parse_interact_request(input) {
         Ok(_) => None,
-        Err(failure) => Some(rejected_click_outcome("", failure)),
+        Err(failure) => Some(rejected_interact_outcome(failure)),
     }
 }
 
-pub(crate) async fn execute_browser_click(
+pub(crate) fn parse_browser_interact_for_authorization(
+    input: &Value,
+) -> Result<BrowserInteractRequest, String> {
+    parse_interact_request(input).map_err(|failure| failure.message)
+}
+
+pub(crate) async fn execute_browser_interact(
     run_id: &str,
     input: Value,
     harness: Arc<dyn SemanticBrowserHarness>,
-    network_allowed: bool,
+    controlled_network_allowed: bool,
     cancellation: CancellationToken,
 ) -> ToolOutcome {
-    let element_ref = input
-        .get("element_ref")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let request = match parse_click_request(&input) {
+    let request = match parse_interact_request(&input) {
         Ok(request) => request,
-        Err(failure) => return click_operation_outcome(&element_ref, failure, None, false),
+        Err(failure) => return interact_operation_outcome(failure, false),
     };
-    if !network_allowed {
-        return click_operation_outcome(
-            &element_ref,
+    if !controlled_network_allowed {
+        return interact_operation_outcome(
             BrowserFailure::operation(
                 "browser_network_not_authorized",
                 "authorization",
-                "当前 Run permission 或 actor sandbox 禁止浏览器网络访问",
+                "当前 actor 的冻结边界禁止浏览器网络访问",
             ),
-            None,
             false,
         );
     }
-    harness.click(run_id, request, cancellation).await
+    harness.interact(run_id, request, cancellation).await
 }
 
-pub(crate) fn preflight_browser_fill(input: &Value) -> Option<ToolOutcome> {
-    match parse_fill_request(input) {
-        Ok(_) => None,
-        Err(failure) => Some(rejected_fill_outcome("", failure)),
-    }
-}
-
-pub(crate) async fn execute_browser_fill(
-    run_id: &str,
-    input: Value,
-    harness: Arc<dyn SemanticBrowserHarness>,
-    network_allowed: bool,
-    cancellation: CancellationToken,
-) -> ToolOutcome {
-    let element_ref = input
-        .get("element_ref")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let request = match parse_fill_request(&input) {
-        Ok(request) => request,
-        Err(failure) => return fill_operation_outcome(&element_ref, failure, None, false),
+fn parse_interact_request(input: &Value) -> Result<BrowserInteractRequest, BrowserFailure> {
+    let action = required_str(input, "action").map_err(|error| {
+        BrowserFailure::rejected("browser_action_missing", "action", error.to_string())
+    })?;
+    let allowed = |fields: &[&str]| {
+        input
+            .as_object()
+            .is_some_and(|object| object.keys().all(|key| fields.contains(&key.as_str())))
     };
-    if !network_allowed {
-        return fill_operation_outcome(
-            &element_ref,
-            BrowserFailure::operation(
-                "browser_network_not_authorized",
-                "authorization",
-                "当前 Run permission 或 actor sandbox 禁止浏览器网络访问",
-            ),
-            None,
-            false,
-        );
+    match action {
+        "click" if allowed(&["action", "element_ref"]) => {
+            Ok(BrowserInteractRequest::Click(BrowserClickRequest {
+                element_ref: parse_element_ref(input)?,
+            }))
+        }
+        "fill" if allowed(&["action", "element_ref", "value"]) => {
+            Ok(BrowserInteractRequest::Fill(parse_fill_request(input)?))
+        }
+        "press" if allowed(&["action", "element_ref", "key"]) => {
+            let key = match required_str(input, "key").map_err(|error| {
+                BrowserFailure::rejected("browser_key_missing", "key", error.to_string())
+            })? {
+                "enter" => BrowserKey::Enter,
+                "escape" => BrowserKey::Escape,
+                "tab" => BrowserKey::Tab,
+                "arrow_up" => BrowserKey::ArrowUp,
+                "arrow_down" => BrowserKey::ArrowDown,
+                "space" => BrowserKey::Space,
+                _ => {
+                    return Err(BrowserFailure::rejected(
+                        "browser_key_denied",
+                        "key",
+                        "key 必须是 enter/escape/tab/arrow_up/arrow_down/space",
+                    ));
+                }
+            };
+            Ok(BrowserInteractRequest::Press {
+                element_ref: parse_element_ref(input)?,
+                key,
+            })
+        }
+        "wait" if allowed(&["action", "condition", "value", "timeout_ms"]) => {
+            let condition = match required_str(input, "condition").map_err(|error| {
+                BrowserFailure::rejected(
+                    "browser_wait_condition_missing",
+                    "condition",
+                    error.to_string(),
+                )
+            })? {
+                "document_ready" => BrowserWaitCondition::DocumentReady,
+                "text_present" => BrowserWaitCondition::TextPresent,
+                "text_absent" => BrowserWaitCondition::TextAbsent,
+                "url_equals" => BrowserWaitCondition::UrlEquals,
+                _ => {
+                    return Err(BrowserFailure::rejected(
+                        "browser_wait_condition_denied",
+                        "condition",
+                        "condition 必须是 document_ready/text_present/text_absent/url_equals",
+                    ));
+                }
+            };
+            let value = input
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if condition == BrowserWaitCondition::DocumentReady {
+                if value.is_some() {
+                    return Err(BrowserFailure::rejected(
+                        "browser_wait_value_unexpected",
+                        "value",
+                        "document_ready 不接受 value",
+                    ));
+                }
+            } else if value.as_deref().is_none_or(str::is_empty) {
+                return Err(BrowserFailure::rejected(
+                    "browser_wait_value_missing",
+                    "value",
+                    "该 wait condition 需要非空 value",
+                ));
+            }
+            if value
+                .as_ref()
+                .is_some_and(|value| value.chars().count() > MAX_INTERACTION_VALUE_CHARS)
+            {
+                return Err(BrowserFailure::rejected(
+                    "browser_wait_value_too_large",
+                    "value",
+                    format!("wait value 不得超过 {MAX_INTERACTION_VALUE_CHARS} 字符"),
+                ));
+            }
+            let timeout_ms = input
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_WAIT_MILLIS);
+            if timeout_ms == 0 || timeout_ms > MAX_WAIT_MILLIS {
+                return Err(BrowserFailure::rejected(
+                    "browser_wait_timeout_invalid",
+                    "timeout_ms",
+                    format!("timeout_ms 必须为 1..={MAX_WAIT_MILLIS}"),
+                ));
+            }
+            Ok(BrowserInteractRequest::Wait {
+                condition,
+                value,
+                timeout: Duration::from_millis(timeout_ms),
+            })
+        }
+        "scroll" if allowed(&["action", "element_ref", "direction", "amount"]) => {
+            let direction = match required_str(input, "direction").map_err(|error| {
+                BrowserFailure::rejected(
+                    "browser_scroll_direction_missing",
+                    "direction",
+                    error.to_string(),
+                )
+            })? {
+                "up" => BrowserScrollDirection::Up,
+                "down" => BrowserScrollDirection::Down,
+                _ => {
+                    return Err(BrowserFailure::rejected(
+                        "browser_scroll_direction_denied",
+                        "direction",
+                        "direction 必须是 up/down",
+                    ));
+                }
+            };
+            let amount = input.get("amount").and_then(Value::as_u64).unwrap_or(600);
+            if amount == 0 || amount > MAX_SCROLL_AMOUNT {
+                return Err(BrowserFailure::rejected(
+                    "browser_scroll_amount_invalid",
+                    "amount",
+                    format!("amount 必须为 1..={MAX_SCROLL_AMOUNT}"),
+                ));
+            }
+            Ok(BrowserInteractRequest::Scroll {
+                element_ref: parse_element_ref(input)?,
+                direction,
+                amount,
+            })
+        }
+        "select" if allowed(&["action", "element_ref", "value"]) => {
+            let value = parse_interaction_value(input, "browser_select_value_invalid")?;
+            Ok(BrowserInteractRequest::Select {
+                element_ref: parse_element_ref(input)?,
+                value,
+            })
+        }
+        "back" if allowed(&["action"]) => Ok(BrowserInteractRequest::Back),
+        "tab_open" if allowed(&["action", "url"]) => {
+            let raw = required_str(input, "url").map_err(|error| {
+                BrowserFailure::rejected("browser_tab_url_missing", "url", error.to_string())
+            })?;
+            let url = Url::parse(raw).map_err(|error| {
+                BrowserFailure::rejected(
+                    "browser_tab_url_invalid",
+                    "url",
+                    format!("tab URL 解析失败：{error}"),
+                )
+            })?;
+            Origin::from_url(&url)?;
+            Ok(BrowserInteractRequest::TabOpen { url })
+        }
+        "tab_switch" if allowed(&["action", "page_ref"]) => Ok(BrowserInteractRequest::TabSwitch {
+            page_ref: parse_page_ref(input)?,
+        }),
+        "tab_close" if allowed(&["action", "page_ref"]) => Ok(BrowserInteractRequest::TabClose {
+            page_ref: parse_page_ref(input)?,
+        }),
+        "submit" if allowed(&["action", "element_ref"]) => {
+            Ok(BrowserInteractRequest::Submit(BrowserClickRequest {
+                element_ref: parse_element_ref(input)?,
+            }))
+        }
+        "click" | "fill" | "press" | "wait" | "scroll" | "select" | "back" | "tab_open"
+        | "tab_switch" | "tab_close" | "submit" => Err(BrowserFailure::rejected(
+            "browser_action_arguments_invalid",
+            "arguments",
+            format!("action {action} 的参数集合不精确"),
+        )),
+        _ => Err(BrowserFailure::rejected(
+            "browser_action_denied",
+            "action",
+            "action 不在 Host 固定 semantic interaction 集合中",
+        )),
     }
-    harness.fill(run_id, request, cancellation).await
 }
 
+fn parse_interaction_value(input: &Value, code: &'static str) -> Result<String, BrowserFailure> {
+    let value = required_str(input, "value")
+        .map_err(|error| BrowserFailure::rejected(code, "value", error.to_string()))?;
+    if value.is_empty()
+        || value.chars().count() > MAX_INTERACTION_VALUE_CHARS
+        || value
+            .chars()
+            .any(|character| matches!(character as u32, 0x00..=0x1f | 0x7f..=0x9f))
+    {
+        return Err(BrowserFailure::rejected(
+            code,
+            "value",
+            format!("value 必须非空、不含控制字符且不超过 {MAX_INTERACTION_VALUE_CHARS} 字符"),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_page_ref(input: &Value) -> Result<String, BrowserFailure> {
+    let page_ref = required_str(input, "page_ref").map_err(|error| {
+        BrowserFailure::rejected("browser_page_ref_missing", "page_ref", error.to_string())
+    })?;
+    if page_ref.len() != 37
+        || !page_ref.starts_with("page_")
+        || !page_ref[5..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_page_ref_invalid",
+            "page_ref",
+            "page_ref 必须是 Host 返回的 opaque page ref",
+        ));
+    }
+    Ok(page_ref.to_owned())
+}
+
+#[cfg(test)]
 fn parse_click_request(input: &Value) -> Result<BrowserClickRequest, BrowserFailure> {
     let element_ref = parse_element_ref(input)?;
     Ok(BrowserClickRequest { element_ref })
@@ -820,30 +1429,70 @@ fn rejected_outcome(requested: &str, failure: BrowserFailure) -> ToolOutcome {
     .with_metadata(failure_metadata(requested, &failure, None))
 }
 
-fn rejected_click_outcome(element_ref: &str, failure: BrowserFailure) -> ToolOutcome {
+fn rejected_interact_outcome(failure: BrowserFailure) -> ToolOutcome {
     let retry = failure.retry;
     ToolOutcome::rejected(
         format!(
-            "browser_click 拒绝：code={}；{}",
+            "browser_interact 拒绝：code={}；{}",
             failure.code, failure.message
         ),
         retry,
     )
     .with_failure_code(ToolFailureCode::InvocationRejected)
-    .with_metadata(click_failure_metadata(element_ref, &failure, None))
+    .with_metadata(json!({
+        "semantic_browser": {
+            "action": "interact",
+            "trust": TRUST,
+            "failure": {
+                "code": failure.code,
+                "stage": failure.stage,
+                "message": failure.message,
+            }
+        }
+    }))
 }
 
-fn rejected_fill_outcome(element_ref: &str, failure: BrowserFailure) -> ToolOutcome {
-    let retry = failure.retry;
-    ToolOutcome::rejected(
-        format!(
-            "browser_fill 拒绝：code={}；{}",
+fn interact_operation_outcome(failure: BrowserFailure, dispatched: bool) -> ToolOutcome {
+    let mut outcome = if failure.transport {
+        ToolOutcome::transport_failure(format!(
+            "browser_interact 失败：code={}；{}",
             failure.code, failure.message
-        ),
-        retry,
-    )
-    .with_failure_code(ToolFailureCode::InvocationRejected)
-    .with_metadata(action_failure_metadata(element_ref, "fill", &failure, None))
+        ))
+    } else {
+        let mut outcome = ToolOutcome::error(format!(
+            "browser_interact 失败：code={}；{}",
+            failure.code, failure.message
+        ));
+        outcome.transport = ToolTransportStatus::Succeeded;
+        outcome.operation = if dispatched {
+            ToolOperationStatus::Indeterminate
+        } else {
+            ToolOperationStatus::Failed
+        };
+        outcome
+    };
+    outcome.side_effect = if dispatched {
+        ToolSideEffectStatus::Indeterminate
+    } else {
+        ToolSideEffectStatus::NotApplied
+    };
+    outcome.retry = if dispatched {
+        ToolRetryDisposition::Unsafe
+    } else {
+        failure.retry
+    };
+    outcome.metadata = Some(json!({
+        "semantic_browser": {
+            "action": "interact",
+            "trust": TRUST,
+            "failure": {
+                "code": failure.code,
+                "stage": failure.stage,
+                "message": failure.message,
+            }
+        }
+    }));
+    outcome
 }
 
 fn click_operation_outcome(
@@ -1053,7 +1702,25 @@ struct EgressState {
     redirect_count: AtomicU64,
     fatal_failure: Mutex<Option<BrowserFailure>>,
     action_started: AtomicBool,
+    external_grant: Mutex<Option<ExternalRequestGrant>>,
+    external_receipt: Mutex<Option<ObservedExternalReceipt>>,
     metrics: BrowserMetrics,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalRequestGrant {
+    target_url: String,
+    parameters: Vec<(String, String)>,
+    ignored_empty_parameters: BTreeSet<String>,
+    parameters_sha256: String,
+    impact: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedExternalReceipt {
+    target_url: String,
+    status: u16,
+    remote_receipt: String,
 }
 
 impl EgressState {
@@ -1068,6 +1735,8 @@ impl EgressState {
             redirect_count: AtomicU64::new(0),
             fatal_failure: Mutex::new(None),
             action_started: AtomicBool::new(false),
+            external_grant: Mutex::new(None),
+            external_receipt: Mutex::new(None),
             metrics: BrowserMetrics::default(),
         }
     }
@@ -1077,13 +1746,33 @@ impl EgressState {
         url: &str,
         method: &str,
         resource_type: Option<&str>,
+        post_data: Option<&str>,
     ) -> Result<(), BrowserFailure> {
         if !matches!(method, "GET" | "HEAD") {
-            return Err(BrowserFailure::operation(
-                "browser_method_denied",
-                "egress",
-                format!("read-only browser blocked HTTP method {method}"),
-            ));
+            let grant = self
+                .external_grant
+                .lock()
+                .expect("browser external grant lock")
+                .clone();
+            let allowed = grant.as_ref().is_some_and(|grant| {
+                method == "POST"
+                    && grant.target_url == url
+                    && post_data
+                        .and_then(|post_data| {
+                            canonical_granted_form_parameters(
+                                post_data,
+                                &grant.ignored_empty_parameters,
+                            )
+                        })
+                        .is_some_and(|parameters| parameters == grant.parameters)
+            });
+            if !allowed {
+                return Err(BrowserFailure::operation(
+                    "browser_method_denied",
+                    "egress",
+                    format!("browser blocked ungranted HTTP method {method}"),
+                ));
+            }
         }
         let parsed = Url::parse(url).map_err(|error| {
             BrowserFailure::operation(
@@ -1153,6 +1842,59 @@ impl EgressState {
             .lock()
             .expect("browser allowed origin lock")
             .contains(origin)
+    }
+
+    fn proxy_request_allowed(&self, method: &str, url: &Url) -> bool {
+        matches!(method, "GET" | "HEAD")
+            || self
+                .external_grant
+                .lock()
+                .expect("browser external grant lock")
+                .as_ref()
+                .is_some_and(|grant| method == "POST" && grant.target_url == url.as_str())
+    }
+
+    fn begin_external_action(&self, grant: ExternalRequestGrant) {
+        *self
+            .external_grant
+            .lock()
+            .expect("browser external grant lock") = Some(grant);
+        *self
+            .external_receipt
+            .lock()
+            .expect("browser external receipt lock") = None;
+        self.begin_action();
+    }
+
+    fn record_external_response(&self, url: &str, status: u16, remote_receipt: Option<&str>) {
+        let matches = self
+            .external_grant
+            .lock()
+            .expect("browser external grant lock")
+            .as_ref()
+            .is_some_and(|grant| grant.target_url == url);
+        if matches {
+            *self
+                .external_receipt
+                .lock()
+                .expect("browser external receipt lock") = Some(ObservedExternalReceipt {
+                target_url: url.to_owned(),
+                status,
+                remote_receipt: remote_receipt.unwrap_or_default().to_owned(),
+            });
+        }
+    }
+
+    fn finish_external_action(&self) -> Option<ObservedExternalReceipt> {
+        *self
+            .external_grant
+            .lock()
+            .expect("browser external grant lock") = None;
+        self.end_action();
+        self.external_receipt
+            .lock()
+            .expect("browser external receipt lock")
+            .take()
     }
 
     fn record_denial(&self, failure: BrowserFailure, fatal: bool) {
@@ -1299,7 +2041,7 @@ async fn handle_proxy_connection(
     resolver: Arc<dyn WebFetchNetwork>,
     cancellation: CancellationToken,
 ) -> Result<(), BrowserFailure> {
-    let head = read_proxy_head(&mut client, &cancellation).await?;
+    let (head, buffered_body) = read_proxy_head(&mut client, &cancellation).await?;
     let text = std::str::from_utf8(&head).map_err(|_| {
         BrowserFailure::operation(
             "browser_proxy_request_invalid",
@@ -1322,6 +2064,13 @@ async fn handle_proxy_connection(
     }
 
     if method == "CONNECT" {
+        if !buffered_body.is_empty() {
+            return Err(BrowserFailure::operation(
+                "browser_proxy_request_pipelined",
+                "proxy",
+                "CONNECT request contained bytes after its header",
+            ));
+        }
         let origin = origin_from_authority("https", target)?;
         if !state.proxy_origin_allowed(&origin) {
             return Err(BrowserFailure::operation(
@@ -1343,52 +2092,84 @@ async fn handle_proxy_connection(
             })?;
         relay_bounded(&mut client, &mut upstream, &state.metrics, &cancellation).await
     } else {
-        if !matches!(method, "GET" | "HEAD") {
-            return Err(BrowserFailure::operation(
-                "browser_method_denied",
-                "proxy",
-                format!("browser proxy denied method {method}"),
-            ));
+        let result = async {
+            if !matches!(method, "GET" | "HEAD" | "POST") {
+                return Err(BrowserFailure::operation(
+                    "browser_method_denied",
+                    "proxy",
+                    format!("browser proxy denied method {method}"),
+                ));
+            }
+            let url = Url::parse(target).map_err(|error| {
+                BrowserFailure::operation(
+                    "browser_proxy_request_invalid",
+                    "proxy",
+                    format!("browser proxy requires absolute HTTP URL: {error}"),
+                )
+            })?;
+            let origin = Origin::from_url(&url)?;
+            if !state.proxy_origin_allowed(&origin) {
+                return Err(BrowserFailure::operation(
+                    "browser_proxy_origin_denied",
+                    "proxy",
+                    format!("proxy denied unapproved origin {}", origin.canonical()),
+                ));
+            }
+            if !state.proxy_request_allowed(method, &url) {
+                return Err(BrowserFailure::operation(
+                    "browser_method_denied",
+                    "proxy",
+                    format!("browser proxy denied ungranted method {method} for {url}"),
+                ));
+            }
+            let mut upstream = connect_pinned(&origin, &state.scope, resolver.as_ref()).await?;
+            let sanitized = sanitize_http_proxy_request(method, &url, lines)?;
+            reserve_bytes(
+                &state.metrics.bytes_sent,
+                sanitized.len() as u64,
+                MAX_TOTAL_NETWORK_REQUEST_BYTES,
+                "browser_total_request_bytes_exceeded",
+                "browser total request bytes",
+            )?;
+            upstream.write_all(&sanitized).await.map_err(|error| {
+                BrowserFailure::transport(
+                    "browser_proxy_upstream_write_failed",
+                    "proxy",
+                    format!("cannot write sanitized browser request: {error}"),
+                )
+            })?;
+            if !buffered_body.is_empty() {
+                reserve_bytes(
+                    &state.metrics.bytes_sent,
+                    buffered_body.len() as u64,
+                    MAX_TOTAL_NETWORK_REQUEST_BYTES,
+                    "browser_total_request_bytes_exceeded",
+                    "browser total request bytes",
+                )?;
+                upstream.write_all(&buffered_body).await.map_err(|error| {
+                    BrowserFailure::transport(
+                        "browser_proxy_upstream_write_failed",
+                        "proxy",
+                        format!("cannot write bounded browser request body: {error}"),
+                    )
+                })?;
+            }
+            relay_bounded(&mut client, &mut upstream, &state.metrics, &cancellation).await
         }
-        let url = Url::parse(target).map_err(|error| {
-            BrowserFailure::operation(
-                "browser_proxy_request_invalid",
-                "proxy",
-                format!("browser proxy requires absolute HTTP URL: {error}"),
-            )
-        })?;
-        let origin = Origin::from_url(&url)?;
-        if !state.proxy_origin_allowed(&origin) {
-            return Err(BrowserFailure::operation(
-                "browser_proxy_origin_denied",
-                "proxy",
-                format!("proxy denied unapproved origin {}", origin.canonical()),
-            ));
+        .await;
+        if method == "POST"
+            && let Err(failure) = &result
+        {
+            state.record_proxy_denial(failure.clone(), true);
         }
-        let mut upstream = connect_pinned(&origin, &state.scope, resolver.as_ref()).await?;
-        let sanitized = sanitize_http_proxy_request(method, &url, lines)?;
-        reserve_bytes(
-            &state.metrics.bytes_sent,
-            sanitized.len() as u64,
-            MAX_TOTAL_NETWORK_REQUEST_BYTES,
-            "browser_total_request_bytes_exceeded",
-            "browser total request bytes",
-        )?;
-        upstream.write_all(&sanitized).await.map_err(|error| {
-            BrowserFailure::transport(
-                "browser_proxy_upstream_write_failed",
-                "proxy",
-                format!("cannot write sanitized browser request: {error}"),
-            )
-        })?;
-        relay_bounded(&mut client, &mut upstream, &state.metrics, &cancellation).await
+        result
     }
 }
 
 async fn read_proxy_head(
     stream: &mut TcpStream,
     cancellation: &CancellationToken,
-) -> Result<Vec<u8>, BrowserFailure> {
+) -> Result<(Vec<u8>, Vec<u8>), BrowserFailure> {
     let mut head = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 2048];
     loop {
@@ -1425,14 +2206,8 @@ async fn read_proxy_head(
         }
         if let Some(index) = head.windows(4).position(|window| window == b"\r\n\r\n") {
             let end = index + 4;
-            if end != head.len() {
-                return Err(BrowserFailure::operation(
-                    "browser_proxy_request_pipelined",
-                    "proxy",
-                    "browser proxy request contained bytes after its bounded request head",
-                ));
-            }
-            return Ok(head);
+            let buffered_body = head.split_off(end);
+            return Ok((head, buffered_body));
         }
     }
 }
@@ -1476,6 +2251,8 @@ fn sanitize_http_proxy_request<'a>(
                 | "sec-fetch-mode"
                 | "sec-fetch-site"
                 | "upgrade-insecure-requests"
+                | "content-type"
+                | "content-length"
         ) {
             let value = value.trim();
             if value.contains(['\r', '\n']) {
@@ -1579,7 +2356,7 @@ async fn connect_pinned(
     addresses.dedup();
     let mut last_error = None;
     for address in addresses {
-        match tokio::time::timeout(CONNECT_DEADLINE, TcpStream::connect(address)).await {
+        match tokio::time::timeout(CONNECT_DEADLINE, resolver.connect(address)).await {
             Ok(Ok(stream)) => return Ok(stream),
             Ok(Err(error)) => last_error = Some(error.to_string()),
             Err(_) => last_error = Some("connect deadline exceeded".to_owned()),
@@ -1691,9 +2468,13 @@ fn reserve_bytes(
 struct CdpClient {
     socket: tokio_tungstenite::WebSocketStream<TcpStream>,
     next_id: u64,
+    pending_commands: HashMap<u64, String>,
     observed_events: BTreeSet<(String, String)>,
     egress: Arc<EgressState>,
     primary_target_id: Option<String>,
+    managed_target_ids: BTreeSet<String>,
+    allow_next_page_target: bool,
+    attached_page_sessions: HashMap<String, String>,
 }
 
 impl CdpClient {
@@ -1802,6 +2583,20 @@ impl CdpClient {
     }
 
     async fn handle_event(&mut self, event: &Value) -> Result<(), BrowserFailure> {
+        if let Some(id) = event.get("id").and_then(Value::as_u64)
+            && let Some(command) = self.pending_commands.remove(&id)
+        {
+            if let Some(error) = event.get("error") {
+                let failure = BrowserFailure::operation(
+                    "browser_cdp_command_failed",
+                    "cdp",
+                    format!("CDP {command} failed: {error}"),
+                );
+                self.egress.record_denial(failure.clone(), true);
+                return Err(failure);
+            }
+            return Ok(());
+        }
         let method = event.get("method").and_then(Value::as_str);
         let session_id = event.get("sessionId").and_then(Value::as_str);
         if method == Some("Target.attachedToTarget") {
@@ -1817,7 +2612,27 @@ impl CdpClient {
                         "Target.attachedToTarget is missing targetId",
                     )
                 })?;
-            if self.primary_target_id.as_deref() != Some(target_id) {
+            let session_id = event
+                .get("params")
+                .and_then(|params| params.get("sessionId"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let target_type = event
+                .get("params")
+                .and_then(|params| params.get("targetInfo"))
+                .and_then(|target| target.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if self.primary_target_id.as_deref() == Some(target_id)
+                || self.managed_target_ids.contains(target_id)
+            {
+                return Ok(());
+            }
+            if self.allow_next_page_target && target_type == "page" && !session_id.is_empty() {
+                self.managed_target_ids.insert(target_id.to_owned());
+                self.attached_page_sessions
+                    .insert(target_id.to_owned(), session_id.to_owned());
+            } else {
                 self.egress.record_denial(
                     BrowserFailure::operation(
                         "browser_additional_target_denied",
@@ -1876,6 +2691,33 @@ impl CdpClient {
                 );
                 self.egress.record_denial(failure.clone(), true);
                 return Err(failure);
+            }
+        }
+        if method == Some("Network.responseReceived") {
+            let response = event
+                .get("params")
+                .and_then(|params| params.get("response"));
+            if let (Some(url), Some(status)) = (
+                response
+                    .and_then(|response| response.get("url"))
+                    .and_then(Value::as_str),
+                response
+                    .and_then(|response| response.get("status"))
+                    .and_then(Value::as_f64)
+                    .map(|status| status as u16),
+            ) {
+                let remote_receipt = response
+                    .and_then(|response| response.get("headers"))
+                    .and_then(Value::as_object)
+                    .and_then(|headers| {
+                        headers.iter().find_map(|(name, value)| {
+                            name.eq_ignore_ascii_case("x-dse-receipt")
+                                .then(|| value.as_str())
+                                .flatten()
+                        })
+                    });
+                self.egress
+                    .record_external_response(url, status, remote_receipt);
             }
         }
         if let Some(failure) = prohibited_browser_event(method) {
@@ -1952,12 +2794,13 @@ impl CdpClient {
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let post_data = request.get("postData").and_then(Value::as_str);
         let resource_type = params.get("resourceType").and_then(Value::as_str);
         let fatal = resource_type == Some("Document");
         let session_id = event.get("sessionId").and_then(Value::as_str);
         match self
             .egress
-            .authorize_cdp_request(url, method, resource_type)
+            .authorize_cdp_request(url, method, resource_type, post_data)
         {
             Ok(()) => {
                 let headers = sanitized_cdp_headers(request.get("headers"));
@@ -2000,7 +2843,10 @@ impl CdpClient {
                     "cdp",
                     format!("CDP send failed for {method}: {error}"),
                 )
-            })
+            })?;
+        self.pending_commands
+            .insert(self.next_id, method.to_owned());
+        Ok(())
     }
 }
 
@@ -2044,7 +2890,41 @@ fn sanitized_cdp_headers(headers: Option<&Value>) -> Vec<Value> {
     values
 }
 
-#[derive(Debug)]
+fn canonical_form_parameters(post_data: &str) -> Option<Vec<(String, String)>> {
+    if post_data.len() > 8 * 1024 {
+        return None;
+    }
+    let parsed = Url::parse(&format!("http://form.invalid/?{post_data}")).ok()?;
+    let mut parameters = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    if parameters.len() > 32 {
+        return None;
+    }
+    parameters.sort();
+    Some(parameters)
+}
+
+fn canonical_granted_form_parameters(
+    post_data: &str,
+    ignored_empty_parameters: &BTreeSet<String>,
+) -> Option<Vec<(String, String)>> {
+    let parameters = canonical_form_parameters(post_data)?;
+    let mut granted = Vec::with_capacity(parameters.len());
+    for (name, value) in parameters {
+        if ignored_empty_parameters.contains(&name) {
+            if !value.is_empty() {
+                return None;
+            }
+        } else {
+            granted.push((name, value));
+        }
+    }
+    Some(granted)
+}
+
+#[derive(Debug, Clone)]
 struct SessionObservation {
     final_url: String,
     title: String,
@@ -2060,13 +2940,28 @@ struct ElementTarget {
     backend_dom_node_id: u64,
     role: String,
     accessible_name: String,
-    capability: ElementCapability,
+    capabilities: BTreeSet<ElementCapability>,
+    external_preview: Option<ExternalActionPreview>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ElementCapability {
+    Click,
+    Fill,
+    Press,
+    Scroll,
+    Select,
+    Submit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ElementCapability {
-    Click(ClickSafety),
-    Fill,
+struct ExternalActionPreview {
+    origin: String,
+    target_url: String,
+    parameters: Vec<(String, String)>,
+    ignored_empty_parameters: BTreeSet<String>,
+    parameters_sha256: String,
+    impact: &'static str,
 }
 
 struct LiveBrowserSession {
@@ -2082,11 +2977,27 @@ struct LiveBrowserSession {
     binary: PinnedChromeForTesting,
     egress: Arc<EgressState>,
     cdp: CdpClient,
+    page_ref: String,
+    target_id: String,
     cdp_session_id: String,
+    background_pages: BTreeMap<String, BrowserPageState>,
     proxy: Option<EgressProxy>,
     profile: Option<tempfile::TempDir>,
     child: tokio::process::Child,
     owner: ProcessTreeOwner,
+}
+
+#[derive(Debug)]
+struct BrowserPageState {
+    page_ref: String,
+    target_id: String,
+    cdp_session_id: String,
+    page_epoch: u64,
+    snapshot_id: String,
+    refs: HashMap<String, ElementTarget>,
+    stale_refs: BTreeSet<String>,
+    observation_fingerprint: String,
+    observation: SessionObservation,
 }
 
 impl Drop for LiveBrowserSession {
@@ -2105,6 +3016,44 @@ struct OpenBrowser {
 }
 
 impl LiveBrowserSession {
+    fn swap_active_page(&mut self, page: BrowserPageState) -> BrowserPageState {
+        let BrowserPageState {
+            mut page_ref,
+            mut target_id,
+            mut cdp_session_id,
+            mut page_epoch,
+            mut snapshot_id,
+            mut refs,
+            mut stale_refs,
+            mut observation_fingerprint,
+            mut observation,
+        } = page;
+        std::mem::swap(&mut self.page_ref, &mut page_ref);
+        std::mem::swap(&mut self.target_id, &mut target_id);
+        std::mem::swap(&mut self.cdp_session_id, &mut cdp_session_id);
+        std::mem::swap(&mut self.page_epoch, &mut page_epoch);
+        std::mem::swap(&mut self.snapshot_id, &mut snapshot_id);
+        std::mem::swap(&mut self.refs, &mut refs);
+        std::mem::swap(&mut self.stale_refs, &mut stale_refs);
+        std::mem::swap(
+            &mut self.observation_fingerprint,
+            &mut observation_fingerprint,
+        );
+        std::mem::swap(&mut self.observation, &mut observation);
+        self.cdp.primary_target_id = Some(self.target_id.clone());
+        BrowserPageState {
+            page_ref,
+            target_id,
+            cdp_session_id,
+            page_epoch,
+            snapshot_id,
+            refs,
+            stale_refs,
+            observation_fingerprint,
+            observation,
+        }
+    }
+
     async fn teardown(mut self) -> TeardownFacts {
         let _ = self.cdp.call("Browser.close", json!({}), None).await;
         let process_tree_settled =
@@ -2183,40 +3132,10 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
             Ok(open) => open,
             Err(outcome) => return outcome,
         };
-        let retain = matches!(
-            open.session.request.scope,
-            BrowserTargetScope::ExactLocal(_)
-        );
-        if retain {
-            rotate_observation(&mut open.session, true);
-            let outcome = browser_result_outcome(&open.session, None, false);
-            *self.session.lock().expect("browser session lock") = Some(open.session);
-            outcome
-        } else {
-            rotate_observation(&mut open.session, false);
-            let result = browser_result_value(&open.session, None, false);
-            let teardown = open.session.teardown().await;
-            if !teardown.process_tree_settled
-                || !teardown.proxy_settled
-                || !teardown.profile_removed
-            {
-                return operation_outcome(
-                    result.requested_url.as_str(),
-                    BrowserFailure::operation(
-                        "browser_teardown_incomplete",
-                        "teardown",
-                        "browser process, proxy, or ephemeral profile did not settle",
-                    ),
-                    Some(&teardown),
-                );
-            }
-            let mut settled = result;
-            settled.process_tree_settled = true;
-            settled.teardown = teardown;
-            ToolOutcome::json(&settled)
-                .expect("bounded browser result serializes")
-                .with_side_effect(ToolSideEffectStatus::NotApplicable)
-        }
+        rotate_observation(&mut open.session, true);
+        let outcome = browser_result_outcome(&open.session, None, false);
+        *self.session.lock().expect("browser session lock") = Some(open.session);
+        outcome
     }
 
     async fn click(
@@ -2237,7 +3156,7 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
                 BrowserFailure::operation(
                     "browser_session_missing",
                     "session",
-                    "browser_click requires a live exact-loopback browser_navigate observation",
+                    "browser_interact click requires a live browser_navigate observation",
                 ),
                 None,
                 false,
@@ -2334,7 +3253,7 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
                 BrowserFailure::operation(
                     "browser_session_missing",
                     "session",
-                    "browser_fill requires a live exact-loopback browser_navigate observation",
+                    "browser_interact fill requires a live browser_navigate observation",
                 ),
                 None,
                 false,
@@ -2410,6 +3329,32 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
                 }
             }
         }
+    }
+
+    async fn interact(
+        &self,
+        run_id: &str,
+        request: BrowserInteractRequest,
+        cancellation: BrowserCancellationToken,
+    ) -> ToolOutcome {
+        match request {
+            BrowserInteractRequest::Click(request) => {
+                self.click(run_id, request, cancellation).await
+            }
+            BrowserInteractRequest::Fill(request) => self.fill(run_id, request, cancellation).await,
+            request => {
+                self.run_extended_interaction(run_id, request, cancellation)
+                    .await
+            }
+        }
+    }
+
+    fn authorization_preview(
+        &self,
+        run_id: &str,
+        request: &BrowserInteractRequest,
+    ) -> Option<BrowserAuthorizationPreview> {
+        self.public_authorization_preview(run_id, request)
     }
 
     fn shutdown(&self) {
@@ -2578,7 +3523,7 @@ async fn start_system_browser(
             }
         }
     };
-    let (cdp, cdp_session_id, observation) = match execution {
+    let (cdp, target_id, cdp_session_id, observation) = match execution {
         Ok(open) => open,
         Err(failure) => {
             let process_tree_settled =
@@ -2632,7 +3577,10 @@ async fn start_system_browser(
             binary,
             egress,
             cdp,
+            page_ref: format!("page_{}", Uuid::new_v4().simple()),
+            target_id,
             cdp_session_id,
+            background_pages: BTreeMap::new(),
             proxy: Some(proxy),
             profile: Some(profile),
             child,
@@ -2654,10 +3602,141 @@ fn observation_fingerprint(nodes: &[SemanticNode]) -> String {
                 "state": node.state,
                 "click_safety": format!("{:?}", node.click_safety),
                 "fill_safety": format!("{:?}", node.fill_safety),
+                "dom": node.dom.as_ref().map(|dom| (&dom.node_name, &dom.attributes)),
             })
         })
         .collect::<Vec<_>>();
     sha256_bytes(&serde_json::to_vec(&identity).expect("browser fingerprint serializes"))
+}
+
+fn derive_external_action_previews(
+    current_url: &str,
+    nodes: &[SemanticNode],
+) -> HashMap<u64, ExternalActionPreview> {
+    let Ok(base) = Url::parse(current_url) else {
+        return HashMap::new();
+    };
+    let Ok(base_origin) = Origin::from_url(&base) else {
+        return HashMap::new();
+    };
+    let mut previews = HashMap::new();
+    for node in nodes {
+        let Some(backend_id) = node.backend_dom_node_id else {
+            continue;
+        };
+        let Some(dom) = node.dom.as_ref() else {
+            continue;
+        };
+        let Some(form_id) = dom.attributes.get("form").filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if !dom
+            .attributes
+            .get("formmethod")
+            .is_some_and(|method| method.eq_ignore_ascii_case("post"))
+        {
+            continue;
+        }
+        let Some(action) = dom.attributes.get("formaction") else {
+            continue;
+        };
+        let Ok(target) = base.join(action) else {
+            continue;
+        };
+        if Origin::from_url(&target).ok().as_ref() != Some(&base_origin) {
+            continue;
+        }
+        let semantic_identity = format!(
+            "{} {}",
+            node.accessible_name.to_ascii_lowercase(),
+            target.path().to_ascii_lowercase()
+        );
+        if !semantic_identity.contains("draft")
+            || ["publish", "delete", "purchase", "buy", "send", "message"]
+                .iter()
+                .any(|denied| semantic_identity.contains(denied))
+        {
+            continue;
+        }
+        let mut parameters = Vec::new();
+        let mut ignored_empty_parameters = BTreeSet::new();
+        for field in nodes {
+            let Some(facts) = field.dom.as_ref() else {
+                continue;
+            };
+            if facts.attributes.get("form") != Some(form_id) {
+                continue;
+            }
+            let Some(name) = facts.attributes.get("name").map(|name| name.trim()) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let input_type = facts
+                .attributes
+                .get("type")
+                .map(|value| value.to_ascii_lowercase());
+            if facts.node_name == "BUTTON"
+                || input_type
+                    .as_deref()
+                    .is_some_and(|kind| matches!(kind, "submit" | "button" | "reset"))
+            {
+                continue;
+            }
+            let sensitive = field.fill_safety == Some(FillSafety::SensitiveDenied)
+                || field
+                    .accessible_name
+                    .to_ascii_lowercase()
+                    .contains("password")
+                || input_type
+                    .as_deref()
+                    .is_some_and(|kind| matches!(kind, "password" | "file"));
+            if sensitive {
+                ignored_empty_parameters.insert(name.to_owned());
+                continue;
+            }
+            let value = if field.value.is_empty() {
+                facts.attributes.get("value").cloned().unwrap_or_default()
+            } else {
+                field.value.clone()
+            };
+            parameters.push((bounded_text(name, 256), bounded_text(&value, 1_024)));
+        }
+        if let Some(name) = dom.attributes.get("name").filter(|name| !name.is_empty()) {
+            parameters.push((
+                bounded_text(name, 256),
+                bounded_text(
+                    dom.attributes
+                        .get("value")
+                        .map(String::as_str)
+                        .unwrap_or("save_draft"),
+                    1_024,
+                ),
+            ));
+        }
+        parameters.sort();
+        parameters.dedup();
+        if parameters.len() > 32 {
+            continue;
+        }
+        let encoded = serde_json::to_vec(&parameters).expect("bounded form parameters serialize");
+        if encoded.len() > 8 * 1024 {
+            continue;
+        }
+        previews.insert(
+            backend_id,
+            ExternalActionPreview {
+                origin: base_origin.canonical(),
+                target_url: target.to_string(),
+                parameters_sha256: format!("sha256:{}", sha256_bytes(&encoded)),
+                parameters,
+                ignored_empty_parameters,
+                impact: "reversible_draft_write",
+            },
+        );
+    }
+    previews
 }
 
 fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
@@ -2671,6 +3750,8 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
         session.stale_refs.remove(&first);
     }
     session.refs.clear();
+    let external_previews =
+        derive_external_action_previews(&session.observation.final_url, &session.observation.nodes);
     for node in &mut session.observation.nodes {
         node.element_ref = None;
         if !allow_refs {
@@ -2679,13 +3760,32 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
         let Some(backend_dom_node_id) = node.backend_dom_node_id else {
             continue;
         };
-        let capability = match (&node.click_safety, &node.fill_safety) {
-            (Some(safety @ (ClickSafety::Allowed | ClickSafety::Disabled)), _) => {
-                ElementCapability::Click(safety.clone())
+        let mut capabilities = BTreeSet::new();
+        if node.click_safety == Some(ClickSafety::Allowed) {
+            capabilities.insert(ElementCapability::Click);
+        }
+        if node.fill_safety == Some(FillSafety::Allowed) {
+            capabilities.insert(ElementCapability::Fill);
+        }
+        if node.capabilities.contains(&"press") {
+            capabilities.insert(ElementCapability::Press);
+        }
+        if node.capabilities.contains(&"scroll") {
+            capabilities.insert(ElementCapability::Scroll);
+        }
+        if node.capabilities.contains(&"select") {
+            capabilities.insert(ElementCapability::Select);
+        }
+        let external_preview = external_previews.get(&backend_dom_node_id).cloned();
+        if external_preview.is_some() {
+            capabilities.insert(ElementCapability::Submit);
+            if !node.capabilities.contains(&"submit") {
+                node.capabilities.push("submit");
             }
-            (None, Some(FillSafety::Allowed)) => ElementCapability::Fill,
-            _ => continue,
-        };
+        }
+        if capabilities.is_empty() {
+            continue;
+        }
         let element_ref = new_element_ref(&session.refs, &session.stale_refs);
         session.refs.insert(
             element_ref.clone(),
@@ -2693,7 +3793,8 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
                 backend_dom_node_id,
                 role: node.role.clone(),
                 accessible_name: node.accessible_name.clone(),
-                capability,
+                capabilities,
+                external_preview,
             },
         );
         node.element_ref = Some(element_ref);
@@ -2719,6 +3820,25 @@ fn browser_result_value(
 ) -> BrowserResult {
     let snapshot_bytes = serde_json::to_vec(&session.observation.nodes)
         .expect("bounded semantic browser snapshot serializes");
+    let mut pages = session
+        .background_pages
+        .values()
+        .map(|page| BrowserPageSummary {
+            page_ref: page.page_ref.clone(),
+            url: page.observation.final_url.clone(),
+            title: page.observation.title.clone(),
+            page_epoch: page.page_epoch,
+            active: false,
+        })
+        .collect::<Vec<_>>();
+    pages.push(BrowserPageSummary {
+        page_ref: session.page_ref.clone(),
+        url: session.observation.final_url.clone(),
+        title: session.observation.title.clone(),
+        page_epoch: session.page_epoch,
+        active: true,
+    });
+    pages.sort_by(|left, right| left.page_ref.cmp(&right.page_ref));
     BrowserResult {
         action,
         requested_url: session.request.requested_url.clone(),
@@ -2727,6 +3847,8 @@ fn browser_result_value(
         snapshot: session.observation.nodes.clone(),
         snapshot_id: session.snapshot_id.clone(),
         page_epoch: session.page_epoch,
+        active_page_ref: session.page_ref.clone(),
+        pages,
         element_refs_returned: session.refs.len(),
         snapshot_sha256: format!("sha256:{}", sha256_bytes(&snapshot_bytes)),
         snapshot_sha256_scope: "bounded_semantic_observation_replay_identity",
@@ -2758,9 +3880,9 @@ fn browser_result_value(
         profile_ephemeral: true,
         session_scope: match session.request.scope {
             BrowserTargetScope::ExactLocal(_) => "same_run_in_memory_exact_loopback",
-            BrowserTargetScope::Public => "one_shot_public",
+            BrowserTargetScope::Public => "same_run_in_memory_public_origin",
         },
-        session_live: matches!(session.request.scope, BrowserTargetScope::ExactLocal(_)),
+        session_live: true,
         process_tree_settled,
         teardown: TeardownFacts {
             attempted: false,
@@ -2784,45 +3906,58 @@ fn browser_result_outcome(
 async fn capture_current_observation(
     session: &mut LiveBrowserSession,
 ) -> Result<SessionObservation, BrowserFailure> {
-    let before = session
-        .cdp
-        .call(
-            "Page.getNavigationHistory",
-            json!({}),
-            Some(&session.cdp_session_id),
-        )
-        .await?;
-    let ax = session
-        .cdp
-        .call(
-            "Accessibility.getFullAXTree",
-            json!({"depth":16}),
-            Some(&session.cdp_session_id),
-        )
-        .await?;
-    let dom = session
-        .cdp
-        .call(
-            "DOMSnapshot.captureSnapshot",
-            json!({
-                "computedStyles":[],
-                "includeDOMRects":false,
-                "includePaintOrder":false,
-            }),
-            Some(&session.cdp_session_id),
-        )
-        .await?;
-    let after = session
-        .cdp
-        .call(
-            "Page.getNavigationHistory",
-            json!({}),
-            Some(&session.cdp_session_id),
-        )
-        .await?;
-    let (before_id, before_url) = current_history_identity(&before)?;
-    let (after_id, after_url) = current_history_identity(&after)?;
-    if before_id != after_id || before_url != after_url {
+    async fn bounded_call(
+        cdp: &mut CdpClient,
+        session_id: &str,
+        method: &'static str,
+        params: Value,
+    ) -> Result<Value, BrowserFailure> {
+        tokio::time::timeout(CONNECT_DEADLINE, cdp.call(method, params, Some(session_id)))
+            .await
+            .map_err(|_| {
+                BrowserFailure::transport(
+                    "browser_semantic_snapshot_deadline",
+                    "snapshot",
+                    format!("CDP {method} exceeded its bounded snapshot deadline"),
+                )
+            })?
+    }
+
+    let before = bounded_call(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        "Page.getFrameTree",
+        json!({}),
+    )
+    .await?;
+    let ax = bounded_call(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        "Accessibility.getFullAXTree",
+        json!({"depth":16}),
+    )
+    .await?;
+    let dom = bounded_call(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        "DOMSnapshot.captureSnapshot",
+        json!({
+            "computedStyles":[],
+            "includeDOMRects":false,
+            "includePaintOrder":false,
+        }),
+    )
+    .await?;
+    let after = bounded_call(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        "Page.getFrameTree",
+        json!({}),
+    )
+    .await?;
+    let (before_loader, before_url) = current_frame_identity(&before)?;
+    let (after_loader, after_url) = current_frame_identity(&after)?;
+    if before_loader != after_loader || before_url != after_url {
         return Err(BrowserFailure::operation(
             "browser_stale_document",
             "snapshot",
@@ -2864,6 +3999,42 @@ async fn capture_current_observation(
     })
 }
 
+fn current_frame_identity(frame_tree: &Value) -> Result<(String, String), BrowserFailure> {
+    let frame = frame_tree
+        .get("frameTree")
+        .and_then(|tree| tree.get("frame"))
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_cdp_message_invalid",
+                "snapshot",
+                "Page.getFrameTree is missing its main frame",
+            )
+        })?;
+    let loader_id = frame
+        .get("loaderId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_cdp_message_invalid",
+                "snapshot",
+                "Page.getFrameTree main frame is missing loaderId",
+            )
+        })?;
+    let url = frame
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_cdp_message_invalid",
+                "snapshot",
+                "Page.getFrameTree main frame is missing URL",
+            )
+        })?;
+    Ok((loader_id.to_owned(), url.to_owned()))
+}
+
 fn click_failure_with_fresh_observation(
     session: &LiveBrowserSession,
     request: &BrowserClickRequest,
@@ -2874,7 +4045,9 @@ fn click_failure_with_fresh_observation(
         session,
         Some(BrowserActionResult {
             kind: "click",
-            consumed_element_ref: request.element_ref.clone(),
+            consumed_element_ref: Some(request.element_ref.clone()),
+            page_ref: None,
+            receipt: None,
         }),
         false,
     );
@@ -3021,28 +4194,24 @@ fn validate_click_target<'a>(
     let Some(current) = validate_target_identity(target, nodes)? else {
         return Ok(None);
     };
-    let ElementCapability::Click(safety) = &target.capability else {
+    if !target.capabilities.contains(&ElementCapability::Click) {
         return Err(BrowserFailure::operation(
             "browser_element_ref_capability_mismatch",
             "element_ref",
-            "browser_click cannot consume a fill-only element_ref",
+            "element_ref does not carry click capability",
         ));
-    };
-    match (safety, &current.click_safety) {
-        (ClickSafety::Disabled, _) | (_, Some(ClickSafety::Disabled)) => {
-            Err(BrowserFailure::operation(
-                "browser_element_ref_disabled",
-                "element_ref",
-                "element_ref resolves to a disabled target",
-            ))
-        }
-        (ClickSafety::SideEffectDenied, _) | (_, Some(ClickSafety::SideEffectDenied)) => {
-            Err(BrowserFailure::operation(
-                "browser_element_ref_side_effect_denied",
-                "element_ref",
-                "element_ref target is outside the admitted click-only control family",
-            ))
-        }
+    }
+    match &current.click_safety {
+        Some(ClickSafety::Disabled) => Err(BrowserFailure::operation(
+            "browser_element_ref_disabled",
+            "element_ref",
+            "element_ref resolves to a disabled target",
+        )),
+        Some(ClickSafety::SideEffectDenied) => Err(BrowserFailure::operation(
+            "browser_element_ref_side_effect_denied",
+            "element_ref",
+            "element_ref target is outside the admitted click-only control family",
+        )),
         _ => Ok(Some(current)),
     }
 }
@@ -3054,7 +4223,7 @@ fn validate_fill_target<'a>(
     let Some(current) = validate_target_identity(target, nodes)? else {
         return Ok(None);
     };
-    if target.capability != ElementCapability::Fill {
+    if !target.capabilities.contains(&ElementCapability::Fill) {
         return Err(BrowserFailure::operation(
             "browser_element_ref_capability_mismatch",
             "element_ref",
@@ -3288,7 +4457,9 @@ async fn execute_live_click(
     rotate_observation(session, true);
     let action = Some(BrowserActionResult {
         kind: "click",
-        consumed_element_ref: request.element_ref.clone(),
+        consumed_element_ref: Some(request.element_ref.clone()),
+        page_ref: None,
+        receipt: None,
     });
     if let Some(failure) = session.egress.take_fatal_failure() {
         return click_failure_with_fresh_observation(session, request, failure, true);
@@ -3316,7 +4487,9 @@ fn fill_failure_with_fresh_observation(
         session,
         Some(BrowserActionResult {
             kind: "fill",
-            consumed_element_ref: request.element_ref.clone(),
+            consumed_element_ref: Some(request.element_ref.clone()),
+            page_ref: None,
+            receipt: None,
         }),
         false,
     );
@@ -3497,11 +4670,11 @@ async fn execute_live_fill(
         session.egress.end_action();
         return fill_operation_outcome(&request.element_ref, failure, None, true);
     }
-    for (event_type, key, code, modifiers, key_code) in [
-        ("rawKeyDown", "a", "KeyA", SELECT_ALL_MODIFIERS, 65),
-        ("keyUp", "a", "KeyA", SELECT_ALL_MODIFIERS, 65),
-        ("rawKeyDown", "Backspace", "Backspace", 0, 8),
-        ("keyUp", "Backspace", "Backspace", 0, 8),
+    for (event_type, key, code, modifiers) in [
+        ("rawKeyDown", "a", "KeyA", SELECT_ALL_MODIFIERS),
+        ("keyUp", "a", "KeyA", SELECT_ALL_MODIFIERS),
+        ("rawKeyDown", "Backspace", "Backspace", 0),
+        ("keyUp", "Backspace", "Backspace", 0),
     ] {
         let dispatched = session
             .cdp
@@ -3512,8 +4685,6 @@ async fn execute_live_fill(
                     "key":key,
                     "code":code,
                     "modifiers":modifiers,
-                    "windowsVirtualKeyCode":key_code,
-                    "nativeVirtualKeyCode":key_code,
                 }),
                 Some(&session.cdp_session_id),
             )
@@ -3562,7 +4733,9 @@ async fn execute_live_fill(
     rotate_observation(session, true);
     let action = Some(BrowserActionResult {
         kind: "fill",
-        consumed_element_ref: request.element_ref.clone(),
+        consumed_element_ref: Some(request.element_ref.clone()),
+        page_ref: None,
+        receipt: None,
     });
     if let Some(failure) = session.egress.take_fatal_failure() {
         return fill_failure_with_fresh_observation(session, request, failure, true);
@@ -3576,6 +4749,1336 @@ async fn execute_live_fill(
         )
         .await;
     let mut outcome = browser_result_outcome(session, action, false);
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+async fn execute_live_extended_interaction(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    request: &BrowserInteractRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if session.run_id != run_id {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_element_ref_cross_run",
+                "session",
+                "browser interaction belongs to a different Run",
+            ),
+            false,
+        );
+    }
+    match request {
+        BrowserInteractRequest::Press { .. }
+        | BrowserInteractRequest::Scroll { .. }
+        | BrowserInteractRequest::Select { .. } => {
+            execute_live_ref_interaction(session, request, cancellation).await
+        }
+        BrowserInteractRequest::Wait { .. } => {
+            execute_live_wait(session, request, cancellation).await
+        }
+        BrowserInteractRequest::Back => execute_live_back(session, cancellation).await,
+        BrowserInteractRequest::TabOpen { .. }
+        | BrowserInteractRequest::TabSwitch { .. }
+        | BrowserInteractRequest::TabClose { .. } => {
+            execute_live_tab(session, request, cancellation).await
+        }
+        BrowserInteractRequest::Submit(request) => {
+            execute_live_submit(session, run_id, request, cancellation).await
+        }
+        BrowserInteractRequest::Click(_) | BrowserInteractRequest::Fill(_) => unreachable!(),
+    }
+}
+
+fn request_action_identity(
+    request: &BrowserInteractRequest,
+) -> (&'static str, Option<&str>, ElementCapability) {
+    match request {
+        BrowserInteractRequest::Press { element_ref, .. } => {
+            ("press", Some(element_ref), ElementCapability::Press)
+        }
+        BrowserInteractRequest::Scroll { element_ref, .. } => {
+            ("scroll", Some(element_ref), ElementCapability::Scroll)
+        }
+        BrowserInteractRequest::Select { element_ref, .. } => {
+            ("select", Some(element_ref), ElementCapability::Select)
+        }
+        _ => ("interact", None, ElementCapability::Press),
+    }
+}
+
+fn extended_failure_with_fresh_observation(
+    session: &LiveBrowserSession,
+    kind: &'static str,
+    element_ref: Option<&str>,
+    failure: BrowserFailure,
+    dispatched: bool,
+) -> ToolOutcome {
+    let observation = browser_result_value(
+        session,
+        Some(BrowserActionResult {
+            kind,
+            consumed_element_ref: element_ref.map(str::to_owned),
+            page_ref: None,
+            receipt: None,
+        }),
+        false,
+    );
+    let content = json!({
+        "failure": {
+            "code": failure.code,
+            "stage": failure.stage,
+            "message": failure.message,
+        },
+        "fresh_observation": observation,
+        "trust": TRUST,
+    })
+    .to_string();
+    let mut outcome =
+        ToolOutcome::error(content).with_failure_code(ToolFailureCode::OperationFailed);
+    outcome.transport = if failure.transport {
+        ToolTransportStatus::Failed
+    } else {
+        ToolTransportStatus::Succeeded
+    };
+    outcome.operation = if dispatched && failure.transport {
+        ToolOperationStatus::Indeterminate
+    } else {
+        ToolOperationStatus::Failed
+    };
+    outcome.side_effect = if dispatched {
+        ToolSideEffectStatus::Applied
+    } else {
+        ToolSideEffectStatus::NotApplied
+    };
+    outcome.retry = if dispatched {
+        ToolRetryDisposition::NotRetryable
+    } else {
+        failure.retry
+    };
+    outcome.metadata = Some(json!({
+        "semantic_browser": {
+            "action": kind,
+            "element_ref": element_ref,
+            "trust": TRUST,
+            "failure": {
+                "code": failure.code,
+                "stage": failure.stage,
+                "message": failure.message,
+            }
+        }
+    }));
+    outcome
+}
+
+async fn invalidate_extended_with_failure(
+    session: &mut LiveBrowserSession,
+    kind: &'static str,
+    element_ref: Option<&str>,
+    observation: SessionObservation,
+    failure: BrowserFailure,
+) -> ToolOutcome {
+    session.observation = observation;
+    rotate_observation(session, true);
+    extended_failure_with_fresh_observation(session, kind, element_ref, failure, false)
+}
+
+async fn execute_live_ref_interaction(
+    session: &mut LiveBrowserSession,
+    request: &BrowserInteractRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    let (kind, element_ref, capability) = request_action_identity(request);
+    let element_ref = element_ref.expect("ref interaction carries element_ref");
+    let fresh = match tokio::time::timeout(PAGE_LOAD_DEADLINE, capture_current_observation(session))
+        .await
+    {
+        Ok(Ok(observation)) => observation,
+        Ok(Err(failure)) => return interact_operation_outcome(failure, false),
+        Err(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::transport(
+                    "browser_interaction_observation_deadline",
+                    "pre_action_observation",
+                    "fresh pre-action semantic observation exceeded its deadline",
+                ),
+                false,
+            );
+        }
+    };
+    if cancellation.is_cancelled() {
+        return invalidate_extended_with_failure(
+            session,
+            kind,
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser interaction was cancelled before dispatch",
+            ),
+        )
+        .await;
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        &session.run_id,
+        &session.refs,
+        &session.stale_refs,
+        element_ref,
+    ) {
+        Ok(target) => target,
+        Err(failure) => {
+            return invalidate_extended_with_failure(
+                session,
+                kind,
+                Some(element_ref),
+                fresh,
+                failure,
+            )
+            .await;
+        }
+    };
+    if !target.capabilities.contains(&capability) {
+        return invalidate_extended_with_failure(
+            session,
+            kind,
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_element_ref_capability_mismatch",
+                "element_ref",
+                format!("element_ref does not carry {kind} capability"),
+            ),
+        )
+        .await;
+    }
+    let current = match validate_target_identity(&target, &fresh.nodes) {
+        Ok(Some(current)) => current,
+        Ok(None) => {
+            return invalidate_extended_with_failure(
+                session,
+                kind,
+                Some(element_ref),
+                fresh,
+                absent_target_failure(false),
+            )
+            .await;
+        }
+        Err(failure) => {
+            return invalidate_extended_with_failure(
+                session,
+                kind,
+                Some(element_ref),
+                fresh,
+                failure,
+            )
+            .await;
+        }
+    };
+    if observation_fingerprint(&fresh.nodes) != session.observation_fingerprint {
+        return invalidate_extended_with_failure(
+            session,
+            kind,
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_element_ref_stale_snapshot",
+                "element_ref",
+                "page semantics changed after the latest Host observation",
+            ),
+        )
+        .await;
+    }
+    let model = match session
+        .cdp
+        .call(
+            "DOM.getBoxModel",
+            json!({"backendNodeId":target.backend_dom_node_id}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        Ok(model) => model,
+        Err(_) => {
+            return invalidate_extended_with_failure(
+                session,
+                kind,
+                Some(element_ref),
+                fresh,
+                absent_target_failure(false),
+            )
+            .await;
+        }
+    };
+    let Some((x, y)) = box_center(&model) else {
+        return invalidate_extended_with_failure(
+            session,
+            kind,
+            Some(element_ref),
+            fresh,
+            absent_target_failure(true),
+        )
+        .await;
+    };
+    session.egress.begin_action();
+    let dispatch_operation = async {
+        match request {
+            BrowserInteractRequest::Press { key, .. } => {
+                match session
+                    .cdp
+                    .call(
+                        "DOM.focus",
+                        json!({"backendNodeId":target.backend_dom_node_id}),
+                        Some(&session.cdp_session_id),
+                    )
+                    .await
+                {
+                    Ok(_) => dispatch_key(&mut session.cdp, &session.cdp_session_id, *key).await,
+                    Err(failure) => Err(failure),
+                }
+            }
+            BrowserInteractRequest::Scroll {
+                direction, amount, ..
+            } => {
+                let delta = match direction {
+                    BrowserScrollDirection::Up => -(*amount as i64),
+                    BrowserScrollDirection::Down => *amount as i64,
+                };
+                session
+                    .cdp
+                    .call(
+                        "Input.dispatchMouseEvent",
+                        json!({"type":"mouseWheel","x":x,"y":y,"deltaX":0,"deltaY":delta}),
+                        Some(&session.cdp_session_id),
+                    )
+                    .await
+            }
+            BrowserInteractRequest::Select { value, .. } => {
+                dispatch_select(
+                    &mut session.cdp,
+                    &session.cdp_session_id,
+                    target.backend_dom_node_id,
+                    value,
+                    current,
+                )
+                .await
+            }
+            _ => unreachable!(),
+        }
+    };
+    let dispatch = match tokio::time::timeout(PAGE_LOAD_DEADLINE, dispatch_operation).await {
+        Ok(result) => result,
+        Err(_) => Err(BrowserFailure::transport(
+            "browser_interaction_dispatch_deadline",
+            "action_dispatch",
+            format!("browser_{kind} dispatch exceeded its deadline"),
+        )),
+    };
+    if let Err(failure) = dispatch {
+        session.egress.end_action();
+        return extended_failure_with_fresh_observation(
+            session,
+            kind,
+            Some(element_ref),
+            failure,
+            true,
+        );
+    }
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post = match tokio::time::timeout(PAGE_LOAD_DEADLINE, capture_current_observation(session))
+        .await
+    {
+        Ok(Ok(observation)) => observation,
+        Ok(Err(failure)) => {
+            session.egress.end_action();
+            return extended_failure_with_fresh_observation(
+                session,
+                kind,
+                Some(element_ref),
+                failure,
+                true,
+            );
+        }
+        Err(_) => {
+            session.egress.end_action();
+            return extended_failure_with_fresh_observation(
+                session,
+                kind,
+                Some(element_ref),
+                BrowserFailure::transport(
+                    "browser_interaction_observation_deadline",
+                    "post_action_observation",
+                    "fresh post-action semantic observation exceeded its deadline",
+                ),
+                true,
+            );
+        }
+    };
+    session.egress.end_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return extended_failure_with_fresh_observation(
+            session,
+            kind,
+            Some(element_ref),
+            failure,
+            true,
+        );
+    }
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind,
+            consumed_element_ref: Some(element_ref.to_owned()),
+            page_ref: None,
+            receipt: None,
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+async fn dispatch_key(
+    cdp: &mut CdpClient,
+    session_id: &str,
+    key: BrowserKey,
+) -> Result<Value, BrowserFailure> {
+    let (key_name, code) = match key {
+        BrowserKey::Enter => ("Enter", "Enter"),
+        BrowserKey::Escape => ("Escape", "Escape"),
+        BrowserKey::Tab => ("Tab", "Tab"),
+        BrowserKey::ArrowUp => ("ArrowUp", "ArrowUp"),
+        BrowserKey::ArrowDown => ("ArrowDown", "ArrowDown"),
+        BrowserKey::Space => (" ", "Space"),
+    };
+    cdp.call(
+        "Input.dispatchKeyEvent",
+        json!({
+            "type":"keyDown",
+            "key":key_name,
+            "code":code,
+        }),
+        Some(session_id),
+    )
+    .await?;
+    cdp.call(
+        "Input.dispatchKeyEvent",
+        json!({
+            "type":"keyUp",
+            "key":key_name,
+            "code":code,
+        }),
+        Some(session_id),
+    )
+    .await
+}
+
+async fn dispatch_select(
+    cdp: &mut CdpClient,
+    session_id: &str,
+    backend_dom_node_id: u64,
+    value: &str,
+    current: &SemanticNode,
+) -> Result<Value, BrowserFailure> {
+    if current
+        .dom
+        .as_ref()
+        .is_none_or(|dom| dom.node_name != "SELECT")
+    {
+        return Err(BrowserFailure::operation(
+            "browser_select_target_ineligible",
+            "element_ref",
+            "select target is not a native SELECT element",
+        ));
+    }
+    let described = cdp
+        .call(
+            "DOM.describeNode",
+            json!({"backendNodeId":backend_dom_node_id,"depth":2,"pierce":false}),
+            Some(session_id),
+        )
+        .await?;
+    let children = described
+        .get("node")
+        .and_then(|node| node.get("children"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_select_options_missing",
+                "element_ref",
+                "SELECT has no inspectable OPTION children",
+            )
+        })?;
+    let mut option_index = None;
+    let mut option_backend_ids = Vec::new();
+    let mut selected_backend_id = None;
+    let mut logical_index = 0_usize;
+    for option in children {
+        if option.get("nodeName").and_then(Value::as_str) != Some("OPTION") {
+            continue;
+        }
+        let attributes = option
+            .get("attributes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let attribute_value = attributes.chunks_exact(2).find_map(|pair| {
+            (pair[0].as_str() == Some("value")).then(|| pair[1].as_str().unwrap_or_default())
+        });
+        let text = option
+            .get("children")
+            .and_then(Value::as_array)
+            .and_then(|children| children.first())
+            .and_then(|text| text.get("nodeValue"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let semantic_value = attribute_value.unwrap_or(text);
+        let backend_id = option.get("backendNodeId").and_then(Value::as_u64);
+        option_backend_ids.extend(backend_id);
+        if semantic_value == value {
+            option_index = Some(logical_index);
+            selected_backend_id = backend_id;
+        }
+        logical_index += 1;
+    }
+    if option_index.is_none() {
+        return Err(BrowserFailure::operation(
+            "browser_select_option_missing",
+            "value",
+            "requested option value/text is not present",
+        ));
+    }
+    cdp.call(
+        "DOM.focus",
+        json!({"backendNodeId":backend_dom_node_id}),
+        Some(session_id),
+    )
+    .await?;
+    let selected_backend_id = selected_backend_id.ok_or_else(|| {
+        BrowserFailure::operation(
+            "browser_select_option_identity_missing",
+            "value",
+            "requested OPTION has no inspectable backend identity",
+        )
+    })?;
+    cdp.call(
+        "DOM.getDocument",
+        json!({"depth":0,"pierce":false}),
+        Some(session_id),
+    )
+    .await?;
+    let pushed = cdp
+        .call(
+            "DOM.pushNodesByBackendIdsToFrontend",
+            json!({"backendNodeIds":option_backend_ids}),
+            Some(session_id),
+        )
+        .await?;
+    let option_node_ids = pushed
+        .get("nodeIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_select_option_identity_missing",
+                "value",
+                "OPTION backend identities did not resolve to frontend nodes",
+            )
+        })?;
+    let selected_index = option_backend_ids
+        .iter()
+        .position(|backend_id| *backend_id == selected_backend_id)
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_select_option_identity_missing",
+                "value",
+                "requested OPTION identity was not present in the resolved option set",
+            )
+        })?;
+    let selected_node_id = option_node_ids
+        .get(selected_index)
+        .and_then(Value::as_u64)
+        .filter(|node_id| *node_id != 0)
+        .ok_or_else(|| {
+            BrowserFailure::operation(
+                "browser_select_option_identity_missing",
+                "value",
+                "requested OPTION did not resolve to a frontend node",
+            )
+        })?;
+    for option_node_id in option_node_ids
+        .iter()
+        .filter_map(Value::as_u64)
+        .filter(|node_id| *node_id != 0)
+    {
+        cdp.call(
+            "DOM.removeAttribute",
+            json!({"nodeId":option_node_id,"name":"selected"}),
+            Some(session_id),
+        )
+        .await?;
+    }
+    cdp.call(
+        "DOM.setAttributeValue",
+        json!({"nodeId":selected_node_id,"name":"selected","value":""}),
+        Some(session_id),
+    )
+    .await
+}
+
+async fn execute_live_wait(
+    session: &mut LiveBrowserSession,
+    request: &BrowserInteractRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    let BrowserInteractRequest::Wait {
+        condition,
+        value,
+        timeout,
+    } = request
+    else {
+        unreachable!()
+    };
+    let started = tokio::time::Instant::now();
+    loop {
+        if cancellation.is_cancelled() {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_cancelled",
+                    "cancellation",
+                    "browser_wait was cancelled",
+                ),
+                false,
+            );
+        }
+        let observation = match capture_current_observation(session).await {
+            Ok(observation) => observation,
+            Err(failure) => return interact_operation_outcome(failure, false),
+        };
+        let matched = wait_condition_matches(*condition, value.as_deref(), &observation);
+        session.observation = observation;
+        if matched {
+            rotate_observation(session, true);
+            return browser_result_outcome(
+                session,
+                Some(BrowserActionResult {
+                    kind: "wait",
+                    consumed_element_ref: None,
+                    page_ref: None,
+                    receipt: None,
+                }),
+                false,
+            );
+        }
+        if started.elapsed() >= *timeout {
+            rotate_observation(session, true);
+            return extended_failure_with_fresh_observation(
+                session,
+                "wait",
+                None,
+                BrowserFailure::operation(
+                    "browser_wait_timeout",
+                    "wait",
+                    format!(
+                        "typed condition {} did not match within {} ms",
+                        wait_condition_name(*condition),
+                        timeout.as_millis()
+                    ),
+                ),
+                false,
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn wait_condition_matches(
+    condition: BrowserWaitCondition,
+    value: Option<&str>,
+    observation: &SessionObservation,
+) -> bool {
+    match condition {
+        BrowserWaitCondition::DocumentReady => true,
+        BrowserWaitCondition::UrlEquals => value == Some(observation.final_url.as_str()),
+        BrowserWaitCondition::TextPresent | BrowserWaitCondition::TextAbsent => {
+            let needle = value.unwrap_or_default();
+            let present = observation.nodes.iter().any(|node| {
+                node.accessible_name.contains(needle)
+                    || node.text.contains(needle)
+                    || node.value.contains(needle)
+                    || node.state.values().any(|state| state.contains(needle))
+            });
+            present == (condition == BrowserWaitCondition::TextPresent)
+        }
+    }
+}
+
+async fn execute_live_back(
+    session: &mut LiveBrowserSession,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if cancellation.is_cancelled() {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser_back was cancelled before dispatch",
+            ),
+            false,
+        );
+    }
+    let history = match session
+        .cdp
+        .call(
+            "Page.getNavigationHistory",
+            json!({}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        Ok(history) => history,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let current = history
+        .get("currentIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if current == 0 {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_back_history_empty",
+                "history",
+                "current page has no previous navigation entry",
+            ),
+            false,
+        );
+    }
+    let Some(entry_id) = history
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.get(current as usize - 1))
+        .and_then(|entry| entry.get("id"))
+        .and_then(Value::as_i64)
+    else {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_back_history_invalid",
+                "history",
+                "previous navigation entry is missing",
+            ),
+            false,
+        );
+    };
+    session.egress.begin_action();
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Page.navigateToHistoryEntry",
+            json!({"entryId":entry_id}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.end_action();
+        return interact_operation_outcome(failure, true);
+    }
+    let _ = tokio::time::timeout(
+        PAGE_LOAD_DEADLINE,
+        session
+            .cdp
+            .wait_event("Page.frameStoppedLoading", &session.cdp_session_id),
+    )
+    .await;
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => {
+            session.egress.end_action();
+            return interact_operation_outcome(failure, true);
+        }
+    };
+    session.egress.end_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return extended_failure_with_fresh_observation(session, "back", None, failure, true);
+    }
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "back",
+            consumed_element_ref: None,
+            page_ref: None,
+            receipt: None,
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+async fn execute_live_tab(
+    session: &mut LiveBrowserSession,
+    request: &BrowserInteractRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if cancellation.is_cancelled() {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser tab action was cancelled before dispatch",
+            ),
+            false,
+        );
+    }
+    match request {
+        BrowserInteractRequest::TabOpen { url } => {
+            if session.background_pages.len() + 1 >= MAX_BROWSER_PAGES {
+                return interact_operation_outcome(
+                    BrowserFailure::operation(
+                        "browser_tab_limit",
+                        "tab",
+                        format!("browser session is limited to {MAX_BROWSER_PAGES} pages"),
+                    ),
+                    false,
+                );
+            }
+            let expected = match &session.request.scope {
+                BrowserTargetScope::ExactLocal(origin) => origin,
+                BrowserTargetScope::Public => &session.egress.initial_origin,
+            };
+            if Origin::from_url(url).ok().as_ref() != Some(expected) {
+                return interact_operation_outcome(
+                    BrowserFailure::operation(
+                        "browser_tab_origin_escape",
+                        "tab",
+                        "tab_open only accepts the session's exact authorized origin",
+                    ),
+                    false,
+                );
+            }
+            session.egress.begin_action();
+            session.cdp.allow_next_page_target = true;
+            let created = session
+                .cdp
+                .call("Target.createTarget", json!({"url":"about:blank"}), None)
+                .await;
+            session.cdp.allow_next_page_target = false;
+            let created = match created {
+                Ok(created) => created,
+                Err(failure) => {
+                    session.egress.end_action();
+                    return interact_operation_outcome(failure, false);
+                }
+            };
+            let Some(target_id) = created
+                .get("targetId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                session.egress.end_action();
+                return interact_operation_outcome(
+                    BrowserFailure::operation(
+                        "browser_cdp_message_invalid",
+                        "tab",
+                        "Target.createTarget did not return targetId",
+                    ),
+                    true,
+                );
+            };
+            let (cdp_session_id, resume_paused) =
+                if let Some(session_id) = session.cdp.attached_page_sessions.remove(&target_id) {
+                    (session_id, true)
+                } else {
+                    let attached = match session
+                        .cdp
+                        .call(
+                            "Target.attachToTarget",
+                            json!({"targetId":target_id,"flatten":true}),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(attached) => attached,
+                        Err(failure) => {
+                            session.egress.end_action();
+                            return interact_operation_outcome(failure, true);
+                        }
+                    };
+                    let Some(session_id) = attached
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                    else {
+                        session.egress.end_action();
+                        return interact_operation_outcome(
+                            BrowserFailure::operation(
+                                "browser_cdp_message_invalid",
+                                "tab",
+                                "Target.attachToTarget did not return sessionId",
+                            ),
+                            true,
+                        );
+                    };
+                    session.cdp.managed_target_ids.insert(target_id.clone());
+                    (session_id, false)
+                };
+            if let Err(failure) =
+                configure_cdp_page(&mut session.cdp, &cdp_session_id, resume_paused).await
+            {
+                session.egress.end_action();
+                return interact_operation_outcome(failure, true);
+            }
+            let placeholder = BrowserPageState {
+                page_ref: format!("page_{}", Uuid::new_v4().simple()),
+                target_id: target_id.clone(),
+                cdp_session_id: cdp_session_id.clone(),
+                page_epoch: 0,
+                snapshot_id: String::new(),
+                refs: HashMap::new(),
+                stale_refs: BTreeSet::new(),
+                observation_fingerprint: String::new(),
+                observation: session.observation.clone(),
+            };
+            let previous = session.swap_active_page(placeholder);
+            session
+                .background_pages
+                .insert(previous.page_ref.clone(), previous);
+            let navigation = session
+                .cdp
+                .call(
+                    "Page.navigate",
+                    json!({"url":url.as_str()}),
+                    Some(&session.cdp_session_id),
+                )
+                .await;
+            if let Err(failure) = navigation {
+                session.egress.end_action();
+                return interact_operation_outcome(failure, true);
+            }
+            let _ = session
+                .cdp
+                .call(
+                    "Target.activateTarget",
+                    json!({"targetId":session.target_id}),
+                    None,
+                )
+                .await;
+            let _ = tokio::time::timeout(
+                PAGE_LOAD_DEADLINE,
+                session
+                    .cdp
+                    .wait_event("Page.loadEventFired", &session.cdp_session_id),
+            )
+            .await;
+            tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+            let post = match capture_current_observation(session).await {
+                Ok(observation) => observation,
+                Err(failure) => {
+                    session.egress.end_action();
+                    return interact_operation_outcome(failure, true);
+                }
+            };
+            session.egress.end_action();
+            session.observation = post;
+            rotate_observation(session, true);
+            if let Some(failure) = session.egress.take_fatal_failure() {
+                return extended_failure_with_fresh_observation(
+                    session, "tab_open", None, failure, true,
+                );
+            }
+            let mut outcome = browser_result_outcome(
+                session,
+                Some(BrowserActionResult {
+                    kind: "tab_open",
+                    consumed_element_ref: None,
+                    page_ref: Some(session.page_ref.clone()),
+                    receipt: None,
+                }),
+                false,
+            );
+            outcome.side_effect = ToolSideEffectStatus::Applied;
+            outcome
+        }
+        BrowserInteractRequest::TabSwitch { page_ref } => {
+            if page_ref == &session.page_ref {
+                return interact_operation_outcome(
+                    BrowserFailure::operation(
+                        "browser_tab_already_active",
+                        "tab",
+                        "requested page_ref is already active",
+                    ),
+                    false,
+                );
+            }
+            let Some(page) = session.background_pages.remove(page_ref) else {
+                return interact_operation_outcome(
+                    BrowserFailure::operation(
+                        "browser_page_ref_stale",
+                        "page_ref",
+                        "page_ref is not a live page in this session",
+                    ),
+                    false,
+                );
+            };
+            let previous = session.swap_active_page(page);
+            session
+                .background_pages
+                .insert(previous.page_ref.clone(), previous);
+            if let Err(failure) = session
+                .cdp
+                .call(
+                    "Target.activateTarget",
+                    json!({"targetId":session.target_id}),
+                    None,
+                )
+                .await
+            {
+                return interact_operation_outcome(failure, true);
+            }
+            let observation = match capture_current_observation(session).await {
+                Ok(observation) => observation,
+                Err(failure) => return interact_operation_outcome(failure, true),
+            };
+            session.observation = observation;
+            rotate_observation(session, true);
+            let mut outcome = browser_result_outcome(
+                session,
+                Some(BrowserActionResult {
+                    kind: "tab_switch",
+                    consumed_element_ref: None,
+                    page_ref: Some(session.page_ref.clone()),
+                    receipt: None,
+                }),
+                false,
+            );
+            outcome.side_effect = ToolSideEffectStatus::Applied;
+            outcome
+        }
+        BrowserInteractRequest::TabClose { page_ref } => {
+            if page_ref == &session.page_ref {
+                let Some(next_ref) = session.background_pages.keys().next().cloned() else {
+                    return interact_operation_outcome(
+                        BrowserFailure::operation(
+                            "browser_tab_last_page_denied",
+                            "tab",
+                            "cannot close the only live page",
+                        ),
+                        false,
+                    );
+                };
+                let next = session
+                    .background_pages
+                    .remove(&next_ref)
+                    .expect("selected background page exists");
+                let closing = session.swap_active_page(next);
+                let _ = session
+                    .cdp
+                    .call(
+                        "Target.closeTarget",
+                        json!({"targetId":closing.target_id}),
+                        None,
+                    )
+                    .await;
+                session.cdp.managed_target_ids.remove(&closing.target_id);
+            } else {
+                let Some(closing) = session.background_pages.remove(page_ref) else {
+                    return interact_operation_outcome(
+                        BrowserFailure::operation(
+                            "browser_page_ref_stale",
+                            "page_ref",
+                            "page_ref is not a live page in this session",
+                        ),
+                        false,
+                    );
+                };
+                let _ = session
+                    .cdp
+                    .call(
+                        "Target.closeTarget",
+                        json!({"targetId":closing.target_id}),
+                        None,
+                    )
+                    .await;
+                session.cdp.managed_target_ids.remove(&closing.target_id);
+            }
+            let observation = match capture_current_observation(session).await {
+                Ok(observation) => observation,
+                Err(failure) => return interact_operation_outcome(failure, true),
+            };
+            session.observation = observation;
+            rotate_observation(session, true);
+            let mut outcome = browser_result_outcome(
+                session,
+                Some(BrowserActionResult {
+                    kind: "tab_close",
+                    consumed_element_ref: None,
+                    page_ref: Some(session.page_ref.clone()),
+                    receipt: None,
+                }),
+                false,
+            );
+            outcome.side_effect = ToolSideEffectStatus::Applied;
+            outcome
+        }
+        _ => unreachable!(),
+    }
+}
+
+async fn execute_live_submit(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    request: &BrowserClickRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if !matches!(session.request.scope, BrowserTargetScope::Public) {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_submit_public_scope_required",
+                "submit",
+                "scoped submit is limited to an authorized disposable public origin",
+            ),
+            false,
+        );
+    }
+    let fresh = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    if cancellation.is_cancelled() {
+        return invalidate_extended_with_failure(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            fresh,
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser_submit was cancelled before dispatch",
+            ),
+        )
+        .await;
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        run_id,
+        &session.refs,
+        &session.stale_refs,
+        request.element_ref(),
+    ) {
+        Ok(target) => target,
+        Err(failure) => {
+            return invalidate_extended_with_failure(
+                session,
+                "submit",
+                Some(request.element_ref()),
+                fresh,
+                failure,
+            )
+            .await;
+        }
+    };
+    if !target.capabilities.contains(&ElementCapability::Submit) {
+        return invalidate_extended_with_failure(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            fresh,
+            BrowserFailure::operation(
+                "browser_submit_target_denied",
+                "element_ref",
+                "element_ref is not a Host-classified reversible draft submit target",
+            ),
+        )
+        .await;
+    }
+    let previews = derive_external_action_previews(&fresh.final_url, &fresh.nodes);
+    let Some(current_preview) = previews.get(&target.backend_dom_node_id) else {
+        return invalidate_extended_with_failure(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            fresh,
+            BrowserFailure::operation(
+                "browser_submit_preview_stale",
+                "submit",
+                "external action preview no longer matches the current page",
+            ),
+        )
+        .await;
+    };
+    if target.external_preview.as_ref() != Some(current_preview)
+        || observation_fingerprint(&fresh.nodes) != session.observation_fingerprint
+    {
+        return invalidate_extended_with_failure(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            fresh,
+            BrowserFailure::operation(
+                "browser_submit_preview_stale",
+                "submit",
+                "target, parameters, or impact changed after durable authorization",
+            ),
+        )
+        .await;
+    }
+    let model = match session
+        .cdp
+        .call(
+            "DOM.getBoxModel",
+            json!({"backendNodeId":target.backend_dom_node_id}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        Ok(model) => model,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let Some((x, y)) = box_center(&model) else {
+        return invalidate_extended_with_failure(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            fresh,
+            absent_target_failure(true),
+        )
+        .await;
+    };
+    let grant = ExternalRequestGrant {
+        target_url: current_preview.target_url.clone(),
+        parameters: current_preview.parameters.clone(),
+        ignored_empty_parameters: current_preview.ignored_empty_parameters.clone(),
+        parameters_sha256: current_preview.parameters_sha256.clone(),
+        impact: current_preview.impact,
+    };
+    session.egress.begin_external_action(grant.clone());
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Input.dispatchMouseEvent",
+            json!({"type":"mousePressed","x":x,"y":y,"button":"left","clickCount":1}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.finish_external_action();
+        return interact_operation_outcome(failure, false);
+    }
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Input.dispatchMouseEvent",
+            json!({"type":"mouseReleased","x":x,"y":y,"button":"left","clickCount":1}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.finish_external_action();
+        return interact_operation_outcome(failure, true);
+    }
+    let _ = tokio::time::timeout(
+        PAGE_LOAD_DEADLINE,
+        session
+            .cdp
+            .wait_event("Page.frameStoppedLoading", &session.cdp_session_id),
+    )
+    .await;
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => {
+            session.egress.finish_external_action();
+            return interact_operation_outcome(
+                session.egress.take_fatal_failure().unwrap_or(failure),
+                true,
+            );
+        }
+    };
+    let observed = session.egress.finish_external_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return extended_failure_with_fresh_observation(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            failure,
+            true,
+        );
+    }
+    let semantic_receipt = session.observation.nodes.iter().find_map(|node| {
+        node.state
+            .get("data-receipt")
+            .filter(|receipt| !receipt.is_empty())
+            .cloned()
+    });
+    let Some(observed) = observed else {
+        return extended_failure_with_fresh_observation(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            BrowserFailure::operation(
+                "browser_external_receipt_missing",
+                "receipt",
+                "external request started but no matching response receipt was observed",
+            ),
+            true,
+        );
+    };
+    let remote_receipt = (!observed.remote_receipt.is_empty())
+        .then_some(observed.remote_receipt)
+        .or_else(|| semantic_receipt.clone());
+    let Some(remote_receipt) = remote_receipt else {
+        return extended_failure_with_fresh_observation(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            BrowserFailure::operation(
+                "browser_external_receipt_missing",
+                "receipt",
+                "external response did not provide a bounded receipt",
+            ),
+            true,
+        );
+    };
+    if !(200..300).contains(&observed.status) {
+        return extended_failure_with_fresh_observation(
+            session,
+            "submit",
+            Some(request.element_ref()),
+            BrowserFailure::operation(
+                "browser_external_action_failed",
+                "receipt",
+                format!("external action returned HTTP {}", observed.status),
+            ),
+            true,
+        );
+    }
+    let receipt = ExternalActionReceipt {
+        target_url: observed.target_url,
+        method: "POST",
+        status: observed.status,
+        parameters_sha256: grant.parameters_sha256,
+        impact: grant.impact,
+        remote_receipt: bounded_text(&remote_receipt, 512),
+        semantic_receipt: semantic_receipt.map(|receipt| bounded_text(&receipt, 512)),
+        observed_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    };
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "submit",
+            consumed_element_ref: Some(request.element_ref().to_owned()),
+            page_ref: Some(session.page_ref.clone()),
+            receipt: Some(receipt),
+        }),
+        false,
+    );
     outcome.side_effect = ToolSideEffectStatus::Applied;
     outcome
 }
@@ -3617,11 +6120,52 @@ fn browser_command(executable: &Path, profile: &Path, proxy: SocketAddr) -> Comm
     command
 }
 
+async fn configure_cdp_page(
+    cdp: &mut CdpClient,
+    session_id: &str,
+    resume_paused_target: bool,
+) -> Result<(), BrowserFailure> {
+    cdp.call("Page.enable", json!({}), Some(session_id)).await?;
+    cdp.call("Network.enable", json!({}), Some(session_id))
+        .await?;
+    cdp.call(
+        "Network.setCacheDisabled",
+        json!({"cacheDisabled":true}),
+        Some(session_id),
+    )
+    .await?;
+    cdp.call(
+        "Network.setBypassServiceWorker",
+        json!({"bypass":true}),
+        Some(session_id),
+    )
+    .await?;
+    cdp.call("Network.clearBrowserCookies", json!({}), Some(session_id))
+        .await?;
+    cdp.call("Accessibility.enable", json!({}), Some(session_id))
+        .await?;
+    cdp.call(
+        "Fetch.enable",
+        json!({"patterns":[{"urlPattern":"*","requestStage":"Request"}]}),
+        Some(session_id),
+    )
+    .await?;
+    if resume_paused_target {
+        cdp.call(
+            "Runtime.runIfWaitingForDebugger",
+            json!({}),
+            Some(session_id),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn run_cdp_session(
     request: &BrowserNavigateRequest,
     profile: &Path,
     egress: Arc<EgressState>,
-) -> Result<(CdpClient, String, SessionObservation), BrowserFailure> {
+) -> Result<(CdpClient, String, String, SessionObservation), BrowserFailure> {
     let (port, websocket_path) = wait_for_devtools_active_port(profile).await?;
     let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .await
@@ -3648,9 +6192,13 @@ async fn run_cdp_session(
     let mut cdp = CdpClient {
         socket,
         next_id: 0,
+        pending_commands: HashMap::new(),
         observed_events: BTreeSet::new(),
         egress,
         primary_target_id: None,
+        managed_target_ids: BTreeSet::new(),
+        allow_next_page_target: false,
+        attached_page_sessions: HashMap::new(),
     };
     let version = cdp.call("Browser.getVersion", json!({}), None).await?;
     let product = version
@@ -3681,6 +6229,7 @@ async fn run_cdp_session(
         })?
         .to_owned();
     cdp.primary_target_id = Some(target_id.clone());
+    cdp.managed_target_ids.insert(target_id.clone());
     let attached = cdp
         .call(
             "Target.attachToTarget",
@@ -3699,32 +6248,7 @@ async fn run_cdp_session(
             )
         })?
         .to_owned();
-    cdp.call("Page.enable", json!({}), Some(&session_id))
-        .await?;
-    cdp.call("Network.enable", json!({}), Some(&session_id))
-        .await?;
-    cdp.call(
-        "Network.setCacheDisabled",
-        json!({"cacheDisabled":true}),
-        Some(&session_id),
-    )
-    .await?;
-    cdp.call(
-        "Network.setBypassServiceWorker",
-        json!({"bypass":true}),
-        Some(&session_id),
-    )
-    .await?;
-    cdp.call("Network.clearBrowserCookies", json!({}), Some(&session_id))
-        .await?;
-    cdp.call("Accessibility.enable", json!({}), Some(&session_id))
-        .await?;
-    cdp.call(
-        "Fetch.enable",
-        json!({"patterns":[{"urlPattern":"*","requestStage":"Request"}]}),
-        Some(&session_id),
-    )
-    .await?;
+    configure_cdp_page(&mut cdp, &session_id, false).await?;
     cdp.call(
         "Browser.setDownloadBehavior",
         json!({"behavior":"deny","eventsEnabled":true}),
@@ -3837,7 +6361,7 @@ async fn run_cdp_session(
             .unwrap_or_default()
             .to_owned(),
     };
-    Ok((cdp, session_id, observation))
+    Ok((cdp, target_id, session_id, observation))
 }
 
 async fn wait_for_devtools_active_port(profile: &Path) -> Result<(u16, String), BrowserFailure> {
@@ -3948,7 +6472,7 @@ fn current_history_identity(history: &Value) -> Result<(i64, String), BrowserFai
     Ok((id, url))
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct DomFacts {
     node_name: String,
     node_value: String,
@@ -4012,6 +6536,7 @@ fn extract_semantic_snapshot(
                 "data-state"
                     | "data-channel"
                     | "data-filter"
+                    | "data-receipt"
                     | "aria-checked"
                     | "aria-selected"
                     | "aria-expanded"
@@ -4027,6 +6552,12 @@ fn extract_semantic_snapshot(
                     | "placeholder"
                     | "autocomplete"
                     | "aria-label"
+                    | "contenteditable"
+                    | "form"
+                    | "formaction"
+                    | "formmethod"
+                    | "href"
+                    | "value"
             ) {
                 parsed_attributes.insert(name, bounded_text(&value, 512));
             }
@@ -4118,23 +6649,54 @@ fn extract_semantic_snapshot(
         {
             continue;
         }
-        let click_safety = if matches!(role.to_ascii_lowercase().as_str(), "button" | "switch") {
+        let lower_role = role.to_ascii_lowercase();
+        let click_safety = if matches!(lower_role.as_str(), "button" | "switch") {
             Some(
                 if state.iter().any(|(name, value)| {
                     matches!(name.as_str(), "disabled" | "aria-disabled")
                         && value.eq_ignore_ascii_case("true")
                 }) {
                     ClickSafety::Disabled
+                } else if dom.as_ref().is_some_and(|dom| {
+                    dom.attributes.contains_key("form")
+                        || dom
+                            .attributes
+                            .get("type")
+                            .is_some_and(|value| value.eq_ignore_ascii_case("submit"))
+                }) {
+                    ClickSafety::SideEffectDenied
                 } else {
                     ClickSafety::Allowed
                 },
             )
-        } else if matches!(role.to_ascii_lowercase().as_str(), "link") {
-            Some(ClickSafety::SideEffectDenied)
+        } else if lower_role == "link" {
+            Some(ClickSafety::Allowed)
         } else {
             None
         };
         let fill_safety = classify_fill_safety(&role, &accessible_name, dom, &state);
+        let mut capabilities = Vec::new();
+        if click_safety == Some(ClickSafety::Allowed) {
+            capabilities.push("click");
+        }
+        if fill_safety == Some(FillSafety::Allowed) {
+            capabilities.push("fill");
+        }
+        if click_safety == Some(ClickSafety::Allowed)
+            || fill_safety == Some(FillSafety::Allowed)
+            || dom.as_ref().is_some_and(|dom| dom.node_name == "SELECT")
+        {
+            capabilities.push("press");
+        }
+        if dom.as_ref().is_some_and(|dom| dom.node_name == "SELECT") {
+            capabilities.push("select");
+        }
+        if matches!(
+            lower_role.as_str(),
+            "region" | "list" | "listbox" | "document"
+        ) {
+            capabilities.push("scroll");
+        }
         eligible.push(SemanticNode {
             element_ref: None,
             role: bounded_text(&role, 512),
@@ -4142,9 +6704,11 @@ fn extract_semantic_snapshot(
             text,
             value: bounded_text(&value, 1_024),
             state,
+            capabilities,
             backend_dom_node_id,
             click_safety,
             fill_safety,
+            dom: dom.cloned(),
         });
     }
     let nodes_read = eligible.len();
@@ -4178,17 +6742,29 @@ fn classify_fill_safety(
     let Some(dom) = dom else {
         return Some(FillSafety::Ineligible);
     };
-    if dom.node_name != "INPUT" {
+    let editable = dom.node_name == "INPUT"
+        || dom.node_name == "TEXTAREA"
+        || dom.attributes.get("contenteditable").is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "true" | "plaintext-only"
+            )
+        });
+    if !editable {
         return Some(FillSafety::Ineligible);
     }
-    let input_type = dom
-        .attributes
-        .get("type")
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "text".to_owned());
-    if !matches!(input_type.as_str(), "text" | "search") {
-        return Some(if input_type == "password" {
+    let input_type = (dom.node_name == "INPUT").then(|| {
+        dom.attributes
+            .get("type")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "text".to_owned())
+    });
+    if input_type
+        .as_deref()
+        .is_some_and(|input_type| !matches!(input_type, "text" | "search"))
+    {
+        return Some(if input_type.as_deref() == Some("password") {
             FillSafety::SensitiveDenied
         } else {
             FillSafety::Ineligible
@@ -4396,7 +6972,8 @@ mod tests {
                 backend_dom_node_id,
                 role: role.to_owned(),
                 accessible_name: name.to_owned(),
-                capability: ElementCapability::Click(safety.clone()),
+                capabilities: BTreeSet::from([ElementCapability::Click]),
+                external_preview: None,
             },
             SemanticNode {
                 element_ref: None,
@@ -4405,9 +6982,11 @@ mod tests {
                 text: name.to_owned(),
                 value: String::new(),
                 state: BTreeMap::new(),
+                capabilities: vec!["click"],
                 backend_dom_node_id: Some(backend_dom_node_id),
                 click_safety: Some(safety),
                 fill_safety: None,
+                dom: None,
             },
         )
     }
@@ -4423,7 +7002,8 @@ mod tests {
                 backend_dom_node_id,
                 role: role.to_owned(),
                 accessible_name: name.to_owned(),
-                capability: ElementCapability::Fill,
+                capabilities: BTreeSet::from([ElementCapability::Fill]),
+                external_preview: None,
             },
             SemanticNode {
                 element_ref: None,
@@ -4432,9 +7012,11 @@ mod tests {
                 text: name.to_owned(),
                 value: String::new(),
                 state: BTreeMap::new(),
+                capabilities: vec!["fill"],
                 backend_dom_node_id: Some(backend_dom_node_id),
                 click_safety: None,
                 fill_safety: Some(safety),
+                dom: None,
             },
         )
     }
@@ -4522,6 +7104,218 @@ mod tests {
                     .unwrap_err()
                     .code,
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn host_synthetic_capability_does_not_stale_semantic_fingerprint() {
+        let (_, mut node) = semantic_target(7, "button", "Save draft", ClickSafety::Allowed);
+        let before = observation_fingerprint(std::slice::from_ref(&node));
+        node.capabilities.push("submit");
+        assert_eq!(
+            observation_fingerprint(std::slice::from_ref(&node)),
+            before,
+            "Host-derived authorization capabilities are not page semantic mutation"
+        );
+        node.accessible_name = "Publish".to_owned();
+        assert_ne!(observation_fingerprint(&[node]), before);
+    }
+
+    #[test]
+    fn typed_interaction_parser_admits_the_cluster_and_rejects_argument_escape() {
+        let element_ref = "eref_0123456789abcdef0123456789abcdef";
+        let page_ref = "page_0123456789abcdef0123456789abcdef";
+        let admitted = [
+            json!({"action":"click","element_ref":element_ref}),
+            json!({"action":"fill","element_ref":element_ref,"value":"ready"}),
+            json!({"action":"press","element_ref":element_ref,"key":"enter"}),
+            json!({"action":"wait","condition":"document_ready","timeout_ms":100}),
+            json!({"action":"wait","condition":"text_present","value":"ready","timeout_ms":100}),
+            json!({"action":"scroll","element_ref":element_ref,"direction":"down","amount":200}),
+            json!({"action":"select","element_ref":element_ref,"value":"staging"}),
+            json!({"action":"back"}),
+            json!({"action":"tab_open","url":"https://example.com/review"}),
+            json!({"action":"tab_switch","page_ref":page_ref}),
+            json!({"action":"tab_close","page_ref":page_ref}),
+            json!({"action":"submit","element_ref":element_ref}),
+        ];
+        for input in admitted {
+            parse_interact_request(&input).unwrap_or_else(|failure| {
+                panic!("admitted input failed {}: {input}", failure.code)
+            });
+        }
+        for denied in [
+            json!({"action":"press","element_ref":element_ref,"key":"meta"}),
+            json!({"action":"wait","condition":"text_present","timeout_ms":100}),
+            json!({"action":"wait","condition":"document_ready","value":"forbidden"}),
+            json!({"action":"scroll","element_ref":element_ref,"direction":"left"}),
+            json!({"action":"tab_open","url":"file:///tmp/escape"}),
+            json!({"action":"click","element_ref":element_ref,"selector":"button"}),
+            json!({"action":"submit","element_ref":element_ref,"headers":{}}),
+        ] {
+            assert!(parse_interact_request(&denied).is_err(), "{denied}");
+        }
+    }
+
+    #[test]
+    fn reversible_draft_preview_and_post_grant_are_exact_and_sensitive_free() {
+        let node =
+            |backend_dom_node_id, role: &str, name: &str, value: &str, attributes| SemanticNode {
+                element_ref: None,
+                role: role.to_owned(),
+                accessible_name: name.to_owned(),
+                text: name.to_owned(),
+                value: value.to_owned(),
+                state: BTreeMap::new(),
+                capabilities: Vec::new(),
+                backend_dom_node_id: Some(backend_dom_node_id),
+                click_safety: None,
+                fill_safety: Some(FillSafety::Allowed),
+                dom: Some(DomFacts {
+                    node_name: if role == "button" {
+                        "BUTTON"
+                    } else {
+                        "TEXTAREA"
+                    }
+                    .to_owned(),
+                    node_value: String::new(),
+                    attributes,
+                }),
+            };
+        let fields = vec![
+            node(
+                1,
+                "textbox",
+                "Draft notes",
+                "reviewed",
+                BTreeMap::from([
+                    ("form".to_owned(), "draft-form".to_owned()),
+                    ("name".to_owned(), "notes".to_owned()),
+                ]),
+            ),
+            SemanticNode {
+                fill_safety: Some(FillSafety::SensitiveDenied),
+                ..node(
+                    2,
+                    "textbox",
+                    "Password",
+                    "must-not-leak",
+                    BTreeMap::from([
+                        ("form".to_owned(), "draft-form".to_owned()),
+                        ("name".to_owned(), "password".to_owned()),
+                    ]),
+                )
+            },
+            node(
+                3,
+                "button",
+                "Save draft",
+                "",
+                BTreeMap::from([
+                    ("form".to_owned(), "draft-form".to_owned()),
+                    ("formmethod".to_owned(), "post".to_owned()),
+                    ("formaction".to_owned(), "/drafts/save".to_owned()),
+                    ("name".to_owned(), "action".to_owned()),
+                    ("value".to_owned(), "save_draft".to_owned()),
+                ]),
+            ),
+            node(
+                4,
+                "button",
+                "Publish",
+                "",
+                BTreeMap::from([
+                    ("form".to_owned(), "draft-form".to_owned()),
+                    ("formmethod".to_owned(), "post".to_owned()),
+                    ("formaction".to_owned(), "/publish".to_owned()),
+                ]),
+            ),
+        ];
+        let previews = derive_external_action_previews("https://example.com/review", &fields);
+        assert_eq!(previews.len(), 1);
+        assert!(
+            !previews.contains_key(&4),
+            "publish must not gain a submit ref"
+        );
+        let preview = previews.get(&3).expect("reversible draft preview");
+        assert_eq!(preview.target_url, "https://example.com/drafts/save");
+        assert_eq!(
+            preview.parameters,
+            vec![
+                ("action".to_owned(), "save_draft".to_owned()),
+                ("notes".to_owned(), "reviewed".to_owned()),
+            ]
+        );
+        assert!(
+            !preview
+                .parameters
+                .iter()
+                .any(|(name, _)| name == "password"),
+            "sensitive values never enter the durable preview"
+        );
+        assert_eq!(
+            preview.ignored_empty_parameters,
+            BTreeSet::from(["password".to_owned()])
+        );
+
+        let request = parse_request(&input("https://example.com/review"), None).unwrap();
+        let egress = EgressState::new(&request);
+        egress.begin_external_action(ExternalRequestGrant {
+            target_url: preview.target_url.clone(),
+            parameters: preview.parameters.clone(),
+            ignored_empty_parameters: preview.ignored_empty_parameters.clone(),
+            parameters_sha256: preview.parameters_sha256.clone(),
+            impact: preview.impact,
+        });
+        egress
+            .authorize_cdp_request(
+                "https://example.com/drafts/save",
+                "POST",
+                Some("Document"),
+                Some("notes=reviewed&action=save_draft"),
+            )
+            .expect("exact canonical POST grant");
+        egress
+            .authorize_cdp_request(
+                "https://example.com/drafts/save",
+                "POST",
+                Some("Document"),
+                Some("notes=reviewed&password=&action=save_draft"),
+            )
+            .expect("empty sensitive control is excluded without entering the preview");
+        assert_eq!(
+            egress
+                .authorize_cdp_request(
+                    "https://example.com/drafts/save",
+                    "POST",
+                    Some("Document"),
+                    Some("notes=reviewed&password=secret&action=save_draft"),
+                )
+                .unwrap_err()
+                .code,
+            "browser_method_denied"
+        );
+        for (url, body) in [
+            (
+                "https://example.com/publish",
+                "notes=reviewed&action=save_draft",
+            ),
+            (
+                "https://example.com/drafts/save",
+                "notes=changed&action=save_draft",
+            ),
+            (
+                "https://example.com/drafts/save",
+                "notes=reviewed&action=publish",
+            ),
+        ] {
+            assert_eq!(
+                egress
+                    .authorize_cdp_request(url, "POST", Some("Document"), Some(body))
+                    .unwrap_err()
+                    .code,
+                "browser_method_denied"
             );
         }
     }
@@ -4646,7 +7440,7 @@ mod tests {
                 "textbox",
                 "Notes",
                 facts("TEXTAREA", &[]),
-                FillSafety::Ineligible,
+                FillSafety::Allowed,
             ),
             (
                 "textbox",
@@ -4738,21 +7532,26 @@ mod tests {
         let public = parse_request(&input("https://example.com/app"), None).unwrap();
         let public = EgressState::new(&public);
         public
-            .authorize_cdp_request("https://example.com/app", "GET", Some("Document"))
+            .authorize_cdp_request("https://example.com/app", "GET", Some("Document"), None)
             .unwrap();
         public
-            .authorize_cdp_request("https://cdn.example.net/app.js", "GET", Some("Script"))
+            .authorize_cdp_request(
+                "https://cdn.example.net/app.js",
+                "GET",
+                Some("Script"),
+                None,
+            )
             .unwrap();
         assert_eq!(
             public
-                .authorize_cdp_request("https://other.example/", "GET", Some("Document"))
+                .authorize_cdp_request("https://other.example/", "GET", Some("Document"), None,)
                 .unwrap_err()
                 .code,
             "browser_cross_origin_navigation_denied"
         );
         assert_eq!(
             public
-                .authorize_cdp_request("https://example.com/form", "POST", Some("Fetch"))
+                .authorize_cdp_request("https://example.com/form", "POST", Some("Fetch"), None,)
                 .unwrap_err()
                 .code,
             "browser_method_denied"
@@ -4762,6 +7561,7 @@ mod tests {
                 &format!("https://example.com/redirect-{index}"),
                 "GET",
                 Some("Document"),
+                None,
             );
             if index == MAX_REDIRECTS {
                 assert_eq!(result.unwrap_err().code, "browser_redirect_limit");
@@ -4778,7 +7578,7 @@ mod tests {
         let local = EgressState::new(&local);
         assert_eq!(
             local
-                .authorize_cdp_request("http://127.0.0.1:32124/", "GET", Some("Script"))
+                .authorize_cdp_request("http://127.0.0.1:32124/", "GET", Some("Script"), None,)
                 .unwrap_err()
                 .code,
             "browser_local_origin_escape"

@@ -5869,3 +5869,62 @@ RuntimeEvent、RunStore、State schema、catalog 或 UI；official DeepSeek requ
 read=`false`、actual cost=`$0`，`product_metric_eligible=false`。费用只是正交状态，不是能力方向或
 hold 原因。authority/link/diff 的实际 final gate 结果记录在同一 checkpoint 的 Roadmap/current
 architecture，不创建第二 evaluator、roadmap、handoff、tracker 或 frozen evidence rewrite。
+
+<a id="semantic-interaction-public-action-governance"></a>
+### Semantic Interaction + Public Action Governance 合同与结果
+
+本次是 ADR-0018 首个 Risk 2 production capability cluster。primary owner=`crates/tools`，真实 caller
+composition 只允许 `crates/app`；DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、
+State schema 的预期与实际 delta 均为 0。问题不是“缺一个按钮”，而是 root Agent 无法完成包含文本编辑、
+键盘、等待、滚动、选择、多页状态和授权 public reversible action 的完整 Web 工程任务。
+
+冻结 acceptance：
+
+| family | production path | keep condition | actual |
+|---|---|---|---:|
+| local semantic workflow | navigate → textarea/contenteditable/input → press/select/scroll/wait → back/tab/multi-page | typed actions 全闭合、fresh observation、stale/scope false allow=0 | 1/1 |
+| disposable public workflow | public navigate → fill → exact preview → approved reversible draft POST → receipt | exact target/parameters/impact；HTTP 2xx + durable receipt | 1/1 |
+| external negative | publish/delete/purchase/send、origin/scope escape、非 exact POST、sensitive/file non-empty | false allow=0 | 0 false allow |
+| production caller/reopen | AgentApplication → AgentRuntime → approval → ToolOutcome → SQLite reopen | execute once；reopen network/POST=0 | pass |
+| crash recovery | durable started without outcome | RecoveryRequired；model/tool replay=0 | click+fill 2/2 |
+
+fixed catalog 从 16 收敛为 15；`browser_click`/`browser_fill` 被唯一 `browser_interact` 替换。tagged schema
+只接受 typed action fields，拒绝 selector/CSS/XPath、坐标、任意 key、JS/eval、header/Cookie/auth/proxy、
+Chrome flag 和文件路径。press 只允许 Enter/Escape/Tab/ArrowUp/ArrowDown/Space，且不发送 macOS/Windows
+virtual key code。textarea/contenteditable 与普通 input 可获得能力；password/file/login/secret/token/
+credential/OTP 不获得敏感 ref。
+
+public permission ladder 的 actual contract：exact-local routine 自动执行；public routine 在 Ask 下询问、
+Agent/FullAccess 允许；public reversible draft submit 在 Ask/Agent 下询问、FullAccess 允许；isolated Writer
+始终 `actor_controlled_network_denied`。approval 绑定 exact origin/target、canonical non-sensitive params、
+impact、invocation 和 workspace revision。其他 submit intent 不产生 capability ref，不靠事后字符串 deny。
+敏感/file successful controls 只在实际值为空时由 Host comparison 排除，非空立即拒绝且不进入 durable
+preview/log。
+
+真实 repository-pinned CfT `151.0.7922.47` credential-free vertical wall time=`7.21s`，verified task
+families=`2/2`、false success=`0`、required approval=`1`、receipt=`draft-receipt-001`（transport header 与
+semantic DOM 双观察）。真实 app fixture 的 committed reopen submit reexecution=`0`；started ambiguity
+recovery=`2/2`、replay=`0`。official DeepSeek requests=`0`、credential read=`false`、model tokens/cost=`0/$0`；
+因此 `product_metric_eligible=false`，不做费用、Token 或通用效率声明，behavior evidence 独立有效。
+
+实际返工关闭四类问题：native virtual key 误路由 macOS UI、CDP backend/front-end node identity 混用、
+Host synthetic submit capability 污染 stale fingerprint、以及 HTML successful-controls 与授权参数不一致。
+这些问题均由 deterministic vertical 暴露并在同一 owner 内闭合，没有靠降低 stale/egress/receipt gate
+取得绿结果。
+
+cutover 删除两个旧 integration path：`crates/tools/tests/m46_browser_fill.rs` 与
+`crates/tools/tests/m46_browser_interaction_admission.rs`，由
+`crates/tools/tests/semantic_interaction_cluster.rs` 接管；分立 click/fill catalog/schema/dispatch 同时删除。
+没有 compatibility flag、新 crate/dependency、Provider、第二 Runtime/Store、browser Agent、Node/Playwright/
+Firecrawl sidecar、Manager/Factory/Service、session/accounting ledger，也未改 frozen manifest/raw/history。
+
+remaining gap 只记录为后续 cluster：managed browser login/session、Cookie/storage clear、workspace-granted
+upload、isolated/scanned download、canonical search 与 selective visual。它们不被当前 draft POST grant
+冒充。最终 revision 的 bounded authority actual 是 bootstrap=`17,636` 行、tools owner route=`2,626/4,409`
+行、fixed boundary=`24/24`；focused gate 全绿（tools=`396 passed, 5 ignored`、DeepSeek=`61/1`、
+runtime conformance=`88/88`、app=`70/3`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、
+PTY=`7/7`），唯一一次 full pre-integration gate exit=`0`，workspace tools run=`398 passed, 5 ignored`。
+`cargo fmt --all -- --check`、`cargo check -p dse-tools --locked`、`git diff --check` 与真实 pinned-CfT
+vertical=`1/1 in 7.21s` 均通过。Rust delta=`+4,390/-1,094`，其中旧 integration tests=`-527` 行、
+新 cluster test=`+555` 行（test-path net=`+28`），`semantic_browser.rs` 从 `5,170` 行变为 `7,970` 行；
+catalog net=`-1`，crate/dependency/protocol/state delta=`0`。full gate invocation=`1`，同一 revision 不重复。
