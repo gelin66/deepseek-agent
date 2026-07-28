@@ -44,8 +44,10 @@ const TEST_MODEL: &str = "deepseek-v4-flash";
 const TEST_KEY: &str = "offline-canonical-tui-key";
 const FIRST_INPUT: &str = "请检查当前项目并给出第一轮结论";
 const CONTINUE_INPUT: &str = "继续完成剩余工作，并给出最终结论";
+const NEW_INPUT: &str = "启动一个独立的新任务，不继承旧运行";
 const FIRST_OUTPUT: &str = "第一轮已完成";
 const CONTINUE_OUTPUT: &str = "后续工作已完成";
+const NEW_OUTPUT: &str = "独立任务已完成";
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy)]
@@ -56,7 +58,9 @@ impl Respond for ChineseCompletionFixture {
         let body = request
             .body_json::<Value>()
             .expect("DeepSeek request must be JSON");
-        let content = if json_strings_contain(&body, CONTINUE_INPUT) {
+        let content = if json_strings_contain(&body, NEW_INPUT) {
+            NEW_OUTPUT.to_owned()
+        } else if json_strings_contain(&body, CONTINUE_INPUT) {
             CONTINUE_OUTPUT.to_owned()
         } else {
             assert!(
@@ -112,10 +116,27 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     let rebuilt_application =
         production_application(&state_path, &model.uri(), &workspace, &skills_dir);
     let (rebuilt_client, mut rebuilt_rx) = TuiRunClient::new(rebuilt_application);
-    let attached = rebuilt_client
-        .attach_or_resume(first_view.run_id.clone(), Some(canonical_workspace.clone()))
+    let hub_roots = rebuilt_client
+        .list_root_views(canonical_workspace.clone(), 50)
         .await
-        .expect("attach terminal source");
+        .expect("cold-start Run Hub projection");
+    assert_eq!(hub_roots.len(), 1);
+    assert_eq!(hub_roots[0].summary.run_id, first_view.run_id);
+    assert!(hub_roots[0].summary.terminal);
+    assert_eq!(
+        hub_roots[0]
+            .run
+            .task_contract
+            .as_ref()
+            .expect("root TaskContract")
+            .definition
+            .objective,
+        FIRST_INPUT
+    );
+    let attached = rebuilt_client
+        .reopen_from_hub(first_view.run_id.clone(), Some(canonical_workspace.clone()))
+        .await
+        .expect("Run Hub reopens terminal source");
     assert_eq!(attached.run_id, first_view.run_id);
     let mut rebuilt_projection = CanonicalRunProjection::new();
     let (replayed_events, replayed_effects) =
@@ -141,9 +162,39 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     assert_canonical_projection(&continued_events, &continued_effects, CONTINUE_INPUT);
     assert_stored_event_identity(&continued_events, &continued_view.run_id);
 
+    rebuilt_client
+        .prepare_new_root()
+        .await
+        .expect("Run Hub new-root action");
+    let independent_view = rebuilt_client
+        .submit(start_command(NEW_INPUT, &canonical_workspace))
+        .await
+        .expect("new action starts an independent canonical root");
+    assert_eq!(independent_view.continued_from_run_id, None);
+    let (independent_events, independent_effects) = collect_terminal(
+        &mut rebuilt_rx,
+        &mut rebuilt_projection,
+        &independent_view.run_id,
+    )
+    .await;
+    assert_canonical_projection(&independent_events, &independent_effects, NEW_INPUT);
+    assert_stored_event_identity(&independent_events, &independent_view.run_id);
+
+    let reopened_source = rebuilt_client
+        .reopen_from_hub(first_view.run_id.clone(), Some(canonical_workspace.clone()))
+        .await
+        .expect("same-process Hub selection resets only the local replay cursor");
+    assert_eq!(reopened_source.run_id, first_view.run_id);
+    rebuilt_projection = CanonicalRunProjection::new();
+    let (reopened_events, reopened_effects) =
+        collect_terminal(&mut rebuilt_rx, &mut rebuilt_projection, &first_view.run_id).await;
+    assert_eq!(reopened_events, first_events);
+    assert_canonical_projection(&reopened_events, &reopened_effects, FIRST_INPUT);
+
     let store = StateStore::open(Some(state_path)).expect("reopen canonical RunStore");
     let source_after = load_replay(&store, &first_view.run_id).await;
     let continuation = load_replay(&store, &continued_view.run_id).await;
+    let independent = load_replay(&store, &independent_view.run_id).await;
     assert_eq!(
         source_after, source_before,
         "Continue must not rewrite its source run"
@@ -168,6 +219,8 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         }
         event => panic!("continuation must start with RunCreated, got {event:?}"),
     }
+    assert_eq!(independent.snapshot.request.continued_from_run_id, None);
+    assert_eq!(independent.snapshot.request.parent_run_id, None);
     let requests = model
         .received_requests()
         .await
@@ -178,13 +231,15 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .collect::<Vec<_>>();
     assert_eq!(
         requests.len(),
-        2,
-        "replay and continuation must issue exactly two model requests"
+        3,
+        "replay, continuation, and an independent new root must issue exactly three model requests"
     );
     assert!(json_strings_contain(&requests[0], FIRST_INPUT));
     assert!(!json_strings_contain(&requests[0], CONTINUE_INPUT));
     assert!(json_strings_contain(&requests[1], FIRST_INPUT));
     assert!(json_strings_contain(&requests[1], CONTINUE_INPUT));
+    assert!(json_strings_contain(&requests[2], NEW_INPUT));
+    assert!(!json_strings_contain(&requests[2], CONTINUE_INPUT));
 
     assert_no_legacy_json_state(isolated.path());
 }

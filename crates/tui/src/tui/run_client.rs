@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dse_app::AgentApplication;
 use dse_localization::{MessageId, tr};
 use dse_protocol::agent_runtime::{
-    InteractionId, RunId, StoredRuntimeEvent, UserInteractionResponse,
+    InteractionId, RunId, RuntimeEventKind, StoredRuntimeEvent, TerminalState,
+    UserInteractionResponse,
 };
 use dse_protocol::run_api::{
     ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary, RUN_API_SCHEMA_VERSION,
@@ -22,6 +23,17 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 const RUN_EVENT_BUFFER_CAPACITY: usize = 256;
+
+/// One workspace-scoped root as seen through the canonical Run API.
+///
+/// `summary` owns list ordering and timestamps. `run` supplies the exact
+/// TaskContract and terminal taxonomy for presentation. Neither value is
+/// stored by the TUI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TuiRootRun {
+    pub summary: RootRunSummary,
+    pub run: RunView,
+}
 
 #[derive(Debug)]
 pub enum TuiRunClientError {
@@ -129,11 +141,11 @@ impl TuiRunClientState {
 
     fn observe_run(&mut self, run: &RunView) -> Result<bool, TuiRunClientError> {
         let cursor = *self.cursors.entry(run.run_id.clone()).or_insert(0);
-        if run.terminal.is_some() {
+        if let Some(terminal) = run.terminal.as_ref() {
             if self.current_active_root.as_ref() == Some(&run.run_id) {
                 self.current_active_root = None;
             }
-            self.latest_terminal_root = Some(run.run_id.clone());
+            self.latest_terminal_root = terminal_can_continue(terminal).then(|| run.run_id.clone());
         } else {
             if let Some(active) = &self.current_active_root
                 && active != &run.run_id
@@ -157,11 +169,12 @@ impl TuiRunClientState {
 
     fn record_event(&mut self, event: &StoredRuntimeEvent) {
         self.cursors.insert(event.run_id.clone(), event.sequence);
-        if event.event.is_terminal() {
+        if let RuntimeEventKind::Terminal { outcome } = &event.event {
             if self.current_active_root.as_ref() == Some(&event.run_id) {
                 self.current_active_root = None;
             }
-            self.latest_terminal_root = Some(event.run_id.clone());
+            self.latest_terminal_root =
+                terminal_can_continue(&outcome.terminal).then(|| event.run_id.clone());
         }
     }
 }
@@ -188,6 +201,10 @@ impl RequestIds {
 
 fn run_requires_resume(run: &RunView) -> bool {
     run.terminal.is_none()
+}
+
+fn terminal_can_continue(terminal: &TerminalState) -> bool {
+    !matches!(terminal, TerminalState::RecoveryRequired { .. })
 }
 
 /// Thin interactive client for one in-process [`AgentApplication`].
@@ -245,25 +262,64 @@ impl TuiRunClient {
         &self,
         workspace: String,
     ) -> Result<Option<RootRunSummary>, TuiRunClientError> {
-        let operation = "latest-root";
+        Ok(self.list_roots(workspace, 1).await?.into_iter().next())
+    }
+
+    /// List canonical root summaries for one exact workspace.
+    pub async fn list_roots(
+        &self,
+        workspace: String,
+        limit: u32,
+    ) -> Result<Vec<RootRunSummary>, TuiRunClientError> {
+        let operation = "list-roots";
         let response = self
             .application
-            .execute(self.envelope(
-                operation,
-                RunCommand::ListRoots {
-                    workspace,
-                    limit: 1,
-                },
-            ))
+            .execute(self.envelope(operation, RunCommand::ListRoots { workspace, limit }))
             .await;
         match response.result {
-            RunCommandResult::Runs { runs, .. } => Ok(runs.into_iter().next()),
+            RunCommandResult::Runs { runs, .. } => Ok(runs),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
             result => Err(TuiRunClientError::UnexpectedResult {
                 operation,
                 result: Box::new(result),
             }),
         }
+    }
+
+    /// Build the bounded Run Hub projection using only canonical list/get
+    /// commands. The TUI does not read SQLite or derive a second lifecycle.
+    pub async fn list_root_views(
+        &self,
+        workspace: String,
+        limit: u32,
+    ) -> Result<Vec<TuiRootRun>, TuiRunClientError> {
+        let summaries = self.list_roots(workspace, limit).await?;
+        let mut roots = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            let run = self
+                .execute_run_command(
+                    "run-hub-get",
+                    RunCommand::Get {
+                        run_id: summary.run_id.clone(),
+                    },
+                )
+                .await?;
+            roots.push(TuiRootRun { summary, run });
+        }
+        Ok(roots)
+    }
+
+    /// Select an independent root for the next composer submission.
+    ///
+    /// This clears only the process-local continuation choice. The canonical
+    /// source Run and every Store event remain unchanged.
+    pub async fn prepare_new_root(&self) -> Result<(), TuiRunClientError> {
+        let mut state = self.state.lock().await;
+        if let Some(run_id) = state.current_active_root.clone() {
+            return Err(TuiRunClientError::ActiveRun { run_id });
+        }
+        state.latest_terminal_root = None;
+        Ok(())
     }
 
     /// List canonical creation receipts that reserved a Run identity but did
@@ -384,6 +440,26 @@ impl TuiRunClient {
             return self.adopt_launched_run(resumed).await;
         }
         self.adopt_launched_run(loaded).await
+    }
+
+    /// Reopen one root selected in the Run Hub and replay it from sequence 1.
+    ///
+    /// The cursor reset is process-local presentation state. Canonical events
+    /// remain append-only and are read from the same RunStore; no model or
+    /// tool work is repeated for a terminal Run.
+    pub async fn reopen_from_hub(
+        &self,
+        run_id: RunId,
+        expected_workspace: Option<String>,
+    ) -> Result<RunView, TuiRunClientError> {
+        {
+            let mut state = self.state.lock().await;
+            if let Some(active) = state.current_active_root.clone() {
+                return Err(TuiRunClientError::ActiveRun { run_id: active });
+            }
+            state.cursors.insert(run_id.clone(), 0);
+        }
+        self.attach_or_resume(run_id, expected_workspace).await
     }
 
     pub async fn steer(&self, content: String) -> Result<u64, TuiRunClientError> {
@@ -841,6 +917,32 @@ mod tests {
     }
 
     #[test]
+    fn recovery_required_is_never_selected_as_a_continuation_source() {
+        let mut state = TuiRunClientState {
+            latest_terminal_root: Some(RunId::from("older-terminal")),
+            ..TuiRunClientState::default()
+        };
+        let recovery = run_view(
+            "recovery-root",
+            Some(TerminalState::RecoveryRequired {
+                ambiguity: dse_protocol::agent_runtime::RecoveryAmbiguity {
+                    phase: dse_protocol::agent_runtime::RecoveryAmbiguityPhase::ModelRequest,
+                    action_id: "request-1".to_owned(),
+                    message: "fixture ambiguity".to_owned(),
+                },
+            }),
+            7,
+        );
+
+        assert!(state.observe_run(&recovery).expect("observe recovery root"));
+        assert_eq!(state.latest_terminal_root, None);
+        assert!(matches!(
+            state.plan_submit(start_command("start independently")),
+            Ok(RunCommand::Start(_))
+        ));
+    }
+
+    #[test]
     fn run_observation_and_terminal_event_advance_only_canonical_state() {
         let mut state = TuiRunClientState::default();
         let active = run_view("run-1", None, 1);
@@ -875,6 +977,29 @@ mod tests {
         assert_eq!(snapshot.current_active_root, None);
         assert_eq!(snapshot.latest_terminal_root, Some(run_id.clone()));
         assert_eq!(snapshot.cursors.get(&run_id), Some(&9));
+    }
+
+    #[tokio::test]
+    async fn prepare_new_root_clears_only_the_ephemeral_continuation_choice() {
+        let fixture = RecoveryFixture::new().await;
+        let (client, _events) = TuiRunClient::new(fixture.application);
+        client.state.lock().await.latest_terminal_root = Some(RunId::from("terminal-root"));
+
+        client
+            .prepare_new_root()
+            .await
+            .expect("idle client may choose a fresh root");
+
+        let snapshot = client.snapshot().await;
+        assert_eq!(snapshot.latest_terminal_root, None);
+        assert!(matches!(
+            client
+                .state
+                .lock()
+                .await
+                .plan_submit(start_command("new root")),
+            Ok(RunCommand::Start(_))
+        ));
     }
 
     #[test]

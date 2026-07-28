@@ -11,10 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use dse_app::AgentApplication;
 use dse_protocol::agent_runtime::{
-    ApprovalRisk, ReasoningEffort as RuntimeReasoningEffort, RunId, RunLimits, ToolPolicy,
-    UserInteractionPrompt, UserInteractionResponse,
+    ApprovalRisk, ReasoningEffort as RuntimeReasoningEffort, RunId, RunLimits, TerminalState,
+    ToolPolicy, UserInteractionPrompt, UserInteractionResponse,
 };
-use dse_protocol::run_api::{RunProductControls, StartRunCommand};
+use dse_protocol::run_api::{DEFAULT_RUN_LIST_LIMIT, RunProductControls, StartRunCommand};
 use dse_protocol::task::TaskDefinition;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
@@ -53,6 +53,7 @@ use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::permission_selector::PermissionSelector;
 use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
+use crate::tui::run_hub::RunHubView;
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::user_input::UserInputView;
@@ -467,6 +468,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // then a conscious new creation with a fresh request identity; startup
         // recovery never replays it implicitly.
         app.auto_submit_initial_input = false;
+    } else if options.resume_session_id.is_none()
+        && !app.auto_submit_initial_input
+        && app.input.is_empty()
+    {
+        open_run_hub(&mut app, &run_client, false).await;
     } else if app.auto_submit_initial_input {
         app.auto_submit_initial_input = false;
         if !matches!(
@@ -516,6 +522,27 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     drop(terminal);
 
     result
+}
+
+async fn open_run_hub(app: &mut App, run_client: &TuiRunClient, show_when_empty: bool) {
+    let workspace = app.workspace.display().to_string();
+    match run_client
+        .list_root_views(workspace.clone(), DEFAULT_RUN_LIST_LIMIT)
+        .await
+    {
+        Ok(roots) if show_when_empty || !roots.is_empty() => {
+            app.view_stack
+                .push(RunHubView::new(workspace, roots, app.language));
+        }
+        Ok(_) => {}
+        Err(error) => {
+            app.status_message = Some(
+                app.tr(MessageId::RunHubLoadFailed)
+                    .replace("{error}", &error.to_string()),
+            );
+        }
+    }
+    app.needs_redraw = true;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,8 +814,15 @@ async fn run_canonical_event_loop(
         };
         match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                if handle_canonical_key(app, config, run_client, key, &mut exit_after_terminal)
-                    .await?
+                if handle_canonical_key(
+                    app,
+                    config,
+                    run_client,
+                    &mut projection,
+                    key,
+                    &mut exit_after_terminal,
+                )
+                .await?
                 {
                     return Ok(());
                 }
@@ -806,6 +840,7 @@ async fn run_canonical_event_loop(
                 handle_canonical_view_events(
                     app,
                     run_client,
+                    &mut projection,
                     view_events,
                     &mut exit_after_terminal,
                 )
@@ -943,12 +978,14 @@ async fn handle_canonical_key(
     app: &mut App,
     config: &Config,
     run_client: &TuiRunClient,
+    projection: &mut CanonicalRunProjection,
     key: KeyEvent,
     exit_after_terminal: &mut bool,
 ) -> Result<bool> {
     if !app.view_stack.is_empty() {
         let events = app.view_stack.handle_key(key);
-        handle_canonical_view_events(app, run_client, events, exit_after_terminal).await?;
+        handle_canonical_view_events(app, run_client, projection, events, exit_after_terminal)
+            .await?;
         app.needs_redraw = true;
         return Ok(false);
     }
@@ -1031,6 +1068,9 @@ async fn handle_canonical_key(
                         content: canonical_commands::help_text(),
                     });
                     app.status_message = Some(app.tr(MessageId::CanonicalHelpShown).into_owned());
+                }
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Runs) => {
+                    open_run_hub(app, run_client, true).await;
                 }
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Cost) => {
                     let total = app.total_cost_for_currency(app.cost_currency);
@@ -1137,6 +1177,7 @@ async fn handle_canonical_key(
 async fn handle_canonical_view_events(
     app: &mut App,
     run_client: &TuiRunClient,
+    projection: &mut CanonicalRunProjection,
     events: Vec<ViewEvent>,
     exit_after_terminal: &mut bool,
 ) -> Result<()> {
@@ -1185,6 +1226,58 @@ async fn handle_canonical_view_events(
                         UserInteractionResponse::Cancelled,
                     )
                     .await?;
+            }
+            ViewEvent::RunHubNewRoot => match run_client.prepare_new_root().await {
+                Ok(()) => {
+                    if matches!(
+                        app.view_stack.top_kind(),
+                        Some(SecondarySurfaceKind::RunHub)
+                    ) {
+                        let _ = app.view_stack.pop();
+                    }
+                    app.status_message =
+                        Some(app.tr(MessageId::RunHubPreparedNewRoot).into_owned());
+                }
+                Err(error) => {
+                    app.status_message = Some(
+                        app.tr(MessageId::RunHubOpenFailed)
+                            .replace("{error}", &error.to_string()),
+                    );
+                }
+            },
+            ViewEvent::RunHubOpen { run_id } => {
+                match run_client
+                    .reopen_from_hub(run_id.clone(), Some(app.workspace.display().to_string()))
+                    .await
+                {
+                    Ok(run) => {
+                        *projection = CanonicalRunProjection::new();
+                        if matches!(
+                            app.view_stack.top_kind(),
+                            Some(SecondarySurfaceKind::RunHub)
+                        ) {
+                            let _ = app.view_stack.pop();
+                        }
+                        app.is_loading = run.terminal.is_none();
+                        let message_id = match run.terminal.as_ref() {
+                            None => MessageId::RunHubResuming,
+                            Some(TerminalState::RecoveryRequired { .. }) => {
+                                MessageId::RunHubRecoveryReadOnly
+                            }
+                            Some(_) => MessageId::RunHubReadyToContinue,
+                        };
+                        app.status_message = Some(
+                            app.tr(message_id)
+                                .replace("{run_id}", &run.run_id.to_string()),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message = Some(
+                            app.tr(MessageId::RunHubOpenFailed)
+                                .replace("{error}", &error.to_string()),
+                        );
+                    }
+                }
             }
             _ => {
                 app.status_message = Some(

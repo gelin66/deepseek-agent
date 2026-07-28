@@ -21,6 +21,7 @@ pub enum SecondarySurfaceKind {
     Permission,
     UserInput,
     Pager,
+    RunHub,
 }
 
 /// Bottom-anchored secondary surface. The transcript above remains visible.
@@ -300,6 +301,10 @@ pub enum ViewEvent {
     PermissionSelected {
         mode: dse_protocol::agent_runtime::RunPermissionMode,
     },
+    RunHubOpen {
+        run_id: dse_protocol::agent_runtime::RunId,
+    },
+    RunHubNewRoot,
 }
 
 #[derive(Debug, Clone)]

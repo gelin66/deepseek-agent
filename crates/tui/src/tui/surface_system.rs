@@ -30,6 +30,7 @@ pub(crate) enum ProductionSurface {
     UserInput,
     Approval,
     Pager,
+    RunHub,
 }
 
 /// Auditable presentation contract for one reachable surface.
@@ -143,6 +144,14 @@ const CONTRACTS: &[SurfaceContract] = &[
         exit_action: "Esc/q closes and restores main surface",
         legacy_deletion_point: "deleted in M28-D",
     },
+    SurfaceContract {
+        surface: ProductionSurface::RunHub,
+        opener: "cold-start root discovery or /runs",
+        state_source: "canonical ListRoots + Get projection",
+        targets: ROOM,
+        exit_action: "Enter resumes/reopens; N prepares new root; Esc closes",
+        legacy_deletion_point: "M42 replaces cold-start blank session discovery",
+    },
 ];
 
 pub(crate) fn contracts() -> &'static [SurfaceContract] {
@@ -162,6 +171,7 @@ pub(crate) fn for_secondary_surface(kind: SecondarySurfaceKind) -> &'static Surf
         SecondarySurfaceKind::Permission => ProductionSurface::PermissionSelector,
         SecondarySurfaceKind::UserInput => ProductionSurface::UserInput,
         SecondarySurfaceKind::Pager => ProductionSurface::Pager,
+        SecondarySurfaceKind::RunHub => ProductionSurface::RunHub,
     })
 }
 
@@ -196,6 +206,7 @@ mod tests {
             ProductionSurface::UserInput,
             ProductionSurface::Approval,
             ProductionSurface::Pager,
+            ProductionSurface::RunHub,
         ];
         let actual = contracts()
             .iter()
@@ -234,6 +245,10 @@ mod tests {
         assert_eq!(
             for_secondary_surface(SecondarySurfaceKind::Pager).surface,
             ProductionSurface::Pager
+        );
+        assert_eq!(
+            for_secondary_surface(SecondarySurfaceKind::RunHub).surface,
+            ProductionSurface::RunHub
         );
 
         assert_eq!(

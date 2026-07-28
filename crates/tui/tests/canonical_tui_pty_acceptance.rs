@@ -210,13 +210,14 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
                 .expect("UTF-8 fixture workspace"),
             "--language",
             "zh-Hans",
-            "--resume",
-            "latest",
             "--no-project-config",
             "--skip-onboarding",
         ])
         .size(40, 140)
         .spawn()?;
+    reopened.wait_for_text("工作区运行中心", BOOT_TIMEOUT)?;
+    reopened.wait_for_text("请审计真实 PTY 路径", BOOT_TIMEOUT)?;
+    reopened.send(keys::key::enter())?;
     reopened.wait_for_text(COMPLETION_MARKER, BOOT_TIMEOUT)?;
     reopened.wait_for(
         |frame| {

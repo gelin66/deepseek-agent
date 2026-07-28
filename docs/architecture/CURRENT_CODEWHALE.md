@@ -654,13 +654,19 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   command；
 - `CanonicalRunProjection` 与 presenter 只从 `RunStore` event 投影 root/child 进度、终态和
   durable outcome；
+- 冷启动在无显式 resume、无初始输入时通过 canonical `ListRoots + Get` 打开 workspace
+  Run Hub；`/runs` 到达同一 full-screen room，按 Store 的 `updated_at` 倒序显示 exact status、
+  UTC 更新时间、TaskContract objective 与 continuation lineage；
+- Run Hub 选择 active root 复用 `Resume`，选择 terminal root 从 sequence 1 重放 Store event
+  并建立下一次 `Continue` source；`RecoveryRequired` 只读且不能 continuation，New run 只清除
+  TUI 进程内选择。冷重开和同进程重选都重建 fresh projection，不持久化 TUI history；
 - `CanonicalRunPresentation` 从同一 ordered event 派生 root 的思考/执行/等待/验证/返工/
   终态、已确认工作区变更、Host 验收进度、Agent 数、frozen permission 与恢复事实；
   宽终端默认显示右侧 task rail，窄终端响应式回退到顶部，输入框上方 phase strip 读取
   同一状态；不存在 TUI 私有 `runtime_turn_status`；
 - 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
   cache 和 registry-driven slash command system 已删除；
-- slash command 只剩统一的 `help/cost/exit` canonical contract；
+- slash command 只剩统一的 `help/runs/cost/permissions/exit` canonical contract；
 - 退役的 `crates/tui/src/compaction.rs`、`seam_manager.rs` 以及不再生效的 TUI
   `auto_compact` 开关/阈值状态均已删除；hard-limit compaction 位于
   `crates/context + crates/runtime`，不存在手动 `/compact` 或传输层 command；
@@ -688,7 +694,7 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 | `app` | 唯一 production composition、Run command、显式 Writer policy 与 Orchestrator wiring | M7 策略调优 |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析；run list/resume 只走 canonical Store | 只按真实产品入口扩展 |
-| `tui` | exec/interactive canonical Run projection | 不恢复 Provider/thread 私有状态 |
+| `tui` | exec/interactive canonical Run projection 与 workspace Run Hub | 不恢复 Provider/thread 私有状态 |
 | `localization` | CLI/TUI 共享 fixed `zh-Hans` compile-time message owner | 只删除失去真实 caller 的 message id，不增加 locale |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server

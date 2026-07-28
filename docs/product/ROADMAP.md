@@ -206,9 +206,9 @@
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
 - 上次更新：2026-07-28
 
-- 当前执行指针（2026-07-28）：M41 原生 `web_fetch` 已完成并以 `keep` 关闭；M40-A 继续保持
-  `reject_incomplete_acquisition`，不能续跑或补样。M42 是下一条候选 production slice，但
-  尚未启动；M43–M46 也只记录顺序。
+- 当前执行指针（2026-07-28）：M42 TUI Run Hub 已完成；M40-A 继续保持
+  `reject_incomplete_acquisition`，不能续跑或补样。下一条候选 production slice 是 M43；
+  M44–M46 只记录顺序，尚未启动。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6776,10 +6776,10 @@ targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、C
 
 ## 40. M42–M46：生产力后续顺序
 
-这些里程碑只冻结顺序；M41 已形成实现与证据 checkpoint，本次交付未启动其中任何一项。
+这些里程碑冻结后续顺序；M42 已形成实现与证据 checkpoint，M43–M46 尚未启动。
 
-1. **M42 TUI Run Hub**：复用 `list_roots/resume/continue`，实现 workspace/project 运行列表、
-   状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
+1. **M42 TUI Run Hub（已完成）**：复用 `list_roots/resume/continue`，实现 workspace/project
+   运行列表、状态、更新时间、新建、恢复和继续；不创建 Thread DB 或第二 Store。
 2. **M43 Skills 可靠加载**：提供 Host-owned exact `load_skill(name)` 或精确 discovered-path
    grant；不能读取的全局 Skill 不再向模型宣称可用。MCP/plugin 未进入模型 catalog 前保持
    管理面或隐藏，不建设 marketplace。
@@ -6792,6 +6792,28 @@ targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、C
 5. **M46 只读语义浏览器**：只有 ApplicationProbe/真实 JS 页面证明 HTTP 不足时，使用
    Rust/Tokio + CDP + pinned Chrome for Testing，实现 navigate、bounded AX/DOM snapshot 和
    Host teardown；action、登录、截图和视觉分别后置。
+
+### 40.1 M42 formal result
+
+M42 已在现有 interactive TUI 中加入 full-screen Run Hub。无显式 `--resume`、无初始输入且
+当前 workspace 存在历史 root 时，冷启动先显示按 canonical `updated_at` 倒序的运行列表；
+`/runs` 可随时打开同一投影。每行来自 `ListRoots + Get`，显示 exact terminal taxonomy、UTC
+更新时间、TaskContract objective、continuation 标记和有界 Run ID，并提供键盘与鼠标等价的
+选择、新建和关闭动作。
+
+选择 active root 调用现有 `Resume`；选择可继续的 terminal root 从 sequence 1 重放 Store
+事件，并把它设为下一次提交的 `Continue` source；`RecoveryRequired` 只允许检查，不能被误作
+continuation source。`New run` 只清除进程内的 continuation 选择，下一次提交仍由
+`AgentApplication` 创建独立 root。冷重开和同进程重选都重建 fresh
+`CanonicalRunProjection`，不重发模型请求，也不创建 TUI history、Thread DB、第二 Store 或
+第二生命周期。
+
+确定性证据覆盖 Run Hub 的响应式中英文渲染、状态/时间、键盘/鼠标 parity、真实
+`AgentApplication` terminal reopen/continue/new-root/same-process replay、SQLite 冷重开以及
+真实中文 PTY 冷启动发现。PTY 重开使用不可达 loopback endpoint 仍完成 exact terminal replay，
+证明历史查看没有再次访问模型。M42 没有 material model-visible treatment，不读取 Key、不做
+付费 A/B 或 canary；Run API、RuntimeEvent 与 State schema 均未升级。`dse-tui` package、
+focused、严格 workspace Clippy、完整 workspace tests、fmt、check 与 diff gate 全部通过。
 
 在 M41–M46 期间继续停做：多 Writer/swarm、FIM、RepoGraph/LSP、视觉 placeholder、Firecrawl/
 Playwright sidecar、MCP marketplace、独立大文件重构，以及不绑定正在交付能力的付费 loss

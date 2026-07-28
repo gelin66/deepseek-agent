@@ -30,6 +30,7 @@ pub mod pager;
 pub mod permission_selector;
 pub mod phase_strip;
 pub mod run_client;
+pub mod run_hub;
 pub mod run_presentation;
 pub mod run_presenter;
 pub mod run_projection;

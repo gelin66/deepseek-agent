@@ -5017,3 +5017,46 @@ preflight 不计为 canary rerun。
 通过。单次 canary 只证明已知 URL 工具可选、来源可读和 vertical task 闭合；没有 A/B，也不
 支持成功率、Token、时间或费用相对提升声明。search/browser/visual/ApplicationProbe 与第二
 Runtime/Store/accounting owner 均未引入。
+
+### M42 TUI Run Hub delivery contract
+
+M42 是现有 canonical Run truth 的交互投影交付，不是 Prompt、模型、reasoning、route 或
+Agent 策略 treatment。它不读取 Key，也不为已有 `ListRoots/Get/Resume/Continue` plumbing
+制造付费 A/B。最低证据分四层：
+
+1. **projection contract**：workspace 过滤、canonical updated ordering、exact terminal
+   taxonomy、TaskContract objective、更新时间和 continuation lineage 都来自 Run API，TUI
+   不保存第二份 lifecycle；
+2. **interaction parity**：冷启动与 `/runs` 到达同一 full-screen room，键盘/鼠标选择同一
+   Run；新建、关闭、窄终端和 CJK 都有确定性门禁；
+3. **production caller**：active 选择调用现有 `Resume`，terminal 选择建立下一次
+   `Continue` source，`RecoveryRequired` fail closed，新建只清除本地选择并创建独立 root；
+4. **reopen truth**：真实 `AgentApplication` 与 SQLite 冷重开、同进程重选都从 sequence 1
+   重建 canonical projection；terminal replay 不发模型请求，也不依赖 JSON/Thread sidecar。
+
+keep gate 是以上合同全部通过、false lifecycle=0、跨客户端仍观察同一 RunStore truth，且
+没有 Thread DB、第二 Store、TUI session truth 或协议升级。若 Hub 必须猜测 terminal、绕开
+Run API、或重开会重新执行 terminal Run，则删除 candidate。
+
+#### M42 formal result
+
+结论为 `keep_canonical_tui_run_hub`。实现复用 Run API v15 的 `ListRoots`、`Get`、`Resume`、
+`Continue` 和现有 full-screen room；Run API、RuntimeEvent、State schema 均无版本变化。
+workspace history 按 canonical `updated_at` 倒序显示状态、UTC 时间、TaskContract objective、
+lineage 与 bounded Run ID；`/runs` 与无输入冷启动使用同一 caller，键盘和鼠标发出相同选择
+intent。
+
+真实 production loopback 证明 terminal root 在 SQLite reopen 后由 Hub 重放、继续为新 root
+且保留 `continued_from_run_id`，New run 创建无 lineage 的独立 root；同进程重新选择旧 root
+得到与首次 Store replay 相同的 ordered events。总共只有 first/continue/independent 三次模型
+请求，两个 reopen 都为零额外请求。真实中文 PTY 在不可达 loopback endpoint 下冷启动列出
+旧 objective 并重放相同 terminal frame，排除了隐式网络恢复。
+
+该切片没有 material model-visible treatment，official DeepSeek requests=0、Key 未读取、
+actual canary cost `$0`，不产生 Token、时间、费用或成功率提升声明。behavior evidence 已闭合；
+不存在需由 provider usage 补全的 accounting observation。M43 Skills、M44 search、M45
+ApplicationProbe、M46 browser 以及第二 Runtime/Store/Thread truth 均未引入。
+
+离线门为 `dse-tui` unit 772 passed / 2 existing ignored、canonical Run acceptance 20/20、
+真实 PTY 7/7；`cargo check -p dse-tui --locked`、`./scripts/dev-dse.sh focused`、严格 workspace
+Clippy、完整 workspace tests、fmt 与 diff check 全部通过。
