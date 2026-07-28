@@ -843,11 +843,30 @@ impl ToolExecutor for ProductionToolExecutor {
                     None,
                 ));
             }
+            let plaintext_http = invocation
+                .arguments
+                .parsed
+                .as_ref()
+                .and_then(|input| input.get("url"))
+                .and_then(Value::as_str)
+                .and_then(|url| reqwest::Url::parse(url).ok())
+                .is_some_and(|url| url.scheme() == "http");
             return Ok(decision.build(
                 ToolAuthorizationDisposition::Allow,
                 ApprovalRisk::Routine,
-                Some("public_https_web_fetch".to_owned()),
-                "只读 public HTTPS fetch 由 Host URL/DNS/connect/redirect 安全门约束",
+                Some(
+                    if plaintext_http {
+                        "public_plaintext_http_web_fetch"
+                    } else {
+                        "public_https_web_fetch"
+                    }
+                    .to_owned(),
+                ),
+                if plaintext_http {
+                    "只读 public HTTP fetch 由 Host URL/DNS/connect/redirect 安全门约束，结果明确标记为明文传输"
+                } else {
+                    "只读 public HTTPS fetch 由 Host URL/DNS/connect/redirect 安全门约束"
+                },
                 None,
             ));
         }
@@ -1002,7 +1021,7 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
         ),
         definition(
             "web_fetch",
-            "读取一个已知公开 HTTPS URL，返回有界正文、标题、canonical links、来源哈希与 external_untrusted 信任标记；不提供搜索、认证、Cookie、任意 header、脚本或浏览器执行。",
+            "读取一个已知公开 HTTP(S) URL，返回有界正文、标题、canonical links、received-content 来源哈希、传输轨迹与 external_untrusted 信任标记；HTTP 是不受保护的明文传输。不提供搜索、认证、Cookie、任意 header、脚本或浏览器执行。",
             web_fetch_schema(),
         ),
     ]
@@ -1651,16 +1670,29 @@ allow = ["git push"]
     #[test]
     fn web_fetch_schema_catalog_and_authorization_follow_existing_actor_policy() {
         let workspace = tempfile::tempdir().unwrap();
-        let valid = invocation(
+        let valid_https = invocation(
             "web_fetch",
             json!({"url":"https://example.com/docs","max_chars":4096}),
+        );
+        let valid_http = invocation(
+            "web_fetch",
+            json!({"url":"http://example.com/docs","max_chars":4096}),
         );
 
         let ask = ProductionToolExecutor::new(
             ProductionToolConfig::new(workspace.path())
                 .with_permission_mode(RunPermissionMode::Ask),
         );
-        assert!(ask.preflight(&valid).is_none());
+        assert!(ask.preflight(&valid_https).is_none());
+        assert!(ask.preflight(&valid_http).is_none());
+        let definition = ask
+            .definitions()
+            .into_iter()
+            .find(|definition| definition.name == "web_fetch")
+            .unwrap();
+        assert!(definition.description.contains("HTTP(S)"));
+        assert!(definition.description.contains("明文传输"));
+        assert!(definition.description.contains("external_untrusted"));
         assert_eq!(
             ask.definition_workspace_access("web_fetch"),
             WorkspaceAccess::ReadOnly
@@ -1669,7 +1701,7 @@ allow = ["git push"]
             .authorize(
                 RunPermissionMode::Ask,
                 &ToolExecutionGrant::Ordinary,
-                &valid,
+                &valid_http,
                 &workspace_state(),
             )
             .unwrap();
@@ -1683,19 +1715,21 @@ allow = ["git push"]
             let executor = ProductionToolExecutor::new(
                 ProductionToolConfig::new(workspace.path()).with_permission_mode(mode),
             );
-            let allowed = executor
-                .authorize(
-                    mode,
-                    &ToolExecutionGrant::Ordinary,
-                    &valid,
-                    &workspace_state(),
-                )
-                .unwrap();
-            assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
-            assert_eq!(
-                allowed.matched_rule.as_deref(),
-                Some("public_https_web_fetch")
-            );
+            for (invocation, expected_rule) in [
+                (&valid_https, "public_https_web_fetch"),
+                (&valid_http, "public_plaintext_http_web_fetch"),
+            ] {
+                let allowed = executor
+                    .authorize(
+                        mode,
+                        &ToolExecutionGrant::Ordinary,
+                        invocation,
+                        &workspace_state(),
+                    )
+                    .unwrap();
+                assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
+                assert_eq!(allowed.matched_rule.as_deref(), Some(expected_rule));
+            }
         }
 
         let writer = tempfile::tempdir().unwrap();
@@ -1708,7 +1742,7 @@ allow = ["git push"]
             .authorize(
                 RunPermissionMode::Agent,
                 &ToolExecutionGrant::Ordinary,
-                &valid,
+                &valid_http,
                 &workspace_state(),
             )
             .unwrap();
@@ -1726,7 +1760,7 @@ allow = ["git push"]
             "method",
             "path",
         ] {
-            let mut input = json!({"url":"https://example.com/"});
+            let mut input = json!({"url":"http://example.com/"});
             input
                 .as_object_mut()
                 .unwrap()
@@ -1750,14 +1784,24 @@ allow = ["git push"]
                 "web_fetch",
                 json!({"url":"http://169.254.169.254/latest"}),
             ))
-            .expect("non-HTTPS metadata URL must fail before authorization");
+            .expect("public HTTP metadata URL must fail before authorization");
         assert_eq!(
             unsafe_url.failure_code,
             Some(ToolFailureCode::InvocationRejected)
         );
         assert_eq!(
             unsafe_url.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
-            "web_scheme_denied"
+            "web_private_address_denied"
+        );
+        let unsafe_port = ask
+            .preflight(&invocation(
+                "web_fetch",
+                json!({"url":"http://example.com:8080/"}),
+            ))
+            .expect("non-default public HTTP port must fail before authorization");
+        assert_eq!(
+            unsafe_port.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
+            "web_http_port_denied"
         );
     }
 

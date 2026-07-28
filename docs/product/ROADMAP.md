@@ -216,8 +216,10 @@
 - ADR-0016 排序后的 continuation/Harness 离线复核已完成：可准入的重复 continuation loss
   为 0，`VerifiedMilestoneProjection` 不实施；same-DeepSeek structural baseline 已冻结，
   production Rust delta=0、official requests=0。
+- ADR-0017 W1.1 已完成并 keep：canonical `web_fetch` 已从 HTTPS-only 一次迁移为 public
+  HTTP(S) + monotonic transport provenance；M45/M46 未启动。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；M45/M46 尚未启动。
-- 当前 clean checkpoint 仍停在 ADR-0016；没有并行启动后续项。
+- ADR-0017 W1.1 形成 M45 前的新 clean checkpoint；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -6782,6 +6784,49 @@ tokens，费用 `$0.002387011`，低于 `$0.10` ceiling；没有 billing unknown
 targeted/full tests、fmt 与 diff check 均通过。M41 没有引入 search、Chrome/CDP、ApplicationProbe、
 视觉、第二 Provider/Runtime/Store、Web session、独立 accounting ledger、Manager/Factory/Service
 或 compatibility path，也没有改造 TUI/config 的 search-provider 管理面；因此 keep。
+
+### 39.5 ADR-0017 W1.1：public HTTP 与 transport provenance
+
+- 状态：**完成并 keep**
+- owner：`crates/tools` + 必要 `crates/app` caller/docs
+- 用户变化：以前 public `http://` 固定 `web_scheme_denied`；完成后 Agent 能读取默认端口 80
+  的公开 HTTP 文本，并明确知道任何 HTTP hop 都是 `plaintext_exposed/unprotected`。
+
+W1.1 一次迁移 URL preflight、Reqwest HTTP(S) client、scheme/port、manual redirect、canonical
+link extraction、authorization reason、catalog description、network fingerprint 与真实
+application reopen fixture。HTTP 只允许规范化端口 80；HTTPS→HTTP 和 HTTP→HTTPS→HTTP 在
+目标 DNS/connect 前以 `web_transport_downgrade` 拒绝。HTTP→HTTPS 可以升级，但最终 TLS 不会
+抹去之前的明文暴露。所有 userinfo、DNS 全地址 public-unicast、connect pin、metadata、proxy、
+Cookie、auth/header、GET-only、deadline、body/decompression、content type/charset 与 HTML
+script suppression 边界保持。
+
+成功与失败 outcome 区分 final scheme/security 和完整 trajectory/integrity，并记录 redirect
+count/upgrade；`source_sha256_scope=received_content_replay_identity` 明确 hash 不代表 publisher
+真实性。现有 JSON `ToolOutcome` 足以无损表达，预期 RuntimeEvent/State delta=0。W1.2 charset、
+W1.3 sniffing 与 HTTP 非 80 exact grant 只保留为后续 loss candidate，不进入本切片。
+
+deterministic owner tests 已覆盖 direct HTTP/HTTPS、默认/非默认 HTTP port、HTTP→HTTP、
+HTTP→HTTPS、HTTPS→HTTPS、两类 downgrade、HTTP/HTTPS literal/DNS/mixed/redirect SSRF、connect
+pin、failure provenance、deadline 后完整 trajectory、content/bounds/link 与 actor authorization。
+真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RunStore`
+fixture 已迁移为 HTTP，SQLite reopen 后 DNS/GET 仍为 1/1，没有再次访问网络。旧 HTTPS-only
+client、network identity、catalog 文案、HTTP scheme 反例和单一 authorization 假设已删除。
+
+唯一 credential-free public HTTP transport canary（maximum reruns=0）读取
+`http://example.com/`：status 200、final scheme/security `http/plaintext`、trajectory/integrity
+`plaintext_exposed/unprotected`、redirect 0、读取 388 bytes、返回 127 个正文字符、未截断，
+`source_sha256=sha256:ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d`。
+该 canary 未读取 DeepSeek Key、模型/官方请求 0、费用 `$0`，只证明真实 public HTTP transport
+可用，不构成质量、真实性或效率声明。
+
+focused、`cargo fmt --all -- --check`、`cargo test -p dse-tools --locked`（366 pass / 0 fail / 2
+ignored）、`cargo check -p dse-tools --locked`、真实 app caller/reopen、authority 23/23 和 diff
+check 均通过。pre-integration full gate 严格只运行一次：public/authority、fmt 与 workspace strict
+Clippy 通过；workspace tests 仅在既有 TUI PTY `foreign_provider...` 的并行 5 秒退出等待出现一次
+`exit=None`。该 exact test 随后隔离通过，完整 `dse-tui` package 以 focused 的串行合同复核为
+0 fail（773 unit、7 PTY、30 exec acceptance 及其余 integration/QA）；没有重跑 full，也没有把
+TUI test/gate 修改混入 W1.1。该 false-negative 与 `crates/tools`/必要 app caller 无调用或 diff
+交集，所有 workspace 测试语料最终均有 green evidence。
 
 ## 40. M42–M46：生产力后续顺序
 

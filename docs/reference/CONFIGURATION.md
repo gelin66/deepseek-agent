@@ -281,8 +281,10 @@ worktree. No configuration enables default multi-Writer or a second runtime.
 
 ## Web retrieval
 
-The canonical `web_fetch` tool reads a user-supplied public HTTPS URL and has
-no selectable provider. DSE does not currently expose a production
+The canonical `web_fetch` tool reads a user-supplied public HTTP(S) URL and has
+no selectable provider. Public HTTP is limited to port 80, remains
+`external_untrusted`, and is returned with explicit plaintext/unprotected
+transport provenance; HTTPS downgrade redirects are rejected. DSE does not currently expose a production
 `web_search` tool. The former `[search]` table and `DSE_SEARCH_*` environment
 variables had no executor and are rejected instead of being silently treated
 as an Agent capability.

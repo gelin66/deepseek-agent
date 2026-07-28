@@ -559,19 +559,25 @@ precedence cell 的归一化歧义均不向模型宣称可用。已接纳 body �
 拒绝。SQLite terminal reopen 只重放 committed `ToolOutcome`。它没有增加 Skill session/store、
 第二权限 owner、RuntimeEvent 或 State schema。
 
-M41 已在 `crates/tools` 加入 canonical `web_fetch(url, max_chars?)`。它只读取 public HTTPS，
-每一跳都重新执行 URL、DNS/IP、connect pin 与 redirect 安全门；system proxy、自动 redirect、
-Cookie、认证、任意 header、证书绕过和自动解压均未开放。当前硬边界为 5 次 redirect、15 秒
-总 deadline、1 MiB raw response、2 MiB decompressed body、50,000 个返回字符和 32 个 canonical
-link；只接受 UTF-8/US-ASCII 的 HTML/XHTML/plain text，HTML 提取不执行 script。
+M41 已在 `crates/tools` 加入 canonical `web_fetch(url, max_chars?)`；ADR-0017 W1.1 将它从
+HTTPS-only 一次迁移为 public HTTP(S)。HTTP 只允许规范化默认端口 80，HTTPS 保持既有端口行为；
+每一跳都重新执行 URL、DNS/IP、connect pin 与 redirect 安全门。trajectory 一旦进入 HTTPS，
+后续 HTTP target 在 DNS/connect 前以 `web_transport_downgrade` 拒绝。system proxy、自动
+redirect、Cookie、认证、任意 header、证书绕过和自动解压均未开放。当前硬边界仍为 5 次
+redirect、15 秒总 deadline、1 MiB raw response、2 MiB decompressed body、50,000 个返回字符和
+32 个 canonical link；只接受 UTF-8/US-ASCII 的 HTML/XHTML/plain text，HTML 提取不执行 script。
 
 成功结果携带 requested/final URL、status、media type、title、有界正文/链接、retrieved time、
-source SHA-256、读取/返回 bytes、truncation 和 `trust=external_untrusted`；Web-specific stable
-failure detail 放入现有 `ToolOutcome.metadata`，生命周期仍使用 canonical typed fields。没有改变
-RuntimeEvent 或 State schema，也没有 Web session/store/accounting ledger。committed outcome 经
-SQLite reopen 只重放，不重新 DNS/HTTP。root、coordinator 和 read-only child 依现有 read-only
-catalog 获得定义；Ask 因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess
-root 可执行，isolated Writer 继续由既有 network-denied sandbox 拒绝。
+source SHA-256、`source_sha256_scope=received_content_replay_identity`、读取/返回 bytes、
+truncation、final transport、完整 trajectory/integrity、redirect count、upgrade 与
+`trust=external_untrusted`。只要任一 hop 是 HTTP，trajectory/integrity 就保持
+`plaintext_exposed/unprotected`，即使 final response 是 HTTPS；hash 不表示 publisher
+真实性。Web-specific stable failure 及同一 transport provenance 放入现有
+`ToolOutcome.metadata`，生命周期仍使用 canonical typed fields。没有改变 RuntimeEvent 或 State
+schema，也没有 Web session/store/accounting ledger。committed outcome 经 SQLite reopen 只重放，
+不重新 DNS/HTTP。root、coordinator 和 read-only child 依现有 read-only catalog 获得定义；Ask
+因无可强制的 scoped network approval 而 fail closed，Agent/FullAccess root 可执行，isolated
+Writer 继续由既有 network-denied sandbox 拒绝。
 
 production 仍没有 `web_search` 或 browser tool。M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确

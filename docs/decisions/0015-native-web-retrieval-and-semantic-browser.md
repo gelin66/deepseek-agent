@@ -1,6 +1,7 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
-- 状态：已接受；W1 `web_fetch` 已交付，M44 search 决策为等待 Chat surface，其他层仍按证据逐项准入
+- 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
+  决策为等待 Chat surface，其他层仍按证据逐项准入
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire，并删除
@@ -222,13 +223,17 @@ bounded extracted text
 bounded canonical links
 retrieved_at
 source_sha256
+source_sha256_scope = received_content_replay_identity
 bytes_read / bytes_returned / truncated
+final_transport_scheme / final_transport_security
+transport_trajectory / transport_integrity / redirect_count / transport_upgraded
 trust = external_untrusted
 ```
 
 Host 必须执行：
 
-- 只接受 `https`；只有 TaskContract-scoped ApplicationProbe 才可接受精确 loopback `http`；
+- 按 [ADR-0017](0017-public-http-web-fetch.md) 接受 public `http:80` 与现有 `https`，拒绝
+  HTTPS→HTTP 及 HTTP→HTTPS→HTTP 降级；ApplicationProbe 的精确 loopback `http` 仍是另一能力；
 - 每次 DNS、connect 和 redirect 都拒绝未授权 loopback/private/link-local/multicast、云 metadata
   和非 HTTP(S) scheme，防止 SSRF、DNS rebinding 和 redirect escape；
 - 限制 redirect、response bytes、decompressed bytes、content type 和 deadline；
@@ -290,8 +295,8 @@ M44 对当前官方文档、production caller 和 canonical 类型完成逐项�
 Key 未读取、actual cost `$0`、maximum reruns=0。零请求不是成功 canary。M44 的 hold 原因是
 当前 Chat surface 没有 Web Search、而 compatibility 路线需要未经 ADR 授权且尚无 DeepSeek
 完整 fixture 的第二 wire；不是因为费用显示本身。若未来 canary 的 usage 不完整，只停止精确
-费用声明和后续付费重试，不抹掉已闭合的行为证据。现有 `web_fetch` 继续读取已知 public HTTPS
-URL，但用户仍不能让 Agent 从未知问题发现来源。
+费用声明和后续付费重试，不抹掉已闭合的行为证据。ADR-0017 W1.1 后 `web_fetch` 读取已知
+public HTTP(S) URL，但用户仍不能让 Agent 从未知问题发现来源。
 
 同一切片删除 TUI/config 中没有 canonical executor 的 Bing、DuckDuckGo、Tavily、Bocha、
 Metaso、SearXNG、Baidu、Volcengine、Sofya 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor

@@ -33,8 +33,101 @@ const MAX_LINK_CHARS: usize = 2_048;
 const MAX_TITLE_CHARS: usize = 512;
 const FETCH_DEADLINE: Duration = Duration::from_secs(15);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
-const NETWORK_IDENTITY: &str = "rustls_pinned_public_https_v1";
+const NETWORK_IDENTITY: &str = "rustls_pinned_public_http_https_monotonic_v2";
 const TRUST: &str = "external_untrusted";
+const SOURCE_SHA256_SCOPE: &str = "received_content_replay_identity";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebTransportScheme {
+    Http,
+    Https,
+}
+
+impl WebTransportScheme {
+    fn from_url(url: &Url) -> Option<Self> {
+        match url.scheme() {
+            "http" => Some(Self::Http),
+            "https" => Some(Self::Https),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    const fn final_security(self) -> &'static str {
+        match self {
+            Self::Http => "plaintext",
+            Self::Https => "tls_authenticated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TransportState {
+    secure_transport_seen: bool,
+    plaintext_exposed: bool,
+    request_started: bool,
+    transport_upgraded: bool,
+    redirect_count: usize,
+}
+
+impl TransportState {
+    const fn initial(scheme: WebTransportScheme) -> Self {
+        Self {
+            secure_transport_seen: matches!(scheme, WebTransportScheme::Https),
+            plaintext_exposed: false,
+            request_started: false,
+            transport_upgraded: false,
+            redirect_count: 0,
+        }
+    }
+
+    fn mark_request(&mut self, scheme: WebTransportScheme) {
+        self.request_started = true;
+        if scheme == WebTransportScheme::Http {
+            self.plaintext_exposed = true;
+        }
+    }
+
+    fn redirect_to(mut self, scheme: WebTransportScheme) -> Result<Self, FetchFailure> {
+        self.redirect_count += 1;
+        if self.secure_transport_seen && scheme == WebTransportScheme::Http {
+            return Err(FetchFailure::operation(
+                "web_transport_downgrade",
+                "redirect",
+                "已进入 HTTPS 的 fetch trajectory 不允许重定向回 HTTP",
+            ));
+        }
+        if scheme == WebTransportScheme::Https && !self.secure_transport_seen {
+            self.secure_transport_seen = true;
+            self.transport_upgraded = true;
+        }
+        Ok(self)
+    }
+
+    fn trajectory(self) -> Option<&'static str> {
+        self.request_started.then_some(if self.plaintext_exposed {
+            "plaintext_exposed"
+        } else {
+            "tls_only"
+        })
+    }
+
+    fn integrity(self) -> Option<&'static str> {
+        self.trajectory().map(|_| {
+            if self.plaintext_exposed {
+                "unprotected"
+            } else {
+                "tls_protected"
+            }
+        })
+    }
+}
 
 /// One response returned by the narrow HTTP seam used by `web_fetch`.
 ///
@@ -131,9 +224,24 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
         timeout: Duration,
     ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
         let host = url.host_str().ok_or_else(|| {
-            WebFetchNetworkError::new("web_url_host_missing", "HTTPS URL 缺少主机名")
+            WebFetchNetworkError::new("web_url_host_missing", "HTTP(S) URL 缺少主机名")
         })?;
-        let expected_port = url.port_or_known_default().unwrap_or(443);
+        let expected_port = match (url.scheme(), url.port_or_known_default()) {
+            ("http", Some(80)) => 80,
+            ("https", Some(port)) => port,
+            ("http", Some(_)) => {
+                return Err(WebFetchNetworkError::new(
+                    "web_http_port_denied",
+                    "公开 HTTP 只允许默认端口 80",
+                ));
+            }
+            _ => {
+                return Err(WebFetchNetworkError::new(
+                    "web_scheme_denied",
+                    "只允许 public HTTP(S) URL",
+                ));
+            }
+        };
         if pinned_addresses.is_empty()
             || pinned_addresses
                 .iter()
@@ -141,7 +249,7 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
         {
             return Err(WebFetchNetworkError::new(
                 "web_connect_target_denied",
-                "连接目标未通过 public HTTPS IP 安全门",
+                "连接目标未通过 public HTTP(S) IP 安全门",
             ));
         }
 
@@ -151,7 +259,7 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
             .no_proxy()
             .referer(false)
             .no_gzip()
-            .https_only(true)
+            .https_only(false)
             .connect_timeout(CONNECT_DEADLINE.min(timeout))
             .timeout(timeout)
             .resolve_to_addrs(host, pinned_addresses)
@@ -159,7 +267,7 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
             .map_err(|error| {
                 WebFetchNetworkError::new(
                     "web_http_client_failed",
-                    format!("无法构造受限 HTTPS client：{error}"),
+                    format!("无法构造受限 HTTP(S) client：{error}"),
                 )
             })?;
         let response = client
@@ -183,7 +291,7 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
                 } else {
                     "web_request_failed"
                 };
-                WebFetchNetworkError::new(code, format!("HTTPS 请求失败：{error}"))
+                WebFetchNetworkError::new(code, format!("HTTP(S) 请求失败：{error}"))
             })?;
 
         let status = response.status().as_u16();
@@ -225,7 +333,7 @@ impl WebFetchNetwork for SystemWebFetchNetwork {
             let chunk = chunk.map_err(|error| {
                 WebFetchNetworkError::new(
                     "web_body_read_failed",
-                    format!("读取 HTTPS response body 失败：{error}"),
+                    format!("读取 HTTP(S) response body 失败：{error}"),
                 )
             })?;
             if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
@@ -247,6 +355,7 @@ struct FetchFailure {
     message: String,
     final_url: Option<String>,
     status: Option<u16>,
+    transport_state: Option<TransportState>,
     transport: bool,
     retry: ToolRetryDisposition,
 }
@@ -259,6 +368,7 @@ impl FetchFailure {
             message: message.into(),
             final_url: None,
             status: None,
+            transport_state: None,
             transport: false,
             retry: ToolRetryDisposition::NotRetryable,
         }
@@ -271,6 +381,7 @@ impl FetchFailure {
             message: message.into(),
             final_url: None,
             status: None,
+            transport_state: None,
             transport: false,
             retry: ToolRetryDisposition::NotRetryable,
         }
@@ -283,13 +394,15 @@ impl FetchFailure {
             message: message.into(),
             final_url: None,
             status: None,
+            transport_state: None,
             transport: true,
             retry: ToolRetryDisposition::Safe,
         }
     }
 
-    fn at_url(mut self, url: &Url) -> Self {
+    fn at_url(mut self, url: &Url, transport_state: TransportState) -> Self {
         self.final_url = Some(url.as_str().to_owned());
+        self.transport_state = Some(transport_state);
         self
     }
 
@@ -310,9 +423,16 @@ struct WebFetchResult {
     links: Vec<String>,
     retrieved_at: String,
     source_sha256: String,
+    source_sha256_scope: &'static str,
     bytes_read: u64,
     bytes_returned: u64,
     truncated: bool,
+    final_transport_scheme: &'static str,
+    final_transport_security: &'static str,
+    transport_trajectory: &'static str,
+    transport_integrity: &'static str,
+    redirect_count: usize,
+    transport_upgraded: bool,
     trust: &'static str,
 }
 
@@ -362,6 +482,13 @@ async fn execute_web_fetch_with_deadline(
                 .with_side_effect(ToolSideEffectStatus::NotApplicable);
         }
     };
+    let initial = match parse_and_validate_url(&requested) {
+        Ok(url) => url,
+        Err(failure) => return operation_outcome(&requested, failure),
+    };
+    let initial_scheme = WebTransportScheme::from_url(&initial)
+        .expect("validated web_fetch URL has an HTTP(S) scheme");
+    let initial_transport = TransportState::initial(initial_scheme);
     if !network_allowed {
         return operation_outcome(
             &requested,
@@ -369,20 +496,17 @@ async fn execute_web_fetch_with_deadline(
                 "web_network_not_authorized",
                 "authorization",
                 "当前 Run permission 或 actor sandbox 禁止网络访问",
-            ),
+            )
+            .at_url(&initial, initial_transport),
         );
     }
     let max_chars = usize::try_from(optional_u64(&input, "max_chars", DEFAULT_MAX_CHARS as u64))
         .unwrap_or(MAX_MAX_CHARS)
         .clamp(1, MAX_MAX_CHARS);
-    let initial = match parse_and_validate_url(&requested) {
-        Ok(url) => url,
-        Err(failure) => return operation_outcome(&requested, failure),
-    };
-
+    let progress = std::sync::Mutex::new((initial.clone(), initial_transport));
     match tokio::time::timeout(
         deadline,
-        fetch_inner(&requested, initial, max_chars, network.as_ref()),
+        fetch_inner(&requested, initial, max_chars, network.as_ref(), &progress),
     )
     .await
     {
@@ -390,14 +514,18 @@ async fn execute_web_fetch_with_deadline(
             .expect("bounded web_fetch result is serializable")
             .with_side_effect(ToolSideEffectStatus::NotApplicable),
         Ok(Err(failure)) => operation_outcome(&requested, failure),
-        Err(_) => operation_outcome(
-            &requested,
-            FetchFailure::transport(
-                "web_deadline_exceeded",
-                "deadline",
-                format!("web_fetch 超过 {} ms 总时限", deadline.as_millis()),
-            ),
-        ),
+        Err(_) => {
+            let (current, transport) = progress.lock().expect("web_fetch progress lock").clone();
+            operation_outcome(
+                &requested,
+                FetchFailure::transport(
+                    "web_deadline_exceeded",
+                    "deadline",
+                    format!("web_fetch 超过 {} ms 总时限", deadline.as_millis()),
+                )
+                .at_url(&current, transport),
+            )
+        }
     }
 }
 
@@ -406,31 +534,44 @@ async fn fetch_inner(
     initial: Url,
     max_chars: usize,
     network: &dyn WebFetchNetwork,
+    progress: &std::sync::Mutex<(Url, TransportState)>,
 ) -> Result<WebFetchResult, FetchFailure> {
     let mut current = initial;
     let mut visited = HashSet::from([current.as_str().to_owned()]);
     let mut redirects = 0usize;
+    let mut transport = TransportState::initial(
+        WebTransportScheme::from_url(&current)
+            .expect("validated web_fetch URL has an HTTP(S) scheme"),
+    );
 
     loop {
-        validate_url_host(&current).map_err(|failure| failure.at_url(&current))?;
+        *progress.lock().expect("web_fetch progress lock") = (current.clone(), transport);
+        validate_url_host(&current).map_err(|failure| failure.at_url(&current, transport))?;
         let host = current.host_str().ok_or_else(|| {
-            FetchFailure::operation("web_url_host_missing", "url", "HTTPS URL 缺少主机名")
-                .at_url(&current)
+            FetchFailure::operation("web_url_host_missing", "url", "HTTP(S) URL 缺少主机名")
+                .at_url(&current, transport)
         })?;
-        let port = current.port_or_known_default().unwrap_or(443);
+        let scheme = WebTransportScheme::from_url(&current)
+            .expect("validated web_fetch URL has an HTTP(S) scheme");
+        let port = current
+            .port_or_known_default()
+            .expect("HTTP(S) URL has a known port");
         let mut addresses = network.resolve(host, port).await.map_err(|error| {
-            FetchFailure::transport(error.code, "dns", error.message).at_url(&current)
+            FetchFailure::transport(error.code, "dns", error.message).at_url(&current, transport)
         })?;
         validate_resolved_addresses(&addresses, port)
-            .map_err(|failure| failure.at_url(&current))?;
+            .map_err(|failure| failure.at_url(&current, transport))?;
         addresses.sort_unstable();
         addresses.dedup();
 
+        transport.mark_request(scheme);
+        *progress.lock().expect("web_fetch progress lock") = (current.clone(), transport);
         let response = network
             .get(&current, &addresses, FETCH_DEADLINE)
             .await
             .map_err(|error| {
-                FetchFailure::transport(error.code, "request", error.message).at_url(&current)
+                FetchFailure::transport(error.code, "request", error.message)
+                    .at_url(&current, transport)
             })?;
         if let Some(length) = response
             .header(CONTENT_LENGTH.as_str())
@@ -442,7 +583,7 @@ async fn fetch_inner(
                 "body",
                 format!("响应声明 {length} bytes，超过 {MAX_RESPONSE_BYTES} bytes 上限"),
             )
-            .at_url(&current)
+            .at_url(&current, transport)
             .with_status(response.status));
         }
         if response.body.len() > MAX_RESPONSE_BYTES
@@ -453,7 +594,7 @@ async fn fetch_inner(
                 "body",
                 format!("响应超过 {MAX_RESPONSE_BYTES} bytes 上限"),
             )
-            .at_url(&current)
+            .at_url(&current, transport)
             .with_status(response.status));
         }
 
@@ -464,7 +605,7 @@ async fn fetch_inner(
                     "redirect",
                     format!("redirect 超过 {MAX_REDIRECTS} 次上限"),
                 )
-                .at_url(&current)
+                .at_url(&current, transport)
                 .with_status(response.status));
             }
             let location = response.header(LOCATION.as_str()).ok_or_else(|| {
@@ -473,7 +614,7 @@ async fn fetch_inner(
                     "redirect",
                     "redirect response 缺少 Location",
                 )
-                .at_url(&current)
+                .at_url(&current, transport)
                 .with_status(response.status)
             })?;
             let mut next = current.join(location).map_err(|error| {
@@ -482,23 +623,34 @@ async fn fetch_inner(
                     "redirect",
                     format!("redirect Location 无效：{error}"),
                 )
-                .at_url(&current)
+                .at_url(&current, transport)
                 .with_status(response.status)
             })?;
             next.set_fragment(None);
-            validate_url_host(&next)
-                .map_err(|failure| failure.at_url(&next).with_status(response.status))?;
+            validate_url_host(&next).map_err(|failure| {
+                failure
+                    .at_url(&next, transport)
+                    .with_status(response.status)
+            })?;
+            let next_scheme = WebTransportScheme::from_url(&next)
+                .expect("validated redirect target has an HTTP(S) scheme");
+            let next_transport = transport.redirect_to(next_scheme).map_err(|failure| {
+                let mut denied = transport;
+                denied.redirect_count += 1;
+                failure.at_url(&next, denied).with_status(response.status)
+            })?;
             if !visited.insert(next.as_str().to_owned()) {
                 return Err(FetchFailure::operation(
                     "web_redirect_loop",
                     "redirect",
                     "redirect 形成循环",
                 )
-                .at_url(&next)
+                .at_url(&next, next_transport)
                 .with_status(response.status));
             }
             redirects += 1;
             current = next;
+            transport = next_transport;
             continue;
         }
 
@@ -506,18 +658,29 @@ async fn fetch_inner(
             return Err(FetchFailure::operation(
                 "web_http_status",
                 "response",
-                format!("HTTPS response status {} 不可读取", response.status),
+                format!("HTTP(S) response status {} 不可读取", response.status),
             )
-            .at_url(&current)
+            .at_url(&current, transport)
             .with_status(response.status));
         }
-        let media = parse_media_type(response.header(CONTENT_TYPE.as_str()))
-            .map_err(|failure| failure.at_url(&current).with_status(response.status))?;
+        let media =
+            parse_media_type(response.header(CONTENT_TYPE.as_str())).map_err(|failure| {
+                failure
+                    .at_url(&current, transport)
+                    .with_status(response.status)
+            })?;
         let source =
             decode_response_body(&response.body, response.header(CONTENT_ENCODING.as_str()))
-                .map_err(|failure| failure.at_url(&current).with_status(response.status))?;
-        let source_text = decode_utf8_source(&source, &media.charset)
-            .map_err(|failure| failure.at_url(&current).with_status(response.status))?;
+                .map_err(|failure| {
+                    failure
+                        .at_url(&current, transport)
+                        .with_status(response.status)
+                })?;
+        let source_text = decode_utf8_source(&source, &media.charset).map_err(|failure| {
+            failure
+                .at_url(&current, transport)
+                .with_status(response.status)
+        })?;
         let extracted = if media.is_html {
             extract_html(source_text, &current)
         } else {
@@ -537,6 +700,12 @@ async fn fetch_inner(
                 .collect::<String>()
         );
         let bytes_returned = u64::try_from(text.len()).unwrap_or(u64::MAX);
+        let transport_trajectory = transport
+            .trajectory()
+            .expect("successful web_fetch has a transport trajectory");
+        let transport_integrity = transport
+            .integrity()
+            .expect("successful web_fetch has transport integrity");
         return Ok(WebFetchResult {
             requested_url: requested.to_owned(),
             final_url: current.as_str().to_owned(),
@@ -547,9 +716,16 @@ async fn fetch_inner(
             links: extracted.links,
             retrieved_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             source_sha256,
+            source_sha256_scope: SOURCE_SHA256_SCOPE,
             bytes_read: response.bytes_read,
             bytes_returned,
             truncated: text_truncated || extracted.links_truncated,
+            final_transport_scheme: scheme.as_str(),
+            final_transport_security: scheme.final_security(),
+            transport_trajectory,
+            transport_integrity,
+            redirect_count: transport.redirect_count,
+            transport_upgraded: transport.transport_upgraded,
             trust: TRUST,
         });
     }
@@ -590,11 +766,25 @@ fn operation_outcome(requested: &str, failure: FetchFailure) -> ToolOutcome {
 }
 
 fn failure_metadata(requested: &str, failure: &FetchFailure) -> Value {
+    let final_scheme = failure
+        .final_url
+        .as_deref()
+        .and_then(|url| Url::parse(url).ok())
+        .as_ref()
+        .and_then(WebTransportScheme::from_url);
+    let transport_trajectory = failure.transport_state.and_then(TransportState::trajectory);
+    let transport_integrity = failure.transport_state.and_then(TransportState::integrity);
     json!({
         "web_fetch": {
             "requested_url": requested,
             "final_url": failure.final_url,
             "status": failure.status,
+            "final_transport_scheme": final_scheme.map(WebTransportScheme::as_str),
+            "final_transport_security": final_scheme.map(WebTransportScheme::final_security),
+            "transport_trajectory": transport_trajectory,
+            "transport_integrity": transport_integrity,
+            "redirect_count": failure.transport_state.map(|state| state.redirect_count),
+            "transport_upgraded": failure.transport_state.map(|state| state.transport_upgraded),
             "trust": TRUST,
             "failure": {
                 "code": failure.code,
@@ -617,16 +807,27 @@ fn parse_and_validate_url(requested: &str) -> Result<Url, FetchFailure> {
         FetchFailure::rejected("web_url_invalid", "url", format!("URL 解析失败：{error}"))
     })?;
     url.set_fragment(None);
-    validate_url_host(&url)?;
+    if let Err(failure) = validate_url_host(&url) {
+        return Err(match WebTransportScheme::from_url(&url) {
+            Some(scheme) => failure.at_url(&url, TransportState::initial(scheme)),
+            None => failure,
+        });
+    }
     Ok(url)
 }
 
 fn validate_url_host(url: &Url) -> Result<(), FetchFailure> {
-    if url.scheme() != "https" {
+    let scheme = WebTransportScheme::from_url(url).ok_or_else(|| {
+        FetchFailure::rejected("web_scheme_denied", "url", "只允许 public HTTP(S) URL")
+    })?;
+    let port = url.port_or_known_default().ok_or_else(|| {
+        FetchFailure::rejected("web_port_missing", "url", "HTTP(S) URL 缺少有效端口")
+    })?;
+    if scheme == WebTransportScheme::Http && port != 80 {
         return Err(FetchFailure::rejected(
-            "web_scheme_denied",
+            "web_http_port_denied",
             "url",
-            "只允许 https URL",
+            "公开 HTTP 只允许默认端口 80",
         ));
     }
     if !url.username().is_empty() || url.password().is_some() {
@@ -637,7 +838,7 @@ fn validate_url_host(url: &Url) -> Result<(), FetchFailure> {
         ));
     }
     let host = url.host_str().ok_or_else(|| {
-        FetchFailure::rejected("web_url_host_missing", "url", "HTTPS URL 缺少主机名")
+        FetchFailure::rejected("web_url_host_missing", "url", "HTTP(S) URL 缺少主机名")
     })?;
     let normalized = host.trim_end_matches('.').to_ascii_lowercase();
     if normalized == "localhost"
@@ -690,7 +891,7 @@ fn validate_resolved_addresses(
         return Err(FetchFailure::operation(
             "web_dns_target_denied",
             "dns",
-            format!("DNS/连接目标 {address} 不是允许的 public HTTPS 地址"),
+            format!("DNS/连接目标 {address} 不是允许的 public HTTP(S) 地址"),
         ));
     }
     Ok(())
@@ -1281,14 +1482,15 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::Write;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use flate2::Compression;
     use flate2::write::GzEncoder;
 
     use super::*;
 
-    fn public_address() -> SocketAddr {
-        "93.184.216.34:443".parse().unwrap()
+    fn public_address(port: u16) -> SocketAddr {
+        SocketAddr::new("93.184.216.34".parse().unwrap(), port)
     }
 
     #[derive(Default)]
@@ -1373,6 +1575,47 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct HttpUpgradeThenPendingNetwork {
+        resolve_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl WebFetchNetwork for HttpUpgradeThenPendingNetwork {
+        fn identity(&self) -> &str {
+            "http_upgrade_then_pending_v1"
+        }
+
+        async fn resolve(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> Result<Vec<SocketAddr>, WebFetchNetworkError> {
+            if self.resolve_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(vec![public_address(80)])
+            } else {
+                std::future::pending().await
+            }
+        }
+
+        async fn get(
+            &self,
+            url: &Url,
+            _pinned_addresses: &[SocketAddr],
+            _timeout: Duration,
+        ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
+            assert_eq!(url.as_str(), "http://example.com/start");
+            Ok(WebFetchHttpResponse::new(
+                302,
+                BTreeMap::from([(
+                    LOCATION.as_str().to_owned(),
+                    "https://example.com/final".to_owned(),
+                )]),
+                Vec::new(),
+            ))
+        }
+    }
+
     fn html_response(status: u16, html: &str) -> WebFetchHttpResponse {
         WebFetchHttpResponse::new(
             status,
@@ -1385,19 +1628,22 @@ mod tests {
     }
 
     #[test]
-    fn url_gate_rejects_scheme_userinfo_metadata_and_literal_ssrf_targets() {
+    fn url_gate_allows_public_http_default_port_and_rejects_all_other_boundaries() {
         for (url, code) in [
-            ("http://example.com/", "web_scheme_denied"),
             ("file:///etc/passwd", "web_scheme_denied"),
+            ("http://example.com:8080/", "web_http_port_denied"),
+            ("http://user:pass@example.com/", "web_userinfo_denied"),
             ("https://user:pass@example.com/", "web_userinfo_denied"),
+            ("http://localhost/", "web_metadata_target_denied"),
             ("https://localhost/", "web_metadata_target_denied"),
             (
-                "https://metadata.google.internal/",
+                "http://metadata.google.internal/",
                 "web_metadata_target_denied",
             ),
+            ("http://127.0.0.1/", "web_private_address_denied"),
             ("https://127.0.0.1/", "web_private_address_denied"),
             (
-                "https://169.254.169.254/latest",
+                "http://169.254.169.254/latest",
                 "web_private_address_denied",
             ),
             ("https://[::1]/", "web_private_address_denied"),
@@ -1405,6 +1651,8 @@ mod tests {
         ] {
             assert_eq!(parse_and_validate_url(url).unwrap_err().code, code, "{url}");
         }
+        assert!(parse_and_validate_url("http://example.com/path?q=1#part").is_ok());
+        assert!(parse_and_validate_url("http://example.com:80/path").is_ok());
         assert!(parse_and_validate_url("https://example.com/path?q=1#part").is_ok());
     }
 
@@ -1444,7 +1692,7 @@ mod tests {
             Vec::new(),
         );
         let network = Arc::new(ScriptedNetwork::with_steps(
-            vec![Ok(vec![public_address()]), Ok(vec![public_address()])],
+            vec![Ok(vec![public_address(443)]), Ok(vec![public_address(443)])],
             vec![
                 Ok(redirect),
                 Ok(html_response(
@@ -1467,7 +1715,17 @@ mod tests {
         assert_eq!(payload["media_type"], "text/html");
         assert_eq!(payload["title"], "Example & page");
         assert_eq!(payload["text"], "Hello\npublic text\nDocsNo");
-        assert_eq!(payload["links"], json!(["https://example.com/docs"]));
+        assert_eq!(
+            payload["links"],
+            json!(["https://example.com/docs", "http://unsafe.test/"])
+        );
+        assert_eq!(payload["final_transport_scheme"], "https");
+        assert_eq!(payload["final_transport_security"], "tls_authenticated");
+        assert_eq!(payload["transport_trajectory"], "tls_only");
+        assert_eq!(payload["transport_integrity"], "tls_protected");
+        assert_eq!(payload["redirect_count"], 1);
+        assert_eq!(payload["transport_upgraded"], false);
+        assert_eq!(payload["source_sha256_scope"], SOURCE_SHA256_SCOPE);
         assert_eq!(payload["trust"], TRUST);
         assert!(!payload["text"].as_str().unwrap().contains("steal"));
         assert!(
@@ -1483,47 +1741,251 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|(_, addresses)| addresses == &[public_address()])
+                .all(|(_, addresses)| addresses == &[public_address(443)])
         );
     }
 
     #[tokio::test]
-    async fn dns_rebinding_and_mixed_public_private_answers_fail_before_connect() {
-        for addresses in [
-            vec!["127.0.0.1:443".parse().unwrap()],
-            vec![public_address(), "169.254.169.254:443".parse().unwrap()],
+    async fn direct_http_and_https_results_have_exact_transport_and_hash_provenance() {
+        for (url, port, scheme, security, trajectory, integrity) in [
+            (
+                "http://example.com/plain",
+                80,
+                "http",
+                "plaintext",
+                "plaintext_exposed",
+                "unprotected",
+            ),
+            (
+                "https://example.com/secure",
+                443,
+                "https",
+                "tls_authenticated",
+                "tls_only",
+                "tls_protected",
+            ),
         ] {
-            let network = Arc::new(ScriptedNetwork::with_steps(vec![Ok(addresses)], vec![]));
-            let outcome =
-                execute_web_fetch(json!({"url":"https://example.com/"}), network.clone(), true)
-                    .await;
+            let network = Arc::new(ScriptedNetwork::with_steps(
+                vec![Ok(vec![public_address(port)])],
+                vec![Ok(WebFetchHttpResponse::new(
+                    200,
+                    BTreeMap::from([(
+                        CONTENT_TYPE.as_str().to_owned(),
+                        "text/plain; charset=utf-8".to_owned(),
+                    )]),
+                    b"known text".to_vec(),
+                ))],
+            ));
+            let outcome = execute_web_fetch(json!({"url":url}), network.clone(), true).await;
+            assert!(outcome.is_success(), "{}", outcome.content);
+            let payload: Value = serde_json::from_str(&outcome.content).unwrap();
+            assert_eq!(payload["final_transport_scheme"], scheme);
+            assert_eq!(payload["final_transport_security"], security);
+            assert_eq!(payload["transport_trajectory"], trajectory);
+            assert_eq!(payload["transport_integrity"], integrity);
+            assert_eq!(payload["redirect_count"], 0);
+            assert_eq!(payload["transport_upgraded"], false);
+            assert_eq!(payload["trust"], TRUST);
+            assert_eq!(payload["source_sha256_scope"], SOURCE_SHA256_SCOPE);
             assert_eq!(
-                outcome.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
-                "web_dns_target_denied"
+                network.requests.lock().unwrap().as_slice(),
+                &[(url.to_owned(), vec![public_address(port)])]
             );
-            assert!(network.requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn public_http_transport_failure_retains_plaintext_provenance_without_page_text() {
+        let network = Arc::new(ScriptedNetwork::with_steps(
+            vec![Ok(vec![public_address(80)])],
+            vec![Err(WebFetchNetworkError::new(
+                "web_connect_failed",
+                "fixture connection failure",
+            ))],
+        ));
+        let outcome =
+            execute_web_fetch(json!({"url":"http://example.com/failure"}), network, true).await;
+        assert_eq!(outcome.failure_code, Some(ToolFailureCode::TransportFailed));
+        let metadata = &outcome.metadata.as_ref().unwrap()["web_fetch"];
+        assert_eq!(metadata["final_url"], "http://example.com/failure");
+        assert_eq!(metadata["final_transport_scheme"], "http");
+        assert_eq!(metadata["final_transport_security"], "plaintext");
+        assert_eq!(metadata["transport_trajectory"], "plaintext_exposed");
+        assert_eq!(metadata["transport_integrity"], "unprotected");
+        assert_eq!(metadata["failure"]["code"], "web_connect_failed");
+        assert!(metadata.get("text").is_none());
+        outcome.validate().unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_redirects_are_monotonic_and_preserve_plaintext_trajectory() {
+        for (location, final_scheme, final_security, upgraded, final_port) in [
+            ("http://example.com/final", "http", "plaintext", false, 80),
+            (
+                "https://example.com/final",
+                "https",
+                "tls_authenticated",
+                true,
+                443,
+            ),
+        ] {
+            let network = Arc::new(ScriptedNetwork::with_steps(
+                vec![
+                    Ok(vec![public_address(80)]),
+                    Ok(vec![public_address(final_port)]),
+                ],
+                vec![
+                    Ok(WebFetchHttpResponse::new(
+                        302,
+                        BTreeMap::from([(LOCATION.as_str().to_owned(), location.to_owned())]),
+                        Vec::new(),
+                    )),
+                    Ok(html_response(200, "<body>redirected</body>")),
+                ],
+            ));
+            let outcome = execute_web_fetch(
+                json!({"url":"http://example.com/start"}),
+                network.clone(),
+                true,
+            )
+            .await;
+            assert!(outcome.is_success(), "{}", outcome.content);
+            let payload: Value = serde_json::from_str(&outcome.content).unwrap();
+            assert_eq!(payload["final_url"], location);
+            assert_eq!(payload["final_transport_scheme"], final_scheme);
+            assert_eq!(payload["final_transport_security"], final_security);
+            assert_eq!(payload["transport_trajectory"], "plaintext_exposed");
+            assert_eq!(payload["transport_integrity"], "unprotected");
+            assert_eq!(payload["redirect_count"], 1);
+            assert_eq!(payload["transport_upgraded"], upgraded);
+            assert_eq!(network.requests.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn https_and_upgraded_http_trajectories_reject_downgrade_before_dns_or_connect() {
+        let direct = Arc::new(ScriptedNetwork::with_steps(
+            vec![Ok(vec![public_address(443)])],
+            vec![Ok(WebFetchHttpResponse::new(
+                302,
+                BTreeMap::from([(
+                    LOCATION.as_str().to_owned(),
+                    "http://example.com/plain".to_owned(),
+                )]),
+                Vec::new(),
+            ))],
+        ));
+        let outcome = execute_web_fetch(
+            json!({"url":"https://example.com/secure"}),
+            direct.clone(),
+            true,
+        )
+        .await;
+        let metadata = &outcome.metadata.as_ref().unwrap()["web_fetch"];
+        assert_eq!(metadata["failure"]["code"], "web_transport_downgrade");
+        assert_eq!(metadata["final_transport_scheme"], "http");
+        assert_eq!(metadata["transport_trajectory"], "tls_only");
+        assert_eq!(metadata["transport_integrity"], "tls_protected");
+        assert_eq!(metadata["redirect_count"], 1);
+        assert_eq!(metadata["transport_upgraded"], false);
+        assert!(direct.resolutions.lock().unwrap().is_empty());
+        assert_eq!(direct.requests.lock().unwrap().len(), 1);
+
+        let upgraded = Arc::new(ScriptedNetwork::with_steps(
+            vec![Ok(vec![public_address(80)]), Ok(vec![public_address(443)])],
+            vec![
+                Ok(WebFetchHttpResponse::new(
+                    302,
+                    BTreeMap::from([(
+                        LOCATION.as_str().to_owned(),
+                        "https://example.com/secure".to_owned(),
+                    )]),
+                    Vec::new(),
+                )),
+                Ok(WebFetchHttpResponse::new(
+                    302,
+                    BTreeMap::from([(
+                        LOCATION.as_str().to_owned(),
+                        "http://example.com/plain".to_owned(),
+                    )]),
+                    Vec::new(),
+                )),
+            ],
+        ));
+        let outcome = execute_web_fetch(
+            json!({"url":"http://example.com/start"}),
+            upgraded.clone(),
+            true,
+        )
+        .await;
+        let metadata = &outcome.metadata.as_ref().unwrap()["web_fetch"];
+        assert_eq!(metadata["failure"]["code"], "web_transport_downgrade");
+        assert_eq!(metadata["final_transport_scheme"], "http");
+        assert_eq!(metadata["transport_trajectory"], "plaintext_exposed");
+        assert_eq!(metadata["transport_integrity"], "unprotected");
+        assert_eq!(metadata["redirect_count"], 2);
+        assert_eq!(metadata["transport_upgraded"], true);
+        assert!(upgraded.resolutions.lock().unwrap().is_empty());
+        assert_eq!(upgraded.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_and_mixed_public_private_answers_fail_before_connect() {
+        for (url, port) in [("http://example.com/", 80), ("https://example.com/", 443)] {
+            for addresses in [
+                vec![SocketAddr::new("127.0.0.1".parse().unwrap(), port)],
+                vec![
+                    public_address(port),
+                    SocketAddr::new("169.254.169.254".parse().unwrap(), port),
+                ],
+            ] {
+                let network = Arc::new(ScriptedNetwork::with_steps(vec![Ok(addresses)], vec![]));
+                let outcome = execute_web_fetch(json!({"url":url}), network.clone(), true).await;
+                assert_eq!(
+                    outcome.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
+                    "web_dns_target_denied"
+                );
+                assert!(network.requests.lock().unwrap().is_empty());
+            }
         }
     }
 
     #[tokio::test]
     async fn redirect_escape_is_blocked_without_resolving_or_connecting_target() {
-        for location in [
-            "http://example.com/plain",
-            "https://user:pass@example.com/secret",
-            "https://169.254.169.254/latest/meta-data",
+        for (initial, initial_port, location, expected_code) in [
+            (
+                "https://example.com/",
+                443,
+                "http://example.com/plain",
+                "web_transport_downgrade",
+            ),
+            (
+                "http://example.com/",
+                80,
+                "http://user:pass@example.com/secret",
+                "web_userinfo_denied",
+            ),
+            (
+                "http://example.com/",
+                80,
+                "http://169.254.169.254/latest/meta-data",
+                "web_private_address_denied",
+            ),
         ] {
             let network = Arc::new(ScriptedNetwork::with_steps(
-                vec![Ok(vec![public_address()])],
+                vec![Ok(vec![public_address(initial_port)])],
                 vec![Ok(WebFetchHttpResponse::new(
                     302,
                     BTreeMap::from([(LOCATION.as_str().to_owned(), location.to_owned())]),
                     Vec::new(),
                 ))],
             ));
-            let outcome =
-                execute_web_fetch(json!({"url":"https://example.com/"}), network.clone(), true)
-                    .await;
+            let outcome = execute_web_fetch(json!({"url":initial}), network.clone(), true).await;
             assert!(!outcome.is_success());
+            assert_eq!(
+                outcome.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
+                expected_code
+            );
             assert_eq!(network.requests.lock().unwrap().len(), 1);
             assert!(network.resolutions.lock().unwrap().is_empty());
         }
@@ -1532,7 +1994,7 @@ mod tests {
     #[tokio::test]
     async fn redirect_limit_and_loop_are_typed_and_bounded() {
         let resolutions = (0..=MAX_REDIRECTS)
-            .map(|_| Ok(vec![public_address()]))
+            .map(|_| Ok(vec![public_address(443)]))
             .collect::<Vec<_>>();
         let responses = (0..=MAX_REDIRECTS)
             .map(|index| {
@@ -1560,7 +2022,7 @@ mod tests {
         assert_eq!(network.requests.lock().unwrap().len(), MAX_REDIRECTS + 1);
 
         let looped = Arc::new(ScriptedNetwork::with_steps(
-            vec![Ok(vec![public_address()])],
+            vec![Ok(vec![public_address(443)])],
             vec![Ok(WebFetchHttpResponse::new(
                 302,
                 BTreeMap::from([(
@@ -1592,6 +2054,27 @@ mod tests {
             outcome.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
             "web_deadline_exceeded"
         );
+        outcome.validate().unwrap();
+    }
+
+    #[tokio::test]
+    async fn total_deadline_retains_full_http_upgrade_trajectory() {
+        let outcome = execute_web_fetch_with_deadline(
+            json!({"url":"http://example.com/start"}),
+            Arc::new(HttpUpgradeThenPendingNetwork::default()),
+            true,
+            Duration::from_millis(10),
+        )
+        .await;
+        let metadata = &outcome.metadata.as_ref().unwrap()["web_fetch"];
+        assert_eq!(metadata["failure"]["code"], "web_deadline_exceeded");
+        assert_eq!(metadata["final_url"], "https://example.com/final");
+        assert_eq!(metadata["final_transport_scheme"], "https");
+        assert_eq!(metadata["final_transport_security"], "tls_authenticated");
+        assert_eq!(metadata["transport_trajectory"], "plaintext_exposed");
+        assert_eq!(metadata["transport_integrity"], "unprotected");
+        assert_eq!(metadata["redirect_count"], 1);
+        assert_eq!(metadata["transport_upgraded"], true);
         outcome.validate().unwrap();
     }
 
@@ -1656,7 +2139,7 @@ mod tests {
         ];
         for (response, expected) in cases {
             let network = Arc::new(ScriptedNetwork::with_steps(
-                vec![Ok(vec![public_address()])],
+                vec![Ok(vec![public_address(443)])],
                 vec![Ok(response)],
             ));
             let outcome =
@@ -1706,7 +2189,7 @@ mod tests {
             .collect::<String>();
         let html = format!("<body><p>甲乙丙丁</p>{links}</body>");
         let network = Arc::new(ScriptedNetwork::with_steps(
-            vec![Ok(vec![public_address()])],
+            vec![Ok(vec![public_address(443)])],
             vec![Ok(html_response(200, &html))],
         ));
         let outcome = execute_web_fetch(
@@ -1725,17 +2208,47 @@ mod tests {
     #[tokio::test]
     async fn permission_denial_does_not_touch_dns_or_http() {
         let network = Arc::new(ScriptedNetwork::default());
-        let outcome = execute_web_fetch(
-            json!({"url":"https://example.com/"}),
-            network.clone(),
-            false,
-        )
-        .await;
+        let outcome =
+            execute_web_fetch(json!({"url":"http://example.com/"}), network.clone(), false).await;
         assert_eq!(
             outcome.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
             "web_network_not_authorized"
         );
         assert!(network.resolutions.lock().unwrap().is_empty());
         assert!(network.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "credential-free public HTTP transport canary; run at most once per W1.1 candidate"]
+    async fn credential_free_public_http_transport_canary() {
+        let outcome = execute_web_fetch(
+            json!({"url":"http://example.com/","max_chars":4096}),
+            Arc::new(SystemWebFetchNetwork),
+            true,
+        )
+        .await;
+        assert!(outcome.is_success(), "{}", outcome.content);
+        let payload: Value = serde_json::from_str(&outcome.content).unwrap();
+        println!(
+            "w11_http_canary requested_url={} final_url={} status={} final_transport_scheme={} final_transport_security={} transport_trajectory={} transport_integrity={} redirect_count={} transport_upgraded={} bytes_read={} bytes_returned={} truncated={} source_sha256={}",
+            payload["requested_url"],
+            payload["final_url"],
+            payload["status"],
+            payload["final_transport_scheme"],
+            payload["final_transport_security"],
+            payload["transport_trajectory"],
+            payload["transport_integrity"],
+            payload["redirect_count"],
+            payload["transport_upgraded"],
+            payload["bytes_read"],
+            payload["bytes_returned"],
+            payload["truncated"],
+            payload["source_sha256"]
+        );
+        assert_eq!(payload["requested_url"], "http://example.com/");
+        assert_eq!(payload["transport_trajectory"], "plaintext_exposed");
+        assert_eq!(payload["transport_integrity"], "unprotected");
+        assert_eq!(payload["trust"], TRUST);
+        assert_eq!(payload["source_sha256_scope"], SOURCE_SHA256_SCOPE);
     }
 }

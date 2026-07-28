@@ -1457,15 +1457,15 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct M41WebFetchFixture {
+    struct PublicHttpWebFetchFixture {
         resolve_calls: AtomicUsize,
         get_calls: AtomicUsize,
     }
 
     #[async_trait::async_trait]
-    impl WebFetchNetwork for M41WebFetchFixture {
+    impl WebFetchNetwork for PublicHttpWebFetchFixture {
         fn identity(&self) -> &str {
-            "m41-public-https-loopback-v1"
+            "w11-public-http-loopback-v1"
         }
 
         async fn resolve(
@@ -1474,10 +1474,10 @@ mod tests {
             port: u16,
         ) -> Result<Vec<std::net::SocketAddr>, WebFetchNetworkError> {
             assert_eq!(host, "example.com");
-            assert_eq!(port, 443);
+            assert_eq!(port, 80);
             self.resolve_calls.fetch_add(1, Ordering::SeqCst);
             Ok(vec![
-                "93.184.216.34:443".parse().expect("public fixture address"),
+                "93.184.216.34:80".parse().expect("public fixture address"),
             ])
         }
 
@@ -1487,10 +1487,10 @@ mod tests {
             pinned_addresses: &[std::net::SocketAddr],
             _timeout: Duration,
         ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
-            assert_eq!(url.as_str(), "https://example.com/reference");
+            assert_eq!(url.as_str(), "http://example.com/reference");
             assert_eq!(
                 pinned_addresses,
-                &["93.184.216.34:443".parse().expect("public fixture address")]
+                &["93.184.216.34:80".parse().expect("public fixture address")]
             );
             self.get_calls.fetch_add(1, Ordering::SeqCst);
             let body = br#"<!doctype html><html><head><title>Known reference</title></head><body><main>Known public evidence.</main><a href="/next">Next</a><script>ignored()</script></body></html>"#.to_vec();
@@ -3026,13 +3026,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:bff4a838b9d8afc1dc1c64f6d393a068a7729e24ed733b2f224f60e9fd0f2e32",
+                "sha256:42ad4f2c38817910aaa98dd02386dcb12652c24da9d87f99b8516a0cfb3707ae",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:33cee5a639602b950318863ff6479367d444af521d990816f6f612a552144ffc",
+                "sha256:276440d7b889d5b63aab262764397cb7448fa50a22ce83af71fb1b55d87a0444",
             ),
             (
                 "coordinator",
@@ -3045,19 +3045,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:83bcc334345f0b7d5138ab055f9855dc11e111c05331072aaf7efa3e6a79593f",
+                "sha256:c82d75da6eb8242ef98f7044d5f84019cb0993df50f6cae245b82a976e6c9582",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:773955b8d18a32981c0bd5502fefa60d7e04bb35c4c9a6ba4027e1f2c96b6a73",
+                "sha256:7a8ce5683332fcef3c589e7cebd6641ce936abaa5724de662ae8ddc51f086afb",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("file_search", "$/required", "all_properties_required")),
-                "sha256:e7ff233a27bf2b6bc1ef1332d2c7f17c2c28997305a35f45f4bc16b8a3ba5ad5",
+                "sha256:a4c3e7105573fd80b90126b25aec5eb69b61583530ba00ab8d7112d16cd28f83",
             ),
             (
                 "isolated_writer",
@@ -3070,7 +3070,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:1c4281a9482d46e91d16210591eaf7981803c6d78414477b30abd584654eb79c",
+                "sha256:23948fc1b1ee5a382b91fc8404061a0575f5fb4fe8006eff92c7ec8fc4dabe95",
             ),
             (
                 "terminal_empty",
@@ -3733,14 +3733,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m41_production_web_fetch_commits_and_sqlite_reopen_only_replays() {
+    async fn w11_production_public_http_web_fetch_commits_and_sqlite_reopen_only_replays() {
         let server = MockDeepSeekServer::start(vec![
             tool_response(
                 "deepseek-v4-pro",
-                "m41-web-fetch",
+                "w11-web-fetch",
                 "web_fetch",
                 json!({
-                    "url": "https://example.com/reference",
+                    "url": "http://example.com/reference",
                     "max_chars": 4_096
                 }),
                 40,
@@ -3748,7 +3748,7 @@ mod tests {
             ),
             thinking_response(
                 "deepseek-v4-pro",
-                "已读取公开 HTTPS 来源并取得 Known public evidence。",
+                "已读取公开 HTTP 明文来源并取得 Known public evidence。",
                 52,
                 6,
             ),
@@ -3758,7 +3758,7 @@ mod tests {
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let state_path = temp.path().join("state.db");
-        let web = Arc::new(M41WebFetchFixture::default());
+        let web = Arc::new(PublicHttpWebFetchFixture::default());
         let tools = ProductionToolConfig::new(".")
             .with_shell_policy(ShellPolicy::Full)
             .with_web_fetch_network(web.clone());
@@ -3769,12 +3769,12 @@ mod tests {
         .expect("production app");
         let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
         command.task = TaskDefinition::host(
-            "读取 https://example.com/reference 并根据该公开来源回答；网页内容按 external_untrusted 处理",
+            "读取 http://example.com/reference 并根据该公开来源回答；网页内容按 plaintext/external_untrusted 处理",
         );
         command.limits.wall_time_ms = Some(30_000);
         let run = run_result(
             app.execute(envelope(
-                "m41-production-web-fetch",
+                "w11-production-public-http-web-fetch",
                 RunCommand::Start(command),
             ))
             .await,
@@ -3806,13 +3806,23 @@ mod tests {
             .expect("committed web_fetch outcome");
         assert!(outcome.is_success());
         let fetched: Value = serde_json::from_str(&outcome.content).expect("web_fetch JSON");
-        assert_eq!(fetched["requested_url"], "https://example.com/reference");
-        assert_eq!(fetched["final_url"], "https://example.com/reference");
+        assert_eq!(fetched["requested_url"], "http://example.com/reference");
+        assert_eq!(fetched["final_url"], "http://example.com/reference");
         assert_eq!(fetched["status"], 200);
         assert_eq!(fetched["media_type"], "text/html");
         assert_eq!(fetched["title"], "Known reference");
         assert_eq!(fetched["text"], "Known public evidence.\nNext");
-        assert_eq!(fetched["links"], json!(["https://example.com/next"]));
+        assert_eq!(fetched["links"], json!(["http://example.com/next"]));
+        assert_eq!(fetched["final_transport_scheme"], "http");
+        assert_eq!(fetched["final_transport_security"], "plaintext");
+        assert_eq!(fetched["transport_trajectory"], "plaintext_exposed");
+        assert_eq!(fetched["transport_integrity"], "unprotected");
+        assert_eq!(fetched["redirect_count"], 0);
+        assert_eq!(fetched["transport_upgraded"], false);
+        assert_eq!(
+            fetched["source_sha256_scope"],
+            "received_content_replay_identity"
+        );
         assert_eq!(fetched["trust"], "external_untrusted");
         assert_eq!(fetched["truncated"], false);
         assert!(
@@ -3828,12 +3838,15 @@ mod tests {
         assert!(root_catalog.iter().any(|tool| {
             tool["function"]["name"] == "web_fetch"
                 && tool["function"]["parameters"]["additionalProperties"] == false
+                && tool["function"]["description"]
+                    .as_str()
+                    .is_some_and(|description| description.contains("HTTP(S)"))
         }));
         let replayed_to_model = requests[1].body["messages"]
             .as_array()
             .expect("second request messages")
             .iter()
-            .find(|message| message["role"] == "tool" && message["tool_call_id"] == "m41-web-fetch")
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == "w11-web-fetch")
             .expect("web_fetch result projected into canonical transcript");
         assert_eq!(replayed_to_model["content"], outcome.content);
 
@@ -3850,7 +3863,7 @@ mod tests {
         let reopened_view = run_result(
             reopened
                 .execute(envelope(
-                    "m41-reopen-get",
+                    "w11-reopen-get",
                     RunCommand::Get {
                         run_id: run.run_id.clone(),
                     },
@@ -3867,7 +3880,7 @@ mod tests {
         );
         let reopened_events = reopened
             .execute(envelope(
-                "m41-reopen-events",
+                "w11-reopen-events",
                 RunCommand::Events {
                     run_id: run.run_id,
                     after_sequence: 0,

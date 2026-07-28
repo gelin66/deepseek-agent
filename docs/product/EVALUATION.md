@@ -5258,3 +5258,59 @@ fresh same-DeepSeek held-out execution、false success 0 和完整 behavior/acco
 `product_metric_eligible=false`、`quality_comparison_executed=false`；production Rust delta=0，
 DeepSeek official requests=0、Key 未读取、actual cost `$0`、maximum reruns=0。DeepSeek wire、
 model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、M45 与 M46 均未改变或启动。
+
+<a id="adr-0017-w11-evaluation"></a>
+### ADR-0017 W1.1 public HTTP `web_fetch` contract
+
+W1.1 是 Risk 1 deterministic-tool correction，不是 Prompt/route treatment 或付费模型评测。
+owner 只能是 `crates/tools` 与必要 production caller/docs；输入仍只有 `url` 和 optional
+`max_chars`，不增加 `allow_insecure`、header、Cookie、auth、proxy、method/body、证书或 browser。
+
+保留门按顺序为：
+
+1. public `http:80` 和现有 HTTPS 均能读取；HTTP 非 80 fail closed；
+2. HTTP/HTTPS literal、DNS、mixed answer、connect pin、redirect 与 metadata false allow=0；
+3. HTTP→HTTP、HTTP→HTTPS、HTTPS→HTTPS allow，HTTPS→HTTP 与 upgrade 后 downgrade 在下一跳
+   DNS/connect 前 typed deny；
+4. 任何 HTTP hop 使 `transport_trajectory=plaintext_exposed`、
+   `transport_integrity=unprotected`，final scheme/security 独立记录；
+5. `source_sha256_scope=received_content_replay_identity`，不得把 hash 或
+   `external_untrusted` 解释为 publisher authenticity；
+6. authorization/catalog/network identity、真实 app caller 与 SQLite reopen 一次切换，旧
+   HTTPS-only identity、文案和 HTTP scheme 断言消失；
+7. RuntimeEvent/State schema、Provider、Runtime、Store/session/browser delta=0。
+
+offline matrix 必须继续覆盖原 M41 的 userinfo、public IP classes、all-address DNS validation、
+no proxy、manual redirect、GET-only schema、deadline、raw/decompressed bounds、content type、
+UTF-8/US-ASCII、truncation、HTML script suppression、link bound、Ask deny、Agent/FullAccess allow
+与 Writer network sandbox。字符集扩张、Content-Type sniffing 和 HTTP 非 80 grant 不得混入。
+
+确定性门通过后最多运行一次 ignored credential-free `SystemWebFetchNetwork` public HTTP
+canary，maximum reruns=0；不读取 DeepSeek Key、不调用模型、不产生质量/成本声明。随后 focused
+gate 和一次 pre-integration full gate 必须通过。任一 downgrade/SSRF false allow 或 provenance
+误报都 `reject_and_delete` 整个 HTTP candidate，不保留双 client、disabled flag 或 adapter。
+
+#### W1.1 deterministic result
+
+owner matrix 为 17 pass、0 fail，真实 HTTP app caller/reopen 1 pass。direct HTTP/HTTPS、两类
+allowed redirect、两类 downgrade、HTTP/HTTPS SSRF、failure provenance、deadline 跨 upgrade
+trajectory、bounds、catalog 与 authorization 已闭合。production caller 的 committed HTTP outcome
+进入 canonical model tool message；无凭据 SQLite reopen 后 events 相同且 DNS/GET 计数未增加。
+
+唯一 ignored credential-free canary 按 maximum reruns=0 执行一次并通过：
+`http://example.com/` 返回 200，final transport 为 `http/plaintext`，完整 trajectory/integrity 为
+`plaintext_exposed/unprotected`，redirect 0，读取 388 bytes、返回 127 chars、未截断；received
+content replay identity 为
+`sha256:ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d`。Key 未读取、DeepSeek
+official requests=0、实际费用 `$0`，因此 `product_metric_eligible=false`，不产生 publisher
+authenticity、质量或效率声明。protocol/state delta=0。
+
+focused、owner crate 全测试/check、真实 app caller/reopen、fmt、authority 23/23 与 diff check
+均通过。pre-integration full gate 只运行一次：public/authority、fmt、workspace strict Clippy
+通过；`cargo test --workspace --locked` 的唯一失败是未被本切片修改的 TUI PTY
+`foreign_provider_fails_before_terminal_runstore_or_model_request` 在并行运行时 5 秒内未退出
+（observed `None`，expected `Some(1)`）。同一 exact test 随后隔离串行通过，完整 `dse-tui`
+package 串行复核也 0 fail（773 unit、7 PTY、30 exec acceptance 及其余 integration/QA）。full
+没有重跑，TUI source/test/gate delta=0；因此记录为 gate concurrency false-negative，而不是
+W1.1 behavior failure。HTTP candidate 的 keep/delete 条件全部成立，正式决定为
+`keep_public_http_web_fetch_with_explicit_plaintext_provenance`。
