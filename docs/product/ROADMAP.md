@@ -227,8 +227,11 @@
 - M46 W3 已完成并 keep：`browser_navigate` 为 Host-owned exact-loopback ephemeral page 返回
   same-run/latest-epoch opaque refs，唯一新增 `browser_click(element_ref)`；两个冻结 fixture 的
   post-click state=`2/2`、负向 false allow=`0`，committed click reopen 不重放。production
-  protocol/state schema delta=0、official DeepSeek requests=0；下一阶段仍须重新按 loss 准入，
-  不自动启动 fill/press/wait、public action、视觉、搜索或 M47。
+  protocol/state schema delta=0、official DeepSeek requests=0。
+- M46 post-W3 interaction admission 已完成：两个独立 exact-loopback text-entry task 产生同一
+  `tools:browser_interaction:fill=2/2`，production control=`0/2`、false-success=`0`，Host teardown
+  与 AgentApplication reopen regression 均通过；只准入后续单一 `browser_fill` focused Goal，
+  本阶段 production delta=0，press/wait/public action/视觉/搜索/M47 仍未启动。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7246,3 +7249,48 @@ credential read=`false`、actual cost=`$0`；费用仅记录状态，不作为�
 fill/press/wait、public action、POST/upload/download/auth、登录、Cookie/storage 持久化、用户 Chrome
 profile、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。Risk 2 的 focused/full
 最终数字以本 checkpoint 的 gate 结果为准。
+
+### 40.11 M46 post-W3 browser interaction admission（已完成）
+
+真实问题不是“click 后应补齐完整 browser API”，而是 current
+`web_fetch + browser_navigate + browser_click` 是否在两个独立真实 local application task 上仍无法
+产生同一 action-family 的 post-action evidence。本阶段唯一 owner 是 Evaluation authority；baseline
+固定为 clean W3 `64b83a21b7859e38ca7ce43a4a035c6337702d36`，production control 使用 root
+`Agent` permission 下的真实 `ProductionToolExecutor`，没有改变 production Rust。
+
+预注册恰好两个彼此独立的 text-entry task：
+
+| task | current target | required post-fill state |
+|---|---|---|
+| `m46_post_w3_release_channel_fill` | `textbox / Release channel` | `status / Release channel set to canary / data-channel=canary` |
+| `m46_post_w3_test_filter_fill` | `searchbox / Test filter` | `status / Test filter applied: network / data-filter=network` |
+
+target、fill value 与 post-fill name/state 均不以 literal 出现在 raw HTTP。production `web_fetch` 不执行
+script；`browser_navigate` 能观察精确 target，但 current click-only ref policy 对两个 text-entry target
+都返回 refs=`0`，15-tool catalog 没有 `browser_fill`，真实 Runtime preflight 为
+`UnknownTool + NotApplied`。control verified=`0/2`、false-success=`0`。
+
+eval-only oracle 使用 Node `v24.18.0`、Playwright `1.61.0` 和 pinned CfT `151.0.7922.47`，每个
+task 只按 exact role/name fill 一次，只允许 Host-assigned literal-loopback origin 与 GET/HEAD，输出上限
+2 nodes / 4,096 bytes，截图/坐标/external requests=`0`，context/browser 全关闭。oracle verified=`2/2`，
+因此同一 `tools:browser_interaction:fill=2/2` 达到 repeated-loss threshold。真实 W3
+AgentApplication committed navigate/click SQLite reopen 保持调用计数 `1/1`，pinned-CfT retained session
+teardown regression 同样通过。
+
+决定为 `admit_next_goal_ref_based_browser_fill_w3_1_contract_only`。它只允许下一独立 Goal 在
+`crates/tools` 为 eligible latest-epoch text-entry target 扩展 opaque ref，并新增唯一
+`browser_fill(element_ref, value)` 与 mandatory fresh observation；stale/missing/hidden/disabled/
+readonly/detached/ambiguous ref、password/file/non-text input、过长/控制字符 value、origin escape、非
+GET、external side effect、crash-after-start、authorization/catalog 和 committed reopen 必须先作为
+负向门闭合。press/wait、click+fill macro、任意 submit、登录/secret、Cookie/storage、public POST/
+upload/download/auth、用户 profile、截图/坐标/视觉、搜索、Node production sidecar、第二
+Runtime/Store/session ledger 继续禁止。
+
+完整正式 evaluator result 只形成一次、reruns=`0`，SHA-256 为
+`71afb4a6ce866e2e47eb68ad4001c8c586549172c3b414221fedb40b4c76391f`。此前两次 harness
+implementation attempt 均在 oracle 前停止：一次把 direct execute 误当真实 Runtime preflight，一次
+使用系统 Python 3.9 不支持的 `zip(strict=True)`；它们没有形成准入结果、oracle action、外网或模型
+请求。11/11 negative self-test、真实 control/oracle/reopen/teardown 与 targeted/authority gate 结果见
+Evaluation 当前条目。本阶段 production Rust/Cargo/catalog/DeepSeek wire/Prompt/RuntimeEvent/RunStore/
+State schema delta=`0`，official requests=`0`、credential read=`false`、actual cost=`$0`；不运行 full，
+也不形成成功率、Token、时间或费用提升声明。

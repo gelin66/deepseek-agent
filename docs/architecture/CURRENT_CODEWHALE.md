@@ -649,6 +649,14 @@ committed click outcome 冷重开只重放，`ToolExecutionStarted` 后无 outco
 `RecoveryRequired` 且绝不自动 click。RuntimeEvent v18、State v24、ToolOutcome 与 RunStore schema
 delta=`0`；production 未引入 Playwright/Node、第二 Runtime/Store 或 browser session ledger。
 
+post-W3 admission 没有改变上述 production facts。两个新的 test-only exact-loopback task 证明 current
+root 能观察 `textbox / Release channel` 与 `searchbox / Test filter`，但 click-only ref policy 不给
+text-entry target 发 ref，15-tool catalog 也没有 `browser_fill`；Runtime preflight 以
+`UnknownTool + NotApplied` fail closed。eval-only oracle 的单次 fill 各自得到预注册 state，形成同一
+`tools:browser_interaction:fill=2/2`、control=`0/2`、false-success=`0`。因此 current production 仍只
+有 navigate + click；后续仅获准另开一个 fill-family focused Goal，并未实现 fill/press/wait、public
+action、登录/secret、Cookie/storage、截图/视觉或搜索。
+
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确
 fail closed。MCP 配置与插件发现仍没有进入模型统一工具面，不能算作 Agent 搜索或浏览器能力。

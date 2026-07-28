@@ -5644,3 +5644,73 @@ Cookie/storage、用户 Chrome profile、截图、坐标、视觉或搜索。
 本 treatment 是 credential-free Risk 2 deterministic capability proof：official DeepSeek requests=`0`、
 credential read=`false`、actual cost=`$0`。它不做模型 A/B、不形成通用效率或产品指标声明；计费只
 是正交状态显示。
+
+<a id="m46-post-w3-browser-interaction-admission"></a>
+### M46 post-W3 browser interaction admission contract and result
+
+本 audit 是 credential-free、eval-only repeated-loss gate，不是 `browser_fill` production treatment、
+Prompt/route A/B 或产品指标。baseline 固定为 clean W3
+`64b83a21b7859e38ca7ce43a4a035c6337702d36`；current control 是 root `Agent` permission 下的 exact
+production `web_fetch + browser_navigate + browser_click`。准入前冻结：
+
+1. 恰好两个 task id、不同 independence key 和同一 action family；fill、press、wait 不得混合计数；
+2. 两个真实 loopback application 都必须由 JavaScript 产生 exact role/name text-entry target，只有一次
+   预注册 fill 才产生 required role/name/state；
+3. target name、fill value、post-fill name/state 不得以 literal 出现在 raw HTTP；
+4. current W3 必须观察到 target，同时 candidate target refs=`0`、`browser_fill` 不可见，真实 Runtime
+   preflight 必须在 side effect 前返回 `UnknownTool + NotApplied`；
+5. production control verified=`0/2`、false-success=`0`，Host process/proxy/profile teardown 与真实
+   AgentApplication committed navigate/click SQLite reopen regression 必须保持通过；
+6. eval-only oracle 每 task 只按 exact role/name fill 一次，只允许 Host-assigned literal-loopback origin
+   与 GET/HEAD，输出最多 2 nodes / 4,096 bytes，不使用 screenshot、coordinate、Cookie/storage、认证、
+   upload/download、public action 或 arbitrary JavaScript result；
+7. official DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`；production Rust/Cargo/
+   catalog/DeepSeek wire/Prompt/RuntimeEvent/RunStore/State/session delta=`0`，
+   `product_metric_eligible=false`。
+
+预注册 manifest 是
+`eval/manifests/m46-post-w3-interaction-admission-v1.json`，唯一 evaluator 是
+`scripts/eval-m46-post-w3-interaction-admission.py`，test-only root control 是
+`crates/tools/tests/m46_post_w3_interaction_admission.rs`；external oracle 使用
+`scripts/eval-m46-post-w3-interaction-oracle.cjs` + Playwright `1.61.0` + Node `v24.18.0` + pinned CfT
+`151.0.7922.47`。Node/Playwright 不是 production sidecar/dependency。
+
+正式结果：
+
+| task_id | current W3 target | oracle post-fill result | control verified | false success |
+|---|---|---|---:|---:|
+| `m46_post_w3_release_channel_fill` | `textbox / Release channel` | `status / Release channel set to canary / data-channel=canary` | 0 | 0 |
+| `m46_post_w3_test_filter_fill` | `searchbox / Test filter` | `status / Test filter applied: network / data-filter=network` | 0 | 0 |
+
+oracle=`2/2`、current control verified=`0/2`、同一
+`tools:browser_interaction:fill=2/2`、control false-success=`0`，Host teardown 与 AgentApplication
+reopen regression 均通过。唯一完整正式 result SHA-256 为
+`71afb4a6ce866e2e47eb68ad4001c8c586549172c3b414221fedb40b4c76391f`，决定为
+`admit_next_goal_ref_based_browser_fill_w3_1_contract_only`。
+
+该决定只冻结下一独立 focused Goal：owner=`crates/tools`，action family=`browser_fill`，只给 eligible
+latest-epoch text-entry target 生成 Host opaque ref，schema 只有 bounded `element_ref + value`，action 后
+必须 fresh semantic observation 并废弃旧 refs。下一 Goal 必须先固定 stale/missing/hidden/disabled/
+readonly/detached/ambiguous ref、password/file/color/date/non-text target、过长/控制字符 value、origin/
+method/download/popup/storage/Cookie、external side effect、crash-after-start、authorization/catalog 与
+committed-outcome reopen negative gates。
+
+press、wait、click+fill macro、任意 submit、登录/password/secret、Cookie/storage persistence、public
+POST/upload/download/auth、用户 profile、截图/坐标/视觉、搜索、Node/Playwright production sidecar、
+durable browser session truth、第二 Runtime/Store/ledger 仍未准入。本 audit 没有实现下一 Goal。
+
+完整正式矩阵前有两个 pre-result harness implementation stop：第一次 test-only caller 把 direct
+`execute` 误当真实 Runtime `preflight`；第二次在两个 control 后因系统 Python 3.9 不支持非必要的
+`zip(strict=True)` 停止。二者均未运行 oracle、没有形成准入结果、没有 DeepSeek/credential/外网行为；
+修正并重新冻结 identity 后，完整正式 evaluator result 只形成一次、reruns=`0`。validation、11-case
+negative self-test、真实 control/oracle、Host teardown 与 AgentApplication reopen 全部通过。
+
+production Rust、Cargo dependency、fixed catalog、DeepSeek wire/model-visible Prompt、AgentRuntime、
+RuntimeEvent、RunStore、State schema、UI 和 browser session delta 均为 `0`。official DeepSeek
+requests=`0`、credential read=`false`、actual cost=`$0`；费用只是正交状态，不构成准入原因或工程
+收益声明。按 production delta=0 的 eval-only Risk 0 边界只运行 targeted + authority gate，不运行 full。
+
+最终离线门全绿：manifest validation、11/11 negative self-test、Node syntax、test-only Rust compile、
+唯一完整 control/oracle/reopen/teardown evaluator、`dse-tools` unit 389 passed / 5 ignored、owner check、
+strict Clippy、fmt 与 diff check。authority baseline=`17,636`、ceiling=`4,409`、最大 tools route=
+`2,273` 行、fixed boundary=`23/23`。

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Test selection</title>
+  </head>
+  <body>
+    <main id="test-filter"></main>
+    <template data-probe-identity>{{DSE_APPLICATION_PROBE_LEASE}}</template>
+    <script>
+      const decode = (values) => String.fromCharCode(...values);
+      const label = decode([97, 114, 105, 97, 45, 108, 97, 98, 101, 108]);
+      const targetValue = decode([110, 101, 116, 119, 111, 114, 107]);
+      const target = document.createElement(decode([105, 110, 112, 117, 116]));
+      target.type = decode([115, 101, 97, 114, 99, 104]);
+      target.setAttribute(
+        label,
+        decode([84, 101, 115, 116, 32, 102, 105, 108, 116, 101, 114]),
+      );
+      target.addEventListener(decode([105, 110, 112, 117, 116]), () => {
+        document.querySelector("#filter-result")?.remove();
+        if (target.value !== targetValue) return;
+        const status = document.createElement(decode([115, 101, 99, 116, 105, 111, 110]));
+        status.id = "filter-result";
+        status.setAttribute(decode([114, 111, 108, 101]), decode([115, 116, 97, 116, 117, 115]));
+        status.setAttribute(
+          label,
+          decode([84, 101, 115, 116, 32, 102, 105, 108, 116, 101, 114, 32, 97, 112, 112, 108, 105, 101, 100, 58, 32, 110, 101, 116, 119, 111, 114, 107]),
+        );
+        status.setAttribute(
+          decode([100, 97, 116, 97, 45, 102, 105, 108, 116, 101, 114]),
+          targetValue,
+        );
+        status.textContent = status.getAttribute(label);
+        document.querySelector("#test-filter").append(status);
+      });
+      document.querySelector("#test-filter").append(target);
+    </script>
+  </body>
+</html>

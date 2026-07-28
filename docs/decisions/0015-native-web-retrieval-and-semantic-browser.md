@@ -1,16 +1,16 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
 - 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface；M46 read-only W2 与 post-W2 click-family admission 均已完成
+  决策为等待 Chat surface；M46 W2/W3 与 post-W3 fill-family admission 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
-  已交付 Host-only `ApplicationProbe`；M46 W2 已加入一个 `browser_navigate` 模型工具和 Rust
-  direct-CDP adapter，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
-- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；W2 的一次性 navigate + bounded
-  DOM/AX observation 已闭合 `tools:application_visibility`。post-W2 两个独立 local task 又证明同一
-  `tools:browser_interaction:click` loss，因此只准入后续单一 click-family W3 Goal；production action、
-  ref-bearing session、截图、视觉与搜索仍未实现
+  已交付 Host-only `ApplicationProbe`；M46 W2/W3 在一个 Rust direct-CDP adapter 中加入
+  `browser_navigate` 与唯一 `browser_click`，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
+- 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；W2 的 navigate + bounded DOM/AX
+  observation 已闭合 `tools:application_visibility`，W3 已闭合 click-family loss。post-W3 两个独立
+  local task 又证明同一 `tools:browser_interaction:fill` loss，因此只准入后续单一 fill-family
+  focused Goal；press/wait、public action、截图、视觉与搜索仍未实现
 
 ## 文档权威与替代关系
 
@@ -713,6 +713,27 @@ outcome SQLite reopen 只重放，started-without-outcome reopen 为现有 `Reco
 manifest/result/history 保留。RuntimeEvent、RunStore、State schema 和 DeepSeek wire delta=`0`，official
 requests=`0`、credential read=`false`、actual cost=`$0`。没有准入 fill/press/wait、public action、
 登录、Cookie/storage 持久化、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。
+
+post-W3 admission audit 现已在 clean W3
+`64b83a21b7859e38ca7ce43a4a035c6337702d36` 上完成。两个独立 exact-loopback application task
+分别要求向 `textbox / Release channel` 填入 `canary`，以及向 `searchbox / Test filter` 填入
+`network`；current W3 能观察两个 target，但 click-only refs 对两者均为 `0`，catalog 不含
+`browser_fill`，Runtime preflight 为 `UnknownTool + NotApplied`，control verified=`0/2`、
+false-success=`0`。
+
+eval-only exact role/name oracle 每任务 fill 一次，分别得到
+`status / Release channel set to canary / data-channel=canary` 与
+`status / Test filter applied: network / data-filter=network`，结果 `2/2`；Host teardown 与真实
+AgentApplication committed-outcome reopen regression 均保持通过。因此只准入下一独立 Goal 的
+`browser_fill(element_ref, value)` family、eligible latest-epoch text-entry refs 与 mandatory fresh
+observation。该 Goal 必须先拒绝 stale/hidden/disabled/readonly/non-text/password/oversized/control-char
+输入、origin escape、external side effect 与 crash/replay ambiguity；press/wait、任意 submit、登录/
+secret、Cookie/storage、public action、截图/视觉和搜索仍未准入。
+
+本 audit 的 production Rust/Cargo/catalog/DeepSeek wire/Prompt/RuntimeEvent/RunStore/State/session delta
+均为 `0`，official requests=`0`、credential read=`false`、actual cost=`$0`。唯一完整正式 result
+SHA-256 为 `71afb4a6ce866e2e47eb68ad4001c8c586549172c3b414221fedb40b4c76391f`；两次
+pre-result harness implementation stop 均发生在 oracle 前，没有形成结果或付费/外网行为。
 
 ### Slice W4：ApplicationProbe 收敛（M45-A 已完成）
 
