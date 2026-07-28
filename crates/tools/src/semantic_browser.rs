@@ -2,7 +2,8 @@
 //!
 //! Public navigation remains one-shot and read-only. An exact Host-owned
 //! loopback navigation may retain one in-memory page long enough for the same
-//! run to consume an opaque latest-snapshot ref through `browser_click`.
+//! run to consume an opaque latest-snapshot ref through `browser_click` or
+//! `browser_fill`.
 //! Neither the live page nor its refs become durable truth, and there is no
 //! screenshot, selector, coordinate input, arbitrary JavaScript, or second
 //! browser store.
@@ -39,7 +40,7 @@ use dse_protocol::agent_runtime::{
 };
 
 const TRUST: &str = "external_untrusted";
-const ADAPTER_ID: &str = "direct_tokio_cdp_ref_click_v2";
+const ADAPTER_ID: &str = "direct_tokio_cdp_ref_click_fill_v3";
 const PINNED_CFT_VERSION: &str = "151.0.7922.47";
 const DEFAULT_MAX_NODES: usize = 128;
 const MAX_MAX_NODES: usize = 256;
@@ -62,6 +63,12 @@ const RENDER_SETTLE_DELAY: Duration = Duration::from_millis(150);
 const PROCESS_TEARDOWN_GRACE: Duration = Duration::from_millis(750);
 const PROXY_TEARDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_ELEMENT_REF_CHARS: usize = 40;
+const MAX_FILL_VALUE_CHARS: usize = 1_024;
+const MAX_FILL_VALUE_BYTES: usize = 4_096;
+#[cfg(target_os = "macos")]
+const SELECT_ALL_MODIFIERS: u8 = 4;
+#[cfg(not(target_os = "macos"))]
+const SELECT_ALL_MODIFIERS: u8 = 2;
 const MAX_STALE_REFS: usize = MAX_MAX_NODES * 2;
 
 /// Cancellation signal accepted by deterministic browser harness fixtures.
@@ -153,6 +160,25 @@ pub struct BrowserClickRequest {
     element_ref: String,
 }
 
+/// Canonical fill input after fixed-schema, value, and opaque-ref validation.
+#[derive(Debug, Clone)]
+pub struct BrowserFillRequest {
+    element_ref: String,
+    value: String,
+}
+
+impl BrowserFillRequest {
+    #[must_use]
+    pub fn element_ref(&self) -> &str {
+        &self.element_ref
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
 impl BrowserClickRequest {
     #[must_use]
     pub fn element_ref(&self) -> &str {
@@ -177,6 +203,13 @@ pub trait SemanticBrowserHarness: Send + Sync {
         &self,
         run_id: &str,
         request: BrowserClickRequest,
+        cancellation: BrowserCancellationToken,
+    ) -> ToolOutcome;
+
+    async fn fill(
+        &self,
+        run_id: &str,
+        request: BrowserFillRequest,
         cancellation: BrowserCancellationToken,
     ) -> ToolOutcome;
 
@@ -373,6 +406,8 @@ struct SemanticNode {
     backend_dom_node_id: Option<u64>,
     #[serde(skip)]
     click_safety: Option<ClickSafety>,
+    #[serde(skip)]
+    fill_safety: Option<FillSafety>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,6 +415,15 @@ enum ClickSafety {
     Allowed,
     Disabled,
     SideEffectDenied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FillSafety {
+    Allowed,
+    Disabled,
+    ReadOnly,
+    SensitiveDenied,
+    Ineligible,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -514,7 +558,81 @@ pub(crate) async fn execute_browser_click(
     harness.click(run_id, request, cancellation).await
 }
 
+pub(crate) fn preflight_browser_fill(input: &Value) -> Option<ToolOutcome> {
+    match parse_fill_request(input) {
+        Ok(_) => None,
+        Err(failure) => Some(rejected_fill_outcome("", failure)),
+    }
+}
+
+pub(crate) async fn execute_browser_fill(
+    run_id: &str,
+    input: Value,
+    harness: Arc<dyn SemanticBrowserHarness>,
+    network_allowed: bool,
+    cancellation: CancellationToken,
+) -> ToolOutcome {
+    let element_ref = input
+        .get("element_ref")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let request = match parse_fill_request(&input) {
+        Ok(request) => request,
+        Err(failure) => return fill_operation_outcome(&element_ref, failure, None, false),
+    };
+    if !network_allowed {
+        return fill_operation_outcome(
+            &element_ref,
+            BrowserFailure::operation(
+                "browser_network_not_authorized",
+                "authorization",
+                "当前 Run permission 或 actor sandbox 禁止浏览器网络访问",
+            ),
+            None,
+            false,
+        );
+    }
+    harness.fill(run_id, request, cancellation).await
+}
+
 fn parse_click_request(input: &Value) -> Result<BrowserClickRequest, BrowserFailure> {
+    let element_ref = parse_element_ref(input)?;
+    Ok(BrowserClickRequest { element_ref })
+}
+
+fn parse_fill_request(input: &Value) -> Result<BrowserFillRequest, BrowserFailure> {
+    let element_ref = parse_element_ref(input)?;
+    let value = required_str(input, "value").map_err(|error| {
+        BrowserFailure::rejected("browser_fill_value_missing", "value", error.to_string())
+    })?;
+    let chars = value.chars().count();
+    if chars == 0 || chars > MAX_FILL_VALUE_CHARS || value.len() > MAX_FILL_VALUE_BYTES {
+        return Err(BrowserFailure::rejected(
+            "browser_fill_value_invalid",
+            "value",
+            format!(
+                "value 必须非空且不超过 {MAX_FILL_VALUE_CHARS} 字符/{MAX_FILL_VALUE_BYTES} UTF-8 字节"
+            ),
+        ));
+    }
+    if value
+        .chars()
+        .any(|character| matches!(character as u32, 0x00..=0x1f | 0x7f..=0x9f))
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_fill_value_control_denied",
+            "value",
+            "value 不允许 NUL、C0/C1、DEL 或换行控制字符",
+        ));
+    }
+    Ok(BrowserFillRequest {
+        element_ref,
+        value: value.to_owned(),
+    })
+}
+
+fn parse_element_ref(input: &Value) -> Result<String, BrowserFailure> {
     let element_ref = required_str(input, "element_ref").map_err(|error| {
         BrowserFailure::rejected(
             "browser_element_ref_missing",
@@ -536,9 +654,7 @@ fn parse_click_request(input: &Value) -> Result<BrowserClickRequest, BrowserFail
             "element_ref 必须是 Host 返回的有界 opaque ref",
         ));
     }
-    Ok(BrowserClickRequest {
-        element_ref: element_ref.to_owned(),
-    })
+    Ok(element_ref.to_owned())
 }
 
 fn parse_request(
@@ -717,6 +833,19 @@ fn rejected_click_outcome(element_ref: &str, failure: BrowserFailure) -> ToolOut
     .with_metadata(click_failure_metadata(element_ref, &failure, None))
 }
 
+fn rejected_fill_outcome(element_ref: &str, failure: BrowserFailure) -> ToolOutcome {
+    let retry = failure.retry;
+    ToolOutcome::rejected(
+        format!(
+            "browser_fill 拒绝：code={}；{}",
+            failure.code, failure.message
+        ),
+        retry,
+    )
+    .with_failure_code(ToolFailureCode::InvocationRejected)
+    .with_metadata(action_failure_metadata(element_ref, "fill", &failure, None))
+}
+
 fn click_operation_outcome(
     element_ref: &str,
     failure: BrowserFailure,
@@ -757,14 +886,73 @@ fn click_operation_outcome(
     outcome
 }
 
+fn fill_operation_outcome(
+    element_ref: &str,
+    failure: BrowserFailure,
+    teardown: Option<&TeardownFacts>,
+    dispatched: bool,
+) -> ToolOutcome {
+    let mut outcome = if failure.transport {
+        let mut outcome = ToolOutcome::transport_failure(format!(
+            "browser_fill 失败：code={}；{}",
+            failure.code, failure.message
+        ));
+        outcome.retry = if dispatched {
+            ToolRetryDisposition::Unsafe
+        } else {
+            failure.retry
+        };
+        outcome
+    } else {
+        let mut outcome = ToolOutcome::error(format!(
+            "browser_fill 失败：code={}；{}",
+            failure.code, failure.message
+        ));
+        outcome.transport = ToolTransportStatus::Succeeded;
+        outcome.operation = if dispatched {
+            ToolOperationStatus::Indeterminate
+        } else {
+            ToolOperationStatus::Failed
+        };
+        outcome.retry = if dispatched {
+            ToolRetryDisposition::Unsafe
+        } else {
+            failure.retry
+        };
+        outcome
+    };
+    outcome.side_effect = if dispatched {
+        ToolSideEffectStatus::Indeterminate
+    } else {
+        ToolSideEffectStatus::NotApplied
+    };
+    outcome.metadata = Some(action_failure_metadata(
+        element_ref,
+        "fill",
+        &failure,
+        teardown,
+    ));
+    outcome
+}
+
 fn click_failure_metadata(
     element_ref: &str,
+    failure: &BrowserFailure,
+    teardown: Option<&TeardownFacts>,
+) -> Value {
+    action_failure_metadata(element_ref, "click", failure, teardown)
+}
+
+fn action_failure_metadata(
+    element_ref: &str,
+    action: &'static str,
     failure: &BrowserFailure,
     teardown: Option<&TeardownFacts>,
 ) -> Value {
     json!({
         "semantic_browser": {
             "element_ref": element_ref,
+            "action": action,
             "trust": TRUST,
             "failure": {
                 "code": failure.code,
@@ -1872,7 +2060,13 @@ struct ElementTarget {
     backend_dom_node_id: u64,
     role: String,
     accessible_name: String,
-    safety: ClickSafety,
+    capability: ElementCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ElementCapability {
+    Click(ClickSafety),
+    Fill,
 }
 
 struct LiveBrowserSession {
@@ -2122,6 +2316,102 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
         }
     }
 
+    async fn fill(
+        &self,
+        run_id: &str,
+        request: BrowserFillRequest,
+        cancellation: BrowserCancellationToken,
+    ) -> ToolOutcome {
+        let _guard = match self.begin_operation() {
+            Ok(guard) => guard,
+            Err(failure) => {
+                return fill_operation_outcome(&request.element_ref, failure, None, false);
+            }
+        };
+        let Some(mut session) = self.session.lock().expect("browser session lock").take() else {
+            return fill_operation_outcome(
+                &request.element_ref,
+                BrowserFailure::operation(
+                    "browser_session_missing",
+                    "session",
+                    "browser_fill requires a live exact-loopback browser_navigate observation",
+                ),
+                None,
+                false,
+            );
+        };
+        enum Completion {
+            Finished(Box<ToolOutcome>),
+            Cancelled,
+            TimedOut,
+        }
+        let completion = {
+            let execution = execute_live_fill(&mut session, run_id, &request, cancellation.clone());
+            tokio::pin!(execution);
+            tokio::select! {
+                outcome = &mut execution => Completion::Finished(Box::new(outcome)),
+                () = cancellation.cancelled() => Completion::Cancelled,
+                () = tokio::time::sleep(OVERALL_DEADLINE) => Completion::TimedOut,
+            }
+        };
+        match completion {
+            Completion::Finished(outcome) => {
+                let outcome = *outcome;
+                if outcome.side_effect == ToolSideEffectStatus::Indeterminate {
+                    let teardown = session.teardown().await;
+                    let mut outcome = outcome;
+                    if let Some(metadata) = outcome.metadata.as_mut()
+                        && let Some(browser) = metadata
+                            .get_mut("semantic_browser")
+                            .and_then(Value::as_object_mut)
+                    {
+                        browser.insert(
+                            "teardown".to_owned(),
+                            serde_json::to_value(teardown)
+                                .expect("browser teardown facts serialize"),
+                        );
+                    }
+                    outcome
+                } else {
+                    *self.session.lock().expect("browser session lock") = Some(session);
+                    outcome
+                }
+            }
+            Completion::Cancelled | Completion::TimedOut => {
+                let dispatched = session.egress.action_started.load(Ordering::SeqCst);
+                session.egress.end_action();
+                let failure = match completion {
+                    Completion::Cancelled => BrowserFailure {
+                        code: "browser_cancelled",
+                        stage: "cancellation",
+                        message: "browser_fill was cancelled".to_owned(),
+                        transport: false,
+                        retry: if dispatched {
+                            ToolRetryDisposition::Unsafe
+                        } else {
+                            ToolRetryDisposition::Safe
+                        },
+                    },
+                    Completion::TimedOut => BrowserFailure::transport(
+                        "browser_deadline_exceeded",
+                        "deadline",
+                        format!("browser_fill exceeded {} ms", OVERALL_DEADLINE.as_millis()),
+                    ),
+                    Completion::Finished(_) => unreachable!(),
+                };
+                if dispatched {
+                    let teardown = session.teardown().await;
+                    fill_operation_outcome(&request.element_ref, failure, Some(&teardown), true)
+                } else {
+                    let outcome =
+                        fill_operation_outcome(&request.element_ref, failure, None, false);
+                    *self.session.lock().expect("browser session lock") = Some(session);
+                    outcome
+                }
+            }
+        }
+    }
+
     fn shutdown(&self) {
         let session = self.session.lock().expect("browser session lock").take();
         let Some(session) = session else {
@@ -2363,6 +2653,7 @@ fn observation_fingerprint(nodes: &[SemanticNode]) -> String {
                 "value": node.value,
                 "state": node.state,
                 "click_safety": format!("{:?}", node.click_safety),
+                "fill_safety": format!("{:?}", node.fill_safety),
             })
         })
         .collect::<Vec<_>>();
@@ -2388,24 +2679,21 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
         let Some(backend_dom_node_id) = node.backend_dom_node_id else {
             continue;
         };
-        let Some(safety @ (ClickSafety::Allowed | ClickSafety::Disabled)) =
-            node.click_safety.clone()
-        else {
-            continue;
-        };
-        let element_ref = loop {
-            let candidate = format!("eref_{}", Uuid::new_v4().simple());
-            if !session.refs.contains_key(&candidate) && !session.stale_refs.contains(&candidate) {
-                break candidate;
+        let capability = match (&node.click_safety, &node.fill_safety) {
+            (Some(safety @ (ClickSafety::Allowed | ClickSafety::Disabled)), _) => {
+                ElementCapability::Click(safety.clone())
             }
+            (None, Some(FillSafety::Allowed)) => ElementCapability::Fill,
+            _ => continue,
         };
+        let element_ref = new_element_ref(&session.refs, &session.stale_refs);
         session.refs.insert(
             element_ref.clone(),
             ElementTarget {
                 backend_dom_node_id,
                 role: node.role.clone(),
                 accessible_name: node.accessible_name.clone(),
-                safety,
+                capability,
             },
         );
         node.element_ref = Some(element_ref);
@@ -2413,6 +2701,15 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
     session.page_epoch = session.page_epoch.saturating_add(1).max(1);
     session.snapshot_id = format!("snapshot_{}", Uuid::new_v4().simple());
     session.observation_fingerprint = observation_fingerprint(&session.observation.nodes);
+}
+
+fn new_element_ref(refs: &HashMap<String, ElementTarget>, stale_refs: &BTreeSet<String>) -> String {
+    loop {
+        let candidate = format!("eref_{}", Uuid::new_v4().simple());
+        if !refs.contains_key(&candidate) && !stale_refs.contains(&candidate) {
+            return candidate;
+        }
+    }
 }
 
 fn browser_result_value(
@@ -2648,6 +2945,17 @@ async fn invalidate_with_failure(
     click_failure_with_fresh_observation(session, request, failure, false)
 }
 
+async fn invalidate_fill_with_failure(
+    session: &mut LiveBrowserSession,
+    request: &BrowserFillRequest,
+    observation: SessionObservation,
+    failure: BrowserFailure,
+) -> ToolOutcome {
+    session.observation = observation;
+    rotate_observation(session, true);
+    fill_failure_with_fresh_observation(session, request, failure, false)
+}
+
 fn resolve_element_ref(
     session_run_id: &str,
     caller_run_id: &str,
@@ -2678,7 +2986,7 @@ fn resolve_element_ref(
     })
 }
 
-fn validate_current_target<'a>(
+fn validate_target_identity<'a>(
     target: &ElementTarget,
     nodes: &'a [SemanticNode],
 ) -> Result<Option<&'a SemanticNode>, BrowserFailure> {
@@ -2703,7 +3011,24 @@ fn validate_current_target<'a>(
             "element_ref target identity changed after the Host observation",
         ));
     }
-    match (&target.safety, &current.click_safety) {
+    Ok(Some(current))
+}
+
+fn validate_click_target<'a>(
+    target: &ElementTarget,
+    nodes: &'a [SemanticNode],
+) -> Result<Option<&'a SemanticNode>, BrowserFailure> {
+    let Some(current) = validate_target_identity(target, nodes)? else {
+        return Ok(None);
+    };
+    let ElementCapability::Click(safety) = &target.capability else {
+        return Err(BrowserFailure::operation(
+            "browser_element_ref_capability_mismatch",
+            "element_ref",
+            "browser_click cannot consume a fill-only element_ref",
+        ));
+    };
+    match (safety, &current.click_safety) {
         (ClickSafety::Disabled, _) | (_, Some(ClickSafety::Disabled)) => {
             Err(BrowserFailure::operation(
                 "browser_element_ref_disabled",
@@ -2719,6 +3044,45 @@ fn validate_current_target<'a>(
             ))
         }
         _ => Ok(Some(current)),
+    }
+}
+
+fn validate_fill_target<'a>(
+    target: &ElementTarget,
+    nodes: &'a [SemanticNode],
+) -> Result<Option<&'a SemanticNode>, BrowserFailure> {
+    let Some(current) = validate_target_identity(target, nodes)? else {
+        return Ok(None);
+    };
+    if target.capability != ElementCapability::Fill {
+        return Err(BrowserFailure::operation(
+            "browser_element_ref_capability_mismatch",
+            "element_ref",
+            "browser_fill cannot consume a click-only element_ref",
+        ));
+    }
+    match &current.fill_safety {
+        Some(FillSafety::Allowed) => Ok(Some(current)),
+        Some(FillSafety::Disabled) => Err(BrowserFailure::operation(
+            "browser_element_ref_disabled",
+            "element_ref",
+            "element_ref resolves to a disabled text-entry target",
+        )),
+        Some(FillSafety::ReadOnly) => Err(BrowserFailure::operation(
+            "browser_element_ref_readonly",
+            "element_ref",
+            "element_ref resolves to a readonly text-entry target",
+        )),
+        Some(FillSafety::SensitiveDenied) => Err(BrowserFailure::operation(
+            "browser_fill_sensitive_target_denied",
+            "element_ref",
+            "browser_fill denies login, secret, token, credential, and OTP targets",
+        )),
+        Some(FillSafety::Ineligible) | None => Err(BrowserFailure::operation(
+            "browser_fill_target_ineligible",
+            "element_ref",
+            "element_ref no longer resolves to an admitted text/search input",
+        )),
     }
 }
 
@@ -2798,7 +3162,7 @@ async fn execute_live_click(
             return invalidate_with_failure(session, request, fresh, failure).await;
         }
     };
-    let current = match validate_current_target(&target, &fresh.nodes) {
+    let current = match validate_click_target(&target, &fresh.nodes) {
         Ok(current) => current,
         Err(failure) => {
             return invalidate_with_failure(session, request, fresh, failure).await;
@@ -2928,6 +3292,280 @@ async fn execute_live_click(
     });
     if let Some(failure) = session.egress.take_fatal_failure() {
         return click_failure_with_fresh_observation(session, request, failure, true);
+    }
+    let _ = session
+        .cdp
+        .call(
+            "Network.clearBrowserCookies",
+            json!({}),
+            Some(&session.cdp_session_id),
+        )
+        .await;
+    let mut outcome = browser_result_outcome(session, action, false);
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+fn fill_failure_with_fresh_observation(
+    session: &LiveBrowserSession,
+    request: &BrowserFillRequest,
+    failure: BrowserFailure,
+    dispatched: bool,
+) -> ToolOutcome {
+    let observation = browser_result_value(
+        session,
+        Some(BrowserActionResult {
+            kind: "fill",
+            consumed_element_ref: request.element_ref.clone(),
+        }),
+        false,
+    );
+    let content = json!({
+        "failure": {
+            "code": failure.code,
+            "stage": failure.stage,
+            "message": failure.message,
+        },
+        "fresh_observation": observation,
+        "trust": TRUST,
+    })
+    .to_string();
+    let mut outcome =
+        ToolOutcome::error(content).with_failure_code(ToolFailureCode::OperationFailed);
+    outcome.transport = if failure.transport {
+        ToolTransportStatus::Failed
+    } else {
+        ToolTransportStatus::Succeeded
+    };
+    outcome.operation = ToolOperationStatus::Failed;
+    outcome.side_effect = if dispatched {
+        ToolSideEffectStatus::Applied
+    } else {
+        ToolSideEffectStatus::NotApplied
+    };
+    outcome.retry = if dispatched {
+        ToolRetryDisposition::NotRetryable
+    } else {
+        failure.retry
+    };
+    outcome.metadata = Some(action_failure_metadata(
+        &request.element_ref,
+        "fill",
+        &failure,
+        None,
+    ));
+    outcome
+}
+
+async fn execute_live_fill(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    request: &BrowserFillRequest,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    let fresh =
+        match tokio::time::timeout(OVERALL_DEADLINE, capture_current_observation(session)).await {
+            Ok(Ok(observation)) => observation,
+            Ok(Err(failure)) => {
+                return fill_operation_outcome(&request.element_ref, failure, None, false);
+            }
+            Err(_) => {
+                return fill_operation_outcome(
+                    &request.element_ref,
+                    BrowserFailure::transport(
+                        "browser_deadline_exceeded",
+                        "deadline",
+                        "browser_fill pre-action observation exceeded its deadline",
+                    ),
+                    None,
+                    false,
+                );
+            }
+        };
+    if cancellation.is_cancelled() {
+        return invalidate_fill_with_failure(
+            session,
+            request,
+            fresh,
+            BrowserFailure {
+                code: "browser_cancelled",
+                stage: "cancellation",
+                message: "browser_fill was cancelled before dispatch".to_owned(),
+                transport: false,
+                retry: ToolRetryDisposition::Safe,
+            },
+        )
+        .await;
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        run_id,
+        &session.refs,
+        &session.stale_refs,
+        &request.element_ref,
+    ) {
+        Ok(target) => target,
+        Err(failure) => {
+            return invalidate_fill_with_failure(session, request, fresh, failure).await;
+        }
+    };
+    let current = match validate_fill_target(&target, &fresh.nodes) {
+        Ok(current) => current,
+        Err(failure) => {
+            return invalidate_fill_with_failure(session, request, fresh, failure).await;
+        }
+    };
+    let Some(_current) = current else {
+        let described = session
+            .cdp
+            .call(
+                "DOM.describeNode",
+                json!({"backendNodeId":target.backend_dom_node_id}),
+                Some(&session.cdp_session_id),
+            )
+            .await;
+        return invalidate_fill_with_failure(
+            session,
+            request,
+            fresh,
+            absent_target_failure(described.is_ok()),
+        )
+        .await;
+    };
+    let fresh_fingerprint = observation_fingerprint(&fresh.nodes);
+    if fresh_fingerprint != session.observation_fingerprint {
+        return invalidate_fill_with_failure(
+            session,
+            request,
+            fresh,
+            BrowserFailure::operation(
+                "browser_element_ref_stale_snapshot",
+                "element_ref",
+                "page semantics changed after the latest Host observation",
+            ),
+        )
+        .await;
+    }
+    let model = match session
+        .cdp
+        .call(
+            "DOM.getBoxModel",
+            json!({"backendNodeId":target.backend_dom_node_id}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        Ok(model) => model,
+        Err(_) => {
+            return invalidate_fill_with_failure(
+                session,
+                request,
+                fresh,
+                BrowserFailure::operation(
+                    "browser_element_ref_detached",
+                    "element_ref",
+                    "element_ref detached before fill dispatch",
+                ),
+            )
+            .await;
+        }
+    };
+    if box_center(&model).is_none() {
+        return invalidate_fill_with_failure(
+            session,
+            request,
+            fresh,
+            BrowserFailure::operation(
+                "browser_element_ref_hidden",
+                "element_ref",
+                "element_ref has no visible non-zero layout box",
+            ),
+        )
+        .await;
+    }
+
+    session.egress.begin_action();
+    let focus = session
+        .cdp
+        .call(
+            "DOM.focus",
+            json!({"backendNodeId":target.backend_dom_node_id}),
+            Some(&session.cdp_session_id),
+        )
+        .await;
+    if let Err(failure) = focus {
+        session.egress.end_action();
+        return fill_operation_outcome(&request.element_ref, failure, None, true);
+    }
+    for (event_type, key, code, modifiers, key_code) in [
+        ("rawKeyDown", "a", "KeyA", SELECT_ALL_MODIFIERS, 65),
+        ("keyUp", "a", "KeyA", SELECT_ALL_MODIFIERS, 65),
+        ("rawKeyDown", "Backspace", "Backspace", 0, 8),
+        ("keyUp", "Backspace", "Backspace", 0, 8),
+    ] {
+        let dispatched = session
+            .cdp
+            .call(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type":event_type,
+                    "key":key,
+                    "code":code,
+                    "modifiers":modifiers,
+                    "windowsVirtualKeyCode":key_code,
+                    "nativeVirtualKeyCode":key_code,
+                }),
+                Some(&session.cdp_session_id),
+            )
+            .await;
+        if let Err(failure) = dispatched {
+            session.egress.end_action();
+            return fill_operation_outcome(&request.element_ref, failure, None, true);
+        }
+    }
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Input.insertText",
+            json!({"text":request.value}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.end_action();
+        return fill_operation_outcome(&request.element_ref, failure, None, true);
+    }
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post =
+        match tokio::time::timeout(OVERALL_DEADLINE, capture_current_observation(session)).await {
+            Ok(Ok(observation)) => observation,
+            Ok(Err(failure)) => {
+                session.egress.end_action();
+                return fill_operation_outcome(&request.element_ref, failure, None, true);
+            }
+            Err(_) => {
+                session.egress.end_action();
+                return fill_operation_outcome(
+                    &request.element_ref,
+                    BrowserFailure::transport(
+                        "browser_deadline_exceeded",
+                        "deadline",
+                        "browser_fill post-action observation exceeded its deadline",
+                    ),
+                    None,
+                    true,
+                );
+            }
+        };
+    session.egress.end_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    let action = Some(BrowserActionResult {
+        kind: "fill",
+        consumed_element_ref: request.element_ref.clone(),
+    });
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return fill_failure_with_fresh_observation(session, request, failure, true);
     }
     let _ = session
         .cdp
@@ -3372,12 +4010,23 @@ fn extract_semantic_snapshot(
             if matches!(
                 name.as_str(),
                 "data-state"
+                    | "data-channel"
+                    | "data-filter"
                     | "aria-checked"
                     | "aria-selected"
                     | "aria-expanded"
                     | "aria-disabled"
                     | "aria-busy"
                     | "aria-pressed"
+                    | "type"
+                    | "disabled"
+                    | "readonly"
+                    | "hidden"
+                    | "name"
+                    | "id"
+                    | "placeholder"
+                    | "autocomplete"
+                    | "aria-label"
             ) {
                 parsed_attributes.insert(name, bounded_text(&value, 512));
             }
@@ -3444,7 +4093,9 @@ fn extract_semantic_snapshot(
         }
         if let Some(dom) = dom.as_ref() {
             for (name, value) in &dom.attributes {
-                state.insert(name.clone(), value.clone());
+                if name.starts_with("data-") || name.starts_with("aria-") {
+                    state.insert(name.clone(), value.clone());
+                }
             }
         }
         let mut text = if matches!(role.as_str(), "StaticText" | "InlineTextBox") {
@@ -3483,6 +4134,7 @@ fn extract_semantic_snapshot(
         } else {
             None
         };
+        let fill_safety = classify_fill_safety(&role, &accessible_name, dom, &state);
         eligible.push(SemanticNode {
             element_ref: None,
             role: bounded_text(&role, 512),
@@ -3492,6 +4144,7 @@ fn extract_semantic_snapshot(
             state,
             backend_dom_node_id,
             click_safety,
+            fill_safety,
         });
     }
     let nodes_read = eligible.len();
@@ -3511,6 +4164,82 @@ fn extract_semantic_snapshot(
         returned.push(node);
     }
     Ok((bounded_text(&title, 512), returned, nodes_read, truncated))
+}
+
+fn classify_fill_safety(
+    role: &str,
+    accessible_name: &str,
+    dom: Option<&DomFacts>,
+    state: &BTreeMap<String, String>,
+) -> Option<FillSafety> {
+    if !matches!(role.to_ascii_lowercase().as_str(), "textbox" | "searchbox") {
+        return None;
+    }
+    let Some(dom) = dom else {
+        return Some(FillSafety::Ineligible);
+    };
+    if dom.node_name != "INPUT" {
+        return Some(FillSafety::Ineligible);
+    }
+    let input_type = dom
+        .attributes
+        .get("type")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "text".to_owned());
+    if !matches!(input_type.as_str(), "text" | "search") {
+        return Some(if input_type == "password" {
+            FillSafety::SensitiveDenied
+        } else {
+            FillSafety::Ineligible
+        });
+    }
+    if dom.attributes.contains_key("disabled")
+        || state.iter().any(|(name, value)| {
+            matches!(name.as_str(), "disabled" | "aria-disabled")
+                && value.eq_ignore_ascii_case("true")
+        })
+    {
+        return Some(FillSafety::Disabled);
+    }
+    if dom.attributes.contains_key("readonly")
+        || state
+            .get("readonly")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+    {
+        return Some(FillSafety::ReadOnly);
+    }
+    if dom.attributes.contains_key("hidden") {
+        return Some(FillSafety::Ineligible);
+    }
+    let mut identity = accessible_name.to_ascii_lowercase();
+    for name in ["name", "id", "placeholder", "autocomplete", "aria-label"] {
+        if let Some(value) = dom.attributes.get(name) {
+            identity.push(' ');
+            identity.push_str(&value.to_ascii_lowercase());
+        }
+    }
+    let normalized = identity.replace(['-', '_'], " ");
+    if [
+        "password",
+        "passcode",
+        "secret",
+        "token",
+        "api key",
+        "credential",
+        "otp",
+        "one time code",
+        "verification code",
+        "login",
+        "sign in",
+        "username",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+    {
+        return Some(FillSafety::SensitiveDenied);
+    }
+    Some(FillSafety::Allowed)
 }
 
 fn descendant_ax_text(
@@ -3667,7 +4396,7 @@ mod tests {
                 backend_dom_node_id,
                 role: role.to_owned(),
                 accessible_name: name.to_owned(),
-                safety: safety.clone(),
+                capability: ElementCapability::Click(safety.clone()),
             },
             SemanticNode {
                 element_ref: None,
@@ -3678,6 +4407,34 @@ mod tests {
                 state: BTreeMap::new(),
                 backend_dom_node_id: Some(backend_dom_node_id),
                 click_safety: Some(safety),
+                fill_safety: None,
+            },
+        )
+    }
+
+    fn fill_target(
+        backend_dom_node_id: u64,
+        role: &str,
+        name: &str,
+        safety: FillSafety,
+    ) -> (ElementTarget, SemanticNode) {
+        (
+            ElementTarget {
+                backend_dom_node_id,
+                role: role.to_owned(),
+                accessible_name: name.to_owned(),
+                capability: ElementCapability::Fill,
+            },
+            SemanticNode {
+                element_ref: None,
+                role: role.to_owned(),
+                accessible_name: name.to_owned(),
+                text: name.to_owned(),
+                value: String::new(),
+                state: BTreeMap::new(),
+                backend_dom_node_id: Some(backend_dom_node_id),
+                click_safety: None,
+                fill_safety: Some(safety),
             },
         )
     }
@@ -3729,25 +4486,66 @@ mod tests {
     }
 
     #[test]
+    fn fill_value_and_ref_preflight_is_bounded_and_control_free() {
+        let element_ref = "eref_0123456789abcdef0123456789abcdef";
+        let valid = parse_fill_request(&json!({
+            "element_ref":element_ref,
+            "value":"canary"
+        }))
+        .expect("bounded fill request");
+        assert_eq!(valid.element_ref(), element_ref);
+        assert_eq!(valid.value(), "canary");
+        assert!(
+            parse_fill_request(&json!({
+                "element_ref":element_ref,
+                "value":"🦀".repeat(MAX_FILL_VALUE_CHARS)
+            }))
+            .is_ok(),
+            "the exact 1024-char/4096-byte UTF-8 boundary is admitted"
+        );
+
+        for (value, expected) in [
+            (String::new(), "browser_fill_value_invalid"),
+            (
+                "a".repeat(MAX_FILL_VALUE_CHARS + 1),
+                "browser_fill_value_invalid",
+            ),
+            ("line\nfeed".to_owned(), "browser_fill_value_control_denied"),
+            ("nul\0byte".to_owned(), "browser_fill_value_control_denied"),
+            (
+                format!("c1{}", '\u{0085}'),
+                "browser_fill_value_control_denied",
+            ),
+        ] {
+            assert_eq!(
+                parse_fill_request(&json!({"element_ref":element_ref,"value":value}))
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn current_target_matrix_distinguishes_ambiguous_disabled_and_stale_identity() {
         let (allowed, node) = semantic_target(7, "button", "Deploy", ClickSafety::Allowed);
         assert!(
-            validate_current_target(&allowed, std::slice::from_ref(&node))
+            validate_click_target(&allowed, std::slice::from_ref(&node))
                 .unwrap()
                 .is_some()
         );
         assert_eq!(
-            validate_current_target(&allowed, &[node.clone(), node.clone()])
+            validate_click_target(&allowed, &[node.clone(), node.clone()])
                 .unwrap_err()
                 .code,
             "browser_element_ref_ambiguous"
         );
-        assert!(validate_current_target(&allowed, &[]).unwrap().is_none());
+        assert!(validate_click_target(&allowed, &[]).unwrap().is_none());
 
         let (_, mut renamed) = semantic_target(7, "button", "Other", ClickSafety::Allowed);
         renamed.backend_dom_node_id = Some(7);
         assert_eq!(
-            validate_current_target(&allowed, &[renamed])
+            validate_click_target(&allowed, &[renamed])
                 .unwrap_err()
                 .code,
             "browser_element_ref_stale_target"
@@ -3755,7 +4553,7 @@ mod tests {
         let (disabled, disabled_node) =
             semantic_target(8, "button", "Deploy", ClickSafety::Disabled);
         assert_eq!(
-            validate_current_target(&disabled, &[disabled_node])
+            validate_click_target(&disabled, &[disabled_node])
                 .unwrap_err()
                 .code,
             "browser_element_ref_disabled"
@@ -3763,9 +4561,7 @@ mod tests {
         let (link, link_node) =
             semantic_target(9, "link", "External", ClickSafety::SideEffectDenied);
         assert_eq!(
-            validate_current_target(&link, &[link_node])
-                .unwrap_err()
-                .code,
+            validate_click_target(&link, &[link_node]).unwrap_err().code,
             "browser_element_ref_side_effect_denied"
         );
         assert_eq!(
@@ -3776,6 +4572,126 @@ mod tests {
             absent_target_failure(false).code,
             "browser_element_ref_detached"
         );
+    }
+
+    #[test]
+    fn fill_target_and_cross_capability_matrix_fail_closed() {
+        let (fill, allowed) = fill_target(11, "textbox", "Release channel", FillSafety::Allowed);
+        assert!(
+            validate_fill_target(&fill, std::slice::from_ref(&allowed))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            validate_click_target(&fill, std::slice::from_ref(&allowed))
+                .unwrap_err()
+                .code,
+            "browser_element_ref_capability_mismatch"
+        );
+        let (click, click_node) = semantic_target(12, "button", "Deploy", ClickSafety::Allowed);
+        assert_eq!(
+            validate_fill_target(&click, &[click_node])
+                .unwrap_err()
+                .code,
+            "browser_element_ref_capability_mismatch"
+        );
+        for (safety, expected) in [
+            (FillSafety::Disabled, "browser_element_ref_disabled"),
+            (FillSafety::ReadOnly, "browser_element_ref_readonly"),
+            (
+                FillSafety::SensitiveDenied,
+                "browser_fill_sensitive_target_denied",
+            ),
+            (FillSafety::Ineligible, "browser_fill_target_ineligible"),
+        ] {
+            let (target, node) = fill_target(13, "textbox", "Release channel", safety);
+            assert_eq!(
+                validate_fill_target(&target, &[node]).unwrap_err().code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn only_non_sensitive_text_and_search_inputs_are_fill_eligible() {
+        let state = BTreeMap::new();
+        let facts = |node_name: &str, attributes: &[(&str, &str)]| DomFacts {
+            node_name: node_name.to_owned(),
+            node_value: String::new(),
+            attributes: attributes
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        };
+        assert_eq!(
+            classify_fill_safety(
+                "textbox",
+                "Release channel",
+                Some(&facts("INPUT", &[("type", "text")])),
+                &state,
+            ),
+            Some(FillSafety::Allowed)
+        );
+        assert_eq!(
+            classify_fill_safety(
+                "searchbox",
+                "Test filter",
+                Some(&facts("INPUT", &[("type", "search")])),
+                &state,
+            ),
+            Some(FillSafety::Allowed)
+        );
+        for (role, name, dom, expected) in [
+            (
+                "textbox",
+                "Notes",
+                facts("TEXTAREA", &[]),
+                FillSafety::Ineligible,
+            ),
+            (
+                "textbox",
+                "Password",
+                facts("INPUT", &[("type", "password")]),
+                FillSafety::SensitiveDenied,
+            ),
+            (
+                "textbox",
+                "API key",
+                facts("INPUT", &[("type", "text")]),
+                FillSafety::SensitiveDenied,
+            ),
+            (
+                "textbox",
+                "Value",
+                facts("INPUT", &[("type", "file")]),
+                FillSafety::Ineligible,
+            ),
+            (
+                "textbox",
+                "Value",
+                facts("INPUT", &[("type", "number")]),
+                FillSafety::Ineligible,
+            ),
+            (
+                "textbox",
+                "Value",
+                facts("INPUT", &[("type", "text"), ("readonly", "")]),
+                FillSafety::ReadOnly,
+            ),
+            (
+                "textbox",
+                "Value",
+                facts("INPUT", &[("type", "text"), ("disabled", "")]),
+                FillSafety::Disabled,
+            ),
+        ] {
+            assert_eq!(
+                classify_fill_safety(role, name, Some(&dom), &state),
+                Some(expected),
+                "{role}:{name}:{:?}",
+                dom.attributes
+            );
+        }
     }
 
     #[test]

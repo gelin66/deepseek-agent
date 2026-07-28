@@ -1456,7 +1456,7 @@ mod tests {
         NullEventSink, RunLease, ToolExecutionError,
     };
     use dse_tools::{
-        BrowserCancellationToken, BrowserClickRequest, BrowserNavigateRequest,
+        BrowserCancellationToken, BrowserClickRequest, BrowserFillRequest, BrowserNavigateRequest,
         PRODUCTION_TOOL_NAMES, SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork,
         WebFetchNetworkError,
     };
@@ -1483,6 +1483,7 @@ mod tests {
     struct SemanticBrowserFixture {
         navigate_calls: AtomicUsize,
         click_calls: AtomicUsize,
+        fill_calls: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -1561,6 +1562,25 @@ mod tests {
             .with_side_effect(ToolSideEffectStatus::Applied)
         }
 
+        async fn fill(
+            &self,
+            _run_id: &str,
+            _request: BrowserFillRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.fill_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "action":{"kind":"fill","consumed_element_ref":"eref_fixture"},
+                "snapshot_id":"snapshot_fixture_2",
+                "page_epoch":2,
+                "snapshot":[{"role":"status","accessible_name":"Value set","text":""}],
+                "trust":"external_untrusted",
+                "session_live":true
+            }))
+            .expect("semantic browser fill fixture outcome")
+            .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
         fn shutdown(&self) {}
     }
 
@@ -1568,6 +1588,8 @@ mod tests {
     struct BrowserClickFixture {
         navigate_calls: AtomicUsize,
         click_calls: AtomicUsize,
+        fill_calls: AtomicUsize,
+        fill_mode: bool,
     }
 
     #[async_trait::async_trait]
@@ -1583,6 +1605,28 @@ mod tests {
             _cancellation: BrowserCancellationToken,
         ) -> ToolOutcome {
             self.navigate_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fill_mode {
+                return ToolOutcome::json(&json!({
+                    "requested_url":"http://127.0.0.1:43111/",
+                    "final_url":"http://127.0.0.1:43111/",
+                    "title":"Deployment configuration",
+                    "snapshot_id":"snapshot_fixture_1",
+                    "page_epoch":1,
+                    "element_refs_returned":1,
+                    "snapshot":[{
+                        "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                        "role":"textbox",
+                        "accessible_name":"Release channel",
+                        "text":"Release channel",
+                        "value":"stable"
+                    }],
+                    "trust":"external_untrusted",
+                    "session_scope":"same_run_in_memory_exact_loopback",
+                    "session_live":true,
+                    "teardown":{"attempted":false}
+                }))
+                .expect("fill fixture navigation");
+            }
             ToolOutcome::json(&json!({
                 "requested_url":"http://127.0.0.1:43111/",
                 "final_url":"http://127.0.0.1:43111/",
@@ -1640,6 +1684,45 @@ mod tests {
                 "teardown":{"attempted":false}
             }))
             .expect("click fixture outcome")
+            .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
+        async fn fill(
+            &self,
+            _run_id: &str,
+            request: BrowserFillRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            assert_eq!(
+                request.element_ref(),
+                "eref_0123456789abcdef0123456789abcdef"
+            );
+            assert_eq!(request.value(), "canary");
+            self.fill_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "action":{
+                    "kind":"fill",
+                    "consumed_element_ref":"eref_0123456789abcdef0123456789abcdef"
+                },
+                "requested_url":"http://127.0.0.1:43111/",
+                "final_url":"http://127.0.0.1:43111/",
+                "title":"Deployment configuration",
+                "snapshot_id":"snapshot_fixture_2",
+                "page_epoch":2,
+                "element_refs_returned":0,
+                "snapshot":[{
+                    "role":"status",
+                    "accessible_name":"Release channel set to canary",
+                    "text":"Release channel set to canary",
+                    "value":"",
+                    "state":{"data-channel":"canary"}
+                }],
+                "trust":"external_untrusted",
+                "session_scope":"same_run_in_memory_exact_loopback",
+                "session_live":true,
+                "teardown":{"attempted":false}
+            }))
+            .expect("fill fixture outcome")
             .with_side_effect(ToolSideEffectStatus::Applied)
         }
 
@@ -2791,6 +2874,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_fill_started_without_outcome_reopens_recovery_required_without_replay() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("browser-fill-in-flight");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+            WriteExecutionMode::Root,
+        );
+        let (replay, _) = seed_in_flight_tool(
+            store.as_ref(),
+            request,
+            None,
+            Some((
+                "browser_fill",
+                json!({
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "value":"canary"
+                }),
+                WorkspaceAccess::MayWrite,
+            )),
+        )
+        .await;
+        assert!(!resume_needs_live_model(&replay));
+
+        let run = composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+            .expect("browser fill ambiguity composes without a Key")
+            .ready()
+            .await
+            .expect("resume acquires canonical run");
+        let outcome = run.wait().await.expect("ambiguity settles locally");
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::RecoveryRequired { .. }
+        ));
+        assert_eq!(accepted.await.expect("browser fill was not replayed"), 0);
+    }
+
+    #[tokio::test]
     async fn writer_resume_recovers_shared_child_ledger_without_reopening_limit_or_losing_usage() {
         let temp = tempfile::tempdir().expect("temp workspace");
         let composition = test_production_composition(
@@ -3086,10 +3214,16 @@ mod tests {
             false,
         );
         assert!(catalog.iter().any(|tool| tool.name == "browser_click"));
+        assert!(catalog.iter().any(|tool| tool.name == "browser_fill"));
         assert!(
             !coordinator_catalog
                 .iter()
                 .any(|tool| tool.name == "browser_click")
+        );
+        assert!(
+            !coordinator_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_fill")
         );
         assert!(
             !read_only_catalog
@@ -3097,9 +3231,19 @@ mod tests {
                 .any(|tool| tool.name == "browser_click")
         );
         assert!(
+            !read_only_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_fill")
+        );
+        assert!(
             writer_catalog
                 .iter()
                 .any(|tool| tool.name == "browser_click")
+        );
+        assert!(
+            writer_catalog
+                .iter()
+                .any(|tool| tool.name == "browser_fill")
         );
         let prompt_config = ProductionPromptConfig::default();
         let request = || ProductionPromptRequest {
@@ -3346,13 +3490,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:4a93e176398a48f32e173a78a310c38dd527d205fc5b5a3936d1a295a7395cba",
+                "sha256:52e587667fffd84ca7c1c6046389941ac2d7ef0cafd7989fe762c1aeafb33be9",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:2710a4f26c7b91500030ac14f7619a6bc71ac1d86764a519d66ec9afb7d897fb",
+                "sha256:dd41ab1d1b6a9200539e6e1978ab02f79af9439e6d17b03eaa4bd1cf160974c6",
             ),
             (
                 "coordinator",
@@ -3365,19 +3509,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:06f78f1505adad936e9a01b6ce81c1991ded07a5a9f25425f8044b9e665e76cc",
+                "sha256:f010e9c53c55e9987aa6b63d5e6feeea238c6a2a323330721eb71d2e78cc880c",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:c77513fb0f299f3c30b605b835fb85ab6ce5bd4120488445e6d2dd48b672b899",
+                "sha256:dba1cf43cd518399dc74d96e51d5d552dab4e4b6122f0a7969f5eee2233708ad",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("browser_navigate", "$/required", "all_properties_required")),
-                "sha256:2a3451a0f510d40c83fa84e406dc444e573de1961bd80b2b2780b48990b9f02d",
+                "sha256:506ee3a5f89112cb086e8bf618f4f4d43aebecf5014effa051743175c196b5b4",
             ),
             (
                 "isolated_writer",
@@ -3390,7 +3534,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:0ab673f095dfade5cc84518ad2b6e30b08a70f63102d27fab4b78f0984f1daec",
+                "sha256:8735b0202db5134da89b8135d8a822c40571dc36cc215f380e2403f7280f641e",
             ),
             (
                 "terminal_empty",
@@ -4543,6 +4687,186 @@ mod tests {
             ),
             calls_before_reopen,
             "committed click reopen must replay without navigation or click"
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn m46_w3_1_agent_fill_commits_and_sqlite_reopen_never_fills_again() {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "m46-w3-1-navigate",
+                "browser_navigate",
+                json!({
+                    "url":"http://127.0.0.1:43111/",
+                    "max_nodes":16,
+                    "max_chars":4_096
+                }),
+                40,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "m46-w3-1-fill",
+                "browser_fill",
+                json!({
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "value":"canary"
+                }),
+                48,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "已填写 Host 返回的 fill-only opaque ref，并观察到 Release channel set to canary。",
+                56,
+                6,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let browser = Arc::new(BrowserClickFixture {
+            fill_mode: true,
+            ..BrowserClickFixture::default()
+        });
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_browser_local_origin(Some("http://127.0.0.1:43111".to_owned()))
+            .with_semantic_browser_harness(browser.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "打开 Host-owned deployment configuration，填写返回的 Release channel ref 为 canary，并报告 fresh post-fill state",
+        );
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "m46-w3-1-production-browser-fill",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(browser.navigate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            browser.fill_calls.load(Ordering::SeqCst),
+            1,
+            "events={:?}",
+            replay.events
+        );
+        assert_eq!(browser.click_calls.load(Ordering::SeqCst), 0);
+        let committed_fill = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "browser_fill" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed browser_fill outcome");
+        assert!(committed_fill.is_success(), "{}", committed_fill.content);
+        assert_eq!(committed_fill.side_effect, ToolSideEffectStatus::Applied);
+        let fill_payload: Value = serde_json::from_str(&committed_fill.content).expect("fill JSON");
+        assert_eq!(fill_payload["page_epoch"], 2);
+        assert_eq!(
+            fill_payload["snapshot"][0]["accessible_name"],
+            "Release channel set to canary"
+        );
+        assert_eq!(fill_payload["trust"], "external_untrusted");
+
+        assert_eq!(requests.len(), 3);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        let fill_definition = root_catalog
+            .iter()
+            .find(|tool| tool["function"]["name"] == "browser_fill")
+            .expect("browser_fill in root catalog");
+        assert_eq!(
+            fill_definition["function"]["parameters"]["required"],
+            json!(["element_ref", "value"])
+        );
+        assert_eq!(
+            fill_definition["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        let fill_replayed_to_model = requests[2].body["messages"]
+            .as_array()
+            .expect("third request messages")
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == "m46-w3-1-fill")
+            .expect("committed fill projected to model");
+        assert_eq!(fill_replayed_to_model["content"], committed_fill.content);
+
+        drop(app);
+        let calls_before_reopen = (
+            browser.navigate_calls.load(Ordering::SeqCst),
+            browser.fill_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen production app without credential");
+        let reopened_view = run_result(
+            reopened
+                .execute(envelope(
+                    "m46-w3-1-reopen-get",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(
+            reopened_view.terminal.as_ref(),
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal)
+        );
+        let reopened_events = reopened
+            .execute(envelope(
+                "m46-w3-1-reopen-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                browser.navigate_calls.load(Ordering::SeqCst),
+                browser.fill_calls.load(Ordering::SeqCst),
+            ),
+            calls_before_reopen,
+            "committed fill reopen must replay without navigation or fill"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }

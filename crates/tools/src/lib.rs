@@ -53,8 +53,8 @@ pub(crate) use run_tests::{execute_run_tests, resolve_run_tests_spec};
 pub use run_verifiers::{GateResult, GateStatus, RunVerifiersOutput, VerifierVerdict};
 pub(crate) use run_verifiers::{execute_run_verifiers, resolve_run_verifiers_spec};
 pub use semantic_browser::{
-    BrowserCancellationToken, BrowserClickRequest, BrowserNavigateRequest, SemanticBrowserHarness,
-    SystemSemanticBrowserHarness,
+    BrowserCancellationToken, BrowserClickRequest, BrowserFillRequest, BrowserNavigateRequest,
+    SemanticBrowserHarness, SystemSemanticBrowserHarness,
 };
 pub use unified_diff::make_unified_diff;
 pub use verification_artifact::{

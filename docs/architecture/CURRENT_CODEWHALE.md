@@ -649,13 +649,36 @@ committed click outcome 冷重开只重放，`ToolExecutionStarted` 后无 outco
 `RecoveryRequired` 且绝不自动 click。RuntimeEvent v18、State v24、ToolOutcome 与 RunStore schema
 delta=`0`；production 未引入 Playwright/Node、第二 Runtime/Store 或 browser session ledger。
 
-post-W3 admission 没有改变上述 production facts。两个新的 test-only exact-loopback task 证明 current
-root 能观察 `textbox / Release channel` 与 `searchbox / Test filter`，但 click-only ref policy 不给
-text-entry target 发 ref，15-tool catalog 也没有 `browser_fill`；Runtime preflight 以
-`UnknownTool + NotApplied` fail closed。eval-only oracle 的单次 fill 各自得到预注册 state，形成同一
-`tools:browser_interaction:fill=2/2`、control=`0/2`、false-success=`0`。因此 current production 仍只
-有 navigate + click；后续仅获准另开一个 fill-family focused Goal，并未实现 fill/press/wait、public
-action、登录/secret、Cookie/storage、截图/视觉或搜索。
+post-W3 admission 的历史 audit 曾证明 root 能观察 `textbox / Release channel` 与
+`searchbox / Test filter`，但当时 click-only ref policy 不给 text-entry target 发 ref，15-tool catalog
+也没有 `browser_fill`；eval-only oracle 形成同一 `tools:browser_interaction:fill=2/2`、control=`0/2`、
+false-success=`0`，从而准入 W3.1。该冻结 manifest/summary/fixtures/history 保留，eval-only Python/Node
+oracle 与 test-only missing-tool control 已在 production cutover 后删除。
+
+W3.1 仍由同一个 `crates/tools` direct-CDP adapter 和同一个 Host in-memory exact-loopback session
+拥有。fixed production catalog 现为 16 个 Host tools，新增且仅新增
+`browser_fill(element_ref, value)`。navigate snapshot 只给 visible、enabled、非 readonly、非敏感的
+`input[type=text|search]` 生成 fill-only ref；password/file/date/color/number、textarea、contenteditable
+以及 login/secret/token/API-key/credential/OTP target 不生成 ref。value 由 Host preflight 限为非空
+UTF-8、最多 1,024 chars / 4,096 bytes，并拒绝 NUL、C0/C1、DEL 与换行；没有 selector、坐标、script、
+任意 key/Enter/submit、header、Cookie、认证或路径参数。
+
+每个 ref 在 memory-only registry 中绑定 run、browser、backend DOM node、latest snapshot/page epoch
+与 exact click/fill capability，两个 action 不能交叉消费。fill action 固定为
+`DOM.focus -> replace current value -> Input.insertText`；前置 Host validation 重新取得 DOM/AX/layout
+identity 并拒绝 cross-run、stale、missing、hidden、disabled、readonly、detached、ambiguous、semantic
+drift 与 capability drift。成功或可闭合失败都返回 fresh bounded `external_untrusted` observation 并
+旋转全部 refs/epoch；首次 focus 后的 crash/cancel/timeout/transport ambiguity 使用既有
+`Indeterminate/Unsafe`、teardown 与 `RecoveryRequired`，不自动 replay。
+
+root catalog 可见 fill；coordinator/read-only child 因既有 MayWrite actor catalog 不可见；isolated
+Writer 虽按既有写工具 catalog 可见，但 network-denied sandbox 和清除后的 local-origin grant 在授权
+阶段拒绝。两个冻结 fixture 的 production navigate/fill/post-state=`2/2`、stale reuse false allow=`0`；
+真实 AgentApplication committed outcome SQLite reopen 的 navigate/fill counts 保持 `1/1`，started-
+without-outcome 的 model/fill replay=`0`。RuntimeEvent、RunStore 与 State schema delta=`0`，official
+DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`。current production 仍没有 press/
+wait、public action、POST/upload/download、登录、Cookie/storage persistence、截图/视觉、搜索、Node
+production sidecar、第二 Runtime/Store 或 session ledger。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确

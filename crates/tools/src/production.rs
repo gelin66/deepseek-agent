@@ -26,8 +26,8 @@ use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::semantic_browser::{
     SemanticBrowserHarness, SystemSemanticBrowserHarness, browser_harness_identity,
-    execute_browser_click, execute_browser_navigate, preflight_browser_click,
-    preflight_browser_navigate,
+    execute_browser_click, execute_browser_fill, execute_browser_navigate, preflight_browser_click,
+    preflight_browser_fill, preflight_browser_navigate,
 };
 use crate::shell::{
     ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
@@ -47,9 +47,10 @@ use crate::{
     validate_application_probe_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 15] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 16] = [
     "apply_patch",
     "browser_click",
+    "browser_fill",
     "browser_navigate",
     "edit_file",
     "exec_shell",
@@ -646,6 +647,14 @@ impl ProductionToolExecutor {
                 context.cancellation_token().cloned().unwrap_or_default(),
             )
             .await),
+            "browser_fill" => Ok(execute_browser_fill(
+                run_id,
+                input,
+                Arc::clone(&self.semantic_browser_harness),
+                self.web_fetch_network_allowed,
+                context.cancellation_token().cloned().unwrap_or_default(),
+            )
+            .await),
             "browser_navigate" => Ok(execute_browser_navigate(
                 run_id,
                 input,
@@ -750,6 +759,9 @@ impl ToolExecutor for ProductionToolExecutor {
         }
         if invocation.name == "browser_click" {
             return preflight_browser_click(input);
+        }
+        if invocation.name == "browser_fill" {
+            return preflight_browser_fill(input);
         }
         None
     }
@@ -944,7 +956,7 @@ impl ToolExecutor for ProductionToolExecutor {
 
         if matches!(
             invocation.name.as_str(),
-            "browser_click" | "browser_navigate" | "web_fetch"
+            "browser_click" | "browser_fill" | "browser_navigate" | "web_fetch"
         ) {
             let sandbox_denies_network = self
                 .shell
@@ -968,21 +980,27 @@ impl ToolExecutor for ProductionToolExecutor {
                     None,
                 ));
             }
-            if invocation.name == "browser_click" {
+            if matches!(invocation.name.as_str(), "browser_click" | "browser_fill") {
                 if self.browser_local_origin.is_none() {
                     return Ok(decision.build(
                         ToolAuthorizationDisposition::Deny,
                         ApprovalRisk::Elevated,
-                        Some("browser_click_local_origin_missing".to_owned()),
-                        "browser_click 只允许 Host 绑定的 exact loopback disposable application origin",
+                        Some(format!("{}_local_origin_missing", invocation.name)),
+                        format!(
+                            "{} 只允许 Host 绑定的 exact loopback disposable application origin",
+                            invocation.name
+                        ),
                         None,
                     ));
                 }
+                let action = invocation.name.strip_prefix("browser_").unwrap_or_default();
                 return Ok(decision.build(
                     ToolAuthorizationDisposition::Allow,
                     ApprovalRisk::Elevated,
-                    Some("exact_local_semantic_browser_click".to_owned()),
-                    "Host 只允许同一 Run 消费当前 ephemeral page epoch 的 opaque ref",
+                    Some(format!("exact_local_semantic_browser_{action}")),
+                    format!(
+                        "Host 只允许同一 Run 消费当前 ephemeral page epoch 的 opaque {action} ref"
+                    ),
                     None,
                 ));
             }
@@ -1157,8 +1175,13 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             browser_click_schema(),
         ),
         definition(
+            "browser_fill",
+            "用一个非空有界 UTF-8 value 填写 browser_navigate 为同一 Run、当前 Host-owned exact-loopback ephemeral page epoch 返回的 fill-only opaque element_ref；仅支持非敏感 input[type=text|search]，action 后总是刷新 external_untrusted observation 并使旧 refs 失效。",
+            browser_fill_schema(),
+        ),
+        definition(
             "browser_navigate",
-            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；exact-loopback observation 可包含只供同一 Run 最新 page epoch 使用的 opaque click refs。",
+            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot 与 external_untrusted 信任标记；exact-loopback observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque click/fill refs。",
             browser_navigate_schema(),
         ),
         definition(
@@ -1411,6 +1434,10 @@ fn browser_navigate_schema() -> Value {
 
 fn browser_click_schema() -> Value {
     json!({"type":"object","properties":{"element_ref":{"type":"string","minLength":1}},"required":["element_ref"],"additionalProperties":false})
+}
+
+fn browser_fill_schema() -> Value {
+    json!({"type":"object","properties":{"element_ref":{"type":"string","minLength":1},"value":{"type":"string","minLength":1}},"required":["element_ref","value"],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
@@ -2014,6 +2041,7 @@ allow = ["git push"]
     struct FixtureSemanticBrowser {
         navigate_calls: std::sync::atomic::AtomicUsize,
         click_calls: std::sync::atomic::AtomicUsize,
+        fill_calls: std::sync::atomic::AtomicUsize,
         shutdown_calls: std::sync::atomic::AtomicUsize,
     }
 
@@ -2060,6 +2088,20 @@ allow = ["git push"]
                 .with_side_effect(ToolSideEffectStatus::Applied)
         }
 
+        async fn fill(
+            &self,
+            _run_id: &str,
+            request: crate::BrowserFillRequest,
+            _cancellation: TokioCancellationToken,
+        ) -> ToolOutcome {
+            assert_eq!(request.value(), "canary");
+            self.fill_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ToolOutcome::json(&json!({"action":{"kind":"fill"},"trust":"external_untrusted"}))
+                .expect("fixture browser fill outcome")
+                .with_side_effect(ToolSideEffectStatus::Applied)
+        }
+
         fn shutdown(&self) {
             self.shutdown_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2099,6 +2141,7 @@ allow = ["git push"]
         let harness = Arc::new(FixtureSemanticBrowser {
             navigate_calls: std::sync::atomic::AtomicUsize::new(0),
             click_calls: std::sync::atomic::AtomicUsize::new(0),
+            fill_calls: std::sync::atomic::AtomicUsize::new(0),
             shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
         });
         let executor = ProductionToolExecutor::new(
@@ -2226,6 +2269,85 @@ allow = ["git push"]
             1
         );
 
+        let fill = invocation(
+            "browser_fill",
+            json!({
+                "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                "value":"canary"
+            }),
+        );
+        assert!(local_executor.preflight(&fill).is_none());
+        assert_eq!(
+            local_executor.definition_workspace_access("browser_fill"),
+            WorkspaceAccess::MayWrite
+        );
+        let fill_allowed = local_executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &fill,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            fill_allowed.disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        assert_eq!(
+            fill_allowed.matched_rule.as_deref(),
+            Some("exact_local_semantic_browser_fill")
+        );
+        let full_executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::FullAccess)
+                .with_browser_local_origin(Some(local_origin.to_owned()))
+                .with_semantic_browser_harness(harness.clone()),
+        );
+        let full_fill_allowed = full_executor
+            .authorize(
+                RunPermissionMode::FullAccess,
+                &ToolExecutionGrant::Ordinary,
+                &invocation(
+                    "browser_fill",
+                    json!({
+                        "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                        "value":"canary"
+                    }),
+                ),
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            full_fill_allowed.disposition,
+            ToolAuthorizationDisposition::Allow
+        );
+        let filled = local_executor
+            .execute(fill, CancellationToken::default())
+            .await
+            .unwrap();
+        assert!(filled.is_success(), "{}", filled.content);
+        assert_eq!(filled.side_effect, ToolSideEffectStatus::Applied);
+        assert_eq!(
+            harness.fill_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        for invalid in [
+            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":""}),
+            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":"line\nfeed"}),
+            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":"canary","selector":"input"}),
+        ] {
+            assert!(
+                local_executor
+                    .preflight(&invocation("browser_fill", invalid))
+                    .is_some()
+            );
+        }
+        assert_eq!(
+            harness.fill_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "schema/value rejection must not touch the browser harness"
+        );
+
         let public_click = invocation(
             "browser_click",
             json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"}),
@@ -2242,6 +2364,24 @@ allow = ["git push"]
             public_click_denied.matched_rule.as_deref(),
             Some("browser_click_local_origin_missing")
         );
+        let public_fill_denied = executor
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &invocation(
+                    "browser_fill",
+                    json!({
+                        "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                        "value":"canary"
+                    }),
+                ),
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            public_fill_denied.matched_rule.as_deref(),
+            Some("browser_fill_local_origin_missing")
+        );
         for forbidden in ["selector", "css", "xpath", "x", "y", "script"] {
             let mut input = json!({"element_ref":"eref_0123456789abcdef0123456789abcdef"});
             input
@@ -2251,6 +2391,35 @@ allow = ["git push"]
             assert!(
                 local_executor
                     .preflight(&invocation("browser_click", input))
+                    .is_some(),
+                "{forbidden}"
+            );
+        }
+        for forbidden in [
+            "selector",
+            "css",
+            "xpath",
+            "x",
+            "y",
+            "script",
+            "press",
+            "submit",
+            "headers",
+            "cookie",
+            "authorization",
+            "path",
+        ] {
+            let mut input = json!({
+                "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                "value":"canary"
+            });
+            input
+                .as_object_mut()
+                .unwrap()
+                .insert(forbidden.to_owned(), Value::String("forbidden".to_owned()));
+            assert!(
+                local_executor
+                    .preflight(&invocation("browser_fill", input))
                     .is_some(),
                 "{forbidden}"
             );
@@ -2281,6 +2450,28 @@ allow = ["git push"]
         );
         assert_eq!(
             writer_denied.matched_rule.as_deref(),
+            Some("sandbox_network_denied")
+        );
+        let writer_fill_denied = isolated
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &invocation(
+                    "browser_fill",
+                    json!({
+                        "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                        "value":"canary"
+                    }),
+                ),
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(
+            writer_fill_denied.disposition,
+            ToolAuthorizationDisposition::Deny
+        );
+        assert_eq!(
+            writer_fill_denied.matched_rule.as_deref(),
             Some("sandbox_network_denied")
         );
     }

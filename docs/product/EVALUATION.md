@@ -5714,3 +5714,69 @@ requests=`0`、credential read=`false`、actual cost=`$0`；费用只是正交�
 唯一完整 control/oracle/reopen/teardown evaluator、`dse-tools` unit 389 passed / 5 ignored、owner check、
 strict Clippy、fmt 与 diff check。authority baseline=`17,636`、ceiling=`4,409`、最大 tools route=
 `2,273` 行、fixed boundary=`23/23`。
+
+<a id="m46-browser-fill-w3-1"></a>
+### M46 W3.1 ref-based browser fill contract and result
+
+W3.1 只处理上一节已准入的 `tools:browser_interaction:fill` repeated loss。owner 是
+`crates/tools`；old path 是 click-only ref registry、15-tool catalog 和 post-W3 eval-only
+Python/Node oracle + test-only missing-tool control。production acceptance 固定为：只给 same-run、
+latest-epoch、exact-loopback、visible/enabled/non-readonly/non-sensitive `input[type=text|search]` 返回
+fill-only opaque ref；唯一 `browser_fill(element_ref, value)` 必须返回 fresh bounded DOM/AX
+observation 并旋转全部 refs/epoch；两个冻结 task 的 post-fill state=`2/2`，mandatory negative false
+allow=`0`。
+
+输入与 capability contract：
+
+1. schema 只接受 `element_ref + value`，Host preflight 要求 value 非空 UTF-8、最多 1,024 chars /
+   4,096 bytes，并拒绝 NUL、C0/C1、DEL 与换行；pure schema/value rejection 不进入 harness；
+2. ref 绑定 run、browser、backend DOM node、latest snapshot/page epoch 与 exact click/fill capability；
+   click ref 不能 fill，fill ref 不能 click；
+3. password/file/date/color/number、textarea/contenteditable、disabled/readonly target 和
+   login/secret/token/API-key/credential/OTP identity 不产生 fill ref；
+4. action 前重取 DOM/AX/layout identity，拒绝 cross-run、stale、missing、hidden、disabled、readonly、
+   detached、ambiguous、identity drift、capability drift；
+5. 固定内部 CDP sequence 只有 focus、替换当前值与 insert text；无 selector/CSS/XPath/坐标/任意 JS、
+   模型可选 key/Enter/submit/blur、header/Cookie/auth/path；
+6. exact-local egress 继续只允许 Host literal-loopback origin 与 GET/HEAD，origin escape、POST、popup/
+   worker、download/upload、Cookie/auth 与外部副作用 fail closed；
+7. 首次 focus 前失败为 `NotApplied`；focus 后无法闭合 fresh observation 为既有
+   `Indeterminate/Unsafe + teardown`，started-without-outcome reopen 必须 `RecoveryRequired` 且 replay=0。
+
+production matrix：
+
+| task_id | initial fill ref target | production fresh post-fill observation | result |
+|---|---|---|---:|
+| `m46_post_w3_release_channel_fill` | `textbox / Release channel` | `status / Release channel set to canary / data-channel=canary` | 1 |
+| `m46_post_w3_test_filter_fill` | `searchbox / Test filter` | `status / Test filter applied: network / data-filter=network` | 1 |
+
+两项均由 repository-pinned CfT `151.0.7922.47`、真实 `ProductionToolExecutor` 与冻结 loopback fixture
+执行 `browser_navigate -> browser_fill -> fresh observation`：initial epoch=`1`、post-fill epoch=`2`、
+旧 ref 再用得到 `browser_element_ref_stale + NotApplied` 与 epoch=`3` fresh observation。verified=`2/2`，
+stale false allow=`0`，输出继续为 `external_untrusted`。
+
+真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RuntimeEvent -> SQLite
+RunStore` loopback 中，模型选择 navigate 后选择 fill，committed outcome 投影回第三次模型请求；cold
+reopen event prefix 相同，navigate/fill call count 保持 `1/1`。started-without-outcome fixture 在
+`browser_fill` 的 durable `ToolExecutionStarted` 后 reopen 为 `RecoveryRequired`，model/fill replay=`0`。
+现有 ToolOutcome、RuntimeEvent 与 RunStore 足够无损表达，protocol/state schema delta=`0`。
+
+root catalog 可见 fill；coordinator/read-only child 因 MayWrite actor policy 不可见；isolated Writer
+虽按既有 write catalog 可见，但 network-denied sandbox 与 cleared local-origin grant 在授权阶段拒绝。
+catalog/schema/authorization/direct dispatch/execution identity parity 已由同一 owner fixture 覆盖。
+
+cutover 物理删除 `scripts/eval-m46-post-w3-interaction-admission.py`、
+`scripts/eval-m46-post-w3-interaction-oracle.cjs` 与
+`crates/tools/tests/m46_post_w3_interaction_admission.rs`；冻结 manifest/summary/fixtures/history 不改写。
+production Cargo graph 没有 Node/Playwright，且未加入 press/wait、textarea/contenteditable、登录、public
+action、POST/upload/download、Cookie/storage persistence、用户 Chrome、截图/坐标/视觉、搜索、第二
+Runtime/Store 或 session ledger。
+
+本 treatment 按 Risk 2 验收；official DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`。
+没有模型付费 A/B、质量/效率或通用产品指标声明；计费仍只是与行为证据正交的状态显示。
+
+最终 revision 前的 focused gate 全绿：authority baseline=`17,636`、ceiling=`4,409`、最大 owner route
+为 tools=`2,325` 行、fixed boundary=`23/23`；`dse-tools`=`392/0/5 ignored`，DeepSeek=`61/0/1
+ignored`，Runtime=`88/88`，app=`69/0/3 ignored`，app-server=`23/23`，exec=`30/30`，canonical
+TUI=`20/20`，PTY=`7/7`，owner strict Clippy 通过。pinned-CfT W3.1 fixture gate 另按合同显式执行一次为
+`1/1`（内部 task matrix=`2/2`）；无 credential、DeepSeek 或外部网络请求。

@@ -232,6 +232,11 @@
   `tools:browser_interaction:fill=2/2`，production control=`0/2`、false-success=`0`，Host teardown
   与 AgentApplication reopen regression 均通过；只准入后续单一 `browser_fill` focused Goal，
   本阶段 production delta=0，press/wait/public action/视觉/搜索/M47 仍未启动。
+- M46 W3.1 已完成并 keep：同一个 Host-owned direct-CDP lifecycle 现只为 eligible、非敏感、可编辑的
+  `input[type=text|search]` 返回 fill-only opaque ref，并新增唯一
+  `browser_fill(element_ref, value)`；两个冻结 fixture 的 fresh post-fill state=`2/2`、stale reuse
+  与 mandatory negative matrix false allow=`0`。真实 AgentApplication committed fill reopen 不重放，
+  started-without-outcome 进入既有 `RecoveryRequired`；protocol/state delta=0、official requests=0。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7294,3 +7299,39 @@ implementation attempt 均在 oracle 前停止：一次把 direct execute 误当
 Evaluation 当前条目。本阶段 production Rust/Cargo/catalog/DeepSeek wire/Prompt/RuntimeEvent/RunStore/
 State schema delta=`0`，official requests=`0`、credential read=`false`、actual cost=`$0`；不运行 full，
 也不形成成功率、Token、时间或费用提升声明。
+
+### 40.12 M46 W3.1 ref-based browser fill（已完成）
+
+真实问题是 post-W3 audit 已证明两个独立 text-entry task 需要同一个 fill family，但 production 仍只有
+click-only refs 与 15-tool catalog。唯一 owner 是 `crates/tools`；旧路是 eval-only Python +
+Node/Playwright role/name fill oracle 和 test-only `UnknownTool` control。cutover 在同一个 Rust
+direct-CDP、same-run in-memory exact-loopback lifecycle 中扩展 capability-bound refs，并只新增
+`browser_fill(element_ref, value)`；上述三个旧 caller 路径已物理删除，冻结 manifest/summary/
+fixtures/history 保留。
+
+Host 只给 visible、enabled、非 readonly、非敏感 `input[type=text|search]` 返回 fill-only ref；ref
+绑定 run、browser、backend DOM node、latest snapshot/page epoch 与 exact fill capability，click/fill
+不可交叉消费。value 非空且最多 1,024 chars / 4,096 UTF-8 bytes，NUL、C0/C1、DEL、换行和 schema
+外字段在 harness 前拒绝。password/file/date/color/number、textarea/contenteditable 与 login/secret/
+token/API-key/credential/OTP target 均不获 ref。
+
+fill 前 Host 重取 DOM/AX/layout identity 并拒绝 cross-run、stale、missing、hidden、disabled、readonly、
+detached、ambiguous、identity/capability drift；内部 fixed CDP sequence 只有 focus、替换当前值与 insert
+text，不开放 selector/CSS/XPath/坐标/JS/key/Enter/submit/blur。action 后必须取得 fresh bounded
+`external_untrusted` observation 并旋转全部 refs/epoch；首次 focus 后的 crash/cancel/timeout/transport
+ambiguity 进入既有 `Indeterminate/Unsafe + teardown`，started-without-outcome reopen 为
+`RecoveryRequired` 且不自动 replay。
+
+两个冻结 fixture 的 production `navigate -> fill -> fresh observation` 均通过：initial epoch=`1`、
+post-fill epoch=`2`，分别观察到 `Release channel set to canary / data-channel=canary` 与
+`Test filter applied: network / data-filter=network`；旧 ref reuse 为 `NotApplied` 并返回 epoch=`3`
+fresh observation。真实 AgentApplication loopback 中模型选择 navigate/fill，committed SQLite reopen
+的调用计数保持 `1/1`；started-without-outcome 的 model/fill replay=`0`。
+
+fixed Host catalog 从 15 增至 16；root 可见，coordinator/read-only child 按既有 MayWrite actor policy
+不可见，isolated Writer 由既有 network-denied sandbox/cleared local-origin grant 拒绝。production
+dependency、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore 与 State schema
+delta=`0`。official DeepSeek requests=`0`、credential read=`false`、actual cost=`$0`；费用只是状态显示。
+没有加入 press/wait、登录、public action、POST/upload/download、Cookie/storage persistence、用户
+Chrome、截图/视觉、搜索、Node sidecar、第二 Runtime/Store 或 session ledger。Risk 2 最终 focused/full
+证据以 Evaluation W3.1 条目为准。

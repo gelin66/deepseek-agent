@@ -1,16 +1,16 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
 - 状态：已接受；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface；M46 W2/W3 与 post-W3 fill-family admission 均已完成
+  决策为等待 Chat surface；M46 W2/W3、post-W3 admission 与 W3.1 fill-family 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
 - 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
-  已交付 Host-only `ApplicationProbe`；M46 W2/W3 在一个 Rust direct-CDP adapter 中加入
-  `browser_navigate` 与唯一 `browser_click`，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
+  已交付 Host-only `ApplicationProbe`；M46 W2/W3/W3.1 在一个 Rust direct-CDP adapter 中加入
+  `browser_navigate`、`browser_click` 与 `browser_fill`，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
 - 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；W2 的 navigate + bounded DOM/AX
-  observation 已闭合 `tools:application_visibility`，W3 已闭合 click-family loss。post-W3 两个独立
-  local task 又证明同一 `tools:browser_interaction:fill` loss，因此只准入后续单一 fill-family
-  focused Goal；press/wait、public action、截图、视觉与搜索仍未实现
+  observation 已闭合 `tools:application_visibility`，W3 已闭合 click-family loss，W3.1 已闭合
+  post-W3 两个独立 local task 的 `tools:browser_interaction:fill` loss；press/wait、public action、
+  截图、视觉与搜索仍未实现
 
 ## 文档权威与替代关系
 
@@ -734,6 +734,30 @@ secret、Cookie/storage、public action、截图/视觉和搜索仍未准入。
 均为 `0`，official requests=`0`、credential read=`false`、actual cost=`$0`。唯一完整正式 result
 SHA-256 为 `71afb4a6ce866e2e47eb68ad4001c8c586549172c3b414221fedb40b4c76391f`；两次
 pre-result harness implementation stop 均发生在 oracle 前，没有形成结果或付费/外网行为。
+
+W3.1 focused Goal 现已完成。`crates/tools` 在上述同一个 in-memory exact-loopback session 内只为
+visible、enabled、非 readonly、非敏感的 `input[type=text|search]` 生成 fill-only ref，并只新增
+`browser_fill(element_ref, value)`。value 必须是非空 UTF-8，最多 1,024 chars / 4,096 bytes，Host
+preflight 拒绝 NUL、C0/C1、DEL 与换行；schema 不接受 selector、CSS/XPath、坐标、script、press、
+submit、header、Cookie、认证或路径。password/file/date/color/number、textarea/contenteditable 与
+login/secret/token/API-key/credential/OTP identity 都没有 ref。
+
+每个 ref 继续绑定 run、browser、backend DOM node、latest snapshot/page epoch 与精确 capability；
+click/fill 不可交叉消费。fill 前重取 DOM/AX 与 layout identity，拒绝 cross-run、stale、missing、hidden、
+disabled、readonly、detached、ambiguous、identity drift 与 capability drift；固定内部动作只有
+`DOM.focus -> replace current value -> Input.insertText`，没有模型可选 key/Enter/submit/JS/坐标/blur。
+action 后强制 fresh bounded `external_untrusted` observation 并旋转所有 refs/epoch。首次 focus 前失败
+为 `NotApplied`；started 后无法闭合则是既有 `Indeterminate/Unsafe + teardown`，绝不自动 replay。
+
+两个冻结 task 的 production Rust navigate/fill/post-state 均为 `2/2`，stale reuse false allow=`0`。
+真实 `AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RuntimeEvent -> SQLite
+RunStore` loopback 中模型选择 navigate/fill，committed reopen 的 navigate/fill count 保持 `1/1`；独立
+started-without-outcome reopen 为 `RecoveryRequired` 且 model/fill replay=`0`。因此 RuntimeEvent、
+RunStore 与 State schema delta=`0`。cutover 已删除 post-W3 eval-only Python/Node oracle 和 test-only
+missing-tool control，冻结 manifest/summary/fixtures/history 保留。official DeepSeek requests=`0`、
+credential read=`false`、actual cost=`$0`；没有 press/wait、登录、public action、POST/upload/download、
+Cookie/storage persistence、用户 Chrome、截图/视觉、搜索、Node production sidecar、第二 Runtime/Store
+或 session ledger。
 
 ### Slice W4：ApplicationProbe 收敛（M45-A 已完成）
 

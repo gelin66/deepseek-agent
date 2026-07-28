@@ -1,20 +1,12 @@
-use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
-use async_trait::async_trait;
 use dse_protocol::agent_runtime::{
-    RunId, RunPermissionMode, ToolArguments, ToolFailureCode, ToolInvocation, ToolInvocationStatus,
-    ToolSideEffectStatus,
+    RunId, RunPermissionMode, ToolArguments, ToolInvocation, ToolSideEffectStatus,
 };
 use dse_runtime::{CancellationToken, ToolExecutor};
 use dse_tools::shell::ShellPolicy;
-use dse_tools::{
-    PRODUCTION_TOOL_NAMES, ProductionToolConfig, ProductionToolExecutor, WebFetchHttpResponse,
-    WebFetchNetwork, WebFetchNetworkError,
-};
+use dse_tools::{PRODUCTION_TOOL_NAMES, ProductionToolConfig, ProductionToolExecutor};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -23,52 +15,6 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 const MANIFEST: &str = "eval/manifests/m46-post-w3-interaction-admission-v1.json";
 const LEASE_PLACEHOLDER: &str = "{{DSE_APPLICATION_PROBE_LEASE}}";
-
-#[derive(Debug)]
-struct FixtureNetwork {
-    expected_url: String,
-    body: Vec<u8>,
-}
-
-#[async_trait]
-impl WebFetchNetwork for FixtureNetwork {
-    fn identity(&self) -> &str {
-        "m46-post-w3-http-control-v1"
-    }
-
-    async fn resolve(
-        &self,
-        host: &str,
-        port: u16,
-    ) -> Result<Vec<SocketAddr>, WebFetchNetworkError> {
-        assert_eq!(host, "example.com");
-        assert_eq!(port, 443);
-        Ok(vec![
-            "93.184.216.34:443".parse().expect("public fixture address"),
-        ])
-    }
-
-    async fn get(
-        &self,
-        url: &reqwest::Url,
-        pinned_addresses: &[SocketAddr],
-        _timeout: Duration,
-    ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
-        assert_eq!(url.as_str(), self.expected_url);
-        assert_eq!(
-            pinned_addresses,
-            &["93.184.216.34:443".parse().expect("public fixture address")]
-        );
-        Ok(WebFetchHttpResponse::new(
-            200,
-            BTreeMap::from([(
-                "content-type".to_owned(),
-                "text/html; charset=utf-8".to_owned(),
-            )]),
-            self.body.clone(),
-        ))
-    }
-}
 
 struct LocalFixture {
     origin: String,
@@ -178,17 +124,13 @@ fn snapshot_contains(nodes: &[Value], expected: &Value) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "requires repository-pinned Chrome for Testing; run only through post-W3 admission"]
-async fn current_w3_root_cannot_complete_pre_registered_fill_tasks() {
-    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 15);
+#[ignore = "requires repository-pinned Chrome for Testing; credential-free W3.1 fixture gate"]
+async fn ref_based_fill_completes_both_frozen_exact_loopback_tasks() {
+    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 16);
     assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_navigate"));
     assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_click"));
-    for forbidden in [
-        "browser_fill",
-        "browser_press",
-        "browser_wait",
-        "browser_snapshot",
-    ] {
+    assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_fill"));
+    for forbidden in ["browser_press", "browser_wait", "browser_snapshot"] {
         assert!(!PRODUCTION_TOOL_NAMES.contains(&forbidden));
     }
 
@@ -205,63 +147,23 @@ async fn current_w3_root_cannot_complete_pre_registered_fill_tasks() {
         )
         .expect("read post-W3 fixture");
         let expected = &task["expected_post_action_observation"];
-        let expected_name = expected["accessible_name"]
-            .as_str()
-            .expect("post-action accessible name");
-        assert!(!source.contains(expected_name));
-        assert!(
-            !source.contains(
-                task["action"]["accessible_name"]
-                    .as_str()
-                    .expect("target name")
-            )
-        );
-        assert!(!source.contains(task["action"]["value"].as_str().expect("fill value")));
-
         let served = source.replace(
             LEASE_PLACEHOLDER,
-            &format!("dse-post-w3-interaction:{task_id}"),
+            &format!("dse-w3-1-browser-fill:{task_id}"),
         );
         let local = LocalFixture::start(served.into_bytes()).await;
-        let public_url = format!("https://example.com/m46-post-w3/{task_id}");
-        let network = Arc::new(FixtureNetwork {
-            expected_url: public_url.clone(),
-            body: source.into_bytes(),
-        });
         let executor = ProductionToolExecutor::new(
             ProductionToolConfig::new(root.as_path())
                 .with_permission_mode(RunPermissionMode::Agent)
                 .with_shell_policy(ShellPolicy::Full)
-                .with_web_fetch_network(network)
                 .with_browser_local_origin(Some(local.origin.clone())),
         );
-
-        let fetched = executor
-            .execute(
-                invocation(
-                    task_id,
-                    &format!("control:web_fetch:{task_id}"),
-                    "web_fetch",
-                    json!({"url":public_url,"max_chars":4096}),
-                ),
-                CancellationToken::default(),
-            )
-            .await
-            .expect("production web_fetch control");
-        assert!(fetched.is_success(), "{task_id}: {}", fetched.content);
-        let fetched_payload: Value =
-            serde_json::from_str(&fetched.content).expect("web_fetch JSON");
-        let http_observed_post_state = fetched_payload["text"]
-            .as_str()
-            .expect("bounded text")
-            .contains(expected_name);
-        assert!(!http_observed_post_state, "{task_id}: HTTP false success");
 
         let navigated = executor
             .execute(
                 invocation(
                     task_id,
-                    &format!("control:browser_navigate:{task_id}"),
+                    &format!("navigate:{task_id}"),
                     "browser_navigate",
                     json!({"url":format!("{}/",local.origin),"max_nodes":64,"max_chars":4096}),
                 ),
@@ -278,56 +180,76 @@ async fn current_w3_root_cannot_complete_pre_registered_fill_tasks() {
         let nodes = browser_payload["snapshot"]
             .as_array()
             .expect("semantic snapshot");
-        let target_observed = snapshot_contains(nodes, &task["action"]);
-        let post_state_observed = snapshot_contains(nodes, expected);
-        let target_ref_count = nodes
+        let target = nodes
             .iter()
-            .filter(|node| {
+            .find(|node| {
                 node["role"] == task["action"]["role"]
                     && node["accessible_name"] == task["action"]["accessible_name"]
-                    && node.get("element_ref").is_some()
             })
-            .count();
-        assert!(target_observed, "{task_id}: fill target absent");
-        assert!(!post_state_observed, "{task_id}: browser false success");
-        assert_eq!(
-            target_ref_count, 0,
-            "click-only refs must not cover fill targets"
-        );
+            .expect("fill target in fresh semantic observation");
+        let element_ref = target["element_ref"]
+            .as_str()
+            .expect("Host-generated fill-only opaque ref")
+            .to_owned();
+        assert!(!snapshot_contains(nodes, expected));
 
-        let fill_invocation = invocation(
-            task_id,
-            &format!("control:browser_fill:{task_id}"),
-            "browser_fill",
-            json!({"element_ref":"eref_0123456789abcdef0123456789abcdef","value":task["action"]["value"]}),
-        );
-        let fill_rejection = executor
-            .preflight(&fill_invocation)
-            .expect("unknown fill tool must fail Runtime preflight");
-        assert_eq!(fill_rejection.invocation, ToolInvocationStatus::Rejected);
+        let filled = executor
+            .execute(
+                invocation(
+                    task_id,
+                    &format!("fill:{task_id}"),
+                    "browser_fill",
+                    json!({"element_ref":element_ref,"value":task["action"]["value"]}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("production fill");
+        assert!(filled.is_success(), "{task_id}: {}", filled.content);
+        assert_eq!(filled.side_effect, ToolSideEffectStatus::Applied);
+        let post: Value = serde_json::from_str(&filled.content).expect("fill JSON");
+        assert_eq!(post["action"]["kind"], "fill");
+        assert_eq!(post["page_epoch"], 2);
+        assert_ne!(post["snapshot_id"], browser_payload["snapshot_id"]);
+        assert_eq!(post["trust"], "external_untrusted");
+        assert!(snapshot_contains(
+            post["snapshot"]
+                .as_array()
+                .expect("fresh post-fill snapshot"),
+            expected
+        ));
+
+        let stale = executor
+            .execute(
+                invocation(
+                    task_id,
+                    &format!("stale:{task_id}"),
+                    "browser_fill",
+                    json!({"element_ref":element_ref,"value":task["action"]["value"]}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("stale fill outcome");
+        assert!(!stale.is_success());
+        assert_eq!(stale.side_effect, ToolSideEffectStatus::NotApplied);
+        let stale_payload: Value = serde_json::from_str(&stale.content).expect("stale JSON");
         assert_eq!(
-            fill_rejection.failure_code,
-            Some(ToolFailureCode::UnknownTool)
+            stale_payload["failure"]["code"],
+            "browser_element_ref_stale"
         );
-        assert_eq!(fill_rejection.side_effect, ToolSideEffectStatus::NotApplied);
+        assert_eq!(stale_payload["fresh_observation"]["page_epoch"], 3);
 
         matrix.push(json!({
             "task_id":task_id,
             "independence_key":task["independence_key"],
-            "loss_code":task["loss_code"],
             "action_family":task["action"]["family"],
             "root_permission_mode":"agent",
-            "http_observed_post_action_state":http_observed_post_state,
-            "browser_initial_action_target_observed":target_observed,
-            "browser_observed_post_action_state":post_state_observed,
-            "browser_fill_target_refs_returned":target_ref_count,
-            "browser_fill_tool_visible":false,
-            "browser_fill_dispatch_failure_code":"unknown_tool",
-            "browser_fill_dispatch_side_effect":"not_applied",
-            "browser_session_live_before_host_drop":browser_payload["session_live"],
-            "trust":browser_payload["trust"],
-            "control_verified":false,
-            "control_false_success":false
+            "initial_epoch":browser_payload["page_epoch"],
+            "post_fill_epoch":post["page_epoch"],
+            "fresh_post_fill_observed":true,
+            "stale_reuse_side_effect":"not_applied",
+            "trust":post["trust"]
         }));
 
         drop(executor);
@@ -335,7 +257,7 @@ async fn current_w3_root_cannot_complete_pre_registered_fill_tasks() {
     }
 
     println!(
-        "M46_POST_W3_CONTROL_MATRIX={}",
-        serde_json::to_string(&matrix).expect("serialize post-W3 control matrix")
+        "M46_W3_1_BROWSER_FILL_MATRIX={}",
+        serde_json::to_string(&matrix).expect("serialize W3.1 fill matrix")
     );
 }
