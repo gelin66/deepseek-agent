@@ -242,7 +242,11 @@
   `browser_click`/`browser_fill` 已由一个 `browser_interact` 替换；同一 direct-CDP owner 现闭合完整
   semantic interaction、最多三页状态、public reversible draft POST、exact approval/receipt 和
   caller/reopen/recovery。catalog 从 16 收敛为 15；protocol/state/DeepSeek Prompt delta=0，official
-  DeepSeek requests=0。managed session/login/upload/download/search/visual 仍是后续 capability gap。
+  DeepSeek requests=0。search/observation quality/visual 仍是后续 capability gap。
+- ADR-0018 第二个 production cluster 已完成：同一 Rust direct-CDP owner 现在提供 project-isolated managed
+  profile、Host-owned credential login、bounded Cookie/storage lifecycle、workspace-authorized upload、
+  isolated/scanned download 与 explicit no-overwrite promotion；真实 pinned Chrome 和 production app/reopen/
+  recovery 均闭合，protocol/state/Prompt delta=0、official DeepSeek requests=0。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7467,3 +7471,70 @@ gaps 是 managed login/session、Cookie/storage、workspace-granted upload、iso
 canonical search 与 selective visual；本切片没有启动后续 cluster。focused/full pre-integration gate 与
 复杂度/删除 actual 已通过并记录在 Evaluation 同名条目；full gate 只调用一次且 exit=`0`，不改 frozen
 manifest/raw/summary/history。
+
+### 40.15 Managed Browser Session capability cluster（已完成）
+
+#### 问题、owner、旧路与 cutover
+
+第二个 cluster 解决的真实问题是：公开页面交互此前只有进程内 session，root Agent 不能安全登录工程
+应用、跨 browser executor 复用项目会话、上传已授权 workspace artifact，或接收并显式纳入下载结果。
+验收是 disposable authenticated engineering application 的完整 login → session reuse → authenticated
+navigation → upload → isolated download → verified promotion → clear，而不是单独增加几个 action。
+
+single owner 是 `crates/tools`；`crates/app` 只接入真实 caller/composition，credential 复用既有
+`dse-secrets` Host owner。cutover 删除 public incognito/ephemeral-only profile、Cookie blanket strip、
+managed action blanket deny 和 `same_run_in_memory_public_origin` active assertion。没有 compatibility flag、
+BrowserManager/Factory/Service、BrowserSessionStore、第二 Runtime/Store、Provider 或 production sidecar。
+
+#### 纵向能力与治理
+
+public browser profile 由 canonical workspace SHA-256 派生 project identity，位于 DSE state root，使用独占
+文件锁、0700/0600 权限、30 天上限、stale Chrome marker 清理和 bounded graceful teardown；exact-local
+仍为 incognito TempDir。不同 workspace 即使访问同一 origin 也不能读取对方 Cookie。Host credential
+grant 绑定 exact login URL、submit origin/target、字段与 secret key；模型只看到 opaque ref，secret 只由
+Host 从既有 secret backend 解析，所有 durable outcome/event/store/error 均保持 redacted。
+
+upload grant 绑定 workspace-relative ordinary leaf file、canonical containment、非 symlink、4 MiB 上限、
+size/SHA-256 与 exact same-origin form POST；execution 再做 TOCTOU identity check。download 只进入 per-session
+quarantine，最多 4 个/4 MiB，并验证 redirect/origin、Content-Type 与 magic；允许有界 UTF-8 text/PDF/PNG/
+JPEG，拒绝 executable/shebang/archive/unknown binary。receipt 记录 requested/final URL、trajectory、media、
+bytes、SHA-256、transport/plaintext provenance、retrieved_at，明确 `auto_opened=false`、`executed=false`；
+promotion 只能 no-overwrite 原子创建到 workspace，随后删除 quarantine source。
+
+Ask/Agent 对 login、upload、session clear 投影 exact target/impact 并确认；routine status/download/promotion
+按既有 policy 执行，isolated Writer 的 network action 继续拒绝。每个外部 POST grant 只消费一次；登录、
+上传、下载、promotion、clear 的 durable started-without-outcome 矩阵全部进入 `RecoveryRequired` 且 replay=0。
+RuntimeEvent、RunStore、State schema、AgentRuntime、DeepSeek wire/model-visible Prompt delta=0。
+
+#### 实际纵向证据与剩余边界
+
+repository-pinned CfT `151.0.7922.47` 在 7.47 秒完成真实 managed vertical：in-memory Host secret 登录且
+durable 输出零 secret、clean shutdown 后新 executor 复用认证 Cookie、第二 workspace 同 origin 被拒、
+multipart upload bytes 匹配、download 隔离/扫描/provenance 闭合、promotion bytes 匹配、session status 与
+profile clear 成功。verified task family=`1/1`、cross-project/origin/path/symlink/oversize/type/auto-execute/
+replay false allow=`0`。
+
+真实 `AgentApplication -> AgentRuntime` mock-model loop 执行 8 次 model request、3 次人工批准、6 个
+committed managed outcomes；SQLite reopen 的 event prefix 完全相同且 network/filesystem counters 不增加。
+official DeepSeek requests/tokens/cost=`0/0/$0`，没有读取用户 credential 或 DeepSeek key，不做付费 A/B 或
+效率声明。实际返工关闭 HSTS auto-upgrade fixture、persistent DevTools marker、session cookie durability、
+Chrome SQLite graceful flush、storage clear CDP session 与 multipart form 六类问题；安全门没有为绿测试放宽。
+
+production complexity 是 `semantic_browser.rs` 约 11.2k 行；该簇保留单一 owner/执行链，后续只允许在不改
+行为时按 observation、interaction、session-egress、authorization-receipt 拆普通 Rust module，不能借此
+引入 Manager/Service 或平行路径。下一路线输入是 canonical search + semantic observation quality，随后
+内部 Alpha dogfood；本 checkpoint 未启动它们，也未改 frozen manifest/raw/summary/history。
+
+最终 bounded authority actual 是 bootstrap=`17,636` 行、tools owner route=`2,645/4,409` 行、fixed
+boundary=`24/24`。focused gate 全绿：tools=`405 passed, 8 ignored`、DeepSeek=`61/1`、runtime
+conformance=`88/88`、app=`72/3`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。
+首个 full candidate invocation 在测试前被两个 Clippy finding 拒绝（`unnecessary_sort_by` 与 test-only
+`await_holding_lock`）；两项均已做最小修复，workspace/all-targets Clippy `-D warnings` 通过。第二个
+candidate 的 workspace suite 又发现 exec 与 HTTP/stdio 未绑定同一 managed browser state-root，导致
+execution fingerprint parity 失败；测试 caller 迁移到同一 Host root 后 targeted surface parity=`2/2`。
+第三个 candidate 随后暴露既有 child-env test 临时把进程全局 `PATH` 改为不存在目录、与并行
+application-probe fixture 竞争的问题；该测试改为使用真实 parent PATH，不再改变进程全局状态，targeted
+child-env/application-probe=`11/11`。最终 revision 只调用一次 full 且 exit=`0`；总 invocation=`4`
+（failed candidates=`3`、final revision=`1`），没有把失败冒充通过，也没有在同一 revision 重跑。
+`cargo fmt --all -- --check`、
+`cargo check -p dse-tools --locked`、`cargo test -p dse-tools --locked` 与 `git diff --check` 均通过。

@@ -940,22 +940,7 @@ mod tests {
 
     #[test]
     fn explicit_child_env_values_win_over_parent_allowlist() {
-        let _guard = env_lock().lock().expect("env lock");
-        let previous = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var("PATH", "/parent/bin");
-        }
-
         let env = sanitized_child_env([(OsString::from("PATH"), OsString::from("/explicit/bin"))]);
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("PATH", value);
-            },
-            None => unsafe {
-                std::env::remove_var("PATH");
-            },
-        }
 
         let path = env
             .iter()

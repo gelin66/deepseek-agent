@@ -5928,3 +5928,57 @@ PTY=`7/7`），唯一一次 full pre-integration gate exit=`0`，workspace tools
 vertical=`1/1 in 7.21s` 均通过。Rust delta=`+4,390/-1,094`，其中旧 integration tests=`-527` 行、
 新 cluster test=`+555` 行（test-path net=`+28`），`semantic_browser.rs` 从 `5,170` 行变为 `7,970` 行；
 catalog net=`-1`，crate/dependency/protocol/state delta=`0`。full gate invocation=`1`，同一 revision 不重复。
+
+<a id="managed-browser-session"></a>
+### Managed Browser Session 合同与结果
+
+这是 ADR-0018 第二个 Risk 2 production capability cluster。primary owner=`crates/tools`，`crates/app` 只做
+真实 caller/composition；DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore 与 State
+schema 的预期和实际 delta 均为 0。
+
+| family | frozen keep condition | actual |
+|---|---|---:|
+| authenticated vertical | login → clean shutdown → session reuse → authenticated upload/download → promotion → clear | 1/1 |
+| credential secrecy | model/outcome/event/SQLite/error 中 secret 或 key literal=0 | 0 leak |
+| isolation | personal Chrome/cross-project/cross-origin/cross-actor access=0 | 0 false allow |
+| upload | exact workspace file+size+SHA；path/symlink/device/oversize/TOCTOU escape=0 | pass |
+| download | quarantine+bound+origin/type/scan；auto-open/execute/overwrite=0 | pass |
+| production caller/reopen | exact approvals；committed outcome replay only | 3 approvals；reexecution=0 |
+| crash recovery | login/upload/download/promotion/clear started without outcome | 5/5 RecoveryRequired；replay=0 |
+
+repository-pinned CfT `151.0.7922.47` actual wall time=`7.47s`。同一 project profile 在 clean Chrome close 后
+复用认证 Cookie；不同 workspace 同 origin 被拒。真实 multipart upload bytes 与授权 SHA 匹配；download
+receipt 包含 requested/final URL、trajectory、media、bytes、SHA-256、HTTP/plaintext provenance 与
+external_untrusted trust，扫描后显式 no-overwrite promotion bytes 匹配，未自动打开或执行。status 只返回
+Cookie/storage 计数，clear 删除 project profile。
+
+真实 app fixture 使用 mock DeepSeek 选择完整 action sequence：model requests=`8`、required approvals=`3`、
+committed managed outcomes=`6`；SQLite reopen event prefix 不变，network/filesystem counters 不增。official
+DeepSeek requests/tokens/cost=`0/0/$0`，credential read 仅为 deterministic in-memory Host fixture，用户 secret/
+DeepSeek key 均未读；`product_metric_eligible=false`，不声明 Token/成本/通用效率提升。
+
+negative matrix 覆盖 credential/log leak、个人 Chrome、cross-project Cookie、origin escape、unauthorized
+upload、path/symlink/device/oversize/TOCTOU、download executable/archive/unknown binary、auto-open/execute、
+overwrite 与 duplicate external POST，false allow=`0`。committed reopen reexecution=`0`；五类 managed
+side-effect started ambiguity 全部由既有 Runtime/RunStore fail closed，证明不需要新 protocol/state/session
+store。
+
+cutover 删除 active public-incognito/ephemeral-only session、Cookie stripping、blanket no-login/upload/download
+和 `same_run_in_memory_public_origin` assertion。新增直接依赖只复用 workspace 已有 `dse-secrets` 与 `fs2`，
+没有 crate acquisition、Provider、第二 Runtime/Store、BrowserManager/Factory/Service、sidecar、session ledger、
+personal Chrome、任意 selector/coordinate/JS/header/auth/proxy 或 frozen evidence rewrite。
+
+最终 revision 的 authority actual 是 bootstrap=`17,636`、tools owner route=`2,645/4,409`、fixed
+boundary=`24/24`。focused actual：tools=`405 passed, 8 ignored`、DeepSeek=`61/1`、runtime=`88/88`、
+app=`72/3`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。首个 full candidate
+invocation 在行为测试前因 `unnecessary_sort_by` 与 test-only `await_holding_lock` 两个 Clippy finding
+exit≠0；两项最小修复后 workspace/all-targets Clippy `-D warnings` 通过。第二个 candidate 的 workspace
+suite 暴露 exec 与 HTTP/stdio managed browser state-root identity 不一致；测试 caller 迁移到同一 Host
+root 后 targeted surface parity=`2/2`。第三个 candidate 暴露既有 child-env test 对进程全局 `PATH` 的并行
+污染；测试改为使用真实 parent PATH 后 targeted child-env/application-probe=`11/11`。final revision 的
+唯一 full invocation exit=`0`；总 invocation=`4`（failed candidates=`3`、final revision=`1`），同一
+revision 没有重跑。
+`cargo fmt --all -- --check`、`cargo check -p dse-tools --locked`、`cargo test -p dse-tools --locked`、
+`git diff --check` 与真实 pinned-CfT vertical=`1/1 in 7.47s` 均通过。
+production Rust/Cargo delta=`+4,095/-169`，docs delta=`+162/-22`；`semantic_browser.rs` 从 `7,970` 行变为
+`11,173` 行。direct dependency edge=`+2`，但两者均为 workspace/lock 已有依赖，无新 acquisition。

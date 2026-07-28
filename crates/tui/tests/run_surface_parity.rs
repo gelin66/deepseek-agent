@@ -394,7 +394,13 @@ fn production_application(
     };
     let tools = ProductionToolConfig::new(workspace)
         .with_permission_mode(RunPermissionMode::Agent)
-        .with_shell_policy(ShellPolicy::Full);
+        .with_shell_policy(ShellPolicy::Full)
+        .with_browser_state_root(
+            state_path
+                .parent()
+                .expect("parity state has a parent")
+                .join(".dse/browser"),
+        );
     let prompt = ProductionPromptConfig {
         preferences: PromptPreferences::default(),
         instructions: Vec::new(),

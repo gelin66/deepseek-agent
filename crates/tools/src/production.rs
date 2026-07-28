@@ -16,6 +16,7 @@ use dse_protocol::agent_runtime::{
 };
 use dse_protocol::task::{VerifierSpec, WorkspaceState};
 use dse_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
+use dse_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -25,8 +26,9 @@ use crate::command_safety::{SafetyLevel, analyze_command, command_is_high_impact
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::semantic_browser::{
-    BrowserInteractRequest, SemanticBrowserHarness, SystemSemanticBrowserHarness,
-    browser_harness_identity, execute_browser_interact, execute_browser_navigate,
+    BrowserCredentialGrant, BrowserInteractRequest, SemanticBrowserHarness,
+    SystemSemanticBrowserHarness, browser_credential_grants_sha256, browser_harness_identity,
+    default_browser_state_root, execute_browser_interact, execute_browser_navigate,
     parse_browser_interact_for_authorization, preflight_browser_interact,
     preflight_browser_navigate,
 };
@@ -84,6 +86,9 @@ pub struct ProductionToolConfig {
     web_fetch_network: Arc<dyn WebFetchNetwork>,
     semantic_browser_harness: Option<Arc<dyn SemanticBrowserHarness>>,
     browser_local_origin: Option<String>,
+    browser_state_root: PathBuf,
+    browser_credential_grants: Vec<BrowserCredentialGrant>,
+    browser_secrets: Secrets,
 }
 
 #[derive(Clone)]
@@ -126,6 +131,9 @@ pub struct ProductionToolExecutionIdentity {
     pub web_fetch_network_sha256: String,
     pub semantic_browser_harness_sha256: String,
     pub browser_local_origin_sha256: Option<String>,
+    pub browser_state_root_sha256: String,
+    pub browser_credential_grants_sha256: String,
+    pub browser_secret_backend: String,
 }
 
 impl ProductionToolConfig {
@@ -147,6 +155,9 @@ impl ProductionToolConfig {
             web_fetch_network: Arc::new(SystemWebFetchNetwork),
             semantic_browser_harness: None,
             browser_local_origin: None,
+            browser_state_root: default_browser_state_root(),
+            browser_credential_grants: Vec::new(),
+            browser_secrets: Secrets::auto_detect(),
         }
     }
 
@@ -177,6 +188,7 @@ impl ProductionToolConfig {
         rebound.shell_network_denied_hint = Some("隔离 Writer Agent 禁止访问网络".to_owned());
         rebound.sandbox_backend = None;
         rebound.browser_local_origin = None;
+        rebound.browser_credential_grants.clear();
         rebound
     }
 
@@ -269,12 +281,36 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Bind the Host-owned browser data root. Managed profiles and download
+    /// quarantine remain project-isolated beneath this directory.
+    #[must_use]
+    pub fn with_browser_state_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.browser_state_root = root.into();
+        self
+    }
+
+    /// Add one exact non-secret login grant. Secret values remain in the
+    /// existing DSE secret owner and are resolved only after authorization.
+    #[must_use]
+    pub fn with_browser_credential_grant(mut self, grant: BrowserCredentialGrant) -> Self {
+        self.browser_credential_grants.push(grant);
+        self
+    }
+
+    /// Replace only the existing DSE secret facade, primarily for isolated
+    /// application composition and deterministic tests.
+    #[must_use]
+    pub fn with_browser_secrets(mut self, secrets: Secrets) -> Self {
+        self.browser_secrets = secrets;
+        self
+    }
+
     /// Project this config into deterministic, serializable and non-secret
     /// fingerprint material. Live executor state is intentionally absent.
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 5,
+            schema: 6,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -305,6 +341,13 @@ impl ProductionToolConfig {
                 .browser_local_origin
                 .as_deref()
                 .map(non_secret_sha256),
+            browser_state_root_sha256: non_secret_sha256(&stable_path_identity(
+                &self.browser_state_root,
+            )),
+            browser_credential_grants_sha256: browser_credential_grants_sha256(
+                &self.browser_credential_grants,
+            ),
+            browser_secret_backend: self.browser_secrets.backend_name().to_owned(),
         }
     }
 
@@ -451,16 +494,20 @@ impl ProductionToolExecutor {
             context = context.with_isolated_writer_write_guard(workspace);
         }
         let mut shell = ExecShellOptions::new(
-            new_shared_shell_manager(config.workspace),
+            new_shared_shell_manager(config.workspace.clone()),
             config.shell_policy,
         );
         shell.elevated_sandbox_policy = config.elevated_sandbox_policy;
         shell.shell_network_denied_hint = config.shell_network_denied_hint;
         shell.sandbox_backend = config.sandbox_backend;
         let semantic_browser_harness = config.semantic_browser_harness.unwrap_or_else(|| {
-            Arc::new(SystemSemanticBrowserHarness::new(Arc::clone(
-                &config.web_fetch_network,
-            )))
+            Arc::new(SystemSemanticBrowserHarness::new_managed(
+                Arc::clone(&config.web_fetch_network),
+                config.workspace.clone(),
+                config.browser_state_root.clone(),
+                config.browser_credential_grants.clone(),
+                config.browser_secrets.clone(),
+            ))
         });
         Self {
             context,
@@ -971,12 +1018,21 @@ impl ToolExecutor for ProductionToolExecutor {
                     ));
                 }
                 if local_fixture {
-                    if matches!(request, BrowserInteractRequest::Submit(_)) {
+                    if matches!(
+                        request,
+                        BrowserInteractRequest::Submit(_)
+                            | BrowserInteractRequest::Login { .. }
+                            | BrowserInteractRequest::Upload { .. }
+                            | BrowserInteractRequest::Download { .. }
+                            | BrowserInteractRequest::PromoteDownload { .. }
+                            | BrowserInteractRequest::SessionStatus
+                            | BrowserInteractRequest::SessionClear
+                    ) {
                         return Ok(decision.build(
                             ToolAuthorizationDisposition::Deny,
                             ApprovalRisk::Critical,
                             Some("browser_local_submit_not_admitted".to_owned()),
-                            "local semantic interaction 不把 form submit 冒充可逆本地动作",
+                            "exact-loopback semantic interaction 不冒充 managed public session 能力",
                             None,
                         ));
                     }
@@ -1227,12 +1283,12 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
         ),
         definition(
             "browser_interact",
-            "在同一 Run 的 Host-owned ephemeral browser session 中执行一个枚举化 semantic action：click/fill/press/wait/scroll/select/back/tab_open/tab_switch/tab_close/submit。element/page ref 只能来自最新 observation；不接受 selector、坐标、脚本、header、Cookie 或认证。每个 action 后返回 fresh bounded external_untrusted observation；public interaction 使用 exact origin scope，external submit 仅允许可撤销 draft 并在执行前由 Host 展示 exact target/parameters/impact、取得 scoped approval，结果返回 receipt。",
+            "在 Host-owned semantic browser 中执行一个枚举化 action：click/fill/press/wait/scroll/select/back/tab、可撤销 submit，以及 managed login/upload/download/promotion/session_status/session_clear。element/page ref 只能来自最新 observation；credential_ref 只引用 Host secret grant，秘密/Cookie/storage 不进入模型。public managed action 使用项目隔离 Profile、exact origin/target、scoped approval、quarantine/static scan、显式 no-overwrite promotion 与 durable receipt；不接受 selector、坐标、脚本、任意 header 或个人 Chrome Profile。",
             browser_interact_schema(),
         ),
         definition(
             "browser_navigate",
-            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot、page state 与 external_untrusted 信任标记；observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque refs，并保留一个 Host-egress-scoped memory-only session 供 browser_interact 使用。",
+            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot、page state 与 external_untrusted 信任标记；observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque refs。public navigation 使用项目隔离 DSE managed Profile 以受控复用 Cookie/storage；exact-loopback 仍使用 teardown 即删除的临时 Profile。",
             browser_navigate_schema(),
         ),
         definition(
@@ -1484,7 +1540,7 @@ fn browser_navigate_schema() -> Value {
 }
 
 fn browser_interact_schema() -> Value {
-    json!({"type":"object","properties":{"action":{"type":"string","enum":["click","fill","press","wait","scroll","select","back","tab_open","tab_switch","tab_close","submit"]},"element_ref":{"type":"string","minLength":1},"value":{"type":"string"},"key":{"type":"string","enum":["enter","escape","tab","arrow_up","arrow_down","space"]},"condition":{"type":"string","enum":["document_ready","text_present","text_absent","url_equals"]},"timeout_ms":{"type":"integer","minimum":1,"maximum":10000},"direction":{"type":"string","enum":["up","down"]},"amount":{"type":"integer","minimum":1,"maximum":2000},"url":{"type":"string","minLength":1},"page_ref":{"type":"string","minLength":1}},"required":["action"],"additionalProperties":false})
+    json!({"type":"object","properties":{"action":{"type":"string","enum":["click","fill","press","wait","scroll","select","back","tab_open","tab_switch","tab_close","submit","login","upload","download","promote_download","session_status","session_clear"]},"element_ref":{"type":"string","minLength":1},"value":{"type":"string"},"key":{"type":"string","enum":["enter","escape","tab","arrow_up","arrow_down","space"]},"condition":{"type":"string","enum":["document_ready","text_present","text_absent","url_equals"]},"timeout_ms":{"type":"integer","minimum":1,"maximum":10000},"direction":{"type":"string","enum":["up","down"]},"amount":{"type":"integer","minimum":1,"maximum":2000},"url":{"type":"string","minLength":1},"page_ref":{"type":"string","minLength":1},"credential_ref":{"type":"string","minLength":1},"workspace_path":{"type":"string","minLength":1},"download_ref":{"type":"string","minLength":37}},"required":["action"],"additionalProperties":false})
 }
 
 fn edit_file_schema() -> Value {
@@ -1630,6 +1686,25 @@ mod tests {
         for forbidden in ["cancel", "shell_manager", "read_tracker", "api_key"] {
             assert!(!serialized.contains(forbidden));
         }
+        let grant = BrowserCredentialGrant::new(
+            "engineering-app",
+            "https://example.com/login",
+            "https://example.com/session",
+            [("password", "super-secret-store-key")],
+        )
+        .unwrap();
+        let with_grant = ProductionToolConfig::new(workspace.path())
+            .with_browser_state_root(workspace.path().join("browser-state"))
+            .with_browser_credential_grant(grant)
+            .execution_identity();
+        let serialized = serde_json::to_string(&with_grant).unwrap();
+        assert_eq!(with_grant.schema, 6);
+        assert!(!serialized.contains("super-secret-store-key"));
+        assert!(!serialized.contains("password"));
+        assert_ne!(
+            with_grant.browser_credential_grants_sha256,
+            first.browser_credential_grants_sha256
+        );
     }
 
     #[tokio::test]
@@ -1737,7 +1812,7 @@ mod tests {
         let second_identity = ProductionToolConfig::new(workspace.path())
             .with_skill_registry(second)
             .execution_identity();
-        assert_eq!(first_identity.schema, 5);
+        assert_eq!(first_identity.schema, 6);
         assert_ne!(
             first_identity.skills_snapshot_sha256,
             second_identity.skills_snapshot_sha256
@@ -2162,20 +2237,28 @@ allow = ["git push"]
             _run_id: &str,
             request: &BrowserInteractRequest,
         ) -> Option<crate::semantic_browser::BrowserAuthorizationPreview> {
-            self.public_preview
-                .then(|| crate::semantic_browser::BrowserAuthorizationPreview {
+            self.public_preview.then(|| {
+                let external_side_effect = matches!(
+                    request,
+                    BrowserInteractRequest::Submit(_)
+                        | BrowserInteractRequest::Login { .. }
+                        | BrowserInteractRequest::Upload { .. }
+                        | BrowserInteractRequest::SessionClear
+                );
+                crate::semantic_browser::BrowserAuthorizationPreview {
                     public: true,
                     origin: "https://example.com".to_owned(),
                     target: "https://example.com/drafts/save".to_owned(),
                     parameters: "sha256:fixture-parameters".to_owned(),
-                    impact: if matches!(request, BrowserInteractRequest::Submit(_)) {
+                    impact: if external_side_effect {
                         "reversible_draft_write"
                     } else {
                         "ephemeral_page_state_only"
                     }
                     .to_owned(),
-                    external_side_effect: matches!(request, BrowserInteractRequest::Submit(_)),
-                })
+                    external_side_effect,
+                }
+            })
         }
 
         fn shutdown(&self) {
@@ -2632,6 +2715,109 @@ allow = ["git push"]
                 assert!(prompt.description.contains("parameters"));
                 assert!(prompt.description.contains("impact"));
             }
+        }
+    }
+
+    #[test]
+    fn managed_browser_actions_share_exact_public_authorization_and_actor_denials() {
+        let workspace = tempfile::tempdir().unwrap();
+        let harness = Arc::new(FixtureSemanticBrowser {
+            navigate_calls: std::sync::atomic::AtomicUsize::new(0),
+            click_calls: std::sync::atomic::AtomicUsize::new(0),
+            fill_calls: std::sync::atomic::AtomicUsize::new(0),
+            shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
+            public_preview: true,
+        });
+        let element_ref = "eref_0123456789abcdef0123456789abcdef";
+        let cases = [
+            (
+                json!({"action":"login","element_ref":element_ref,"credential_ref":"engineering-app"}),
+                true,
+            ),
+            (
+                json!({"action":"upload","element_ref":element_ref,"workspace_path":"artifact.txt"}),
+                true,
+            ),
+            (
+                json!({"action":"download","element_ref":element_ref}),
+                false,
+            ),
+            (
+                json!({"action":"promote_download","download_ref":"dref_0123456789abcdef0123456789abcdef","workspace_path":"result.txt"}),
+                false,
+            ),
+            (json!({"action":"session_status"}), false),
+            (json!({"action":"session_clear"}), true),
+        ];
+        for (input, external) in &cases {
+            let invocation = invocation("browser_interact", input.clone());
+            assert!(
+                ProductionToolExecutor::new(
+                    ProductionToolConfig::new(workspace.path())
+                        .with_semantic_browser_harness(harness.clone())
+                )
+                .preflight(&invocation)
+                .is_none(),
+                "{input}"
+            );
+            for (mode, expected) in [
+                (RunPermissionMode::Ask, ToolAuthorizationDisposition::Ask),
+                (
+                    RunPermissionMode::Agent,
+                    if *external {
+                        ToolAuthorizationDisposition::Ask
+                    } else {
+                        ToolAuthorizationDisposition::Allow
+                    },
+                ),
+                (
+                    RunPermissionMode::FullAccess,
+                    ToolAuthorizationDisposition::Allow,
+                ),
+            ] {
+                let executor = ProductionToolExecutor::new(
+                    ProductionToolConfig::new(workspace.path())
+                        .with_permission_mode(mode)
+                        .with_semantic_browser_harness(harness.clone()),
+                );
+                let decision = executor
+                    .authorize(
+                        mode,
+                        &ToolExecutionGrant::Ordinary,
+                        &invocation,
+                        &workspace_state(),
+                    )
+                    .unwrap();
+                assert_eq!(decision.disposition, expected, "{mode:?}:{input}");
+                if expected == ToolAuthorizationDisposition::Ask {
+                    let prompt = decision.prompt.expect("scoped approval prompt");
+                    assert!(prompt.description.contains("exact target"));
+                    assert!(!prompt.description.contains("password"));
+                }
+            }
+        }
+
+        let writer = tempfile::tempdir().unwrap();
+        let writer_executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .with_semantic_browser_harness(harness)
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+        for (input, _) in cases {
+            let decision = writer_executor
+                .authorize(
+                    RunPermissionMode::Agent,
+                    &ToolExecutionGrant::Ordinary,
+                    &invocation("browser_interact", input),
+                    &workspace_state(),
+                )
+                .unwrap();
+            assert_eq!(decision.disposition, ToolAuthorizationDisposition::Deny);
+            assert_eq!(
+                decision.matched_rule.as_deref(),
+                Some("actor_controlled_network_denied")
+            );
         }
     }
 

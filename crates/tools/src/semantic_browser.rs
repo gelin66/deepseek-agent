@@ -1,13 +1,16 @@
-//! Ephemeral semantic browser backed by pinned Chrome for Testing.
+//! Project-isolated semantic browser backed by pinned Chrome for Testing.
 //!
-//! Public and exact Host-owned loopback navigation retain one bounded,
-//! in-memory session long enough for the same run to consume opaque
-//! latest-snapshot refs through the typed `browser_interact` action surface.
-//! Neither the live page nor its refs become durable truth, and there is no
-//! screenshot, selector, coordinate input, arbitrary JavaScript, or second
+//! Public navigation uses one Host-owned, workspace-keyed managed Profile;
+//! exact loopback navigation remains ephemeral. Live pages and opaque refs are
+//! never durable truth, while bounded Cookie/storage lifecycle, credential
+//! grants, upload and quarantined download receipts flow through the existing
+//! tool outcome/runtime/store chain. There is no screenshot, selector,
+//! coordinate input, arbitrary JavaScript, personal Chrome Profile or second
 //! browser store.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -17,6 +20,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
+use dse_secrets::Secrets;
+use fs2::FileExt as _;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
 use serde::Serialize;
@@ -39,7 +44,7 @@ use dse_protocol::agent_runtime::{
 };
 
 const TRUST: &str = "external_untrusted";
-const ADAPTER_ID: &str = "direct_tokio_cdp_semantic_interaction_v4";
+const ADAPTER_ID: &str = "direct_tokio_cdp_managed_session_v5";
 const PINNED_CFT_VERSION: &str = "151.0.7922.47";
 const DEFAULT_MAX_NODES: usize = 128;
 const MAX_MAX_NODES: usize = 256;
@@ -60,6 +65,7 @@ const PROFILE_DISCOVERY_DEADLINE: Duration = Duration::from_secs(15);
 const PAGE_LOAD_DEADLINE: Duration = Duration::from_secs(10);
 const RENDER_SETTLE_DELAY: Duration = Duration::from_millis(150);
 const PROCESS_TEARDOWN_GRACE: Duration = Duration::from_millis(750);
+const BROWSER_CLOSE_GRACE: Duration = Duration::from_secs(2);
 const PROXY_TEARDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_ELEMENT_REF_CHARS: usize = 40;
 const MAX_FILL_VALUE_CHARS: usize = 1_024;
@@ -74,9 +80,276 @@ const SELECT_ALL_MODIFIERS: u8 = 4;
 const SELECT_ALL_MODIFIERS: u8 = 2;
 const MAX_STALE_REFS: usize = MAX_MAX_NODES * 2;
 const MAX_BROWSER_PAGES: usize = 3;
+const MAX_CREDENTIAL_FIELDS: usize = 4;
+const MAX_CREDENTIAL_REF_CHARS: usize = 128;
+const MAX_CREDENTIAL_KEY_CHARS: usize = 256;
+const MAX_UPLOAD_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_DOWNLOADS_PER_SESSION: usize = 4;
+const PROFILE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Cancellation signal accepted by deterministic browser harness fixtures.
 pub type BrowserCancellationToken = CancellationToken;
+
+/// Non-secret Host grant describing where credential values from the existing
+/// DSE secret owner may be used. The model sees only `credential_ref`; secret
+/// store keys and values never enter tool input or outcome.
+#[derive(Clone)]
+pub struct BrowserCredentialGrant {
+    credential_ref: String,
+    login_url: Url,
+    submit_url: Url,
+    fields: Vec<BrowserCredentialFieldGrant>,
+}
+
+#[derive(Clone)]
+struct BrowserCredentialFieldGrant {
+    form_field: String,
+    secret_key: String,
+}
+
+impl BrowserCredentialGrant {
+    /// Create one exact login grant backed by keys in `dse-secrets`.
+    pub fn new<I, K, V>(
+        credential_ref: impl Into<String>,
+        login_url: &str,
+        submit_url: &str,
+        fields: I,
+    ) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let credential_ref = credential_ref.into();
+        if credential_ref.is_empty()
+            || credential_ref.chars().count() > MAX_CREDENTIAL_REF_CHARS
+            || !credential_ref.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return Err(
+                "credential_ref must be 1-128 ASCII letters, digits, '-' or '_'".to_owned(),
+            );
+        }
+        let login_url =
+            Url::parse(login_url).map_err(|error| format!("invalid login_url: {error}"))?;
+        let submit_url =
+            Url::parse(submit_url).map_err(|error| format!("invalid submit_url: {error}"))?;
+        let login_origin = Origin::from_url(&login_url).map_err(|failure| failure.message)?;
+        let submit_origin = Origin::from_url(&submit_url).map_err(|failure| failure.message)?;
+        if login_origin != submit_origin
+            || !matches!(login_origin.scheme.as_str(), "http" | "https")
+        {
+            return Err("login_url and submit_url must use the same HTTP(S) origin".to_owned());
+        }
+        let mut fields = fields
+            .into_iter()
+            .map(|(form_field, secret_key)| BrowserCredentialFieldGrant {
+                form_field: form_field.into(),
+                secret_key: secret_key.into(),
+            })
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.form_field.cmp(&right.form_field));
+        if fields.is_empty() || fields.len() > MAX_CREDENTIAL_FIELDS {
+            return Err(format!(
+                "credential grant requires 1-{MAX_CREDENTIAL_FIELDS} fields"
+            ));
+        }
+        let mut names = BTreeSet::new();
+        for field in &fields {
+            if field.form_field.is_empty()
+                || field.form_field.chars().count() > 128
+                || !field.form_field.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+                || !names.insert(field.form_field.clone())
+            {
+                return Err(
+                    "credential form fields must be unique bounded ASCII identifiers".to_owned(),
+                );
+            }
+            if field.secret_key.is_empty()
+                || field.secret_key.chars().count() > MAX_CREDENTIAL_KEY_CHARS
+                || field.secret_key.chars().any(char::is_control)
+            {
+                return Err("credential secret keys must be non-empty bounded text".to_owned());
+            }
+        }
+        Ok(Self {
+            credential_ref,
+            login_url,
+            submit_url,
+            fields,
+        })
+    }
+
+    fn non_secret_identity(&self) -> Value {
+        json!({
+            "credential_ref": self.credential_ref,
+            "login_url": self.login_url.as_str(),
+            "submit_url": self.submit_url.as_str(),
+            "fields": self.fields.iter().map(|field| &field.form_field).collect::<Vec<_>>(),
+        })
+    }
+}
+
+pub(crate) fn default_browser_state_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("DSE_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(root).join("browser");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join(".dse/browser");
+    }
+    std::env::temp_dir().join("dse/browser")
+}
+
+pub(crate) fn browser_credential_grants_sha256(grants: &[BrowserCredentialGrant]) -> String {
+    let mut identities = grants
+        .iter()
+        .map(BrowserCredentialGrant::non_secret_identity)
+        .collect::<Vec<_>>();
+    identities.sort_by_key(|identity| identity.to_string());
+    format!(
+        "sha256:{}",
+        sha256_bytes(
+            &serde_json::to_vec(&identities).expect("credential grant identity serializes")
+        )
+    )
+}
+
+#[derive(Clone)]
+struct ManagedBrowserPolicy {
+    workspace: PathBuf,
+    state_root: PathBuf,
+    project_id: String,
+    credential_grants: Vec<BrowserCredentialGrant>,
+    secrets: Secrets,
+}
+
+impl ManagedBrowserPolicy {
+    fn new(
+        workspace: PathBuf,
+        state_root: PathBuf,
+        credential_grants: Vec<BrowserCredentialGrant>,
+        secrets: Secrets,
+    ) -> Self {
+        let canonical_workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.clone());
+        let project_id = format!(
+            "project_{}",
+            &sha256_bytes(canonical_workspace.to_string_lossy().as_bytes())[..32]
+        );
+        Self {
+            workspace,
+            state_root,
+            project_id,
+            credential_grants,
+            secrets,
+        }
+    }
+
+    fn credential_grant(&self, credential_ref: &str) -> Option<&BrowserCredentialGrant> {
+        self.credential_grants
+            .iter()
+            .find(|grant| grant.credential_ref == credential_ref)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UploadArtifact {
+    workspace_path: String,
+    canonical_path: PathBuf,
+    bytes: u64,
+    sha256: String,
+}
+
+fn resolve_workspace_upload(
+    policy: &ManagedBrowserPolicy,
+    workspace_path: &str,
+) -> Result<UploadArtifact, BrowserFailure> {
+    let relative = Path::new(workspace_path);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_upload_path_denied",
+            "upload",
+            "upload requires one workspace-relative path without traversal",
+        ));
+    }
+    let workspace = policy.workspace.canonicalize().map_err(|error| {
+        BrowserFailure::operation(
+            "browser_upload_workspace_invalid",
+            "upload",
+            format!("cannot resolve the configured workspace: {error}"),
+        )
+    })?;
+    let candidate = workspace.join(relative);
+    let metadata = fs::symlink_metadata(&candidate).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_upload_file_missing",
+            "upload",
+            format!("authorized workspace file is unavailable: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(BrowserFailure::rejected(
+            "browser_upload_file_type_denied",
+            "upload",
+            "upload source must be an ordinary non-symlink file",
+        ));
+    }
+    if metadata.len() > MAX_UPLOAD_BYTES {
+        return Err(BrowserFailure::rejected(
+            "browser_upload_bytes_exceeded",
+            "upload",
+            format!("upload source exceeds {MAX_UPLOAD_BYTES} bytes"),
+        ));
+    }
+    let canonical_path = candidate.canonicalize().map_err(|error| {
+        BrowserFailure::operation(
+            "browser_upload_file_missing",
+            "upload",
+            format!("cannot resolve authorized workspace file: {error}"),
+        )
+    })?;
+    if !canonical_path.starts_with(&workspace) {
+        return Err(BrowserFailure::rejected(
+            "browser_upload_path_escape",
+            "upload",
+            "upload source resolved outside the configured workspace",
+        ));
+    }
+    let bytes = fs::read(&canonical_path).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_upload_read_failed",
+            "upload",
+            format!("cannot read authorized workspace file: {error}"),
+        )
+    })?;
+    if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > MAX_UPLOAD_BYTES {
+        return Err(BrowserFailure::operation(
+            "browser_upload_file_changed",
+            "upload",
+            "upload source identity changed during Host validation",
+        ));
+    }
+    Ok(UploadArtifact {
+        workspace_path: workspace_path.to_owned(),
+        canonical_path,
+        bytes: bytes.len() as u64,
+        sha256: format!("sha256:{}", sha256_bytes(&bytes)),
+    })
+}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const PINNED_CFT_EXECUTABLE_SHA256: Option<&str> =
@@ -206,6 +479,23 @@ pub enum BrowserInteractRequest {
         page_ref: String,
     },
     Submit(BrowserClickRequest),
+    Login {
+        element_ref: String,
+        credential_ref: String,
+    },
+    Upload {
+        element_ref: String,
+        workspace_path: String,
+    },
+    Download {
+        element_ref: String,
+    },
+    PromoteDownload {
+        download_ref: String,
+        workspace_path: String,
+    },
+    SessionStatus,
+    SessionClear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,17 +667,37 @@ pub struct SystemSemanticBrowserHarness {
     session: Mutex<Option<LiveBrowserSession>>,
     last_drop_teardown: Arc<Mutex<Option<TeardownFacts>>>,
     operation_active: AtomicBool,
+    managed: ManagedBrowserPolicy,
 }
 
 impl SystemSemanticBrowserHarness {
     #[must_use]
     pub fn new(resolver: Arc<dyn WebFetchNetwork>) -> Self {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new_managed(
+            resolver,
+            workspace,
+            default_browser_state_root(),
+            Vec::new(),
+            Secrets::auto_detect(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_managed(
+        resolver: Arc<dyn WebFetchNetwork>,
+        workspace: PathBuf,
+        state_root: PathBuf,
+        credential_grants: Vec<BrowserCredentialGrant>,
+        secrets: Secrets,
+    ) -> Self {
         Self {
             binary: PinnedChromeForTesting::discover(),
             resolver,
             session: Mutex::new(None),
             last_drop_teardown: Arc::new(Mutex::new(None)),
             operation_active: AtomicBool::new(false),
+            managed: ManagedBrowserPolicy::new(workspace, state_root, credential_grants, secrets),
         }
     }
 
@@ -417,8 +727,8 @@ impl SystemSemanticBrowserHarness {
         run_id: &str,
         request: &BrowserInteractRequest,
     ) -> Option<BrowserAuthorizationPreview> {
-        let session = self.session.lock().ok()?;
-        let session = session.as_ref()?;
+        let mut session = self.session.lock().ok()?;
+        let session = session.as_mut()?;
         if session.run_id != run_id || !matches!(session.request.scope, BrowserTargetScope::Public)
         {
             return None;
@@ -556,6 +866,105 @@ impl SystemSemanticBrowserHarness {
                     external_side_effect: true,
                 }
             }
+            BrowserInteractRequest::Login {
+                element_ref,
+                credential_ref,
+            } => {
+                let target = ref_target(element_ref, ElementCapability::Login)?;
+                let ManagedElementPreview::Login {
+                    credential_refs,
+                    target_url,
+                    ..
+                } = target.managed_preview.as_ref()?
+                else {
+                    return None;
+                };
+                if !credential_refs.contains(credential_ref)
+                    || self.managed.credential_grant(credential_ref).is_none()
+                {
+                    return None;
+                }
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("POST {target_url}"),
+                    parameters: format!(
+                        "credential_ref={credential_ref}; secret_values=host_owned_redacted"
+                    ),
+                    impact: "create_or_replace_project_scoped_authenticated_session".to_owned(),
+                    external_side_effect: true,
+                }
+            }
+            BrowserInteractRequest::Upload {
+                element_ref,
+                workspace_path,
+            } => {
+                let target = ref_target(element_ref, ElementCapability::Upload)?;
+                let ManagedElementPreview::Upload { target_url, .. } =
+                    target.managed_preview.as_ref()?
+                else {
+                    return None;
+                };
+                let artifact = resolve_workspace_upload(&self.managed, workspace_path).ok()?;
+                session.authorized_uploads.insert(
+                    upload_authorization_key(element_ref, workspace_path),
+                    artifact.sha256.clone(),
+                );
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: format!("POST {target_url}"),
+                    parameters: format!(
+                        "workspace_path={}; bytes={}; sha256={}",
+                        artifact.workspace_path, artifact.bytes, artifact.sha256
+                    ),
+                    impact: "upload_exact_workspace_artifact_to_exact_origin".to_owned(),
+                    external_side_effect: true,
+                }
+            }
+            BrowserInteractRequest::Download { element_ref } => {
+                let target = ref_target(element_ref, ElementCapability::Download)?;
+                let ManagedElementPreview::Download { target_url } =
+                    target.managed_preview.as_ref()?
+                else {
+                    return None;
+                };
+                BrowserAuthorizationPreview {
+                    public: true,
+                    origin,
+                    target: target_url.clone(),
+                    parameters: format!("quarantine_limit_bytes={MAX_DOWNLOAD_BYTES}"),
+                    impact: "download_to_isolated_quarantine_and_static_scan".to_owned(),
+                    external_side_effect: false,
+                }
+            }
+            BrowserInteractRequest::PromoteDownload {
+                download_ref,
+                workspace_path,
+            } => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: workspace_path.clone(),
+                parameters: format!("download_ref={download_ref}; no_overwrite=true"),
+                impact: "promote_verified_quarantine_artifact_into_workspace".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::SessionStatus => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: self.managed.project_id.clone(),
+                parameters: "cookie_values=redacted; storage_values=redacted".to_owned(),
+                impact: "read_bounded_project_session_status".to_owned(),
+                external_side_effect: false,
+            },
+            BrowserInteractRequest::SessionClear => BrowserAuthorizationPreview {
+                public: true,
+                origin,
+                target: self.managed.project_id.clone(),
+                parameters: "cookies=clear; storage=clear; profile=delete".to_owned(),
+                impact: "revoke_and_delete_project_managed_browser_session".to_owned(),
+                external_side_effect: true,
+            },
         };
         Some(preview)
     }
@@ -602,8 +1011,13 @@ impl SystemSemanticBrowserHarness {
         match completion {
             Completion::Finished(outcome) => {
                 let mut outcome = *outcome;
-                if outcome.side_effect == ToolSideEffectStatus::Indeterminate {
+                if outcome.side_effect == ToolSideEffectStatus::Indeterminate
+                    || session.clear_profile_on_teardown
+                {
                     let teardown = session.teardown().await;
+                    if outcome.side_effect != ToolSideEffectStatus::Indeterminate {
+                        attach_clear_teardown_to_content(&mut outcome, &teardown);
+                    }
                     if let Some(metadata) = outcome.metadata.as_mut()
                         && let Some(browser) = metadata
                             .get_mut("semantic_browser")
@@ -687,6 +1101,23 @@ impl SystemSemanticBrowserHarness {
         .await
         .ok()
     }
+}
+
+fn attach_clear_teardown_to_content(outcome: &mut ToolOutcome, teardown: &TeardownFacts) {
+    let Ok(mut content) = serde_json::from_str::<Value>(&outcome.content) else {
+        return;
+    };
+    content["session_live"] = json!(false);
+    content["teardown"] = serde_json::to_value(teardown).expect("browser teardown facts serialize");
+    if let Some(receipt) = content
+        .get_mut("action")
+        .and_then(|action| action.get_mut("receipt"))
+    {
+        receipt["profile_removed"] = json!(teardown.profile_removed);
+        receipt["process_tree_settled"] = json!(teardown.process_tree_settled);
+        receipt["proxy_settled"] = json!(teardown.proxy_settled);
+    }
+    outcome.content = content.to_string();
 }
 
 fn browser_key_name(key: BrowserKey) -> &'static str {
@@ -855,6 +1286,13 @@ struct BrowserResult {
     trust: &'static str,
     profile_ephemeral: bool,
     session_scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+    profile_reused: bool,
+    credential_grants_available: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    credential_grants: Vec<Value>,
+    profile_max_age_seconds: u64,
     session_live: bool,
     process_tree_settled: bool,
     teardown: TeardownFacts,
@@ -877,7 +1315,7 @@ struct BrowserActionResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     page_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    receipt: Option<ExternalActionReceipt>,
+    receipt: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1153,8 +1591,70 @@ fn parse_interact_request(input: &Value) -> Result<BrowserInteractRequest, Brows
                 element_ref: parse_element_ref(input)?,
             }))
         }
+        "login" if allowed(&["action", "element_ref", "credential_ref"]) => {
+            let credential_ref = required_str(input, "credential_ref").map_err(|error| {
+                BrowserFailure::rejected(
+                    "browser_credential_ref_missing",
+                    "credential_ref",
+                    error.to_string(),
+                )
+            })?;
+            if credential_ref.is_empty()
+                || credential_ref.chars().count() > MAX_CREDENTIAL_REF_CHARS
+                || !credential_ref.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+            {
+                return Err(BrowserFailure::rejected(
+                    "browser_credential_ref_invalid",
+                    "credential_ref",
+                    "credential_ref 不是 Host 支持的有界 opaque label",
+                ));
+            }
+            Ok(BrowserInteractRequest::Login {
+                element_ref: parse_element_ref(input)?,
+                credential_ref: credential_ref.to_owned(),
+            })
+        }
+        "upload" if allowed(&["action", "element_ref", "workspace_path"]) => {
+            Ok(BrowserInteractRequest::Upload {
+                element_ref: parse_element_ref(input)?,
+                workspace_path: parse_workspace_path(input)?,
+            })
+        }
+        "download" if allowed(&["action", "element_ref"]) => Ok(BrowserInteractRequest::Download {
+            element_ref: parse_element_ref(input)?,
+        }),
+        "promote_download" if allowed(&["action", "download_ref", "workspace_path"]) => {
+            let download_ref = required_str(input, "download_ref").map_err(|error| {
+                BrowserFailure::rejected(
+                    "browser_download_ref_missing",
+                    "download_ref",
+                    error.to_string(),
+                )
+            })?;
+            if download_ref.len() != 37
+                || !download_ref.starts_with("dref_")
+                || !download_ref[5..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+            {
+                return Err(BrowserFailure::rejected(
+                    "browser_download_ref_invalid",
+                    "download_ref",
+                    "download_ref 不是 Host 生成的 opaque download identity",
+                ));
+            }
+            Ok(BrowserInteractRequest::PromoteDownload {
+                download_ref: download_ref.to_owned(),
+                workspace_path: parse_workspace_path(input)?,
+            })
+        }
+        "session_status" if allowed(&["action"]) => Ok(BrowserInteractRequest::SessionStatus),
+        "session_clear" if allowed(&["action"]) => Ok(BrowserInteractRequest::SessionClear),
         "click" | "fill" | "press" | "wait" | "scroll" | "select" | "back" | "tab_open"
-        | "tab_switch" | "tab_close" | "submit" => Err(BrowserFailure::rejected(
+        | "tab_switch" | "tab_close" | "submit" | "login" | "upload" | "download"
+        | "promote_download" | "session_status" | "session_clear" => Err(BrowserFailure::rejected(
             "browser_action_arguments_invalid",
             "arguments",
             format!("action {action} 的参数集合不精确"),
@@ -1165,6 +1665,36 @@ fn parse_interact_request(input: &Value) -> Result<BrowserInteractRequest, Brows
             "action 不在 Host 固定 semantic interaction 集合中",
         )),
     }
+}
+
+fn parse_workspace_path(input: &Value) -> Result<String, BrowserFailure> {
+    let path = required_str(input, "workspace_path").map_err(|error| {
+        BrowserFailure::rejected(
+            "browser_workspace_path_missing",
+            "workspace_path",
+            error.to_string(),
+        )
+    })?;
+    if path.is_empty()
+        || path.chars().count() > 1_024
+        || path.chars().any(char::is_control)
+        || Path::new(path).is_absolute()
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_workspace_path_invalid",
+            "workspace_path",
+            "workspace_path 必须是非空、有界、无控制字符的 workspace 相对路径",
+        ));
+    }
+    Ok(path.to_owned())
 }
 
 fn parse_interaction_value(input: &Value, code: &'static str) -> Result<String, BrowserFailure> {
@@ -1704,16 +2234,46 @@ struct EgressState {
     action_started: AtomicBool,
     external_grant: Mutex<Option<ExternalRequestGrant>>,
     external_receipt: Mutex<Option<ObservedExternalReceipt>>,
+    external_dispatches: AtomicU64,
+    download_grant: Mutex<Option<String>>,
+    response_provenance: Mutex<BTreeMap<String, ResponseProvenance>>,
+    managed_session: bool,
     metrics: BrowserMetrics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ExternalRequestGrant {
     target_url: String,
-    parameters: Vec<(String, String)>,
-    ignored_empty_parameters: BTreeSet<String>,
+    body: ExternalBodyGrant,
     parameters_sha256: String,
     impact: &'static str,
+}
+
+#[derive(Clone)]
+enum ExternalBodyGrant {
+    ExactForm {
+        parameters: Vec<(String, String)>,
+        ignored_empty_parameters: BTreeSet<String>,
+    },
+    ManagedUpload,
+}
+
+impl std::fmt::Debug for ExternalRequestGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExternalRequestGrant")
+            .field("target_url", &self.target_url)
+            .field(
+                "body",
+                &match self.body {
+                    ExternalBodyGrant::ExactForm { .. } => "redacted_exact_form",
+                    ExternalBodyGrant::ManagedUpload => "managed_upload",
+                },
+            )
+            .field("parameters_sha256", &self.parameters_sha256)
+            .field("impact", &self.impact)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1723,8 +2283,14 @@ struct ObservedExternalReceipt {
     remote_receipt: String,
 }
 
+#[derive(Debug, Clone)]
+struct ResponseProvenance {
+    status: u16,
+    media_type: String,
+}
+
 impl EgressState {
-    fn new(request: &BrowserNavigateRequest) -> Self {
+    fn new(request: &BrowserNavigateRequest, managed_session: bool) -> Self {
         let initial_origin = Origin::from_url(&request.initial_url)
             .expect("validated browser request has an origin");
         Self {
@@ -1737,6 +2303,10 @@ impl EgressState {
             action_started: AtomicBool::new(false),
             external_grant: Mutex::new(None),
             external_receipt: Mutex::new(None),
+            external_dispatches: AtomicU64::new(0),
+            download_grant: Mutex::new(None),
+            response_provenance: Mutex::new(BTreeMap::new()),
+            managed_session,
             metrics: BrowserMetrics::default(),
         }
     }
@@ -1757,20 +2327,33 @@ impl EgressState {
             let allowed = grant.as_ref().is_some_and(|grant| {
                 method == "POST"
                     && grant.target_url == url
-                    && post_data
-                        .and_then(|post_data| {
-                            canonical_granted_form_parameters(
-                                post_data,
-                                &grant.ignored_empty_parameters,
-                            )
-                        })
-                        .is_some_and(|parameters| parameters == grant.parameters)
+                    && match &grant.body {
+                        ExternalBodyGrant::ExactForm {
+                            parameters,
+                            ignored_empty_parameters,
+                        } => post_data
+                            .and_then(|post_data| {
+                                canonical_granted_form_parameters(
+                                    post_data,
+                                    ignored_empty_parameters,
+                                )
+                            })
+                            .is_some_and(|observed| &observed == parameters),
+                        ExternalBodyGrant::ManagedUpload => true,
+                    }
             });
             if !allowed {
                 return Err(BrowserFailure::operation(
                     "browser_method_denied",
                     "egress",
                     format!("browser blocked ungranted HTTP method {method}"),
+                ));
+            }
+            if self.external_dispatches.fetch_add(1, Ordering::SeqCst) != 0 {
+                return Err(BrowserFailure::operation(
+                    "browser_external_duplicate_denied",
+                    "egress",
+                    "browser blocked a duplicate external POST under one scoped grant",
                 ));
             }
         }
@@ -1863,6 +2446,7 @@ impl EgressState {
             .external_receipt
             .lock()
             .expect("browser external receipt lock") = None;
+        self.external_dispatches.store(0, Ordering::SeqCst);
         self.begin_action();
     }
 
@@ -1883,6 +2467,57 @@ impl EgressState {
                 remote_receipt: remote_receipt.unwrap_or_default().to_owned(),
             });
         }
+    }
+
+    fn record_response_provenance(&self, url: &str, status: u16, media_type: &str) {
+        let mut responses = self
+            .response_provenance
+            .lock()
+            .expect("browser response provenance lock");
+        if responses.len() >= 64
+            && let Some(first) = responses.keys().next().cloned()
+        {
+            responses.remove(&first);
+        }
+        responses.insert(
+            url.to_owned(),
+            ResponseProvenance {
+                status,
+                media_type: bounded_text(media_type, 256),
+            },
+        );
+    }
+
+    fn response_provenance(&self, url: &str) -> Option<ResponseProvenance> {
+        self.response_provenance
+            .lock()
+            .expect("browser response provenance lock")
+            .get(url)
+            .cloned()
+    }
+
+    fn begin_download(&self, target_url: String) {
+        *self
+            .download_grant
+            .lock()
+            .expect("browser download grant lock") = Some(target_url);
+        self.begin_action();
+    }
+
+    fn download_allowed(&self, url: &str) -> bool {
+        self.download_grant
+            .lock()
+            .expect("browser download grant lock")
+            .as_deref()
+            == Some(url)
+    }
+
+    fn finish_download(&self) {
+        *self
+            .download_grant
+            .lock()
+            .expect("browser download grant lock") = None;
+        self.end_action();
     }
 
     fn finish_external_action(&self) -> Option<ObservedExternalReceipt> {
@@ -2123,7 +2758,8 @@ async fn handle_proxy_connection(
                 ));
             }
             let mut upstream = connect_pinned(&origin, &state.scope, resolver.as_ref()).await?;
-            let sanitized = sanitize_http_proxy_request(method, &url, lines)?;
+            let sanitized =
+                sanitize_http_proxy_request(method, &url, lines, state.managed_session)?;
             reserve_bytes(
                 &state.metrics.bytes_sent,
                 sanitized.len() as u64,
@@ -2227,6 +2863,7 @@ fn sanitize_http_proxy_request<'a>(
     method: &str,
     url: &Url,
     lines: impl Iterator<Item = &'a str>,
+    allow_managed_cookie: bool,
 ) -> Result<Vec<u8>, BrowserFailure> {
     let mut preserved = Vec::new();
     for line in lines {
@@ -2253,7 +2890,8 @@ fn sanitize_http_proxy_request<'a>(
                 | "upgrade-insecure-requests"
                 | "content-type"
                 | "content-length"
-        ) {
+        ) || (allow_managed_cookie && lower == "cookie")
+        {
             let value = value.trim();
             if value.contains(['\r', '\n']) {
                 return Err(BrowserFailure::operation(
@@ -2475,6 +3113,17 @@ struct CdpClient {
     managed_target_ids: BTreeSet<String>,
     allow_next_page_target: bool,
     attached_page_sessions: HashMap<String, String>,
+    downloads: HashMap<String, ObservedDownload>,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedDownload {
+    guid: String,
+    url: String,
+    suggested_filename: String,
+    received_bytes: u64,
+    total_bytes: u64,
+    state: String,
 }
 
 impl CdpClient {
@@ -2528,6 +3177,33 @@ impl CdpClient {
             {
                 return Ok(());
             }
+            self.handle_event(&message).await?;
+        }
+    }
+
+    async fn wait_for_download(&mut self) -> Result<ObservedDownload, BrowserFailure> {
+        loop {
+            if let Some(download) = self
+                .downloads
+                .values()
+                .find(|download| download.state == "completed")
+                .cloned()
+            {
+                self.downloads.remove(&download.guid);
+                return Ok(download);
+            }
+            if let Some(download) = self
+                .downloads
+                .values()
+                .find(|download| download.state == "canceled")
+            {
+                return Err(BrowserFailure::transport(
+                    "browser_download_cancelled",
+                    "download",
+                    format!("Chrome cancelled download {}", download.guid),
+                ));
+            }
+            let message = self.next_message().await?;
             self.handle_event(&message).await?;
         }
     }
@@ -2683,7 +3359,15 @@ impl CdpClient {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            if !matches!(media_type.as_str(), "text/html" | "application/xhtml+xml") {
+            let response_url = event
+                .get("params")
+                .and_then(|params| params.get("response"))
+                .and_then(|response| response.get("url"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !matches!(media_type.as_str(), "text/html" | "application/xhtml+xml")
+                && !self.egress.download_allowed(response_url)
+            {
                 let failure = BrowserFailure::operation(
                     "browser_content_type_denied",
                     "response",
@@ -2697,6 +3381,10 @@ impl CdpClient {
             let response = event
                 .get("params")
                 .and_then(|params| params.get("response"));
+            let media_type = response
+                .and_then(|response| response.get("mimeType"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if let (Some(url), Some(status)) = (
                 response
                     .and_then(|response| response.get("url"))
@@ -2718,7 +3406,109 @@ impl CdpClient {
                     });
                 self.egress
                     .record_external_response(url, status, remote_receipt);
+                self.egress
+                    .record_response_provenance(url, status, media_type);
             }
+        }
+        if method == Some("Browser.downloadWillBegin") {
+            let params = event
+                .get("params")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    BrowserFailure::operation(
+                        "browser_download_event_invalid",
+                        "download",
+                        "Browser.downloadWillBegin is missing params",
+                    )
+                })?;
+            let guid = params
+                .get("guid")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if guid.is_empty() || !self.egress.download_allowed(url) {
+                let failure = BrowserFailure::operation(
+                    "browser_download_denied",
+                    "download",
+                    "Chrome started an ungranted or malformed download",
+                );
+                self.egress.record_denial(failure.clone(), true);
+                return Err(failure);
+            }
+            if self.downloads.len() >= MAX_DOWNLOADS_PER_SESSION {
+                let failure = BrowserFailure::operation(
+                    "browser_download_count_exceeded",
+                    "download",
+                    format!("download count exceeds {MAX_DOWNLOADS_PER_SESSION}"),
+                );
+                self.egress.record_denial(failure.clone(), true);
+                return Err(failure);
+            }
+            self.downloads.insert(
+                guid.to_owned(),
+                ObservedDownload {
+                    guid: guid.to_owned(),
+                    url: url.to_owned(),
+                    suggested_filename: bounded_text(
+                        params
+                            .get("suggestedFilename")
+                            .and_then(Value::as_str)
+                            .unwrap_or("download"),
+                        256,
+                    ),
+                    received_bytes: 0,
+                    total_bytes: 0,
+                    state: "inProgress".to_owned(),
+                },
+            );
+            return Ok(());
+        }
+        if method == Some("Browser.downloadProgress") {
+            let params = event
+                .get("params")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    BrowserFailure::operation(
+                        "browser_download_event_invalid",
+                        "download",
+                        "Browser.downloadProgress is missing params",
+                    )
+                })?;
+            let guid = params
+                .get("guid")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(download) = self.downloads.get_mut(guid) else {
+                return Ok(());
+            };
+            download.received_bytes = params
+                .get("receivedBytes")
+                .and_then(nonnegative_u64)
+                .unwrap_or(download.received_bytes);
+            download.total_bytes = params
+                .get("totalBytes")
+                .and_then(nonnegative_u64)
+                .unwrap_or(download.total_bytes);
+            download.state = params
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("inProgress")
+                .to_owned();
+            if download.received_bytes > MAX_DOWNLOAD_BYTES
+                || download.total_bytes > MAX_DOWNLOAD_BYTES
+            {
+                let failure = BrowserFailure::operation(
+                    "browser_download_bytes_exceeded",
+                    "download",
+                    format!("download exceeds {MAX_DOWNLOAD_BYTES} bytes"),
+                );
+                self.egress.record_denial(failure.clone(), true);
+                return Err(failure);
+            }
+            return Ok(());
         }
         if let Some(failure) = prohibited_browser_event(method) {
             self.egress.record_denial(failure.clone(), true);
@@ -2803,7 +3593,8 @@ impl CdpClient {
             .authorize_cdp_request(url, method, resource_type, post_data)
         {
             Ok(()) => {
-                let headers = sanitized_cdp_headers(request.get("headers"));
+                let headers =
+                    sanitized_cdp_headers(request.get("headers"), self.egress.managed_session);
                 self.send_unobserved(
                     "Fetch.continueRequest",
                     json!({"requestId":request_id,"headers":headers}),
@@ -2851,11 +3642,11 @@ impl CdpClient {
 }
 
 fn prohibited_browser_event(method: Option<&str>) -> Option<BrowserFailure> {
-    (method == Some("Browser.downloadWillBegin")).then(|| {
+    matches!(method, Some("Page.fileChooserOpened")).then(|| {
         BrowserFailure::operation(
-            "browser_download_denied",
+            "browser_file_chooser_denied",
             "page",
-            "semantic browser denied a download",
+            "semantic browser denied an unexpected file chooser",
         )
     })
 }
@@ -2868,7 +3659,7 @@ fn nonnegative_u64(value: &Value) -> Option<u64> {
     (value.is_finite() && value >= 0.0 && value <= u64::MAX as f64).then(|| value.ceil() as u64)
 }
 
-fn sanitized_cdp_headers(headers: Option<&Value>) -> Vec<Value> {
+fn sanitized_cdp_headers(headers: Option<&Value>, allow_managed_cookie: bool) -> Vec<Value> {
     let mut values = headers
         .and_then(Value::as_object)
         .into_iter()
@@ -2877,8 +3668,9 @@ fn sanitized_cdp_headers(headers: Option<&Value>) -> Vec<Value> {
             let lower = name.to_ascii_lowercase();
             if matches!(
                 lower.as_str(),
-                "cookie" | "authorization" | "proxy-authorization" | "referer"
-            ) {
+                "authorization" | "proxy-authorization" | "referer"
+            ) || (lower == "cookie" && !allow_managed_cookie)
+            {
                 return None;
             }
             value
@@ -2942,6 +3734,7 @@ struct ElementTarget {
     accessible_name: String,
     capabilities: BTreeSet<ElementCapability>,
     external_preview: Option<ExternalActionPreview>,
+    managed_preview: Option<ManagedElementPreview>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2952,6 +3745,26 @@ enum ElementCapability {
     Scroll,
     Select,
     Submit,
+    Login,
+    Upload,
+    Download,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManagedElementPreview {
+    Login {
+        credential_refs: BTreeSet<String>,
+        form_id: String,
+        target_url: String,
+    },
+    Upload {
+        form_id: String,
+        target_url: String,
+        submit_backend_dom_node_id: u64,
+    },
+    Download {
+        target_url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2982,9 +3795,214 @@ struct LiveBrowserSession {
     cdp_session_id: String,
     background_pages: BTreeMap<String, BrowserPageState>,
     proxy: Option<EgressProxy>,
-    profile: Option<tempfile::TempDir>,
+    profile: Option<BrowserProfileLease>,
+    managed_policy: ManagedBrowserPolicy,
+    quarantine: Option<tempfile::TempDir>,
+    quarantined_downloads: BTreeMap<String, QuarantinedDownload>,
+    clear_profile_on_teardown: bool,
+    authorized_uploads: BTreeMap<String, String>,
     child: tokio::process::Child,
     owner: ProcessTreeOwner,
+}
+
+#[derive(Debug, Clone)]
+struct QuarantinedDownload {
+    download_ref: String,
+    path: PathBuf,
+    requested_url: String,
+    final_url: String,
+    status: u16,
+    media_type: String,
+    suggested_filename: String,
+    bytes: u64,
+    sha256: String,
+    retrieved_at: String,
+    transport: &'static str,
+    plaintext_exposed: bool,
+}
+
+enum BrowserProfileLease {
+    Ephemeral(tempfile::TempDir),
+    Managed {
+        path: PathBuf,
+        lock: File,
+        reused: bool,
+    },
+}
+
+impl BrowserProfileLease {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Ephemeral(profile) => profile.path(),
+            Self::Managed { path, .. } => path,
+        }
+    }
+
+    fn is_managed(&self) -> bool {
+        matches!(self, Self::Managed { .. })
+    }
+
+    fn reused(&self) -> bool {
+        matches!(self, Self::Managed { reused: true, .. })
+    }
+
+    fn project_release(self, clear: bool) -> bool {
+        match self {
+            Self::Ephemeral(profile) => profile.close().is_ok(),
+            Self::Managed { path, lock, .. } => {
+                let removed = !clear || remove_managed_profile(&path).is_ok();
+                let unlocked = fs2::FileExt::unlock(&lock).is_ok();
+                removed && unlocked
+            }
+        }
+    }
+}
+
+fn remove_managed_profile(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => Err(
+            std::io::Error::other("managed profile root is not an ordinary directory"),
+        ),
+        Ok(_) => fs::remove_dir_all(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn create_private_directory(path: &Path) -> Result<(), BrowserFailure> {
+    fs::create_dir_all(path).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_profile_failed",
+            "profile",
+            format!("cannot create managed browser directory: {error}"),
+        )
+    })?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_profile_failed",
+            "profile",
+            format!("cannot inspect managed browser directory: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(BrowserFailure::operation(
+            "browser_profile_identity_denied",
+            "profile",
+            "managed browser directory must be an ordinary non-symlink directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            BrowserFailure::operation(
+                "browser_profile_permissions_failed",
+                "profile",
+                format!("cannot restrict managed browser directory permissions: {error}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn acquire_browser_profile(
+    request: &BrowserNavigateRequest,
+    policy: &ManagedBrowserPolicy,
+) -> Result<BrowserProfileLease, BrowserFailure> {
+    if !matches!(request.scope, BrowserTargetScope::Public) {
+        return tempfile::Builder::new()
+            .prefix("dse-browser-")
+            .tempdir()
+            .map(BrowserProfileLease::Ephemeral)
+            .map_err(|error| {
+                BrowserFailure::operation(
+                    "browser_profile_failed",
+                    "profile",
+                    format!("cannot create ephemeral browser profile: {error}"),
+                )
+            });
+    }
+    create_private_directory(&policy.state_root)?;
+    let profiles = policy.state_root.join("profiles");
+    let locks = policy.state_root.join("locks");
+    create_private_directory(&profiles)?;
+    create_private_directory(&locks)?;
+    let lock_path = locks.join(format!("{}.lock", policy.project_id));
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let lock = options.open(&lock_path).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_profile_lock_failed",
+            "profile",
+            format!("cannot open managed browser profile lock: {error}"),
+        )
+    })?;
+    lock.try_lock_exclusive().map_err(|error| {
+        BrowserFailure::operation(
+            "browser_profile_busy",
+            "profile",
+            format!("managed browser profile is already active: {error}"),
+        )
+    })?;
+    let path = profiles.join(&policy.project_id);
+    let expired = fs::symlink_metadata(&path).ok().is_some_and(|metadata| {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > PROFILE_MAX_AGE)
+    });
+    if expired {
+        remove_managed_profile(&path).map_err(|error| {
+            BrowserFailure::operation(
+                "browser_profile_expiry_failed",
+                "profile",
+                format!("cannot expire stale managed browser profile: {error}"),
+            )
+        })?;
+    }
+    let reused = path.exists();
+    create_private_directory(&path)?;
+    for runtime_marker in [
+        "DevToolsActivePort",
+        "SingletonCookie",
+        "SingletonLock",
+        "SingletonSocket",
+    ] {
+        let marker = path.join(runtime_marker);
+        match fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                return Err(BrowserFailure::operation(
+                    "browser_profile_runtime_marker_denied",
+                    "profile",
+                    format!(
+                        "managed profile runtime marker {runtime_marker} is an unexpected directory"
+                    ),
+                ));
+            }
+            Ok(_) => fs::remove_file(&marker).map_err(|error| {
+                BrowserFailure::operation(
+                    "browser_profile_runtime_marker_failed",
+                    "profile",
+                    format!("cannot clear stale managed profile runtime marker: {error}"),
+                )
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(BrowserFailure::operation(
+                    "browser_profile_runtime_marker_failed",
+                    "profile",
+                    format!("cannot inspect managed profile runtime marker: {error}"),
+                ));
+            }
+        }
+    }
+    Ok(BrowserProfileLease::Managed { path, lock, reused })
 }
 
 #[derive(Debug)]
@@ -3054,8 +4072,68 @@ impl LiveBrowserSession {
         }
     }
 
+    async fn persist_managed_session_cookies(&mut self) -> Result<usize, BrowserFailure> {
+        if !self.egress.managed_session {
+            return Ok(0);
+        }
+        let result = self.cdp.call("Storage.getCookies", json!({}), None).await?;
+        let Some(cookies) = result.get("cookies").and_then(Value::as_array) else {
+            return Ok(0);
+        };
+        let expires = Utc::now().timestamp() as f64 + PROFILE_MAX_AGE.as_secs_f64();
+        let cookie_url = format!("{}/", self.egress.initial_origin.canonical());
+        let mut promoted = 0_usize;
+        for cookie in cookies {
+            if cookie.get("session").and_then(Value::as_bool) != Some(true)
+                || cookie
+                    .get("domain")
+                    .and_then(Value::as_str)
+                    .is_none_or(|domain| {
+                        domain.trim_start_matches('.') != self.egress.initial_origin.host
+                    })
+            {
+                continue;
+            }
+            let mut parameter = Map::new();
+            for field in ["name", "value", "path", "secure", "httpOnly", "sameSite"] {
+                if let Some(value) = cookie.get(field) {
+                    parameter.insert(field.to_owned(), value.clone());
+                }
+            }
+            parameter.insert("url".to_owned(), json!(cookie_url));
+            parameter.insert("expires".to_owned(), json!(expires));
+            let result = self
+                .cdp
+                .call(
+                    "Network.setCookie",
+                    Value::Object(parameter),
+                    Some(&self.cdp_session_id),
+                )
+                .await?;
+            if result.get("success").and_then(Value::as_bool) == Some(false) {
+                return Err(BrowserFailure::operation(
+                    "browser_session_cookie_persist_failed",
+                    "session",
+                    "Chrome rejected a bounded project session Cookie lifecycle update",
+                ));
+            }
+            promoted += 1;
+        }
+        if promoted > 0 {
+            tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+        }
+        Ok(promoted)
+    }
+
     async fn teardown(mut self) -> TeardownFacts {
-        let _ = self.cdp.call("Browser.close", json!({}), None).await;
+        if self
+            .cdp
+            .call("Browser.close", json!({}), None)
+            .await
+            .is_ok()
+        {
+            let _ = tokio::time::timeout(BROWSER_CLOSE_GRACE, self.child.wait()).await;
+        }
         let process_tree_settled =
             shutdown_tokio_process_tree(&mut self.child, &mut self.owner, PROCESS_TEARDOWN_GRACE)
                 .await;
@@ -3066,7 +4144,11 @@ impl LiveBrowserSession {
         let profile_removed = self
             .profile
             .take()
-            .is_none_or(|profile| profile.close().is_ok());
+            .is_none_or(|profile| profile.project_release(self.clear_profile_on_teardown));
+        let _ = self
+            .quarantine
+            .take()
+            .is_none_or(|directory| directory.close().is_ok());
         TeardownFacts {
             attempted: true,
             process_tree_settled,
@@ -3125,6 +4207,7 @@ impl SemanticBrowserHarness for SystemSemanticBrowserHarness {
             request,
             binary,
             Arc::clone(&self.resolver),
+            self.managed.clone(),
             cancellation,
         )
         .await
@@ -3425,41 +4508,62 @@ async fn start_system_browser(
     request: BrowserNavigateRequest,
     binary: PinnedChromeForTesting,
     resolver: Arc<dyn WebFetchNetwork>,
+    managed_policy: ManagedBrowserPolicy,
     cancellation: CancellationToken,
 ) -> Result<OpenBrowser, ToolOutcome> {
-    let egress = Arc::new(EgressState::new(&request));
+    let profile = match acquire_browser_profile(&request, &managed_policy) {
+        Ok(profile) => profile,
+        Err(failure) => {
+            return Err(operation_outcome(&request.requested_url, failure, None));
+        }
+    };
+    let managed_session = profile.is_managed();
+    let quarantine = match create_download_quarantine(&managed_policy, managed_session) {
+        Ok(quarantine) => quarantine,
+        Err(failure) => {
+            let profile_removed = profile.project_release(false);
+            return Err(operation_outcome(
+                &request.requested_url,
+                failure,
+                Some(&TeardownFacts {
+                    attempted: true,
+                    process_tree_settled: true,
+                    proxy_settled: true,
+                    profile_removed,
+                }),
+            ));
+        }
+    };
+    let egress = Arc::new(EgressState::new(&request, managed_session));
     let proxy = match EgressProxy::start(Arc::clone(&egress), resolver).await {
         Ok(proxy) => proxy,
-        Err(failure) => return Err(operation_outcome(&request.requested_url, failure, None)),
-    };
-    let profile = match tempfile::Builder::new().prefix("dse-browser-").tempdir() {
-        Ok(profile) => profile,
-        Err(error) => {
-            let proxy_settled = proxy.shutdown().await;
+        Err(failure) => {
+            let profile_removed = profile.project_release(false);
             let teardown = TeardownFacts {
                 attempted: true,
                 process_tree_settled: true,
-                proxy_settled,
-                profile_removed: true,
+                proxy_settled: true,
+                profile_removed,
             };
             return Err(operation_outcome(
                 &request.requested_url,
-                BrowserFailure::operation(
-                    "browser_profile_failed",
-                    "profile",
-                    format!("cannot create ephemeral browser profile: {error}"),
-                ),
+                failure,
                 Some(&teardown),
             ));
         }
     };
-    let mut command = browser_command(&binary.executable, profile.path(), proxy.address);
+    let mut command = browser_command(
+        &binary.executable,
+        profile.path(),
+        proxy.address,
+        managed_session,
+    );
     configure_process_tree(command.as_std_mut());
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             let proxy_settled = proxy.shutdown().await;
-            let profile_removed = profile.close().is_ok();
+            let profile_removed = profile.project_release(false);
             let teardown = TeardownFacts {
                 attempted: true,
                 process_tree_settled: true,
@@ -3483,7 +4587,7 @@ async fn start_system_browser(
             let _ = child.start_kill();
             let _ = child.wait().await;
             let proxy_settled = proxy.shutdown().await;
-            let profile_removed = profile.close().is_ok();
+            let profile_removed = profile.project_release(false);
             let teardown = TeardownFacts {
                 attempted: true,
                 process_tree_settled: false,
@@ -3503,7 +4607,12 @@ async fn start_system_browser(
     };
 
     let execution = {
-        let cdp_session = run_cdp_session(&request, profile.path(), Arc::clone(&egress));
+        let cdp_session = run_cdp_session(
+            &request,
+            profile.path(),
+            quarantine.path(),
+            Arc::clone(&egress),
+        );
         tokio::pin!(cdp_session);
         tokio::select! {
             () = cancellation.cancelled() => Err(BrowserFailure {
@@ -3529,7 +4638,7 @@ async fn start_system_browser(
             let process_tree_settled =
                 shutdown_tokio_process_tree(&mut child, &mut owner, PROCESS_TEARDOWN_GRACE).await;
             let proxy_settled = proxy.shutdown().await;
-            let profile_removed = profile.close().is_ok();
+            let profile_removed = profile.project_release(false);
             let teardown = TeardownFacts {
                 attempted: true,
                 process_tree_settled,
@@ -3549,7 +4658,7 @@ async fn start_system_browser(
         let process_tree_settled =
             shutdown_tokio_process_tree(&mut child, &mut owner, PROCESS_TEARDOWN_GRACE).await;
         let proxy_settled = proxy.shutdown().await;
-        let profile_removed = profile.close().is_ok();
+        let profile_removed = profile.project_release(false);
         let teardown = TeardownFacts {
             attempted: true,
             process_tree_settled,
@@ -3583,9 +4692,37 @@ async fn start_system_browser(
             background_pages: BTreeMap::new(),
             proxy: Some(proxy),
             profile: Some(profile),
+            managed_policy,
+            quarantine: Some(quarantine),
+            quarantined_downloads: BTreeMap::new(),
+            clear_profile_on_teardown: false,
+            authorized_uploads: BTreeMap::new(),
             child,
             owner,
         },
+    })
+}
+
+fn create_download_quarantine(
+    policy: &ManagedBrowserPolicy,
+    managed_session: bool,
+) -> Result<tempfile::TempDir, BrowserFailure> {
+    if managed_session {
+        let root = policy
+            .state_root
+            .join("quarantine")
+            .join(&policy.project_id);
+        create_private_directory(&root)?;
+        tempfile::Builder::new().prefix("session-").tempdir_in(root)
+    } else {
+        tempfile::Builder::new().prefix("dse-download-").tempdir()
+    }
+    .map_err(|error| {
+        BrowserFailure::operation(
+            "browser_download_quarantine_failed",
+            "download",
+            format!("cannot create isolated download quarantine: {error}"),
+        )
     })
 }
 
@@ -3739,6 +4876,110 @@ fn derive_external_action_previews(
     previews
 }
 
+fn derive_managed_element_previews(
+    current_url: &str,
+    nodes: &[SemanticNode],
+    policy: &ManagedBrowserPolicy,
+) -> HashMap<u64, ManagedElementPreview> {
+    let Ok(base) = Url::parse(current_url) else {
+        return HashMap::new();
+    };
+    let Ok(base_origin) = Origin::from_url(&base) else {
+        return HashMap::new();
+    };
+    let mut previews = HashMap::new();
+    for node in nodes {
+        let (Some(backend_id), Some(dom)) = (node.backend_dom_node_id, node.dom.as_ref()) else {
+            continue;
+        };
+        let input_type = dom
+            .attributes
+            .get("type")
+            .map(|value| value.to_ascii_lowercase());
+        let submit_control = dom.node_name == "BUTTON" || input_type.as_deref() == Some("submit");
+        if submit_control
+            && let Some(form_id) = dom.attributes.get("form").filter(|value| !value.is_empty())
+            && let Some(action) = dom.attributes.get("formaction")
+            && dom
+                .attributes
+                .get("formmethod")
+                .is_some_and(|method| method.eq_ignore_ascii_case("post"))
+            && let Ok(target) = base.join(action)
+            && Origin::from_url(&target).ok().as_ref() == Some(&base_origin)
+        {
+            let credential_refs = policy
+                .credential_grants
+                .iter()
+                .filter(|grant| {
+                    grant.login_url.as_str() == base.as_str()
+                        && grant.submit_url.as_str() == target.as_str()
+                })
+                .map(|grant| grant.credential_ref.clone())
+                .collect::<BTreeSet<_>>();
+            if !credential_refs.is_empty() {
+                previews.insert(
+                    backend_id,
+                    ManagedElementPreview::Login {
+                        credential_refs,
+                        form_id: form_id.clone(),
+                        target_url: target.to_string(),
+                    },
+                );
+                continue;
+            }
+        }
+        if dom.node_name == "INPUT"
+            && input_type.as_deref() == Some("file")
+            && let Some(form_id) = dom.attributes.get("form").filter(|value| !value.is_empty())
+            && let Some((submit_id, target_url)) = nodes.iter().find_map(|candidate| {
+                let candidate_id = candidate.backend_dom_node_id?;
+                let facts = candidate.dom.as_ref()?;
+                let candidate_type = facts
+                    .attributes
+                    .get("type")
+                    .map(|value| value.to_ascii_lowercase());
+                let submit =
+                    facts.node_name == "BUTTON" || candidate_type.as_deref() == Some("submit");
+                if !submit
+                    || facts.attributes.get("form") != Some(form_id)
+                    || !facts
+                        .attributes
+                        .get("formmethod")
+                        .is_some_and(|method| method.eq_ignore_ascii_case("post"))
+                {
+                    return None;
+                }
+                let target = base.join(facts.attributes.get("formaction")?).ok()?;
+                (Origin::from_url(&target).ok().as_ref() == Some(&base_origin))
+                    .then(|| (candidate_id, target.to_string()))
+            })
+        {
+            previews.insert(
+                backend_id,
+                ManagedElementPreview::Upload {
+                    form_id: form_id.clone(),
+                    target_url,
+                    submit_backend_dom_node_id: submit_id,
+                },
+            );
+            continue;
+        }
+        if let Some(href) = dom.attributes.get("href")
+            && dom.attributes.contains_key("download")
+            && let Ok(target) = base.join(href)
+            && Origin::from_url(&target).ok().as_ref() == Some(&base_origin)
+        {
+            previews.insert(
+                backend_id,
+                ManagedElementPreview::Download {
+                    target_url: target.to_string(),
+                },
+            );
+        }
+    }
+    previews
+}
+
 fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
     for element_ref in session.refs.keys() {
         session.stale_refs.insert(element_ref.clone());
@@ -3752,6 +4993,11 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
     session.refs.clear();
     let external_previews =
         derive_external_action_previews(&session.observation.final_url, &session.observation.nodes);
+    let managed_previews = derive_managed_element_previews(
+        &session.observation.final_url,
+        &session.observation.nodes,
+        &session.managed_policy,
+    );
     for node in &mut session.observation.nodes {
         node.element_ref = None;
         if !allow_refs {
@@ -3783,6 +5029,28 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
                 node.capabilities.push("submit");
             }
         }
+        let managed_preview = managed_previews.get(&backend_dom_node_id).cloned();
+        match &managed_preview {
+            Some(ManagedElementPreview::Login { .. }) => {
+                capabilities.insert(ElementCapability::Login);
+                if !node.capabilities.contains(&"login") {
+                    node.capabilities.push("login");
+                }
+            }
+            Some(ManagedElementPreview::Upload { .. }) => {
+                capabilities.insert(ElementCapability::Upload);
+                if !node.capabilities.contains(&"upload") {
+                    node.capabilities.push("upload");
+                }
+            }
+            Some(ManagedElementPreview::Download { .. }) => {
+                capabilities.insert(ElementCapability::Download);
+                if !node.capabilities.contains(&"download") {
+                    node.capabilities.push("download");
+                }
+            }
+            None => {}
+        }
         if capabilities.is_empty() {
             continue;
         }
@@ -3795,6 +5063,7 @@ fn rotate_observation(session: &mut LiveBrowserSession, allow_refs: bool) {
                 accessible_name: node.accessible_name.clone(),
                 capabilities,
                 external_preview,
+                managed_preview,
             },
         );
         node.element_ref = Some(element_ref);
@@ -3877,11 +5146,28 @@ fn browser_result_value(
         chrome_executable_sha256: format!("sha256:{}", session.binary.sha256),
         retrieved_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         trust: TRUST,
-        profile_ephemeral: true,
+        profile_ephemeral: !session.egress.managed_session,
         session_scope: match session.request.scope {
             BrowserTargetScope::ExactLocal(_) => "same_run_in_memory_exact_loopback",
-            BrowserTargetScope::Public => "same_run_in_memory_public_origin",
+            BrowserTargetScope::Public => "project_isolated_managed_public_origin",
         },
+        project_id: session
+            .egress
+            .managed_session
+            .then(|| session.managed_policy.project_id.clone()),
+        profile_reused: session
+            .profile
+            .as_ref()
+            .is_some_and(BrowserProfileLease::reused),
+        credential_grants_available: session.managed_policy.credential_grants.len(),
+        credential_grants: session
+            .managed_policy
+            .credential_grants
+            .iter()
+            .filter(|grant| grant.login_url.as_str() == session.observation.final_url)
+            .map(BrowserCredentialGrant::non_secret_identity)
+            .collect(),
+        profile_max_age_seconds: PROFILE_MAX_AGE.as_secs(),
         session_live: true,
         process_tree_settled,
         teardown: TeardownFacts {
@@ -4464,14 +5750,16 @@ async fn execute_live_click(
     if let Some(failure) = session.egress.take_fatal_failure() {
         return click_failure_with_fresh_observation(session, request, failure, true);
     }
-    let _ = session
-        .cdp
-        .call(
-            "Network.clearBrowserCookies",
-            json!({}),
-            Some(&session.cdp_session_id),
-        )
-        .await;
+    if !session.egress.managed_session {
+        let _ = session
+            .cdp
+            .call(
+                "Network.clearBrowserCookies",
+                json!({}),
+                Some(&session.cdp_session_id),
+            )
+            .await;
+    }
     let mut outcome = browser_result_outcome(session, action, false);
     outcome.side_effect = ToolSideEffectStatus::Applied;
     outcome
@@ -4740,14 +6028,16 @@ async fn execute_live_fill(
     if let Some(failure) = session.egress.take_fatal_failure() {
         return fill_failure_with_fresh_observation(session, request, failure, true);
     }
-    let _ = session
-        .cdp
-        .call(
-            "Network.clearBrowserCookies",
-            json!({}),
-            Some(&session.cdp_session_id),
-        )
-        .await;
+    if !session.egress.managed_session {
+        let _ = session
+            .cdp
+            .call(
+                "Network.clearBrowserCookies",
+                json!({}),
+                Some(&session.cdp_session_id),
+            )
+            .await;
+    }
     let mut outcome = browser_result_outcome(session, action, false);
     outcome.side_effect = ToolSideEffectStatus::Applied;
     outcome
@@ -4787,8 +6077,1195 @@ async fn execute_live_extended_interaction(
         BrowserInteractRequest::Submit(request) => {
             execute_live_submit(session, run_id, request, cancellation).await
         }
+        BrowserInteractRequest::Login {
+            element_ref,
+            credential_ref,
+        } => execute_live_login(session, run_id, element_ref, credential_ref, cancellation).await,
+        BrowserInteractRequest::Upload {
+            element_ref,
+            workspace_path,
+        } => execute_live_upload(session, run_id, element_ref, workspace_path, cancellation).await,
+        BrowserInteractRequest::Download { element_ref } => {
+            execute_live_download(session, run_id, element_ref, cancellation).await
+        }
+        BrowserInteractRequest::PromoteDownload {
+            download_ref,
+            workspace_path,
+        } => execute_promote_download(session, download_ref, workspace_path).await,
+        BrowserInteractRequest::SessionStatus => execute_session_status(session).await,
+        BrowserInteractRequest::SessionClear => execute_session_clear(session).await,
         BrowserInteractRequest::Click(_) | BrowserInteractRequest::Fill(_) => unreachable!(),
     }
+}
+
+async fn dispatch_click_backend(
+    cdp: &mut CdpClient,
+    session_id: &str,
+    backend_dom_node_id: u64,
+) -> Result<(), BrowserFailure> {
+    let model = cdp
+        .call(
+            "DOM.getBoxModel",
+            json!({"backendNodeId":backend_dom_node_id}),
+            Some(session_id),
+        )
+        .await?;
+    let Some((x, y)) = box_center(&model) else {
+        return Err(absent_target_failure(true));
+    };
+    cdp.call(
+        "Input.dispatchMouseEvent",
+        json!({"type":"mousePressed","x":x,"y":y,"button":"left","clickCount":1}),
+        Some(session_id),
+    )
+    .await?;
+    cdp.call(
+        "Input.dispatchMouseEvent",
+        json!({"type":"mouseReleased","x":x,"y":y,"button":"left","clickCount":1}),
+        Some(session_id),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn replace_element_text(
+    cdp: &mut CdpClient,
+    session_id: &str,
+    backend_dom_node_id: u64,
+    value: &str,
+) -> Result<(), BrowserFailure> {
+    cdp.call(
+        "DOM.focus",
+        json!({"backendNodeId":backend_dom_node_id}),
+        Some(session_id),
+    )
+    .await?;
+    for (event_type, key, code, modifiers) in [
+        ("rawKeyDown", "a", "KeyA", SELECT_ALL_MODIFIERS),
+        ("keyUp", "a", "KeyA", SELECT_ALL_MODIFIERS),
+        ("rawKeyDown", "Backspace", "Backspace", 0),
+        ("keyUp", "Backspace", "Backspace", 0),
+    ] {
+        cdp.call(
+            "Input.dispatchKeyEvent",
+            json!({
+                "type":event_type,
+                "key":key,
+                "code":code,
+                "modifiers":modifiers,
+            }),
+            Some(session_id),
+        )
+        .await?;
+    }
+    cdp.call("Input.insertText", json!({"text":value}), Some(session_id))
+        .await?;
+    Ok(())
+}
+
+async fn execute_live_login(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    element_ref: &str,
+    credential_ref: &str,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if cancellation.is_cancelled() {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser login was cancelled before dispatch",
+            ),
+            false,
+        );
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        run_id,
+        &session.refs,
+        &session.stale_refs,
+        element_ref,
+    ) {
+        Ok(target) if target.capabilities.contains(&ElementCapability::Login) => target,
+        Ok(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_login_capability_mismatch",
+                    "login",
+                    "element_ref does not carry Host-derived login capability",
+                ),
+                false,
+            );
+        }
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let Some(ManagedElementPreview::Login {
+        credential_refs,
+        form_id,
+        target_url,
+    }) = target.managed_preview.clone()
+    else {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_login_preview_missing",
+                "login",
+                "login capability has no Host preview",
+            ),
+            false,
+        );
+    };
+    if !credential_refs.contains(credential_ref) {
+        return interact_operation_outcome(
+            BrowserFailure::rejected(
+                "browser_credential_grant_denied",
+                "login",
+                "credential_ref is not granted for this exact login form",
+            ),
+            false,
+        );
+    }
+    let Some(grant) = session
+        .managed_policy
+        .credential_grant(credential_ref)
+        .cloned()
+    else {
+        return interact_operation_outcome(
+            BrowserFailure::rejected(
+                "browser_credential_grant_missing",
+                "login",
+                "credential_ref is unavailable",
+            ),
+            false,
+        );
+    };
+    let fresh = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let current_previews =
+        derive_managed_element_previews(&fresh.final_url, &fresh.nodes, &session.managed_policy);
+    if observation_fingerprint(&fresh.nodes) != session.observation_fingerprint
+        || current_previews.get(&target.backend_dom_node_id) != target.managed_preview.as_ref()
+    {
+        return invalidate_extended_with_failure(
+            session,
+            "login",
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_login_preview_stale",
+                "login",
+                "login target or form changed after durable authorization",
+            ),
+        )
+        .await;
+    }
+    let mut secret_fields = Vec::new();
+    for field in &grant.fields {
+        let mut matching = fresh.nodes.iter().filter(|node| {
+            node.dom.as_ref().is_some_and(|dom| {
+                dom.attributes.get("form") == Some(&form_id)
+                    && dom.attributes.get("name") == Some(&field.form_field)
+            })
+        });
+        let Some(node) = matching.next() else {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_credential_field_missing",
+                    "login",
+                    "one granted credential field is not present in the exact form",
+                ),
+                false,
+            );
+        };
+        if matching.next().is_some() || node.backend_dom_node_id.is_none() {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_credential_field_ambiguous",
+                    "login",
+                    "one granted credential field is ambiguous in the exact form",
+                ),
+                false,
+            );
+        }
+        let Some(secret) = session
+            .managed_policy
+            .secrets
+            .resolve_direct(&field.secret_key, Some("keyring"))
+            .filter(|value| !value.is_empty() && value.len() <= MAX_FILL_VALUE_BYTES)
+        else {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_credential_secret_unavailable",
+                    "login",
+                    "one Host-owned credential value is unavailable or exceeds its bound",
+                ),
+                false,
+            );
+        };
+        secret_fields.push((
+            field.form_field.clone(),
+            node.backend_dom_node_id
+                .expect("checked field backend identity"),
+            secret,
+        ));
+    }
+    let mut exact_parameters = secret_fields
+        .iter()
+        .map(|(name, _, value)| (name.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    for node in &fresh.nodes {
+        let Some(dom) = node.dom.as_ref() else {
+            continue;
+        };
+        if dom.attributes.get("form") != Some(&form_id) {
+            continue;
+        }
+        let Some(name) = dom.attributes.get("name").filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        if exact_parameters.iter().any(|(current, _)| current == name) {
+            continue;
+        }
+        let input_type = dom.attributes.get("type").map(|value| value.as_str());
+        if dom.node_name == "BUTTON"
+            || matches!(input_type, Some("submit" | "button" | "reset" | "file"))
+        {
+            continue;
+        }
+        exact_parameters.push((
+            name.clone(),
+            if node.value.is_empty() {
+                dom.attributes.get("value").cloned().unwrap_or_default()
+            } else {
+                node.value.clone()
+            },
+        ));
+    }
+    exact_parameters.sort();
+    let public_identity = json!({
+        "credential_ref": credential_ref,
+        "target_url": target_url,
+        "fields": grant.fields.iter().map(|field| &field.form_field).collect::<Vec<_>>(),
+    });
+    let parameters_sha256 = format!(
+        "sha256:{}",
+        sha256_bytes(&serde_json::to_vec(&public_identity).expect("login identity serializes"))
+    );
+    session.egress.begin_action();
+    for (_, backend_id, secret) in &secret_fields {
+        if let Err(failure) = replace_element_text(
+            &mut session.cdp,
+            &session.cdp_session_id,
+            *backend_id,
+            secret,
+        )
+        .await
+        {
+            session.egress.end_action();
+            return interact_operation_outcome(failure, true);
+        }
+    }
+    let request_grant = ExternalRequestGrant {
+        target_url: target_url.clone(),
+        body: ExternalBodyGrant::ExactForm {
+            parameters: exact_parameters,
+            ignored_empty_parameters: BTreeSet::new(),
+        },
+        parameters_sha256: parameters_sha256.clone(),
+        impact: "project_scoped_login",
+    };
+    session.egress.begin_external_action(request_grant);
+    if let Err(failure) = dispatch_click_backend(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        target.backend_dom_node_id,
+    )
+    .await
+    {
+        session.egress.finish_external_action();
+        return interact_operation_outcome(failure, true);
+    }
+    drop(secret_fields);
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => {
+            session.egress.finish_external_action();
+            return interact_operation_outcome(
+                session.egress.take_fatal_failure().unwrap_or(failure),
+                true,
+            );
+        }
+    };
+    let observed = session.egress.finish_external_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return extended_failure_with_fresh_observation(
+            session,
+            "login",
+            Some(element_ref),
+            failure,
+            true,
+        );
+    }
+    let Some(observed) = observed.filter(|receipt| (200..400).contains(&receipt.status)) else {
+        return extended_failure_with_fresh_observation(
+            session,
+            "login",
+            Some(element_ref),
+            BrowserFailure::operation(
+                "browser_login_receipt_missing",
+                "receipt",
+                "login POST did not yield a bounded successful response receipt",
+            ),
+            true,
+        );
+    };
+    let promoted_session_cookies = match session.persist_managed_session_cookies().await {
+        Ok(count) => count,
+        Err(failure) => {
+            return extended_failure_with_fresh_observation(
+                session,
+                "login",
+                Some(element_ref),
+                failure,
+                true,
+            );
+        }
+    };
+    let receipt = json!({
+        "kind":"managed_login",
+        "credential_ref":credential_ref,
+        "target_url":observed.target_url,
+        "method":"POST",
+        "status":observed.status,
+        "parameters_sha256":parameters_sha256,
+        "secret_values":"host_owned_redacted",
+        "session_cookie_lifecycle":"project_scoped_bounded",
+        "session_cookies_promoted":promoted_session_cookies,
+        "profile_max_age_seconds":PROFILE_MAX_AGE.as_secs(),
+        "project_id":session.managed_policy.project_id,
+        "final_url":session.observation.final_url,
+        "observed_at":Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    });
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "login",
+            consumed_element_ref: Some(element_ref.to_owned()),
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+fn upload_authorization_key(element_ref: &str, workspace_path: &str) -> String {
+    format!(
+        "sha256:{}",
+        sha256_bytes(format!("{element_ref}\0{workspace_path}").as_bytes())
+    )
+}
+
+async fn execute_live_upload(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    element_ref: &str,
+    workspace_path: &str,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if cancellation.is_cancelled() {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser upload was cancelled before dispatch",
+            ),
+            false,
+        );
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        run_id,
+        &session.refs,
+        &session.stale_refs,
+        element_ref,
+    ) {
+        Ok(target) if target.capabilities.contains(&ElementCapability::Upload) => target,
+        Ok(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_upload_capability_mismatch",
+                    "upload",
+                    "element_ref does not carry Host-derived upload capability",
+                ),
+                false,
+            );
+        }
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let Some(ManagedElementPreview::Upload {
+        target_url,
+        submit_backend_dom_node_id,
+        ..
+    }) = target.managed_preview.clone()
+    else {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_upload_preview_missing",
+                "upload",
+                "upload capability has no Host preview",
+            ),
+            false,
+        );
+    };
+    let artifact = match resolve_workspace_upload(&session.managed_policy, workspace_path) {
+        Ok(artifact) => artifact,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let authorization_key = upload_authorization_key(element_ref, workspace_path);
+    if session
+        .authorized_uploads
+        .remove(&authorization_key)
+        .as_deref()
+        != Some(artifact.sha256.as_str())
+    {
+        return interact_operation_outcome(
+            BrowserFailure::rejected(
+                "browser_upload_authorization_stale",
+                "upload",
+                "upload file identity differs from the exact Host authorization preview",
+            ),
+            false,
+        );
+    }
+    let fresh = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let current_previews =
+        derive_managed_element_previews(&fresh.final_url, &fresh.nodes, &session.managed_policy);
+    if observation_fingerprint(&fresh.nodes) != session.observation_fingerprint
+        || current_previews.get(&target.backend_dom_node_id) != target.managed_preview.as_ref()
+    {
+        return invalidate_extended_with_failure(
+            session,
+            "upload",
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_upload_preview_stale",
+                "upload",
+                "upload target or form changed after durable authorization",
+            ),
+        )
+        .await;
+    }
+    let public_identity = json!({
+        "workspace_path":artifact.workspace_path,
+        "bytes":artifact.bytes,
+        "sha256":artifact.sha256,
+        "target_url":target_url,
+    });
+    let parameters_sha256 = format!(
+        "sha256:{}",
+        sha256_bytes(&serde_json::to_vec(&public_identity).expect("upload identity serializes"))
+    );
+    session.egress.begin_action();
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "DOM.setFileInputFiles",
+            json!({
+                "files":[artifact.canonical_path.display().to_string()],
+                "backendNodeId":target.backend_dom_node_id,
+            }),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.end_action();
+        return interact_operation_outcome(failure, true);
+    }
+    session.egress.begin_external_action(ExternalRequestGrant {
+        target_url: target_url.clone(),
+        body: ExternalBodyGrant::ManagedUpload,
+        parameters_sha256: parameters_sha256.clone(),
+        impact: "authorized_workspace_artifact_upload",
+    });
+    if let Err(failure) = dispatch_click_backend(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        submit_backend_dom_node_id,
+    )
+    .await
+    {
+        session.egress.finish_external_action();
+        return interact_operation_outcome(failure, true);
+    }
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    let post = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => {
+            session.egress.finish_external_action();
+            return interact_operation_outcome(
+                session.egress.take_fatal_failure().unwrap_or(failure),
+                true,
+            );
+        }
+    };
+    let observed = session.egress.finish_external_action();
+    session.observation = post;
+    rotate_observation(session, true);
+    if let Some(failure) = session.egress.take_fatal_failure() {
+        return extended_failure_with_fresh_observation(
+            session,
+            "upload",
+            Some(element_ref),
+            failure,
+            true,
+        );
+    }
+    let Some(observed) = observed.filter(|receipt| (200..300).contains(&receipt.status)) else {
+        return extended_failure_with_fresh_observation(
+            session,
+            "upload",
+            Some(element_ref),
+            BrowserFailure::operation(
+                "browser_upload_receipt_missing",
+                "receipt",
+                "upload POST did not yield a bounded successful response receipt",
+            ),
+            true,
+        );
+    };
+    let receipt = json!({
+        "kind":"managed_upload",
+        "target_url":observed.target_url,
+        "method":"POST",
+        "status":observed.status,
+        "workspace_path":artifact.workspace_path,
+        "bytes":artifact.bytes,
+        "sha256":artifact.sha256,
+        "parameters_sha256":parameters_sha256,
+        "remote_receipt":bounded_text(&observed.remote_receipt, 512),
+        "observed_at":Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    });
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "upload",
+            consumed_element_ref: Some(element_ref.to_owned()),
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+fn inspect_download_content(bytes: &[u8]) -> Result<&'static str, BrowserFailure> {
+    if bytes.starts_with(b"#!")
+        || bytes.starts_with(b"\x7fELF")
+        || bytes.starts_with(b"MZ")
+        || matches!(
+            bytes.get(..4),
+            Some(
+                b"\xfe\xed\xfa\xce"
+                    | b"\xfe\xed\xfa\xcf"
+                    | b"\xcf\xfa\xed\xfe"
+                    | b"\xce\xfa\xed\xfe"
+            )
+        )
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_download_executable_denied",
+            "download",
+            "download static scan rejected executable content",
+        ));
+    }
+    if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"\x1f\x8b")
+        || bytes.starts_with(b"7z\xbc\xaf\x27\x1c")
+        || bytes.starts_with(b"Rar!")
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_download_archive_denied",
+            "download",
+            "download static scan rejected archive content",
+        ));
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return Ok("application/pdf");
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Ok("image/jpeg");
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        return Ok("text/plain; charset=utf-8");
+    }
+    Err(BrowserFailure::rejected(
+        "browser_download_type_denied",
+        "download",
+        "download static scan could not classify bounded content as an admitted safe type",
+    ))
+}
+
+async fn execute_live_download(
+    session: &mut LiveBrowserSession,
+    run_id: &str,
+    element_ref: &str,
+    cancellation: BrowserCancellationToken,
+) -> ToolOutcome {
+    if cancellation.is_cancelled() {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_cancelled",
+                "cancellation",
+                "browser download was cancelled before dispatch",
+            ),
+            false,
+        );
+    }
+    if session.quarantined_downloads.len() >= MAX_DOWNLOADS_PER_SESSION {
+        return interact_operation_outcome(
+            BrowserFailure::rejected(
+                "browser_download_count_exceeded",
+                "download",
+                format!("session already holds {MAX_DOWNLOADS_PER_SESSION} quarantined downloads"),
+            ),
+            false,
+        );
+    }
+    let target = match resolve_element_ref(
+        &session.run_id,
+        run_id,
+        &session.refs,
+        &session.stale_refs,
+        element_ref,
+    ) {
+        Ok(target) if target.capabilities.contains(&ElementCapability::Download) => target,
+        Ok(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_download_capability_mismatch",
+                    "download",
+                    "element_ref does not carry Host-derived download capability",
+                ),
+                false,
+            );
+        }
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let Some(ManagedElementPreview::Download { target_url }) = target.managed_preview.clone()
+    else {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_download_preview_missing",
+                "download",
+                "download capability has no Host preview",
+            ),
+            false,
+        );
+    };
+    let fresh = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let current_previews =
+        derive_managed_element_previews(&fresh.final_url, &fresh.nodes, &session.managed_policy);
+    if observation_fingerprint(&fresh.nodes) != session.observation_fingerprint
+        || current_previews.get(&target.backend_dom_node_id) != target.managed_preview.as_ref()
+    {
+        return invalidate_extended_with_failure(
+            session,
+            "download",
+            Some(element_ref),
+            fresh,
+            BrowserFailure::operation(
+                "browser_download_preview_stale",
+                "download",
+                "download target changed after Host authorization",
+            ),
+        )
+        .await;
+    }
+    session.egress.begin_download(target_url.clone());
+    if let Err(failure) = dispatch_click_backend(
+        &mut session.cdp,
+        &session.cdp_session_id,
+        target.backend_dom_node_id,
+    )
+    .await
+    {
+        session.egress.finish_download();
+        return interact_operation_outcome(failure, true);
+    }
+    let observed =
+        match tokio::time::timeout(PAGE_LOAD_DEADLINE, session.cdp.wait_for_download()).await {
+            Ok(Ok(download)) => download,
+            Ok(Err(failure)) => {
+                session.egress.finish_download();
+                return interact_operation_outcome(failure, true);
+            }
+            Err(_) => {
+                session.egress.finish_download();
+                return interact_operation_outcome(
+                    BrowserFailure::transport(
+                        "browser_download_deadline",
+                        "download",
+                        format!("download exceeded {} ms", PAGE_LOAD_DEADLINE.as_millis()),
+                    ),
+                    true,
+                );
+            }
+        };
+    session.egress.finish_download();
+    let Some(quarantine) = session.quarantine.as_ref() else {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_download_quarantine_missing",
+                "download",
+                "isolated download quarantine is unavailable",
+            ),
+            true,
+        );
+    };
+    let path = quarantine.path().join(&observed.guid);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_download_file_missing",
+                    "download",
+                    format!("completed Chrome download is unavailable: {error}"),
+                ),
+                true,
+            );
+        }
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_DOWNLOAD_BYTES
+        || metadata.len() != observed.received_bytes
+    {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_download_identity_mismatch",
+                "download",
+                "completed download failed file identity or byte-count validation",
+            ),
+            true,
+        );
+    }
+    let bytes = match fs::read(&path) {
+        Ok(bytes) if bytes.len() as u64 <= MAX_DOWNLOAD_BYTES => bytes,
+        Ok(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::rejected(
+                    "browser_download_bytes_exceeded",
+                    "download",
+                    format!("download exceeds {MAX_DOWNLOAD_BYTES} bytes"),
+                ),
+                true,
+            );
+        }
+        Err(error) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_download_read_failed",
+                    "download",
+                    format!("cannot inspect quarantined download: {error}"),
+                ),
+                true,
+            );
+        }
+    };
+    let sniffed_media_type = match inspect_download_content(&bytes) {
+        Ok(media_type) => media_type,
+        Err(failure) => {
+            let _ = fs::remove_file(&path);
+            return interact_operation_outcome(failure, true);
+        }
+    };
+    let provenance =
+        session
+            .egress
+            .response_provenance(&observed.url)
+            .unwrap_or(ResponseProvenance {
+                status: 200,
+                media_type: sniffed_media_type.to_owned(),
+            });
+    let media_type = if provenance.media_type.is_empty()
+        || provenance.media_type == "application/octet-stream"
+    {
+        sniffed_media_type.to_owned()
+    } else {
+        provenance.media_type
+    };
+    let download_ref = format!("dref_{}", Uuid::new_v4().simple());
+    let parsed_final = Url::parse(&observed.url).ok();
+    let plaintext_exposed = parsed_final
+        .as_ref()
+        .is_some_and(|url| url.scheme() == "http")
+        || target_url.starts_with("http://");
+    let download = QuarantinedDownload {
+        download_ref: download_ref.clone(),
+        path,
+        requested_url: target_url.clone(),
+        final_url: observed.url.clone(),
+        status: provenance.status,
+        media_type,
+        suggested_filename: observed.suggested_filename,
+        bytes: bytes.len() as u64,
+        sha256: format!("sha256:{}", sha256_bytes(&bytes)),
+        retrieved_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        transport: if plaintext_exposed {
+            "unprotected"
+        } else {
+            "tls_protected"
+        },
+        plaintext_exposed,
+    };
+    let receipt = download_receipt(&download, "quarantined");
+    session.quarantined_downloads.insert(download_ref, download);
+    let post = match capture_current_observation(session).await {
+        Ok(observation) => observation,
+        Err(failure) => return interact_operation_outcome(failure, true),
+    };
+    session.observation = post;
+    rotate_observation(session, true);
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "download",
+            consumed_element_ref: Some(element_ref.to_owned()),
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+fn download_receipt(download: &QuarantinedDownload, state: &'static str) -> Value {
+    json!({
+        "kind":"managed_download",
+        "state":state,
+        "download_ref":download.download_ref,
+        "requested_url":download.requested_url,
+        "final_url":download.final_url,
+        "trajectory":[download.requested_url, download.final_url],
+        "status":download.status,
+        "media_type":download.media_type,
+        "suggested_filename":download.suggested_filename,
+        "bytes":download.bytes,
+        "sha256":download.sha256,
+        "transport":download.transport,
+        "plaintext_exposed":download.plaintext_exposed,
+        "trust":TRUST,
+        "retrieved_at":download.retrieved_at,
+        "auto_opened":false,
+        "executed":false,
+    })
+}
+
+fn resolve_promotion_target(
+    policy: &ManagedBrowserPolicy,
+    workspace_path: &str,
+) -> Result<PathBuf, BrowserFailure> {
+    let relative = Path::new(workspace_path);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(BrowserFailure::rejected(
+            "browser_promotion_path_denied",
+            "promotion",
+            "promotion requires one workspace-relative path without traversal",
+        ));
+    }
+    let workspace = policy.workspace.canonicalize().map_err(|error| {
+        BrowserFailure::operation(
+            "browser_promotion_workspace_invalid",
+            "promotion",
+            format!("cannot resolve the configured workspace: {error}"),
+        )
+    })?;
+    let target = workspace.join(relative);
+    if target.exists() {
+        return Err(BrowserFailure::rejected(
+            "browser_promotion_overwrite_denied",
+            "promotion",
+            "promotion never overwrites an existing workspace path",
+        ));
+    }
+    let parent = target.parent().ok_or_else(|| {
+        BrowserFailure::rejected(
+            "browser_promotion_parent_missing",
+            "promotion",
+            "promotion target has no parent directory",
+        )
+    })?;
+    let metadata = fs::symlink_metadata(parent).map_err(|error| {
+        BrowserFailure::operation(
+            "browser_promotion_parent_missing",
+            "promotion",
+            format!("promotion parent directory is unavailable: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(BrowserFailure::rejected(
+            "browser_promotion_parent_denied",
+            "promotion",
+            "promotion parent must be an ordinary non-symlink directory",
+        ));
+    }
+    let canonical_parent = parent.canonicalize().map_err(|error| {
+        BrowserFailure::operation(
+            "browser_promotion_parent_missing",
+            "promotion",
+            format!("cannot resolve promotion parent: {error}"),
+        )
+    })?;
+    if !canonical_parent.starts_with(&workspace) {
+        return Err(BrowserFailure::rejected(
+            "browser_promotion_path_escape",
+            "promotion",
+            "promotion target resolved outside the configured workspace",
+        ));
+    }
+    Ok(target)
+}
+
+async fn execute_promote_download(
+    session: &mut LiveBrowserSession,
+    download_ref: &str,
+    workspace_path: &str,
+) -> ToolOutcome {
+    let Some(download) = session.quarantined_downloads.get(download_ref).cloned() else {
+        return interact_operation_outcome(
+            BrowserFailure::rejected(
+                "browser_download_ref_missing",
+                "promotion",
+                "download_ref is not present in the current isolated quarantine",
+            ),
+            false,
+        );
+    };
+    let target = match resolve_promotion_target(&session.managed_policy, workspace_path) {
+        Ok(target) => target,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let bytes = match fs::read(&download.path) {
+        Ok(bytes)
+            if bytes.len() as u64 == download.bytes
+                && format!("sha256:{}", sha256_bytes(&bytes)) == download.sha256 =>
+        {
+            bytes
+        }
+        Ok(_) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_download_identity_changed",
+                    "promotion",
+                    "quarantined download identity changed before promotion",
+                ),
+                false,
+            );
+        }
+        Err(error) => {
+            return interact_operation_outcome(
+                BrowserFailure::operation(
+                    "browser_download_file_missing",
+                    "promotion",
+                    format!("quarantined download is unavailable: {error}"),
+                ),
+                false,
+            );
+        }
+    };
+    if let Err(error) = publish_download_atomically(&target, &bytes) {
+        return interact_operation_outcome(
+            BrowserFailure::operation(
+                "browser_promotion_failed",
+                "promotion",
+                format!("cannot atomically promote quarantined download: {error}"),
+            ),
+            false,
+        );
+    }
+    let _ = fs::remove_file(&download.path);
+    session.quarantined_downloads.remove(download_ref);
+    let mut receipt = download_receipt(&download, "promoted");
+    receipt["workspace_path"] = json!(workspace_path);
+    receipt["promoted_at"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "promote_download",
+            consumed_element_ref: None,
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
+}
+
+fn publish_download_atomically(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::other("promotion target has no parent"))?;
+    let temporary = parent.join(format!(".dse-promote-{}", Uuid::new_v4().simple()));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let publish = (|| -> std::io::Result<()> {
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::hard_link(&temporary, target)?;
+        fs::remove_file(&temporary)?;
+        Ok(())
+    })();
+    if publish.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    publish
+}
+
+async fn execute_session_status(session: &mut LiveBrowserSession) -> ToolOutcome {
+    let cookies = match session
+        .cdp
+        .call("Storage.getCookies", json!({}), None)
+        .await
+    {
+        Ok(result) => result,
+        Err(failure) => return interact_operation_outcome(failure, false),
+    };
+    let host = session.egress.initial_origin.host.as_str();
+    let origin_cookie_count = cookies
+        .get("cookies")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|cookie| {
+            cookie
+                .get("domain")
+                .and_then(Value::as_str)
+                .is_some_and(|domain| domain.trim_start_matches('.') == host)
+        })
+        .count();
+    let usage = session
+        .cdp
+        .call(
+            "Storage.getUsageAndQuota",
+            json!({"origin":session.egress.initial_origin.canonical()}),
+            None,
+        )
+        .await
+        .unwrap_or_else(|_| json!({}));
+    let receipt = json!({
+        "kind":"managed_session_status",
+        "project_id":session.managed_policy.project_id,
+        "origin":session.egress.initial_origin.canonical(),
+        "origin_cookie_count":origin_cookie_count,
+        "storage_usage_bytes":usage.get("usage").and_then(Value::as_f64).unwrap_or(0.0),
+        "quarantined_downloads":session.quarantined_downloads.len(),
+        "cookie_values":"host_owned_redacted",
+        "storage_values":"host_owned_redacted",
+        "profile_reused":session.profile.as_ref().is_some_and(BrowserProfileLease::reused),
+        "observed_at":Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    });
+    browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "session_status",
+            consumed_element_ref: None,
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    )
+}
+
+async fn execute_session_clear(session: &mut LiveBrowserSession) -> ToolOutcome {
+    session.egress.begin_action();
+    let origin = session.egress.initial_origin.canonical();
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Storage.clearDataForOrigin",
+            json!({
+                "origin":origin,
+                "storageTypes":"file_systems,indexeddb,local_storage,websql,service_workers,cache_storage,shared_storage,storage_buckets"
+            }),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.end_action();
+        return interact_operation_outcome(failure, true);
+    }
+    if let Err(failure) = session
+        .cdp
+        .call(
+            "Network.clearBrowserCookies",
+            json!({}),
+            Some(&session.cdp_session_id),
+        )
+        .await
+    {
+        session.egress.end_action();
+        return interact_operation_outcome(failure, true);
+    }
+    session.egress.end_action();
+    session.clear_profile_on_teardown = true;
+    session.quarantined_downloads.clear();
+    let receipt = json!({
+        "kind":"managed_session_clear",
+        "project_id":session.managed_policy.project_id,
+        "origin":origin,
+        "cookies_cleared":true,
+        "storage_cleared":true,
+        "profile_delete_scheduled":true,
+        "cleared_at":Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    });
+    let mut outcome = browser_result_outcome(
+        session,
+        Some(BrowserActionResult {
+            kind: "session_clear",
+            consumed_element_ref: None,
+            page_ref: None,
+            receipt: Some(receipt),
+        }),
+        false,
+    );
+    outcome.side_effect = ToolSideEffectStatus::Applied;
+    outcome
 }
 
 fn request_action_identity(
@@ -5951,8 +8428,10 @@ async fn execute_live_submit(
     };
     let grant = ExternalRequestGrant {
         target_url: current_preview.target_url.clone(),
-        parameters: current_preview.parameters.clone(),
-        ignored_empty_parameters: current_preview.ignored_empty_parameters.clone(),
+        body: ExternalBodyGrant::ExactForm {
+            parameters: current_preview.parameters.clone(),
+            ignored_empty_parameters: current_preview.ignored_empty_parameters.clone(),
+        },
         parameters_sha256: current_preview.parameters_sha256.clone(),
         impact: current_preview.impact,
     };
@@ -6075,7 +8554,9 @@ async fn execute_live_submit(
             kind: "submit",
             consumed_element_ref: Some(request.element_ref().to_owned()),
             page_ref: Some(session.page_ref.clone()),
-            receipt: Some(receipt),
+            receipt: Some(
+                serde_json::to_value(receipt).expect("external action receipt serializes"),
+            ),
         }),
         false,
     );
@@ -6083,7 +8564,12 @@ async fn execute_live_submit(
     outcome
 }
 
-fn browser_command(executable: &Path, profile: &Path, proxy: SocketAddr) -> Command {
+fn browser_command(
+    executable: &Path,
+    profile: &Path,
+    proxy: SocketAddr,
+    managed_session: bool,
+) -> Command {
     let mut command = Command::new(executable);
     command
         .args([
@@ -6100,7 +8586,6 @@ fn browser_command(executable: &Path, profile: &Path, proxy: SocketAddr) -> Comm
             "--disable-quic",
             "--disable-sync",
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            "--incognito",
             "--metrics-recording-only",
             "--mute-audio",
             "--no-default-browser-check",
@@ -6117,6 +8602,9 @@ fn browser_command(executable: &Path, profile: &Path, proxy: SocketAddr) -> Comm
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    if !managed_session {
+        command.arg("--incognito");
+    }
     command
 }
 
@@ -6140,8 +8628,10 @@ async fn configure_cdp_page(
         Some(session_id),
     )
     .await?;
-    cdp.call("Network.clearBrowserCookies", json!({}), Some(session_id))
-        .await?;
+    if !cdp.egress.managed_session {
+        cdp.call("Network.clearBrowserCookies", json!({}), Some(session_id))
+            .await?;
+    }
     cdp.call("Accessibility.enable", json!({}), Some(session_id))
         .await?;
     cdp.call(
@@ -6164,6 +8654,7 @@ async fn configure_cdp_page(
 async fn run_cdp_session(
     request: &BrowserNavigateRequest,
     profile: &Path,
+    quarantine: &Path,
     egress: Arc<EgressState>,
 ) -> Result<(CdpClient, String, String, SessionObservation), BrowserFailure> {
     let (port, websocket_path) = wait_for_devtools_active_port(profile).await?;
@@ -6199,6 +8690,7 @@ async fn run_cdp_session(
         managed_target_ids: BTreeSet::new(),
         allow_next_page_target: false,
         attached_page_sessions: HashMap::new(),
+        downloads: HashMap::new(),
     };
     let version = cdp.call("Browser.getVersion", json!({}), None).await?;
     let product = version
@@ -6251,7 +8743,11 @@ async fn run_cdp_session(
     configure_cdp_page(&mut cdp, &session_id, false).await?;
     cdp.call(
         "Browser.setDownloadBehavior",
-        json!({"behavior":"deny","eventsEnabled":true}),
+        json!({
+            "behavior":"allowAndName",
+            "downloadPath":quarantine.display().to_string(),
+            "eventsEnabled":true
+        }),
         None,
     )
     .await?;
@@ -6557,6 +9053,7 @@ fn extract_semantic_snapshot(
                     | "formaction"
                     | "formmethod"
                     | "href"
+                    | "download"
                     | "value"
             ) {
                 parsed_attributes.insert(name, bounded_text(&value, 512));
@@ -6974,6 +9471,7 @@ mod tests {
                 accessible_name: name.to_owned(),
                 capabilities: BTreeSet::from([ElementCapability::Click]),
                 external_preview: None,
+                managed_preview: None,
             },
             SemanticNode {
                 element_ref: None,
@@ -7004,6 +9502,7 @@ mod tests {
                 accessible_name: name.to_owned(),
                 capabilities: BTreeSet::from([ElementCapability::Fill]),
                 external_preview: None,
+                managed_preview: None,
             },
             SemanticNode {
                 element_ref: None,
@@ -7139,6 +9638,12 @@ mod tests {
             json!({"action":"tab_switch","page_ref":page_ref}),
             json!({"action":"tab_close","page_ref":page_ref}),
             json!({"action":"submit","element_ref":element_ref}),
+            json!({"action":"login","element_ref":element_ref,"credential_ref":"engineering-app"}),
+            json!({"action":"upload","element_ref":element_ref,"workspace_path":"artifacts/report.txt"}),
+            json!({"action":"download","element_ref":element_ref}),
+            json!({"action":"promote_download","download_ref":"dref_0123456789abcdef0123456789abcdef","workspace_path":"downloads/report.txt"}),
+            json!({"action":"session_status"}),
+            json!({"action":"session_clear"}),
         ];
         for input in admitted {
             parse_interact_request(&input).unwrap_or_else(|failure| {
@@ -7153,6 +9658,11 @@ mod tests {
             json!({"action":"tab_open","url":"file:///tmp/escape"}),
             json!({"action":"click","element_ref":element_ref,"selector":"button"}),
             json!({"action":"submit","element_ref":element_ref,"headers":{}}),
+            json!({"action":"login","element_ref":element_ref,"credential_ref":"bad ref"}),
+            json!({"action":"upload","element_ref":element_ref,"workspace_path":"../secret"}),
+            json!({"action":"download","element_ref":element_ref,"url":"https://escape.invalid"}),
+            json!({"action":"promote_download","download_ref":"dref_not_hex","workspace_path":"report.txt"}),
+            json!({"action":"session_clear","origin":"https://escape.invalid"}),
         ] {
             assert!(parse_interact_request(&denied).is_err(), "{denied}");
         }
@@ -7260,11 +9770,13 @@ mod tests {
         );
 
         let request = parse_request(&input("https://example.com/review"), None).unwrap();
-        let egress = EgressState::new(&request);
+        let egress = EgressState::new(&request, false);
         egress.begin_external_action(ExternalRequestGrant {
             target_url: preview.target_url.clone(),
-            parameters: preview.parameters.clone(),
-            ignored_empty_parameters: preview.ignored_empty_parameters.clone(),
+            body: ExternalBodyGrant::ExactForm {
+                parameters: preview.parameters.clone(),
+                ignored_empty_parameters: preview.ignored_empty_parameters.clone(),
+            },
             parameters_sha256: preview.parameters_sha256.clone(),
             impact: preview.impact,
         });
@@ -7276,6 +9788,7 @@ mod tests {
                 Some("notes=reviewed&action=save_draft"),
             )
             .expect("exact canonical POST grant");
+        egress.external_dispatches.store(0, Ordering::SeqCst);
         egress
             .authorize_cdp_request(
                 "https://example.com/drafts/save",
@@ -7284,6 +9797,18 @@ mod tests {
                 Some("notes=reviewed&password=&action=save_draft"),
             )
             .expect("empty sensitive control is excluded without entering the preview");
+        assert_eq!(
+            egress
+                .authorize_cdp_request(
+                    "https://example.com/drafts/save",
+                    "POST",
+                    Some("Document"),
+                    Some("notes=reviewed&password=&action=save_draft"),
+                )
+                .unwrap_err()
+                .code,
+            "browser_external_duplicate_denied"
+        );
         assert_eq!(
             egress
                 .authorize_cdp_request(
@@ -7502,10 +10027,10 @@ mod tests {
             assert_eq!(box_center(&model), None);
         }
         assert_eq!(
-            prohibited_browser_event(Some("Browser.downloadWillBegin"))
+            prohibited_browser_event(Some("Page.fileChooserOpened"))
                 .unwrap()
                 .code,
-            "browser_download_denied"
+            "browser_file_chooser_denied"
         );
         assert!(prohibited_browser_event(Some("Page.loadEventFired")).is_none());
 
@@ -7514,7 +10039,7 @@ mod tests {
             Some("http://127.0.0.1:32123"),
         )
         .unwrap();
-        let egress = EgressState::new(&request);
+        let egress = EgressState::new(&request, false);
         egress.begin_action();
         egress.record_denial(
             BrowserFailure::operation("browser_additional_target_denied", "target", "popup denied"),
@@ -7530,7 +10055,7 @@ mod tests {
     #[test]
     fn cdp_egress_blocks_methods_redirect_escape_and_local_escape() {
         let public = parse_request(&input("https://example.com/app"), None).unwrap();
-        let public = EgressState::new(&public);
+        let public = EgressState::new(&public, false);
         public
             .authorize_cdp_request("https://example.com/app", "GET", Some("Document"), None)
             .unwrap();
@@ -7575,7 +10100,7 @@ mod tests {
             Some("http://127.0.0.1:32123"),
         )
         .unwrap();
-        let local = EgressState::new(&local);
+        let local = EgressState::new(&local, false);
         assert_eq!(
             local
                 .authorize_cdp_request("http://127.0.0.1:32124/", "GET", Some("Script"), None,)
@@ -7760,12 +10285,253 @@ mod tests {
             "Referer":"https://secret.invalid/",
             "User-Agent":"Chrome"
         });
-        let sanitized = sanitized_cdp_headers(Some(&headers));
+        let sanitized = sanitized_cdp_headers(Some(&headers), false);
         let encoded = serde_json::to_string(&sanitized).unwrap();
         assert!(encoded.contains("Accept"));
         assert!(encoded.contains("User-Agent"));
         assert!(!encoded.contains("secret"));
         assert!(!encoded.contains("Referer"));
+
+        let managed = sanitized_cdp_headers(Some(&headers), true);
+        let encoded = serde_json::to_string(&managed).unwrap();
+        assert!(encoded.contains("Cookie"));
+        assert!(!encoded.contains("Authorization"));
+        assert!(!encoded.contains("Referer"));
+    }
+
+    #[test]
+    fn managed_profile_is_project_isolated_locked_reused_and_clearable() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let policy = ManagedBrowserPolicy::new(
+            workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            Vec::new(),
+            Secrets::new(Arc::new(dse_secrets::InMemoryKeyringStore::new())),
+        );
+        let request = parse_request(&input("https://example.com/app"), None).unwrap();
+        let first = acquire_browser_profile(&request, &policy).expect("first managed profile");
+        assert!(first.is_managed());
+        assert!(!first.reused());
+        let profile_path = first.path().to_path_buf();
+        assert_eq!(
+            acquire_browser_profile(&request, &policy)
+                .err()
+                .expect("concurrent managed profile must fail")
+                .code,
+            "browser_profile_busy"
+        );
+        assert!(first.project_release(false));
+        let reused = acquire_browser_profile(&request, &policy).expect("reused profile");
+        assert!(reused.reused());
+        assert!(reused.project_release(true));
+        assert!(!profile_path.exists());
+        assert!(policy.state_root.join("profiles").exists());
+    }
+
+    #[test]
+    fn credential_grant_and_workspace_artifact_identity_are_non_secret_and_bounded() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join("artifacts")).unwrap();
+        fs::write(workspace.path().join("artifacts/report.txt"), b"verified\n").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let grant = BrowserCredentialGrant::new(
+            "engineering-app",
+            "https://example.com/login",
+            "https://example.com/session",
+            [
+                ("username", "login-user-secret"),
+                ("password", "login-password-secret"),
+            ],
+        )
+        .unwrap();
+        let identity = grant.non_secret_identity().to_string();
+        assert!(identity.contains("engineering-app"));
+        assert!(identity.contains("username"));
+        assert!(!identity.contains("login-user-secret"));
+        assert!(!identity.contains("login-password-secret"));
+        let policy = ManagedBrowserPolicy::new(
+            workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            vec![grant],
+            Secrets::new(Arc::new(dse_secrets::InMemoryKeyringStore::new())),
+        );
+        let artifact = resolve_workspace_upload(&policy, "artifacts/report.txt").unwrap();
+        assert_eq!(artifact.bytes, 9);
+        assert!(artifact.sha256.starts_with("sha256:"));
+        for denied in ["../secret", "/etc/passwd", "artifacts"] {
+            assert!(
+                resolve_workspace_upload(&policy, denied).is_err(),
+                "{denied}"
+            );
+        }
+        let oversized = workspace.path().join("artifacts/oversized.bin");
+        File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_UPLOAD_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            resolve_workspace_upload(&policy, "artifacts/oversized.bin")
+                .unwrap_err()
+                .code,
+            "browser_upload_bytes_exceeded"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("report.txt", workspace.path().join("artifacts/link.txt"))
+                .unwrap();
+            assert_eq!(
+                resolve_workspace_upload(&policy, "artifacts/link.txt")
+                    .unwrap_err()
+                    .code,
+                "browser_upload_file_type_denied"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_login_upload_and_download_capabilities_require_exact_form_and_origin() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let grant = BrowserCredentialGrant::new(
+            "engineering-app",
+            "https://example.com/login",
+            "https://example.com/session",
+            [("username", "user-key"), ("password", "password-key")],
+        )
+        .unwrap();
+        let policy = ManagedBrowserPolicy::new(
+            workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            vec![grant],
+            Secrets::new(Arc::new(dse_secrets::InMemoryKeyringStore::new())),
+        );
+        let node = |id: u64, role: &str, name: &str, node_name: &str, attributes| SemanticNode {
+            element_ref: None,
+            role: role.to_owned(),
+            accessible_name: name.to_owned(),
+            text: name.to_owned(),
+            value: String::new(),
+            state: BTreeMap::new(),
+            capabilities: Vec::new(),
+            backend_dom_node_id: Some(id),
+            click_safety: None,
+            fill_safety: None,
+            dom: Some(DomFacts {
+                node_name: node_name.to_owned(),
+                node_value: String::new(),
+                attributes,
+            }),
+        };
+        let login_nodes = vec![node(
+            1,
+            "button",
+            "Login",
+            "BUTTON",
+            BTreeMap::from([
+                ("form".to_owned(), "login".to_owned()),
+                ("formaction".to_owned(), "/session".to_owned()),
+                ("formmethod".to_owned(), "post".to_owned()),
+                ("type".to_owned(), "submit".to_owned()),
+            ]),
+        )];
+        let login =
+            derive_managed_element_previews("https://example.com/login", &login_nodes, &policy);
+        assert!(matches!(
+            login.get(&1),
+            Some(ManagedElementPreview::Login { credential_refs, .. })
+                if credential_refs.contains("engineering-app")
+        ));
+        assert!(
+            derive_managed_element_previews("https://example.com/other", &login_nodes, &policy)
+                .is_empty()
+        );
+
+        let interaction_nodes = vec![
+            node(
+                2,
+                "button",
+                "Upload",
+                "BUTTON",
+                BTreeMap::from([
+                    ("form".to_owned(), "upload".to_owned()),
+                    ("formaction".to_owned(), "/upload".to_owned()),
+                    ("formmethod".to_owned(), "post".to_owned()),
+                    ("type".to_owned(), "submit".to_owned()),
+                ]),
+            ),
+            node(
+                3,
+                "button",
+                "Artifact",
+                "INPUT",
+                BTreeMap::from([
+                    ("form".to_owned(), "upload".to_owned()),
+                    ("name".to_owned(), "artifact".to_owned()),
+                    ("type".to_owned(), "file".to_owned()),
+                ]),
+            ),
+            node(
+                4,
+                "link",
+                "Download",
+                "A",
+                BTreeMap::from([
+                    ("href".to_owned(), "/download".to_owned()),
+                    ("download".to_owned(), "artifact.txt".to_owned()),
+                ]),
+            ),
+        ];
+        let previews = derive_managed_element_previews(
+            "https://example.com/workspace",
+            &interaction_nodes,
+            &policy,
+        );
+        assert!(matches!(
+            previews.get(&3),
+            Some(ManagedElementPreview::Upload { target_url, .. })
+                if target_url == "https://example.com/upload"
+        ));
+        assert!(matches!(
+            previews.get(&4),
+            Some(ManagedElementPreview::Download { target_url })
+                if target_url == "https://example.com/download"
+        ));
+    }
+
+    #[test]
+    fn download_scan_and_no_overwrite_promotion_are_deterministic() {
+        assert_eq!(
+            inspect_download_content(b"verified text\n").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            inspect_download_content(b"%PDF-1.7\n").unwrap(),
+            "application/pdf"
+        );
+        assert_eq!(
+            inspect_download_content(b"#!/bin/sh\n").unwrap_err().code,
+            "browser_download_executable_denied"
+        );
+        assert_eq!(
+            inspect_download_content(b"PK\x03\x04archive")
+                .unwrap_err()
+                .code,
+            "browser_download_archive_denied"
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("artifact.txt");
+        publish_download_atomically(&target, b"verified\n").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"verified\n");
+        assert!(publish_download_atomically(&target, b"overwrite").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"verified\n");
+        assert!(fs::read_dir(workspace.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".dse-promote-")
+        }));
     }
 
     async fn start_rendered_fixture() -> (
@@ -7837,6 +10603,443 @@ setTimeout(() => {
             while connections.join_next().await.is_some() {}
         });
         (origin, cancellation, task, requests)
+    }
+
+    #[derive(Debug, Default)]
+    struct ManagedAppFacts {
+        login_body_verified: bool,
+        authenticated_workspace_reads: usize,
+        upload_body_verified: bool,
+        download_reads: usize,
+    }
+
+    #[derive(Debug)]
+    struct RoutedPublicNetwork {
+        fixture: SocketAddr,
+    }
+
+    #[async_trait]
+    impl WebFetchNetwork for RoutedPublicNetwork {
+        fn identity(&self) -> &str {
+            "managed_public_routed_fixture_v1"
+        }
+
+        async fn resolve(
+            &self,
+            host: &str,
+            port: u16,
+        ) -> Result<Vec<SocketAddr>, WebFetchNetworkError> {
+            assert_eq!(host, "engineering.example");
+            assert_eq!(port, 80);
+            Ok(vec!["93.184.216.34:80".parse().unwrap()])
+        }
+
+        async fn get(
+            &self,
+            _url: &Url,
+            _pinned_addresses: &[SocketAddr],
+            _timeout: Duration,
+        ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
+            panic!("semantic browser uses only the connect seam")
+        }
+
+        async fn connect(&self, _address: SocketAddr) -> Result<TcpStream, WebFetchNetworkError> {
+            TcpStream::connect(self.fixture)
+                .await
+                .map_err(|error| WebFetchNetworkError::new("fixture_connect", error.to_string()))
+        }
+    }
+
+    async fn start_managed_app_fixture() -> (
+        SocketAddr,
+        CancellationToken,
+        JoinHandle<()>,
+        Arc<Mutex<ManagedAppFacts>>,
+    ) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let facts = Arc::new(Mutex::new(ManagedAppFacts::default()));
+        let task_facts = Arc::clone(&facts);
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    () = task_cancellation.cancelled() => break,
+                    accepted = listener.accept() => match accepted {
+                        Ok((mut stream, _)) => {
+                            let facts = Arc::clone(&task_facts);
+                            connections.spawn(async move {
+                                let mut request = Vec::new();
+                                let mut chunk = [0_u8; 4096];
+                                let header_end = loop {
+                                    let Ok(read) = stream.read(&mut chunk).await else { return };
+                                    if read == 0 { return; }
+                                    request.extend_from_slice(&chunk[..read]);
+                                    if request.len() > 128 * 1024 { return; }
+                                    if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                                        break index + 4;
+                                    }
+                                };
+                                let head = String::from_utf8_lossy(&request[..header_end]).to_string();
+                                let content_length = head.lines().find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                }).unwrap_or(0);
+                                while request.len() < header_end + content_length {
+                                    let Ok(read) = stream.read(&mut chunk).await else { return };
+                                    if read == 0 { return; }
+                                    request.extend_from_slice(&chunk[..read]);
+                                    if request.len() > 5 * 1024 * 1024 { return; }
+                                }
+                                let request_line = head.lines().next().unwrap_or_default();
+                                let mut parts = request_line.split_whitespace();
+                                let method = parts.next().unwrap_or_default();
+                                let path = parts.next().unwrap_or_default();
+                                let has_session = head.lines().any(|line| {
+                                    line.to_ascii_lowercase().starts_with("cookie:")
+                                        && line.contains("dse_session=authenticated")
+                                });
+                                let body = &request[header_end..header_end + content_length];
+                                let (status, extra_headers, response_body) = match (method, path) {
+                                    ("GET", "/login") => (
+                                        "200 OK",
+                                        "",
+                                        r#"<!doctype html><html><head><title>Login</title></head><body>
+<form id="login"></form>
+<label>Username <input form="login" name="username" type="text"></label>
+<label>Password <input form="login" name="password" type="password"></label>
+<button form="login" type="submit" formaction="/session" formmethod="post">Login</button>
+</body></html>"#,
+                                    ),
+                                    ("POST", "/session") => {
+                                        let body = String::from_utf8_lossy(body);
+                                        facts.lock().unwrap().login_body_verified =
+                                            body.contains("username=dseuser")
+                                                && body.contains("password=s3cr3t");
+                                        (
+                                            "200 OK",
+                                            "Set-Cookie: dse_session=authenticated; Path=/; HttpOnly; SameSite=Lax\r\nX-DSE-Receipt: login-001\r\n",
+                                            r#"<!doctype html><html><head><title>Logged in</title></head><body><div role="status" data-state="authenticated">Authenticated</div></body></html>"#,
+                                        )
+                                    }
+                                    ("GET", "/workspace") if has_session => {
+                                        facts.lock().unwrap().authenticated_workspace_reads += 1;
+                                        (
+                                            "200 OK",
+                                            "",
+                                            r#"<!doctype html><html><head><title>Authorized workspace</title></head><body>
+<form id="upload" enctype="multipart/form-data"></form>
+<label>Artifact <input form="upload" name="artifact" type="file"></label>
+<button form="upload" type="submit" formaction="/upload" formmethod="post">Upload artifact</button>
+<a href="/download" download="result.txt">Download result</a>
+</body></html>"#,
+                                        )
+                                    }
+                                    ("POST", "/upload") if has_session => {
+                                        facts.lock().unwrap().upload_body_verified = body
+                                            .windows(b"verified-upload".len())
+                                            .any(|window| window == b"verified-upload");
+                                        (
+                                            "200 OK",
+                                            "X-DSE-Receipt: upload-001\r\n",
+                                            r#"<!doctype html><html><head><title>Upload complete</title></head><body><div role="status" data-receipt="upload-001">Uploaded</div><a href="/download" download="result.txt">Download result</a></body></html>"#,
+                                        )
+                                    }
+                                    ("GET", "/download") if has_session => {
+                                        facts.lock().unwrap().download_reads += 1;
+                                        let response_body = "verified-download\n";
+                                        let response = format!(
+                                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"result.txt\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                                            response_body.len()
+                                        );
+                                        let _ = stream.write_all(response.as_bytes()).await;
+                                        let _ = stream.shutdown().await;
+                                        return;
+                                    }
+                                    _ => (
+                                        "401 Unauthorized",
+                                        "",
+                                        r#"<!doctype html><html><head><title>Unauthorized</title></head><body>Unauthorized</body></html>"#,
+                                    ),
+                                };
+                                let response = format!(
+                                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                                    response_body.len()
+                                );
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                let _ = stream.shutdown().await;
+                            });
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            while connections.join_next().await.is_some() {}
+        });
+        (address, cancellation, task, facts)
+    }
+
+    fn action_ref(result: &Value, capability: &str) -> String {
+        result["snapshot"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| {
+                node["capabilities"]
+                    .as_array()
+                    .is_some_and(|values| values.iter().any(|value| value == capability))
+            })
+            .and_then(|node| node["element_ref"].as_str())
+            .unwrap_or_else(|| panic!("missing {capability} ref in {result}"))
+            .to_owned()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires pinned Chrome for Testing fixture"]
+    async fn pinned_cft_managed_login_session_upload_download_promotion_and_clear() {
+        let (fixture, server_cancellation, server, facts) = start_managed_app_fixture().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join("artifacts")).unwrap();
+        fs::create_dir_all(workspace.path().join("downloads")).unwrap();
+        fs::write(
+            workspace.path().join("artifacts/report.txt"),
+            b"verified-upload\n",
+        )
+        .unwrap();
+        let secrets = Secrets::new(Arc::new(dse_secrets::InMemoryKeyringStore::new()));
+        secrets.set("managed-user", "dseuser").unwrap();
+        secrets.set("managed-password", "s3cr3t").unwrap();
+        let grant = BrowserCredentialGrant::new(
+            "engineering-app",
+            "http://engineering.example/login",
+            "http://engineering.example/session",
+            [
+                ("username", "managed-user"),
+                ("password", "managed-password"),
+            ],
+        )
+        .unwrap();
+        let resolver: Arc<dyn WebFetchNetwork> = Arc::new(RoutedPublicNetwork { fixture });
+        let first = Arc::new(SystemSemanticBrowserHarness::new_managed(
+            Arc::clone(&resolver),
+            workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            vec![grant.clone()],
+            secrets.clone(),
+        ));
+        let first_harness: Arc<dyn SemanticBrowserHarness> = first.clone();
+        let navigate = execute_browser_navigate(
+            "managed-login-run",
+            input("http://engineering.example/login"),
+            first_harness.clone(),
+            true,
+            None,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(navigate.is_success(), "{}", navigate.content);
+        let navigate_json: Value = serde_json::from_str(&navigate.content).unwrap();
+        assert_eq!(navigate_json["profile_ephemeral"], false);
+        assert_eq!(navigate_json["profile_reused"], false);
+        let login_ref = action_ref(&navigate_json, "login");
+        let login_input = json!({
+            "action":"login",
+            "element_ref":login_ref,
+            "credential_ref":"engineering-app"
+        });
+        let login_request = parse_interact_request(&login_input).unwrap();
+        let preview = first_harness
+            .authorization_preview("managed-login-run", &login_request)
+            .expect("exact login approval preview");
+        assert!(preview.external_side_effect);
+        assert!(preview.parameters.contains("host_owned_redacted"));
+        let login = execute_browser_interact(
+            "managed-login-run",
+            login_input,
+            first_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(login.is_success(), "{}", login.content);
+        assert!(!login.content.contains("dseuser"));
+        assert!(!login.content.contains("s3cr3t"));
+        assert!(login.content.contains("managed_login"));
+        first_harness.shutdown();
+        let first_teardown = first.await_last_teardown().await.unwrap();
+        assert!(first_teardown.process_tree_settled);
+        assert!(first_teardown.proxy_settled);
+
+        let isolated_workspace = tempfile::tempdir().unwrap();
+        let isolated = Arc::new(SystemSemanticBrowserHarness::new_managed(
+            Arc::clone(&resolver),
+            isolated_workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            vec![grant.clone()],
+            secrets.clone(),
+        ));
+        let isolated_harness: Arc<dyn SemanticBrowserHarness> = isolated.clone();
+        let isolated_navigation = execute_browser_navigate(
+            "managed-isolated-project-run",
+            input("http://engineering.example/workspace"),
+            isolated_harness.clone(),
+            true,
+            None,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            isolated_navigation.is_success(),
+            "{}",
+            isolated_navigation.content
+        );
+        let isolated_json: Value = serde_json::from_str(&isolated_navigation.content).unwrap();
+        assert_eq!(isolated_json["title"], "Unauthorized");
+        assert_eq!(isolated_json["profile_reused"], false);
+        let isolated_clear = execute_browser_interact(
+            "managed-isolated-project-run",
+            json!({"action":"session_clear"}),
+            isolated_harness,
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(isolated_clear.is_success(), "{}", isolated_clear.content);
+
+        let second = Arc::new(SystemSemanticBrowserHarness::new_managed(
+            resolver,
+            workspace.path().to_path_buf(),
+            state.path().join("browser"),
+            vec![grant],
+            secrets,
+        ));
+        let second_harness: Arc<dyn SemanticBrowserHarness> = second.clone();
+        let resumed = execute_browser_navigate(
+            "managed-resume-run",
+            input("http://engineering.example/workspace"),
+            second_harness.clone(),
+            true,
+            None,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(resumed.is_success(), "{}", resumed.content);
+        let resumed_json: Value = serde_json::from_str(&resumed.content).unwrap();
+        assert_eq!(
+            resumed_json["title"], "Authorized workspace",
+            "login outcome: {}",
+            login.content
+        );
+        assert_eq!(resumed_json["profile_reused"], true);
+        let upload_ref = action_ref(&resumed_json, "upload");
+        let upload_input = json!({
+            "action":"upload",
+            "element_ref":upload_ref,
+            "workspace_path":"artifacts/report.txt"
+        });
+        let upload_request = parse_interact_request(&upload_input).unwrap();
+        let upload_preview = second_harness
+            .authorization_preview("managed-resume-run", &upload_request)
+            .expect("exact upload approval preview");
+        assert!(upload_preview.external_side_effect);
+        assert!(upload_preview.parameters.contains("sha256:"));
+        let upload = execute_browser_interact(
+            "managed-resume-run",
+            upload_input,
+            second_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(upload.is_success(), "{}", upload.content);
+        assert!(upload.content.contains("managed_upload"));
+        let upload_json: Value = serde_json::from_str(&upload.content).unwrap();
+        let download_ref_element = action_ref(&upload_json, "download");
+        let download = execute_browser_interact(
+            "managed-resume-run",
+            json!({"action":"download","element_ref":download_ref_element}),
+            second_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(download.is_success(), "{}", download.content);
+        let download_json: Value = serde_json::from_str(&download.content).unwrap();
+        let download_ref = download_json["action"]["receipt"]["download_ref"]
+            .as_str()
+            .unwrap();
+        assert_eq!(download_json["action"]["receipt"]["state"], "quarantined");
+        assert_eq!(download_json["action"]["receipt"]["auto_opened"], false);
+        assert_eq!(
+            download_json["action"]["receipt"]["plaintext_exposed"],
+            true
+        );
+        let promoted = execute_browser_interact(
+            "managed-resume-run",
+            json!({
+                "action":"promote_download",
+                "download_ref":download_ref,
+                "workspace_path":"downloads/result.txt"
+            }),
+            second_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(promoted.is_success(), "{}", promoted.content);
+        assert_eq!(
+            fs::read(workspace.path().join("downloads/result.txt")).unwrap(),
+            b"verified-download\n"
+        );
+        let status = execute_browser_interact(
+            "managed-resume-run",
+            json!({"action":"session_status"}),
+            second_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(status.is_success(), "{}", status.content);
+        let status_json: Value = serde_json::from_str(&status.content).unwrap();
+        assert!(
+            status_json["action"]["receipt"]["origin_cookie_count"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+        );
+        let cleared = execute_browser_interact(
+            "managed-resume-run",
+            json!({"action":"session_clear"}),
+            second_harness.clone(),
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(cleared.is_success(), "{}", cleared.content);
+        let cleared_json: Value = serde_json::from_str(&cleared.content).unwrap();
+        assert_eq!(cleared_json["session_live"], false);
+        assert_eq!(cleared_json["action"]["receipt"]["profile_removed"], true);
+        assert_eq!(cleared_json["teardown"]["process_tree_settled"], true);
+        assert!(
+            !state
+                .path()
+                .join("browser/profiles")
+                .join(&second.managed.project_id)
+                .exists()
+        );
+        {
+            let observed = facts.lock().unwrap();
+            assert!(observed.login_body_verified);
+            assert_eq!(observed.authenticated_workspace_reads, 1);
+            assert!(observed.upload_body_verified);
+            assert_eq!(observed.download_reads, 1);
+        }
+        server_cancellation.cancel();
+        server.await.unwrap();
     }
 
     #[tokio::test]

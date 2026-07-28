@@ -18,6 +18,8 @@ dse-context = { path = "../context", version = "0.8.68" }
 dse-protocol = { path = "../protocol", version = "0.8.68" }
 dse-runtime = { path = "../runtime", version = "0.8.68" }
 dse-execpolicy = { path = "../execpolicy", version = "0.8.68" }
+dse-secrets = { path = "../secrets", version = "0.8.68" }
+fs2 = "0.4.3"
 futures-util = "0.3.31"
 flate2 = "1.1"
 ignore = "0.4"

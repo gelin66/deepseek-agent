@@ -90,11 +90,13 @@ Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
 
 ## 6. Current development fact
 
-M44, ADR-0016, ADR-0017 W1.1, M45-A, and M46 W2/W3/W3.1 are clean checkpoints. Current production
-has public HTTP(S) `web_fetch` plus one Rust direct-CDP lifecycle with `browser_navigate`,
-`browser_click`, and `browser_fill`; action remains exact-loopback and there is no search, managed
-session, upload/download, public action, screenshot, or visual input. ADR-0018 classifies these as
-current capability gaps rather than permanent safety boundaries and replaces further
+M44, ADR-0016, ADR-0017 W1.1, M45-A, M46 W2/W3/W3.1, ADR-0018, and its first two production
+clusters are clean checkpoints. Current production has public HTTP(S) `web_fetch` plus one Rust
+direct-CDP lifecycle with `browser_navigate` and tagged `browser_interact`: complete bounded semantic
+interaction, scoped public reversible action, project-isolated managed login/session, Host-owned
+credentials, workspace-authorized upload, and isolated/scanned download with explicit promotion.
+There is still no canonical search, personal-Chrome access, screenshot, or visual input. ADR-0018
+classifies remaining capability gaps rather than permanent safety boundaries and replaces further
 one-action/one-Goal progression with one capability-cluster roadmap.
 `scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk classification
 contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists are not

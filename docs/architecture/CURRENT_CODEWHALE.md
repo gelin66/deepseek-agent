@@ -618,17 +618,20 @@ exact URL 形成一次性 Host approval prompt，Agent/FullAccess root 可执行
 production 仍没有 `web_search`。M46 首个 capability cluster 把 fixed catalog 从 W3.1 的 16 个收敛为
 15 个 Host tools：`browser_click` 与 `browser_fill` 已由唯一 `browser_interact` 取代，Web surface 现为
 `web_fetch`、`browser_navigate`、`browser_interact`。owner 仍是 `crates/tools` 的 direct Tokio CDP，驱动
-Host 预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；同一 Run 只保留一个有界、内存内、
-最多三页的 isolated session，replacement navigate、terminal/drop 与 ambiguity teardown process tree、
-loopback proxy 和 TempDir profile。没有第二 snapshot tool、后台 daemon、Runtime、Store 或 session ledger。
+Host 预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；同一 executor 只保留一个有界、
+最多三页的 isolated session。exact-local 使用 TempDir/incognito；public 使用按 canonical workspace identity
+派生、有独占锁和 bounded expiry 的 project profile。replacement navigate、terminal/drop 与 ambiguity 会
+teardown process tree、loopback proxy 和 quarantine。managed profile 是 Chrome artifact，不是第二
+snapshot tool、后台 daemon、Runtime、Store 或 session ledger。
 
 public target 只允许默认端口 HTTP(S)，local target 只允许 Host 注入的 exact literal-loopback origin。
 CDP Fetch interception 与 connect-pinned proxy 对每次 request/DNS/connect/redirect 重验，继续阻止
-private/metadata、cross-origin Document、Cookie/auth/referer、download、service worker、QUIC 与非代理
-WebRTC。额外 worker/popup 仍在启动暂停态关闭；只有 Host typed `tab_open` 可在同一 egress scope 内增加
-受管 page。wire/decoded body、CDP frame、node、char、redirect、page count 与 deadline 都有硬上限；
-outcome 只保存 bounded `external_untrusted` semantic observation、replay hash、Chrome/CDP/network identity
-与 receipt，不保存 HTML、script、storage、screenshot 或 pixel。
+private/metadata、cross-origin Document、auth/referer、service worker、QUIC 与非代理 WebRTC。Cookie 只由
+project profile/Chrome 在 exact origin 内管理，值不进入模型；download 仅在 exact granted URL 下进入
+quarantine。额外 worker/popup 仍在启动暂停态关闭；只有 Host typed `tab_open` 可在同一 egress scope 内
+增加受管 page。wire/decoded body、CDP frame、node、char、redirect、page/download count、bytes 与 deadline
+都有硬上限；outcome 只保存 bounded `external_untrusted` semantic observation、replay hash、Chrome/CDP/
+network identity 与 receipt，不保存 HTML、script、Cookie/storage value、screenshot 或 pixel。
 
 `browser_navigate` 仍按既有 read-only actor catalog 可见：exact-local 自动执行，public Ask 显示 exact
 target/read impact 后一次性批准，Agent/FullAccess 可执行；isolated Writer 不继承 local-origin grant，
@@ -678,19 +681,29 @@ model-visible Prompt delta=`0`；official DeepSeek requests=`0`、credential rea
 
 #### ADR-0018 后的 current capability boundary
 
-首个 cluster 已闭合 semantic interaction 与 public reversible action，且将 `crates/app` 的 root Agent
-从 broad full-access workaround 改为 workspace-write + Host-controlled network。current product 仍没有
-canonical `web_search`、managed login/session、Cookie/storage persistence、workspace-granted upload、
-isolated/scanned download 或 visual observation，因此仍不能完成 unknown-source research、managed
-account workflow 或 visual-only task，也不能声称已可替代完整工程 Agent。
+前两个 cluster 已闭合 semantic interaction、public reversible action 与 managed account workflow，并将
+`crates/app` 的 root Agent 从 broad full-access workaround 改为 workspace-write + Host-controlled network。
+current product 仍没有 canonical `web_search`、task-relevance semantic pruning/diff 或 visual observation，
+因此仍不能完成完整 unknown-source research 或 visual-only task，也不能声称已可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
 RecoveryRequired、committed reopen no-reexecution、bounds/teardown 和 single Runtime/Event/Store。
 
-下一 capability cluster 仍按 ADR-0018 顺序是 Managed Browser Session；当前切片未启动它。受控登录、
-Cookie/session、upload/download、高风险 publish/delete/purchase、搜索与视觉仍 fail closed，不能由文档
-或已有 draft grant 冒充能力。
+ADR-0018 的第二个 capability cluster 已闭合 Managed Browser Session。public browser 现在使用按 canonical
+workspace identity 派生并加独占锁的 managed profile；Host 只把 opaque credential grant 暴露给模型，
+secret 通过既有 secret owner 直接注入 exact same-origin login form，永不进入 ToolOutcome、RuntimeEvent、
+SQLite 或日志。session cookie/storage 可查询有限计数并按项目清除；不同项目、origin、actor 不能共享。
+
+workspace-granted upload 只接受 canonical workspace 内普通非 symlink 文件，并在授权与执行时绑定 size/
+SHA-256；download 只进入 session quarantine，受数量、大小、deadline、redirect/origin、media sniff 与静态
+扫描约束，永不自动打开/执行/覆盖。通过扫描的 artifact 只有在显式 `promote_download` 后以 no-overwrite
+原子创建进入 workspace。登录、上传、下载、promotion、clear 均复用既有 started/outcome/recovery；
+started-without-outcome reopen 为 `RecoveryRequired`，committed reopen 不访问网络或文件系统。
+
+当前剩余 capability gap 是 canonical `web_search`、更高质量的 task-relevant semantic observation、受确认的
+destructive/financial/publish 动作与 selective visual。个人 Chrome、任意 selector/coordinate/JS、无界网络、
+secret-to-model 和 unknown-side-effect replay 继续 fail closed。
 
 M44 已删除没有 executor 的 TUI/config
 search-provider 枚举、`[search]`/`DSE_SEARCH_*` reader 与 Doctor projection；遗留配置明确

@@ -1463,8 +1463,9 @@ mod tests {
     };
     use dse_tools::{
         BrowserAuthorizationPreview, BrowserCancellationToken, BrowserClickRequest,
-        BrowserFillRequest, BrowserInteractRequest, BrowserNavigateRequest, PRODUCTION_TOOL_NAMES,
-        SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
+        BrowserCredentialGrant, BrowserFillRequest, BrowserInteractRequest, BrowserNavigateRequest,
+        PRODUCTION_TOOL_NAMES, SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork,
+        WebFetchNetworkError,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1767,7 +1768,7 @@ mod tests {
                     "capabilities":["submit"]
                 }],
                 "trust":"external_untrusted",
-                "session_scope":"same_run_in_memory_public_origin",
+                "session_scope":"project_isolated_managed_public_origin",
                 "session_live":true
             }))
             .expect("public navigation fixture")
@@ -1827,7 +1828,7 @@ mod tests {
                     "state":{"data-receipt":"draft-receipt-runtime-001"}
                 }],
                 "trust":"external_untrusted",
-                "session_scope":"same_run_in_memory_public_origin",
+                "session_scope":"project_isolated_managed_public_origin",
                 "session_live":true
             }))
             .expect("public submit fixture")
@@ -1848,6 +1849,206 @@ mod tests {
                     impact: "reversible_draft_write".to_owned(),
                     external_side_effect: true,
                 }
+            })
+        }
+
+        fn shutdown(&self) {}
+    }
+
+    #[derive(Debug, Default)]
+    struct ManagedSessionFixture {
+        navigate_calls: AtomicUsize,
+        interact_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SemanticBrowserHarness for ManagedSessionFixture {
+        fn identity(&self) -> String {
+            "managed-browser-session-runtime-fixture-v1".to_owned()
+        }
+
+        async fn navigate(
+            &self,
+            _run_id: &str,
+            _request: BrowserNavigateRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.navigate_calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::json(&json!({
+                "requested_url":"https://example.com/login",
+                "final_url":"https://example.com/login",
+                "title":"Engineering application",
+                "snapshot_id":"managed_snapshot_1",
+                "page_epoch":1,
+                "snapshot":[{
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "role":"button",
+                    "accessible_name":"Managed action",
+                    "capabilities":["login","upload","download"]
+                }],
+                "project_id":"project_fixture",
+                "profile_ephemeral":false,
+                "profile_reused":false,
+                "trust":"external_untrusted",
+                "session_scope":"project_isolated_managed_public_origin",
+                "session_live":true
+            }))
+            .expect("managed session navigation fixture")
+        }
+
+        async fn click(
+            &self,
+            _run_id: &str,
+            _request: BrowserClickRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            ToolOutcome::error("managed fixture expects typed interaction")
+        }
+
+        async fn fill(
+            &self,
+            _run_id: &str,
+            _request: BrowserFillRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            ToolOutcome::error("managed fixture expects typed interaction")
+        }
+
+        async fn interact(
+            &self,
+            _run_id: &str,
+            request: BrowserInteractRequest,
+            _cancellation: BrowserCancellationToken,
+        ) -> ToolOutcome {
+            self.interact_calls.fetch_add(1, Ordering::SeqCst);
+            let (kind, receipt) = match request {
+                BrowserInteractRequest::Login { credential_ref, .. } => (
+                    "login",
+                    json!({
+                        "kind":"managed_login",
+                        "credential_ref":credential_ref,
+                        "secret_values":"host_owned_redacted",
+                        "status":303
+                    }),
+                ),
+                BrowserInteractRequest::SessionStatus => (
+                    "session_status",
+                    json!({
+                        "kind":"managed_session_status",
+                        "origin_cookie_count":1,
+                        "cookie_values":"host_owned_redacted"
+                    }),
+                ),
+                BrowserInteractRequest::Upload { workspace_path, .. } => (
+                    "upload",
+                    json!({
+                        "kind":"managed_upload",
+                        "workspace_path":workspace_path,
+                        "sha256":"sha256:fixture-upload",
+                        "status":200
+                    }),
+                ),
+                BrowserInteractRequest::Download { .. } => (
+                    "download",
+                    json!({
+                        "kind":"managed_download",
+                        "state":"quarantined",
+                        "download_ref":"dref_0123456789abcdef0123456789abcdef",
+                        "sha256":"sha256:fixture-download",
+                        "auto_opened":false,
+                        "executed":false
+                    }),
+                ),
+                BrowserInteractRequest::PromoteDownload { workspace_path, .. } => (
+                    "promote_download",
+                    json!({
+                        "kind":"managed_download",
+                        "state":"promoted",
+                        "workspace_path":workspace_path,
+                        "sha256":"sha256:fixture-download"
+                    }),
+                ),
+                BrowserInteractRequest::SessionClear => (
+                    "session_clear",
+                    json!({
+                        "kind":"managed_session_clear",
+                        "cookies_cleared":true,
+                        "storage_cleared":true,
+                        "profile_removed":true
+                    }),
+                ),
+                _ => return ToolOutcome::error("unexpected managed session action"),
+            };
+            ToolOutcome::json(&json!({
+                "action":{"kind":kind,"receipt":receipt},
+                "snapshot_id":format!("managed_snapshot_{}", self.interact_calls.load(Ordering::SeqCst) + 1),
+                "page_epoch":self.interact_calls.load(Ordering::SeqCst) + 1,
+                "snapshot":[{"role":"status","accessible_name":format!("{kind} complete")}],
+                "project_id":"project_fixture",
+                "profile_ephemeral":false,
+                "trust":"external_untrusted",
+                "session_scope":"project_isolated_managed_public_origin",
+                "session_live":kind != "session_clear"
+            }))
+            .expect("managed session interaction fixture")
+            .with_side_effect(if kind == "session_status" {
+                ToolSideEffectStatus::NotApplicable
+            } else {
+                ToolSideEffectStatus::Applied
+            })
+        }
+
+        fn authorization_preview(
+            &self,
+            _run_id: &str,
+            request: &BrowserInteractRequest,
+        ) -> Option<BrowserAuthorizationPreview> {
+            let (target, parameters, impact, external_side_effect) = match request {
+                BrowserInteractRequest::Login { credential_ref, .. } => (
+                    "POST https://example.com/session".to_owned(),
+                    format!("credential_ref={credential_ref}; secret_values=host_owned_redacted"),
+                    "create_project_session".to_owned(),
+                    true,
+                ),
+                BrowserInteractRequest::Upload { workspace_path, .. } => (
+                    "POST https://example.com/upload".to_owned(),
+                    format!("workspace_path={workspace_path}; sha256=fixture"),
+                    "upload_exact_workspace_artifact".to_owned(),
+                    true,
+                ),
+                BrowserInteractRequest::Download { .. } => (
+                    "https://example.com/download".to_owned(),
+                    "quarantine=true".to_owned(),
+                    "download_and_static_scan".to_owned(),
+                    false,
+                ),
+                BrowserInteractRequest::PromoteDownload { workspace_path, .. } => (
+                    workspace_path.clone(),
+                    "no_overwrite=true".to_owned(),
+                    "promote_verified_artifact".to_owned(),
+                    false,
+                ),
+                BrowserInteractRequest::SessionStatus => (
+                    "project_fixture".to_owned(),
+                    "values=redacted".to_owned(),
+                    "read_session_status".to_owned(),
+                    false,
+                ),
+                BrowserInteractRequest::SessionClear => (
+                    "project_fixture".to_owned(),
+                    "cookies=clear; storage=clear; profile=delete".to_owned(),
+                    "revoke_project_session".to_owned(),
+                    true,
+                ),
+                _ => return None,
+            };
+            Some(BrowserAuthorizationPreview {
+                public: true,
+                origin: "https://example.com".to_owned(),
+                target,
+                parameters,
+                impact,
+                external_side_effect,
             })
         }
 
@@ -3047,6 +3248,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_browser_side_effects_started_without_outcome_never_replay() {
+        let cases = [
+            (
+                "login",
+                json!({
+                    "action":"login",
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "credential_ref":"cred_0123456789abcdef0123456789abcdef"
+                }),
+            ),
+            (
+                "upload",
+                json!({
+                    "action":"upload",
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef",
+                    "workspace_path":"artifacts/report.txt"
+                }),
+            ),
+            (
+                "download",
+                json!({
+                    "action":"download",
+                    "element_ref":"eref_0123456789abcdef0123456789abcdef"
+                }),
+            ),
+            (
+                "promote_download",
+                json!({
+                    "action":"promote_download",
+                    "download_ref":"dref_0123456789abcdef0123456789abcdef",
+                    "workspace_path":"artifacts/download.txt"
+                }),
+            ),
+            ("session_clear", json!({"action":"session_clear"})),
+        ];
+
+        for (action, arguments) in cases {
+            let temp = tempfile::tempdir().expect("temp workspace");
+            let (root, accepted) = quiet_loopback().await;
+            let composition =
+                test_production_composition(temp.path(), connection(&root, false), false);
+            let store = Arc::new(InMemoryRunStore::default());
+            let run_id = RunId::from(format!("managed-browser-{action}-in-flight"));
+            let request = exact_resume_request(
+                &composition,
+                temp.path(),
+                run_id.clone(),
+                resume_accounting(1, 0, 10),
+                WriteExecutionMode::Root,
+            );
+            let (replay, _) = seed_in_flight_tool(
+                store.as_ref(),
+                request,
+                None,
+                Some(("browser_interact", arguments, WorkspaceAccess::MayWrite)),
+            )
+            .await;
+            assert!(!resume_needs_live_model(&replay));
+
+            let run = composition
+                .resume(run_id, replay, store, Arc::new(NullEventSink))
+                .await
+                .expect("managed browser ambiguity composes without a Key")
+                .ready()
+                .await
+                .expect("resume acquires canonical run");
+            let outcome = run.wait().await.expect("ambiguity settles locally");
+            assert!(matches!(
+                outcome.terminal,
+                TerminalState::RecoveryRequired { .. }
+            ));
+            assert_eq!(
+                accepted.await.expect("managed action was not replayed"),
+                0,
+                "{action} must not call the model or tool again"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn writer_resume_recovers_shared_child_ledger_without_reopening_limit_or_losing_usage() {
         let temp = tempfile::tempdir().expect("temp workspace");
         let composition = test_production_composition(
@@ -3602,13 +3883,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:32db1cbf5cf68a2a92d5c2c2d5b9a614d138f327beb0a3564b39e226c027f545",
+                "sha256:a0ef151b26eea87f1badf5f5fe0ce790c23b0e3ec66677ff7fc91e6edcbf4def",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:5e9f7c1e2db873266ba62f9c3c1628edf85823355442d69caca553abd9488983",
+                "sha256:0c6b0838ca3e9f3a84ea228f2cb76d5438a04127f4e70521ad8871b0d2a47439",
             ),
             (
                 "coordinator",
@@ -3621,19 +3902,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:0595347f699be75e76f7ba9bac278e7cf871cf5ee4d7ab00c462868983b3214a",
+                "sha256:60345efaff537b52a3ec302f99ddc7a3d69371108d4664c9fb69056b85674bcf",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:5f8e495745c8f48ffe0e4f01cf40b78f4a3df1eb4a8a97adddaa56a7ecbceccb",
+                "sha256:97d3f66cff1a239ccfb409bd54d0e400aa07ed83ad75ad1329ea904cc2930c12",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("browser_navigate", "$/required", "all_properties_required")),
-                "sha256:8e67b1d0a3ea46c80648061907349c07aa17e9f45a189c1d1c8fc35921ad5e83",
+                "sha256:4d8ab2b740e7dc99796280f233c6c1fae35c365c83a67818f8510e1abe3242de",
             ),
             (
                 "isolated_writer",
@@ -3646,7 +3927,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:b4e35c4a13044391a17472d08537c28a072399dd1c10f691f7d154e81c1a4c66",
+                "sha256:c017c64dc31a42f8c0daf5b6dd8a692bda33fbf6298cdac9836b72b040051f25",
             ),
             (
                 "terminal_empty",
@@ -5153,6 +5434,267 @@ mod tests {
             ),
             calls_before_reopen,
             "SQLite reopen replays the receipt without navigation or duplicate POST"
+        );
+        assert_eq!(accepted.await.expect("quiet reopen"), 0);
+    }
+
+    #[tokio::test]
+    async fn managed_browser_cluster_runs_through_application_and_sqlite_reopen_is_replay_only() {
+        let element_ref = "eref_0123456789abcdef0123456789abcdef";
+        let download_ref = "dref_0123456789abcdef0123456789abcdef";
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-navigate",
+                "browser_navigate",
+                json!({"url":"https://example.com/login","max_nodes":32,"max_chars":4096}),
+                40,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-login",
+                "browser_interact",
+                json!({"action":"login","element_ref":element_ref,"credential_ref":"engineering-app"}),
+                44,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-status",
+                "browser_interact",
+                json!({"action":"session_status"}),
+                48,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-upload",
+                "browser_interact",
+                json!({"action":"upload","element_ref":element_ref,"workspace_path":"artifacts/report.txt"}),
+                52,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-download",
+                "browser_interact",
+                json!({"action":"download","element_ref":element_ref}),
+                56,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-promote",
+                "browser_interact",
+                json!({"action":"promote_download","download_ref":download_ref,"workspace_path":"downloads/result.txt"}),
+                60,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "managed-clear",
+                "browser_interact",
+                json!({"action":"session_clear"}),
+                64,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "登录、会话复用、授权上传、隔离下载、显式 promotion 与 session clear 均有 Host receipt。",
+                68,
+                8,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("artifacts")).expect("artifact directory");
+        std::fs::create_dir_all(workspace.join("downloads")).expect("download directory");
+        std::fs::write(workspace.join("artifacts/report.txt"), "verified\n")
+            .expect("upload artifact");
+        let state_path = temp.path().join("state.db");
+        let browser = Arc::new(ManagedSessionFixture::default());
+        let credential_grant = BrowserCredentialGrant::new(
+            "engineering-app",
+            "https://example.com/login",
+            "https://example.com/session",
+            [
+                ("username", "fixture-user"),
+                ("password", "fixture-password"),
+            ],
+        )
+        .expect("non-secret credential grant");
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_browser_state_root(temp.path().join("browser-state"))
+            .with_browser_credential_grant(credential_grant)
+            .with_semantic_browser_harness(browser.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "在 disposable engineering application 中登录、验证 session、上传 artifacts/report.txt、下载结果到 quarantine、promotion 到 downloads/result.txt，最后清除 session；逐步报告 Host receipt",
+        );
+        command.controls.permission_mode = RunPermissionMode::Agent;
+        command.controls.interactive = true;
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "managed-browser-cluster-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let mut approved_actions = Vec::new();
+        for approval_index in 0..3 {
+            let interaction = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let replay = app
+                        .store
+                        .load(&run.run_id)
+                        .await
+                        .expect("load managed browser run")
+                        .expect("managed browser run exists");
+                    let requests = replay
+                        .events
+                        .iter()
+                        .filter_map(|event| match &event.event {
+                            RuntimeEventKind::InteractionRequested { request } => {
+                                Some(request.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(request) = requests.get(approval_index) {
+                        return request.clone();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("managed side effect requests scoped approval");
+            let dse_protocol::agent_runtime::UserInteractionPrompt::Approval { prompt, arguments } =
+                &interaction.prompt
+            else {
+                panic!("managed external side effect must use approval prompt")
+            };
+            let action = arguments["action"].as_str().expect("approved action");
+            approved_actions.push(action.to_owned());
+            assert!(prompt.description.contains("exact target"));
+            assert!(prompt.description.contains("impact"));
+            assert!(!prompt.description.contains("fixture-user"));
+            assert!(!prompt.description.contains("fixture-password"));
+            let resolved = app
+                .execute(envelope(
+                    &format!("managed-browser-approve-{approval_index}"),
+                    RunCommand::ResolveInteraction {
+                        run_id: run.run_id.clone(),
+                        interaction_id: interaction.interaction_id,
+                        response: UserInteractionResponse::Approved,
+                    },
+                ))
+                .await;
+            assert!(matches!(resolved.result, RunCommandResult::Accepted { .. }));
+        }
+        assert_eq!(approved_actions, ["login", "upload", "session_clear"]);
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+        assert!(matches!(
+            replay
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(requests.len(), 8);
+        assert_eq!(browser.navigate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(browser.interact_calls.load(Ordering::SeqCst), 6);
+        let committed = replay
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "browser_interact" =>
+                {
+                    Some(outcome.as_ref())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(committed.len(), 6);
+        let serialized = committed
+            .iter()
+            .map(|outcome| outcome.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for receipt in [
+            "managed_login",
+            "managed_session_status",
+            "managed_upload",
+            "managed_download",
+            "managed_session_clear",
+        ] {
+            assert!(serialized.contains(receipt), "missing {receipt}");
+        }
+        assert!(serialized.contains("host_owned_redacted"));
+        assert!(!serialized.contains("fixture-user"));
+        assert!(!serialized.contains("fixture-password"));
+        let catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        let browser_definition = catalog
+            .iter()
+            .find(|tool| tool["function"]["name"] == "browser_interact")
+            .expect("browser_interact catalog");
+        let actions = browser_definition["function"]["parameters"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        for action in [
+            "login",
+            "upload",
+            "download",
+            "promote_download",
+            "session_status",
+            "session_clear",
+        ] {
+            assert!(actions.iter().any(|value| value == action));
+        }
+
+        drop(app);
+        let calls_before_reopen = (
+            browser.navigate_calls.load(Ordering::SeqCst),
+            browser.interact_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen managed browser run without model credential");
+        let reopened_events = reopened
+            .execute(envelope(
+                "managed-browser-cluster-reopen",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                browser.navigate_calls.load(Ordering::SeqCst),
+                browser.interact_calls.load(Ordering::SeqCst),
+            ),
+            calls_before_reopen,
+            "SQLite reopen must replay all managed receipts without network or filesystem action"
         );
         assert_eq!(accepted.await.expect("quiet reopen"), 0);
     }
