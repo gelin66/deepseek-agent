@@ -240,6 +240,8 @@ def main() -> None:
         "cargo fetch --locked",
         "actions/setup-python@v6",
         'python-version: "3.13"',
+        "release_id: ${{ steps.draft.outputs.release_id }}",
+        "repos/$DSE_RELEASE_REPOSITORY/releases/$RELEASE_ID",
         "dse-installer.sh",
         "dist-manifest.json",
         "SBOM.spdx.json",
@@ -272,6 +274,12 @@ def main() -> None:
     if python_index < 0 or assemble_index < 0 or python_index > assemble_index:
         raise AssertionError(
             "release workflow must provision Python with tomllib before assembly"
+        )
+    publish_index = workflow.find("- name: Publish the complete Draft once")
+    tag_lookup_index = workflow.find("releases/tags/$TAG")
+    if publish_index < 0 or tag_lookup_index < publish_index:
+        raise AssertionError(
+            "release workflow must address a Draft by id until after publication"
         )
     all_workflows = "\n".join(
         path.read_text(encoding="utf-8")
