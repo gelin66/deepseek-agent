@@ -6270,12 +6270,20 @@ Rust/Cargo/Node/npm/Python/clone 的 PATH 中完成四 target selection；native
 wrong-target、checksummed semantic/incomplete manifest tamper、空/foreign-identity SBOM 与 installer
 payload tamper。
 
-remote precondition actual：repository public；Immutable Releases API=`enabled:true`；Release API list=`[]`；
-历史最高 tag=`v0.8.67`。官网 no-release path 实测 HTTP 200 shell MIME（脚本本身成功取得）、执行 exit=`1`
-并输出精确 no-stable-release message，HOME entries=`0`。这不是安装成功；behavior status 现为
-`local_gates_green_pending_public_ci_and_release`。本切片 focused 一次 exit=`0`：delivery/release/
-installer self-tests 全绿；tools=`412/6`、DeepSeek=`61/1`、Runtime=`88/0`、app=`76/4`、app-server=
-`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。冻结后的 full 只执行一次并 exit=`0`：
-public repository、三 delivery tests、fmt、workspace Clippy/tests、diff check 全绿，同一 revision 未
-重跑。只有 public CI、four-native Draft、
-attestation、publish 后 `immutable=true` 与公网 clean install 全部闭合才改为 keep/complete。
+remote evidence actual：repository public、Immutable Releases=`enabled:true`；`v0.8.68` 已从 exact
+`222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 run `30466835639` 发布，`draft=false`、
+`prerelease=false`、`immutable=true`，8/8 assets、repo verifier、artifact/release attestations 与四 native
+fresh install 全绿。官网返回 shell MIME 与 bounded cache；隔离 macOS arm64 HOME 的主命令真实完成
+install、`dse`/`dse-tui 0.8.68`、doctor，`DSE_HOME` marker hash 前后相同。
+
+同版主命令复验随后以 curl 56 connection reset 失败，旧 installer 虽有 `--retry 2`，却没有
+`--retry-all-errors`，并把 transport failure 误报为 missing archive；false completion=`0`、active install 与
+用户数据均未改变。该真实 red 准入 patch candidate `0.8.69`：唯一 versioned installer owner 加入总时限内
+all-error retry，并把 curl 18/22/28/35/56 分为 partial/missing/timeout/HTTPS transport。新增 fixture 先抓到
+POSIX `if` 后读取 `$?` 会丢失原状态，再把捕获移入 `else` 后 green；targeted delivery/release/installer、
+locked check/fmt/diff 与 focused 全绿。首次 full 只因 release version 改变后 prompt provenance fixture
+仍固定旧 `Cargo.toml` hash 而 red；精确更新 block 与 aggregate provenance identity 后，新 revision 的
+targeted prompt test 与唯一一次 full 均 exit=`0`。behavior status 现为
+`first_public_stable_verified_retry_patch_pending_release`；只有 patch full、公开 CI、第二个 immutable release 与
+公网 fresh/same-version/verify/uninstall 全部闭合才改为 keep/complete。原始与 patch 路径均未发起
+official DeepSeek request，Runtime/Event/Store/catalog/Prompt/DeepSeek wire delta=`0`。

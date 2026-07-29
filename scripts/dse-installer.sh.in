@@ -114,24 +114,40 @@ fetch() {
     --max-time 120 \
     --retry 2 \
     --retry-delay 1 \
+    --retry-max-time 120 \
     --retry-connrefused \
+    --retry-all-errors \
     -fsSL \
     -o "$destination" \
     "$source_url"
 }
 
 latest_tag() {
-  latest_url="$(curl \
+  if latest_url="$(curl \
     --proto '=https' \
     --proto-redir '=https' \
     --tlsv1.2 \
     --connect-timeout 10 \
     --max-time 30 \
+    --retry 2 \
+    --retry-delay 1 \
+    --retry-max-time 30 \
+    --retry-connrefused \
+    --retry-all-errors \
     -fsSL \
     -o /dev/null \
     -w '%{url_effective}' \
-    "$DSE_RELEASE_ROOT/latest")" ||
-    fail "no stable DSE release is available yet; see $DSE_RELEASE_ROOT"
+    "$DSE_RELEASE_ROOT/latest")"; then
+    :
+  else
+    latest_status=$?
+    case "$latest_status" in
+      22) fail "no stable DSE release is available yet; see $DSE_RELEASE_ROOT" ;;
+      28) fail "latest stable release lookup timed out" ;;
+      35 | 56) fail "latest stable release lookup failed during HTTPS transport" ;;
+      *) fail "latest stable release lookup failed (curl exit $latest_status)" ;;
+    esac
+  fi
   release_prefix="$DSE_RELEASE_ROOT/tag/"
   case "$latest_url" in
     "$release_prefix"*) tag="${latest_url#"$release_prefix"}" ;;
@@ -139,6 +155,25 @@ latest_tag() {
   esac
   validate_tag "$tag"
   printf '%s\n' "$tag"
+}
+
+download_release_asset() {
+  release_tag="$1"
+  asset_name="$2"
+  destination="$3"
+  source_url="$DSE_RELEASE_ROOT/download/$release_tag/$asset_name"
+  if fetch "$source_url" "$destination"; then
+    return 0
+  else
+    fetch_status=$?
+  fi
+  case "$fetch_status" in
+    18) fail "download for $asset_name was partial" ;;
+    22) fail "release $release_tag is missing $asset_name" ;;
+    28) fail "download for $asset_name timed out" ;;
+    35 | 56) fail "download for $asset_name failed during HTTPS transport" ;;
+    *) fail "download for $asset_name failed (curl exit $fetch_status)" ;;
+  esac
 }
 
 expected_hash() {
@@ -328,19 +363,16 @@ main() {
     release_tag="$(latest_tag)"
   fi
   version="${release_tag#v}"
-  exact_release_root="$DSE_RELEASE_ROOT/download/$release_tag"
   checksums_path="$tmp_dir/$DSE_CHECKSUMS_NAME"
   manifest_path="$tmp_dir/$DSE_MANIFEST_NAME"
 
-  fetch "$exact_release_root/$DSE_CHECKSUMS_NAME" "$checksums_path" ||
-    fail "release $release_tag is missing $DSE_CHECKSUMS_NAME"
+  download_release_asset "$release_tag" "$DSE_CHECKSUMS_NAME" "$checksums_path"
   if [ -n "${DSE_RELEASE_MANIFEST:-}" ]; then
     [ -f "$DSE_RELEASE_MANIFEST" ] && [ ! -L "$DSE_RELEASE_MANIFEST" ] ||
       fail "DSE_RELEASE_MANIFEST is not a regular file"
     cp "$DSE_RELEASE_MANIFEST" "$manifest_path"
   else
-    fetch "$exact_release_root/$DSE_MANIFEST_NAME" "$manifest_path" ||
-      fail "release $release_tag is missing $DSE_MANIFEST_NAME"
+    download_release_asset "$release_tag" "$DSE_MANIFEST_NAME" "$manifest_path"
   fi
 
   verify_top_asset "$checksums_path" "$DSE_INSTALLER_NAME" "$installer_source"
@@ -369,8 +401,7 @@ main() {
     fail "manifest and $DSE_CHECKSUMS_NAME disagree for $asset"
 
   archive_path="$tmp_dir/$asset"
-  fetch "$exact_release_root/$asset" "$archive_path" ||
-    fail "release $release_tag is missing $asset"
+  download_release_asset "$release_tag" "$asset" "$archive_path"
   [ "$(sha256_file "$archive_path")" = "$archive_sha" ] ||
     fail "$asset failed SHA-256 verification"
   printf '%s  %s\n' "$archive_sha" "$asset" >"$archive_path.sha256"

@@ -140,6 +140,7 @@ set -eu
 output=""
 write_format=""
 url=""
+retry_all_errors=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o)
@@ -150,8 +151,12 @@ while [ "$#" -gt 0 ]; do
       write_format="$2"
       shift 2
       ;;
-    --proto | --proto-redir | --connect-timeout | --max-time | --retry | --retry-delay)
+    --proto | --proto-redir | --connect-timeout | --max-time | --retry | --retry-delay | --retry-max-time)
       shift 2
+      ;;
+    --retry-all-errors)
+      retry_all_errors=1
+      shift
       ;;
     --tlsv1.2 | --retry-connrefused | -fsSL)
       shift
@@ -163,6 +168,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$url" ] || exit 2
+[ "$retry_all_errors" = "1" ] || exit 91
 if [ -n "$write_format" ]; then
   case "${DSE_FAKE_CURL_MODE:-ok}" in
     latest-none)
@@ -177,6 +183,7 @@ asset="${url##*/}"
 case "${DSE_FAKE_CURL_MODE:-ok}:$asset" in
   404-manifest:dist-manifest.json) exit 22 ;;
   timeout-archive:*.tar.gz) exit 28 ;;
+  reset-archive:*.tar.gz) exit 56 ;;
   partial-archive:*.tar.gz)
     dd if="$DSE_FAKE_RELEASE_DIR/$asset" of="$output" bs=1 count=128 2>/dev/null
     exit 18
@@ -290,7 +297,7 @@ run_installer "$release2/dse-installer.sh" --rollback
 previous_before_failure="$(readlink "$prefix/lib/dse/previous")"
 
 # Network and integrity failures must preserve the active v2 release.
-for mode in 404-manifest timeout-archive partial-archive; do
+for mode in 404-manifest timeout-archive reset-archive partial-archive; do
   assert_rejected "$mode" env \
     PATH="$tool_path_root" \
     DSE_FAKE_CURL_MODE="$mode" \
@@ -298,6 +305,28 @@ for mode in 404-manifest timeout-archive partial-archive; do
     DSE_FAKE_RELEASE_TAG="v2.0.0" \
     DSE_RELEASE_TAG="v2.0.0" \
     /bin/sh "$release2/dse-installer.sh" --prefix "$prefix"
+  case "$mode" in
+    404-manifest)
+      grep -F "release v2.0.0 is missing dist-manifest.json" \
+        "$test_root/rejected.stderr" >/dev/null ||
+        fail "$mode did not report a missing release asset"
+      ;;
+    timeout-archive)
+      grep -F "download for dse-2.0.0-aarch64-apple-darwin.tar.gz timed out" \
+        "$test_root/rejected.stderr" >/dev/null ||
+        fail "$mode did not report a timeout"
+      ;;
+    reset-archive)
+      grep -F "download for dse-2.0.0-aarch64-apple-darwin.tar.gz failed during HTTPS transport" \
+        "$test_root/rejected.stderr" >/dev/null ||
+        fail "$mode did not report an HTTPS transport failure"
+      ;;
+    partial-archive)
+      grep -F "download for dse-2.0.0-aarch64-apple-darwin.tar.gz was partial" \
+        "$test_root/rejected.stderr" >/dev/null ||
+        fail "$mode did not report a partial response"
+      ;;
+  esac
   [ "$("$prefix/bin/dse" --version)" = "dse 2.0.0 (fixture)" ] ||
     fail "$mode changed the active release"
 done

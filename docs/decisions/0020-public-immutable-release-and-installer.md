@@ -79,6 +79,9 @@ curl -fsSL https://dse.run/install.sh | sh
 4. 提取同 revision 的 canonical `dse-delivery.sh` payload，并由系统 Bash 执行本地 owner。
 
 它不 `source` 网络内容，不接受任意 URL、header、hook、proxy、credential 或后台更新。
+每次 latest/asset 下载都必须在固定总时限内覆盖 connection reset 等全部 curl 传输错误的
+有界重试；重试耗尽后保留 404、partial、timeout 与 HTTPS transport 的不同失败语义，不能把
+网络故障统一冒充为“release asset missing”。Sites 薄 bootstrap 使用同一下载失败合同。
 默认 prefix 为 `$HOME/.local`、不使用 `sudo`，支持 `--version VERSION`、`--prefix DIR`、
 `--no-modify-path`、`--help` 以及同一 delivery owner 的 verify/rollback/uninstall 投影。
 首版不修改 shell profile；当 prefix/bin 不在 PATH 时只输出精确、可复制的 PATH 指令。
