@@ -9,11 +9,11 @@ one SQLite-backed source of truth.
 
 > Release status: DSE is still on its pre-public development line. There are no
 > official public binaries, tags, or releases yet. Build and test from source;
-> do not treat a partial M17 checkpoint as a public V1.
+> the current internal-alpha checkpoints are not a public V1.
 
 ## Why DSE
 
-DSE is deliberately narrow:
+DSE keeps one coherent production path:
 
 - one official DeepSeek backend using OpenAI-format Chat Completions at
   `https://api.deepseek.com/chat/completions`;
@@ -30,6 +30,24 @@ DSE is deliberately narrow:
 
 The current protocol identities are Run API v15, RuntimeEvent v22,
 State schema v28, and exec-stream v6.
+
+## Current engineering surface
+
+The current source tree closes the core code/app/Web loop through the same
+application service:
+
+- repository-scoped read, edit, shell, verification, and isolated Writer
+  worktrees with latest-revision evidence;
+- canonical `web_search` for source discovery and bounded public HTTP(S)
+  `web_fetch` for known URLs;
+- a Rust-native semantic browser with scoped interaction, project-isolated
+  managed sessions, Host-owned credentials, and controlled upload/download;
+- deterministic application start, loopback probing, teardown, recovery, and
+  SQLite reopen without replaying committed side effects.
+
+These are internal-alpha capabilities, not a compatibility or security promise
+for arbitrary sites and projects. Current implementation facts and tested
+boundaries live in the authority documents linked below.
 
 ## Fixed model profiles
 

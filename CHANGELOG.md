@@ -5,25 +5,44 @@ imported CodeWhale history remains available in Git and is not duplicated here.
 
 ## [Unreleased]
 
+This section summarizes user-visible development since the imported baseline.
+The canonical status, tested revision, and keep/delete evidence remain in the
+[Roadmap](docs/product/ROADMAP.md),
+[Evaluation contract](docs/product/EVALUATION.md), and frozen `eval/` records.
+
+### Added
+
+- One Rust-native DeepSeek Agent production loop shared by CLI, TUI, and the
+  local Run API, with typed outcomes, SQLite replay/reopen, recovery, and
+  Host-accepted latest-revision completion.
+- Repository-scoped engineering tools, deterministic application probing, and
+  one explicit isolated Writer worktree path that converges through
+  read/edit/verify/integrate receipts.
+- Canonical public HTTP(S) `web_fetch`, one Host-owned `web_search`, and a
+  Rust-native semantic browser with scoped public interaction.
+- Project-isolated managed browser sessions, Host-owned credential handling,
+  and controlled workspace upload plus isolated/scanned download promotion.
+- Complete English and Simplified Chinese human-facing interfaces.
+
 ### Changed
 
-- Established the Rust + DeepSeek-only product scope and target architecture.
-- Replaced overlapping product plans with one product plan, one roadmap, one
-  evaluation contract, and three accepted ADRs.
-- Preserved the pre-audit DeepSeek work as an explicitly unverified WIP before
-  repository cleanup.
-- Removed imported website, VS Code scaffold, npm publishing wrappers, cloud
-  release automation, translated marketing READMEs, version trackers, and
-  historical dogfood/release documents from the active development tree.
+- Consolidated product truth into one Product Plan, one Roadmap, one Evaluation
+  contract, accepted ADRs, and owner-scoped current architecture facts.
+- Replaced unconditional repository bootstrap and duplicated validation lists
+  with bounded owner routing and one risk-tier executable gate.
+- Replaced legacy per-action browser paths with one semantic interaction
+  surface and replaced mechanical first-N observations with deterministic
+  task-cue priority and bounded action diffs.
 
-### Current migration status
+### Removed
 
-- The production Agent loop still lives in `crates/tui`.
-- DeepSeek protocol and Agent-reliability WIP still require slice-by-slice
-  evaluation.
-- Remote setup/chat bridges and generic Provider code remain only because the
-  current Rust runtime still references them; their removal has an explicit
-  migration point in `docs/product/ROADMAP.md`.
+- Imported multi-provider routing, model Auto, chat bridges, cloud control
+  surfaces, second runtime paths, and other product identities outside the
+  DeepSeek-only DSE architecture.
+- Imported website/release scaffolding, obsolete marketing translations,
+  duplicate roadmaps, compatibility trackers, and stale public screenshots.
+
+No public DSE release has been cut from these changes yet.
 
 ## [0.8.68] - 2026-07-13
 

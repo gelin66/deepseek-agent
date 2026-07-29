@@ -6,18 +6,23 @@ Chinese entry is available in [README.zh-CN.md](README.zh-CN.md).
 
 ## Start with product authority
 
-Before changing code, read in this order:
+Use the bounded authority map before changing the repository:
 
-1. [AGENTS.md](AGENTS.md)
-2. [Product plan](docs/product/PRODUCT_PLAN.md)
-3. [Architecture decisions](docs/decisions/)
-4. [Roadmap](docs/product/ROADMAP.md)
-5. [Evaluation contract](docs/product/EVALUATION.md)
-6. [Current architecture facts](docs/architecture/CURRENT_CODEWHALE.md)
+1. Read [AGENTS.md](AGENTS.md) and the complete
+   [Product plan](docs/product/PRODUCT_PLAN.md).
+2. Read only the Roadmap's
+   [current execution window](docs/product/ROADMAP.md#current-execution-window).
+3. Select one matching [owner route](docs/README.md#owner-routes), then read its
+   linked accepted decisions and current-fact section.
+4. Read the linked Evaluation entry only when changing an evaluation contract
+   or making a keep/delete claim.
+5. Expand beyond that route only for a conflict or a fixed-architecture change.
 
-The product plan and accepted ADRs win when older documents conflict. Historical
-evaluation artifacts are evidence from their tested revisions; do not rename or
-rewrite their schemas, hashes, titles, manifests, summaries, or raw journals.
+Do not read every ADR, milestone history, Evaluation result, or the entire
+current-architecture inventory by default. The Product Plan and accepted ADRs
+win when older documents conflict. Historical evaluation artifacts are
+evidence from their tested revisions; do not rename or rewrite their schemas,
+hashes, titles, manifests, summaries, or raw journals.
 
 ## Contribution contract
 

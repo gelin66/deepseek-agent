@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/gelin66/deepseek-agent/security/advisories/new
+    about: Report credentials, sandbox, command-execution, or data-exposure issues privately.
+  - name: Product and development authority
+    url: https://github.com/gelin66/deepseek-agent/blob/deepseek-agent/docs/README.md
+    about: Check the bounded owner routes and current authority before proposing a change.

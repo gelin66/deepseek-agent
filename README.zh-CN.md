@@ -7,11 +7,11 @@
 Agent runtime、同一套工具目录和同一个 SQLite 持久真相。
 
 > 发布状态：DSE 仍处于公开发布前的开发分支，目前没有官方公共二进制、tag 或 release。
-> 请从源码构建和测试，不要把 M17 的局部检查点当成公开 V1。
+> 请从源码构建和测试；当前 internal-alpha checkpoint 不是公开 V1。
 
 ## 为什么是 DSE
 
-DSE 刻意保持边界收敛：
+DSE 只保留一条连贯的生产主链：
 
 - 唯一模型后端是官方 DeepSeek，使用 OpenAI 格式 Chat Completions：
   `https://api.deepseek.com/chat/completions`；
@@ -24,6 +24,21 @@ DSE 刻意保持边界收敛：
 - `en` 与 `zh-Hans` 人类界面完整覆盖，不增加语言分类请求或翻译模型。
 
 当前协议身份为 Run API v15、RuntimeEvent v22、State schema v28、exec-stream v6。
+
+## 当前工程能力面
+
+当前源码已经通过同一个 application service 闭合核心 code/app/Web 工程链：
+
+- workspace-scoped 读取、编辑、shell、验证与隔离 Writer worktree，并要求
+  latest-revision evidence；
+- 用 canonical `web_search` 发现来源，用有界 public HTTP(S) `web_fetch` 读取已知 URL；
+- Rust-native semantic browser，支持受控交互、project-isolated managed session、
+  Host-owned credential 与受控上传/下载；
+- 确定性的应用启动、loopback probe、teardown、recovery 与 SQLite reopen，已提交副作用不会
+  因 reopen 重放。
+
+这些是 internal-alpha 能力，不是对任意网站或任意项目的兼容性或安全承诺。当前实现事实与
+已测试边界以本文后面链接的权威文档为准。
 
 ## 固定模型 profile
 
