@@ -6069,13 +6069,21 @@ owner=`crates/app`；`crates/tools` 只修复 task evidence 暴露的 isolated W
 | complexity | 不新增 capability/runtime/store/provider/dependency；删除错误重复 gate | pass |
 
 current 每个 task 的 fixture model requests=`8`、input/output=`1,110/86`、rework=`0`，并真实执行 child
-`read_file -> apply_patch`；加入 compile/build 后三项并行 suite wall=`11.12s`，单项约
-`11.083–11.112s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events exact replay。
+`read_file -> apply_patch`；加入 compile/build 后三项无共享进程锁并发 suite test wall=`12.37s`。root HEAD
+前进、Git clean、writer branch/worktree 清零，cold reopen events exact replay。
 该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实 DeepSeek 的
 通用 success。这三个正向结果来自 macOS Seatbelt；Linux bwrap 的 isolated network namespace 不与 Host
 共享，因此公开 CI 明确 ignore 该正向 family，并以普通 root probe 加 namespace/egress 负向合同覆盖，
-不记录跨平台正向 success。macOS job 复用 M45 已证明的进程 fixture 单锁，避免三个 checkpoint 在
-reserved port 释放到 Python bind 的窗口相互抢占；这只删除 test false deny，不改变 production retry。
+不记录跨平台正向 success。
+
+历史 macOS CI 的一次 constant case 在 root verifier 读到 `draft-constant` 后正确 Blocked，receipt=`0`、
+false success=`0`。response 同时携带该次 Host 生成的 exact lease，排除了 foreign listener/port collision；
+而同一症状发生在进程 fixture 单锁已存在的 revision，故撤回“reserved-port 竞争已由单锁修复”的旧归因。
+旧日志没有持久输出 child completion、seal、integration 的 bounded typed stage，无法事后证明具体失败阶段；
+这属于 fixture diagnostics/concurrency defect，不构成 production completion defect 的证据。current harness
+删除进程单锁，并在 root verifier 前逐项断言 child `read_file/apply_patch` success + revision-bound receipt、
+Host seal、integration、root byte-exact final marker，再断言 root receipt、cleanup 与 terminal 顺序；三项并发
+`3/3`，不依赖测试顺序、共享进程环境或偶然 timeout。
 
 #### 最小 integration fix 与安全反例
 
@@ -6086,6 +6094,25 @@ false completion。修复后 ordinary no-network policy 仍在 spawn 前拒绝�
 `network-bind/network-inbound (local ip "localhost:*")` 且不含 `network-outbound` 或 broad bind；默认 Writer
 serialization 继续省略该字段，probe identity 则显式区分。Linux bwrap 保持 isolated namespace 与同一
 worktree/protected-path policy。模型不能选择该 treatment，只有 Host verification path 能派生。
+
+另一个 deterministic Runtime conformance 在 seal 后注入 typed
+`writer_root_revision_changed` integration conflict：canonical root 保持 base revision 与 draft bytes，
+integration committed=`0`、integration side effect=`0`、root evidence receipt=`0`、terminal=`Blocked`；Writer
+cleanup 仍以 `Removed` committed 且 lifecycle finished。该反例直接证明 root latest-revision receipt 不能
+接受未集成 final marker，也把 integration failure 与 cleanup closure 从 timing 偶现改为可重放合同。
+
+related targeted actual：Alpha=`4 passed, 1 official ignored`（其中 task family=`3/3`）、Writer Runtime=
+`26/26`、ApplicationProbe=`10/10`、orchestrator=`44/44`、Prompt fixture macOS/Linux=`1/1 + 1/1`。首次
+orchestrator package matrix 的唯一失败是既有 descendant teardown fixture 的 `<2s` wall-clock assertion；
+同 revision exact test=`0.85s` 且 PID 已回收，证明 production process-group path 正常而 package 并发调度可
+越过任意 2 秒门。fixture 删除该重复 wall gate，继续以“后台 `late` bytes=`0` + descendant PID reaped”
+确定性验收，production `15s` hard command bound 未改变；新 revision package matrix 随后 `44/44`。
+
+已推送 revision `6b05531e0` 的公开 GitHub run `30428766264` 中，Ubuntu/macOS delivery lifecycle 均
+通过，macOS Alpha=`3/3`；唯一失败是 Linux Prompt provenance fixture 的首 block hash。production Prompt
+内容未变：macOS canonical temp path 为 `/private/var/...`，旧 fixture 只替换 raw `/var/...`，导致 OS-specific
+hash。current test 先归一 canonical root、再归一 raw root；本地 macOS exact 与 Linux container exact 均
+通过。该远端 run 只证明已推送 revision，不冒充 current local revision 的 CI。
 
 没有改变 catalog、authorization owner、ToolOutcome、RuntimeEvent、RunStore/State schema、AgentRuntime、
 DeepSeek wire/model-visible Prompt；没有新增 Manager/Factory/Service、session/ledger、Provider、浏览器、视觉、
@@ -6154,4 +6181,9 @@ conformance=`88/88`、app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30
 PTY=`7/7`。同一 production revision 的 canonical full invocation=`1`、exit=`0`，覆盖 public/authority、
 fmt、strict workspace/all-target Clippy、workspace tests/doctests 与 diff check；后续仅 test/authority truth
 变化，不重跑 full。current read-before-edit/observer revision 的四项 targeted Alpha、fmt、authority 与 diff
-check 通过。
+check 通过。当前 Writer closure revision 的 canonical focused exit=`0`：tools=`412 passed, 6 ignored`，另有
+tools integration=`2 passed, 1 ignored`；DeepSeek=`61/1`、runtime conformance=`88/88`、app=`78/4`、
+app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。代码与 substantive authority 冻结后，
+当前 closure revision 的 canonical full invocation=`1`、exit=`0`；覆盖 authority/public、fmt、workspace
+all-features check、strict Clippy、全 workspace tests、process-crash/reopen suites 与 doctests。同一 code
+revision 未执行第二次 full；结果行写回后只复核 authority/diff。

@@ -448,6 +448,7 @@ struct RootTools {
     bytes: Mutex<Vec<u8>>,
     calls: Mutex<Vec<String>>,
     timeline: Arc<Mutex<Vec<String>>>,
+    require_integrated_bytes: AtomicBool,
 }
 
 impl RootTools {
@@ -457,6 +458,7 @@ impl RootTools {
             bytes: Mutex::new(b"root-before".to_vec()),
             calls: Mutex::new(Vec::new()),
             timeline,
+            require_integrated_bytes: AtomicBool::new(false),
         }
     }
 }
@@ -499,7 +501,13 @@ impl ToolExecutor for RootTools {
             ));
         }
         let revision = self.revision.lock().expect("root revision lock").clone();
-        Ok(passed_verifier(&invocation, &revision))
+        let draft_must_fail = self.require_integrated_bytes.load(Ordering::Acquire)
+            && self.bytes.lock().expect("root bytes lock").as_slice() != b"root-after";
+        if draft_must_fail {
+            Ok(failed_verifier(&invocation, &revision))
+        } else {
+            Ok(passed_verifier(&invocation, &revision))
+        }
     }
 }
 
@@ -596,6 +604,7 @@ struct FakeOrchestrator {
     cleanup_side_effects: AtomicUsize,
     workspace_exists: AtomicBool,
     integrated: AtomicBool,
+    integration_failure: AtomicBool,
     bind_recovery: AtomicBool,
     seal_failure: AtomicBool,
     cleanup_ambiguous: AtomicBool,
@@ -620,6 +629,7 @@ impl FakeOrchestrator {
             cleanup_side_effects: AtomicUsize::new(0),
             workspace_exists: AtomicBool::new(false),
             integrated: AtomicBool::new(false),
+            integration_failure: AtomicBool::new(false),
             bind_recovery: AtomicBool::new(false),
             seal_failure: AtomicBool::new(false),
             cleanup_ambiguous: AtomicBool::new(false),
@@ -721,6 +731,17 @@ impl AgentOrchestrator for FakeOrchestrator {
         self.integrate_calls.fetch_add(1, Ordering::AcqRel);
         assert_eq!(task.workspace, self.assignment);
         assert_eq!(seal.final_commit, FINAL_COMMIT);
+        if self.integration_failure.load(Ordering::Acquire) {
+            self.timeline
+                .lock()
+                .expect("timeline lock")
+                .push("orchestrator:integration-conflict".to_owned());
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::Conflict,
+                "writer_root_revision_changed",
+                "root revision changed before integration",
+            ));
+        }
         if !self.integrated.swap(true, Ordering::AcqRel) {
             assert_eq!(
                 self.root_tools
@@ -1790,6 +1811,91 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
             < position(&timeline, "event:host-verification-committed"),
         "root exact verifier must run only after integration is durable"
     );
+}
+
+#[tokio::test]
+async fn integration_conflict_keeps_root_draft_without_receipt_and_closes_writer_cleanup() {
+    let RuntimeFixture {
+        runtime,
+        root_tools,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::Writer);
+    orchestrator
+        .integration_failure
+        .store(true, Ordering::Release);
+    root_tools
+        .require_integrated_bytes
+        .store(true, Ordering::Release);
+
+    let outcome = runtime
+        .start(root_request(true, true))
+        .wait()
+        .await
+        .expect("integration-conflict run");
+    assert!(
+        matches!(outcome.terminal, TerminalState::Blocked { .. }),
+        "an unintegrated draft cannot complete: {:?}",
+        outcome.terminal,
+    );
+
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let lifecycle = replay.snapshot.agent_tasks.first().expect("Writer task");
+    assert!(
+        lifecycle
+            .seal
+            .as_ref()
+            .is_some_and(|seal| seal.committed.is_some()),
+        "the child and Host seal must close before the injected integration conflict",
+    );
+    assert!(lifecycle.integration.as_ref().is_some_and(|integration| {
+        matches!(
+            integration
+                .failure
+                .as_ref()
+                .map(|failure| &failure.status),
+            Some(WriterIntegrationStatus::Conflict { reason })
+                if reason.contains("writer_root_revision_changed")
+        ) && integration.committed.is_none()
+    }));
+    assert!(lifecycle.cleanup.as_ref().is_some_and(|cleanup| {
+        matches!(
+            cleanup.committed.as_ref(),
+            Some(WriterCleanupResult::Removed { .. })
+        )
+    }));
+    assert!(lifecycle.finished.is_some());
+    assert_eq!(
+        root_tools.bytes.lock().expect("root bytes lock").as_slice(),
+        b"root-before",
+    );
+    assert_eq!(
+        replay.snapshot.workspace_state.revision,
+        WorkspaceRevision::Known {
+            sha256: BASE_COMMIT.to_owned(),
+        },
+        "failed integration must not advance the canonical root revision",
+    );
+    assert!(replay.snapshot.evidence_receipts.is_empty());
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::HostVerificationCommitted {
+            outcome,
+            receipt: None,
+            ..
+        } if !outcome.is_success()
+    )));
+    assert!(replay.events.iter().all(|event| !matches!(
+        &event.event,
+        RuntimeEventKind::Terminal { outcome }
+            if matches!(outcome.terminal, TerminalState::Completed { .. })
+    )));
+    assert_eq!(
+        orchestrator.integrate_side_effects.load(Ordering::Acquire),
+        0
+    );
+    assert_eq!(orchestrator.cleanup_side_effects.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]

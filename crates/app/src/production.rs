@@ -1428,7 +1428,7 @@ fn environment_mismatch_reason(
 mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Instant;
 
     use dse_context::compaction::{ContextInput, effective_context};
@@ -2792,11 +2792,6 @@ mod tests {
         Constant,
         Function,
         Mapping,
-    }
-
-    fn internal_alpha_test_lock() -> &'static tokio::sync::Mutex<()> {
-        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     const ALPHA_CHECKPOINT_CASES: [AlphaCheckpointCase; 3] = [
@@ -5305,7 +5300,6 @@ server.serve_forever()
     }
 
     async fn run_internal_alpha_checkpoint_case(case: AlphaCheckpointCase) {
-        let _guard = internal_alpha_test_lock().lock().await;
         let started = Instant::now();
         let temp = tempfile::tempdir().expect("internal Alpha root");
         let workspace = temp.path().join("repo");
@@ -5386,6 +5380,126 @@ server.serve_forever()
                 .await;
         let requests = server.finish().await;
 
+        let writer_task = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::AgentTaskPrepared { task } => Some(task.as_ref().clone()),
+                _ => None,
+            })
+            .expect("one isolated Writer task");
+        let agent_outcome = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == AGENT_TOOL_NAME =>
+                {
+                    Some(outcome.as_ref())
+                }
+                _ => None,
+            })
+            .expect("one isolated Writer tool outcome");
+        assert!(
+            agent_outcome.is_success(),
+            "internal Alpha {} Writer tool failed before root verification: failure_code={:?} operation={:?} retry={:?} metadata={:?} content={}",
+            case.id,
+            agent_outcome.failure_code,
+            agent_outcome.operation,
+            agent_outcome.retry,
+            agent_outcome.metadata,
+            agent_outcome.content,
+        );
+        assert!(
+            replay.events.iter().any(|stored| matches!(
+                &stored.event,
+                RuntimeEventKind::AgentSealCommitted { task_id, .. }
+                    if task_id == &writer_task.task_id
+            )),
+            "internal Alpha {} Writer outcome succeeded without a committed Host seal",
+            case.id,
+        );
+        assert!(
+            replay.events.iter().any(|stored| matches!(
+                &stored.event,
+                RuntimeEventKind::AgentIntegrationCommitted { task_id, .. }
+                    if task_id == &writer_task.task_id
+            )),
+            "internal Alpha {} Writer outcome succeeded without committed root integration",
+            case.id,
+        );
+        assert!(
+            replay.events.iter().all(|stored| !matches!(
+                &stored.event,
+                RuntimeEventKind::AgentIntegrationFailed { task_id, .. }
+                    if task_id == &writer_task.task_id
+            )),
+            "internal Alpha {} committed both Writer success and integration failure",
+            case.id,
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("server.py"))
+                .expect("read integrated application before root receipt"),
+            expected_script,
+            "internal Alpha {} Writer lifecycle reported success before final bytes reached root",
+            case.id,
+        );
+
+        let child = app
+            .store
+            .load(&writer_task.child_run_id)
+            .await
+            .expect("load Writer child")
+            .expect("Writer child exists");
+        assert!(
+            matches!(
+                child.snapshot.terminal.as_ref(),
+                Some(AgentOutcome {
+                    terminal: TerminalState::Completed { .. },
+                    ..
+                })
+            ),
+            "internal Alpha {} Writer child did not complete: {:?}",
+            case.id,
+            child.snapshot.terminal,
+        );
+        for required_tool in ["read_file", "apply_patch"] {
+            let outcome = child
+                .events
+                .iter()
+                .find_map(|stored| match &stored.event {
+                    RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                        if name == required_tool =>
+                    {
+                        Some(outcome.as_ref())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Writer child did not commit {required_tool}"));
+            assert!(
+                outcome.is_success(),
+                "internal Alpha {} Writer {required_tool} failed: failure_code={:?} operation={:?} retry={:?} metadata={:?} content={}",
+                case.id,
+                outcome.failure_code,
+                outcome.operation,
+                outcome.retry,
+                outcome.metadata,
+                outcome.content,
+            );
+        }
+        assert!(
+            child.events.iter().any(|stored| matches!(
+                &stored.event,
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome,
+                    receipt: Some(_),
+                    ..
+                } if outcome.is_success()
+            )),
+            "internal Alpha {} Writer child lacks a passing revision-bound receipt",
+            case.id
+        );
+
         let verifier_diagnostics = replay
             .events
             .iter()
@@ -5405,24 +5519,6 @@ server.serve_forever()
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let writer_diagnostics = replay
-            .events
-            .iter()
-            .filter(|stored| {
-                matches!(
-                    &stored.event,
-                    RuntimeEventKind::ToolOutcomeCommitted { name, .. }
-                        if name == AGENT_TOOL_NAME
-                ) || matches!(
-                    &stored.event,
-                    RuntimeEventKind::AgentTaskPrepared { .. }
-                        | RuntimeEventKind::AgentSealCommitted { .. }
-                        | RuntimeEventKind::AgentIntegrationCommitted { .. }
-                        | RuntimeEventKind::AgentCleanupCommitted { .. }
-                )
-            })
-            .map(|stored| format!("{}:{:?}", stored.sequence, stored.event))
-            .collect::<Vec<_>>();
         let terminal_message = match replay
             .snapshot
             .terminal
@@ -5431,7 +5527,7 @@ server.serve_forever()
         {
             Some(TerminalState::Completed { message, .. }) => message,
             other => panic!(
-                "internal Alpha {} did not complete: {other:?}; verifier_diagnostics={verifier_diagnostics:?}; writer_diagnostics={writer_diagnostics:?}",
+                "internal Alpha {} did not complete after a successful Writer lifecycle: {other:?}; verifier_diagnostics={verifier_diagnostics:?}",
                 case.id
             ),
         };
@@ -5466,14 +5562,6 @@ server.serve_forever()
             tool_names,
             vec!["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME]
         );
-        let writer_task = replay
-            .events
-            .iter()
-            .find_map(|stored| match &stored.event {
-                RuntimeEventKind::AgentTaskPrepared { task } => Some(task.as_ref().clone()),
-                _ => None,
-            })
-            .expect("one isolated Writer task");
         assert_eq!(
             writer_task.workspace.access,
             AgentWorkspaceAccess::IsolatedWrite
@@ -5524,19 +5612,6 @@ server.serve_forever()
             replay.snapshot.workspace_state.revision
         );
 
-        let child = app
-            .store
-            .load(&writer_task.child_run_id)
-            .await
-            .expect("load Writer child")
-            .expect("Writer child exists");
-        assert!(matches!(
-            child.snapshot.terminal,
-            Some(AgentOutcome {
-                terminal: TerminalState::Completed { .. },
-                ..
-            })
-        ));
         assert_eq!(
             child
                 .events
@@ -5559,15 +5634,6 @@ server.serve_forever()
                 .count(),
             1
         );
-        assert!(child.events.iter().any(|stored| matches!(
-            &stored.event,
-            RuntimeEventKind::HostVerificationCommitted {
-                outcome,
-                receipt: Some(_),
-                ..
-            } if outcome.is_success()
-        )));
-
         assert_eq!(
             std::fs::read_to_string(workspace.join("server.py")).expect("integrated application"),
             expected_script

@@ -1373,14 +1373,19 @@ mod tests {
     }
 
     fn normalized_fixture_text(text: &str) -> String {
+        let fixture_root = production_prompt_fixture_root();
+        let canonical_fixture_root = fixture_root
+            .canonicalize()
+            .unwrap_or_else(|_| fixture_root.clone());
         text.replace(
             &format!("- platform: {}", std::env::consts::OS),
             "- platform: <fixture-os>",
         )
         .replace(
-            &production_prompt_fixture_root().display().to_string(),
+            &canonical_fixture_root.display().to_string(),
             "<fixture-root>",
         )
+        .replace(&fixture_root.display().to_string(), "<fixture-root>")
     }
 
     fn agent_tool_definition(workspace_access: &[&str]) -> ToolDefinition {
@@ -1604,7 +1609,7 @@ mod tests {
         assert_eq!(
             block_hashes,
             [
-                "27d8994cc147713c5797df3592b09547cdaf4cd48ceb249f1c45f3279dd4f0a3",
+                "845162432bf9826c59b1fdafba2958356d494e1313921d5670299258c1e3d767",
                 "eb7b2001a9d73dca127881d763774646adc8884c1fcdff7508a3bd26e93a3632",
                 "5e8571dae69434e271da2bd3d9fe85418b40e0f6a254efd7e63df2f9c793b2f1",
                 "a2fd7cc81b3bf99e30e69ae0edf862c6c26dd2a3049501a92ba93226b22984a1",
@@ -1625,7 +1630,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "1915e8d0bc7f72ecf7853cee8c66ea44f7cd8da6c9c4dd8f29cc91457f60c59e"
+            "b6e0490eaf4a8a3867271aec9a46dcbc615e34ed9c2b2642e1be8c8e585d84b9"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {
