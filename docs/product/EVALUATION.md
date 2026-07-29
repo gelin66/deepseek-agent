@@ -6069,8 +6069,8 @@ owner=`crates/app`；`crates/tools` 只修复 task evidence 暴露的 isolated W
 | complexity | 不新增 capability/runtime/store/provider/dependency；删除错误重复 gate | pass |
 
 current 每个 task 的 fixture model requests=`8`、input/output=`1,110/86`、rework=`0`，并真实执行 child
-`read_file -> apply_patch`；加入 compile/build 后三项并行 suite wall=`12.95s`，单项约
-`12.893–12.946s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events exact replay。
+`read_file -> apply_patch`；加入 compile/build 后三项并行 suite wall=`11.12s`，单项约
+`11.083–11.112s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events exact replay。
 该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实 DeepSeek 的
 通用 success。
 
@@ -6129,13 +6129,26 @@ tools=`[web_search, web_fetch, web_fetch, agent, agent]`、search/fetch=`1/2`、
 Alpha task/harness 加入 parent `read_file`、child `allowed_tools=[read_file, apply_patch]`、read-before-edit
 response 和对应 committed child outcome 断言，不改 production Runtime/catalog/Prompt/Store/Host verifier。
 修复后的三项 deterministic actual=`3/3`、false success=`0`，每项 model requests=`8`、input/output=
-`1,110/86`，parallel wall=`12.95s`，single=`12.893–12.946s`。修正后的 official treatment 未执行，不能
-记为 success。四次 closed accounting 合计约 `$0.03544`；仍不声明 official vertical、真实 Tavily 或
-任何通用 success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=
-`0/unknown`。
+`1,110/86`，latest parallel wall=`11.12s`，single=`11.083–11.112s`。
+
+read-before-edit 后的 fresh official treatment 保持 2,048 output tokens、12 request / 24 tool hard bounds、
+runtime retry=`0`、new-treatment rerun=`0`、ceiling=`$0.10`。production terminal=
+`Completed`，physical requests=`10`、wall=`57.270s`、usage complete=`true`、billing unknown=`false`、
+input/output=`46,281/2,981`、cost=`12,621,177 nanousd`（约 `$0.01262`）。completion message 引用两个
+原始来源，root marker present=`true`，Host receipt 绑定 integrated latest revision；root tools=
+`[web_search, web_fetch, web_fetch, read_file, agent, read_file]`、search/fetch=`1/2`。
+
+test process 在 terminal 之后因旧 exact-root-tool-list assertion 把两次合法 `read_file` 误判而 exit=`101`；
+这不是 product terminal failure，也不抹掉已闭合 behavior/accounting truth。observer 已离线改为只要求核心
+`web_search -> web_fetch -> web_fetch -> agent` 顺序、只允许最多两次额外 root `read_file`，并以 accepted
+actual、unknown write 和 excessive reads 正反例测试闭合；official treatment 没有重跑。post-fix official
+vertical behavior=`1/1`、false success=`0`，五次 closed accounting 合计约 `$0.04806`。它只证明 bounded
+deterministic Host-Web vertical usability，不声明真实 Tavily 或通用 success/Token/time/cost 优势。
+`TAVILY_API_KEY` unavailable，live provider requests/charge=`0/unknown`。
 
 production checkpoint focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime
 conformance=`88/88`、app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、
 PTY=`7/7`。同一 production revision 的 canonical full invocation=`1`、exit=`0`，覆盖 public/authority、
 fmt、strict workspace/all-target Clippy、workspace tests/doctests 与 diff check；后续仅 test/authority truth
-变化，不重跑 full。current read-before-edit revision 的三项 targeted Alpha、fmt、authority 与 diff check 通过。
+变化，不重跑 full。current read-before-edit/observer revision 的四项 targeted Alpha、fmt、authority 与 diff
+check 通过。

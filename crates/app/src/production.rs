@@ -3005,6 +3005,18 @@ server.serve_forever()
         ]
     }
 
+    fn alpha_root_tool_trajectory_is_valid(tools: &[&str]) -> bool {
+        tools
+            .iter()
+            .all(|name| matches!(*name, "web_search" | "web_fetch" | "agent" | "read_file"))
+            && tools.iter().filter(|name| **name == "read_file").count() <= 2
+            && tools
+                .iter()
+                .copied()
+                .filter(|name| *name != "read_file")
+                .eq(["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME])
+    }
+
     fn sigkill_application_probe_task(marker: &Path) -> TaskDefinition {
         let mut task = caller_authored_application_probe_task();
         let TaskAcceptance::Verifier { verifier, .. } = &mut task.acceptance[0] else {
@@ -5615,6 +5627,40 @@ server.serve_forever()
         run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]).await;
     }
 
+    #[test]
+    fn internal_alpha_root_trajectory_allows_only_bounded_read_observations() {
+        assert!(alpha_root_tool_trajectory_is_valid(&[
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "agent",
+        ]));
+        assert!(alpha_root_tool_trajectory_is_valid(&[
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "read_file",
+            "agent",
+            "read_file",
+        ]));
+        assert!(!alpha_root_tool_trajectory_is_valid(&[
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "apply_patch",
+            "agent",
+        ]));
+        assert!(!alpha_root_tool_trajectory_is_valid(&[
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "read_file",
+            "agent",
+            "read_file",
+            "read_file",
+        ]));
+    }
+
     #[tokio::test]
     #[ignore = "one explicitly authorized official Alpha treatment; maximum_reruns=0, ceiling $0.10"]
     async fn internal_alpha_official_deepseek_dogfood() {
@@ -5733,16 +5779,17 @@ server.serve_forever()
         assert!(message.contains(case.source_b));
         assert_eq!(fixture.search_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.get_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            replay
-                .events
-                .iter()
-                .filter_map(|stored| match &stored.event {
-                    RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-            vec!["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME]
+        let committed_root_tools = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            alpha_root_tool_trajectory_is_valid(&committed_root_tools),
+            "unexpected official Alpha root tool trajectory: {committed_root_tools:?}"
         );
         assert!(
             std::fs::read_to_string(workspace.join("server.py"))

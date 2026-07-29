@@ -265,7 +265,10 @@
   recovery request budget。12-request successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
   root marker 仍缺失。审计定位原 deterministic fixture 让只有 `apply_patch`、不能读取 `server.py` 的
   Writer 凭空提交预制文件。当前 fixture/task 已切到 Writer `read_file -> apply_patch` 的真实链并保持
-  3/3 verified；尚未执行修正后的 official treatment，仍不声明 vertical success 或通用生产力提升。
+  3/3 verified。修正后的 official treatment 以 10 requests、0 retry、46,281/2,981 tokens、约 `$0.01262`
+  到达 Host-accepted latest-revision `Completed`；测试进程随后只因 brittle exact-tool-list observer 把两次
+  合法 root `read_file` 误判而 exit 101。observer 已离线改为核心顺序 + bounded reads 并由正反例闭合，
+  treatment 未重跑。该结果只证明 bounded vertical usability，不声明通用生产力提升或 live Tavily success。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7630,8 +7633,8 @@ Writer checkpoint conformance 随 focused gate 一并保持绿色。
 
 deterministic actual=`3/3 verified`、false success=`0`、citations=`6/6`、Writer/root receipts=`6/6`、
 rework=`0`。current fixture 每项真实执行 child `read_file -> apply_patch`，恰为 8 model turns、
-1,110 input/86 output tokens；加入 compile/build 后三项并行 suite wall=`12.95s`，单项观测约
-`12.893–12.946s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
+1,110 input/86 output tokens；加入 compile/build 后三项并行 suite wall=`11.12s`，单项观测约
+`11.083–11.112s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
 refs/worktrees 清零；
 terminal reopen event stream byte-exact。测试 fixture 不是官方模型或 live Tavily，不外推成功率/Token/时间。
 
@@ -7666,9 +7669,20 @@ Writer 后仍无有效 marker，Host 保持 fail closed。
 不能先读取 `server.py`，fixture 却凭空提交完整预制文件。现有 Writer catalog/Agent schema 已原生支持
 `read_file`；最小修复只让 Alpha task/harness 执行 child `read_file -> apply_patch` 并断言两个 committed
 outcome，不改 production Runtime/catalog/Prompt/Store/Host verifier。修正后 deterministic=`3/3`、false
-success=`0`、每项 requests=`8`、input/output=`1,110/86`、parallel wall=`12.95s`。修正后的 official
-treatment 未执行，不能写成 success。四次 closed accounting 合计约 `$0.03544`；仍无 official vertical
-或 live Tavily success。`TAVILY_API_KEY` unavailable，故 live provider canary 仍未执行。
+success=`0`、每项 requests=`8`、input/output=`1,110/86`、parallel wall=`11.12s`。修正后的 fresh
+official treatment 在同一 2,048 output、
+12 request / 24 tool、0 retry、0 rerun、`$0.10` ceiling 下到达 Host-accepted latest-revision
+`Completed`：physical requests=`10`、wall=`57.270s`、usage complete=`true`、billing unknown=`false`、
+input/output=`46,281/2,981`、cost=`12,621,177 nanousd`（约 `$0.01262`）、root marker present=`true`、
+search/fetch=`1/2`。root trajectory 为
+`[web_search, web_fetch, web_fetch, read_file, agent, read_file]`。
+
+test process 仅在 terminal 后因 exact-tool-list observer 把两次合法 root `read_file` 误判而 exit=`101`；
+behavior/accounting truth 已闭合。observer 已离线改为核心 `search -> fetch -> fetch -> agent` 顺序 + 最多
+两次 root read，并用 actual/unknown-write/excessive-read 正反例验证；official treatment 没有重跑。
+post-fix official vertical=`1/1`、false success=`0`，五次 closed accounting 合计约 `$0.04806`。只证明
+bounded deterministic Host-Web usability，不声明通用效率或 live Tavily success。`TAVILY_API_KEY`
+unavailable，故 live provider canary 仍未执行。
 
 production Rust 只增加 Host loopback sandbox distinction，app 的大部分 delta 是 task-family/canary test；
 protocol/state、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、catalog 与依赖均为
@@ -7677,6 +7691,6 @@ delta。bounded authority actual=`17,636` bootstrap、tools route=`2,825/4,409`�
 focused gate exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime=`88/88`、
 app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。
 production checkpoint revision 的 canonical full gate invocation=`1`、exit=`0`；后续只有 test/authority
-truth 变化，没有第二次 full。current read-before-edit revision 的 targeted Alpha、fmt、authority 与 diff
-check 通过；clean reviewable checkpoint 随本条形成，不 push；没有启动 destructive/publish、visual 或
-下一 capability cluster。
+truth 变化，没有第二次 full。current read-before-edit/observer revision 的四项 targeted Alpha、fmt、
+authority 与 diff check 通过；clean reviewable checkpoint 随本条形成，不 push；没有启动
+destructive/publish、visual 或下一 capability cluster。

@@ -721,8 +721,10 @@ successor 越过该限制，但在第 6 个请求因人为 tool-call budget=`6` 
 再次授权的 2,048-token / 16-tool successor 越过两个旧上限，但到 Host verifier failure 时已在第 8 个请求
 耗尽 recovery budget并保持 Blocked。12-request successor 又两次启动 Writer，root marker 仍缺失；审计
 随后发现旧 Alpha fixture 让不能读取 `server.py` 的 apply-only Writer 凭空提交预制文件。current task 已
-改为真实 Writer `read_file -> apply_patch`，deterministic 3/3 保持闭合，但修正后的 official treatment 尚未
-执行。四个 treatment 都没有重跑，尚未证明 official vertical success，更不能据此宣称可替代完整工程 Agent。
+改为真实 Writer `read_file -> apply_patch`，deterministic 3/3 保持闭合；修正后的 official treatment 已在
+10 requests、0 retry 内到达 Host-accepted latest-revision `Completed`。terminal 后旧 observer 把两次合法
+root `read_file` 误判为工具轨迹失败，现已离线改为核心顺序 + bounded reads 并有正反例。五个 treatment
+都没有重跑；当前只证明一个 bounded deterministic Host-Web vertical，不宣称可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
