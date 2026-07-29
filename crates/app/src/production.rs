@@ -5388,6 +5388,31 @@ server.serve_forever()
                 _ => None,
             })
             .expect("one isolated Writer task");
+        let child = app
+            .store
+            .load(&writer_task.child_run_id)
+            .await
+            .expect("load Writer child")
+            .expect("Writer child exists");
+        let child_verifier_diagnostics = child
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } => Some(json!({
+                    "failure_code": outcome.failure_code,
+                    "operation": outcome.operation,
+                    "retry": outcome.retry,
+                    "evidence": outcome.evidence.status,
+                    "metadata": outcome.metadata,
+                    "has_verifier_observation": outcome.verifier_observation.is_some(),
+                    "has_receipt": receipt.is_some(),
+                    "content": outcome.content,
+                })),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let agent_outcome = replay
             .events
             .iter()
@@ -5402,13 +5427,14 @@ server.serve_forever()
             .expect("one isolated Writer tool outcome");
         assert!(
             agent_outcome.is_success(),
-            "internal Alpha {} Writer tool failed before root verification: failure_code={:?} operation={:?} retry={:?} metadata={:?} content={}",
+            "internal Alpha {} Writer tool failed before root verification: failure_code={:?} operation={:?} retry={:?} metadata={:?} content={}; child_terminal={:?}; child_verifier_diagnostics={child_verifier_diagnostics:?}",
             case.id,
             agent_outcome.failure_code,
             agent_outcome.operation,
             agent_outcome.retry,
             agent_outcome.metadata,
             agent_outcome.content,
+            child.snapshot.terminal,
         );
         assert!(
             replay.events.iter().any(|stored| matches!(
@@ -5445,12 +5471,6 @@ server.serve_forever()
             case.id,
         );
 
-        let child = app
-            .store
-            .load(&writer_task.child_run_id)
-            .await
-            .expect("load Writer child")
-            .expect("Writer child exists");
         assert!(
             matches!(
                 child.snapshot.terminal.as_ref(),
@@ -5724,31 +5744,17 @@ server.serve_forever()
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     #[cfg_attr(
         not(target_os = "macos"),
         ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
     )]
-    async fn internal_alpha_constant_cross_code_web_writer_recovery_task() {
-        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[0]).await;
-    }
-
-    #[tokio::test]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
-    )]
-    async fn internal_alpha_function_cross_code_web_writer_recovery_task() {
-        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[1]).await;
-    }
-
-    #[tokio::test]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
-    )]
-    async fn internal_alpha_mapping_cross_code_web_writer_recovery_task() {
-        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]).await;
+    async fn internal_alpha_concurrent_cross_code_web_writer_recovery_family() {
+        tokio::join!(
+            run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[0]),
+            run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[1]),
+            run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]),
+        );
     }
 
     #[test]
