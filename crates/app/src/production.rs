@@ -8462,17 +8462,18 @@ time.sleep(60)
         .await
         .expect("supervised run id timeout");
 
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !marker.is_file() {
+        let application_pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(raw) = std::fs::read_to_string(&marker)
+                    && let Ok(pid) = raw.parse::<u32>()
+                {
+                    break pid;
+                }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("application process start marker timeout");
-        let application_pid = std::fs::read_to_string(&marker)
-            .expect("application pid marker")
-            .parse::<u32>()
-            .expect("application pid");
 
         assert!(
             ProcessCommand::new("/bin/kill")
