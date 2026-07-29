@@ -7721,3 +7721,46 @@ destructive/publish、visual 或下一 capability cluster。当前 Writer closur
 exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。当前 closure revision 的 canonical full invocation=`1`、
 exit=`0`，覆盖 authority/public、fmt、workspace all-features check、strict Clippy、全 workspace tests、
 process-crash/reopen suites 与 doctests；同一 code revision 没有第二次 full，结果写回后仅复核 authority/diff。
+
+### 40.18 首个 Release Candidate 集成与 Dogfood（已完成）
+
+本 checkpoint 不增加 capability；问题是 40.17 的 Code/Web/Browser/Writer/Recovery 组件证据仍未冻结成
+可安装、可重放且有真实 DeepSeek accounting 的 release candidate。owner=`eval + repository delivery`，
+production Rust、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、catalog、Provider
+和 dependency delta=`0`。旧路不是 production 实现，而是只靠分散测试、未安装 binary 与未集成远端
+revision 宣称可发布；cutover 后由一个 frozen five-arm family、同一 immutable binary、SQLite reopen、
+delivery lifecycle 与公开 CI 共同裁决。
+
+Writer Alpha 的最后远端问题属于 fixture/concurrency defect，不是 production completion defect。macOS
+runner 的 `/usr/bin/python3` 是会触发被拒全局 tmp cache 的 `xcrun` shim；改为解析真实 `python3` 后，
+Python `ThreadingHTTPServer` 冷启动并发仍使 Host probe 抖动。fixture 最终改为最小 socket HTTP server，
+删除 ThreadingHTTPServer/共享锁路径，没有提高 timeout、放宽 sandbox 或改变 production Rust。revision
+`9b105952f` 的公开 CI run `30435565728` 全绿：macOS Alpha=`3/3`，Ubuntu/macOS delivery 与全部 quality gate
+通过；root latest-revision 只接受 integrated final marker，Writer seal/integrate/cleanup 各 committed 一次，
+terminal reopen reexecution=`0`。
+
+RC contract 固定 TypeScript/Python/Rust-recovery/explicit-Writer 四个正向工程任务与一个 authorization
+安全反例；runs/task=`1`、maximum reruns=`0`、runtime retries=`0`、suite ceiling=`$0.10`。immutable
+`dse 0.8.68 (506000cda583)` SHA-256=`934c199d...c3438` 的 official DeepSeek actual 为正向=`4/4`、
+正确拒绝=`1/1`、false success=`0`、requests=`38`、input/output=`450,415/20,224`、cache hit/miss=
+`379,520/70,895`、wall=`381,882ms`、cost=`66,663,402 nanousd`（约 `$0.066663402`）、accounting
+complete=`5/5`。Rust task 在一个真实 SIGKILL/reopen 后继续并完成；每个 terminal cold reopen 的 event facts
+一致且不再执行模型、verifier 或副作用。Writer root/child requests=`6/6`，root direct writes=`0`，只集成
+三个授权文件，seal/integrate/cleanup 均 exactly once。
+
+同一 candidate 已用既有 delivery owner 打包为 aarch64 macOS tarball，SHA-256=
+`bb01fe0e...127a4`、size=`16,621,281` bytes；隔离 prefix 的 install/version/auth-read/uninstall 通过，CLI/TUI
+都报告 `0.8.68 (506000cda583)`，用户数据保留。完整 delivery fixture 的 install/upgrade/rollback/uninstall/
+tamper matrix 通过。RC eval delta=`+494/-69`、production delta=`0`；69 行是把旧 M30-only evaluator 分支
+收敛成同一 campaign owner，没有第二 evaluator。raw journal 保持 ignored、`0600`、hash-chained，不进入 Git；
+credential 临时文件已 unlink。decision=`keep_release_candidate` 仅适用于该 bounded family，不声明 live
+Tavily、通用效率或产品级成功率；费用只是闭合状态显示，不是产品能力目标。下一能力簇在 RC 合并前不启动。
+
+首个 RC authority revision 的 focused candidate 暴露一个 2026-07-16 遗留 test-only duplicate wall gate：
+unread stdout helper 已在 25 秒硬截止 kill+panic，case 又要求 process `<22s`；实际 child 自行非零退出、单
+请求和 backpressure 全部成立，但在 package scheduling 下耗时 `22.028s`。fixture 删除第二个偶然 wall
+assertion，继续保留相同 25 秒 hard kill、非零退出、exact-one request 与至少 8 KiB unread bytes；production
+delta=`0`，没有提高 timeout。修正后 exact failing test=`1/1 in 20.22s`、相关 exec matrix=`30/30 in
+90.05s`；只有新 revision 才重新进入 gate。final focused exit=`0`：tools=`412/6`、DeepSeek=`61/1`、
+Runtime=`88/0`、app=`76/4`、app-server=`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`；
+结果写回后只复核 authority/diff，同一 production revision 不重跑 full。

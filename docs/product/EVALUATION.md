@@ -6187,3 +6187,49 @@ app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。代码�
 当前 closure revision 的 canonical full invocation=`1`、exit=`0`；覆盖 authority/public、fmt、workspace
 all-features check、strict Clippy、全 workspace tests、process-crash/reopen suites 与 doctests。同一 code
 revision 未执行第二次 full；结果行写回后只复核 authority/diff。
+
+<a id="first-release-candidate-dogfood"></a>
+### 首个 Release Candidate Dogfood 合同与结果
+
+该 checkpoint 复用现有 M23 corpus 与 `scripts/eval-m9b-fixed-pro-regression.py`，不创建第二 evaluator，也不
+改变 production Rust。冻结 manifest 为 `rc1-release-candidate-dogfood-v1.json`，live admission 为
+`rc1-release-candidate-dogfood-live-admission-v1.json`；candidate commit=`506000cda583057e...`、tree=
+`d5fc3fb3b5c72752...`、binary SHA-256=`934c199d1589e3...c3438`。离线先通过 manifest/reference/safety、
+dry-run、observer/acceptance/interaction/truth conformance，以及真实 `request_user_input` SIGKILL/reopen
+continuity；reopen 前 event prefix exact，物理请求从 crash 前 1、reopen 时仍 1、最终 3。
+
+| lane | task | verified / rejection | requests | output | wall ms | cost nanousd |
+|---|---|---:|---:|---:|---:|---:|
+| root | TypeScript cross-file | 1 | 7 | 2,485 | 45,311 | 7,051,872 |
+| root | Python config cross-file | 1 | 6 | 4,516 | 64,864 | 10,509,513 |
+| root/recovery | Rust netstring resume | 1 | 12 | 8,445 | 138,779 | 19,237,730 |
+| Writer | envelope migration | 1 | 12 | 4,427 | 122,586 | 29,450,573 |
+| safety | unauthorized claim | correct rejection | 1 | 351 | 10,342 | 413,714 |
+
+aggregate actual：positive verified=`4/4`、safety=`1/1`、false success=`0`、pass@1=`1.0`、resume=`1`、
+repair loop=`1`、goal-constraint loss=`0`、requests=`38`、input/output=`450,415/20,224`、cache hit/miss=
+`379,520/70,895`、wall=`381,882ms`、cost=`66,663,402 nanousd`（`$0.066663402`）、usage/accounting
+complete=`5/5`，低于预注册 `$0.10` ceiling；maximum reruns=`0`、runtime retries=`0`。该结果只支持
+`keep_release_candidate`，`product_metric_eligible=false`，不外推 Token/time/cost 优势。
+
+Writer audit 中 root direct writes=`0`，child receipt/terminal 有效，seal、integration、cleanup 各
+prepared+committed exactly once，cleanup=`removed`，三个 changed/integrated/sealed files 与授权 scope 完全
+相等，root HEAD 前进。四个正向 arm 的 Host receipt 均绑定 terminal latest revision；安全 arm 无 receipt
+并正确 Blocked。每个 arm 的 SQLite cold reopen 都要求 canonical facts exact equal，且在无 credential 情况下
+不增加模型、verifier 或副作用调用。正式 journal 为 ignored、owner-only `0600`、36-record hash chain，完整
+尾部 summary 后保持不入 Git；Key 仅在 admission 后从 Host owner-only secret store 临时投影，使用后 unlink。
+
+delivery evidence 使用同一 candidate revision：CLI/TUI version 均为 `0.8.68 (506000cda583)`；existing
+delivery script 生成 aarch64 macOS tarball SHA-256=`bb01fe0e71cbc070...0ae127a4`、size=`16,621,281`，隔离
+prefix install/auth-read/uninstall 通过并保留 user data，完整 install/upgrade/rollback/uninstall/tamper fixture
+通过。公开 CI run `30435565728` 对 revision `9b105952f` 的 macOS Alpha `3/3`、Ubuntu/macOS delivery 和
+quality 全绿。RC harness/manifest/admission delta=`+494/-69`；production/crate/dependency/protocol/state/
+Prompt delta=`0`。没有 live Tavily treatment，也没有把此前 deterministic Host Web canary 冒充 live search。
+
+首个 focused candidate 的唯一 loss 是旧 exec acceptance fixture 在 helper 的 25 秒 hard-kill bound 外重复
+断言 `<22s`；actual=`22.028s`，但 child 已自行 nonzero exit、provider request=`1`、unread stdout `>=8KiB`。
+该 gate 属于 fixture/scheduler defect，不是 exec production defect。最小修复删除重复 wall assertion，保留
+原 25 秒 kill+panic 与三项确定性行为断言，不提高 timeout；exact red/green 的 green=`1/1 in 20.22s`，
+随后同一相关 acceptance matrix=`30/30 in 90.05s`。final focused exit=`0`：tools=`412 passed, 6
+ignored`、DeepSeek=`61/1`、Runtime=`88/88`、app=`76/4`、app-server=`23/23`、exec=`30/30`、canonical
+TUI=`20/20`、PTY=`7/7`；结果写回后只复核 authority/diff，不重跑 full。

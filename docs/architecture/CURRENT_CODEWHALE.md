@@ -386,6 +386,9 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
   回收 in-flight probe process tree；
 - 以同一 root production composition 承载 search/fetch、isolated Writer、Host compile/app probe、
   seal/integrate/cleanup 与 terminal SQLite replay；Internal Alpha 的三个独立 task 已闭合该水平链；
+- 首个 release candidate 又以同一 immutable binary 完成 TypeScript、Python、Rust recovery 与 explicit
+  Writer 四个 official DeepSeek 工程任务及一个正确安全拒绝；所有 terminal cold reopen 只重放 committed
+  facts，Writer root 不直接写入且 seal/integrate/cleanup 各 committed 一次；
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
@@ -725,6 +728,10 @@ current product 已能完成 deterministic unknown-source research vertical，�
 三项现在无共享进程锁并发闭合。另一个 typed integration-conflict conformance 证明 seal 后若 root CAS
 integration 失败，canonical revision/bytes 保持 base/draft、root receipt=`0`、terminal=`Blocked`，同时
 cleanup=`Removed` 且没有 integration side effect；因此 root completion 只接受已集成 final marker。
+首个 RC dogfood 冻结五个 cross-language arm，actual 为 positive=`4/4`、正确安全拒绝=`1/1`、false
+success=`0`、SIGKILL/reopen resume=`1`，official accounting complete=`5/5`；它支持 bounded
+`keep_release_candidate`，不支持 live-search、通用效率或产品级成功率声明。candidate CLI/TUI 已通过隔离
+install/run/uninstall 和既有 delivery lifecycle；production Rust、Runtime/Store/Prompt/catalog delta=`0`。
 首个 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed；显式授权的 fresh 2,048-token
 successor 越过该限制，但在第 6 个请求因人为 tool-call budget=`6` fail closed。两个 treatment 都没有重跑，
 再次授权的 2,048-token / 16-tool successor 越过两个旧上限，但到 Host verifier failure 时已在第 8 个请求
