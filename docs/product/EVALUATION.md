@@ -6074,7 +6074,8 @@ current 每个 task 的 fixture model requests=`8`、input/output=`1,110/86`、r
 该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实 DeepSeek 的
 通用 success。这三个正向结果来自 macOS Seatbelt；Linux bwrap 的 isolated network namespace 不与 Host
 共享，因此公开 CI 明确 ignore 该正向 family，并以普通 root probe 加 namespace/egress 负向合同覆盖，
-不记录跨平台正向 success。
+不记录跨平台正向 success。macOS job 复用 M45 已证明的进程 fixture 单锁，避免三个 checkpoint 在
+reserved port 释放到 Python bind 的窗口相互抢占；这只删除 test false deny，不改变 production retry。
 
 #### 最小 integration fix 与安全反例
 

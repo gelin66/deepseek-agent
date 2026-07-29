@@ -1428,7 +1428,7 @@ fn environment_mismatch_reason(
 mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
     use std::time::Instant;
 
     use dse_context::compaction::{ContextInput, effective_context};
@@ -2792,6 +2792,11 @@ mod tests {
         Constant,
         Function,
         Mapping,
+    }
+
+    fn internal_alpha_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     const ALPHA_CHECKPOINT_CASES: [AlphaCheckpointCase; 3] = [
@@ -5300,6 +5305,7 @@ server.serve_forever()
     }
 
     async fn run_internal_alpha_checkpoint_case(case: AlphaCheckpointCase) {
+        let _guard = internal_alpha_test_lock().lock().await;
         let started = Instant::now();
         let temp = tempfile::tempdir().expect("internal Alpha root");
         let workspace = temp.path().join("repo");
@@ -5380,6 +5386,25 @@ server.serve_forever()
                 .await;
         let requests = server.finish().await;
 
+        let verifier_diagnostics = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome, receipt, ..
+                } => Some(json!({
+                    "failure_code": outcome.failure_code,
+                    "operation": outcome.operation,
+                    "retry": outcome.retry,
+                    "evidence": outcome.evidence.status,
+                    "metadata": outcome.metadata,
+                    "has_verifier_observation": outcome.verifier_observation.is_some(),
+                    "has_receipt": receipt.is_some(),
+                    "content": outcome.content,
+                })),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let terminal_message = match replay
             .snapshot
             .terminal
@@ -5387,7 +5412,10 @@ server.serve_forever()
             .map(|outcome| &outcome.terminal)
         {
             Some(TerminalState::Completed { message, .. }) => message,
-            other => panic!("internal Alpha {} did not complete: {other:?}", case.id),
+            other => panic!(
+                "internal Alpha {} did not complete: {other:?}; verifier_diagnostics={verifier_diagnostics:?}",
+                case.id
+            ),
         };
         assert!(terminal_message.contains(case.source_a));
         assert!(terminal_message.contains(case.source_b));

@@ -575,7 +575,8 @@ typed failure、cancel 和 timeout 都终止 owned process group/Job 并 reap；
 派生 `host_loopback_only` sandbox：macOS 仅允许 `localhost:*` bind/inbound、没有 network-outbound；
 Linux 保持 isolated network namespace。因 Host 与 Writer 不共享该 namespace，isolated Writer 的
 Host-to-application 正向 loopback checkpoint 只在 macOS Seatbelt job 执行；Linux CI 保留普通 root
-probe 与 bwrap namespace/egress 负向合同，不能把该正向路径写成跨平台成功。该例外不进入
+probe 与 bwrap namespace/egress 负向合同，不能把该正向路径写成跨平台成功。多个进程型正向
+checkpoint 在同一 test binary 内串行化，避免 Host 释放 reserved port 后的 fixture 竞争。该例外不进入
 model-visible shell/Web authority。
 
 lease 已随 `HostVerificationPrepared` 的 frozen verifier 持久化，不增加 PID/port sidecar。

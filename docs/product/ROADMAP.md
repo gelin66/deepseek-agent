@@ -264,7 +264,8 @@
   `$0.00933` 到达 `Blocked(Host application_probe deterministic failure)`；它越过两个旧上限，但耗尽
   recovery request budget。Linux bwrap 保持独立 network namespace，因此公开 CI 在 macOS job 跑这三个
   正向 checkpoint，在 Linux workspace job 明确 ignore 并验证 namespace 不共享；不冒充跨平台正向成功。
-  12-request successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
+  macOS 的三个进程 fixture 以单锁串行，删除 reserved-port 竞争造成的 CI false deny。12-request
+  successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
   root marker 仍缺失。审计定位原 deterministic fixture 让只有 `apply_patch`、不能读取 `server.py` 的
   Writer 凭空提交预制文件。当前 fixture/task 已切到 Writer `read_file -> apply_patch` 的真实链并保持
   3/3 verified。修正后的 official treatment 以 10 requests、0 retry、46,281/2,981 tokens、约 `$0.01262`
