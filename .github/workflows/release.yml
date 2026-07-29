@@ -152,26 +152,36 @@ jobs:
           and this repository's immutable release attestation. Windows native
           is not included; Windows users install the Linux x86_64 build in WSL2.
           EOF
-          gh release create "$TAG" \
-            --repo "$DSE_RELEASE_REPOSITORY" \
-            --target "$RELEASE_SHA" \
-            --title "DSE $VERSION" \
-            --notes-file "$notes" \
-            --draft
-          releases="$(gh api \
-            "repos/$DSE_RELEASE_REPOSITORY/releases?per_page=100")"
-          release_id="$(printf '%s' "$releases" | jq -er \
+          payload="$RUNNER_TEMP/release.json"
+          jq -n \
+            --arg tag "$TAG" \
+            --arg target "$RELEASE_SHA" \
+            --arg name "DSE $VERSION" \
+            --rawfile body "$notes" \
+            '{
+              tag_name: $tag,
+              target_commitish: $target,
+              name: $name,
+              body: $body,
+              draft: true,
+              prerelease: false
+            }' >"$payload"
+          release="$(gh api --method POST \
+            "repos/$DSE_RELEASE_REPOSITORY/releases" \
+            --input "$payload")"
+          release_id="$(printf '%s' "$release" | jq -er \
             --arg tag "$TAG" \
             --arg sha "$RELEASE_SHA" \
-            '[.[] | select(
+            'if
               .tag_name == $tag and
               .target_commitish == $sha and
               .draft == true and
               .prerelease == false and
               .immutable == false and
-              (.assets | length) == 0
-            )] | if length == 1 then .[0].id else
-              error("expected exactly one matching empty Draft") end')"
+              (.assets | length) == 0 and
+              (.id | type) == "number"
+            then .id else
+              error("create release response is not the expected empty Draft") end')"
           printf 'release_id=%s\n' "$release_id" >>"$GITHUB_OUTPUT"
 
   native_assets:
