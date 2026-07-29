@@ -266,6 +266,9 @@ jobs:
         with:
           ref: ${{ needs.admission.outputs.release_sha }}
           persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - name: Download the four native assets from the Draft Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -238,6 +238,8 @@ def main() -> None:
         'path == ".github/workflows/ci.yml"',
         "actions/runs/$ci_run_id/jobs",
         "cargo fetch --locked",
+        "actions/setup-python@v6",
+        'python-version: "3.13"',
         "dse-installer.sh",
         "dist-manifest.json",
         "SBOM.spdx.json",
@@ -264,6 +266,12 @@ def main() -> None:
     if fetch_index < 0 or package_index < 0 or fetch_index > package_index:
         raise AssertionError(
             "release workflow must fetch the locked graph before the offline package build"
+        )
+    python_index = workflow.find("actions/setup-python@v6")
+    assemble_index = workflow.find("./scripts/dse-release.py assemble")
+    if python_index < 0 or assemble_index < 0 or python_index > assemble_index:
+        raise AssertionError(
+            "release workflow must provision Python with tomllib before assembly"
         )
     all_workflows = "\n".join(
         path.read_text(encoding="utf-8")
