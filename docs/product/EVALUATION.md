@@ -6297,12 +6297,19 @@ verifier、`gh attestation verify` 与 `gh release verify-asset` 通过，证明
 `0.8.69 (83c9d4315194)`、doctor=`0`、installer-owned paths 删除，`DSE_HOME` marker SHA-256 始终为
 `cf7d4f3696c52757931811e05a5f672870af9ee9532bccdbcb8cbb579f0e3063`。
 
-fresh public result 仍为 red：全新隔离 HOME 从官网取得正确 shell MIME 后，Sites bootstrap 下载
-`SHA256SUMS` 遭 curl 35 reset；当前 Sites `fetch` 只有 `--retry 2 --retry-connrefused`，缺少
-`--retry-all-errors`/`--retry-max-time`，并误报 `release v0.8.69 is missing SHA256SUMS`。versioned installer
-未被调用、owned path 未创建、预置 marker SHA-256 保持
+fresh public result 已转绿。Sites revision
+`65b0a1135a7d0a1822a5f5c088d58ea66d07df6c` 把 latest lookup 与 exact asset fetch 切到 bounded
+`--retry-all-errors`/`--retry-max-time`，并把 curl 18/22/28/35/56 分别保留为
+partial/missing/timeout/HTTPS transport；公网 MIME 仍为 `text/x-shellscript; charset=utf-8`，cache 为
+`public, max-age=300, must-revalidate`。Sites 的唯一 post-deploy 隔离 treatment 已解析 exact tag、
+校验 bootstrap assets 并调用 versioned installer，随后 GitHub platform archive 连续 curl 56，bounded
+retries 耗尽后得到 typed HTTPS-transport failure；owned path 为 0，22-byte marker SHA-256 前后均为
+`a5c99caf436b64e4d0f1bbb5f1d90db942253057128089af6d44836f120f8508`，不计 success。
+
+程序线程的独立全新 macOS arm64 HOME 执行精确主命令时同样真实遭遇 curl 56 reset，但同一命令
+有界恢复并完成 exact `v0.8.69` 下载、checksum、安装；`dse`/`dse-tui`
+均报告 `0.8.69 (83c9d4315194)`、doctor exit=`0`，预置 marker SHA-256 前后均为
 `a007de2d591722ab69bbad89222b1f395c9573b0c9480f96e3ebd9df793ed4b5`。behavior status=
-`repository_release_complete_public_fresh_blocked_by_sites_transport_contract`；Sites 采用同一
-18/22/28/35/56 typed retry 合同并让一次 fresh 主命令/version/doctor 通过前，不声明 entire public Goal
-complete。无需重发 tag/Release 或重跑仓库 full。原始与 patch 路径均未发起 official DeepSeek request，
-Runtime/Event/Store/catalog/Prompt/DeepSeek wire delta=`0`。
+`keep_public_immutable_release_and_one_command_install`，public false success=`0`。无需重发 tag/Release
+或重跑仓库 full。原始与 patch 路径均未发起 official DeepSeek request，Runtime/Event/Store/catalog/
+Prompt/DeepSeek wire delta=`0`。

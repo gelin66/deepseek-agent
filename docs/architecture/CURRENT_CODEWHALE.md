@@ -387,14 +387,17 @@ installer 的有界 `--retry-all-errors` 恢复后 8/8 checksum/verifier/attesta
 Sites 的 `https://dse.run/install.sh` 返回 `text/x-shellscript; charset=utf-8` 与 300 秒
 must-revalidate cache，不托管 binary。隔离 macOS arm64 HOME 已通过主命令完成 `v0.8.68 -> v0.8.69`
 upgrade、同版重跑、rollback、再升级、verify 与 uninstall；version/doctor 正确且 `DSE_HOME` marker
-byte-identical。因此仓库 release 和 versioned installer 当前是已闭合事实。
+byte-identical。
 
-整个 public one-command Goal 尚有一个 Sites-owned transport gap：fresh HOME 下载 `SHA256SUMS` 时遭
-curl 35 reset；当前薄 bootstrap 只有 `--retry 2 --retry-connrefused`，缺少
-`--retry-all-errors`/`--retry-max-time`，并把 transport failure 误报为 asset missing。该次 versioned
-installer 未被调用、没有 owned install path、预置 marker 未改变。现有 Sites 线程必须把 latest 与 asset
-fetch 切到同一 18/22/28/35/56 typed bounded-retry 合同并通过一次 fresh main-command/version/doctor；
-不需要改 Runtime/Store、重发 immutable Release 或重跑仓库 full。
+Sites revision `65b0a1135a7d0a1822a5f5c088d58ea66d07df6c` 已把 latest 与 exact asset fetch 切到 bounded
+`--retry-all-errors`/`--retry-max-time`，并保留 curl 18/22/28/35/56 的
+partial/missing/timeout/HTTPS-transport 语义。Sites 的唯一 post-deploy treatment 已通过 bootstrap
+校验并进入 versioned installer，随后 GitHub tarball curl 56 在 retries 耗尽后 typed fail，owned path
+为 0 且 marker byte-identical。程序线程的独立全新 macOS arm64 HOME 执行精确主命令时也真实遭遇
+curl 56 reset，但同一命令有界恢复后安装 exact `v0.8.69`；`dse`/`dse-tui` version 为
+`0.8.69 (83c9d4315194)`、doctor exit=`0`，预置 `DSE_HOME` marker byte-identical。因此仓库 release、
+versioned installer、DSE.RUN 主入口和 fresh public lifecycle 都是已闭合事实；不需要改 Runtime/Store、
+重发 immutable Release 或重跑仓库 full。
 
 原始切片 focused/full 与 patch targeted/focused 均通过；首次 patch full 只因 version 改变后的 prompt
 provenance fixture 保留旧 `Cargo.toml` hash 而失败，更新 exact block/aggregate provenance 后的新 revision

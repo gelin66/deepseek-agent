@@ -143,10 +143,24 @@ installer-owned 路径按合同删除且 `DSE_HOME` marker SHA-256 始终 byte-i
 实际遭遇多次 curl 35/56 reset；有界 `--retry-all-errors` 恢复后 8 项资产再次通过 checksum、
 release verifier 与两类 attestation，直接证明 patch 覆盖了原始故障类。
 
-公共入口仍有一个明确的跨仓未闭合项。干净 HOME 执行主命令时，Sites bootstrap 下载
-`SHA256SUMS` 遭遇 curl 35 reset；当前 Sites `fetch` 只有 `--retry 2 --retry-connrefused`，没有
-`--retry-all-errors`/`--retry-max-time`，并把所有 fetch failure 误报为 asset missing。版本化
-installer 尚未被调用、没有 installer-owned 安装副作用、预置 marker 未改变。因此仓库 release/
-installer 已交付，但整个 public one-command Goal 只有在现有 Sites 线程把 latest 与 asset fetch
-切到本 ADR 已冻结的 bounded retry 和 18/22/28/35/56 typed failure 合同，并在 fresh HOME 重新通过
-主命令与 version/doctor 后才能标记 complete；不需要重发 tag、Release 或重跑仓库 full gate。
+公共入口也已闭合。现有 Sites 线程以 revision
+`65b0a1135a7d0a1822a5f5c088d58ea66d07df6c` 部署薄 bootstrap；latest lookup 与 exact asset
+fetch 使用 bounded `--retry-all-errors`/`--retry-max-time`，并分别保留 curl
+18/22/28/35/56 的 partial/missing/timeout/HTTPS-transport 语义。公网仍返回
+`text/x-shellscript; charset=utf-8` 与 300 秒 must-revalidate cache，不取 mutable branch、不托管
+binary。
+
+Sites 线程的唯一 post-deploy 隔离 treatment 证明 bootstrap 已解析 `v0.8.69`、校验 installer 与
+manifest 并调用 versioned installer；随后 GitHub platform archive 连续 curl 56 并在 bounded retries
+耗尽后 typed fail，owned path 未创建，22-byte `DSE_HOME` marker SHA-256 前后均为
+`a5c99caf436b64e4d0f1bbb5f1d90db942253057128089af6d44836f120f8508`。这证明故障不再被误报为
+missing，也证明 failure atomicity，不算安装成功。
+
+程序线程的独立全新 macOS arm64 HOME 随后执行精确主命令
+`curl -fsSL https://dse.run/install.sh | sh`。下载期间真实出现 curl 56 reset，同一命令的有界重试
+恢复后完成 exact `v0.8.69` 解析、bootstrap asset checksum、versioned installer 与 native archive
+校验和安装；`dse`/`dse-tui` 均报告 `0.8.69 (83c9d4315194)`，`dse doctor --json` exit=`0`，
+预置 `DSE_HOME` marker SHA-256 前后均为
+`a007de2d591722ab69bbad89222b1f395c9573b0c9480f96e3ebd9df793ed4b5`。因此 stable Release、
+versioned installer、DSE.RUN 主入口和 fresh public lifecycle 全部满足本 ADR 的完成语义；没有重发
+tag/Release 或重跑仓库 full gate。

@@ -277,7 +277,7 @@
   `226e387a54efdb1a22c43f91b11be94068cea534`，合并后 tree 与本地正式 RC tree byte-exact；默认分支
   CI run `30441290667` 的 quality、Ubuntu delivery、macOS Writer/delivery 全绿。RC Goal 已关闭，
   没有启动新 capability cluster。
-- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer。patch stable `v0.8.69`
+- ADR-0020 Public Immutable Release + Installer 已完成并 keep。patch stable `v0.8.69`
   已从 default-branch exact `83c9d43151946c554b1e8ecab028e8eec54bc42f`、tree
   `21e48a0a384b232a72fad778de45a16e2ebbdd19` 经 run `30474005480` 发布：Release
   `draft=false`、`prerelease=false`、`immutable=true`，四 native archive 加 installer/manifest/
@@ -285,12 +285,15 @@
   uninstall 全绿。公网 macOS arm64 已完成 `v0.8.68 -> v0.8.69` upgrade、同版重跑、rollback、
   再升级、verify、uninstall；installer-owned path 删除且 `DSE_HOME` marker hash 始终不变。
   独立 release 下载遭遇多次 curl 35/56 reset 后由新 `--retry-all-errors` 有界恢复，8/8 checksum/
-  verifier/attestation 通过，仓库 release 与 versioned installer 已交付。
-  仍未闭合的是 Sites 薄 bootstrap：fresh HOME 主命令在下载 `SHA256SUMS` 时遭 curl 35 reset，当前
-  Sites `fetch` 缺少 `--retry-all-errors`/`--retry-max-time` 且误报 asset missing；installer 未被调用、
-  HOME 无安装副作用。现有 Sites 线程只需按 ADR-0020 的 latest/asset bounded retry 与
-  18/22/28/35/56 typed failure 合同修正并复验一次 fresh install/version/doctor；不得重发 tag/Release
-  或重跑仓库 full。Homebrew 不阻塞主入口。
+  verifier/attestation 通过，仓库 release 与 versioned installer 已交付。Sites revision
+  `65b0a1135a7d0a1822a5f5c088d58ea66d07df6c` 已把 latest/asset fetch 切到 bounded all-error retry
+  与 18/22/28/35/56 typed failure，并保持 POSIX shell、exact immutable tag、shell MIME 和 300 秒
+  must-revalidate cache。Sites 的唯一 post-deploy treatment 已通过 bootstrap 校验并进入 versioned
+  installer，随后 GitHub tarball curl 56 在 retries 耗尽后 typed fail，owned path 为 0 且 marker 不变；
+  程序线程的独立全新 macOS arm64 HOME 精确主命令同样真实遭遇 curl 56 reset，但在同一命令内
+  有界恢复后安装 `0.8.69 (83c9d4315194)`；CLI/TUI version、doctor=`0` 和预置
+  `DSE_HOME` marker byte-identical 全部通过。因此公网一键安装闭环已完成；Homebrew 仍是非阻塞的
+  后续次级入口。本里程碑关闭后不自动启动新 capability cluster。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
