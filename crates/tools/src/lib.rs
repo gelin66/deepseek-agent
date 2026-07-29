@@ -69,7 +69,7 @@ pub use web_search::{
     SystemWebSearchNetwork, WebSearchHttpResponse, WebSearchNetwork, WebSearchNetworkError,
 };
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod test_support {
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
