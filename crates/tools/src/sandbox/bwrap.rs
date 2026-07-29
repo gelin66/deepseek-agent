@@ -417,6 +417,19 @@ mod tests {
     }
 
     #[test]
+    fn host_loopback_probe_does_not_share_the_linux_network_namespace() {
+        let workspace = isolated_writer_fixture();
+        let policy = crate::sandbox::SandboxPolicy::isolated_writer(workspace.path())
+            .for_host_loopback_probe()
+            .expect("Host probe policy");
+        let command = build_bwrap_command_for_policy(&policy, workspace.path(), "/bin/true", &[]);
+
+        assert!(policy.has_host_loopback_access());
+        assert!(command.iter().any(|argument| argument == "--unshare-all"));
+        assert!(!command.iter().any(|argument| argument == "--share-net"));
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn available_bwrap_enforces_missing_and_existing_protected_paths() {
         use std::process::Command;
