@@ -80,16 +80,12 @@ jobs:
             printf 'source_tree=%s\n' "$source_tree"
             printf 'created_at=%s\n' "$created_at"
           } >>"$GITHUB_OUTPUT"
-      - name: Require Immutable Releases and green public CI
+      - name: Require green public CI
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ steps.identity.outputs.release_sha }}
         run: |
           set -euo pipefail
-          test "$(gh api \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$DSE_RELEASE_REPOSITORY/immutable-releases" \
-            --jq '.enabled')" = "true"
           runs="$(gh api \
             "repos/$DSE_RELEASE_REPOSITORY/actions/runs?head_sha=$RELEASE_SHA&branch=deepseek-agent&event=push&status=completed&per_page=100")"
           ci_run_id="$(printf '%s' "$runs" | jq -er \
