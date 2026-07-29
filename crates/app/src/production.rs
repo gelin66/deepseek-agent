@@ -5405,6 +5405,24 @@ server.serve_forever()
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let writer_diagnostics = replay
+            .events
+            .iter()
+            .filter(|stored| {
+                matches!(
+                    &stored.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. }
+                        if name == AGENT_TOOL_NAME
+                ) || matches!(
+                    &stored.event,
+                    RuntimeEventKind::AgentTaskPrepared { .. }
+                        | RuntimeEventKind::AgentSealCommitted { .. }
+                        | RuntimeEventKind::AgentIntegrationCommitted { .. }
+                        | RuntimeEventKind::AgentCleanupCommitted { .. }
+                )
+            })
+            .map(|stored| format!("{}:{:?}", stored.sequence, stored.event))
+            .collect::<Vec<_>>();
         let terminal_message = match replay
             .snapshot
             .terminal
@@ -5413,7 +5431,7 @@ server.serve_forever()
         {
             Some(TerminalState::Completed { message, .. }) => message,
             other => panic!(
-                "internal Alpha {} did not complete: {other:?}; verifier_diagnostics={verifier_diagnostics:?}",
+                "internal Alpha {} did not complete: {other:?}; verifier_diagnostics={verifier_diagnostics:?}; writer_diagnostics={writer_diagnostics:?}",
                 case.id
             ),
         };
