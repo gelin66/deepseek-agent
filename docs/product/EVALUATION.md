@@ -6103,10 +6103,19 @@ new-treatment rerun=`0`、ceiling=`$0.10`，并继续使用 deterministic Host W
 request 后 terminal=`Failed(ToolBudgetExceeded { limit: 6 })`，wall=`44.536s`、usage complete=`true`、
 billing unknown=`false`、input/output=`21,015/2,212`、cost=`6,538,253 nanousd`（约 `$0.00654`）；没有
 再运行。该结果证明 2,048 output cap 已越过首个 failure，但 canary 的人为 tool-call budget 仍不足以闭合
-official vertical。future ignored contract 只离线改为 `max_tool_calls=16`，未执行、不能记为通过。故本条
-只 keep deterministic production integration 与 sandbox fix，不声明 official vertical success、真实
-Tavily success 或任何通用 success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider
-requests/charge=`0/unknown`。
+official vertical。`max_tool_calls=16` 只在下一份 fresh 显式授权后作为独立 treatment 执行，结果如下。
+
+用户再次显式授权一个 fresh 2,048-token / 16-tool successor，physical request limit=`8`、runtime retry=`0`、
+new-treatment rerun=`0`、ceiling=`$0.10`。实际 terminal=`Blocked(Host application_probe deterministic
+failure)`，physical requests=`8`、runtime retries=`0`、wall=`68.861s`、usage complete=`true`、billing
+unknown=`false`、input/output=`26,349/4,473`、cost=`9,334,781 nanousd`（约 `$0.00933`）；没有再运行。
+它证明 output/tool 两个旧上限已越过，但 deterministic happy path 本就需要 7 个 model requests，真实模型
+到 Host verifier failure 时已在第 8 个请求耗尽 recovery budget，无法再完成“有效修改→新 revision→复验”。
+Host 没有把失败降格为成功。future ignored harness 只离线加入失败前的 root tool/fixture/marker diagnostics，
+并将未执行的 recovery candidate 调整为 12 model/API requests、24 tools、runtime retries=`0`；仍需 fresh
+显式授权且 rerun=`0`。三次 closed accounting 合计约 `$0.01960`，仍没有 official vertical success。
+故本条只 keep deterministic production integration 与 sandbox fix，不声明真实 Tavily success 或任何通用
+success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=`0/unknown`。
 
 focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime conformance=`88/88`、app=
 `77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。最终 revision

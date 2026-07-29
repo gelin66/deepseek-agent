@@ -5595,7 +5595,7 @@ server.serve_forever()
     }
 
     #[tokio::test]
-    #[ignore = "one official internal Alpha dogfood; one run, maximum_reruns=0, ceiling $0.10"]
+    #[ignore = "one explicitly authorized official Alpha treatment; maximum_reruns=0, ceiling $0.10"]
     async fn internal_alpha_official_deepseek_dogfood() {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .expect("internal Alpha dogfood requires DEEPSEEK_API_KEY");
@@ -5623,7 +5623,7 @@ server.serve_forever()
                 .with_state_db_path(&state_path)
                 .with_tool_config(tools)
                 .with_composition_build_revision("internal-alpha-official-dogfood-v1")
-                .with_default_max_api_requests(NonZeroU32::new(8).unwrap())
+                .with_default_max_api_requests(NonZeroU32::new(12).unwrap())
                 .with_api_key(api_key)
                 .expect("bind official DeepSeek credential"),
         )
@@ -5632,7 +5632,7 @@ server.serve_forever()
         command.task = alpha_checkpoint_task(case);
         command.reasoning_effort = ReasoningEffort::High;
         command.max_output_tokens = Some(2_048);
-        command.max_api_requests = Some(NonZeroU32::new(8).unwrap());
+        command.max_api_requests = Some(NonZeroU32::new(12).unwrap());
         command.tool_policy.allowed = Some(vec![
             "web_search".to_owned(),
             "web_fetch".to_owned(),
@@ -5640,10 +5640,10 @@ server.serve_forever()
             "apply_patch".to_owned(),
         ]);
         command.limits = RunLimits {
-            max_turns: 8,
-            max_model_requests: 8,
+            max_turns: 12,
+            max_model_requests: 12,
             max_model_retries: 0,
-            max_tool_calls: 16,
+            max_tool_calls: 24,
             max_depth: 1,
             max_concurrent_children: 1,
             model_event_idle_ms: Some(120_000),
@@ -5680,8 +5680,18 @@ server.serve_forever()
             .terminal
             .as_ref()
             .map(|outcome| &outcome.terminal);
+        let committed_root_tools = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let root_marker_present = std::fs::read_to_string(workspace.join("server.py"))
+            .is_ok_and(|script| script.contains(case.marker));
         println!(
-            "INTERNAL_ALPHA_OFFICIAL terminal={terminal:?} physical_requests={} runtime_retries={} usage_complete={} billing_unknown={} input_tokens={} output_tokens={} cost_nanousd={} wall_ms={}",
+            "INTERNAL_ALPHA_OFFICIAL terminal={terminal:?} physical_requests={} runtime_retries={} usage_complete={} billing_unknown={} input_tokens={} output_tokens={} cost_nanousd={} wall_ms={} root_tools={committed_root_tools:?} search_calls={} fetch_calls={} root_marker_present={root_marker_present}",
             accounting.total_started(),
             accounting.runtime_retries,
             accounting.usage_complete,
@@ -5690,6 +5700,8 @@ server.serve_forever()
             accounting.usage.output_tokens,
             accounting.cost_nanousd,
             started.elapsed().as_millis(),
+            fixture.search_calls.load(Ordering::SeqCst),
+            fixture.get_calls.load(Ordering::SeqCst),
         );
         let message = match terminal {
             Some(TerminalState::Completed { message, .. }) => message,

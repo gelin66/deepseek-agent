@@ -718,7 +718,9 @@ current product 已能完成 deterministic unknown-source research vertical，�
 并已用三个跨 code/app/Web/Writer/recovery 的 Internal Alpha task 证明 deterministic production integration；
 首个 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed；显式授权的 fresh 2,048-token
 successor 越过该限制，但在第 6 个请求因人为 tool-call budget=`6` fail closed。两个 treatment 都没有重跑，
-尚未证明 official vertical success，更不能据此宣称可替代完整工程 Agent。
+再次授权的 2,048-token / 16-tool successor 越过两个旧上限，但到 Host verifier failure 时已在第 8 个请求
+耗尽 recovery budget并保持 Blocked。三个 treatment 都没有重跑，尚未证明 official vertical success，
+更不能据此宣称可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
