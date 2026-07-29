@@ -262,7 +262,10 @@
   21,015/2,212 tokens、约 `$0.00654` 到达 `Failed(ToolBudgetExceeded { limit: 6 })`。两个 treatment 都没有
   重跑。再次授权的 2,048-token / 16-tool successor 以 8 requests、0 retry、26,349/4,473 tokens、约
   `$0.00933` 到达 `Blocked(Host application_probe deterministic failure)`；它越过两个旧上限，但耗尽
-  recovery request budget，仍不声明 official vertical success 或通用生产力提升。
+  recovery request budget。12-request successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
+  root marker 仍缺失。审计定位原 deterministic fixture 让只有 `apply_patch`、不能读取 `server.py` 的
+  Writer 凭空提交预制文件。当前 fixture/task 已切到 Writer `read_file -> apply_patch` 的真实链并保持
+  3/3 verified；尚未执行修正后的 official treatment，仍不声明 vertical success 或通用生产力提升。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7626,8 +7629,9 @@ build/probe/Writer reexecution 均为 0；既有 search started ambiguity、Appl
 Writer checkpoint conformance 随 focused gate 一并保持绿色。
 
 deterministic actual=`3/3 verified`、false success=`0`、citations=`6/6`、Writer/root receipts=`6/6`、
-rework=`0`。每个 fixture 恰为 7 model turns、960 input/76 output tokens；加入 compile/build 后三项并行
-suite wall=`16.52s`，单项观测约 `16.396–16.509s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
+rework=`0`。current fixture 每项真实执行 child `read_file -> apply_patch`，恰为 8 model turns、
+1,110 input/86 output tokens；加入 compile/build 后三项并行 suite wall=`12.95s`，单项观测约
+`12.893–12.946s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
 refs/worktrees 清零；
 terminal reopen event stream byte-exact。测试 fixture 不是官方模型或 live Tavily，不外推成功率/Token/时间。
 
@@ -7647,12 +7651,24 @@ fresh 显式授权后作为独立 treatment 执行，结果如下；前两次 cl
 new-treatment reruns=`0`、ceiling=`$0.10`。实际 terminal=`Blocked(Host application_probe deterministic
 failure)`，physical requests=`8`、wall=`68.861s`、usage complete=`true`、billing unknown=`false`、
 input/output=`26,349/4,473`、cost=`9,334,781 nanousd`（约 `$0.00933`）；没有再运行。它证明 output/tool
-旧上限都已越过，但 deterministic happy path 本就使用 7 个 model requests，真实模型到 Host verifier
-failure 时已在第 8 个请求耗尽 recovery budget，无法进入“有效修改→新 revision→复验”。Host 保持 fail
-closed。future ignored harness 只离线增加失败前的 root tool/fixture/marker diagnostics，并把未执行的
-recovery candidate 调整为 12 model/API requests、24 tools、runtime retries=`0`；仍需 fresh 显式授权且
-rerun=`0`。三次 closed accounting 合计约 `$0.01960`；仍无 official vertical 或 live Tavily success。
-`TAVILY_API_KEY` unavailable，故 live provider canary 仍未执行。
+旧上限都已越过；当时 evidence 只支持“到 Host verifier failure 时已耗尽 recovery budget”。future ignored
+harness 因而增加失败前 root tool/fixture/marker diagnostics，并把下一份 recovery candidate 调整为
+12 model/API requests、24 tools、runtime retries=`0`；后续结果否定了 budget-only hypothesis。
+
+12-request / 24-tool fresh treatment 仍使用 2,048 output tokens、runtime retries=`0`、new-treatment
+reruns=`0`、ceiling=`$0.10`。实际 terminal=`Blocked(Host application_probe deterministic failure)`、
+physical requests=`12`、wall=`119.601s`、usage complete=`true`、billing unknown=`false`、input/output=
+`51,588/7,580`、cost=`15,838,756 nanousd`（约 `$0.01584`）；没有再运行。diagnostics 为 root tools=
+`[web_search, web_fetch, web_fetch, agent, agent]`、search/fetch=`1/2`、root marker present=`false`。两次
+Writer 后仍无有效 marker，Host 保持 fail closed。
+
+审计定位原 Alpha fixture cheat：parent policy 与 scripted Agent launch 只给 `apply_patch`，真实 Writer
+不能先读取 `server.py`，fixture 却凭空提交完整预制文件。现有 Writer catalog/Agent schema 已原生支持
+`read_file`；最小修复只让 Alpha task/harness 执行 child `read_file -> apply_patch` 并断言两个 committed
+outcome，不改 production Runtime/catalog/Prompt/Store/Host verifier。修正后 deterministic=`3/3`、false
+success=`0`、每项 requests=`8`、input/output=`1,110/86`、parallel wall=`12.95s`。修正后的 official
+treatment 未执行，不能写成 success。四次 closed accounting 合计约 `$0.03544`；仍无 official vertical
+或 live Tavily success。`TAVILY_API_KEY` unavailable，故 live provider canary 仍未执行。
 
 production Rust 只增加 Host loopback sandbox distinction，app 的大部分 delta 是 task-family/canary test；
 protocol/state、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、catalog 与依赖均为
@@ -7660,5 +7676,7 @@ delta 0。Rust total delta=`+938/-23`，其中 app `#[cfg(test)]` module=`+825/-
 delta。bounded authority actual=`17,636` bootstrap、tools route=`2,825/4,409`、fixed boundary=`25/25`。
 focused gate exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime=`88/88`、
 app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。
-最终 revision 的 canonical full gate invocation=`1`、exit=`0`；同一 revision 没有第二次 full。clean
-reviewable checkpoint 随本条形成，不 push；没有启动 destructive/publish、visual 或下一 capability cluster。
+production checkpoint revision 的 canonical full gate invocation=`1`、exit=`0`；后续只有 test/authority
+truth 变化，没有第二次 full。current read-before-edit revision 的 targeted Alpha、fmt、authority 与 diff
+check 通过；clean reviewable checkpoint 随本条形成，不 push；没有启动 destructive/publish、visual 或
+下一 capability cluster。

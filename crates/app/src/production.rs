@@ -2885,6 +2885,7 @@ server.serve_forever()
             "constraints": [
                 "必须按 web_search -> 两次 web_fetch -> agent(isolated_write) 顺序完成",
                 "Writer 只允许修改 server.py，root 不得直接写入",
+                "Writer 必须获得 read_file 与 apply_patch，先读取 server.py 再做有依据的修改",
                 "完成消息必须包含两个已读取原始来源 URL"
             ],
             "non_goals": ["不使用浏览器、登录、视觉、外部副作用或第二运行时"],
@@ -2961,14 +2962,22 @@ server.serve_forever()
                     "workspace_access": "isolated_write",
                     "allowed_paths": ["server.py"],
                     "fork_context": true,
-                    "allowed_tools": ["apply_patch"],
-                    "max_steps": 2,
+                    "allowed_tools": ["read_file", "apply_patch"],
+                    "max_steps": 3,
                     "max_depth": 0,
                     "wall_time_secs": 20,
                     "expected_artifact": "一个通过 application_probe 并由 Host seal 的 server.py commit"
                 }),
                 140,
                 12,
+            ),
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-read", case.id),
+                "read_file",
+                json!({"path": "server.py"}),
+                150,
+                10,
             ),
             tool_response(
                 DEEPSEEK_PRO_MODEL,
@@ -5328,18 +5337,19 @@ server.serve_forever()
         let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
         command.task = alpha_checkpoint_task(case);
         command.max_output_tokens = Some(512);
-        command.max_api_requests = Some(NonZeroU32::new(7).expect("non-zero request limit"));
+        command.max_api_requests = Some(NonZeroU32::new(8).expect("non-zero request limit"));
         command.tool_policy.allowed = Some(vec![
             "web_search".to_owned(),
             "web_fetch".to_owned(),
             AGENT_TOOL_NAME.to_owned(),
+            "read_file".to_owned(),
             "apply_patch".to_owned(),
         ]);
         command.limits = RunLimits {
-            max_turns: 7,
-            max_model_requests: 7,
+            max_turns: 8,
+            max_model_requests: 8,
             max_model_retries: 0,
-            max_tool_calls: 5,
+            max_tool_calls: 6,
             max_depth: 1,
             max_concurrent_children: 1,
             model_event_idle_ms: Some(10_000),
@@ -5369,7 +5379,7 @@ server.serve_forever()
         };
         assert!(terminal_message.contains(case.source_a));
         assert!(terminal_message.contains(case.source_b));
-        assert_eq!(requests.len(), 7, "one root/Writer production model loop");
+        assert_eq!(requests.len(), 8, "one root/Writer production model loop");
         assert_eq!(fixture.search_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.resolve_calls.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.get_calls.load(Ordering::SeqCst), 2);
@@ -5469,6 +5479,17 @@ server.serve_forever()
                 ..
             })
         ));
+        assert_eq!(
+            child
+                .events
+                .iter()
+                .filter(|stored| matches!(
+                    &stored.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. } if name == "read_file"
+                ))
+                .count(),
+            1
+        );
         assert_eq!(
             child
                 .events
@@ -5637,6 +5658,7 @@ server.serve_forever()
             "web_search".to_owned(),
             "web_fetch".to_owned(),
             AGENT_TOOL_NAME.to_owned(),
+            "read_file".to_owned(),
             "apply_patch".to_owned(),
         ]);
         command.limits = RunLimits {

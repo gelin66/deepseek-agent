@@ -6068,10 +6068,11 @@ owner=`crates/app`；`crates/tools` 只修复 task evidence 暴露的 isolated W
 | isolation | Writer external egress=0；Host probe 仅 localhost bind/inbound | outbound false allow=`0` |
 | complexity | 不新增 capability/runtime/store/provider/dependency；删除错误重复 gate | pass |
 
-每个 task 的 fixture model requests=`7`、input/output=`960/76`、rework=`0`；加入 compile/build 后三项并行
-suite wall=`16.52s`，单项约 `16.396–16.509s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events
-exact replay。该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实
-DeepSeek 的通用 success。
+current 每个 task 的 fixture model requests=`8`、input/output=`1,110/86`、rework=`0`，并真实执行 child
+`read_file -> apply_patch`；加入 compile/build 后三项并行 suite wall=`12.95s`，单项约
+`12.893–12.946s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events exact replay。
+该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实 DeepSeek 的
+通用 success。
 
 #### 最小 integration fix 与安全反例
 
@@ -6109,15 +6110,32 @@ official vertical。`max_tool_calls=16` 只在下一份 fresh 显式授权后作
 new-treatment rerun=`0`、ceiling=`$0.10`。实际 terminal=`Blocked(Host application_probe deterministic
 failure)`，physical requests=`8`、runtime retries=`0`、wall=`68.861s`、usage complete=`true`、billing
 unknown=`false`、input/output=`26,349/4,473`、cost=`9,334,781 nanousd`（约 `$0.00933`）；没有再运行。
-它证明 output/tool 两个旧上限已越过，但 deterministic happy path 本就需要 7 个 model requests，真实模型
-到 Host verifier failure 时已在第 8 个请求耗尽 recovery budget，无法再完成“有效修改→新 revision→复验”。
-Host 没有把失败降格为成功。future ignored harness 只离线加入失败前的 root tool/fixture/marker diagnostics，
-并将未执行的 recovery candidate 调整为 12 model/API requests、24 tools、runtime retries=`0`；仍需 fresh
-显式授权且 rerun=`0`。三次 closed accounting 合计约 `$0.01960`，仍没有 official vertical success。
-故本条只 keep deterministic production integration 与 sandbox fix，不声明真实 Tavily success 或任何通用
-success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=`0/unknown`。
+它证明 output/tool 两个旧上限已越过；当时 evidence 只支持“到 Host verifier failure 时已耗尽 recovery
+budget”，因此 future ignored harness 加入失败前的 root tool/fixture/marker diagnostics，并把下一份
+recovery candidate 调整为 12 model/API requests、24 tools、runtime retries=`0`。后续证据如下，不能把当时
+的 budget hypothesis 当成最终根因。
 
-focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime conformance=`88/88`、app=
-`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。最终 revision
-canonical full invocation=`1`、exit=`0`，覆盖 public/authority、fmt、strict workspace/all-target Clippy、
-workspace tests/doctests 与 diff check；同一 revision 不重跑。
+用户显式授权 12-request / 24-tool fresh treatment，仍为 2,048 output tokens、runtime retry=`0`、
+new-treatment rerun=`0`、ceiling=`$0.10`。实际 terminal=`Blocked(Host application_probe deterministic
+failure)`，physical requests=`12`、wall=`119.601s`、usage complete=`true`、billing unknown=`false`、
+input/output=`51,588/7,580`、cost=`15,838,756 nanousd`（约 `$0.01584`）；没有再运行。诊断为 root
+tools=`[web_search, web_fetch, web_fetch, agent, agent]`、search/fetch=`1/2`、root marker present=`false`。
+增加 recovery budget 后两次 Writer 仍未形成有效 root marker，故 budget-only hypothesis 被否定，Host
+继续正确 Blocked。
+
+代码审计定位到 Alpha contract/harness 的真实性缺陷：parent `ToolPolicy` 和脚本化 Agent launch 只允许
+`apply_patch`，真实 isolated Writer 无法先读取 `server.py`；deterministic fixture 却直接注入完整预制
+文件，形成 fixture cheat。现有 Writer catalog 与 Agent schema 本来就支持 `read_file`，因此最小修复只在
+Alpha task/harness 加入 parent `read_file`、child `allowed_tools=[read_file, apply_patch]`、read-before-edit
+response 和对应 committed child outcome 断言，不改 production Runtime/catalog/Prompt/Store/Host verifier。
+修复后的三项 deterministic actual=`3/3`、false success=`0`，每项 model requests=`8`、input/output=
+`1,110/86`，parallel wall=`12.95s`，single=`12.893–12.946s`。修正后的 official treatment 未执行，不能
+记为 success。四次 closed accounting 合计约 `$0.03544`；仍不声明 official vertical、真实 Tavily 或
+任何通用 success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=
+`0/unknown`。
+
+production checkpoint focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime
+conformance=`88/88`、app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、
+PTY=`7/7`。同一 production revision 的 canonical full invocation=`1`、exit=`0`，覆盖 public/authority、
+fmt、strict workspace/all-target Clippy、workspace tests/doctests 与 diff check；后续仅 test/authority truth
+变化，不重跑 full。current read-before-edit revision 的三项 targeted Alpha、fmt、authority 与 diff check 通过。
