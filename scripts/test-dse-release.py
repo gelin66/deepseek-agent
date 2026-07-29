@@ -233,7 +233,7 @@ def main() -> None:
         'gh release verify "$TAG"',
         "--draft",
         "--draft=false",
-        "immutable-releases",
+        "jq -r '.immutable'",
         "actions/runs?head_sha=$RELEASE_SHA",
         'path == ".github/workflows/ci.yml"',
         "actions/runs/$ci_run_id/jobs",
@@ -251,6 +251,7 @@ def main() -> None:
         "raw.githubusercontent.com",
         "--clobber",
         "check-runs?",
+        "repos/$DSE_RELEASE_REPOSITORY/immutable-releases",
         "pull_request_target:",
     ):
         if forbidden_fragment in workflow:
