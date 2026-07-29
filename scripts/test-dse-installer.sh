@@ -94,7 +94,7 @@ make_tool_path() {
   local directory="$1"
   mkdir -p "$directory"
   for tool in \
-    awk bash basename cat chmod cp dd dirname grep ln mkdir mktemp readlink rm rmdir \
+    awk bash basename cat chmod cp dd dirname grep gzip ln mkdir mktemp readlink rm rmdir \
     sed shasum tar tr wc; do
     tool_path="$(command -v "$tool")"
     ln -s "$tool_path" "$directory/$tool"
@@ -371,6 +371,20 @@ assert_rejected "unsupported platform" env \
   DSE_RELEASE_TAG="v2.0.0" \
   /bin/sh "$release2/dse-installer.sh" --prefix "$test_root/unsupported-prefix"
 [ ! -e "$test_root/unsupported-prefix" ] || fail "unsupported target changed prefix"
+
+no_gzip_path="$test_root/tools-no-gzip"
+mkdir -p "$no_gzip_path"
+for tool_path in "$tool_path_root"/*; do
+  [ "${tool_path##*/}" = "gzip" ] ||
+    ln -s "$tool_path" "$no_gzip_path/${tool_path##*/}"
+done
+assert_rejected "missing gzip" env \
+  PATH="$no_gzip_path" \
+  DSE_FAKE_RELEASE_DIR="$release2" \
+  DSE_FAKE_RELEASE_TAG="v2.0.0" \
+  DSE_RELEASE_TAG="v2.0.0" \
+  /bin/sh "$release2/dse-installer.sh" --prefix "$test_root/no-gzip-prefix"
+[ ! -e "$test_root/no-gzip-prefix" ] || fail "missing gzip changed prefix"
 
 run_installer "$release2/dse-installer.sh" --verify >/dev/null
 run_installer "$release2/dse-installer.sh" --uninstall
