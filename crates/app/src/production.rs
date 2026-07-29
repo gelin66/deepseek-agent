@@ -2851,27 +2851,32 @@ exec(compiled, {"__name__": "__main__", "__file__": server_path})
             ),
         };
         format!(
-            r#"import http.server
-import os
+            r#"import os
+import socket
 import sys
 
 {marker_definition}
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind((os.environ["HOST"], int(os.environ["PORT"])))
+server.listen()
+while True:
+    connection, _ = server.accept()
+    with connection:
+        request = connection.recv(4096)
+        request_line = request.split(b"\r\n", 1)[0]
+        parts = request_line.split(b" ")
+        path = parts[1] if len(parts) > 1 else b"/"
+        if path == b"/health":
             body = b"healthy"
         else:
             body = response_marker() + b" " + sys.argv[-1].encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format, *args):
-        pass
-
-server = http.server.ThreadingHTTPServer((os.environ["HOST"], int(os.environ["PORT"])), Handler)
-server.serve_forever()
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + str(len(body)).encode("ascii")
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
 "#
         )
     }
