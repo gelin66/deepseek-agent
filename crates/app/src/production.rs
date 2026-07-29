@@ -8522,8 +8522,14 @@ time.sleep(60)
                 ))
                 .await,
         );
+        assert_eq!(resumed.run_id, run_id);
+        let recovered = wait_terminal(reopened.store.as_ref(), &run_id).await;
         assert!(matches!(
-            resumed.terminal,
+            recovered
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
             Some(TerminalState::RecoveryRequired {
                 ambiguity: RecoveryAmbiguity {
                     phase: RecoveryAmbiguityPhase::HostVerification,
