@@ -5613,16 +5613,28 @@ server.serve_forever()
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
+    )]
     async fn internal_alpha_constant_cross_code_web_writer_recovery_task() {
         run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[0]).await;
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
+    )]
     async fn internal_alpha_function_cross_code_web_writer_recovery_task() {
         run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[1]).await;
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "positive isolated-Writer Host-loopback probe uses macOS Seatbelt; Linux bwrap intentionally keeps a separate network namespace"
+    )]
     async fn internal_alpha_mapping_cross_code_web_writer_recovery_task() {
         run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]).await;
     }

@@ -573,7 +573,10 @@ typed failure、cancel 和 timeout 都终止 owned process group/Job 并 reap；
 不一致时既有 artifact 变为 stale，不能 seal receipt。Agent/FullAccess root 可按现有 sandbox
 执行；Ask 与普通 no-network actor 在 spawn 前拒绝。isolated Writer 只在这个 Host-only verifier path
 派生 `host_loopback_only` sandbox：macOS 仅允许 `localhost:*` bind/inbound、没有 network-outbound；
-Linux 保持 isolated network namespace。该例外不进入 model-visible shell/Web authority。
+Linux 保持 isolated network namespace。因 Host 与 Writer 不共享该 namespace，isolated Writer 的
+Host-to-application 正向 loopback checkpoint 只在 macOS Seatbelt job 执行；Linux CI 保留普通 root
+probe 与 bwrap namespace/egress 负向合同，不能把该正向路径写成跨平台成功。该例外不进入
+model-visible shell/Web authority。
 
 lease 已随 `HostVerificationPrepared` 的 frozen verifier 持久化，不增加 PID/port sidecar。
 进程级 `SIGKILL` 后，`AgentApplication` reopen 只按 exact argv marker 扫描并回收 owned process

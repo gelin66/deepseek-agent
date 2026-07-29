@@ -252,8 +252,8 @@
   读取两个独立原来源并给出 URL citation；semantic browser 以 task-cue/role/interaction priority 取代机械
   first-N，返回 quality metrics 与 action diff。真实 caller/SQLite reopen/recovery 和 pinned Chrome vertical
   已闭合；focused 与唯一一次 full gate 均 exit=`0`，形成 clean reviewable checkpoint。
-- Canonical Web Search 后的 Internal Alpha Integration Checkpoint 已完成 deterministic keep：三个独立
-  Python application shape 都经同一 root `web_search -> 2x web_fetch -> isolated Writer -> compile/start ->
+- Canonical Web Search 后的 Internal Alpha Integration Checkpoint 已完成 deterministic keep：macOS
+  Seatbelt 上三个独立 Python application shape 都经同一 root `web_search -> 2x web_fetch -> isolated Writer -> compile/start ->
   Writer receipt -> seal/integrate -> root latest-revision receipt -> cleanup -> SQLite reopen` 生产链闭合，
   verified=`3/3`、false success=`0`、reopen reexecution=`0`。切片同时删除 isolated Writer 对 Host-owned
   loopback verifier 的错误 blanket deny，只开放 sandbox 内 `localhost:*` bind/inbound，external outbound
@@ -262,7 +262,9 @@
   21,015/2,212 tokens、约 `$0.00654` 到达 `Failed(ToolBudgetExceeded { limit: 6 })`。两个 treatment 都没有
   重跑。再次授权的 2,048-token / 16-tool successor 以 8 requests、0 retry、26,349/4,473 tokens、约
   `$0.00933` 到达 `Blocked(Host application_probe deterministic failure)`；它越过两个旧上限，但耗尽
-  recovery request budget。12-request successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
+  recovery request budget。Linux bwrap 保持独立 network namespace，因此公开 CI 在 macOS job 跑这三个
+  正向 checkpoint，在 Linux workspace job 明确 ignore 并验证 namespace 不共享；不冒充跨平台正向成功。
+  12-request successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
   root marker 仍缺失。审计定位原 deterministic fixture 让只有 `apply_patch`、不能读取 `server.py` 的
   Writer 凭空提交预制文件。当前 fixture/task 已切到 Writer `read_file -> apply_patch` 的真实链并保持
   3/3 verified。修正后的 official treatment 以 10 requests、0 retry、46,281/2,981 tokens、约 `$0.01262`
@@ -7618,7 +7620,9 @@ cutover 保留 isolated Writer 的 worktree-only filesystem 与 external network
 argv/cwd/bounds、128-bit lease、随机 IPv4 loopback origin 的 `application_probe` 派生
 `host_loopback_only` sandbox treatment。macOS Seatbelt 仅允许 `network-bind/network-inbound` 的
 `localhost:*`，不出现 `network-outbound`；Linux 继续使用 isolated network namespace。普通 no-network
-actor 仍在 spawn 前拒绝。旧的“external egress=false 等同 Host loopback verifier=false”重复门已删除，
+actor 仍在 spawn 前拒绝。正向 Host-to-isolated-Writer loopback checkpoint 只在 macOS Seatbelt job 执行；
+Linux CI 验证普通 root probe 与 bwrap namespace/egress 负向合同，不声明该正向链跨平台可用。旧的
+“external egress=false 等同 Host loopback verifier=false”重复门已删除，
 没有放开 Writer 的 Web/shell network，也没有第二 Runtime/Store/Provider、UI、视觉、登录或新依赖。
 
 #### Deterministic task family、recovery 与实际指标

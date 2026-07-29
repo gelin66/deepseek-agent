@@ -75,6 +75,9 @@ jobs:
           cache-bin: false
       - name: Fetch locked dependencies
         run: cargo fetch --locked
+      - name: Run macOS isolated Writer integration checkpoint
+        if: runner.os == 'macOS'
+        run: cargo test -p dse-app --locked internal_alpha_
       - name: Run local delivery lifecycle
         run: ./scripts/test-dse-delivery.sh
       - name: Build checksum-bound package
