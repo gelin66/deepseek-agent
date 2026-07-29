@@ -231,7 +231,8 @@ def main() -> None:
         "actions/attest@v4",
         'all(.targets[]; .source_mode == "locked-offline-source")',
         'gh release verify "$TAG"',
-        "--draft",
+        "--method POST",
+        "draft: true",
         "--draft=false",
         "jq -r '.immutable'",
         "actions/runs?head_sha=$RELEASE_SHA",
@@ -257,6 +258,7 @@ def main() -> None:
         "--clobber",
         "check-runs?",
         "repos/$DSE_RELEASE_REPOSITORY/immutable-releases",
+        "releases?per_page=100",
         "pull_request_target:",
     ):
         if forbidden_fragment in workflow:
