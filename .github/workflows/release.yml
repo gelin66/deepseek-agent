@@ -1,0 +1,376 @@
+name: Immutable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact stable SemVer from Cargo.toml (for example 0.8.68)
+        required: true
+        type: string
+      release_sha:
+        description: Exact 40-character default-branch commit SHA to release
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: dse-immutable-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  DSE_RELEASE_REPOSITORY: gelin66/deepseek-agent
+
+jobs:
+  admission:
+    name: Admit exact clean revision and create Draft
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      tag: ${{ steps.identity.outputs.tag }}
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+      source_tree: ${{ steps.identity.outputs.source_tree }}
+      created_at: ${{ steps.identity.outputs.created_at }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Freeze release identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$INPUT_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$INPUT_RELEASE_SHA"
+          test -z "$(git status --porcelain=v1)"
+          workspace_version="$(awk '
+            /^\[workspace\.package\]$/ { active = 1; next }
+            /^\[/ && active { exit }
+            active && /^version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/".*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)"
+          test "$workspace_version" = "$INPUT_VERSION"
+          default_sha="$(gh api \
+            "repos/$DSE_RELEASE_REPOSITORY/git/ref/heads/deepseek-agent" \
+            --jq '.object.sha')"
+          test "$default_sha" = "$INPUT_RELEASE_SHA"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          created_at="$(git show -s --format=%cI HEAD)"
+          {
+            printf 'version=%s\n' "$INPUT_VERSION"
+            printf 'tag=v%s\n' "$INPUT_VERSION"
+            printf 'release_sha=%s\n' "$INPUT_RELEASE_SHA"
+            printf 'source_tree=%s\n' "$source_tree"
+            printf 'created_at=%s\n' "$created_at"
+          } >>"$GITHUB_OUTPUT"
+      - name: Require Immutable Releases and green public CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.identity.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$DSE_RELEASE_REPOSITORY/immutable-releases" \
+            --jq '.enabled')" = "true"
+          checks="$(gh api \
+            "repos/$DSE_RELEASE_REPOSITORY/commits/$RELEASE_SHA/check-runs?filter=latest&per_page=100")"
+          for required in \
+            'Format, check, and test' \
+            'Delivery lifecycle (ubuntu-latest)' \
+            'Delivery lifecycle (macos-latest)'; do
+            conclusion="$(printf '%s' "$checks" | jq -r \
+              --arg name "$required" \
+              '[.check_runs[] | select(.name == $name)] | sort_by(.completed_at) | last | .conclusion // "missing"')"
+            test "$conclusion" = "success" || {
+              printf 'required check is not green: %s=%s\n' "$required" "$conclusion" >&2
+              exit 1
+            }
+          done
+      - name: Refuse an existing tag or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            printf 'release tag already exists: %s\n' "$TAG" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$DSE_RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            printf 'release already exists: %s\n' "$TAG" >&2
+            exit 1
+          fi
+      - name: Create asset-empty Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          RELEASE_SHA: ${{ steps.identity.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat >"$notes" <<EOF
+          DSE $VERSION is the first public stable binary release.
+
+          Install from the official site:
+
+          \`curl -fsSL https://dse.run/install.sh | sh\`
+
+          GitHub Releases are the only binary source. Every platform archive is
+          bound by SHA256SUMS, dist-manifest.json, SPDX SBOM, build provenance,
+          and this repository's immutable release attestation. Windows native
+          is not included; Windows users install the Linux x86_64 build in WSL2.
+          EOF
+          gh release create "$TAG" \
+            --repo "$DSE_RELEASE_REPOSITORY" \
+            --target "$RELEASE_SHA" \
+            --title "DSE $VERSION" \
+            --notes-file "$notes" \
+            --draft
+
+  native_assets:
+    name: Native build and install (${{ matrix.target }})
+    needs: admission
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.admission.outputs.release_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt, clippy
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Build one checksum-bound native release asset
+        id: build
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dse-release-target
+          VERSION: ${{ needs.admission.outputs.version }}
+          RELEASE_SHA: ${{ needs.admission.outputs.release_sha }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          test "$(./scripts/dse-delivery.sh host-target)" = "$EXPECTED_TARGET"
+          mkdir -p dist
+          artifact="$(./scripts/dse-delivery.sh package \
+            --output-dir dist \
+            --release-asset)"
+          test "${artifact##*/}" = "dse-${VERSION}-${EXPECTED_TARGET}.tar.gz"
+          test -f "$artifact.sha256"
+          printf 'artifact=%s\n' "$artifact" >>"$GITHUB_ENV"
+          printf 'artifact=%s\n' "$artifact" >>"$GITHUB_OUTPUT"
+      - name: Fresh install, version, doctor, verify, and uninstall
+        env:
+          VERSION: ${{ needs.admission.outputs.version }}
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/dse-prefix"
+          export HOME="$RUNNER_TEMP/dse-home"
+          export DSE_HOME="$HOME/.dse"
+          mkdir -p "$HOME" "$DSE_HOME"
+          printf 'preserve-release-data\n' >"$DSE_HOME/preservation-fixture"
+          data_before="$(sha256sum "$DSE_HOME/preservation-fixture" 2>/dev/null | awk '{print $1}' || \
+            shasum -a 256 "$DSE_HOME/preservation-fixture" | awk '{print $1}')"
+          ./scripts/dse-delivery.sh install \
+            --artifact "$artifact" \
+            --prefix "$prefix"
+          "$prefix/bin/dse" --version | grep -F "dse $VERSION"
+          "$prefix/bin/dse-tui" --version | grep -F "dse-tui $VERSION"
+          "$prefix/bin/dse" doctor --json >"$RUNNER_TEMP/dse-doctor.json"
+          ./scripts/dse-delivery.sh verify --prefix "$prefix"
+          ./scripts/dse-delivery.sh uninstall --prefix "$prefix"
+          data_after="$(sha256sum "$DSE_HOME/preservation-fixture" 2>/dev/null | awk '{print $1}' || \
+            shasum -a 256 "$DSE_HOME/preservation-fixture" | awk '{print $1}')"
+          test "$data_before" = "$data_after"
+      - name: Attest native archive provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.build.outputs.artifact }}
+      - name: Upload native archive directly to Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.admission.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$artifact" \
+            --repo "$DSE_RELEASE_REPOSITORY"
+
+  finalize:
+    name: Verify Draft, attest, and publish immutable
+    needs: [admission, native_assets]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.admission.outputs.release_sha }}
+          persist-credentials: false
+      - name: Download the four native assets from the Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.admission.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" \
+            --repo "$DSE_RELEASE_REPOSITORY" \
+            --pattern 'dse-*.tar.gz' \
+            --dir dist
+          test "$(find dist -maxdepth 1 -type f -name 'dse-*.tar.gz' | wc -l)" -eq 4
+      - name: Assemble and verify installer, manifest, checksums, and SPDX SBOM
+        env:
+          VERSION: ${{ needs.admission.outputs.version }}
+          RELEASE_SHA: ${{ needs.admission.outputs.release_sha }}
+          SOURCE_TREE: ${{ needs.admission.outputs.source_tree }}
+          CREATED_AT: ${{ needs.admission.outputs.created_at }}
+        run: |
+          set -euo pipefail
+          ./scripts/dse-release.py assemble \
+            --dist-dir dist \
+            --version "$VERSION" \
+            --revision "$RELEASE_SHA" \
+            --tree "$SOURCE_TREE" \
+            --created "$CREATED_AT"
+          ./scripts/dse-release.py verify \
+            --dist-dir dist \
+            --version "$VERSION" \
+            --revision "$RELEASE_SHA" \
+            --tree "$SOURCE_TREE"
+          jq -e 'all(.targets[]; .source_mode == "locked-offline-source")' \
+            dist/dist-manifest.json >/dev/null
+      - name: Attest release metadata provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/dse-installer.sh
+            dist/dist-manifest.json
+            dist/SHA256SUMS
+            dist/SBOM.spdx.json
+      - name: Attach SPDX SBOM attestation to native archives
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/SBOM.spdx.json
+      - name: Upload release metadata directly to Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.admission.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            dist/dse-installer.sh \
+            dist/dist-manifest.json \
+            dist/SHA256SUMS \
+            dist/SBOM.spdx.json \
+            --repo "$DSE_RELEASE_REPOSITORY"
+      - name: Verify exact Draft asset set, bytes, and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.admission.outputs.version }}
+          TAG: ${{ needs.admission.outputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="$RUNNER_TEMP/expected-assets"
+          actual="$RUNNER_TEMP/actual-assets"
+          printf '%s\n' \
+            SHA256SUMS \
+            SBOM.spdx.json \
+            "dse-${VERSION}-aarch64-apple-darwin.tar.gz" \
+            "dse-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
+            "dse-${VERSION}-x86_64-apple-darwin.tar.gz" \
+            "dse-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            dse-installer.sh \
+            dist-manifest.json | sort >"$expected"
+          gh api "repos/$DSE_RELEASE_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[].name' | sort >"$actual"
+          diff -u "$expected" "$actual"
+          verify_dir="$RUNNER_TEMP/release-verify"
+          mkdir -p "$verify_dir"
+          gh release download "$TAG" \
+            --repo "$DSE_RELEASE_REPOSITORY" \
+            --dir "$verify_dir"
+          ./scripts/dse-release.py verify \
+            --dist-dir "$verify_dir" \
+            --version "$VERSION" \
+            --revision "${{ needs.admission.outputs.release_sha }}" \
+            --tree "${{ needs.admission.outputs.source_tree }}"
+          for asset in "$verify_dir"/*; do
+            gh attestation verify "$asset" \
+              --repo "$DSE_RELEASE_REPOSITORY" >/dev/null
+          done
+      - name: Publish the complete Draft once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.admission.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" \
+            --repo "$DSE_RELEASE_REPOSITORY" \
+            --draft=false \
+            --latest
+      - name: Confirm immutable publication and exact tag identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.admission.outputs.tag }}
+          RELEASE_SHA: ${{ needs.admission.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/$DSE_RELEASE_REPOSITORY/releases/tags/$TAG")"
+          test "$(printf '%s' "$release" | jq -r '.draft')" = "false"
+          test "$(printf '%s' "$release" | jq -r '.prerelease')" = "false"
+          test "$(printf '%s' "$release" | jq -r '.immutable')" = "true"
+          gh release verify "$TAG" \
+            --repo "$DSE_RELEASE_REPOSITORY" >/dev/null
+          tag_sha="$(gh api \
+            "repos/$DSE_RELEASE_REPOSITORY/git/ref/tags/$TAG" \
+            --jq '.object.sha')"
+          test "$tag_sha" = "$RELEASE_SHA"

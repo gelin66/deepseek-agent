@@ -1,0 +1,402 @@
+#!/bin/sh
+set -eu
+
+# This POSIX bootstrap is rendered into the versioned dse-installer.sh release
+# asset. The payload after the marker is the exact canonical dse-delivery.sh
+# from the same source revision; this file never reimplements installation.
+
+readonly DSE_REPOSITORY="gelin66/deepseek-agent"
+readonly DSE_RELEASE_ROOT="https://github.com/${DSE_REPOSITORY}/releases"
+readonly DSE_INSTALLER_NAME="dse-installer.sh"
+readonly DSE_MANIFEST_NAME="dist-manifest.json"
+readonly DSE_CHECKSUMS_NAME="SHA256SUMS"
+readonly DSE_DELIVERY_SHA256="__DSE_DELIVERY_SHA256__"
+readonly DSE_PAYLOAD_MARKER="__DSE_DELIVERY_PAYLOAD_BELOW__"
+readonly DSE_PAYLOAD_END="__DSE_DELIVERY_PAYLOAD_END__"
+
+fail() {
+  printf '%s\n' "DSE installer: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+DSE public release installer
+
+Usage:
+  dse-installer.sh [--version VERSION] [--prefix DIR] [--no-modify-path]
+  dse-installer.sh --verify [--prefix DIR]
+  dse-installer.sh --rollback [--prefix DIR]
+  dse-installer.sh --uninstall [--prefix DIR]
+  dse-installer.sh --help
+
+Options:
+  --version VERSION   Install one exact stable SemVer (default: latest stable)
+  --prefix DIR        Absolute install prefix (default: $HOME/.local)
+  --no-modify-path    Explicitly keep shell profiles unchanged (the v1 default)
+  --verify            Verify the active installer-owned release
+  --rollback          Atomically reactivate the previous release
+  --uninstall         Remove only installer-owned programs and release metadata
+  --help              Show this help
+
+The installer requires curl, tar, awk, a SHA-256 utility, and system Bash.
+It never uses sudo and never modifies DSE_HOME, configuration, RunStore, or
+credentials. Shell profiles are not modified; a PATH command is printed when
+the selected prefix is not already reachable.
+EOF
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    fail "sha256sum or shasum is required"
+  fi
+}
+
+validate_version() {
+  printf '%s\n' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
+    fail "version must be an exact stable SemVer: $1"
+}
+
+validate_tag() {
+  case "$1" in
+    v*) validate_version "${1#v}" ;;
+    *) fail "release tag must be vX.Y.Z: $1" ;;
+  esac
+}
+
+validate_prefix() {
+  case "$1" in
+    /*) ;;
+    *) fail "install prefix must be absolute: $1" ;;
+  esac
+  [ "$1" != "/" ] || fail "install prefix cannot be /"
+  case "$1" in
+    *"
+"* | *""* | *"	"*) fail "install prefix contains control whitespace" ;;
+  esac
+}
+
+installer_source_path() {
+  case "$0" in
+    */*) candidate="$0" ;;
+    *) candidate="$(command -v "$0" 2>/dev/null || true)" ;;
+  esac
+  [ -n "${candidate:-}" ] && [ -f "$candidate" ] && [ ! -L "$candidate" ] ||
+    fail "run the downloaded dse-installer.sh file with /bin/sh; direct stdin execution is unsupported"
+  parent="$(cd "$(dirname "$candidate")" && pwd -P)"
+  printf '%s/%s\n' "$parent" "${candidate##*/}"
+}
+
+host_target() {
+  host_os="$(uname -s)"
+  host_arch="$(uname -m)"
+  case "$host_os:$host_arch" in
+    Darwin:arm64 | Darwin:aarch64) printf '%s\n' "aarch64-apple-darwin" ;;
+    Darwin:x86_64) printf '%s\n' "x86_64-apple-darwin" ;;
+    Linux:aarch64 | Linux:arm64) printf '%s\n' "aarch64-unknown-linux-gnu" ;;
+    Linux:x86_64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
+    *) fail "unsupported platform: $host_os $host_arch" ;;
+  esac
+}
+
+fetch() {
+  source_url="$1"
+  destination="$2"
+  curl \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --tlsv1.2 \
+    --connect-timeout 10 \
+    --max-time 120 \
+    --retry 2 \
+    --retry-delay 1 \
+    --retry-connrefused \
+    -fsSL \
+    -o "$destination" \
+    "$source_url"
+}
+
+latest_tag() {
+  latest_url="$(curl \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --tlsv1.2 \
+    --connect-timeout 10 \
+    --max-time 30 \
+    -fsSL \
+    -o /dev/null \
+    -w '%{url_effective}' \
+    "$DSE_RELEASE_ROOT/latest")" ||
+    fail "no stable DSE release is available yet; see $DSE_RELEASE_ROOT"
+  release_prefix="$DSE_RELEASE_ROOT/tag/"
+  case "$latest_url" in
+    "$release_prefix"*) tag="${latest_url#"$release_prefix"}" ;;
+    *) fail "GitHub returned no exact stable DSE release" ;;
+  esac
+  validate_tag "$tag"
+  printf '%s\n' "$tag"
+}
+
+expected_hash() {
+  checksum_file="$1"
+  asset_name="$2"
+  awk -v name="$asset_name" '
+    $2 == name && length($1) == 64 && $1 !~ /[^0-9a-f]/ { hash = $1; count++ }
+    END { if (count == 1) print hash; else exit 1 }
+  ' "$checksum_file"
+}
+
+verify_top_asset() {
+  checksum_file="$1"
+  asset_name="$2"
+  asset_path="$3"
+  expected="$(expected_hash "$checksum_file" "$asset_name")" ||
+    fail "$DSE_CHECKSUMS_NAME does not contain one canonical $asset_name record"
+  actual="$(sha256_file "$asset_path")"
+  [ "$actual" = "$expected" ] || fail "$asset_name failed SHA-256 verification"
+}
+
+manifest_scalar() {
+  manifest="$1"
+  key="$2"
+  awk -v wanted="\"$key\"" '
+    index($0, wanted) {
+      value = $0
+      sub(/^[^:]*:[[:space:]]*"/, "", value)
+      sub(/"[,[:space:]]*$/, "", value)
+      found++
+    }
+    END { if (found == 1) print value; else exit 1 }
+  ' "$manifest"
+}
+
+manifest_target_line() {
+  manifest="$1"
+  target="$2"
+  awk -v wanted="\"target\":\"$target\"" '
+    index($0, wanted) { line = $0; found++ }
+    END { if (found == 1) print line; else exit 1 }
+  ' "$manifest"
+}
+
+json_line_string() {
+  line="$1"
+  key="$2"
+  printf '%s\n' "$line" |
+    sed -n "s/.*\"$key\":\"\([^\"]*\)\".*/\1/p"
+}
+
+extract_delivery_payload() {
+  installer_source="$1"
+  destination="$2"
+  awk -v marker="$DSE_PAYLOAD_MARKER" -v payload_end="$DSE_PAYLOAD_END" '
+    found && $0 == payload_end { ended = 1; exit }
+    found { print }
+    $0 == marker { found = 1; next }
+    END { if (!found || !ended) exit 1 }
+  ' "$installer_source" >"$destination" || fail "installer has no canonical delivery payload"
+  [ "$(sha256_file "$destination")" = "$DSE_DELIVERY_SHA256" ] ||
+    fail "canonical delivery payload failed SHA-256 verification"
+  chmod 0700 "$destination"
+}
+
+detect_foreign_dse() {
+  prefix="$1"
+  if found="$(command -v dse 2>/dev/null)"; then
+    case "$found" in
+      "$prefix/bin/dse") ;;
+      "$HOME/.cargo/bin/dse") fail "an existing Cargo-managed dse conflicts with $prefix" ;;
+      /opt/homebrew/* | /usr/local/Homebrew/* | /home/linuxbrew/*)
+        fail "an existing Homebrew-managed dse conflicts with $prefix"
+        ;;
+      *) fail "an existing dse outside the installer-owned prefix conflicts: $found" ;;
+    esac
+  fi
+}
+
+print_path_result() {
+  prefix="$1"
+  case ":$PATH:" in
+    *":$prefix/bin:"*)
+      printf '%s\n' "DSE installer: $prefix/bin is already on PATH" >&2
+      ;;
+    *)
+      escaped="$(printf '%s' "$prefix/bin" | sed "s/'/'\\\\''/g")"
+      printf '%s\n' \
+        "DSE installer: shell profiles were not modified." \
+        "Add DSE for this shell: export PATH='$escaped':\"\$PATH\"" >&2
+      ;;
+  esac
+}
+
+restore_after_smoke_failure() {
+  delivery="$1"
+  prefix="$2"
+  prior_target="$3"
+  installed_target="$4"
+  if [ -z "$prior_target" ]; then
+    "$delivery" uninstall --prefix "$prefix" >/dev/null 2>&1 || true
+  elif [ "$prior_target" != "$installed_target" ]; then
+    "$delivery" rollback --prefix "$prefix" >/dev/null 2>&1 || true
+  fi
+}
+
+main() {
+  mode="install"
+  requested_version=""
+  prefix="${HOME:?HOME is required}/.local"
+  no_modify_path=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --version)
+        [ "$#" -ge 2 ] || fail "--version requires a value"
+        requested_version="$2"
+        shift 2
+        ;;
+      --prefix)
+        [ "$#" -ge 2 ] || fail "--prefix requires a value"
+        prefix="$2"
+        shift 2
+        ;;
+      --no-modify-path)
+        no_modify_path=1
+        shift
+        ;;
+      --verify | --rollback | --uninstall)
+        [ "$mode" = "install" ] || fail "only one lifecycle mode may be selected"
+        mode="${1#--}"
+        shift
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *) fail "unknown option: $1" ;;
+    esac
+  done
+
+  validate_prefix "$prefix"
+  if [ "$mode" != "install" ] && [ -n "$requested_version" ]; then
+    fail "--version is only valid for install"
+  fi
+  # The flag is intentionally accepted now, while v1 always leaves profiles
+  # unchanged. Keeping this assignment makes shellcheck-style unused checks
+  # and the user-visible contract explicit without adding a hidden branch.
+  : "$no_modify_path"
+
+  command -v awk >/dev/null 2>&1 || fail "awk is required"
+  command -v sed >/dev/null 2>&1 || fail "sed is required"
+  command -v bash >/dev/null 2>&1 || fail "system Bash is required"
+  installer_source="$(installer_source_path)"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/dse-installer.XXXXXX")" ||
+    fail "could not create a temporary directory"
+  delivery_payload="$tmp_dir/dse-delivery.sh"
+  cleanup() {
+    rm -f \
+      "$tmp_dir/$DSE_CHECKSUMS_NAME" \
+      "$tmp_dir/$DSE_MANIFEST_NAME" \
+      "$tmp_dir"/*.tar.gz \
+      "$tmp_dir"/*.tar.gz.sha256 \
+      "$delivery_payload"
+    rmdir "$tmp_dir" 2>/dev/null || true
+  }
+  trap cleanup EXIT HUP INT TERM
+  extract_delivery_payload "$installer_source" "$delivery_payload"
+
+  if [ "$mode" != "install" ]; then
+    /usr/bin/env bash "$delivery_payload" "$mode" --prefix "$prefix"
+    exit $?
+  fi
+
+  command -v curl >/dev/null 2>&1 || fail "curl is required"
+  command -v tar >/dev/null 2>&1 || fail "tar is required"
+  detect_foreign_dse "$prefix"
+
+  if [ -n "$requested_version" ]; then
+    validate_version "$requested_version"
+    release_tag="v$requested_version"
+  elif [ -n "${DSE_RELEASE_TAG:-}" ]; then
+    validate_tag "$DSE_RELEASE_TAG"
+    release_tag="$DSE_RELEASE_TAG"
+  else
+    release_tag="$(latest_tag)"
+  fi
+  version="${release_tag#v}"
+  exact_release_root="$DSE_RELEASE_ROOT/download/$release_tag"
+  checksums_path="$tmp_dir/$DSE_CHECKSUMS_NAME"
+  manifest_path="$tmp_dir/$DSE_MANIFEST_NAME"
+
+  fetch "$exact_release_root/$DSE_CHECKSUMS_NAME" "$checksums_path" ||
+    fail "release $release_tag is missing $DSE_CHECKSUMS_NAME"
+  if [ -n "${DSE_RELEASE_MANIFEST:-}" ]; then
+    [ -f "$DSE_RELEASE_MANIFEST" ] && [ ! -L "$DSE_RELEASE_MANIFEST" ] ||
+      fail "DSE_RELEASE_MANIFEST is not a regular file"
+    cp "$DSE_RELEASE_MANIFEST" "$manifest_path"
+  else
+    fetch "$exact_release_root/$DSE_MANIFEST_NAME" "$manifest_path" ||
+      fail "release $release_tag is missing $DSE_MANIFEST_NAME"
+  fi
+
+  verify_top_asset "$checksums_path" "$DSE_INSTALLER_NAME" "$installer_source"
+  verify_top_asset "$checksums_path" "$DSE_MANIFEST_NAME" "$manifest_path"
+  [ "$(manifest_scalar "$manifest_path" schema)" = "dse.release.v1" ] ||
+    fail "unsupported release manifest schema"
+  [ "$(manifest_scalar "$manifest_path" product)" = "DSE" ] ||
+    fail "unexpected release product identity"
+  [ "$(manifest_scalar "$manifest_path" repository)" = "$DSE_REPOSITORY" ] ||
+    fail "release manifest repository mismatch"
+  [ "$(manifest_scalar "$manifest_path" version)" = "$version" ] ||
+    fail "release manifest version mismatch"
+  [ "$(manifest_scalar "$manifest_path" tag)" = "$release_tag" ] ||
+    fail "release manifest tag mismatch"
+
+  target="$(host_target)"
+  target_line="$(manifest_target_line "$manifest_path" "$target")" ||
+    fail "release $release_tag does not support target $target"
+  asset="$(json_line_string "$target_line" asset)"
+  archive_sha="$(json_line_string "$target_line" sha256)"
+  expected_asset="dse-${version}-${target}.tar.gz"
+  [ "$asset" = "$expected_asset" ] || fail "release asset name is not canonical for $target"
+  printf '%s\n' "$archive_sha" | grep -Eq '^[0-9a-f]{64}$' ||
+    fail "release manifest archive checksum is invalid"
+  [ "$(expected_hash "$checksums_path" "$asset")" = "$archive_sha" ] ||
+    fail "manifest and $DSE_CHECKSUMS_NAME disagree for $asset"
+
+  archive_path="$tmp_dir/$asset"
+  fetch "$exact_release_root/$asset" "$archive_path" ||
+    fail "release $release_tag is missing $asset"
+  [ "$(sha256_file "$archive_path")" = "$archive_sha" ] ||
+    fail "$asset failed SHA-256 verification"
+  printf '%s  %s\n' "$archive_sha" "$asset" >"$archive_path.sha256"
+
+  prior_target=""
+  if [ -L "$prefix/lib/dse/current" ]; then
+    prior_target="$(readlink "$prefix/lib/dse/current")"
+  fi
+  /usr/bin/env bash "$delivery_payload" install \
+    --artifact "$archive_path" \
+    --checksum "$archive_path.sha256" \
+    --prefix "$prefix" \
+    --smoke-test
+  installed_target="$(readlink "$prefix/lib/dse/current")"
+
+  if ! "$prefix/bin/dse" --version >/dev/null 2>&1 ||
+    ! "$prefix/bin/dse" doctor --json >/dev/null 2>&1; then
+    restore_after_smoke_failure "$delivery_payload" "$prefix" "$prior_target" "$installed_target"
+    fail "installed binaries failed version/doctor smoke; the previous installation was restored"
+  fi
+  /usr/bin/env bash "$delivery_payload" verify --prefix "$prefix" >/dev/null
+  printf '%s\n' "DSE installer: verified DSE $version for $target" >&2
+  print_path_result "$prefix"
+}
+
+main "$@"
+exit $?
+
+: <<'__DSE_DELIVERY_PAYLOAD_END__'
+__DSE_DELIVERY_PAYLOAD_BELOW__

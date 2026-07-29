@@ -31,7 +31,7 @@ Evaluation 入口；发生冲突或跨固定架构时才沿 accepted decision in
 | `orchestrator` | `crates/orchestrator` graph/Writer worktrees | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0003](decisions/0003-multi-agent-worktrees.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [Agent orchestrator](architecture/CURRENT_CODEWHALE.md#current-orchestrator) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `localization` | `crates/localization` human language | [ADR-0004](decisions/0004-fixed-simplified-chinese.md), [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md) | [human clients](architecture/CURRENT_CODEWHALE.md#current-clients) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `clients` | `crates/cli`, `crates/tui`, `crates/app-server` | [ADR-0009](decisions/0009-dse-product-identity.md), [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0013](decisions/0013-native-tui-surface-system.md) | [client entrypoints](architecture/CURRENT_CODEWHALE.md#current-clients), [TUI surface](architecture/CURRENT_CODEWHALE.md#current-tui) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
-| `repository-guidance` | root guidance + `docs/product`, `docs/architecture`, `docs/decisions`; mechanical checks in existing scripts | [ADR-0016](decisions/0016-lean-cognitive-control-plane.md), [ADR-0018](decisions/0018-engineering-complete-capability-governance.md) | [development authority](architecture/CURRENT_CODEWHALE.md#current-development-authority) | [ADR-0016 contract](product/EVALUATION.md#adr-0016-evaluation), [complete-product audit](product/EVALUATION.md#engineering-complete-direction-audit) |
+| `repository-guidance` | root guidance + `docs/product`, `docs/architecture`, `docs/decisions`; release/delivery scripts and mechanical checks | [ADR-0016](decisions/0016-lean-cognitive-control-plane.md), [ADR-0018](decisions/0018-engineering-complete-capability-governance.md), [ADR-0020](decisions/0020-public-immutable-release-and-installer.md) | [development authority](architecture/CURRENT_CODEWHALE.md#current-development-authority) | [ADR-0016 contract](product/EVALUATION.md#adr-0016-evaluation), [complete-product audit](product/EVALUATION.md#engineering-complete-direction-audit) |
 <!-- authority-routes:end -->
 
 ## 3. Accepted decision index
@@ -55,7 +55,8 @@ Evaluation 入口；发生冲突或跨固定架构时才沿 accepted decision in
   [ADR-0016](decisions/0016-lean-cognitive-control-plane.md),
   [ADR-0017](decisions/0017-public-http-web-fetch.md),
   [ADR-0018](decisions/0018-engineering-complete-capability-governance.md),
-  [ADR-0019](decisions/0019-canonical-web-search-and-semantic-observation-quality.md).
+  [ADR-0019](decisions/0019-canonical-web-search-and-semantic-observation-quality.md),
+  [ADR-0020](decisions/0020-public-immutable-release-and-installer.md).
 
 所有 ADR、里程碑历史和评测结果仍可查且不得改写；本索引只取消默认全量重放。
 

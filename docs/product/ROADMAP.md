@@ -273,6 +273,14 @@
   到达 Host-accepted latest-revision `Completed`；测试进程随后只因 brittle exact-tool-list observer 把两次
   合法 root `read_file` 误判而 exit 101。observer 已离线改为核心顺序 + bounded reads 并由正反例闭合，
   treatment 未重跑。该结果只证明 bounded vertical usability，不声明通用生产力提升或 live Tavily success。
+- 首个 Release Candidate 已集成到公开默认分支：PR #1 以 rebase 合并为
+  `226e387a54efdb1a22c43f91b11be94068cea534`，合并后 tree 与本地正式 RC tree byte-exact；默认分支
+  CI run `30441290667` 的 quality、Ubuntu delivery、macOS Writer/delivery 全绿。RC Goal 已关闭，
+  没有启动新 capability cluster。
+- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer：保留
+  `scripts/dse-delivery.sh` 为唯一离线 lifecycle owner，增加 POSIX versioned installer、四 target
+  Draft Release、SHA256/manifest/SPDX/attestation 与 `dse.run/install.sh` 公开闭环。production Rust、
+  DeepSeek、Runtime/Event/Store/tools/Prompt 预期 delta=`0`；Homebrew 不阻塞主入口。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7764,3 +7772,60 @@ delta=`0`，没有提高 timeout。修正后 exact failing test=`1/1 in 20.22s`�
 90.05s`；只有新 revision 才重新进入 gate。final focused exit=`0`：tools=`412/6`、DeepSeek=`61/1`、
 Runtime=`88/0`、app=`76/4`、app-server=`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`；
 结果写回后只复核 authority/diff，同一 production revision 不重跑 full。
+
+### 40.19 公共 Immutable Release 与一键安装（进行中）
+
+真实问题不是 Agent capability，而是当前用户只能取得本地 artifact：GitHub 公开仓库没有 stable
+Release、immutable binary、版本化 installer 或一条公共安装命令。唯一 owner 继续是
+`scripts/dse-delivery.sh` 的离线 package/install/verify/upgrade/rollback/uninstall；public bootstrap
+只做 exact version/target/download/checksum，然后执行同 revision 的 canonical owner。旧 M7 runtime/TUI
+updater、后台版本检查、`crates/release` 与 imported GitHub reader 继续保持删除；ADR-0020 只 supersede
+“用户显式 public bootstrap 也永久缺席”的过宽结论。
+
+冻结外部合同：
+
+```text
+curl -fsSL https://dse.run/install.sh | sh
+  -> GitHub latest stable redirect
+  -> exact vX.Y.Z Immutable Release
+  -> SHA256SUMS verifies dse-installer.sh + dist-manifest.json
+  -> /bin/sh dse-installer.sh
+  -> exact target archive + SHA-256
+  -> canonical dse-delivery.sh payload
+  -> ~/.local install -> dse --version -> dse doctor --json
+```
+
+`DSE.RUN` 是现有 Codex Sites 官网，只拥有薄 bootstrap，不存放二进制或产生第二 release truth。本仓
+asset set 精确为 versioned POSIX installer、四个 `dse-<version>-<target>.tar.gz`、顶层
+`SHA256SUMS`、`dist-manifest.json` 和 `SBOM.spdx.json`。GitHub workflow 必须 Draft-first，四个
+native runner 直接把 archive 上传 Draft，不通过 Actions artifact 中转；finalizer 从同一 Draft
+组装/校验/attest，要求四 archive 的 `source_mode=locked-offline-source`，资产齐全后只发布一次。
+Windows native 不承诺；WSL2 使用 Ubuntu 22.04 x86_64 asset，但最终报告必须单列是否执行过
+Windows-hosted WSL canary，不能用 native Ubuntu runner 冒充该环境。
+
+当前 deterministic actual：GitHub repository=`public`、release immutability 已从 disabled 切为
+`enabled=true`；GitHub Release list 仍为空，历史 tag 只到 `v0.8.67`，因此尚未发布 `v0.8.68`。
+公网 `/install.sh` 返回 `text/x-shellscript`、`max-age=300, must-revalidate`；无 stable Release 时实测
+exit=`1`、message=`no stable DSE release is available yet`、clean HOME entries=`0`。
+
+离线 targeted 已证明：四 target 映射与 archive identity、POSIX `sh` bootstrap、same-version、upgrade、
+双向 rollback、uninstall、404/timeout/partial、top/inner checksum、manifest/wrong-target、archive
+traversal/symlink、foreign manager、unsupported target、doctor failure restore、DSE_HOME 三类数据与
+shell profile byte preservation；release asset/SBOM semantic tamper 均 fail closed。cold-install fixture
+PATH 不含 Rust/Cargo/Node/npm/Python/clone。现有 delivery self-test、release self-test、installer
+self-test 全绿；production Rust/Cargo dependency/Runtime/Store/Prompt/catalog delta=`0`，official
+DeepSeek requests=`0`。
+
+当前只能判定 `local_gates_green_pending_public_ci_and_release`。四个平台 real native build +
+fresh install/version/doctor、公开 CI、Draft asset/attestation 和
+immutable publish 尚未执行；这些事实闭合前不得声称公共命令可用。Homebrew tap 是 stable main
+entry 闭合后的次级入口，不阻塞本切片，也不在当前 commit 混入第二安装系统。
+
+本切片 focused gate 已一次 exit=`0`：delivery/release/installer 三组 self-test 全绿；tools=
+`412 passed/6 ignored`、DeepSeek=`61/1`、Runtime conformance=`88/88`、app=`76/4`、app-server=
+`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`，最后的 TUI binary check 通过；没有
+official DeepSeek 请求。
+
+代码与文档冻结后的 pre-integration full 只执行一次并 exit=`0`：public repository check、三组
+delivery tests、`cargo fmt --all -- --check`、workspace Clippy `-D warnings`、workspace 全测试与
+`git diff --check` 全部通过；同一 revision 未重跑 full。

@@ -370,6 +370,24 @@ watchdog/recovery snapshot 与 pause/resume terminal helper 均无生产调用�
 Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run 事件继续由独立
 的 `run_events.try_recv` 进入 `CanonicalRunProjection` 和 presenter。
 
+ADR-0020 当前只改变 repository delivery/release surface，不改变上面的生产主链。现有
+`scripts/dse-delivery.sh` 仍是唯一离线 package/install/verify/upgrade/rollback/uninstall owner；新增
+versioned POSIX installer 只解析固定 `gelin66/deepseek-agent` exact stable Release、验证顶层 manifest/
+SHA 与 target archive，然后提取并校验同 revision 的 canonical delivery payload。release-time Python
+只生成/验证 `dse.release.v1` JSON 和 SPDX，不进入 cold install 或 DSE runtime。
+
+当前远端 release immutability=`enabled`，但 GitHub Releases 仍为空且没有 `v0.8.68` tag。Sites 已部署
+`https://dse.run/install.sh` 薄 bootstrap；当前无 stable release 的真实结果是 nonzero typed failure、
+HOME 无副作用，不是公共安装完成。`.github/workflows/release.yml` 冻结 Draft→四 native runner 直接上传→
+locked-source manifest/SBOM/attestation→single immutable publish，不使用 Actions artifact 作为二进制中转。直到该
+workflow 和公网 clean install 执行成功，current fact 只能是 repository implementation ready，不能是
+public command available。
+
+该切片 focused gate 已一次通过（delivery/release/installer + tools/DeepSeek/Runtime/app/app-server/
+exec/TUI/PTY），冻结后的 full 也只执行一次且 exit=`0`（public repository、fmt、Clippy、workspace
+tests、diff 全绿），没有 official DeepSeek request；当前只等待公开 CI、Draft native assets 与实际
+immutable/public install 证据。
+
 ## 2. 已统一的生产链
 
 <a id="current-app"></a>

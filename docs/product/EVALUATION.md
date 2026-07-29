@@ -6233,3 +6233,49 @@ Prompt delta=`0`。没有 live Tavily treatment，也没有把此前 determinist
 随后同一相关 acceptance matrix=`30/30 in 90.05s`。final focused exit=`0`：tools=`412 passed, 6
 ignored`、DeepSeek=`61/1`、Runtime=`88/88`、app=`76/4`、app-server=`23/23`、exec=`30/30`、canonical
 TUI=`20/20`、PTY=`7/7`；结果写回后只复核 authority/diff，不重跑 full。
+
+### ADR-0020 Public Immutable Release + Installer 合同与当前结果
+
+该切片是 Risk 2 release/supply-chain 变化，不是 model-visible capability treatment。before=`只有本地
+artifact`；after 只有在一个 clean public environment 从 `dse.run/install.sh` 得到 shell、解析 exact
+immutable tag、校验并安装 native archive，再通过 `dse --version` 与 `dse doctor --json` 时才是
+verified success。没有随机 DeepSeek A/B、Key 或费用请求；Runtime/Event/Store/catalog/Prompt/DeepSeek
+wire 的必要 delta 必须为 0。
+
+冻结 identity：repository=`gelin66/deepseek-agent`、schema=`dse.release.v1`、workspace version=
+`0.8.68`、first tag=`v0.8.68`、installer=`dse-installer.sh`、checksums=`SHA256SUMS`、manifest=
+`dist-manifest.json`、SBOM=`SBOM.spdx.json`。四个 target 是 Darwin/Linux 的 arm64/x86_64；Windows
+native unsupported，Windows 只使用 WSL2 Linux x86_64 入口，真实 WSL canary 必须与 native Ubuntu
+runner evidence 分开报告。versioned installer 必须通过 `/bin/sh -n`，
+系统 Bash 只执行同 source revision、embedded SHA-256 已校验的 canonical `dse-delivery.sh` payload。
+
+冻结评测矩阵：
+
+| family | 必须证明 | false allow / mutation budget |
+|---|---|---:|
+| target | 四个 OS/arch 正向、unknown OS/arch、wrong archive target | 0 |
+| resolve | latest stable→exact、explicit version、404、timeout、partial | 0 active-release change |
+| integrity | installer/manifest/archive top SHA、inner SHA、source revision/tree、traversal、symlink | 0 tamper allow |
+| lifecycle | fresh/version/doctor、same-version、upgrade、rollback、uninstall | 0 false success |
+| ownership | foreign brew/cargo/unknown dse、canonical prefix links、no sudo/profile mutation | 0 foreign overwrite |
+| preservation | `DSE_HOME` config、RunStore、credential bytes | byte-identical |
+| release | Draft exact 8 assets、four native installs、locked source mode、SPDX、artifact/SBOM/release attestations | 0 missing asset |
+| public | shell MIME、bounded cache、no-release typed failure、clean install from dse.run | 0 HTML/mutable fetch |
+
+当前 deterministic result：delivery/release/installer 三个 self-test 全绿。installer fixture 在不含
+Rust/Cargo/Node/npm/Python/clone 的 PATH 中完成四 target selection；native-independent fixture lifecycle
+完成 fresh、same-version、upgrade、双向 rollback 与 uninstall，doctor failure 恢复 prior exact current。
+404/timeout/partial/tamper/foreign/unsupported 均保持 active release；config/RunStore/credential 与
+`.profile` hash 前后相同。release verifier 额外拒绝 link/non-regular member、`../` traversal、internal
+wrong-target、checksummed semantic/incomplete manifest tamper、空/foreign-identity SBOM 与 installer
+payload tamper。
+
+remote precondition actual：repository public；Immutable Releases API=`enabled:true`；Release API list=`[]`；
+历史最高 tag=`v0.8.67`。官网 no-release path 实测 HTTP 200 shell MIME（脚本本身成功取得）、执行 exit=`1`
+并输出精确 no-stable-release message，HOME entries=`0`。这不是安装成功；behavior status 现为
+`local_gates_green_pending_public_ci_and_release`。本切片 focused 一次 exit=`0`：delivery/release/
+installer self-tests 全绿；tools=`412/6`、DeepSeek=`61/1`、Runtime=`88/0`、app=`76/4`、app-server=
+`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。冻结后的 full 只执行一次并 exit=`0`：
+public repository、三 delivery tests、fmt、workspace Clippy/tests、diff check 全绿，同一 revision 未
+重跑。只有 public CI、four-native Draft、
+attestation、publish 后 `immutable=true` 与公网 clean install 全部闭合才改为 keep/complete。
