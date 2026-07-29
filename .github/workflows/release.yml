@@ -37,6 +37,7 @@ jobs:
       release_sha: ${{ steps.identity.outputs.release_sha }}
       source_tree: ${{ steps.identity.outputs.source_tree }}
       created_at: ${{ steps.identity.outputs.created_at }}
+      release_id: ${{ steps.draft.outputs.release_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -130,6 +131,7 @@ jobs:
             exit 1
           fi
       - name: Create asset-empty Draft Release
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.identity.outputs.version }}
@@ -156,6 +158,21 @@ jobs:
             --title "DSE $VERSION" \
             --notes-file "$notes" \
             --draft
+          releases="$(gh api \
+            "repos/$DSE_RELEASE_REPOSITORY/releases?per_page=100")"
+          release_id="$(printf '%s' "$releases" | jq -er \
+            --arg tag "$TAG" \
+            --arg sha "$RELEASE_SHA" \
+            '[.[] | select(
+              .tag_name == $tag and
+              .target_commitish == $sha and
+              .draft == true and
+              .prerelease == false and
+              .immutable == false and
+              (.assets | length) == 0
+            )] | if length == 1 then .[0].id else
+              error("expected exactly one matching empty Draft") end')"
+          printf 'release_id=%s\n' "$release_id" >>"$GITHUB_OUTPUT"
 
   native_assets:
     name: Native build and install (${{ matrix.target }})
@@ -332,6 +349,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.admission.outputs.version }}
           TAG: ${{ needs.admission.outputs.tag }}
+          RELEASE_ID: ${{ needs.admission.outputs.release_id }}
+          RELEASE_SHA: ${{ needs.admission.outputs.release_sha }}
         run: |
           set -euo pipefail
           expected="$RUNNER_TEMP/expected-assets"
@@ -345,8 +364,14 @@ jobs:
             "dse-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
             dse-installer.sh \
             dist-manifest.json | sort >"$expected"
-          gh api "repos/$DSE_RELEASE_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[].name' | sort >"$actual"
+          release="$(gh api \
+            "repos/$DSE_RELEASE_REPOSITORY/releases/$RELEASE_ID")"
+          test "$(printf '%s' "$release" | jq -r '.draft')" = "true"
+          test "$(printf '%s' "$release" | jq -r '.prerelease')" = "false"
+          test "$(printf '%s' "$release" | jq -r '.immutable')" = "false"
+          test "$(printf '%s' "$release" | jq -r '.tag_name')" = "$TAG"
+          test "$(printf '%s' "$release" | jq -r '.target_commitish')" = "$RELEASE_SHA"
+          printf '%s' "$release" | jq -r '.assets[].name' | sort >"$actual"
           diff -u "$expected" "$actual"
           verify_dir="$RUNNER_TEMP/release-verify"
           mkdir -p "$verify_dir"
