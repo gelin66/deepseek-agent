@@ -6270,20 +6270,39 @@ Rust/Cargo/Node/npm/Python/clone 的 PATH 中完成四 target selection；native
 wrong-target、checksummed semantic/incomplete manifest tamper、空/foreign-identity SBOM 与 installer
 payload tamper。
 
-remote evidence actual：repository public、Immutable Releases=`enabled:true`；`v0.8.68` 已从 exact
-`222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 run `30466835639` 发布，`draft=false`、
-`prerelease=false`、`immutable=true`，8/8 assets、repo verifier、artifact/release attestations 与四 native
-fresh install 全绿。官网返回 shell MIME 与 bounded cache；隔离 macOS arm64 HOME 的主命令真实完成
-install、`dse`/`dse-tui 0.8.68`、doctor，`DSE_HOME` marker hash 前后相同。
-
-同版主命令复验随后以 curl 56 connection reset 失败，旧 installer 虽有 `--retry 2`，却没有
+remote evidence actual：repository public、Immutable Releases=`enabled:true`。首个 stable `v0.8.68`
+验证后，同版主命令以 curl 56 connection reset 失败；旧 installer 虽有 `--retry 2`，却没有
 `--retry-all-errors`，并把 transport failure 误报为 missing archive；false completion=`0`、active install 与
-用户数据均未改变。该真实 red 准入 patch candidate `0.8.69`：唯一 versioned installer owner 加入总时限内
-all-error retry，并把 curl 18/22/28/35/56 分为 partial/missing/timeout/HTTPS transport。新增 fixture 先抓到
-POSIX `if` 后读取 `$?` 会丢失原状态，再把捕获移入 `else` 后 green；targeted delivery/release/installer、
-locked check/fmt/diff 与 focused 全绿。首次 full 只因 release version 改变后 prompt provenance fixture
-仍固定旧 `Cargo.toml` hash 而 red；精确更新 block 与 aggregate provenance identity 后，新 revision 的
-targeted prompt test 与唯一一次 full 均 exit=`0`。behavior status 现为
-`first_public_stable_verified_retry_patch_pending_release`；只有 patch full、公开 CI、第二个 immutable release 与
-公网 fresh/same-version/verify/uninstall 全部闭合才改为 keep/complete。原始与 patch 路径均未发起
-official DeepSeek request，Runtime/Event/Store/catalog/Prompt/DeepSeek wire delta=`0`。
+用户数据均未改变。该真实 red 准入 `0.8.69`：唯一 versioned installer owner 加入总时限内 all-error
+retry，并把 curl 18/22/28/35/56 分为 partial/missing/timeout/HTTPS transport。新增 fixture 先抓到 POSIX
+`if` 后读取 `$?` 会丢失原状态，再把捕获移入 `else` 后 green；targeted delivery/release/installer、locked
+check/fmt/diff 与 focused 全绿。首次 full 只因 release version 改变后 prompt provenance fixture 仍固定旧
+`Cargo.toml` hash 而 red；精确更新 block 与 aggregate provenance identity 后，新 revision 的 targeted
+prompt test 与唯一一次 full 均 exit=`0`。
+
+PR #10 exact head CI run `30472034739` 的 quality/Ubuntu/macOS 三项全绿；首个 remote red 是 SIGKILL
+fixture 在 Python `open(..., "w")` 创建空 PID 文件后只等 file existence，Ubuntu 偶发读取空内容，属于
+fixture/concurrency defect。唯一修复改为等待 marker 同时可读且可解析，不增加 timeout 或改变 production
+recovery；exact local test 与后续 workspace CI 通过。PR rebase 后 default exact revision=
+`83c9d43151946c554b1e8ecab028e8eec54bc42f`，push CI run `30472976118` 三项全绿。
+
+`v0.8.69` 已从该 revision、tree `21e48a0a384b232a72fad778de45a16e2ebbdd19` 经 immutable workflow
+run `30474005480` 发布；Release id=`361921426`、`draft=false`、`prerelease=false`、`immutable=true`，
+8/8 assets、repo verifier、artifact/release attestations 与四 native fresh install/version/doctor/verify/
+uninstall 全绿。独立下载复核实际遭遇 curl 35/56 reset；有界 retry 恢复后 8/8 top checksum、release
+verifier、`gh attestation verify` 与 `gh release verify-asset` 通过，证明 patch 覆盖原始 transport 故障类。
+
+公网 versioned-installer result：隔离 macOS arm64 HOME 经主命令从 `v0.8.68` 升到 `v0.8.69`，同版
+重跑、rollback、再升级、verify、uninstall 全绿，`dse`/`dse-tui` 报告
+`0.8.69 (83c9d4315194)`、doctor=`0`、installer-owned paths 删除，`DSE_HOME` marker SHA-256 始终为
+`cf7d4f3696c52757931811e05a5f672870af9ee9532bccdbcb8cbb579f0e3063`。
+
+fresh public result 仍为 red：全新隔离 HOME 从官网取得正确 shell MIME 后，Sites bootstrap 下载
+`SHA256SUMS` 遭 curl 35 reset；当前 Sites `fetch` 只有 `--retry 2 --retry-connrefused`，缺少
+`--retry-all-errors`/`--retry-max-time`，并误报 `release v0.8.69 is missing SHA256SUMS`。versioned installer
+未被调用、owned path 未创建、预置 marker SHA-256 保持
+`a007de2d591722ab69bbad89222b1f395c9573b0c9480f96e3ebd9df793ed4b5`。behavior status=
+`repository_release_complete_public_fresh_blocked_by_sites_transport_contract`；Sites 采用同一
+18/22/28/35/56 typed retry 合同并让一次 fresh 主命令/version/doctor 通过前，不声明 entire public Goal
+complete。无需重发 tag/Release 或重跑仓库 full。原始与 patch 路径均未发起 official DeepSeek request，
+Runtime/Event/Store/catalog/Prompt/DeepSeek wire delta=`0`。

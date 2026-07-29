@@ -277,17 +277,20 @@
   `226e387a54efdb1a22c43f91b11be94068cea534`，合并后 tree 与本地正式 RC tree byte-exact；默认分支
   CI run `30441290667` 的 quality、Ubuntu delivery、macOS Writer/delivery 全绿。RC Goal 已关闭，
   没有启动新 capability cluster。
-- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer。首个 stable `v0.8.68`
-  已从 exact `222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 run `30466835639` 发布：Release
+- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer。patch stable `v0.8.69`
+  已从 default-branch exact `83c9d43151946c554b1e8ecab028e8eec54bc42f`、tree
+  `21e48a0a384b232a72fad778de45a16e2ebbdd19` 经 run `30474005480` 发布：Release
   `draft=false`、`prerelease=false`、`immutable=true`，四 native archive 加 installer/manifest/
-  SHA256/SBOM 共 8 项资产及 attestations 齐全。`dse.run/install.sh` 已在隔离 macOS arm64 HOME
-  完成真实 install、`dse`/`dse-tui --version`、doctor 和数据保持；但同版重跑暴露 curl 56
-  connection reset 不在旧 `--retry 2` 全错误集合内，且被误报为 asset missing，因此 Goal 尚未关闭。
-  patch candidate `0.8.69` 只在 versioned installer owner 增加有界 `--retry-all-errors`、总重试时限与
-  18/22/28/35/56 typed failure，production Rust/DeepSeek/Runtime/Event/Store/tools/Prompt delta=`0`；
-  targeted、focused 与修正 revision 的唯一一次 full 已全绿，等待公开 CI、第二个 immutable patch release
-  与公网同版复验。
-  Homebrew 不阻塞主入口。
+  SHA256/SBOM 共 8 项资产及 attestations 齐全，四 runner 的 fresh install/version/doctor/verify/
+  uninstall 全绿。公网 macOS arm64 已完成 `v0.8.68 -> v0.8.69` upgrade、同版重跑、rollback、
+  再升级、verify、uninstall；installer-owned path 删除且 `DSE_HOME` marker hash 始终不变。
+  独立 release 下载遭遇多次 curl 35/56 reset 后由新 `--retry-all-errors` 有界恢复，8/8 checksum/
+  verifier/attestation 通过，仓库 release 与 versioned installer 已交付。
+  仍未闭合的是 Sites 薄 bootstrap：fresh HOME 主命令在下载 `SHA256SUMS` 时遭 curl 35 reset，当前
+  Sites `fetch` 缺少 `--retry-all-errors`/`--retry-max-time` 且误报 asset missing；installer 未被调用、
+  HOME 无安装副作用。现有 Sites 线程只需按 ADR-0020 的 latest/asset bounded retry 与
+  18/22/28/35/56 typed failure 合同修正并复验一次 fresh install/version/doctor；不得重发 tag/Release
+  或重跑仓库 full。Homebrew 不阻塞主入口。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -297,7 +300,7 @@
 ## 1. 当前基线
 
 - 导入基线：CodeWhale `352e86a611fdf3cd8bd27c36d24d482c06a71117`。
-- 基线版本：workspace `0.8.68`。
+- 基线版本：workspace `0.8.69`。
 - `codewhale exec`、app-server 与交互 TUI foreground 已共用
   `crates/app::AgentApplication`、唯一 `crates/runtime::AgentRuntime`、固定工具目录和
   SQLite `RunStore`；TUI 通过 canonical command/event projection 工作。

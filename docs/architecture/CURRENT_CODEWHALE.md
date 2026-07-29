@@ -4,9 +4,9 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-28
+- 快照日期：2026-07-29
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
-- workspace version：`0.8.68`
+- workspace version：`0.8.69`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
@@ -376,27 +376,32 @@ versioned POSIX installer 只解析固定 `gelin66/deepseek-agent` exact stable 
 SHA 与 target archive，然后提取并校验同 revision 的 canonical delivery payload。release-time Python
 只生成/验证 `dse.release.v1` JSON 和 SPDX，不进入 cold install 或 DSE runtime。
 
-当前远端 release immutability=`enabled`；首个 stable `v0.8.68` 已从 exact
-`222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 workflow run `30466835639` 发布。Release
+当前远端 release immutability=`enabled`；stable `v0.8.69` 已从 exact
+`83c9d43151946c554b1e8ecab028e8eec54bc42f`、tree
+`21e48a0a384b232a72fad778de45a16e2ebbdd19` 经 workflow run `30474005480` 发布。Release
 `draft=false`、`prerelease=false`、`immutable=true`，四 native runner 均完成 build/fresh install/
 version/doctor/verify/uninstall，installer/manifest/SHA256/SBOM 与四 archive 共 8 项资产通过 repo verifier、
-GitHub artifact attestation 和 release-asset attestation。Sites 的 `https://dse.run/install.sh` 已在隔离
-macOS arm64 HOME 完成真实 install/version/doctor 且保持 `DSE_HOME` marker；它返回 shell MIME 与 300 秒
-must-revalidate cache，不托管 binary。
+GitHub artifact attestation 和 release-asset attestation。独立下载实际遭遇 curl 35/56 reset；versioned
+installer 的有界 `--retry-all-errors` 恢复后 8/8 checksum/verifier/attestation 再次通过。
 
-该首次公网复验同时发现一个未闭合的 delivery transport 缺陷：旧 versioned installer 的 `--retry 2`
-不覆盖 curl 35/56 connection reset，重试耗尽后的 transport/timeout/partial 还会被统一误报为 asset missing。
-current patch candidate `0.8.69` 在同一个 POSIX installer owner 中加入有总时限的
-`--retry-all-errors`，并保真分类 curl 18/22/28/35/56；deterministic targeted、focused 与修正 revision
-的唯一一次 full 已通过，尚待公开 CI、新 immutable patch release 和公网 same-version 复验。因此
-`v0.8.68` 是真实可安装的
-首个 stable，但 ADR-0020 Goal 在更稳健的 `v0.8.69` 发布前仍为 active。
+Sites 的 `https://dse.run/install.sh` 返回 `text/x-shellscript; charset=utf-8` 与 300 秒
+must-revalidate cache，不托管 binary。隔离 macOS arm64 HOME 已通过主命令完成 `v0.8.68 -> v0.8.69`
+upgrade、同版重跑、rollback、再升级、verify 与 uninstall；version/doctor 正确且 `DSE_HOME` marker
+byte-identical。因此仓库 release 和 versioned installer 当前是已闭合事实。
 
-原始切片 focused 与 full 各一次通过；patch candidate `0.8.69` 的 targeted 与 focused 也已一次通过。
-首次 patch full 在全仓其它已跑项均绿后，只因 workspace version 改变使 production prompt provenance
-fixture 保留旧 `Cargo.toml` hash 而失败；精确更新 block/aggregate provenance hash 后的全新 revision full
-一次 exit=`0`，没有 official DeepSeek request。当前只等待公开 CI、Draft native assets、immutable
-publish 与实际 public same-version evidence。
+整个 public one-command Goal 尚有一个 Sites-owned transport gap：fresh HOME 下载 `SHA256SUMS` 时遭
+curl 35 reset；当前薄 bootstrap 只有 `--retry 2 --retry-connrefused`，缺少
+`--retry-all-errors`/`--retry-max-time`，并把 transport failure 误报为 asset missing。该次 versioned
+installer 未被调用、没有 owned install path、预置 marker 未改变。现有 Sites 线程必须把 latest 与 asset
+fetch 切到同一 18/22/28/35/56 typed bounded-retry 合同并通过一次 fresh main-command/version/doctor；
+不需要改 Runtime/Store、重发 immutable Release 或重跑仓库 full。
+
+原始切片 focused/full 与 patch targeted/focused 均通过；首次 patch full 只因 version 改变后的 prompt
+provenance fixture 保留旧 `Cargo.toml` hash 而失败，更新 exact block/aggregate provenance 后的新 revision
+full 一次 exit=`0`。PR #10 head CI run `30472034739` 与 default push CI run `30472976118` 三项均绿；
+远端首次 PID marker red 属于先创建空文件再解析的 fixture race，修复只等待 typed PID 可解析，不改变
+production recovery。没有 official DeepSeek request，production Runtime/Event/Store/catalog/Prompt/
+DeepSeek wire delta=`0`。
 
 ## 2. 已统一的生产链
 
