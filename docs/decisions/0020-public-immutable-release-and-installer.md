@@ -126,3 +126,27 @@ attestation 可核验，并且公网 `https://dse.run/install.sh` 在干净支�
 HTML，完成下载、校验、安装、version/doctor 后，才可声明公共安装闭环完成。没有 stable
 release 时官网必须非零退出并输出 `no stable DSE release is available yet`，HOME 零副作用；
 失败不得返回 HTML 200 冒充 installer 成功。
+
+## 实施结果（2026-07-29）
+
+仓库侧公共发布合同已经闭合。`v0.8.69` 从 default-branch exact revision
+`83c9d43151946c554b1e8ecab028e8eec54bc42f`、tree
+`21e48a0a384b232a72fad778de45a16e2ebbdd19` 经 workflow run `30474005480`
+发布；Release 为 stable、非 Draft、非 prerelease、`immutable=true`，四个 native archive
+与 installer/manifest/SHA256/SBOM 共 8 项资产均由 release verifier、GitHub artifact
+attestation 和 release-asset attestation 验证。四个 native runner 都完成 build、fresh install、
+version、doctor、verify 与 uninstall。
+
+版本化 installer 的公网生命周期也已闭合：在隔离 macOS arm64 HOME 中通过官网主命令从
+`v0.8.68` 升级到 `v0.8.69`，同版重跑、rollback、重新升级、verify、uninstall 全部成功，
+installer-owned 路径按合同删除且 `DSE_HOME` marker SHA-256 始终 byte-identical。独立下载复核
+实际遭遇多次 curl 35/56 reset；有界 `--retry-all-errors` 恢复后 8 项资产再次通过 checksum、
+release verifier 与两类 attestation，直接证明 patch 覆盖了原始故障类。
+
+公共入口仍有一个明确的跨仓未闭合项。干净 HOME 执行主命令时，Sites bootstrap 下载
+`SHA256SUMS` 遭遇 curl 35 reset；当前 Sites `fetch` 只有 `--retry 2 --retry-connrefused`，没有
+`--retry-all-errors`/`--retry-max-time`，并把所有 fetch failure 误报为 asset missing。版本化
+installer 尚未被调用、没有 installer-owned 安装副作用、预置 marker 未改变。因此仓库 release/
+installer 已交付，但整个 public one-command Goal 只有在现有 Sites 线程把 latest 与 asset fetch
+切到本 ADR 已冻结的 bounded retry 和 18/22/28/35/56 typed failure 合同，并在 fresh HOME 重新通过
+主命令与 version/doctor 后才能标记 complete；不需要重发 tag、Release 或重跑仓库 full gate。
