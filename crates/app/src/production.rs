@@ -2897,7 +2897,7 @@ server.serve_forever()
                 "verifier": {
                     "verifier_id": "application_probe",
                     "parameters": {
-                        "program": "/usr/bin/python3",
+                        "program": "python3",
                         "args": ["-I", "-B", "build_and_serve.py", "server.py", "{dse_probe_lease}"],
                         "health_path": "/health",
                         "assertion_path": "/",
