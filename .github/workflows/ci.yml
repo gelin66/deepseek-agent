@@ -2,7 +2,11 @@ name: Rust CI
 
 on:
   push:
+    branches:
+      - deepseek-agent
   pull_request:
+    branches:
+      - deepseek-agent
   workflow_dispatch:
 
 permissions:
@@ -20,8 +24,11 @@ jobs:
   quality:
     name: Format, check, and test
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
@@ -50,8 +57,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
