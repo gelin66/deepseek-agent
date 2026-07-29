@@ -17,7 +17,7 @@ DSE local delivery owner
 
 Usage:
   scripts/dse-delivery.sh package [options]
-  scripts/dse-delivery.sh install --artifact FILE [--checksum FILE] [--prefix DIR]
+  scripts/dse-delivery.sh install --artifact FILE [--checksum FILE] [--prefix DIR] [--smoke-test]
   scripts/dse-delivery.sh verify [--prefix DIR]
   scripts/dse-delivery.sh rollback [--prefix DIR]
   scripts/dse-delivery.sh uninstall [--prefix DIR]
@@ -30,11 +30,13 @@ Package options:
   --revision SHA      Required with --binary-dir; otherwise clean Git HEAD
   --source-tree SHA   Required with --binary-dir; otherwise Git HEAD tree
   --target TRIPLE     Required with --binary-dir; otherwise rustc host target
+  --release-asset     Use stable dse-VERSION-TARGET.tar.gz outer asset naming
 
 Install options:
   --artifact FILE     Local .tar.gz package
   --checksum FILE     Archive checksum sidecar (default: FILE.sha256)
   --prefix DIR        Absolute install prefix (default: /usr/local)
+  --smoke-test        Run staged version and `dse doctor --json` before activation
 
 The delivery commands perform no network requests. Packaging a source checkout
 uses `cargo build --release --locked --offline`.
@@ -261,6 +263,7 @@ package_command() {
   local revision=""
   local source_tree=""
   local target=""
+  local release_asset=0
   local repo_root stage_root package_root package_name archive archive_tmp
   local cargo_lock_sha rustc_line rustc_verbose source_mode
 
@@ -295,6 +298,10 @@ package_command() {
         [ "$#" -ge 2 ] || die "--target requires a value"
         target="$2"
         shift 2
+        ;;
+      --release-asset)
+        release_asset=1
+        shift
         ;;
       -h | --help)
         usage
@@ -400,7 +407,11 @@ package_command() {
     "$package_root/LICENSE" \
     "$package_root/manifest.tsv" \
     "$package_root/SHA256SUMS"
-  archive="$output_dir/$package_name.tar.gz"
+  if [ "$release_asset" -eq 1 ]; then
+    archive="$output_dir/dse-${version}-${target}.tar.gz"
+  else
+    archive="$output_dir/$package_name.tar.gz"
+  fi
   [ ! -e "$archive" ] && [ ! -L "$archive" ] &&
     [ ! -e "$archive.sha256" ] && [ ! -L "$archive.sha256" ] ||
     die "refusing to overwrite an existing delivery artifact: $archive"
@@ -518,6 +529,7 @@ parse_prefix_and_artifact() {
   PARSED_PREFIX="/usr/local"
   PARSED_ARTIFACT=""
   PARSED_CHECKSUM=""
+  PARSED_SMOKE_TEST=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --prefix)
@@ -537,6 +549,11 @@ parse_prefix_and_artifact() {
         PARSED_CHECKSUM="$2"
         shift 2
         ;;
+      --smoke-test)
+        [ "$mode" = "install" ] || die "--smoke-test is only valid for install"
+        PARSED_SMOKE_TEST=1
+        shift
+        ;;
       -h | --help)
         usage
         exit 0
@@ -549,29 +566,13 @@ parse_prefix_and_artifact() {
   validate_prefix "$PARSED_PREFIX"
 }
 
-install_command() {
-  parse_prefix_and_artifact install "$@"
-  local prefix="$PARSED_PREFIX"
-  local artifact checksum target delivery_root releases_root stage root_name extracted
-  local manifest version revision release_id destination current_target
-  [ -n "$PARSED_ARTIFACT" ] || die "install requires --artifact"
-  artifact="$(absolute_existing_file "$PARSED_ARTIFACT")"
-  checksum="${PARSED_CHECKSUM:-$artifact.sha256}"
-  checksum="$(absolute_existing_file "$checksum")"
-  require_command tar
-  target="$(host_target)"
-  verify_archive_checksum "$artifact" "$checksum"
-  root_name="$(archive_root_name "$artifact")"
-
-  delivery_root="$prefix/lib/dse"
-  releases_root="$delivery_root/releases"
-  validate_delivery_link_slot "$delivery_root/current"
-  validate_delivery_link_slot "$delivery_root/previous"
-  validate_bin_slot "$prefix/bin/dse" "../lib/dse/current/bin/dse"
-  validate_bin_slot "$prefix/bin/dse-tui" "../lib/dse/current/bin/dse-tui"
-  mkdir -p "$releases_root" "$prefix/bin"
-  stage="$(mktemp -d "$delivery_root/.install.XXXXXX")"
-  trap "rm -rf '$stage'" EXIT
+extract_verified_artifact() {
+  local artifact="$1"
+  local stage="$2"
+  local root_name="$3"
+  local target="$4"
+  local smoke_test="$5"
+  local extracted manifest version version_output
   COPYFILE_DISABLE=1 tar -xzf "$artifact" -C "$stage"
   extracted="$stage/$root_name"
   [ -d "$extracted" ] && [ ! -L "$extracted" ] || die "archive root is not a directory"
@@ -582,6 +583,61 @@ install_command() {
   verify_internal_checksums "$extracted"
   [ -x "$extracted/bin/dse" ] && [ -x "$extracted/bin/dse-tui" ] ||
     die "artifact binaries are not executable"
+  if [ "$smoke_test" -eq 1 ]; then
+    version="$(manifest_value "$manifest" version)"
+    version_output="$("$extracted/bin/dse" --version)" ||
+      die "staged dse --version smoke failed"
+    case "$version_output" in
+      "dse $version"*) ;;
+      *) die "staged dse version does not match artifact manifest" ;;
+    esac
+    version_output="$("$extracted/bin/dse-tui" --version)" ||
+      die "staged dse-tui --version smoke failed"
+    case "$version_output" in
+      "dse-tui $version"*) ;;
+      *) die "staged dse-tui version does not match artifact manifest" ;;
+    esac
+    "$extracted/bin/dse" doctor --json >/dev/null ||
+      die "staged dse doctor --json smoke failed"
+  fi
+  VERIFIED_EXTRACTED="$extracted"
+}
+
+install_command() {
+  parse_prefix_and_artifact install "$@"
+  local prefix="$PARSED_PREFIX"
+  local artifact checksum target delivery_root releases_root stage root_name extracted
+  local preflight_stage
+  local manifest version revision release_id destination current_target
+  [ -n "$PARSED_ARTIFACT" ] || die "install requires --artifact"
+  artifact="$(absolute_existing_file "$PARSED_ARTIFACT")"
+  checksum="${PARSED_CHECKSUM:-$artifact.sha256}"
+  checksum="$(absolute_existing_file "$checksum")"
+  require_command tar
+  target="$(host_target)"
+  verify_archive_checksum "$artifact" "$checksum"
+  root_name="$(archive_root_name "$artifact")"
+
+  if [ "$PARSED_SMOKE_TEST" -eq 1 ]; then
+    preflight_stage="$(mktemp -d "${TMPDIR:-/tmp}/dse-install-preflight.XXXXXX")"
+    trap "rm -rf '$preflight_stage'" EXIT
+    extract_verified_artifact "$artifact" "$preflight_stage" "$root_name" "$target" 1
+    rm -rf "$preflight_stage"
+    trap - EXIT
+  fi
+
+  delivery_root="$prefix/lib/dse"
+  releases_root="$delivery_root/releases"
+  validate_delivery_link_slot "$delivery_root/current"
+  validate_delivery_link_slot "$delivery_root/previous"
+  validate_bin_slot "$prefix/bin/dse" "../lib/dse/current/bin/dse"
+  validate_bin_slot "$prefix/bin/dse-tui" "../lib/dse/current/bin/dse-tui"
+  mkdir -p "$releases_root" "$prefix/bin"
+  stage="$(mktemp -d "$delivery_root/.install.XXXXXX")"
+  trap "rm -rf '$stage'" EXIT
+  extract_verified_artifact "$artifact" "$stage" "$root_name" "$target" 0
+  extracted="$VERIFIED_EXTRACTED"
+  manifest="$extracted/manifest.tsv"
   version="$(manifest_value "$manifest" version)"
   revision="$(manifest_value "$manifest" source_revision)"
   release_id="${version}-${target}-${revision:0:12}"

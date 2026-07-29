@@ -39,6 +39,12 @@ run_diff_gate() {
   git diff --check
 }
 
+run_delivery_tests() {
+  ./scripts/test-dse-delivery.sh
+  ./scripts/test-dse-release.py
+  ./scripts/test-dse-installer.sh
+}
+
 run_focused_tests() {
   local filters=(
     "m8a_deepseek_only_entry_tests::canonical_cli_has_no_fleet_or_direct_sandbox_shell"
@@ -79,6 +85,7 @@ case "$mode" in
     ;;
   focused)
     run_public_repository_gate
+    run_delivery_tests
     cargo fmt --all -- --check
     run_focused_tests
     cargo check -p dse-tui --bin dse-tui --locked
@@ -90,6 +97,7 @@ case "$mode" in
     ;;
   full)
     run_public_repository_gate
+    run_delivery_tests
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
