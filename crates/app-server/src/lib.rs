@@ -1539,11 +1539,16 @@ mod tests {
             command: RunCommand::Start(start),
         };
         let no_key_application = production_app(&state_db, &fixture, false);
+        let application_response = no_key_application.execute(interrupted_start.clone()).await;
         let no_key_app =
             router(no_key_application, &test_options(None)).expect("no-Key Run API router");
         let (status, response) =
             post_command(&no_key_app, "/v1/runs", &interrupted_start, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response, application_response,
+            "HTTP framing must not rewrite the application typed error"
+        );
         assert!(matches!(
             response.result,
             RunCommandResult::Error {
@@ -1561,7 +1566,7 @@ mod tests {
         );
 
         let application = production_app(&state_db, &fixture, true);
-        let app = router(application.clone(), &test_options(None)).expect("Run API router");
+        let app = router(application, &test_options(None)).expect("Run API router");
 
         let uri = format!(
             "/v1/runs/pending-creations?workspace={}&limit=7",
@@ -1584,7 +1589,6 @@ mod tests {
         let recover = envelope(RunCommand::RecoverCreation {
             creation_request_id: creation_request_id.to_owned(),
         });
-        let application_response = application.execute(recover.clone()).await;
         let (status, response) = post_command(
             &app,
             &format!("/v1/runs/pending-creations/{creation_request_id}/recover"),
@@ -1593,11 +1597,18 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        let RunCommandResult::Run { run } = response.result else {
+            panic!("HTTP recover route did not return the canonical Run view")
+        };
+        assert_eq!(run.workspace, workspace);
         assert_eq!(
-            response, application_response,
-            "HTTP framing must not rewrite the application typed error"
+            run.task_contract
+                .as_ref()
+                .expect("recovered task contract")
+                .definition
+                .objective,
+            "中断固定路由创建"
         );
-        assert!(matches!(response.result, RunCommandResult::Run { .. }));
 
         let (status, response) = post_command(
             &app,
