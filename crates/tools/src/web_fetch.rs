@@ -809,6 +809,10 @@ fn failure_metadata(requested: &str, failure: &FetchFailure) -> Value {
     })
 }
 
+pub(crate) fn canonical_public_http_url(requested: &str) -> Result<Url, String> {
+    parse_and_validate_url(requested).map_err(|failure| failure.code.to_owned())
+}
+
 fn parse_and_validate_url(requested: &str) -> Result<Url, FetchFailure> {
     if requested.trim() != requested || requested.chars().count() > MAX_URL_CHARS {
         return Err(FetchFailure::rejected(

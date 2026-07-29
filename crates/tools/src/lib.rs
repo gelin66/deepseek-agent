@@ -27,6 +27,7 @@ pub mod shell_dispatcher;
 mod unified_diff;
 mod verification_artifact;
 mod web_fetch;
+mod web_search;
 
 pub use application_probe::ApplicationProbeRecovery;
 pub(crate) use application_probe::{
@@ -63,6 +64,9 @@ pub use verification_artifact::{
 };
 pub use web_fetch::{
     SystemWebFetchNetwork, WebFetchHttpResponse, WebFetchNetwork, WebFetchNetworkError,
+};
+pub use web_search::{
+    SystemWebSearchNetwork, WebSearchHttpResponse, WebSearchNetwork, WebSearchNetworkError,
 };
 
 #[cfg(test)]

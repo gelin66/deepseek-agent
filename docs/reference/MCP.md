@@ -7,9 +7,10 @@ checking connections, and discovering advertised tools. Servers can be local
 stdio processes started by the client, or remote URL-based servers that speak
 Streamable HTTP with legacy SSE fallback.
 
-The fixed Agent catalog has no built-in browsing tool or compatibility alias.
-An MCP server may advertise browsing tools to the explicit MCP CLI, but the
-current canonical Agent catalog does not load MCP tools into model requests.
+The fixed Agent catalog has its own canonical `web_search`, `web_fetch`, and
+semantic browser tools; none is an MCP compatibility alias. An MCP server may
+advertise other browsing tools to the explicit MCP CLI, but the current
+canonical Agent catalog does not load MCP tools into model requests.
 
 DSE only consumes external MCP tool servers; it no longer exposes itself
 as an MCP server. The canonical local Agent API is `dse app-server` over

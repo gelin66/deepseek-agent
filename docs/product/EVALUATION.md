@@ -5982,3 +5982,66 @@ revision 没有重跑。
 `git diff --check` 与真实 pinned-CfT vertical=`1/1 in 7.47s` 均通过。
 production Rust/Cargo delta=`+4,095/-169`，docs delta=`+162/-22`；`semantic_browser.rs` 从 `7,970` 行变为
 `11,173` 行。direct dependency edge=`+2`，但两者均为 workspace/lock 已有依赖，无新 acquisition。
+
+<a id="canonical-search-observation-quality"></a>
+### Canonical Web Search + Semantic Observation Quality 合同与结果
+
+这是 ADR-0019 的 Risk 2 production capability cluster。真实问题是：root Agent 此前只能读取已知 URL，
+不能从未知工程问题发现来源；browser 的 first-eligible-N observation 又可能让前部导航噪音挤掉任务相关
+节点。primary owner=`crates/tools`，`crates/app` 只做 production caller/composition；old path 是 M44 已删除但
+未被真实 search 替代的 provider 管理面，以及 AX/DOM extractor 的机械前 N 截断。
+
+#### Frozen acceptance matrix
+
+| family | keep condition | pre-integration actual |
+|---|---|---:|
+| canonical search | 一个 schema/dispatch/fixed network identity；无 provider/header/credential/proxy 参数 | pass；catalog 15→16 |
+| bounds/failure | query/result/response/deadline/DNS/HTTP/content/JSON/request-id typed fail closed | pass；false allow=0 |
+| research route | search→选择两个独立来源→fetch 原文→cross-check→URL citation | 1/1 deterministic production vertical |
+| evidence role | snippet/rank 不冒充事实；source content 与 citations 对齐 | fetched/cited sources=2/2；unsupported claim=0 |
+| authorization | Ask exact-query approval；Agent/FullAccess allow；isolated Writer deny | pass；rule=`canonical_public_web_search` |
+| replay/recovery | committed SQLite reopen network=0；started ambiguity 不重复 provider request | reopen reexecution=0；RecoveryRequired=1/1 |
+| observation recall | late task cue 在 node bound 内保留；报告 recall/truncation/prompt injection | synthetic late-target recall=10,000 bps；focus loss=false |
+| real browser quality | pinned Chrome focus recall 与每次 action 后 bounded semantic diff | 1/1 in 7.01s；recall=10,000 bps；3/3 fill diff non-empty and <16 KiB |
+| blind spots | 显式报告 AX-only、DOM interactive without AX、canvas/SVG candidates | fields present；不冒充 visual success |
+| false success | HTTP/tool success、snippet、metric 或 diff 不单独完成任务 | 0 in frozen fixtures |
+
+#### 实际 production caller、accounting 与复杂度
+
+真实 production-path fixture 经
+`AgentApplication -> AgentRuntime -> ProductionToolExecutor -> ToolOutcome -> RuntimeEvent -> SQLite RunStore`
+执行 4 个 mock-model turns：模型先选择一次 `web_search`，再读取 `example.com` 与 `example.org` 两个独立
+public HTTPS 原来源，最后只对已读取 URL 形成 citation。search calls=`1`、DNS/fetch=`2/2`、committed
+search/fetch outcomes=`1/2`；cold reopen 的 model/search/DNS/HTTP calls 全部为 0，event stream exact replay。
+这证明 vertical wiring/replay，不证明真实 DeepSeek 的检索策略或通用研究成功率。
+
+search response 记录 provider request identity、`usage.credits` 与
+`billing_truth=provider_usage_units_only_actual_charge_unavailable`。fixture credit=`1` 只是 contract fixture，
+不是实际账单。official DeepSeek requests/tokens/cost=`0/0/$0`；没有付费 A/B，也不做 Token、费用或通用
+效率声明。环境与现有 Host secret store 的 exact-key presence check 均为 unavailable，未读取 credential
+value；因此真实 provider canary=`not_run`、requests=`0`、reruns=`0`、actual credits/charge=`0/unknown`。
+accounting 不完整按 ADR-0011 只阻止精确成本声明与下一次付费请求，不抹掉 deterministic caller/reopen
+behavior。
+
+observation 的 unit fixture 将 8 个前置导航节点、1 个 prompt-injection signal 和最后 1 个 task target 放入
+`max_nodes=2`：旧 first-N 会丢 target，当前 treatment 保留 target，recall=`10,000 bps`、truncation-caused
+focus loss=`false`、injection exposure read/returned=`1/0`。这只证明该 frozen fixture，不宣称一般网页
+prompt-injection 防御率。ref-independent diff fixture 的 changed/unchanged/added/removed=`1/1/1/0`、stale
+ratio=`5,000 bps`、entries=`2`、bytes `<4 KiB`。真实 pinned Chrome complete interaction vertical 为
+`1/1 in 7.01s`；每个 fill 后 fresh diff 都有 semantic change 且 `<16 KiB`。
+
+Rust source/test delta=`+2,087/-53`，其中新 `web_search.rs`=`1,042` 行、
+`semantic_browser.rs` 从 `11,173` 增至 `11,651`；无 Cargo/dependency/crate、protocol/state、DeepSeek
+wire/model-visible Prompt、AgentRuntime、RuntimeEvent 或 RunStore delta。删除 active first-eligible-N loop，
+未恢复 M44 的 `[search]`/`DSE_SEARCH_*`/Doctor provider selector，也未加入 SearchManager/Factory/Service、
+fallback Provider、search HTML scraper、Node/Playwright sidecar、visual stub、session/store/accounting ledger。
+
+实际返工关闭三类 parity/accounting 缺陷：execution identity schema 的两条旧 v6 assertion、六个 actual
+actor catalog hash，以及取消/timeout 后 provider charge 未知却标为 safe retry。最终 cancellation 立即返回
+`Cancelled + transport Indeterminate + retry Unsafe`；没有为通过测试降低 catalog/authorization/replay 门。
+
+bounded authority actual：bootstrap=`17,636`、tools route=`2,814/4,409`、fixed boundary=`25/25`。focused
+exit=`0`：tools=`413 passed, 8 ignored`、DeepSeek=`61/1`、runtime conformance=`88/0`、app=`74/3`、
+app-server=`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。最终 revision 的 canonical full gate
+invocation=`1`、exit=`0`，覆盖 authority/public、fmt、workspace all-features check/strict Clippy、全
+workspace tests 与 doctests；同一 revision 没有第二次 full。clean reviewable checkpoint 随本条形成。

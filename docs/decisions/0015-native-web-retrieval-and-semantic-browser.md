@@ -1,16 +1,18 @@
 # ADR-0015：Rust 原生 Web 获取、搜索准入与语义浏览器 Harness
 
-- 状态：已接受；长期能力边界与后续准入粒度由 ADR-0018 部分取代；W1 `web_fetch` 已交付，HTTPS-only 条款由 ADR-0017 部分取代，M44 search
-  决策为等待 Chat surface；M46 W2/W3、post-W3 admission 与 W3.1 fill-family 均已完成
+- 状态：已接受；长期能力边界与后续准入粒度由 ADR-0018 部分取代；W1 `web_fetch` 已交付，
+  HTTPS-only 条款由 ADR-0017 部分取代；M44 的 search hold 与尚未选择 production search surface
+  结论由 ADR-0019 取代；M46 W2/W3、post-W3 admission 与 W3.1 fill-family 均已完成
 - 日期：2026-07-28
 - 细化：ADR-0001、ADR-0002、ADR-0011、ADR-0012、ADR-0014
-- 当前 production delta：W1 已合入；M44 没有加入 `web_search` 或第二 DeepSeek wire；M45-A
-  已交付 Host-only `ApplicationProbe`；M46 W2/W3/W3.1 在一个 Rust direct-CDP adapter 中加入
-  `browser_navigate`、`browser_click` 与 `browser_fill`，没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
+- 当前 production delta：W1/ADR-0017 public HTTP(S) `web_fetch` 与 ADR-0019 Host-owned `web_search`
+  已合入，仍没有第二 DeepSeek wire；M45-A 已交付 Host-only `ApplicationProbe`；M46/ADR-0018 在一个
+  Rust direct-CDP adapter 中以 `browser_navigate` + `browser_interact` 取代分立 click/fill surface，
+  没有改变 DeepSeek wire、RuntimeEvent 或 RunStore
 - 当前执行关系：M45-A 已完成 process/health/log/HTTP 最小闭环；W2 的 navigate + bounded DOM/AX
   observation 已闭合 `tools:application_visibility`，W3 已闭合 click-family loss，W3.1 已闭合
-  post-W3 两个独立 local task 的 `tools:browser_interaction:fill` loss；press/wait、public action、
-  截图、视觉与搜索仍未实现
+  post-W3 两个独立 local task 的 `tools:browser_interaction:fill` loss；ADR-0018 已闭合 semantic
+  interaction/public action/managed session，ADR-0019 已闭合 search/observation quality；截图与视觉仍未实现
 
 ## 文档权威与替代关系
 
@@ -780,7 +782,8 @@ workspace revision、deterministic status/body/process-lease assertion 和 teard
 ### Slice W5：搜索发现（旧准入粒度由 ADR-0018 取代）
 
 本段保留原 W5 边界；canonical search 仍与 browser 分工，但不再要求先制造两次工具缺失。新的
-真实 research task family 可以按 ADR-0018 capability map 直接准入一个且仅一个 search surface：
+真实 research task family 已按 ADR-0018 capability map 由 ADR-0019 准入并交付一个且仅一个 search
+surface。以下列表保留当时的 admission 边界：
 
 1. 重新复核官方 DeepSeek 当前 search surface、usage 和 pricing；
 2. 冻结一个且仅一个候选 surface；

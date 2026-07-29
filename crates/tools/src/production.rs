@@ -40,6 +40,9 @@ use crate::shell::{
 use crate::web_fetch::{
     SystemWebFetchNetwork, WebFetchNetwork, execute_web_fetch, preflight_web_fetch,
 };
+use crate::web_search::{
+    SystemWebSearchNetwork, WebSearchNetwork, execute_web_search_cancellable, preflight_web_search,
+};
 use crate::{
     APPLICATION_PROBE_VERIFIER_ID, ApplicationProbeRecovery, ProductionToolContext, ToolError,
     ToolOutcome, capture_workspace_revision, execute_application_probe, execute_apply_patch,
@@ -50,7 +53,7 @@ use crate::{
     validate_application_probe_spec,
 };
 
-pub const PRODUCTION_TOOL_NAMES: [&str; 15] = [
+pub const PRODUCTION_TOOL_NAMES: [&str; 16] = [
     "apply_patch",
     "browser_interact",
     "browser_navigate",
@@ -66,6 +69,7 @@ pub const PRODUCTION_TOOL_NAMES: [&str; 15] = [
     "run_tests",
     "run_verifiers",
     "web_fetch",
+    "web_search",
 ];
 
 /// Immutable per-run configuration. It never contains live shell jobs,
@@ -84,6 +88,7 @@ pub struct ProductionToolConfig {
     exec_policy: Option<ExecPolicy>,
     skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
+    web_search_network: Arc<dyn WebSearchNetwork>,
     semantic_browser_harness: Option<Arc<dyn SemanticBrowserHarness>>,
     browser_local_origin: Option<String>,
     browser_state_root: PathBuf,
@@ -129,6 +134,7 @@ pub struct ProductionToolExecutionIdentity {
     pub exec_policy_sha256: Option<String>,
     pub skills_snapshot_sha256: String,
     pub web_fetch_network_sha256: String,
+    pub web_search_network_sha256: String,
     pub semantic_browser_harness_sha256: String,
     pub browser_local_origin_sha256: Option<String>,
     pub browser_state_root_sha256: String,
@@ -153,6 +159,7 @@ impl ProductionToolConfig {
             exec_policy: None,
             skill_registry: Arc::new(SkillRegistry::default()),
             web_fetch_network: Arc::new(SystemWebFetchNetwork),
+            web_search_network: Arc::new(SystemWebSearchNetwork::default()),
             semantic_browser_harness: None,
             browser_local_origin: None,
             browser_state_root: default_browser_state_root(),
@@ -262,6 +269,14 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Replace only the fixed canonical Web Search transport. Production uses
+    /// the Host-owned Tavily Basic adapter; tests inject bounded responses.
+    #[must_use]
+    pub fn with_web_search_network(mut self, network: Arc<dyn WebSearchNetwork>) -> Self {
+        self.web_search_network = network;
+        self
+    }
+
     /// Replace the bounded live-session semantic browser seam for deterministic vertical
     /// tests. Production uses the pinned Chrome for Testing implementation.
     #[must_use]
@@ -310,7 +325,7 @@ impl ProductionToolConfig {
     #[must_use]
     pub fn execution_identity(&self) -> ProductionToolExecutionIdentity {
         ProductionToolExecutionIdentity {
-            schema: 6,
+            schema: 7,
             workspace: stable_path_identity(&self.workspace),
             allow_external_paths: self.allow_external_paths,
             follow_symlinks: self.follow_symlinks,
@@ -333,6 +348,7 @@ impl ProductionToolConfig {
             }),
             skills_snapshot_sha256: self.skill_registry.snapshot_sha256(),
             web_fetch_network_sha256: non_secret_sha256(self.web_fetch_network.identity()),
+            web_search_network_sha256: non_secret_sha256(&self.web_search_network.identity()),
             semantic_browser_harness_sha256: non_secret_sha256(&browser_harness_identity(
                 self.semantic_browser_harness.as_deref(),
                 self.web_fetch_network.as_ref(),
@@ -454,7 +470,7 @@ fn invocation_has_external_path(
         || patch_paths.any(|path| context.path_is_external(&path))
 }
 
-/// Direct executor for the fixed fifteen-tool production surface.
+/// Direct executor for the fixed sixteen-tool production surface.
 pub struct ProductionToolExecutor {
     context: ProductionToolContext,
     shell: ExecShellOptions,
@@ -462,6 +478,7 @@ pub struct ProductionToolExecutor {
     shell_host: ProductionExecShellHost,
     skill_registry: Arc<SkillRegistry>,
     web_fetch_network: Arc<dyn WebFetchNetwork>,
+    web_search_network: Arc<dyn WebSearchNetwork>,
     controlled_network_allowed: bool,
     semantic_browser_harness: Arc<dyn SemanticBrowserHarness>,
     browser_local_origin: Option<String>,
@@ -518,6 +535,7 @@ impl ProductionToolExecutor {
             },
             skill_registry: config.skill_registry,
             web_fetch_network: config.web_fetch_network,
+            web_search_network: config.web_search_network,
             controlled_network_allowed,
             semantic_browser_harness,
             browser_local_origin: config.browser_local_origin,
@@ -719,6 +737,13 @@ impl ProductionToolExecutor {
                 self.controlled_network_allowed,
             )
             .await),
+            "web_search" => Ok(execute_web_search_cancellable(
+                input,
+                Arc::clone(&self.web_search_network),
+                self.controlled_network_allowed,
+                context.cancellation_token().cloned().unwrap_or_default(),
+            )
+            .await),
             _ => unreachable!("validated production tool missing direct dispatch: {name}"),
         }
     }
@@ -733,7 +758,9 @@ impl ToolExecutor for ProductionToolExecutor {
     fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
         match name {
             "browser_navigate" | "file_search" | "git_diff" | "git_status" | "grep_files"
-            | "list_dir" | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
+            | "list_dir" | "load_skill" | "read_file" | "web_fetch" | "web_search" => {
+                WorkspaceAccess::ReadOnly
+            }
             _ => WorkspaceAccess::MayWrite,
         }
     }
@@ -741,7 +768,9 @@ impl ToolExecutor for ProductionToolExecutor {
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
             "browser_navigate" | "file_search" | "git_diff" | "git_status" | "grep_files"
-            | "list_dir" | "load_skill" | "read_file" | "web_fetch" => WorkspaceAccess::ReadOnly,
+            | "list_dir" | "load_skill" | "read_file" | "web_fetch" | "web_search" => {
+                WorkspaceAccess::ReadOnly
+            }
             _ => WorkspaceAccess::MayWrite,
         }
     }
@@ -788,6 +817,9 @@ impl ToolExecutor for ProductionToolExecutor {
         }
         if invocation.name == "web_fetch" {
             return preflight_web_fetch(input);
+        }
+        if invocation.name == "web_search" {
+            return preflight_web_search(input);
         }
         if invocation.name == "browser_navigate" {
             return preflight_browser_navigate(input, self.browser_local_origin.as_deref());
@@ -988,7 +1020,7 @@ impl ToolExecutor for ProductionToolExecutor {
 
         if matches!(
             invocation.name.as_str(),
-            "browser_interact" | "browser_navigate" | "web_fetch"
+            "browser_interact" | "browser_navigate" | "web_fetch" | "web_search"
         ) {
             if !self.controlled_network_allowed {
                 return Ok(decision.build(
@@ -1142,6 +1174,31 @@ impl ToolExecutor for ProductionToolExecutor {
                     }),
                 ));
             }
+            if invocation.name == "web_search" {
+                let query = input
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let description = format!(
+                    "query: {query}\nimpact: 向固定 Host-owned search endpoint 发送一次查询；结果只作 external_untrusted discovery，引用前必须读取并交叉核验原来源。"
+                );
+                let needs_approval = mode == RunPermissionMode::Ask;
+                return Ok(decision.build(
+                    if needs_approval {
+                        ToolAuthorizationDisposition::Ask
+                    } else {
+                        ToolAuthorizationDisposition::Allow
+                    },
+                    ApprovalRisk::Routine,
+                    Some("canonical_public_web_search".to_owned()),
+                    description.clone(),
+                    needs_approval.then_some(ToolApprovalPrompt {
+                        title: "确认搜索公开 Web".to_owned(),
+                        description,
+                        risk: ApprovalRisk::Routine,
+                    }),
+                ));
+            }
             let plaintext_http = invocation
                 .arguments
                 .parsed
@@ -1288,7 +1345,7 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
         ),
         definition(
             "browser_navigate",
-            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，返回有界 DOM/accessibility snapshot、page state 与 external_untrusted 信任标记；observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque refs。public navigation 使用项目隔离 DSE managed Profile 以受控复用 Cookie/storage；exact-loopback 仍使用 teardown 即删除的临时 Profile。",
+            "读取一个已知 public HTTP(S) URL 或 Host-owned exact-loopback application 的 JavaScript 渲染结果，按可选 focus 做确定性 task-cue/role/interaction 优先级裁剪，并返回有界 DOM/accessibility snapshot、观察质量、action 后 semantic diff、page state 与 external_untrusted 信任标记；observation 可包含只供同一 Run 最新 page epoch 使用的 capability-bound opaque refs。public navigation 使用项目隔离 DSE managed Profile 以受控复用 Cookie/storage；exact-loopback 仍使用 teardown 即删除的临时 Profile。",
             browser_navigate_schema(),
         ),
         definition(
@@ -1350,6 +1407,11 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
             "web_fetch",
             "读取一个已知公开 HTTP(S) URL，返回有界正文、标题、canonical links、received-content 来源哈希、传输轨迹与 external_untrusted 信任标记；HTTP 是不受保护的明文传输。不提供搜索、认证、Cookie、任意 header、脚本或浏览器执行。",
             web_fetch_schema(),
+        ),
+        definition(
+            "web_search",
+            "从一个固定 Host-owned Web Search endpoint 发现公开来源，返回有界 rank/title/URL/snippet、provider request/usage identity 与 external_untrusted 标记。snippet 只作 discovery；形成结论或引用前必须用 web_fetch 或 browser_navigate 读取原来源并交叉核验。不接受 provider、header、credential、proxy 或 browser 参数。",
+            web_search_schema(),
         ),
     ]
 }
@@ -1536,7 +1598,7 @@ fn apply_patch_schema() -> Value {
 }
 
 fn browser_navigate_schema() -> Value {
-    json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_nodes":{"type":"integer","minimum":1,"maximum":256,"default":128},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
+    json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_nodes":{"type":"integer","minimum":1,"maximum":256,"default":128},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000},"focus":{"type":"string","minLength":1}},"required":["url"],"additionalProperties":false})
 }
 
 fn browser_interact_schema() -> Value {
@@ -1589,6 +1651,10 @@ fn run_verifiers_schema() -> Value {
 
 fn web_fetch_schema() -> Value {
     json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"max_chars":{"type":"integer","minimum":1,"maximum":50000,"default":20000}},"required":["url"],"additionalProperties":false})
+}
+
+fn web_search_schema() -> Value {
+    json!({"type":"object","properties":{"query":{"type":"string","minLength":1},"max_results":{"type":"integer","minimum":1,"maximum":10,"default":5}},"required":["query"],"additionalProperties":false})
 }
 
 #[cfg(test)]
@@ -1698,7 +1764,7 @@ mod tests {
             .with_browser_credential_grant(grant)
             .execution_identity();
         let serialized = serde_json::to_string(&with_grant).unwrap();
-        assert_eq!(with_grant.schema, 6);
+        assert_eq!(with_grant.schema, 7);
         assert!(!serialized.contains("super-secret-store-key"));
         assert!(!serialized.contains("password"));
         assert_ne!(
@@ -1812,7 +1878,7 @@ mod tests {
         let second_identity = ProductionToolConfig::new(workspace.path())
             .with_skill_registry(second)
             .execution_identity();
-        assert_eq!(first_identity.schema, 6);
+        assert_eq!(first_identity.schema, 7);
         assert_ne!(
             first_identity.skills_snapshot_sha256,
             second_identity.skills_snapshot_sha256
@@ -2164,6 +2230,101 @@ allow = ["git push"]
             unsafe_port.metadata.as_ref().unwrap()["web_fetch"]["failure"]["code"],
             "web_http_port_denied"
         );
+    }
+
+    #[test]
+    fn web_search_is_one_read_only_surface_with_exact_authorization_and_no_provider_controls() {
+        let workspace = tempfile::tempdir().unwrap();
+        let search_invocation = invocation(
+            "web_search",
+            json!({"query":"Rust deterministic replay", "max_results":5}),
+        );
+        let ask = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Ask),
+        );
+        assert!(ask.preflight(&search_invocation).is_none());
+        let definition = ask
+            .definitions()
+            .into_iter()
+            .find(|definition| definition.name == "web_search")
+            .unwrap();
+        assert!(definition.description.contains("discovery"));
+        assert!(definition.description.contains("web_fetch"));
+        assert_eq!(
+            ask.definition_workspace_access("web_search"),
+            WorkspaceAccess::ReadOnly
+        );
+        let requested = ask
+            .authorize(
+                RunPermissionMode::Ask,
+                &ToolExecutionGrant::Ordinary,
+                &search_invocation,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(requested.disposition, ToolAuthorizationDisposition::Ask);
+        assert_eq!(
+            requested.matched_rule.as_deref(),
+            Some("canonical_public_web_search")
+        );
+        assert!(requested.prompt.unwrap().description.contains("交叉核验"));
+
+        for mode in [RunPermissionMode::Agent, RunPermissionMode::FullAccess] {
+            let executor = ProductionToolExecutor::new(
+                ProductionToolConfig::new(workspace.path()).with_permission_mode(mode),
+            );
+            let allowed = executor
+                .authorize(
+                    mode,
+                    &ToolExecutionGrant::Ordinary,
+                    &search_invocation,
+                    &workspace_state(),
+                )
+                .unwrap();
+            assert_eq!(allowed.disposition, ToolAuthorizationDisposition::Allow);
+        }
+
+        let writer = tempfile::tempdir().unwrap();
+        let isolated = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_permission_mode(RunPermissionMode::Agent)
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+        let denied = isolated
+            .authorize(
+                RunPermissionMode::Agent,
+                &ToolExecutionGrant::Ordinary,
+                &search_invocation,
+                &workspace_state(),
+            )
+            .unwrap();
+        assert_eq!(denied.disposition, ToolAuthorizationDisposition::Deny);
+        assert_eq!(
+            denied.matched_rule.as_deref(),
+            Some("actor_controlled_network_denied")
+        );
+
+        for field in ["provider", "api_key", "header", "proxy", "url", "answer"] {
+            let mut input = json!({"query":"Rust deterministic replay"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), Value::String("forbidden".to_owned()));
+            let rejected = ask
+                .preflight(&invocation("web_search", input))
+                .expect("provider controls must fail schema preflight");
+            assert_eq!(rejected.failure_code, Some(ToolFailureCode::InvalidField));
+        }
+        for max_results in [0, 11] {
+            assert!(
+                ask.preflight(&invocation(
+                    "web_search",
+                    json!({"query":"Rust deterministic replay", "max_results":max_results}),
+                ))
+                .is_some()
+            );
+        }
     }
 
     #[derive(Debug)]

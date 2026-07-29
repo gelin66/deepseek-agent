@@ -1465,7 +1465,7 @@ mod tests {
         BrowserAuthorizationPreview, BrowserCancellationToken, BrowserClickRequest,
         BrowserCredentialGrant, BrowserFillRequest, BrowserInteractRequest, BrowserNavigateRequest,
         PRODUCTION_TOOL_NAMES, SemanticBrowserHarness, WebFetchHttpResponse, WebFetchNetwork,
-        WebFetchNetworkError,
+        WebFetchNetworkError, WebSearchHttpResponse, WebSearchNetwork, WebSearchNetworkError,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1482,6 +1482,17 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct PublicHttpWebFetchFixture {
+        resolve_calls: AtomicUsize,
+        get_calls: AtomicUsize,
+    }
+
+    #[derive(Debug, Default)]
+    struct ResearchWebSearchFixture {
+        calls: AtomicUsize,
+    }
+
+    #[derive(Debug, Default)]
+    struct ResearchWebFetchFixture {
         resolve_calls: AtomicUsize,
         get_calls: AtomicUsize,
     }
@@ -2094,6 +2105,95 @@ mod tests {
                     "text/html; charset=utf-8".to_owned(),
                 )]),
                 body,
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WebSearchNetwork for ResearchWebSearchFixture {
+        fn identity(&self) -> String {
+            "research-search-fixture-v1".to_owned()
+        }
+
+        async fn search(
+            &self,
+            query: &str,
+            max_results: usize,
+            _timeout: Duration,
+        ) -> Result<WebSearchHttpResponse, WebSearchNetworkError> {
+            assert_eq!(query, "DSE deterministic replay evidence");
+            assert_eq!(max_results, 5);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let body = serde_json::to_vec(&json!({
+                "query":query,
+                "results":[
+                    {"title":"Source A","url":"https://example.com/source-a","content":"Discovery snippet A","score":0.95},
+                    {"title":"Source B","url":"https://example.org/source-b","content":"Discovery snippet B","score":0.91}
+                ],
+                "response_time":"0.10",
+                "request_id":"research-request-001",
+                "usage":{"credits":1}
+            }))
+            .expect("search fixture JSON");
+            Ok(WebSearchHttpResponse::new(
+                200,
+                std::collections::BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "application/json".to_owned(),
+                )]),
+                body,
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WebFetchNetwork for ResearchWebFetchFixture {
+        fn identity(&self) -> &str {
+            "research-fetch-fixture-v1"
+        }
+
+        async fn resolve(
+            &self,
+            host: &str,
+            port: u16,
+        ) -> Result<Vec<std::net::SocketAddr>, WebFetchNetworkError> {
+            assert!(matches!(host, "example.com" | "example.org"));
+            assert_eq!(port, 443);
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            let address = if host == "example.com" {
+                "93.184.216.34:443"
+            } else {
+                "93.184.216.35:443"
+            };
+            Ok(vec![address.parse().expect("public fixture address")])
+        }
+
+        async fn get(
+            &self,
+            url: &reqwest::Url,
+            pinned_addresses: &[std::net::SocketAddr],
+            _timeout: Duration,
+        ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
+            assert_eq!(pinned_addresses.len(), 1);
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            let (title, text) = match url.as_str() {
+                "https://example.com/source-a" => (
+                    "Primary evidence A",
+                    "DSE commits the canonical tool outcome before terminal replay.",
+                ),
+                "https://example.org/source-b" => (
+                    "Independent evidence B",
+                    "A cold SQLite reopen replays committed evidence without another request.",
+                ),
+                other => panic!("unexpected research source {other}"),
+            };
+            Ok(WebFetchHttpResponse::new(
+                200,
+                std::collections::BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "text/html; charset=utf-8".to_owned(),
+                )]),
+                format!("<html><head><title>{title}</title></head><body><main>{text}</main></body></html>").into_bytes(),
             ))
         }
     }
@@ -3158,6 +3258,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_search_started_without_outcome_reopens_recovery_required_without_provider_replay()
+    {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let search = Arc::new(ResearchWebSearchFixture::default());
+        let mut composition =
+            test_production_composition(temp.path(), connection(&root, false), false);
+        composition.tools = ProductionToolConfig::new(temp.path())
+            .with_permission_mode(RunPermissionMode::Agent)
+            .with_web_search_network(search.clone());
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("web-search-in-flight");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+            WriteExecutionMode::Root,
+        );
+        let (replay, _) = seed_in_flight_tool(
+            store.as_ref(),
+            request,
+            None,
+            Some((
+                "web_search",
+                json!({"query":"DSE deterministic replay evidence","max_results":5}),
+                WorkspaceAccess::ReadOnly,
+            )),
+        )
+        .await;
+        assert!(!resume_needs_live_model(&replay));
+
+        let run = composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+            .expect("search ambiguity composes without a Key")
+            .ready()
+            .await
+            .expect("resume acquires canonical run");
+        let outcome = run.wait().await.expect("ambiguity settles locally");
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::RecoveryRequired { .. }
+        ));
+        assert_eq!(search.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(accepted.await.expect("provider was not replayed"), 0);
+    }
+
+    #[tokio::test]
     async fn browser_interact_click_started_without_outcome_reopens_recovery_required_without_replay()
      {
         let temp = tempfile::tempdir().expect("temp workspace");
@@ -3588,6 +3737,7 @@ mod tests {
                 "read_file",
                 "request_user_input",
                 "web_fetch",
+                "web_search",
             ]
         );
         let coordinator_agent = coordinator_catalog
@@ -3883,13 +4033,13 @@ mod tests {
                 "root_headless",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:a0ef151b26eea87f1badf5f5fe0ce790c23b0e3ec66677ff7fc91e6edcbf4def",
+                "sha256:e2e05e1bf73f72b0fdbc66bf400dc054f12a9c8a824d8f16db4eefc2070d7a22",
             ),
             (
                 "root_interactive",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::RootWrite, 0, 4, true),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:0c6b0838ca3e9f3a84ea228f2cb76d5438a04127f4e70521ad8871b0d2a47439",
+                "sha256:94de1ef03f53f23a3b7755ded2bf1944c558643339b229e158f463964979e2c6",
             ),
             (
                 "coordinator",
@@ -3902,19 +4052,19 @@ mod tests {
                     false,
                 ),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:60345efaff537b52a3ec302f99ddc7a3d69371108d4664c9fb69056b85674bcf",
+                "sha256:16479fc2addea1d071e2019bc7da3d9243f81e6cbbc9426eb613458ac4380fe0",
             ),
             (
                 "read_only_child",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 1, 4, false),
                 Some(("agent", "$/required", "all_properties_required")),
-                "sha256:97d3f66cff1a239ccfb409bd54d0e400aa07ed83ad75ad1329ea904cc2930c12",
+                "sha256:2241378507c9b1b5a42c65b94d10ea341fcad09e2321747741d99dc5866a21f6",
             ),
             (
                 "read_only_depth_limit",
                 runtime.tool_definitions(&policy, None, ModelToolAuthority::ReadOnly, 4, 4, false),
                 Some(("browser_navigate", "$/required", "all_properties_required")),
-                "sha256:4d8ab2b740e7dc99796280f233c6c1fae35c365c83a67818f8510e1abe3242de",
+                "sha256:336200f239d1efb14cfa1f09139ed2306959e5ae441f0b74cef113e061d3e2d5",
             ),
             (
                 "isolated_writer",
@@ -3927,7 +4077,7 @@ mod tests {
                     false,
                 ),
                 Some(("apply_patch", "$/oneOf", "unsupported_keyword")),
-                "sha256:c017c64dc31a42f8c0daf5b6dd8a692bda33fbf6298cdac9836b72b040051f25",
+                "sha256:3e3c73d334e2e0769f5c87e632efb5a7fe51291e564edbd54dce30f46045991d",
             ),
             (
                 "terminal_empty",
@@ -4585,6 +4735,174 @@ mod tests {
         assert_eq!(
             error.reason,
             Some(RunApiErrorReason::ExecutionFingerprintMismatch)
+        );
+        assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    #[tokio::test]
+    async fn canonical_web_research_searches_selects_two_sources_cites_and_reopens_without_network()
+    {
+        let server = MockDeepSeekServer::start(vec![
+            tool_response(
+                "deepseek-v4-pro",
+                "research-search",
+                "web_search",
+                json!({"query":"DSE deterministic replay evidence","max_results":5}),
+                40,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "research-fetch-a",
+                "web_fetch",
+                json!({"url":"https://example.com/source-a","max_chars":4096}),
+                50,
+                4,
+            ),
+            tool_response(
+                "deepseek-v4-pro",
+                "research-fetch-b",
+                "web_fetch",
+                json!({"url":"https://example.org/source-b","max_chars":4096}),
+                60,
+                4,
+            ),
+            thinking_response(
+                "deepseek-v4-pro",
+                "已交叉核验：outcome 先提交，cold reopen 只重放，不再次请求。[来源 A](https://example.com/source-a) [来源 B](https://example.org/source-b)",
+                70,
+                12,
+            ),
+        ])
+        .await;
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state_path = temp.path().join("state.db");
+        let search = Arc::new(ResearchWebSearchFixture::default());
+        let fetch = Arc::new(ResearchWebFetchFixture::default());
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_web_search_network(search.clone())
+            .with_web_fetch_network(fetch.clone());
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone()),
+        )
+        .expect("production app");
+        let mut command = start_command(&workspace, Some("deepseek-v4-pro"));
+        command.task = TaskDefinition::host(
+            "搜索 DSE deterministic replay evidence，选择两个独立公开来源，读取原文、交叉核验并给出 URL 引用",
+        );
+        command.limits.wall_time_ms = Some(30_000);
+        let run = run_result(
+            app.execute(envelope(
+                "canonical-web-research-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let requests = server.finish().await;
+
+        let terminal_message = match replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal)
+        {
+            Some(TerminalState::Completed { message, .. }) => message,
+            other => panic!("research run did not complete: {other:?}"),
+        };
+        assert!(terminal_message.contains("https://example.com/source-a"));
+        assert!(terminal_message.contains("https://example.org/source-b"));
+        assert_eq!(search.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fetch.resolve_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(fetch.get_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(requests.len(), 4);
+        let root_catalog = requests[0].body["tools"]
+            .as_array()
+            .expect("root production catalog");
+        let search_definition = root_catalog
+            .iter()
+            .find(|tool| tool["function"]["name"] == "web_search")
+            .expect("canonical web_search definition");
+        assert_eq!(
+            search_definition["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        assert!(
+            search_definition["function"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("discovery"))
+        );
+
+        let search_outcome = replay
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                    if name == "web_search" =>
+                {
+                    Some(outcome.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("committed web_search outcome");
+        let searched: Value = serde_json::from_str(&search_outcome.content).unwrap();
+        assert_eq!(searched["results_returned"], 2);
+        assert_eq!(searched["evidence_role"], "discovery_only");
+        assert_eq!(searched["provider_usage_credits"], 1);
+        assert_eq!(searched["trust"], "external_untrusted");
+        assert!(requests[1].body["messages"].as_array().unwrap().iter().any(
+            |message| message["role"] == "tool"
+                && message["tool_call_id"] == "research-search"
+                && message["content"] == search_outcome.content
+        ));
+        let committed_fetches = replay
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. } if name == "web_fetch"
+                )
+            })
+            .count();
+        assert_eq!(committed_fetches, 2);
+
+        drop(app);
+        let counters_before_reopen = (
+            search.calls.load(Ordering::SeqCst),
+            fetch.resolve_calls.load(Ordering::SeqCst),
+            fetch.get_calls.load(Ordering::SeqCst),
+        );
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false).with_tool_config(tools),
+        )
+        .expect("reopen production app without model credential");
+        let reopened_events = reopened
+            .execute(envelope(
+                "canonical-web-research-events",
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            reopened_events.result,
+            RunCommandResult::Events { events, .. } if events == replay.events
+        ));
+        assert_eq!(
+            (
+                search.calls.load(Ordering::SeqCst),
+                fetch.resolve_calls.load(Ordering::SeqCst),
+                fetch.get_calls.load(Ordering::SeqCst),
+            ),
+            counters_before_reopen,
+            "SQLite reopen must replay committed search/fetch outcomes without network"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
     }

@@ -306,7 +306,7 @@ fn workspace_state() -> WorkspaceState {
 #[tokio::test]
 #[ignore = "requires repository-pinned Chrome for Testing; credential-free interaction cluster gate"]
 async fn semantic_interaction_cluster_completes_local_and_scoped_public_tasks() {
-    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 15);
+    assert_eq!(PRODUCTION_TOOL_NAMES.len(), 16);
     assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_navigate"));
     assert!(PRODUCTION_TOOL_NAMES.contains(&"browser_interact"));
     for deleted in ["browser_click", "browser_fill"] {
@@ -329,11 +329,25 @@ async fn semantic_interaction_cluster_completes_local_and_scoped_public_tasks() 
         run_id,
         "navigate",
         "browser_navigate",
-        json!({"url":format!("{}/",local.origin),"max_nodes":128,"max_chars":20_000}),
+        json!({
+            "url":format!("{}/",local.origin),
+            "max_nodes":128,
+            "max_chars":20_000,
+            "focus":"notes editor command environment"
+        }),
     )
     .await;
     assert_eq!(state["session_live"], true);
     assert_eq!(state["page_epoch"], 1);
+    assert_eq!(state["observation_quality"]["focus_provided"], true);
+    assert_eq!(
+        state["observation_quality"]["task_relevant_recall_bps"],
+        10_000
+    );
+    assert_eq!(
+        state["observation_quality"]["truncation_caused_focus_loss"],
+        false
+    );
 
     for (call, name, value) in [
         ("fill-notes", "Notes", "reviewed"),
@@ -351,6 +365,19 @@ async fn semantic_interaction_cluster_completes_local_and_scoped_public_tasks() 
         .await;
         assert!(outcome.is_success(), "{}", outcome.content);
         assert_eq!(outcome.side_effect, ToolSideEffectStatus::Applied);
+        let diff = &next["observation_diff"];
+        assert_eq!(
+            diff["basis"],
+            "previous_observation_same_page_epoch_lineage"
+        );
+        assert!(
+            diff["added_nodes"].as_u64().unwrap_or_default()
+                + diff["removed_nodes"].as_u64().unwrap_or_default()
+                + diff["changed_nodes"].as_u64().unwrap_or_default()
+                > 0,
+            "fresh observation must expose a semantic change: {next}"
+        );
+        assert!(diff["bytes_returned"].as_u64().unwrap_or(u64::MAX) < 16_384);
         state = next;
     }
 

@@ -247,6 +247,11 @@
   profile、Host-owned credential login、bounded Cookie/storage lifecycle、workspace-authorized upload、
   isolated/scanned download 与 explicit no-overwrite promotion；真实 pinned Chrome 和 production app/reopen/
   recovery 均闭合，protocol/state/Prompt delta=0、official DeepSeek requests=0。
+- ADR-0019 Canonical Web Search + Semantic Observation Quality 已完成并 keep：production cutover 已把
+  fixed catalog 从 15 增至 16，root Agent 可经唯一 Host-owned `web_search` 发现来源，再用 `web_fetch`
+  读取两个独立原来源并给出 URL citation；semantic browser 以 task-cue/role/interaction priority 取代机械
+  first-N，返回 quality metrics 与 action diff。真实 caller/SQLite reopen/recovery 和 pinned Chrome vertical
+  已闭合；focused 与唯一一次 full gate 均 exit=`0`，形成 clean reviewable checkpoint。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7538,3 +7543,46 @@ child-env/application-probe=`11/11`。最终 revision 只调用一次 full 且 e
 （failed candidates=`3`、final revision=`1`），没有把失败冒充通过，也没有在同一 revision 重跑。
 `cargo fmt --all -- --check`、
 `cargo check -p dse-tools --locked`、`cargo test -p dse-tools --locked` 与 `git diff --check` 均通过。
+
+### 40.16 ADR-0019 Canonical Web Search + Semantic Observation Quality（已完成）
+
+#### 问题、owner、旧路与纵向 cutover
+
+此前 root Agent 只能读取已知 URL，不能为未知工程问题发现来源；semantic browser 又按 eligible 顺序
+机械取前 N 个节点，任务相关内容会被页面前部噪音挤出 bound。single owner=`crates/tools`，`crates/app`
+只接 production caller。replacement 增加唯一 `web_search(query,max_results?)`，并在同一 AXTree +
+DOMSnapshot extractor 中用 deterministic task-cue/interaction/role priority 与 safe dedupe 取代 first-N；
+action 后返回 bounded ref-independent diff。
+
+search adapter 固定为 Tavily Basic/general HTTPS endpoint；模型没有 provider/endpoint/header/Cookie/
+credential/proxy/browser 参数。Host 托管 `TAVILY_API_KEY`，强制 endpoint public DNS/connect pin、no proxy/
+redirect、12 秒 deadline 与 1 MiB response。结果保存 request/usage identity、有界 canonical public
+HTTP(S) source metadata、received-response hash/bytes，并明确 snippet=`discovery_only/external_untrusted`。
+稳定研究路由只允许 search→source selection→fetch/browser original→cross-check→URL citation。
+
+production fixed catalog 15→16；Ask 显示 exact query，Agent/FullAccess root allow，isolated Writer deny。
+committed SQLite reopen 只重放 search/fetch/citation，started search ambiguity 进入既有 RecoveryRequired。
+ToolOutcome/RuntimeEvent/RunStore 已足够，protocol/state/DeepSeek wire/model-visible Prompt delta=0。
+
+#### Pre-integration evidence 与 closure
+
+deterministic production research fixture=`1/1`：search=`1`、两个独立 source fetch=`2/2`、cited=`2/2`、
+unsupported claim=`0`；cold reopen model/search/DNS/HTTP reexecution=`0`。真实 pinned CfT complete interaction
+vertical=`1/1 in 7.01s`，focus recall=`10,000 bps`、truncation focus loss=`false`、fresh fill diff=`3/3`
+non-empty and `<16 KiB`。query/result/deadline/response/provider-status/content/JSON/catalog/authorization/
+actor/recovery matrix false allow=`0`。
+
+official DeepSeek requests=`0`，不做付费 A/B 或效率声明。环境与 existing Host secret store 的
+`TAVILY_API_KEY` presence 均 unavailable，value 未读取；provider canary=`not_run`、requests/reruns=`0/0`、
+actual charge unknown。M44 已删除的 search-provider config/Doctor 假能力没有恢复；first-N active loop 已
+删除。没有 SearchManager/Factory/Service、fallback Provider、search HTML scraper、第二 Runtime/Store、
+Node/Playwright sidecar、visual stub 或新 dependency。
+
+Rust source/test delta=`+2,087/-53`，新 `web_search.rs`=`1,042` 行，`semantic_browser.rs`
+`11,173→11,651`。实际返工关闭 identity schema v6 旧断言、六 actor catalog hash 与 cancellation/unknown-
+charge safe-retry 三类问题。bounded authority=`17,636` bootstrap、tools=`2,814/4,409`、boundary=`25/25`；
+focused exit=`0`：tools=`413/8`、DeepSeek=`61/1`、runtime=`88/0`、app=`74/3`、app-server=`23/0`、
+exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。最终 revision 的 canonical
+`./scripts/dev-dse.sh full` 只调用一次且 exit=`0`，覆盖 authority/public、fmt、workspace all-features
+check/strict Clippy、全 workspace tests 与 doctests；同一 revision 没有第二次 full。clean reviewable
+checkpoint 随本条形成；没有启动内部 Alpha 或下一 capability cluster。

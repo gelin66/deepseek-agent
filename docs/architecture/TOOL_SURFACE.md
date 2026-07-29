@@ -15,11 +15,13 @@
 
 ## 2. 固定生产目录
 
-`crates/tools` 按名称排序并固定公开以下 11 个代码工具：
+`crates/tools` 按名称排序并固定公开以下 16 个 Host 工具：
 
 | 工具 | 当前职责 |
 |---|---|
 | `apply_patch` | 全量预检 unified diff 或 `changes` 完整内容后修改工作区文件；逐文件原子发布，多文件普通失败回滚但跨文件 crash 非事务。 |
+| `browser_interact` | 在同一 Host-owned semantic browser session 中执行 typed interaction、scoped public action 与 managed login/upload/download；只消费最新 opaque ref/grant。 |
+| `browser_navigate` | 读取 public HTTP(S) 或 Host exact-loopback JS 页面，返回 bounded AX/DOM observation、quality metrics、fresh action diff 与 external-untrusted provenance。 |
 | `edit_file` | 对已读取且 byte-digest 仍 fresh 的单个文件执行一次唯一搜索替换。 |
 | `exec_shell` | 在工作区同步执行一条有界命令，返回退出状态和输出。 |
 | `file_search` | 按文件名或路径片段模糊查找工作区文件。 |
@@ -27,11 +29,14 @@
 | `git_status` | 读取分支和工作区文件状态。 |
 | `grep_files` | 用正则搜索工作区文本并返回结构化匹配。 |
 | `list_dir` | 列出工作区内指定目录的直接子项。 |
+| `load_skill` | 按 run-frozen registry 的精确名称返回完整、哈希绑定的 Skill 定义。 |
 | `read_file` | 读取 UTF-8 文本、PDF 或可由本地后端 OCR 的图片。 |
 | `run_tests` | 在工作区运行 `cargo test` 并返回确定性结果。 |
 | `run_verifiers` | 按项目类型运行确定性验证，产生 verifier evidence/artifact。 |
+| `web_fetch` | 读取已知 public HTTP(S) URL 的有界正文/链接并返回 transport/content provenance。 |
+| `web_search` | 经唯一固定 Host adapter 发现 ranked public sources；snippet 只作 discovery，原来源必须再读取与交叉核验。 |
 
-固定目录没有 `write_file`、`web_search`、`update_plan`、`work_update`、`todo_*`、
+固定目录没有 `write_file`、`update_plan`、`work_update`、`todo_*`、
 `checklist_*`、`handle_read`、后台 shell、GitHub、自动化、脚本插件或通用代码执行工具。
 它们不是隐藏能力，也不会为旧 transcript 保留 alias。
 
@@ -76,7 +81,7 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 
 ## 5. 执行与证据边界
 
-- `ProductionToolExecutor` 只按上述 11 个固定名称直接分派，未知名称返回不可用结果。
+- `ProductionToolExecutor` 只按上述 16 个固定名称直接分派，未知名称返回不可用结果。
 - 修改文件、可能产生副作用的完整 Shell、测试和 verifier 按运行策略请求审批；审批前
   不产生副作用。
 - `exec_shell` schema 只有 `command`、可选 `timeout_ms` 和可选 `cwd`。旧后台、TTY、
@@ -107,7 +112,7 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 ## 6. MCP 当前边界
 
 仓库仍有 MCP 配置、stdio/HTTP transport、OAuth、发现和 CLI 管理代码，但当前 canonical
-`AgentRuntime` 的 model-visible 目录只来自固定 11 工具和两个条件内建工具。MCP 发现结果
+`AgentRuntime` 的 model-visible 目录只来自固定 16 工具和两个条件内建工具。MCP 发现结果
 尚未接入这条唯一执行链，因此不能把 MCP tool 当作已经可由当前 Agent 调用的能力。
 
 如果后续保留 MCP，必须作为同一 `ToolExecutor`/`ToolOutcome`/RunStore 契约下的可测垂直
@@ -116,10 +121,10 @@ runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 R
 ## 7. 真实性门禁
 
 ```bash
-cargo test -p codewhale-tools --locked catalog_is_exact_chinese_and_description_free
-cargo test -p codewhale-tools --locked m7c_
-cargo test -p codewhale-deepseek --locked strict_catalog_falls_back_atomically_without_losing_tools
-cargo test -p codewhale-state --test run_store --locked sqlite_replay_matches_memory_and_survives_reopen
+cargo test -p dse-tools --locked catalog_is_exact_chinese_and_description_free
+cargo test -p dse-tools --locked m7c_
+cargo test -p dse-deepseek --locked strict_catalog_falls_back_atomically_without_losing_tools
+cargo test -p dse-state --test run_store --locked sqlite_replay_matches_memory_and_survives_reopen
 ```
 
 调用图审计还必须证明：

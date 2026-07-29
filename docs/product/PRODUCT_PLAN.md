@@ -37,8 +37,9 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 
 “编码 Agent”按完整真实工程任务定义，而不是按当前工具目录定义：DSE 最终必须覆盖仓库理解、
 编辑、构建、测试、静态检查、服务启动、日志/调试、diff/review/integrate、Web 研究、应用交互、
-长任务恢复和可验证交付。当前尚未实现的 search、完整语义交互、managed browser session、
-受控 upload/download 与选择性视觉观察是能力缺口，不是通过永久缺席获得的安全结论。
+长任务恢复和可验证交付。当前能力与缺口只由 Roadmap/current architecture 记录；任何尚未完成的
+完整语义交互、研究、managed session、受控 artifact 或选择性视觉能力都不能通过永久缺席获得
+安全结论。
 
 安全是能力之上的 Host-owned 治理层。Read、sandbox 内可逆本地操作、external side effect 与
 destructive/financial/publish/security-sensitive 操作按风险逐级使用自动执行、exact preview、

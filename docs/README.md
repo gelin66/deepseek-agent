@@ -26,7 +26,7 @@ Evaluation 入口；发生冲突或跨固定架构时才沿 accepted decision in
 | `protocol` | `crates/protocol` commands/events/outcomes | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [core protocol facts](architecture/CURRENT_CODEWHALE.md#current-core-facts) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `deepseek` | `crates/deepseek` plan/transport/parser/accounting | [ADR-0001](decisions/0001-rust-deepseek-product.md), [ADR-0008](decisions/0008-fixed-deepseek-routing-and-auto-retirement.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md) | [DeepSeek backend](architecture/CURRENT_CODEWHALE.md#current-deepseek) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `context` | `crates/context` prompt/project context/compaction | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0014](decisions/0014-model-visible-contract-and-harness-control.md), [ADR-0016](decisions/0016-lean-cognitive-control-plane.md) | [core context facts](architecture/CURRENT_CODEWHALE.md#current-core-facts) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
-| `tools` | `crates/tools` catalog/edit/shell/verifier | [ADR-0005](decisions/0005-v1-evidence-gated-capability-scope.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0015](decisions/0015-native-web-retrieval-and-semantic-browser.md), [ADR-0017](decisions/0017-public-http-web-fetch.md), [ADR-0018](decisions/0018-engineering-complete-capability-governance.md) | [Tools](architecture/CURRENT_CODEWHALE.md#current-tools) | [W1.1 contract](product/EVALUATION.md#adr-0017-w11-evaluation), [M46 admission](product/EVALUATION.md#m46-semantic-browser-admission), [complete-product audit](product/EVALUATION.md#engineering-complete-direction-audit) |
+| `tools` | `crates/tools` catalog/edit/shell/verifier | [ADR-0005](decisions/0005-v1-evidence-gated-capability-scope.md), [ADR-0012](decisions/0012-canonical-permission-policy.md), [ADR-0015](decisions/0015-native-web-retrieval-and-semantic-browser.md), [ADR-0017](decisions/0017-public-http-web-fetch.md), [ADR-0018](decisions/0018-engineering-complete-capability-governance.md), [ADR-0019](decisions/0019-canonical-web-search-and-semantic-observation-quality.md) | [Tools](architecture/CURRENT_CODEWHALE.md#current-tools) | [W1.1 contract](product/EVALUATION.md#adr-0017-w11-evaluation), [M46 admission](product/EVALUATION.md#m46-semantic-browser-admission), [complete-product audit](product/EVALUATION.md#engineering-complete-direction-audit), [search/observation quality](product/EVALUATION.md#canonical-search-observation-quality) |
 | `state` | `crates/state` SQLite/events/snapshots/reopen | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0011](decisions/0011-orthogonal-behavior-and-accounting-truth.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [State](architecture/CURRENT_CODEWHALE.md#current-state) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `orchestrator` | `crates/orchestrator` graph/Writer worktrees | [ADR-0002](decisions/0002-single-runtime-and-runstore.md), [ADR-0003](decisions/0003-multi-agent-worktrees.md), [ADR-0012](decisions/0012-canonical-permission-policy.md) | [Agent orchestrator](architecture/CURRENT_CODEWHALE.md#current-orchestrator) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
 | `localization` | `crates/localization` human language | [ADR-0004](decisions/0004-fixed-simplified-chinese.md), [ADR-0010](decisions/0010-bilingual-product-and-prompt-admission.md) | [human clients](architecture/CURRENT_CODEWHALE.md#current-clients) | [stable rules](product/EVALUATION.md#evaluation-stable-rules) |
@@ -54,7 +54,8 @@ Evaluation 入口；发生冲突或跨固定架构时才沿 accepted decision in
   [ADR-0015](decisions/0015-native-web-retrieval-and-semantic-browser.md),
   [ADR-0016](decisions/0016-lean-cognitive-control-plane.md),
   [ADR-0017](decisions/0017-public-http-web-fetch.md),
-  [ADR-0018](decisions/0018-engineering-complete-capability-governance.md).
+  [ADR-0018](decisions/0018-engineering-complete-capability-governance.md),
+  [ADR-0019](decisions/0019-canonical-web-search-and-semantic-observation-quality.md).
 
 所有 ADR、里程碑历史和评测结果仍可查且不得改写；本索引只取消默认全量重放。
 
@@ -91,13 +92,15 @@ Useful current references remain [Tool surface](architecture/TOOL_SURFACE.md),
 ## 6. Current development fact
 
 M44, ADR-0016, ADR-0017 W1.1, M45-A, M46 W2/W3/W3.1, ADR-0018, and its first two production
-clusters are clean checkpoints. Current production has public HTTP(S) `web_fetch` plus one Rust
-direct-CDP lifecycle with `browser_navigate` and tagged `browser_interact`: complete bounded semantic
-interaction, scoped public reversible action, project-isolated managed login/session, Host-owned
-credentials, workspace-authorized upload, and isolated/scanned download with explicit promotion.
-There is still no canonical search, personal-Chrome access, screenshot, or visual input. ADR-0018
-classifies remaining capability gaps rather than permanent safety boundaries and replaces further
-one-action/one-Goal progression with one capability-cluster roadmap.
+clusters are clean checkpoints. ADR-0019 adds the one canonical `web_search` Host adapter and replaces
+mechanical semantic first-N truncation with task-cue priority, observation-quality metrics and bounded
+action diff. Current production also has public HTTP(S) `web_fetch` plus one Rust direct-CDP lifecycle
+with `browser_navigate` and tagged `browser_interact`: complete bounded semantic interaction, scoped
+public reversible action, project-isolated managed login/session, Host-owned credentials,
+workspace-authorized upload, and isolated/scanned download with explicit promotion. Personal-Chrome
+access, screenshot and visual input remain absent. ADR-0018 classifies remaining capability gaps rather
+than permanent safety boundaries and replaces further one-action/one-Goal progression with one
+capability-cluster roadmap.
 `scripts/dev-dse.sh` owns executable gates, while `AGENTS.md` owns the single risk classification
 contract. New parallel roadmaps, handoffs, trackers, or duplicated gate command lists are not
 allowed.

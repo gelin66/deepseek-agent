@@ -284,10 +284,17 @@ worktree. No configuration enables default multi-Writer or a second runtime.
 The canonical `web_fetch` tool reads a user-supplied public HTTP(S) URL and has
 no selectable provider. Public HTTP is limited to port 80, remains
 `external_untrusted`, and is returned with explicit plaintext/unprotected
-transport provenance; HTTPS downgrade redirects are rejected. DSE does not currently expose a production
-`web_search` tool. The former `[search]` table and `DSE_SEARCH_*` environment
-variables had no executor and are rejected instead of being silently treated
-as an Agent capability.
+transport provenance; HTTPS downgrade redirects are rejected.
+
+The canonical `web_search` tool uses one fixed Host-owned Tavily Basic Search
+adapter. Store `TAVILY_API_KEY` in the existing DSE credential backend under
+that exact key, or provide it as an environment variable. The key is resolved
+by the Host and never appears in tool arguments, outcomes, logs, or RunStore.
+There is deliberately no `[search]` table, provider selector, fallback chain,
+custom endpoint, or `DSE_SEARCH_*` management surface; those former settings
+had no executor and remain rejected. Search snippets are discovery-only: the
+Agent must read original sources through `web_fetch` or the semantic browser
+before citing a claim.
 
 ## Named profiles
 

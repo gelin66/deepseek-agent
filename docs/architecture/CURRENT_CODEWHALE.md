@@ -540,22 +540,23 @@ reference 的 tool 类型只有 function；Web Search 只在独立 `/anthropic` 
 采用它需要 Messages request/response/SSE、server-tool content blocks、thinking signature、
 finish/continuation、source 与 usage replay 的第二 wire，现有 `ModelMessage/ModelOutput` 和 Chat
 parser 不能无损表达。M44 没有增加 `ApiSurface`、endpoint、DTO、parser、RuntimeEvent 或 State
-字段，正式结论是 `hold_wait_for_chat_surface`。
+字段，当时结论是 `hold_wait_for_chat_surface`。ADR-0019 随后选择由现有 function tool 调用一个
+Host-owned canonical search adapter；因此 DeepSeek wire 仍未增加第二 search/server-tool surface。
 
 <a id="current-tools"></a>
 ### Tools
 
 `crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
-当前 13 个 Host 工具为：
+当前 16 个 Host 工具为：
 
 ```text
-apply_patch  edit_file    exec_shell   file_search
-git_diff     git_status   grep_files   list_dir
-load_skill   read_file    run_tests    run_verifiers
-web_fetch
+apply_patch       browser_interact  browser_navigate  edit_file
+exec_shell        file_search       git_diff           git_status
+grep_files        list_dir          load_skill         read_file
+run_tests         run_verifiers     web_fetch          web_search
 ```
 
-M45-A 另有一个不计入这 13 个定义、不会发送给 DeepSeek 的 Host-only exact verifier
+M45-A 另有一个不计入这 16 个定义、不会发送给 DeepSeek 的 Host-only exact verifier
 `application_probe`。`crates/app` 在 Start 时把 caller 的 program/argv、worktree 内 cwd、受限
 env、health/assertion path、status/body 与各项 bounds 解析成 canonical `VerifierSpec`，并加入
 Host 生成的一次性 128-bit lease；caller plan、URL、host 与 port 都不能覆盖 Host 事实。argv 必须
@@ -615,9 +616,26 @@ schema，也没有 Web session/store/accounting ledger。committed outcome 经 S
 exact URL 形成一次性 Host approval prompt，Agent/FullAccess root 可执行，isolated Writer 继续由
 `actor_controlled_network_denied` 拒绝。
 
-production 仍没有 `web_search`。M46 首个 capability cluster 把 fixed catalog 从 W3.1 的 16 个收敛为
-15 个 Host tools：`browser_click` 与 `browser_fill` 已由唯一 `browser_interact` 取代，Web surface 现为
-`web_fetch`、`browser_navigate`、`browser_interact`。owner 仍是 `crates/tools` 的 direct Tokio CDP，驱动
+ADR-0019 已把一个 canonical `web_search(query, max_results?)` 加入 fixed catalog。它固定调用 Tavily
+Basic/general HTTPS endpoint，Host 从既有 secret backend 或 `TAVILY_API_KEY` 解析 credential；模型不能
+提供 provider/endpoint/header/Cookie/auth/proxy/browser 参数。query 最多 512 字符/2,048 bytes，结果最多
+10 个，response 最大 1 MiB，connect/overall deadline 为 5/12 秒；endpoint DNS 必须全部为 public
+unicast，client 使用 connect pin、no proxy、no redirect 与 identity encoding。结果返回 provider
+request/usage identity、有界 rank/title/canonical public HTTP(S) URL/snippet/time/provenance/hash/bytes，
+并明确 `evidence_role=discovery_only` 与 `trust=external_untrusted`。snippet 不能证明事实，生产工具说明
+要求先用 `web_fetch` 或 browser 读取原来源并交叉核验。provider credits 只记录 usage unit，actual
+charge 不可得时不声明精确成本。
+
+Ask 对 exact query 形成一次性批准；Agent/FullAccess root 可执行，isolated Writer 仍由
+`actor_controlled_network_denied` 拒绝。execution identity 包含 fixed search network identity；committed
+SQLite reopen 只重放，started-without-outcome 进入既有 `RecoveryRequired`，不会重发可能计费的
+search。M44 已删除的 `[search]`/`DSE_SEARCH_*`/Doctor provider selector 没有恢复，也没有 Search
+Manager/Factory/Service、fallback chain、HTML search scraper、search session/store/ledger 或新 Runtime。
+
+M46 首个 capability cluster 曾把 fixed catalog 从 W3.1 的 16 个收敛为 15：`browser_click` 与
+`browser_fill` 已由唯一 `browser_interact` 取代；ADR-0019 加入 search 后，Web surface 现为
+`web_search`、`web_fetch`、`browser_navigate`、`browser_interact`。browser owner 仍是 `crates/tools` 的
+direct Tokio CDP，驱动
 Host 预安装且 SHA-256 pinned 的 Chrome for Testing `151.0.7922.47`；同一 executor 只保留一个有界、
 最多三页的 isolated session。exact-local 使用 TempDir/incognito；public 使用按 canonical workspace identity
 派生、有独占锁和 bounded expiry 的 project profile。replacement navigate、terminal/drop 与 ambiguity 会
@@ -653,6 +671,14 @@ fresh observation 并旋转 refs/epoch。Host synthetic `submit` capability 不�
 但 exact target/form parameters/impact 的任何变化都会使 durable preview stale。live page/ref 从不写入
 RunStore；cancel/timeout/transport ambiguity 仍 teardown，未知副作用不自动 replay。
 
+`browser_navigate` 的可选 `focus` 现在在完整 eligible AXTree + DOMSnapshot 节点集上执行确定性的
+task-cue、interaction 与 role priority，navigation/banner/footer 降权；只对无 capability 的相同 semantic
+content 去重，然后才施加既有 node/char bounds。结果同时返回 focus recall、redundant ratio、
+prompt-injection exposure、AX-only/DOM-without-AX、canvas/SVG blind spot 与 truncation-caused focus loss。
+每次 action 后的 fresh observation 还返回同 page lineage、ref-independent 的 bounded semantic diff，
+含 added/removed/changed/unchanged、stale ratio、最多 16 个 entries 和 bytes。该路径仍只使用一个
+AX/DOM extractor，不执行模型脚本、第二 LLM pruning 或视觉 observation。
+
 W3/W3.1 的 frozen manifest/summary/fixtures/history 保留；production cutover 已物理删除分立
 `browser_click`/`browser_fill` catalog/schema/dispatch 与两个旧 integration test path，改为一个 cluster
 test。没有 compatibility flag、one-action admission evaluator、Node/Playwright production sidecar 或第二
@@ -681,10 +707,11 @@ model-visible Prompt delta=`0`；official DeepSeek requests=`0`、credential rea
 
 #### ADR-0018 后的 current capability boundary
 
-前两个 cluster 已闭合 semantic interaction、public reversible action 与 managed account workflow，并将
+前三个 cluster 已闭合 semantic interaction、public reversible action、managed account workflow，以及
+canonical source discovery + task-relevant semantic observation，并将
 `crates/app` 的 root Agent 从 broad full-access workaround 改为 workspace-write + Host-controlled network。
-current product 仍没有 canonical `web_search`、task-relevance semantic pruning/diff 或 visual observation，
-因此仍不能完成完整 unknown-source research 或 visual-only task，也不能声称已可替代完整工程 Agent。
+current product 已能完成 deterministic unknown-source research vertical，但仍没有 visual observation，
+也尚未用跨 code/app/Web/Writer/recovery 的内部 Alpha task set 证明可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
@@ -701,8 +728,8 @@ SHA-256；download 只进入 session quarantine，受数量、大小、deadline�
 原子创建进入 workspace。登录、上传、下载、promotion、clear 均复用既有 started/outcome/recovery；
 started-without-outcome reopen 为 `RecoveryRequired`，committed reopen 不访问网络或文件系统。
 
-当前剩余 capability gap 是 canonical `web_search`、更高质量的 task-relevant semantic observation、受确认的
-destructive/financial/publish 动作与 selective visual。个人 Chrome、任意 selector/coordinate/JS、无界网络、
+当前剩余 capability gap 是内部 Alpha integration/dogfood、受确认的 destructive/financial/publish 动作与
+selective visual。个人 Chrome、任意 selector/coordinate/JS、无界网络、
 secret-to-model 和 unknown-side-effect replay 继续 fail closed。
 
 M44 已删除没有 executor 的 TUI/config
@@ -933,7 +960,7 @@ M4-C foreground 切换后还已物理删除：
   命令、状态、输出、失败可见性、transcript 与 Activity 展示。
 - 同样没有 canonical producer 的 `Exploring`/`PatchSummary`/`DiffPreview`/`Mcp`/
   `WebSearch` 五种 TUI 专用工具卡及其聚合、状态和 renderer；`ToolCell` 单变体兼容壳也已
-  折叠为直接的 `HistoryCell::Tool(GenericToolCell)`。固定 11 工具现在只走这一展示模型，
+  折叠为直接的 `HistoryCell::Tool(GenericToolCell)`。固定 16 工具现在只走这一展示模型，
   `git_diff`/`git_status` 也按真实名称获得 edit/read 语义；MCP transport 与 CLI 不依赖旧卡。
 - 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
   `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
