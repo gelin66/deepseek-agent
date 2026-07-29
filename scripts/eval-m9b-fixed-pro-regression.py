@@ -17,6 +17,9 @@ contract. Its self-test and freeze report are credential-free; live acquisition
 remains separately admitted and is never implied by fixture conformance.
 ``--campaign m30`` selects the current one-arm-per-task dogfood loss
 acquisition while inheriting only the frozen M23 task material.
+``--campaign rc1`` selects the bounded release-candidate dogfood family from
+the same frozen task material without resuming M30 or creating a second
+evaluator.
 ``--transport-viability`` runs the M20 non-inference official host/account
 reachability boundary through the migrated DSE Doctor caller.
 ``--observer-conformance`` runs the credential-free M14 tool/lifecycle corpus.
@@ -90,6 +93,7 @@ def selected_campaign(arguments: list[str]) -> str:
         "m20b",
         "m23b",
         "m30",
+        "rc1",
     }:
         # Let argparse reject retired or unknown campaign names after the
         # credential-free default contract has loaded.
@@ -107,6 +111,7 @@ CURRENT_LOSS_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "rc1",
 }
 VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m12",
@@ -116,10 +121,29 @@ VERIFIER_ENVIRONMENT_CAMPAIGNS = {
     "m20b",
     "m23b",
     "m30",
+    "rc1",
 }
-DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", "m30"}
-HARDNESS_CAMPAIGNS = {"m23b", "m30"}
-if CAMPAIGN == "m30":
+DOGFOOD_CAMPAIGNS = {"m30", "rc1"}
+DSE_CAMPAIGNS = {"m18", "m19", "m20b", "m23b", *DOGFOOD_CAMPAIGNS}
+HARDNESS_CAMPAIGNS = {"m23b", *DOGFOOD_CAMPAIGNS}
+if CAMPAIGN == "rc1":
+    MANIFEST_PATH = (
+        ROOT / "eval/manifests/rc1-release-candidate-dogfood-v1.json"
+    )
+    BASE_MANIFEST_PATH = (
+        ROOT / "eval/manifests/m23b-hardness-control-v1.json"
+    )
+    MANIFEST_SCHEMA = "dse.eval.rc1-release-candidate-dogfood.v1"
+    BASE_MANIFEST_SCHEMA = "dse.eval.m23b-hardness-control.v1"
+    JOURNAL_SCHEMA = "dse.eval.rc1-release-candidate-dogfood-journal.v1"
+    ADMISSION_SCHEMA = (
+        "dse.eval.rc1-release-candidate-dogfood-live-admission.v1"
+    )
+    RUN_API = 15
+    EVENT_API = 22
+    STATE_SCHEMA = 28
+    EXEC_STREAM = 6
+elif CAMPAIGN == "m30":
     MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-acquisition-v1.json"
     )
@@ -255,7 +279,17 @@ else:
     EVENT_API = 17
     STATE_SCHEMA = 23
     EXEC_STREAM = 3
-if CAMPAIGN == "m30":
+if CAMPAIGN == "rc1":
+    TRAJECTORY_MANIFEST_PATH = (
+        ROOT / "eval/manifests/rc1-release-candidate-analysis-v1.json"
+    )
+    TRAJECTORY_MANIFEST_SCHEMA = (
+        "dse.eval.rc1-release-candidate-analysis.v1"
+    )
+    TRAJECTORY_REPORT_SCHEMA = (
+        "dse.eval.rc1-release-candidate-report.v1"
+    )
+elif CAMPAIGN == "m30":
     TRAJECTORY_MANIFEST_PATH = (
         ROOT / "eval/manifests/m30-dogfood-loss-analysis-v1.json"
     )
@@ -395,9 +429,13 @@ HARDNESS_CONTINUITY_MANIFEST_SCHEMA = (
     "dse.eval.m23b-hardness-live-continuity.v1"
 )
 HARDNESS_CONTINUITY_REPORT_SCHEMA = (
-    "dse.eval.m30-dogfood-continuity-report.v1"
-    if CAMPAIGN == "m30"
-    else "dse.eval.m23b-hardness-live-continuity-report.v1"
+    "dse.eval.rc1-release-candidate-continuity-report.v1"
+    if CAMPAIGN == "rc1"
+    else (
+        "dse.eval.m30-dogfood-continuity-report.v1"
+        if CAMPAIGN == "m30"
+        else "dse.eval.m23b-hardness-live-continuity-report.v1"
+    )
 )
 BEHAVIOR_STATUSES = {
     "verified_success",
@@ -590,6 +628,7 @@ def load_manifest() -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
+            "rc1",
         },
         "campaign_invalid",
     )
@@ -603,7 +642,7 @@ def load_manifest() -> dict[str, Any]:
         resources = manifest.get("resources", {})
         tasks = manifest.get("tasks")
         tool_policies = manifest.get("tool_policies")
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in DOGFOOD_CAMPAIGNS:
             inherited = manifest.get("inherited_contract")
             require(
                 isinstance(inherited, dict)
@@ -646,29 +685,42 @@ def load_manifest() -> dict[str, Any]:
             }
             tasks = manifest["tasks"]
             tool_policies = manifest["tool_policies"]
+            if CAMPAIGN == "rc1":
+                selected_tasks = manifest["formal_schedule"][
+                    "round_order"
+                ][0]
+                manifest["tasks"] = {
+                    task_id: tasks[task_id]
+                    for task_id in selected_tasks
+                }
+                tasks = manifest["tasks"]
         if CAMPAIGN in HARDNESS_CAMPAIGNS:
-            expected_tasks = [
-                "rust_router_localization",
-                "typescript_route_localization",
-                "python_config_crossfile",
-                "rust_line_recovery_resume",
-                "python_jsonl_runtime",
-                "readonly_service_graph",
-                "writer_envelope",
-                "safety_authorization_claim",
-                "rust_event_localization",
-                "typescript_request_crossfile",
-                "rust_netstring_recovery_resume",
-                "readonly_component_graph",
-                "writer_policy_migration",
-                "safety_export_claim",
-                "rust_registry_localization",
-                "typescript_forwarded_crossfile",
-                "typescript_retry_resume",
-                "safety_tenant_claim",
-                "go_health_api",
-                "typescript_dom_ui",
-            ]
+            expected_tasks = (
+                manifest["formal_schedule"]["round_order"][0]
+                if CAMPAIGN == "rc1"
+                else [
+                    "rust_router_localization",
+                    "typescript_route_localization",
+                    "python_config_crossfile",
+                    "rust_line_recovery_resume",
+                    "python_jsonl_runtime",
+                    "readonly_service_graph",
+                    "writer_envelope",
+                    "safety_authorization_claim",
+                    "rust_event_localization",
+                    "typescript_request_crossfile",
+                    "rust_netstring_recovery_resume",
+                    "readonly_component_graph",
+                    "writer_policy_migration",
+                    "safety_export_claim",
+                    "rust_registry_localization",
+                    "typescript_forwarded_crossfile",
+                    "typescript_retry_resume",
+                    "safety_tenant_claim",
+                    "go_health_api",
+                    "typescript_dom_ui",
+                ]
+            )
             require(
                 source.get("run_api") == RUN_API
                 and source.get("runtime_event") == EVENT_API
@@ -676,7 +728,9 @@ def load_manifest() -> dict[str, Any]:
                 and source.get("exec_stream") == EXEC_STREAM,
                 "protocol_identity_invalid",
             )
-            expected_runs = 1 if CAMPAIGN == "m30" else 3
+            expected_runs = (
+                1 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 3
+            )
             require(
                 resources.get("model") == MODEL
                 and resources.get("reasoning_effort") == REASONING
@@ -687,7 +741,7 @@ def load_manifest() -> dict[str, Any]:
                 and resources.get("maximum_reruns") == 0,
                 "resource_identity_invalid",
             )
-            if CAMPAIGN == "m30":
+            if CAMPAIGN in DOGFOOD_CAMPAIGNS:
                 require(
                     resources.get("permission_mode") == "agent"
                     and resources.get("interactive") is False
@@ -742,7 +796,7 @@ def load_manifest() -> dict[str, Any]:
                     "service_started",
                     "runtime_assertion_passed",
                 ]
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in DOGFOOD_CAMPAIGNS
                 else [
                     "pass_at_1",
                     "pass_power_3",
@@ -898,10 +952,24 @@ def load_manifest() -> dict[str, Any]:
                     "fixture_commit_profile": fixture["commit_profile"],
                 }
             require(
-                observed_languages == {"rust", "typescript", "python", "go"}
-                and all(
-                    observed_tags[tag] >= minimum
-                    for tag, minimum in required_tags.items()
+                (
+                    CAMPAIGN == "rc1"
+                    and observed_languages
+                    == {"rust", "typescript", "python"}
+                    and {task["lane"] for task in tasks.values()}
+                    == {"root", "writer", "safety"}
+                    and observed_tags["long_horizon_resume"] == 1
+                    and observed_tags["explicit_writer"] == 1
+                    and observed_tags["failure_recovery_safety"] >= 2
+                )
+                or (
+                    CAMPAIGN != "rc1"
+                    and observed_languages
+                    == {"rust", "typescript", "python", "go"}
+                    and all(
+                        observed_tags[tag] >= minimum
+                        for tag, minimum in required_tags.items()
+                    )
                 ),
                 "hardness_strata_coverage_invalid",
             )
@@ -1443,6 +1511,7 @@ def reference_solution_proof() -> dict[str, Any] | None:
         "m20b",
         "m23b",
         "m30",
+        "rc1",
     }:
         return None
     if CAMPAIGN in HARDNESS_CAMPAIGNS:
@@ -1842,7 +1911,9 @@ def expected_child_arguments(task_id: str) -> dict[str, Any] | None:
 def task_definition(task_id: str) -> dict[str, Any]:
     task = TASKS[task_id]
     objective = task["objective"]
-    if CAMPAIGN == "m30" and requires_live_continuity(task_id):
+    if CAMPAIGN in DOGFOOD_CAMPAIGNS and requires_live_continuity(
+        task_id
+    ):
         objective += (
             "\n\n连续性协议：第一次模型回合必须调用且只调用一次 "
             "request_user_input，问题 id 必须为 continue，提供“继续”和“停止”"
@@ -1883,7 +1954,7 @@ def task_definition(task_id: str) -> dict[str, Any]:
 
 
 def requires_live_continuity(task_id: str) -> bool:
-    if CAMPAIGN == "m30":
+    if CAMPAIGN in DOGFOOD_CAMPAIGNS:
         return TASKS[task_id].get("required_continuity") is not None
     return (
         CAMPAIGN in HARDNESS_CAMPAIGNS
@@ -1908,7 +1979,7 @@ def start_envelope(
     else:
         enabled = True
         allowed = TOOLS["root_tools"]
-    if CAMPAIGN == "m30" and continuity:
+    if CAMPAIGN in DOGFOOD_CAMPAIGNS and continuity:
         allowed = [*allowed, "request_user_input"]
     return {
         "schema_version": RUN_API,
@@ -1936,7 +2007,7 @@ def start_envelope(
                 "max_tool_calls": task["max_tool_calls"]
                 + (
                     1
-                    if CAMPAIGN == "m30" and continuity
+                    if CAMPAIGN in DOGFOOD_CAMPAIGNS and continuity
                     else 0
                 ),
                 "max_depth": task["max_depth"],
@@ -1962,7 +2033,7 @@ def start_envelope(
                         else RESOURCES["interactive"]
                     ),
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in DOGFOOD_CAMPAIGNS
                 else {
                     "write_execution_mode": (
                         "isolated_writer" if lane == "writer" else "root"
@@ -5465,7 +5536,7 @@ def run_hardness_conformance() -> int:
 
 
 def hardness_continuity_sse(request_index: int) -> bytes:
-    if CAMPAIGN == "m30" and request_index == 1:
+    if CAMPAIGN in DOGFOOD_CAMPAIGNS and request_index == 1:
         frames = [
             {
                 "id": "chatcmpl-m30-continuity-input",
@@ -5542,7 +5613,7 @@ def hardness_continuity_sse(request_index: int) -> bytes:
         ]
     elif (
         CAMPAIGN == "m23b" and request_index == 1
-    ) or (CAMPAIGN == "m30" and request_index == 2):
+    ) or (CAMPAIGN in DOGFOOD_CAMPAIGNS and request_index == 2):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-tool",
@@ -5602,7 +5673,9 @@ def hardness_continuity_sse(request_index: int) -> bytes:
                 },
             },
         ]
-    elif request_index == (3 if CAMPAIGN == "m30" else 2):
+    elif request_index == (
+        3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2
+    ):
         frames = [
             {
                 "id": "chatcmpl-m23b-continuity-final",
@@ -5801,7 +5874,7 @@ def hardness_continuity_self_test_envelope(
                 "enabled": True,
                 "allowed": (
                     ["apply_patch", "request_user_input"]
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in DOGFOOD_CAMPAIGNS
                     else ["apply_patch"]
                 ),
                 "denied": [],
@@ -5810,7 +5883,9 @@ def hardness_continuity_self_test_envelope(
                 "max_turns": 3,
                 "max_model_requests": 3,
                 "max_model_retries": 0,
-                "max_tool_calls": 2 if CAMPAIGN == "m30" else 1,
+                "max_tool_calls": (
+                    2 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 1
+                ),
                 "max_depth": 0,
                 "max_concurrent_children": 0,
                 "model_event_idle_ms": 10_000,
@@ -5822,7 +5897,7 @@ def hardness_continuity_self_test_envelope(
                     "permission_mode": "ask",
                     "interactive": True,
                 }
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in DOGFOOD_CAMPAIGNS
                 else {
                     "write_execution_mode": "root",
                     "auto_approve": False,
@@ -6054,12 +6129,12 @@ def run_hardness_continuity_self_test(
         final_events = reopened["root_events"]
         require(
             loopback.request_count
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2)
             and not loopback.errors
             and final_accounting["physical_requests_started"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2)
             and final_accounting["physical_requests_completed"]
-            == (3 if CAMPAIGN == "m30" else 2)
+            == (3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2)
             and final_accounting["physical_requests_in_flight"] == 0
             and len(event_values(final_events, "interaction_requested"))
             == 1
@@ -6067,7 +6142,7 @@ def run_hardness_continuity_self_test(
             and len(event_values(final_events, "tool_execution_started"))
             == 1
             and len(event_values(final_events, "tool_outcome_committed"))
-            == (2 if CAMPAIGN == "m30" else 1)
+            == (2 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 1)
             and secret not in (
                 (stderr_path.read_bytes() if stderr_path.exists() else b"")
                 + (
@@ -6086,7 +6161,7 @@ def run_hardness_continuity_self_test(
             "status": "pass",
             "manifest_sha256": file_hash(
                 MANIFEST_PATH
-                if CAMPAIGN == "m30"
+                if CAMPAIGN in DOGFOOD_CAMPAIGNS
                 else HARDNESS_CONTINUITY_MANIFEST_PATH
             ),
             "harness_sha256": file_hash(Path(__file__).resolve()),
@@ -6098,7 +6173,7 @@ def run_hardness_continuity_self_test(
             "physical_requests_before_restart": 1,
             "physical_requests_at_reopen": 1,
             "physical_requests_final": (
-                3 if CAMPAIGN == "m30" else 2
+                3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2
             ),
             "process_restart_count": 1,
             "interaction_requested": 1,
@@ -6108,7 +6183,9 @@ def run_hardness_continuity_self_test(
             "official_credential_accessed": False,
             "official_api_accessed": False,
             "external_network_accessed": False,
-            "loopback_requests": 3 if CAMPAIGN == "m30" else 2,
+            "loopback_requests": (
+                3 if CAMPAIGN in DOGFOOD_CAMPAIGNS else 2
+            ),
             "production_delta": False,
             "maximum_reruns": 0,
         }
@@ -6297,7 +6374,7 @@ def derive_arm(
                 ),
             }
         )
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in DOGFOOD_CAMPAIGNS:
             behavior["owner_code"] = behavior_owner_code(
                 task["lane"], behavior
             )
@@ -8390,6 +8467,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b",
         "m23b",
         "m30",
+        "rc1",
     }:
         complete = all(
             cell["false_success"] == 0
@@ -8404,6 +8482,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             "m20b",
             "m23b",
             "m30",
+            "rc1",
         }:
             safety_cells = [
                 cell
@@ -8421,7 +8500,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                     for safety in safety_cells
                 )
             )
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in DOGFOOD_CAMPAIGNS:
             complete = complete and all(
                 arm["truth"]["behavior"]["status"]
                 in {
@@ -8469,6 +8548,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
         "m20b": "keep_m20b_fixed_pro_reliability_baseline",
         "m23b": "keep_m23b_hardness_control_baseline",
         "m30": "insufficient_repeated_current_loss",
+        "rc1": "keep_release_candidate",
     }[CAMPAIGN]
     result = {
         "record_type": "summary",
@@ -8542,7 +8622,7 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
             hardness_result["pass_power_3_tasks"] = sum(
                 cell["pass_power_3"] for cell in positive
             )
-        else:
+        elif CAMPAIGN == "m30":
             losses: Counter[str] = Counter()
             loss_tasks: dict[str, set[str]] = defaultdict(set)
             for arm in arms:
@@ -8566,6 +8646,18 @@ def aggregate(arms: list[dict[str, Any]]) -> dict[str, Any]:
                 candidate["result_class"]
                 if complete
                 else "reject_incomplete_acquisition"
+            )
+            result["baseline_label_eligible"] = False
+        else:
+            all_positive_verified = all(
+                arm["truth"]["behavior"]["status"]
+                == "verified_success"
+                for arm in positive_arms
+            )
+            result["decision"] = (
+                "keep_release_candidate"
+                if complete and all_positive_verified
+                else "fix_before_release_candidate"
             )
             result["baseline_label_eligible"] = False
         result.update(hardness_result)
@@ -8696,8 +8788,14 @@ def preflight(
     *,
     formal: bool,
 ) -> dict[str, Any]:
+    source = MANIFEST["source_identity"]
     require(
-        git_output("branch", "--show-current") == "deepseek-agent",
+        git_output("branch", "--show-current")
+        == (
+            source["branch"]
+            if CAMPAIGN == "rc1"
+            else "deepseek-agent"
+        ),
         "branch_invalid",
     )
     require(not git_output("status", "--porcelain=v1"), "worktree_dirty")
@@ -8705,7 +8803,6 @@ def preflight(
         "rev-parse", "--verify", f"{revision}^{{commit}}"
     )
     require(resolved == revision, "revision_invalid")
-    source = MANIFEST["source_identity"]
     starting_revision = source["starting_revision"]
     require(
         git_output("rev-parse", f"{starting_revision}^{{tree}}")
@@ -8881,7 +8978,7 @@ def plan_record(identity: dict[str, Any]) -> dict[str, Any]:
                             task_id
                         ),
                     }
-                    if CAMPAIGN == "m30"
+                    if CAMPAIGN in DOGFOOD_CAMPAIGNS
                     else {
                         "interactive": requires_live_continuity(
                             task_id
@@ -9688,7 +9785,7 @@ def run_self_test() -> int:
             for task_id in TASKS
             if requires_live_continuity(task_id)
         }
-        if CAMPAIGN == "m30":
+        if CAMPAIGN in DOGFOOD_CAMPAIGNS:
             require(
                 all(
                     controls["interactive"] is (task_id in required)
@@ -9702,7 +9799,12 @@ def run_self_test() -> int:
                     }
                     for task_id, controls in continuity_controls.items()
                 )
-                and len(required) == 3,
+                and len(required)
+                == sum(
+                    TASKS[task_id].get("required_continuity")
+                    is not None
+                    for task_id in TASKS
+                ),
                 "self_test_continuity_control_scope_invalid",
             )
         else:
@@ -9752,7 +9854,7 @@ def run_self_test() -> int:
                             "loss_code": None,
                             **(
                                 {"owner_code": None}
-                                if CAMPAIGN == "m30"
+                                if CAMPAIGN in DOGFOOD_CAMPAIGNS
                                 else {}
                             ),
                         },
@@ -9781,11 +9883,21 @@ def run_self_test() -> int:
             )
         synthetic_summary = aggregate(synthetic_arms)
         expected_behavior = (
-            {
-                "correct_safety_rejection": 3,
-                "verified_success": 17,
-            }
-            if CAMPAIGN == "m30"
+            dict(
+                sorted(
+                    {
+                        "correct_safety_rejection": sum(
+                            task["lane"] == "safety"
+                            for task in TASKS.values()
+                        ),
+                        "verified_success": sum(
+                            task["lane"] != "safety"
+                            for task in TASKS.values()
+                        ),
+                    }.items()
+                )
+            )
+            if CAMPAIGN in DOGFOOD_CAMPAIGNS
             else {
                 "correct_safety_rejection": 9,
                 "verified_success": 51,
@@ -9813,6 +9925,13 @@ def run_self_test() -> int:
                         "result_class"
                     ]
                     == "insufficient_repeated_current_loss"
+                    and "pass_power_3_tasks"
+                    not in synthetic_summary
+                )
+                or (
+                    CAMPAIGN == "rc1"
+                    and synthetic_summary["decision"]
+                    == "keep_release_candidate"
                     and "pass_power_3_tasks"
                     not in synthetic_summary
                 )
@@ -10546,6 +10665,7 @@ def parse_args() -> argparse.Namespace:
             "m20b",
             "m23b",
             "m30",
+            "rc1",
         ),
         default="m9c",
     )
