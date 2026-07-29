@@ -257,8 +257,10 @@
   Writer receipt -> seal/integrate -> root latest-revision receipt -> cleanup -> SQLite reopen` 生产链闭合，
   verified=`3/3`、false success=`0`、reopen reexecution=`0`。切片同时删除 isolated Writer 对 Host-owned
   loopback verifier 的错误 blanket deny，只开放 sandbox 内 `localhost:*` bind/inbound，external outbound
-  仍为 0。唯一 official DeepSeek dogfood 以 4 requests、0 retry、13,141/1,145 tokens、约 `$0.00373`
-  到达 `Failed(OutputLimit)`；没有重跑，因此不声明 official vertical success 或通用生产力提升。
+  仍为 0。首个 official DeepSeek dogfood 以 4 requests、0 retry、13,141/1,145 tokens、约 `$0.00373`
+  到达 `Failed(OutputLimit)`；显式授权的 fresh 2,048-token successor 以 6 requests、0 retry、
+  21,015/2,212 tokens、约 `$0.00654` 到达 `Failed(ToolBudgetExceeded { limit: 6 })`。两个 treatment 都没有
+  重跑，因此仍不声明 official vertical success 或通用生产力提升。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7627,13 +7629,18 @@ suite wall=`16.52s`，单项观测约 `16.396–16.509s`。root 文件 byte-exac
 refs/worktrees 清零；
 terminal reopen event stream byte-exact。测试 fixture 不是官方模型或 live Tavily，不外推成功率/Token/时间。
 
-唯一 official DeepSeek dogfood 按 one run、maximum reruns=`0`、hard requests=`8`、runtime retries=`0`、
+首个 official DeepSeek dogfood 按 one run、maximum reruns=`0`、hard requests=`8`、runtime retries=`0`、
 known ceiling `$0.10` 执行；实际在 4 个请求后因人为 512-token 单回合 cap 到达
 `Failed(OutputLimit)`，wall=`23.636s`、usage complete=`true`、billing unknown=`false`、input/output=
-`13,141/1,145`、cost=`3,730,821 nanousd`（约 `$0.00373`）。没有第二次付费请求；该结果证明真实 wire/
-accounting fail closed，但没有证明 official Alpha vertical usability。future canary contract 已改为
-production-representative 2,048 output tokens，仍受同一 8-request/$0.10/0-rerun bounds；本 checkpoint 不把
-未执行的新 treatment 写成成功。`TAVILY_API_KEY` unavailable，故 live provider canary 仍未执行。
+`13,141/1,145`、cost=`3,730,821 nanousd`（约 `$0.00373`）；该 treatment 没有重跑。
+
+用户显式授权的 fresh successor 使用 production-representative 2,048 output tokens、同一 hard requests=`8`、
+runtime retries=`0`、new-treatment reruns=`0`、ceiling=`$0.10`；实际第 6 个 physical request 后到达
+`Failed(ToolBudgetExceeded { limit: 6 })`，wall=`44.536s`、usage complete=`true`、billing unknown=`false`、
+input/output=`21,015/2,212`、cost=`6,538,253 nanousd`（约 `$0.00654`）。没有再运行。它证明 output cap
+不再是 failure，但人为 tool-call budget 仍未闭合 official Alpha vertical；future ignored contract 只离线改为
+`max_tool_calls=16`，未执行、不能写成成功。两次 closed accounting 合计约 `$0.01027`。`TAVILY_API_KEY`
+unavailable，故 live provider canary 仍未执行。
 
 production Rust 只增加 Host loopback sandbox distinction，app 的大部分 delta 是 task-family/canary test；
 protocol/state、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、catalog 与依赖均为

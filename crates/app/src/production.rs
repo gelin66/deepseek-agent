@@ -5643,7 +5643,7 @@ server.serve_forever()
             max_turns: 8,
             max_model_requests: 8,
             max_model_retries: 0,
-            max_tool_calls: 6,
+            max_tool_calls: 16,
             max_depth: 1,
             max_concurrent_children: 1,
             model_event_idle_ms: Some(120_000),

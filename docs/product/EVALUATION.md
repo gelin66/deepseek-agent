@@ -6093,13 +6093,20 @@ loopback sandbox distinction 与 exact policy mapping 增加小幅 delta。被�
 
 #### Official dogfood 与 accounting truth
 
-唯一 official DeepSeek dogfood 预注册 one run、physical request limit=`8`、runtime retry=`0`、rerun=`0`、
+首个 official DeepSeek dogfood 预注册 one run、physical request limit=`8`、runtime retry=`0`、rerun=`0`、
 ceiling=`$0.10`。实际 terminal=`Failed(OutputLimit)`，physical requests=`4`、runtime retries=`0`、wall=
 `23.636s`、usage complete=`true`、billing unknown=`false`、input=`13,141`、output=`1,145`、cost=
-`3,730,821 nanousd`（约 `$0.00373`）。失败发生在 canary 人为 512 output-token cap；没有再发付费请求。
-future ignored canary 合同改为 2,048 tokens，但未执行，不能记为通过。故本条只 keep deterministic
-production integration 与 sandbox fix，不声明 official vertical success、真实 Tavily success 或任何通用
-success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=`0/unknown`。
+`3,730,821 nanousd`（约 `$0.00373`）。失败发生在 canary 人为 512 output-token cap；该 treatment 没有重跑。
+
+用户随后显式授权一个 fresh 2,048-token successor，仍为 physical request limit=`8`、runtime retry=`0`、
+new-treatment rerun=`0`、ceiling=`$0.10`，并继续使用 deterministic Host Web fixture。实际在第 6 个 physical
+request 后 terminal=`Failed(ToolBudgetExceeded { limit: 6 })`，wall=`44.536s`、usage complete=`true`、
+billing unknown=`false`、input/output=`21,015/2,212`、cost=`6,538,253 nanousd`（约 `$0.00654`）；没有
+再运行。该结果证明 2,048 output cap 已越过首个 failure，但 canary 的人为 tool-call budget 仍不足以闭合
+official vertical。future ignored contract 只离线改为 `max_tool_calls=16`，未执行、不能记为通过。故本条
+只 keep deterministic production integration 与 sandbox fix，不声明 official vertical success、真实
+Tavily success 或任何通用 success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider
+requests/charge=`0/unknown`。
 
 focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime conformance=`88/88`、app=
 `77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。最终 revision

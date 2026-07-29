@@ -716,8 +716,9 @@ canonical source discovery + task-relevant semantic observation，并将
 `crates/app` 的 root Agent 从 broad full-access workaround 改为 workspace-write + Host-controlled network。
 current product 已能完成 deterministic unknown-source research vertical，但仍没有 visual observation，
 并已用三个跨 code/app/Web/Writer/recovery 的 Internal Alpha task 证明 deterministic production integration；
-唯一 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed，尚未证明 official vertical
-success，更不能据此宣称可替代完整工程 Agent。
+首个 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed；显式授权的 fresh 2,048-token
+successor 越过该限制，但在第 6 个请求因人为 tool-call budget=`6` fail closed。两个 treatment 都没有重跑，
+尚未证明 official vertical success，更不能据此宣称可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
