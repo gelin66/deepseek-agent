@@ -575,8 +575,10 @@ typed failure、cancel 和 timeout 都终止 owned process group/Job 并 reap；
 派生 `host_loopback_only` sandbox：macOS 仅允许 `localhost:*` bind/inbound、没有 network-outbound；
 Linux 保持 isolated network namespace。因 Host 与 Writer 不共享该 namespace，isolated Writer 的
 Host-to-application 正向 loopback checkpoint 只在 macOS Seatbelt job 执行；Linux CI 保留普通 root
-probe 与 bwrap namespace/egress 负向合同，不能把该正向路径写成跨平台成功。多个进程型正向
-checkpoint 在同一 test binary 内串行化，避免 Host 释放 reserved port 后的 fixture 竞争。该例外不进入
+probe 与 bwrap namespace/egress 负向合同，不能把该正向路径写成跨平台成功。Internal Alpha 的三个正向
+fixture 不使用共享进程锁；每项在 root receipt 前依次验证 child tool outcomes/receipt、Host seal、integration
+和 root byte-exact final marker，再验证 root latest-revision receipt、cleanup 与 terminal。历史 draft response
+携带当前 Host lease，故不是 foreign listener；旧 port-race/serialization 归因已删除。该例外不进入
 model-visible shell/Web authority。
 
 lease 已随 `HostVerificationPrepared` 的 frozen verifier 持久化，不增加 PID/port sidecar。
@@ -720,6 +722,9 @@ canonical source discovery + task-relevant semantic observation，并将
 `crates/app` 的 root Agent 从 broad full-access workaround 改为 workspace-write + Host-controlled network。
 current product 已能完成 deterministic unknown-source research vertical，但仍没有 visual observation，
 并已用三个跨 code/app/Web/Writer/recovery 的 Internal Alpha task 证明 deterministic production integration；
+三项现在无共享进程锁并发闭合。另一个 typed integration-conflict conformance 证明 seal 后若 root CAS
+integration 失败，canonical revision/bytes 保持 base/draft、root receipt=`0`、terminal=`Blocked`，同时
+cleanup=`Removed` 且没有 integration side effect；因此 root completion 只接受已集成 final marker。
 首个 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed；显式授权的 fresh 2,048-token
 successor 越过该限制，但在第 6 个请求因人为 tool-call budget=`6` fail closed。两个 treatment 都没有重跑，
 再次授权的 2,048-token / 16-tool successor 越过两个旧上限，但到 Host verifier failure 时已在第 8 个请求

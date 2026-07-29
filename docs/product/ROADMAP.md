@@ -264,7 +264,8 @@
   `$0.00933` 到达 `Blocked(Host application_probe deterministic failure)`；它越过两个旧上限，但耗尽
   recovery request budget。Linux bwrap 保持独立 network namespace，因此公开 CI 在 macOS job 跑这三个
   正向 checkpoint，在 Linux workspace job 明确 ignore 并验证 namespace 不共享；不冒充跨平台正向成功。
-  macOS 的三个进程 fixture 以单锁串行，删除 reserved-port 竞争造成的 CI false deny。12-request
+  历史 macOS root-draft false deny 已确认携带当前 exact lease，排除 foreign listener；进程单锁没有消除该
+  症状，现已删除并以 typed Writer lifecycle + integration-conflict 反例取代旧归因。12-request
   successor 仍 Blocked；新增诊断证明 root 已两次启动 Writer，但
   root marker 仍缺失。审计定位原 deterministic fixture 让只有 `apply_patch`、不能读取 `server.py` 的
   Writer 凭空提交预制文件。当前 fixture/task 已切到 Writer `read_file -> apply_patch` 的真实链并保持
@@ -7638,10 +7639,27 @@ Writer checkpoint conformance 随 focused gate 一并保持绿色。
 
 deterministic actual=`3/3 verified`、false success=`0`、citations=`6/6`、Writer/root receipts=`6/6`、
 rework=`0`。current fixture 每项真实执行 child `read_file -> apply_patch`，恰为 8 model turns、
-1,110 input/86 output tokens；加入 compile/build 后三项并行 suite wall=`11.12s`，单项观测约
-`11.083–11.112s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
+1,110 input/86 output tokens；加入 compile/build 后三项无共享进程锁并发 suite test wall=`12.37s`。
+root 文件 byte-exact、HEAD 前进、Git clean、writer
 refs/worktrees 清零；
 terminal reopen event stream byte-exact。测试 fixture 不是官方模型或 live Tavily，不外推成功率/Token/时间。
+
+历史 macOS CI 曾有一个 constant case 让 root verifier 读到 `draft-constant`；Host 正确返回 Blocked、没有
+receipt，因此 false success 仍为 0。response 带该次 run 的 exact lease，排除 foreign listener；症状又发生
+在进程 fixture 单锁已存在的 revision，故旧“reserved-port 竞争由单锁修复”结论撤回。旧日志缺少 bounded
+Writer stage evidence，不能事后确定 child/seal/integration 中哪一步未闭合；该问题分类为 fixture
+diagnostics/concurrency defect。current harness 删除进程锁，改为在 root receipt 前验证 child committed
+`read_file/apply_patch` + child receipt、seal、integration 与 root byte-exact final marker，再验证 cleanup 和
+terminal 顺序。deterministic integration-conflict 反例同时证明未集成 root 保持 draft/base revision、receipt=0、
+Blocked、cleanup=`Removed`，且 integration side effect=0。
+
+closure targeted actual 为 Alpha task=`3/3`、Writer Runtime=`26/26`、ApplicationProbe=`10/10`、
+orchestrator=`44/44`、Prompt fixture macOS/Linux=`1/1 + 1/1`。orchestrator 旧 test-only `<2s` wall gate 在
+Git-heavy package 并发下产生一次 false deny；exact 同 revision=`0.85s` 且 PID 已回收。current fixture 删除
+任意 wall threshold，保留后台 late bytes=`0`、PID reaped 与 production 15s hard bound。已推送
+`6b05531e0` 的公开 CI 两个 delivery job 均通过、macOS Alpha=`3/3`，quality 唯一失败是 Prompt fixture 未
+同时归一 macOS canonical `/private/var/...` 与 raw `/var/...`；current fixture 已跨 macOS/Linux exact 闭合，
+但该 local revision 尚无远端 CI，不能冒充已验证。
 
 首个 official DeepSeek dogfood 按 one run、maximum reruns=`0`、hard requests=`8`、runtime retries=`0`、
 known ceiling `$0.10` 执行；实际在 4 个请求后因人为 512-token 单回合 cap 到达
@@ -7698,4 +7716,8 @@ app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`
 production checkpoint revision 的 canonical full gate invocation=`1`、exit=`0`；后续只有 test/authority
 truth 变化，没有第二次 full。current read-before-edit/observer revision 的四项 targeted Alpha、fmt、
 authority 与 diff check 通过；clean reviewable checkpoint 随本条形成，不 push；没有启动
-destructive/publish、visual 或下一 capability cluster。
+destructive/publish、visual 或下一 capability cluster。当前 Writer closure focused exit=`0`：tools=
+`412/6`，另有 tools integration=`2/1`；DeepSeek=`61/1`、runtime=`88/0`、app=`78/4`、app-server=`23/0`、
+exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。当前 closure revision 的 canonical full invocation=`1`、
+exit=`0`，覆盖 authority/public、fmt、workspace all-features check、strict Clippy、全 workspace tests、
+process-crash/reopen suites 与 doctests；同一 code revision 没有第二次 full，结果写回后仅复核 authority/diff。
