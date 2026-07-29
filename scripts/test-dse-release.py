@@ -237,6 +237,7 @@ def main() -> None:
         "actions/runs?head_sha=$RELEASE_SHA",
         'path == ".github/workflows/ci.yml"',
         "actions/runs/$ci_run_id/jobs",
+        "cargo fetch --locked",
         "dse-installer.sh",
         "dist-manifest.json",
         "SBOM.spdx.json",
@@ -258,6 +259,12 @@ def main() -> None:
             raise AssertionError(
                 f"release workflow contains forbidden path: {forbidden_fragment}"
             )
+    fetch_index = workflow.find("cargo fetch --locked")
+    package_index = workflow.find("./scripts/dse-delivery.sh package")
+    if fetch_index < 0 or package_index < 0 or fetch_index > package_index:
+        raise AssertionError(
+            "release workflow must fetch the locked graph before the offline package build"
+        )
     all_workflows = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(workflow_dir.glob("*.yml"))
