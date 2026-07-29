@@ -234,6 +234,9 @@ def main() -> None:
         "--draft",
         "--draft=false",
         "immutable-releases",
+        "actions/runs?head_sha=$RELEASE_SHA",
+        'path == ".github/workflows/ci.yml"',
+        "actions/runs/$ci_run_id/jobs",
         "dse-installer.sh",
         "dist-manifest.json",
         "SBOM.spdx.json",
@@ -247,6 +250,7 @@ def main() -> None:
         "actions/download-artifact",
         "raw.githubusercontent.com",
         "--clobber",
+        "check-runs?",
         "pull_request_target:",
     ):
         if forbidden_fragment in workflow:
