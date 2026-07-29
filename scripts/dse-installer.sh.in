@@ -39,7 +39,7 @@ Options:
   --uninstall         Remove only installer-owned programs and release metadata
   --help              Show this help
 
-The installer requires curl, tar, awk, a SHA-256 utility, and system Bash.
+The installer requires curl, tar, gzip, awk, a SHA-256 utility, and system Bash.
 It never uses sudo and never modifies DSE_HOME, configuration, RunStore, or
 credentials. Shell profiles are not modified; a PATH command is printed when
 the selected prefix is not already reachable.
@@ -315,6 +315,7 @@ main() {
 
   command -v curl >/dev/null 2>&1 || fail "curl is required"
   command -v tar >/dev/null 2>&1 || fail "tar is required"
+  command -v gzip >/dev/null 2>&1 || fail "gzip is required"
   detect_foreign_dse "$prefix"
 
   if [ -n "$requested_version" ]; then
