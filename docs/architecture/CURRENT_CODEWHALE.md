@@ -376,17 +376,27 @@ versioned POSIX installer 只解析固定 `gelin66/deepseek-agent` exact stable 
 SHA 与 target archive，然后提取并校验同 revision 的 canonical delivery payload。release-time Python
 只生成/验证 `dse.release.v1` JSON 和 SPDX，不进入 cold install 或 DSE runtime。
 
-当前远端 release immutability=`enabled`，但 GitHub Releases 仍为空且没有 `v0.8.68` tag。Sites 已部署
-`https://dse.run/install.sh` 薄 bootstrap；当前无 stable release 的真实结果是 nonzero typed failure、
-HOME 无副作用，不是公共安装完成。`.github/workflows/release.yml` 冻结 Draft→四 native runner 直接上传→
-locked-source manifest/SBOM/attestation→single immutable publish，不使用 Actions artifact 作为二进制中转。直到该
-workflow 和公网 clean install 执行成功，current fact 只能是 repository implementation ready，不能是
-public command available。
+当前远端 release immutability=`enabled`；首个 stable `v0.8.68` 已从 exact
+`222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 workflow run `30466835639` 发布。Release
+`draft=false`、`prerelease=false`、`immutable=true`，四 native runner 均完成 build/fresh install/
+version/doctor/verify/uninstall，installer/manifest/SHA256/SBOM 与四 archive 共 8 项资产通过 repo verifier、
+GitHub artifact attestation 和 release-asset attestation。Sites 的 `https://dse.run/install.sh` 已在隔离
+macOS arm64 HOME 完成真实 install/version/doctor 且保持 `DSE_HOME` marker；它返回 shell MIME 与 300 秒
+must-revalidate cache，不托管 binary。
 
-该切片 focused gate 已一次通过（delivery/release/installer + tools/DeepSeek/Runtime/app/app-server/
-exec/TUI/PTY），冻结后的 full 也只执行一次且 exit=`0`（public repository、fmt、Clippy、workspace
-tests、diff 全绿），没有 official DeepSeek request；当前只等待公开 CI、Draft native assets 与实际
-immutable/public install 证据。
+该首次公网复验同时发现一个未闭合的 delivery transport 缺陷：旧 versioned installer 的 `--retry 2`
+不覆盖 curl 35/56 connection reset，重试耗尽后的 transport/timeout/partial 还会被统一误报为 asset missing。
+current patch candidate `0.8.69` 在同一个 POSIX installer owner 中加入有总时限的
+`--retry-all-errors`，并保真分类 curl 18/22/28/35/56；deterministic targeted、focused 与修正 revision
+的唯一一次 full 已通过，尚待公开 CI、新 immutable patch release 和公网 same-version 复验。因此
+`v0.8.68` 是真实可安装的
+首个 stable，但 ADR-0020 Goal 在更稳健的 `v0.8.69` 发布前仍为 active。
+
+原始切片 focused 与 full 各一次通过；patch candidate `0.8.69` 的 targeted 与 focused 也已一次通过。
+首次 patch full 在全仓其它已跑项均绿后，只因 workspace version 改变使 production prompt provenance
+fixture 保留旧 `Cargo.toml` hash 而失败；精确更新 block/aggregate provenance hash 后的全新 revision full
+一次 exit=`0`，没有 official DeepSeek request。当前只等待公开 CI、Draft native assets、immutable
+publish 与实际 public same-version evidence。
 
 ## 2. 已统一的生产链
 

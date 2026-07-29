@@ -277,10 +277,17 @@
   `226e387a54efdb1a22c43f91b11be94068cea534`，合并后 tree 与本地正式 RC tree byte-exact；默认分支
   CI run `30441290667` 的 quality、Ubuntu delivery、macOS Writer/delivery 全绿。RC Goal 已关闭，
   没有启动新 capability cluster。
-- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer：保留
-  `scripts/dse-delivery.sh` 为唯一离线 lifecycle owner，增加 POSIX versioned installer、四 target
-  Draft Release、SHA256/manifest/SPDX/attestation 与 `dse.run/install.sh` 公开闭环。production Rust、
-  DeepSeek、Runtime/Event/Store/tools/Prompt 预期 delta=`0`；Homebrew 不阻塞主入口。
+- 当前唯一 active slice 是 ADR-0020 Public Immutable Release + Installer。首个 stable `v0.8.68`
+  已从 exact `222fb1f34392f9bb6dcebf0776857a9c307d1601` 经 run `30466835639` 发布：Release
+  `draft=false`、`prerelease=false`、`immutable=true`，四 native archive 加 installer/manifest/
+  SHA256/SBOM 共 8 项资产及 attestations 齐全。`dse.run/install.sh` 已在隔离 macOS arm64 HOME
+  完成真实 install、`dse`/`dse-tui --version`、doctor 和数据保持；但同版重跑暴露 curl 56
+  connection reset 不在旧 `--retry 2` 全错误集合内，且被误报为 asset missing，因此 Goal 尚未关闭。
+  patch candidate `0.8.69` 只在 versioned installer owner 增加有界 `--retry-all-errors`、总重试时限与
+  18/22/28/35/56 typed failure，production Rust/DeepSeek/Runtime/Event/Store/tools/Prompt delta=`0`；
+  targeted、focused 与修正 revision 的唯一一次 full 已全绿，等待公开 CI、第二个 immutable patch release
+  与公网同版复验。
+  Homebrew 不阻塞主入口。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见

@@ -1610,7 +1610,7 @@ mod tests {
             block_hashes,
             [
                 "845162432bf9826c59b1fdafba2958356d494e1313921d5670299258c1e3d767",
-                "eb7b2001a9d73dca127881d763774646adc8884c1fcdff7508a3bd26e93a3632",
+                "a3c5f21b5b567bd6d5fdc31dc187709b43e25b28586d0ff664c7f19468c3ce61",
                 "5e8571dae69434e271da2bd3d9fe85418b40e0f6a254efd7e63df2f9c793b2f1",
                 "a2fd7cc81b3bf99e30e69ae0edf862c6c26dd2a3049501a92ba93226b22984a1",
                 "53b653986406c8bbfa2680cba570165a68497f6a0669190bc379934d2690fb32",
@@ -1630,7 +1630,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "b6e0490eaf4a8a3867271aec9a46dcbc615e34ed9c2b2642e1be8c8e585d84b9"
+            "c45969027388eaad339745c01a0efb5cccc60e8a5e9be4188a17992ee630e4c2"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {
