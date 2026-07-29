@@ -1429,6 +1429,7 @@ mod tests {
     use std::process::Command as ProcessCommand;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Instant;
 
     use dse_context::compaction::{ContextInput, effective_context};
     use dse_context::{
@@ -1495,6 +1496,37 @@ mod tests {
     struct ResearchWebFetchFixture {
         resolve_calls: AtomicUsize,
         get_calls: AtomicUsize,
+    }
+
+    #[derive(Debug)]
+    struct AlphaWebFixture {
+        identity: String,
+        source_a: &'static str,
+        source_b: &'static str,
+        evidence_a: &'static str,
+        evidence_b: &'static str,
+        search_calls: AtomicUsize,
+        resolve_calls: AtomicUsize,
+        get_calls: AtomicUsize,
+        queries: StdMutex<Vec<String>>,
+        fetched: StdMutex<Vec<String>>,
+    }
+
+    impl AlphaWebFixture {
+        fn new(case: AlphaCheckpointCase) -> Self {
+            Self {
+                identity: format!("internal-alpha-web-{}-v1", case.id),
+                source_a: case.source_a,
+                source_b: case.source_b,
+                evidence_a: case.evidence_a,
+                evidence_b: case.evidence_b,
+                search_calls: AtomicUsize::new(0),
+                resolve_calls: AtomicUsize::new(0),
+                get_calls: AtomicUsize::new(0),
+                queries: StdMutex::new(Vec::new()),
+                fetched: StdMutex::new(Vec::new()),
+            }
+        }
     }
 
     #[derive(Debug, Default)]
@@ -2198,6 +2230,110 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WebSearchNetwork for AlphaWebFixture {
+        fn identity(&self) -> String {
+            self.identity.clone()
+        }
+
+        async fn search(
+            &self,
+            query: &str,
+            max_results: usize,
+            _timeout: Duration,
+        ) -> Result<WebSearchHttpResponse, WebSearchNetworkError> {
+            assert!(!query.trim().is_empty());
+            assert!(max_results > 0);
+            self.search_calls.fetch_add(1, Ordering::SeqCst);
+            self.queries
+                .lock()
+                .expect("alpha query lock")
+                .push(query.to_owned());
+            let body = serde_json::to_vec(&json!({
+                "query": query,
+                "results": [
+                    {
+                        "title": "Primary implementation contract",
+                        "url": self.source_a,
+                        "content": "Primary source; fetch the original document.",
+                        "score": 0.97
+                    },
+                    {
+                        "title": "Independent operational contract",
+                        "url": self.source_b,
+                        "content": "Independent source; cross-check the requirement.",
+                        "score": 0.93
+                    }
+                ],
+                "response_time": "0.01",
+                "request_id": format!("alpha-{}", self.identity),
+                "usage": {"credits": 1}
+            }))
+            .expect("alpha search JSON");
+            Ok(WebSearchHttpResponse::new(
+                200,
+                std::collections::BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "application/json".to_owned(),
+                )]),
+                body,
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WebFetchNetwork for AlphaWebFixture {
+        fn identity(&self) -> &str {
+            &self.identity
+        }
+
+        async fn resolve(
+            &self,
+            host: &str,
+            port: u16,
+        ) -> Result<Vec<std::net::SocketAddr>, WebFetchNetworkError> {
+            assert!(matches!(host, "example.com" | "example.org"));
+            assert_eq!(port, 443);
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            let address = if host == "example.com" {
+                "93.184.216.34:443"
+            } else {
+                "93.184.216.35:443"
+            };
+            Ok(vec![address.parse().expect("public alpha fixture address")])
+        }
+
+        async fn get(
+            &self,
+            url: &reqwest::Url,
+            pinned_addresses: &[std::net::SocketAddr],
+            _timeout: Duration,
+        ) -> Result<WebFetchHttpResponse, WebFetchNetworkError> {
+            assert_eq!(pinned_addresses.len(), 1);
+            let evidence = match url.as_str() {
+                candidate if candidate == self.source_a => self.evidence_a,
+                candidate if candidate == self.source_b => self.evidence_b,
+                other => panic!("unexpected alpha source {other}"),
+            };
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            self.fetched
+                .lock()
+                .expect("alpha fetched lock")
+                .push(url.as_str().to_owned());
+            Ok(WebFetchHttpResponse::new(
+                200,
+                std::collections::BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "text/html; charset=utf-8".to_owned(),
+                )]),
+                format!(
+                    "<html><head><title>Alpha evidence</title></head><body><main>{evidence}</main></body></html>"
+                )
+                .into_bytes(),
+            ))
+        }
+    }
+
     struct MockDeepSeekServer {
         root: String,
         requests: Arc<StdMutex<Vec<CapturedRequest>>>,
@@ -2206,6 +2342,13 @@ mod tests {
 
     impl MockDeepSeekServer {
         async fn start(responses: Vec<Value>) -> Self {
+            Self::start_with_accept_timeout(responses, Duration::from_secs(5)).await
+        }
+
+        async fn start_with_accept_timeout(
+            responses: Vec<Value>,
+            accept_timeout: Duration,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind DeepSeek fixture");
@@ -2214,11 +2357,10 @@ mod tests {
             let captured = requests.clone();
             let task = tokio::spawn(async move {
                 for response in responses {
-                    let (mut socket, _) =
-                        tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                            .await
-                            .expect("fixture request timeout")
-                            .expect("accept fixture request");
+                    let (mut socket, _) = tokio::time::timeout(accept_timeout, listener.accept())
+                        .await
+                        .expect("fixture request timeout")
+                        .expect("accept fixture request");
                     let request = read_request(&mut socket).await;
                     captured.lock().expect("capture lock").push(request);
                     let body = serde_json::to_vec(&response).expect("serialize fixture response");
@@ -2631,6 +2773,227 @@ mod tests {
             }]
         }))
         .expect("caller application probe task")
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct AlphaCheckpointCase {
+        id: &'static str,
+        query: &'static str,
+        marker: &'static str,
+        source_a: &'static str,
+        source_b: &'static str,
+        evidence_a: &'static str,
+        evidence_b: &'static str,
+        shape: AlphaServerShape,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum AlphaServerShape {
+        Constant,
+        Function,
+        Mapping,
+    }
+
+    const ALPHA_CHECKPOINT_CASES: [AlphaCheckpointCase; 3] = [
+        AlphaCheckpointCase {
+            id: "constant",
+            query: "alpha constant deployment contract",
+            marker: "production-ready alpha-constant-v1",
+            source_a: "https://example.com/alpha-constant-contract",
+            source_b: "https://example.org/alpha-constant-operations",
+            evidence_a: "The exact release marker is production-ready alpha-constant-v1.",
+            evidence_b: "The local HTTP root response must include production-ready alpha-constant-v1 and the Host lease.",
+            shape: AlphaServerShape::Constant,
+        },
+        AlphaCheckpointCase {
+            id: "function",
+            query: "alpha function deployment contract",
+            marker: "production-ready alpha-function-v2",
+            source_a: "https://example.com/alpha-function-contract",
+            source_b: "https://example.org/alpha-function-operations",
+            evidence_a: "The exact release marker is production-ready alpha-function-v2.",
+            evidence_b: "The local HTTP root response must include production-ready alpha-function-v2 and the Host lease.",
+            shape: AlphaServerShape::Function,
+        },
+        AlphaCheckpointCase {
+            id: "mapping",
+            query: "alpha mapping deployment contract",
+            marker: "production-ready alpha-mapping-v3",
+            source_a: "https://example.com/alpha-mapping-contract",
+            source_b: "https://example.org/alpha-mapping-operations",
+            evidence_a: "The exact release marker is production-ready alpha-mapping-v3.",
+            evidence_b: "The local HTTP root response must include production-ready alpha-mapping-v3 and the Host lease.",
+            shape: AlphaServerShape::Mapping,
+        },
+    ];
+
+    const ALPHA_BUILD_AND_SERVE: &str = r#"import os
+import sys
+
+server_path = os.path.abspath(sys.argv[1])
+lease = sys.argv[2]
+with open(server_path, "r", encoding="utf-8") as source_file:
+    compiled = compile(source_file.read(), server_path, "exec")
+sys.argv = [server_path, lease]
+exec(compiled, {"__name__": "__main__", "__file__": server_path})
+"#;
+
+    fn alpha_server_script(case: AlphaCheckpointCase, marker: &str) -> String {
+        let marker_definition = match case.shape {
+            AlphaServerShape::Constant => {
+                format!("MARKER = b\"{marker}\"\n\ndef response_marker():\n    return MARKER\n")
+            }
+            AlphaServerShape::Function => {
+                format!("def response_marker():\n    return b\"{marker}\"\n")
+            }
+            AlphaServerShape::Mapping => format!(
+                "RELEASE = {{\"marker\": b\"{marker}\"}}\n\ndef response_marker():\n    return RELEASE[\"marker\"]\n"
+            ),
+        };
+        format!(
+            r#"import http.server
+import os
+import sys
+
+{marker_definition}
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            body = b"healthy"
+        else:
+            body = response_marker() + b" " + sys.argv[-1].encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer((os.environ["HOST"], int(os.environ["PORT"])), Handler)
+server.serve_forever()
+"#
+        )
+    }
+
+    fn alpha_checkpoint_task(case: AlphaCheckpointCase) -> TaskDefinition {
+        serde_json::from_value(json!({
+            "objective": format!(
+                "搜索 `{}`，从 discovery 结果读取并交叉核验两个独立公开来源；引用两个原始 URL；然后只通过一个 isolated Writer 修改 server.py，使本地应用满足来源中的 exact release marker；等待 Writer 的确定性应用验证、集成到 root 后再提出完成",
+                case.query
+            ),
+            "constraints": [
+                "必须按 web_search -> 两次 web_fetch -> agent(isolated_write) 顺序完成",
+                "Writer 只允许修改 server.py，root 不得直接写入",
+                "完成消息必须包含两个已读取原始来源 URL"
+            ],
+            "non_goals": ["不使用浏览器、登录、视觉、外部副作用或第二运行时"],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": format!("alpha-{}-application", case.id),
+                "description": "Writer 与集成后 root 的 local application 均返回来源冻结的 release marker",
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "application_probe",
+                    "parameters": {
+                        "program": "/usr/bin/python3",
+                        "args": ["-I", "-B", "build_and_serve.py", "server.py", "{dse_probe_lease}"],
+                        "health_path": "/health",
+                        "assertion_path": "/",
+                        "expected_status": 200,
+                        "body_contains": case.marker,
+                        "startup_timeout_ms": 1000,
+                        "health_timeout_ms": 3000,
+                        "overall_timeout_ms": 5000,
+                        "max_log_bytes": 4096,
+                        "max_response_bytes": 4096
+                    },
+                    "plan": {"steps": [{
+                        "id": "caller-guess",
+                        "program": "false",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1
+                    }]}
+                }
+            }]
+        }))
+        .expect("internal Alpha task contract")
+    }
+
+    fn alpha_checkpoint_responses(case: AlphaCheckpointCase, expected_script: &str) -> Vec<Value> {
+        vec![
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-search", case.id),
+                "web_search",
+                json!({"query": case.query, "max_results": 5}),
+                80,
+                8,
+            ),
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-fetch-a", case.id),
+                "web_fetch",
+                json!({"url": case.source_a, "max_chars": 4096}),
+                100,
+                8,
+            ),
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-fetch-b", case.id),
+                "web_fetch",
+                json!({"url": case.source_b, "max_chars": 4096}),
+                120,
+                8,
+            ),
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-writer", case.id),
+                AGENT_TOOL_NAME,
+                json!({
+                    "prompt": format!(
+                        "把 server.py 修复为来源共同要求的 exact marker `{}`，保留 Host lease 回显并等待 application_probe 通过",
+                        case.marker
+                    ),
+                    "type": "implementer",
+                    "workspace_access": "isolated_write",
+                    "allowed_paths": ["server.py"],
+                    "fork_context": true,
+                    "allowed_tools": ["apply_patch"],
+                    "max_steps": 2,
+                    "max_depth": 0,
+                    "wall_time_secs": 20,
+                    "expected_artifact": "一个通过 application_probe 并由 Host seal 的 server.py commit"
+                }),
+                140,
+                12,
+            ),
+            tool_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!("alpha-{}-patch", case.id),
+                "apply_patch",
+                json!({"changes": [{"path": "server.py", "content": expected_script}]}),
+                160,
+                12,
+            ),
+            thinking_response(
+                DEEPSEEK_PRO_MODEL,
+                "Writer 已完成代码修改，application_probe 可以验证最新 revision。",
+                170,
+                12,
+            ),
+            thinking_response(
+                DEEPSEEK_PRO_MODEL,
+                &format!(
+                    "已完成 Writer 收敛和集成，并交叉核验 [来源 A]({}) 与 [来源 B]({})。",
+                    case.source_a, case.source_b
+                ),
+                190,
+                16,
+            ),
+        ]
     }
 
     fn sigkill_application_probe_task(marker: &Path) -> TaskDefinition {
@@ -4293,7 +4656,15 @@ mod tests {
     }
 
     async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
-        tokio::time::timeout(Duration::from_secs(15), async {
+        wait_terminal_with_timeout(store, run_id, Duration::from_secs(15)).await
+    }
+
+    async fn wait_terminal_with_timeout(
+        store: &dyn RunStore,
+        run_id: &RunId,
+        timeout: Duration,
+    ) -> RunReplay {
+        tokio::time::timeout(timeout, async {
             loop {
                 let replay = store
                     .load(run_id)
@@ -4905,6 +5276,454 @@ mod tests {
             "SQLite reopen must replay committed search/fetch outcomes without network"
         );
         assert_eq!(accepted.await.expect("quiet loopback"), 0);
+    }
+
+    async fn run_internal_alpha_checkpoint_case(case: AlphaCheckpointCase) {
+        let started = Instant::now();
+        let temp = tempfile::tempdir().expect("internal Alpha root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("internal Alpha workspace");
+        let initial_script = alpha_server_script(case, &format!("draft-{}", case.id));
+        let expected_script = alpha_server_script(case, case.marker);
+        std::fs::write(workspace.join("server.py"), initial_script)
+            .expect("internal Alpha initial application");
+        std::fs::write(workspace.join("build_and_serve.py"), ALPHA_BUILD_AND_SERVE)
+            .expect("internal Alpha deterministic build runner");
+        initialize_git_fixture(&workspace);
+        let git = |arguments: &[&str]| {
+            let output = ProcessCommand::new("git")
+                .args(arguments)
+                .current_dir(&workspace)
+                .output()
+                .expect("internal Alpha git command");
+            assert!(
+                output.status.success(),
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("git output UTF-8")
+                .trim()
+                .to_owned()
+        };
+        let baseline_head = git(&["rev-parse", "HEAD"]);
+
+        let fixture = Arc::new(AlphaWebFixture::new(case));
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_web_search_network(fixture.clone())
+            .with_web_fetch_network(fixture.clone());
+        let server = MockDeepSeekServer::start_with_accept_timeout(
+            alpha_checkpoint_responses(case, &expected_script),
+            Duration::from_secs(20),
+        )
+        .await;
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone())
+                .with_composition_build_revision("internal-alpha-checkpoint-v1"),
+        )
+        .expect("internal Alpha production app");
+        let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
+        command.task = alpha_checkpoint_task(case);
+        command.max_output_tokens = Some(512);
+        command.max_api_requests = Some(NonZeroU32::new(7).expect("non-zero request limit"));
+        command.tool_policy.allowed = Some(vec![
+            "web_search".to_owned(),
+            "web_fetch".to_owned(),
+            AGENT_TOOL_NAME.to_owned(),
+            "apply_patch".to_owned(),
+        ]);
+        command.limits = RunLimits {
+            max_turns: 7,
+            max_model_requests: 7,
+            max_model_retries: 0,
+            max_tool_calls: 5,
+            max_depth: 1,
+            max_concurrent_children: 1,
+            model_event_idle_ms: Some(10_000),
+            wall_time_ms: Some(30_000),
+        };
+        command.controls.write_execution_mode = WriteExecutionMode::IsolatedWriter;
+        let run = run_result(
+            app.execute(envelope(
+                &format!("internal-alpha-{}-start", case.id),
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay =
+            wait_terminal_with_timeout(app.store.as_ref(), &run.run_id, Duration::from_secs(45))
+                .await;
+        let requests = server.finish().await;
+
+        let terminal_message = match replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal)
+        {
+            Some(TerminalState::Completed { message, .. }) => message,
+            other => panic!("internal Alpha {} did not complete: {other:?}", case.id),
+        };
+        assert!(terminal_message.contains(case.source_a));
+        assert!(terminal_message.contains(case.source_b));
+        assert_eq!(requests.len(), 7, "one root/Writer production model loop");
+        assert_eq!(fixture.search_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.resolve_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.get_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            fixture.queries.lock().expect("alpha query lock").as_slice(),
+            &[case.query.to_owned()]
+        );
+        assert_eq!(
+            fixture
+                .fetched
+                .lock()
+                .expect("alpha fetched lock")
+                .as_slice(),
+            &[case.source_a.to_owned(), case.source_b.to_owned()]
+        );
+
+        let tool_names = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool_names,
+            vec!["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME]
+        );
+        let writer_task = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::AgentTaskPrepared { task } => Some(task.as_ref().clone()),
+                _ => None,
+            })
+            .expect("one isolated Writer task");
+        assert_eq!(
+            writer_task.workspace.access,
+            AgentWorkspaceAccess::IsolatedWrite
+        );
+        assert_eq!(writer_task.workspace.allowed_paths, vec!["server.py"]);
+
+        let position = |predicate: fn(&RuntimeEventKind) -> bool| {
+            replay
+                .events
+                .iter()
+                .position(|stored| predicate(&stored.event))
+                .expect("internal Alpha lifecycle event")
+        };
+        let seal = position(|event| matches!(event, RuntimeEventKind::AgentSealCommitted { .. }));
+        let integrated =
+            position(|event| matches!(event, RuntimeEventKind::AgentIntegrationCommitted { .. }));
+        let cleaned =
+            position(|event| matches!(event, RuntimeEventKind::AgentCleanupCommitted { .. }));
+        let verified = position(|event| {
+            matches!(
+                event,
+                RuntimeEventKind::HostVerificationCommitted {
+                    receipt: Some(_),
+                    ..
+                }
+            )
+        });
+        let terminal = position(|event| matches!(event, RuntimeEventKind::Terminal { .. }));
+        assert!(
+            seal < integrated && integrated < verified && verified < cleaned && cleaned < terminal,
+            "seal={seal} integrated={integrated} cleaned={cleaned} verified={verified} terminal={terminal}"
+        );
+        let root_receipt = replay
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event {
+                RuntimeEventKind::HostVerificationCommitted {
+                    outcome,
+                    receipt: Some(receipt),
+                    ..
+                } => Some((outcome.as_ref(), receipt.as_ref())),
+                _ => None,
+            })
+            .expect("latest root application receipt");
+        assert!(root_receipt.0.is_success(), "{}", root_receipt.0.content);
+        assert_eq!(
+            root_receipt.1.workspace_state.revision,
+            replay.snapshot.workspace_state.revision
+        );
+
+        let child = app
+            .store
+            .load(&writer_task.child_run_id)
+            .await
+            .expect("load Writer child")
+            .expect("Writer child exists");
+        assert!(matches!(
+            child.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        assert_eq!(
+            child
+                .events
+                .iter()
+                .filter(|stored| matches!(
+                    &stored.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. } if name == "apply_patch"
+                ))
+                .count(),
+            1
+        );
+        assert!(child.events.iter().any(|stored| matches!(
+            &stored.event,
+            RuntimeEventKind::HostVerificationCommitted {
+                outcome,
+                receipt: Some(_),
+                ..
+            } if outcome.is_success()
+        )));
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("server.py")).expect("integrated application"),
+            expected_script
+        );
+        assert_ne!(git(&["rev-parse", "HEAD"]), baseline_head);
+        assert!(git(&["status", "--short"]).is_empty());
+        assert_eq!(
+            git(&["worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1
+        );
+        assert!(
+            git(&[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/dse/writer"
+            ])
+            .is_empty()
+        );
+        let frozen_events = replay.events.clone();
+        let counters_before_reopen = (
+            fixture.search_calls.load(Ordering::SeqCst),
+            fixture.resolve_calls.load(Ordering::SeqCst),
+            fixture.get_calls.load(Ordering::SeqCst),
+        );
+        let accounting = replay.snapshot.accounting.clone();
+        drop(app);
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false)
+                .with_tool_config(tools)
+                .with_composition_build_revision("internal-alpha-checkpoint-v1"),
+        )
+        .expect("credential-free internal Alpha reopen");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    &format!("internal-alpha-{}-resume", case.id),
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                        expected_workspace: Some(
+                            workspace
+                                .canonicalize()
+                                .expect("canonical Alpha workspace")
+                                .display()
+                                .to_string(),
+                        ),
+                    },
+                ))
+                .await,
+        );
+        assert!(matches!(
+            resumed.terminal,
+            Some(TerminalState::Completed { .. })
+        ));
+        let events = reopened
+            .execute(envelope(
+                &format!("internal-alpha-{}-events", case.id),
+                RunCommand::Events {
+                    run_id: run.run_id,
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            events.result,
+            RunCommandResult::Events { events, .. } if events == frozen_events
+        ));
+        assert_eq!(
+            (
+                fixture.search_calls.load(Ordering::SeqCst),
+                fixture.resolve_calls.load(Ordering::SeqCst),
+                fixture.get_calls.load(Ordering::SeqCst),
+            ),
+            counters_before_reopen,
+            "terminal SQLite reopen must replay without Web, model, verifier, or Writer side effects"
+        );
+        assert_eq!(accepted.await.expect("quiet internal Alpha loopback"), 0);
+        println!(
+            "INTERNAL_ALPHA case={} verified=true false_success=0 citations=2 writer_receipts=2 model_requests={} input_tokens={} output_tokens={} wall_ms={} rework=0",
+            case.id,
+            accounting.total_started(),
+            accounting.usage.input_tokens,
+            accounting.usage.output_tokens,
+            started.elapsed().as_millis(),
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_alpha_constant_cross_code_web_writer_recovery_task() {
+        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[0]).await;
+    }
+
+    #[tokio::test]
+    async fn internal_alpha_function_cross_code_web_writer_recovery_task() {
+        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[1]).await;
+    }
+
+    #[tokio::test]
+    async fn internal_alpha_mapping_cross_code_web_writer_recovery_task() {
+        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "one official internal Alpha dogfood; one run, maximum_reruns=0, ceiling $0.10"]
+    async fn internal_alpha_official_deepseek_dogfood() {
+        let api_key = std::env::var("DEEPSEEK_API_KEY")
+            .expect("internal Alpha dogfood requires DEEPSEEK_API_KEY");
+        let case = ALPHA_CHECKPOINT_CASES[0];
+        let temp = tempfile::tempdir().expect("official internal Alpha root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("official Alpha workspace");
+        std::fs::write(
+            workspace.join("server.py"),
+            alpha_server_script(case, "draft-official-alpha"),
+        )
+        .expect("official Alpha initial application");
+        std::fs::write(workspace.join("build_and_serve.py"), ALPHA_BUILD_AND_SERVE)
+            .expect("official Alpha deterministic build runner");
+        initialize_git_fixture(&workspace);
+
+        let fixture = Arc::new(AlphaWebFixture::new(case));
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_web_search_network(fixture.clone())
+            .with_web_fetch_network(fixture.clone());
+        let app = AgentApplication::production(
+            ProductionApplicationConfig::official()
+                .with_state_db_path(&state_path)
+                .with_tool_config(tools)
+                .with_composition_build_revision("internal-alpha-official-dogfood-v1")
+                .with_default_max_api_requests(NonZeroU32::new(8).unwrap())
+                .with_api_key(api_key)
+                .expect("bind official DeepSeek credential"),
+        )
+        .expect("official internal Alpha app");
+        let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
+        command.task = alpha_checkpoint_task(case);
+        command.reasoning_effort = ReasoningEffort::High;
+        command.max_output_tokens = Some(2_048);
+        command.max_api_requests = Some(NonZeroU32::new(8).unwrap());
+        command.tool_policy.allowed = Some(vec![
+            "web_search".to_owned(),
+            "web_fetch".to_owned(),
+            AGENT_TOOL_NAME.to_owned(),
+            "apply_patch".to_owned(),
+        ]);
+        command.limits = RunLimits {
+            max_turns: 8,
+            max_model_requests: 8,
+            max_model_retries: 0,
+            max_tool_calls: 6,
+            max_depth: 1,
+            max_concurrent_children: 1,
+            model_event_idle_ms: Some(120_000),
+            wall_time_ms: Some(300_000),
+        };
+        command.controls.write_execution_mode = WriteExecutionMode::IsolatedWriter;
+        let started = Instant::now();
+        let run = run_result(
+            app.execute(envelope(
+                "internal-alpha-official-dogfood-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = tokio::time::timeout(Duration::from_secs(300), async {
+            loop {
+                let replay = app
+                    .store
+                    .load(&run.run_id)
+                    .await
+                    .expect("load official Alpha")
+                    .expect("official Alpha exists");
+                if replay.snapshot.terminal.is_some() {
+                    break replay;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("official Alpha reaches bounded terminal");
+        let accounting = &replay.snapshot.accounting;
+        let terminal = replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal);
+        println!(
+            "INTERNAL_ALPHA_OFFICIAL terminal={terminal:?} physical_requests={} runtime_retries={} usage_complete={} billing_unknown={} input_tokens={} output_tokens={} cost_nanousd={} wall_ms={}",
+            accounting.total_started(),
+            accounting.runtime_retries,
+            accounting.usage_complete,
+            accounting.billing_unknown,
+            accounting.usage.input_tokens,
+            accounting.usage.output_tokens,
+            accounting.cost_nanousd,
+            started.elapsed().as_millis(),
+        );
+        let message = match terminal {
+            Some(TerminalState::Completed { message, .. }) => message,
+            other => panic!("official internal Alpha did not complete: {other:?}"),
+        };
+        assert!(message.contains(case.source_a));
+        assert!(message.contains(case.source_b));
+        assert_eq!(fixture.search_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.get_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter_map(|stored| match &stored.event {
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME]
+        );
+        assert!(
+            std::fs::read_to_string(workspace.join("server.py"))
+                .expect("official integrated application")
+                .contains(case.marker)
+        );
+        assert_eq!(accounting.runtime_retries, 0);
+        assert!(accounting.total_started() <= 8);
+        assert!(accounting.total_in_flight() == 0);
+        if accounting.usage_complete && !accounting.billing_unknown {
+            assert!(
+                accounting.cost_nanousd <= 100_000_000,
+                "official internal Alpha exceeded the $0.10 ceiling"
+            );
+        }
     }
 
     #[tokio::test]

@@ -384,6 +384,8 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 绑定 physical request budget、model accounting 和 execution fingerprint；
 - 解析 Host-only `ApplicationProbe` TaskContract，并在冷重开进入 Runtime 前按已持久化 lease
   回收 in-flight probe process tree；
+- 以同一 root production composition 承载 search/fetch、isolated Writer、Host compile/app probe、
+  seal/integrate/cleanup 与 terminal SQLite replay；Internal Alpha 的三个独立 task 已闭合该水平链；
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
@@ -569,7 +571,9 @@ header、Cookie、auth、body、WebSocket 或 TLS 配置。startup/health/overal
 stdout/stderr 与 teardown 都有硬边界，response/log 统一标记 `external_untrusted`。正常成功、
 typed failure、cancel 和 timeout 都终止 owned process group/Job 并 reap；revision before/after
 不一致时既有 artifact 变为 stale，不能 seal receipt。Agent/FullAccess root 可按现有 sandbox
-执行；Ask 与 isolated Writer 的 network-denied policy 在 spawn 前拒绝。
+执行；Ask 与普通 no-network actor 在 spawn 前拒绝。isolated Writer 只在这个 Host-only verifier path
+派生 `host_loopback_only` sandbox：macOS 仅允许 `localhost:*` bind/inbound、没有 network-outbound；
+Linux 保持 isolated network namespace。该例外不进入 model-visible shell/Web authority。
 
 lease 已随 `HostVerificationPrepared` 的 frozen verifier 持久化，不增加 PID/port sidecar。
 进程级 `SIGKILL` 后，`AgentApplication` reopen 只按 exact argv marker 扫描并回收 owned process
@@ -711,7 +715,9 @@ model-visible Prompt delta=`0`；official DeepSeek requests=`0`、credential rea
 canonical source discovery + task-relevant semantic observation，并将
 `crates/app` 的 root Agent 从 broad full-access workaround 改为 workspace-write + Host-controlled network。
 current product 已能完成 deterministic unknown-source research vertical，但仍没有 visual observation，
-也尚未用跨 code/app/Web/Writer/recovery 的内部 Alpha task set 证明可替代完整工程 Agent。
+并已用三个跨 code/app/Web/Writer/recovery 的 Internal Alpha task 证明 deterministic production integration；
+唯一 official DeepSeek dogfood 因 canary 的 512-token output cap fail closed，尚未证明 official vertical
+success，更不能据此宣称可替代完整工程 Agent。
 
 长期不变量继续由代码与 authority 强制：public URL SSRF/egress、isolated profile、opaque ref、secret
 Host 托管与脱敏、fresh observation、external-untrusted、exact authorization、started/outcome/
@@ -728,8 +734,8 @@ SHA-256；download 只进入 session quarantine，受数量、大小、deadline�
 原子创建进入 workspace。登录、上传、下载、promotion、clear 均复用既有 started/outcome/recovery；
 started-without-outcome reopen 为 `RecoveryRequired`，committed reopen 不访问网络或文件系统。
 
-当前剩余 capability gap 是内部 Alpha integration/dogfood、受确认的 destructive/financial/publish 动作与
-selective visual。个人 Chrome、任意 selector/coordinate/JS、无界网络、
+当前剩余 capability gap 是 official DeepSeek Alpha vertical 的成功验证、受确认的
+destructive/financial/publish 动作与 selective visual。个人 Chrome、任意 selector/coordinate/JS、无界网络、
 secret-to-model 和 unknown-side-effect replay 继续 fail closed。
 
 M44 已删除没有 executor 的 TUI/config

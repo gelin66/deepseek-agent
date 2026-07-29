@@ -252,6 +252,13 @@
   读取两个独立原来源并给出 URL citation；semantic browser 以 task-cue/role/interaction priority 取代机械
   first-N，返回 quality metrics 与 action diff。真实 caller/SQLite reopen/recovery 和 pinned Chrome vertical
   已闭合；focused 与唯一一次 full gate 均 exit=`0`，形成 clean reviewable checkpoint。
+- Canonical Web Search 后的 Internal Alpha Integration Checkpoint 已完成 deterministic keep：三个独立
+  Python application shape 都经同一 root `web_search -> 2x web_fetch -> isolated Writer -> compile/start ->
+  Writer receipt -> seal/integrate -> root latest-revision receipt -> cleanup -> SQLite reopen` 生产链闭合，
+  verified=`3/3`、false success=`0`、reopen reexecution=`0`。切片同时删除 isolated Writer 对 Host-owned
+  loopback verifier 的错误 blanket deny，只开放 sandbox 内 `localhost:*` bind/inbound，external outbound
+  仍为 0。唯一 official DeepSeek dogfood 以 4 requests、0 retry、13,141/1,145 tokens、约 `$0.00373`
+  到达 `Failed(OutputLimit)`；没有重跑，因此不声明 official vertical success 或通用生产力提升。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -7586,3 +7593,53 @@ exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。最终 revision 的 canonical
 `./scripts/dev-dse.sh full` 只调用一次且 exit=`0`，覆盖 authority/public、fmt、workspace all-features
 check/strict Clippy、全 workspace tests 与 doctests；同一 revision 没有第二次 full。clean reviewable
 checkpoint 随本条形成；没有启动内部 Alpha 或下一 capability cluster。
+
+### 40.17 Canonical Web Search 后 Internal Alpha Integration Checkpoint（已完成）
+
+#### 问题、owner、旧路与 cutover
+
+此前 search、fetch、Writer、ApplicationProbe、integration 与 replay 各自有纵向测试，但没有一个真实 root
+task family 证明它们能在同一 production run 中收敛；组件分别绿色不能冒充工程闭环。primary owner=
+`crates/app`，唯一 evidence-proven production blocker 位于 `crates/tools`：isolated Writer 的普通 no-egress
+sandbox flag 被重复当成 Host-only loopback verifier 的 deny，导致 Writer 已成功修改代码却必然在
+`application_probe_network_denied` 结束，永远不能 seal/integrate。
+
+cutover 保留 isolated Writer 的 worktree-only filesystem 与 external network deny，只为 Host 冻结 program/
+argv/cwd/bounds、128-bit lease、随机 IPv4 loopback origin 的 `application_probe` 派生
+`host_loopback_only` sandbox treatment。macOS Seatbelt 仅允许 `network-bind/network-inbound` 的
+`localhost:*`，不出现 `network-outbound`；Linux 继续使用 isolated network namespace。普通 no-network
+actor 仍在 spawn 前拒绝。旧的“external egress=false 等同 Host loopback verifier=false”重复门已删除，
+没有放开 Writer 的 Web/shell network，也没有第二 Runtime/Store/Provider、UI、视觉、登录或新依赖。
+
+#### Deterministic task family、recovery 与实际指标
+
+三个独立 task 分别修复 constant/function/mapping 三种 `server.py` code shape。每个 root 都必须从唯一
+`web_search` 发现两个来源、用 `web_fetch` 读取原文并引用 2/2 URL，再把唯一 `server.py` 写权限交给
+isolated Writer。Host runner 先用 Python `compile()` 做确定性 build，再启动 local HTTP app；Writer
+receipt 通过后依次提交 seal、CAS integration，root 只在 integrated latest revision 的第二张 receipt 后
+完成，最后清理 writer branch/worktree。每个 terminal cold SQLite reopen 的 model/search/DNS/fetch/
+build/probe/Writer reexecution 均为 0；既有 search started ambiguity、ApplicationProbe SIGKILL recovery 与
+Writer checkpoint conformance 随 focused gate 一并保持绿色。
+
+deterministic actual=`3/3 verified`、false success=`0`、citations=`6/6`、Writer/root receipts=`6/6`、
+rework=`0`。每个 fixture 恰为 7 model turns、960 input/76 output tokens；加入 compile/build 后三项并行
+suite wall=`16.52s`，单项观测约 `16.396–16.509s`。root 文件 byte-exact、HEAD 前进、Git clean、writer
+refs/worktrees 清零；
+terminal reopen event stream byte-exact。测试 fixture 不是官方模型或 live Tavily，不外推成功率/Token/时间。
+
+唯一 official DeepSeek dogfood 按 one run、maximum reruns=`0`、hard requests=`8`、runtime retries=`0`、
+known ceiling `$0.10` 执行；实际在 4 个请求后因人为 512-token 单回合 cap 到达
+`Failed(OutputLimit)`，wall=`23.636s`、usage complete=`true`、billing unknown=`false`、input/output=
+`13,141/1,145`、cost=`3,730,821 nanousd`（约 `$0.00373`）。没有第二次付费请求；该结果证明真实 wire/
+accounting fail closed，但没有证明 official Alpha vertical usability。future canary contract 已改为
+production-representative 2,048 output tokens，仍受同一 8-request/$0.10/0-rerun bounds；本 checkpoint 不把
+未执行的新 treatment 写成成功。`TAVILY_API_KEY` unavailable，故 live provider canary 仍未执行。
+
+production Rust 只增加 Host loopback sandbox distinction，app 的大部分 delta 是 task-family/canary test；
+protocol/state、DeepSeek wire/model-visible Prompt、AgentRuntime、RuntimeEvent、RunStore、catalog 与依赖均为
+delta 0。Rust total delta=`+938/-23`，其中 app `#[cfg(test)]` module=`+825/-6`；docs=`+127/-4`，无 Cargo
+delta。bounded authority actual=`17,636` bootstrap、tools route=`2,825/4,409`、fixed boundary=`25/25`。
+focused gate exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime=`88/88`、
+app=`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。
+最终 revision 的 canonical full gate invocation=`1`、exit=`0`；同一 revision 没有第二次 full。clean
+reviewable checkpoint 随本条形成，不 push；没有启动 destructive/publish、visual 或下一 capability cluster。

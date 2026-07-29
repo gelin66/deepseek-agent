@@ -64,7 +64,7 @@ pub fn is_available() -> bool {
 pub(crate) fn prepare_isolated_writer_protected_paths(
     policy: &crate::sandbox::SandboxPolicy,
 ) -> io::Result<()> {
-    let crate::sandbox::SandboxPolicy::IsolatedWriter { workspace } = policy else {
+    let crate::sandbox::SandboxPolicy::IsolatedWriter { workspace, .. } = policy else {
         return Ok(());
     };
     let workspace = workspace.canonicalize().map_err(|error| {

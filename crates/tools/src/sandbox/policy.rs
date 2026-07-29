@@ -83,7 +83,16 @@ pub enum SandboxPolicy {
     IsolatedWriter {
         /// Canonical child worktree root.
         workspace: PathBuf,
+        /// Host-owned verifier exception for binding and serving only on
+        /// loopback. This does not grant external network access and is never
+        /// used by model-visible shell or Web tools.
+        #[serde(default, skip_serializing_if = "is_false")]
+        host_loopback_only: bool,
     },
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for SandboxPolicy {
@@ -104,6 +113,21 @@ impl SandboxPolicy {
     pub fn isolated_writer(workspace: impl Into<PathBuf>) -> Self {
         Self::IsolatedWriter {
             workspace: workspace.into(),
+            host_loopback_only: false,
+        }
+    }
+
+    /// Derive the sole network exception admitted for a Host-owned local
+    /// application verifier. External egress remains denied.
+    #[must_use]
+    pub(crate) fn for_host_loopback_probe(&self) -> Option<Self> {
+        match self {
+            Self::IsolatedWriter { workspace, .. } => Some(Self::IsolatedWriter {
+                workspace: workspace.clone(),
+                host_loopback_only: true,
+            }),
+            policy if policy.has_network_access() => Some(policy.clone()),
+            _ => None,
         }
     }
 
@@ -151,6 +175,19 @@ impl SandboxPolicy {
         }
     }
 
+    /// Whether this policy admits only Host-owned loopback bind/inbound
+    /// traffic while continuing to deny external network access.
+    #[must_use]
+    pub(crate) fn has_host_loopback_access(&self) -> bool {
+        matches!(
+            self,
+            Self::IsolatedWriter {
+                host_loopback_only: true,
+                ..
+            }
+        )
+    }
+
     /// Whether local execution must fail when no enforcing sandbox exists.
     #[must_use]
     pub fn requires_enforced_sandbox(&self) -> bool {
@@ -188,7 +225,7 @@ impl SandboxPolicy {
             | SandboxPolicy::ExternalSandbox { .. }
             | SandboxPolicy::ReadOnly => vec![],
 
-            SandboxPolicy::IsolatedWriter { workspace } => {
+            SandboxPolicy::IsolatedWriter { workspace, .. } => {
                 let root = workspace
                     .canonicalize()
                     .unwrap_or_else(|_| workspace.clone());
@@ -552,6 +589,28 @@ mod tests {
                 forbidden.display()
             );
         }
+    }
+
+    #[test]
+    fn host_loopback_probe_is_distinct_but_preserves_default_writer_identity() {
+        let policy = SandboxPolicy::isolated_writer("/workspace/writer");
+        let ordinary = serde_json::to_value(&policy).expect("serialize writer policy");
+        assert!(ordinary.get("host_loopback_only").is_none());
+        assert!(!policy.has_host_loopback_access());
+
+        let probe = policy
+            .for_host_loopback_probe()
+            .expect("derive Host loopback policy");
+        assert_eq!(
+            serde_json::to_value(&probe).expect("serialize probe policy")["host_loopback_only"],
+            true
+        );
+        assert!(probe.has_host_loopback_access());
+        assert!(!probe.has_network_access());
+        assert_eq!(
+            probe.get_writable_roots(Path::new("/workspace/writer")),
+            policy.get_writable_roots(Path::new("/workspace/writer"))
+        );
     }
 
     #[test]

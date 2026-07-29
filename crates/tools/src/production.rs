@@ -499,7 +499,9 @@ impl ProductionToolExecutor {
     #[must_use]
     pub fn new(config: ProductionToolConfig) -> Self {
         let isolated_writer_workspace = match config.elevated_sandbox_policy.as_ref() {
-            Some(ExecutionSandboxPolicy::IsolatedWriter { workspace }) => Some(workspace.clone()),
+            Some(ExecutionSandboxPolicy::IsolatedWriter { workspace, .. }) => {
+                Some(workspace.clone())
+            }
             _ => None,
         };
         let controlled_network_allowed = isolated_writer_workspace.is_none();
@@ -3667,7 +3669,7 @@ allow = ["git push"]
         assert_eq!(identity.sandbox_backend, None);
         assert!(matches!(
             identity.elevated_sandbox_policy,
-            Some(ExecutionSandboxPolicy::IsolatedWriter { ref workspace })
+            Some(ExecutionSandboxPolicy::IsolatedWriter { ref workspace, .. })
                 if workspace == writer.path()
         ));
 

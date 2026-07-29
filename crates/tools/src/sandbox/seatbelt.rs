@@ -90,6 +90,15 @@ const SEATBELT_NETWORK_POLICY: &str = r"
 (allow network-bind)
 ";
 
+/// Narrow network surface for the Host-owned application verifier inside an
+/// isolated Writer. The verified process may bind and serve the exact IPv4
+/// loopback origin, but cannot create external outbound connections.
+const SEATBELT_HOST_LOOPBACK_POLICY: &str = r#"
+; Host-owned application probe loopback only
+(allow network-bind (local ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))
+"#;
+
 /// Check if sandbox-exec is available and permitted on this system.
 pub fn is_available() -> bool {
     static SEATBELT_AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -156,6 +165,9 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     if policy.has_network_access() {
         full_policy.push('\n');
         full_policy.push_str(SEATBELT_NETWORK_POLICY);
+    } else if policy.has_host_loopback_access() {
+        full_policy.push('\n');
+        full_policy.push_str(SEATBELT_HOST_LOOPBACK_POLICY);
     }
 
     // Add Darwin user cache directory access (needed by many macOS tools).
@@ -499,6 +511,27 @@ mod tests {
                 .canonicalize()
                 .expect("canonical git pointer")
         );
+    }
+
+    #[test]
+    fn host_probe_writer_policy_allows_only_ipv4_loopback_without_egress() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join(".git"),
+            "gitdir: /private/readonly/gitdir\n",
+        )
+        .expect("git pointer");
+        let policy = SandboxPolicy::isolated_writer(workspace.path())
+            .for_host_loopback_probe()
+            .expect("Host probe policy");
+        let result = generate_policy(&policy, workspace.path());
+
+        assert!(policy.has_host_loopback_access());
+        assert!(!policy.has_network_access());
+        assert!(result.contains(r#"network-bind (local ip "localhost:*"))"#));
+        assert!(result.contains(r#"network-inbound (local ip "localhost:*"))"#));
+        assert!(!result.contains("network-outbound"));
+        assert!(!result.contains("(allow network-bind)"));
     }
 
     #[test]

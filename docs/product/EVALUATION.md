@@ -6045,3 +6045,63 @@ exit=`0`：tools=`413 passed, 8 ignored`、DeepSeek=`61/1`、runtime conformance
 app-server=`23/0`、exec=`30/0`、canonical TUI=`20/0`、PTY=`7/0`。最终 revision 的 canonical full gate
 invocation=`1`、exit=`0`，覆盖 authority/public、fmt、workspace all-features check/strict Clippy、全
 workspace tests 与 doctests；同一 revision 没有第二次 full。clean reviewable checkpoint 随本条形成。
+
+<a id="internal-alpha-integration-checkpoint"></a>
+### Canonical Web Search 后 Internal Alpha Integration Checkpoint 合同与结果
+
+这是 ADR-0018 integration/dogfood 水平门的 Risk 4 checkpoint，不是新工具或通用 benchmark。问题是各
+capability 单独通过不能证明 root Agent 能完成跨 code/app/Web/Writer/recovery 的同一真实任务。primary
+owner=`crates/app`；`crates/tools` 只修复 task evidence 暴露的 isolated Writer Host-loopback verifier
+阻断。old evidence path 是把分散 fixture green 当成产品闭环；old execution path 是把 external egress deny
+重复用于 Host-owned exact loopback probe。
+
+#### Frozen matrix 与 deterministic actual
+
+| family | keep condition | actual |
+|---|---|---:|
+| independent tasks | 至少 3 个不同 code shape，不以重复 seed 冒充 family | constant/function/mapping=`3/3` |
+| Web research | 每项 search 1 次、fetch 两个独立原来源、completion 引用 2 URL | search=`3/3`；fetch/cite=`6/6` |
+| code/build/app | Writer 只改 `server.py`；Host compile 后启动 app | byte-exact=`3/3`；compile/start=`6/6` |
+| Writer convergence | child receipt→seal→integration→root latest receipt→cleanup | lifecycle=`3/3`；receipts=`6/6` |
+| completion truth | 未经 integrated latest-revision receipt 不得 Completed | false success=`0` |
+| replay/recovery | terminal reopen 不再触发 model/Web/build/probe/Writer；既有 ambiguity/SIGKILL/checkpoint 保持 | reexecution=`0`；focused pass |
+| isolation | Writer external egress=0；Host probe 仅 localhost bind/inbound | outbound false allow=`0` |
+| complexity | 不新增 capability/runtime/store/provider/dependency；删除错误重复 gate | pass |
+
+每个 task 的 fixture model requests=`7`、input/output=`960/76`、rework=`0`；加入 compile/build 后三项并行
+suite wall=`16.52s`，单项约 `16.396–16.509s`。root HEAD 前进、Git clean、writer branch/worktree 清零，cold reopen events
+exact replay。该 Token/时间只属于 deterministic fixture，不与历史 treatment 做效率比较，也不宣称真实
+DeepSeek 的通用 success。
+
+#### 最小 integration fix 与安全反例
+
+开发期首个真实 task 正确地终止为 Blocked：Writer `apply_patch` 已成功，但 child verifier 返回
+`application_probe_network_denied`，root 随后在旧 revision 得到 `application_probe_body_mismatch`；没有
+false completion。修复后 ordinary no-network policy 仍在 spawn 前拒绝，isolated Writer 仅派生
+`host_loopback_only=true`。Seatbelt fixture 明确包含
+`network-bind/network-inbound (local ip "localhost:*")` 且不含 `network-outbound` 或 broad bind；默认 Writer
+serialization 继续省略该字段，probe identity 则显式区分。Linux bwrap 保持 isolated namespace 与同一
+worktree/protected-path policy。模型不能选择该 treatment，只有 Host verification path 能派生。
+
+没有改变 catalog、authorization owner、ToolOutcome、RuntimeEvent、RunStore/State schema、AgentRuntime、
+DeepSeek wire/model-visible Prompt；没有新增 Manager/Factory/Service、session/ledger、Provider、浏览器、视觉、
+登录、UI 或 dependency。test harness delta 主要位于现有 app production test module；production Rust 只为
+loopback sandbox distinction 与 exact policy mapping 增加小幅 delta。被删除的是 isolated Writer
+`application_probe` 的 blanket deny，不是 Writer 的 Web/shell external-network deny。Rust total delta=
+`+938/-23`，其中 app `#[cfg(test)]` module=`+825/-6`；docs=`+127/-4`、Cargo=`0`。bounded authority=
+`17,636` bootstrap、tools owner route=`2,825/4,409`、fixed boundary=`25/25`。
+
+#### Official dogfood 与 accounting truth
+
+唯一 official DeepSeek dogfood 预注册 one run、physical request limit=`8`、runtime retry=`0`、rerun=`0`、
+ceiling=`$0.10`。实际 terminal=`Failed(OutputLimit)`，physical requests=`4`、runtime retries=`0`、wall=
+`23.636s`、usage complete=`true`、billing unknown=`false`、input=`13,141`、output=`1,145`、cost=
+`3,730,821 nanousd`（约 `$0.00373`）。失败发生在 canary 人为 512 output-token cap；没有再发付费请求。
+future ignored canary 合同改为 2,048 tokens，但未执行，不能记为通过。故本条只 keep deterministic
+production integration 与 sandbox fix，不声明 official vertical success、真实 Tavily success 或任何通用
+success/Token/time/cost 优势。`TAVILY_API_KEY` unavailable，live provider requests/charge=`0/unknown`。
+
+focused exit=`0`：tools=`410 passed, 6 ignored`、DeepSeek=`61/1`、runtime conformance=`88/88`、app=
+`77 passed, 4 ignored`、app-server=`23/23`、exec=`30/30`、canonical TUI=`20/20`、PTY=`7/7`。最终 revision
+canonical full invocation=`1`、exit=`0`，覆盖 public/authority、fmt、strict workspace/all-target Clippy、
+workspace tests/doctests 与 diff check；同一 revision 不重跑。

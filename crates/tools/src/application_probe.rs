@@ -531,16 +531,19 @@ pub(crate) async fn execute_application_probe(
         trust: "external_untrusted".to_owned(),
     };
 
-    if shell
-        .elevated_sandbox_policy
-        .as_ref()
-        .is_some_and(|policy| !policy.has_network_access())
-    {
-        output.failure_code = Some("application_probe_network_denied".to_owned());
-        output.summary = "actor sandbox denies the loopback application probe".to_owned();
-        output.duration_ms = elapsed_millis(started_at);
-        return finalize_probe_outcome(output, resolved.spec, revision_before, context).await;
-    }
+    let probe_sandbox_policy = match shell.elevated_sandbox_policy.as_ref() {
+        Some(policy) => match policy.for_host_loopback_probe() {
+            Some(policy) => Some(policy),
+            None => {
+                output.failure_code = Some("application_probe_network_denied".to_owned());
+                output.summary = "actor sandbox denies the loopback application probe".to_owned();
+                output.duration_ms = elapsed_millis(started_at);
+                return finalize_probe_outcome(output, resolved.spec, revision_before, context)
+                    .await;
+            }
+        },
+        None => None,
+    };
 
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
@@ -585,7 +588,7 @@ pub(crate) async fn execute_application_probe(
         &resolved.cwd,
         env,
         resolved.input.overall_timeout_ms,
-        shell.elevated_sandbox_policy.clone(),
+        probe_sandbox_policy,
         resolved.input.max_log_bytes,
     );
     let (mut child, mut owner, stdout_task, stderr_task) = match spawn_result {
@@ -1556,8 +1559,7 @@ server.serve_forever()
         let ctx = context(workspace.path());
         let spec = resolve_application_probe_spec(fixture_parameters("success"), &ctx).unwrap();
         let mut denied_shell = shell(workspace.path());
-        denied_shell.elevated_sandbox_policy =
-            Some(SandboxPolicy::isolated_writer(workspace.path()));
+        denied_shell.elevated_sandbox_policy = Some(SandboxPolicy::default());
         let outcome = execute_application_probe(spec.parameters, &ctx, &denied_shell)
             .await
             .unwrap();
