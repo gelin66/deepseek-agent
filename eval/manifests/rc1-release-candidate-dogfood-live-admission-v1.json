@@ -1,0 +1,126 @@
+{
+  "schema": "dse.eval.rc1-release-candidate-dogfood-live-admission.v1",
+  "admitted_at_utc": "2026-07-29T08:55:00Z",
+  "contract_manifest": "eval/manifests/rc1-release-candidate-dogfood-v1.json",
+  "contract_manifest_sha256": "sha256:84eb7fcab799037fa82b3319394cab0e6b400a0126d9f62aee325ebf37f9995a",
+  "inherited_contract_manifest": "eval/manifests/m23b-hardness-control-v1.json",
+  "inherited_contract_manifest_sha256": "sha256:af8bc143a74cec18564cb450d833ea5de278cb4b74c355e6632f4e840f642d04",
+  "hardness_continuity_manifest": null,
+  "hardness_continuity_manifest_sha256": null,
+  "candidate_revision": "506000cda583057eb58a6ab6b2580adedbd50ad9",
+  "candidate_tree": "d5fc3fb3b5c727529b5e081de7e91dbd1f336968",
+  "candidate_binary": "/private/tmp/dse-rc1-target/release/dse",
+  "candidate_binary_sha256": "sha256:934c199d1589e387e6d79607d8c0db7897d934d96f2af250ff4c1484d94c3438",
+  "candidate_binary_size_bytes": 15711376,
+  "candidate_binary_version": "dse 0.8.68 (506000cda583)",
+  "harness": "scripts/eval-m9b-fixed-pro-regression.py",
+  "harness_sha256": "sha256:e315c0688cee208dfd685d971c837eabb0bad14dd13c4b59c9492b30a202a113",
+  "schedule_sha256": "sha256:8e7fc0352f165e3fd719193d7d0d0c32dfc381b84c8008874d43fe5fc827bce0",
+  "task_contracts_sha256": "sha256:0214406829c2dd8c49e8730b262715e7fedde6e009df096f37264721922ed84b",
+  "verifier_environment_contract_sha256": "sha256:0137309de9201422380264ffa1158e147e2da2e20d8f76d5ca28b27bfcea65ae",
+  "harness_self_test_sha256": "sha256:2fe3cfe793cb9717004ad1656a5e0c317b449e379cf2e090e31b7887558bf937",
+  "freeze_report_sha256": "sha256:b1e1ba9e748289a57d80475c668f89d39050f68ee6dd138e8cabe676dd96ef8a",
+  "dry_run_sha256": "sha256:277741ad043bd53e33218b8e9b6d1abda570632d4070d2693c56c875493d95e5",
+  "continuity_process_report_sha256": "sha256:28337e2bcb2efbfe75639001be52e1bd4c4d60ecd83fa0fee4076a80f36f032c",
+  "observer_conformance_sha256": "sha256:8e19abf6ea425fb953b6b1bf79b74c3bb9905396754bdb72c7aae6171d129dfe",
+  "acceptance_conformance_sha256": "sha256:e9ae0f40c3f267a487aa8341bdf1be69f169bf0b06ad659c1c50afbdaa1a02ef",
+  "interaction_conformance_sha256": "sha256:1376af2f334e313f959f5d4ecbb5062a3cb3e1ddc8ee656aeedb6083328ae43d",
+  "truth_conformance_sha256": "sha256:a93653b740f6aa37151d3e6f092a02802e6c995a00a1f97b1a01401c906f7b41",
+  "surface_identity": {
+    "production_sender": "official DeepSeek OpenAI-format ChatCompletions",
+    "base_url": "https://api.deepseek.com",
+    "endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "streaming": true,
+    "fixed_across_all_arms": true,
+    "product_treatment_delta": false,
+    "baseline_label_delta": "current five-arm cross-language release-candidate regression"
+  },
+  "offline_gates": [
+    {
+      "gate": "five-task inherited fixture, reference solutions, safety counterexample and hash-chain journal",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "immutable release binary, credential-free dry-run and real request_user_input SIGKILL/reopen continuity",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "typed trajectory, interaction, acceptance equivalence and behavior/accounting truth conformance",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "pushed revision 9b105952 macOS/Ubuntu delivery lifecycle, packaged install and workspace quality",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    },
+    {
+      "gate": "official DeepSeek change log, ChatCompletions, Thinking, Tool Calls and current pricing revalidated on 2026-07-29",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": true
+    },
+    {
+      "gate": "credential remains in the owner-only Host secret store and is not read before this admission",
+      "result": "pass",
+      "key_accessed": false,
+      "network_accessed": false
+    }
+  ],
+  "fixture_hashes": {
+    "typescript_request_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "python_config_crossfile": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "rust_netstring_recovery_resume": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "writer_envelope": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4",
+    "safety_authorization_claim": "sha256:0a1e61e35e722a071f606a9a02d6c2009c52ed7fad15029a09685495d13824b4"
+  },
+  "live_contract": {
+    "formal_tasks": 5,
+    "runs_per_task": 1,
+    "formal_arms": 5,
+    "schedule_start_position": 1,
+    "maximum_reruns": 0,
+    "historical_raw_is_input": false,
+    "per_arm_known_cost_ceiling_usd": 0.05,
+    "suite_known_cost_ceiling_usd": 0.1,
+    "stop_before_next_arm_on_unknown_billing": true,
+    "stop_before_next_arm_on_incomplete_accounting": true,
+    "stop_before_next_arm_on_false_success": true,
+    "stop_before_next_arm_on_identity_ambiguity": true,
+    "stop_before_next_arm_on_observer_ambiguity": true,
+    "stop_before_next_arm_on_unsafe_evidence": true,
+    "output": "eval/results/rc1-release-candidate-dogfood-506000cda583-v1.jsonl",
+    "output_mode": "ignored_0600_exclusive_hash_chained",
+    "credential_path": "/private/tmp/dse-rc1-deepseek-key",
+    "credential_mode": "0600",
+    "credential_contents_read_before_admission": false,
+    "official_api_requests_before_admission": 0,
+    "authorization_scope": "user-authorized current release-candidate dogfood under the frozen USD 0.10 suite ceiling"
+  },
+  "official_protocol_revalidated_on": "2026-07-29",
+  "official_sources": [
+    "https://api-docs.deepseek.com/updates/",
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://api-docs.deepseek.com/api/create-chat-completion/",
+    "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "https://api-docs.deepseek.com/guides/tool_calls/"
+  ],
+  "authorization": {
+    "credential_authorized": true,
+    "official_model_request_authorized": true,
+    "authorized_on": "2026-07-29",
+    "per_arm_cost_ceiling_usd": 0.05,
+    "suite_cost_ceiling_usd": 0.1,
+    "maximum_reruns": 0
+  },
+  "offline_gates_passed": true,
+  "live_api_admitted": true
+}
