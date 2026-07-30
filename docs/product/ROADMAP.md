@@ -308,15 +308,19 @@
   workspace check/strict Clippy、全部 workspace tests 与 doctests；没有在失败 revision 或最终
   revision 上重复求绿。结果写回后只复核 authority/fmt/diff，形成 clean reviewable commit，
   不自动启动下一 Goal。
-- ADR-0021 后的 Engineering Alpha 正在执行，不是新 capability cluster。已预注册三个独立
+- ADR-0021 后的 Engineering Alpha 已完成，不是新 capability cluster。已预注册三个独立
   cross-file task：Python quota、Rust retry，以及 deterministic Host Web + isolated Writer/
   recovery vertical。一次 deterministic treatment 为 `VerifiedCompleted=3/3`、
   false success=`0`、requests=`16`、input/output=`2,120/174`、rework=`0`；三项 receipt
   均绑定 latest workspace revision，Host acceptance 使用=`0`，terminal SQLite reopen 的
   model/tool/verifier/Web/Writer reexecution 均为 `0`。该 scripted production loopback 只证明
-  completion/evaluator/replay truth，不能建立或排除 DeepSeek owner loss。官方 fresh treatment
-  因本机 credential 不可用尚未执行，requests=`0`、cost=`$0`；在 actual 闭合前不准入 successor，
-  production delta 保持 `0`。
+  completion/evaluator/replay truth，不冒充 DeepSeek 产品成功。唯一 official fresh treatment
+  未重跑：Python task 在 7 requests、32,463/3,503 tokens、2 次 verifier rework 后仍为 Blocked；
+  Rust task 的首请求得到 typed `deepseek_transport` 且 billing unknown，按预注册 stop rule
+  未启动 Web+Writer task。official acquired=`2/3`、verified=`0/2`、false success=`0`、
+  physical requests=`8`，仅 Python 的 known cost=`$0.009770071`，suite exact cost 因不完整
+  accounting 不可声明；两项 reopen reexecution=`0`。没有两个独立 fresh task 的同一 current
+  owner loss，successor 不准入，production delta=`0`，能力扩张停止。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见

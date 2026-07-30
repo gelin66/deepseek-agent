@@ -485,7 +485,11 @@ deterministic Host Web + isolated Writer/recovery vertical 合计 verified=`3/3`
 Writer 顺序为 seal → integrate → latest-revision verify → cleanup → terminal；SQLite terminal
 reopen 不增加 event，也不重发模型、工具、verifier、Web 或 Writer side effect。该结果证明
 completion/evaluator/replay current fact，不证明 DeepSeek 产品能力；official fresh treatment
-仍因 credential 不可用而未执行，successor admission 保持关闭。
+只执行一次且未重跑：Python task 在 7 requests、2 次 exact-verifier rework 后保持 Blocked；
+Rust task 的首请求 typed transport fail 并使 billing unknown，预注册 stop rule 因而没有启动
+Web+Writer。official false success=`0`、两项 reopen reexecution=`0`，但 acquisition 只有 `2/3`；
+两个 loss 分属 task completion 与外部 transport/accounting owner，未达到同一 current owner 在
+两个独立 fresh task 重复的准入门。successor admission 保持关闭，production delta=`0`。
 
 M7-A2 后，`crates/protocol` 的 canonical JSON 不再依赖 `serde_json::Map` 的 feature 后端：
 每层 object 显式按 UTF-8 key bytes 排序，array 保持原序；inline verification artifact 的
