@@ -6364,3 +6364,31 @@ all-features check/strict Clippy、全部 workspace tests 与 doctests；不是�
 可展示的 durable answer/proposal；exact Host decision 与 exact verifier receipt 继续使用同一
 Runtime/Event/RunStore 状态机，且前者永不冒充 deterministic verified。旧自动 Host satisfaction、
 旧 false-complete conformance 和旧 materialized compatibility 路径保持物理删除。
+
+### 2026-07-30 ADR-0021 后 Engineering Alpha（进行中）
+
+冻结合同为 `eval/manifests/adr0021-engineering-alpha-v1.json`；本节记录一次
+deterministic actual。三个 fresh、cross-file task 分别覆盖 Python owner boundary、Rust retry
+contract，以及 code + deterministic Host Web + isolated Writer/recovery。成功只接受
+`VerifiedCompleted` 和 latest-revision `EvidenceReceipt`；`Answered`、`HostAccepted`、缺
+citation、错误 Writer lifecycle 或 reopen 重执行均计失败。
+
+| task | verified | false success | requests | input/output | wall | rework | Writer |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `python-quota` | 1 | 0 | 4 | 495/44 | 1,911 ms | 0 | 无 |
+| `rust-retry` | 1 | 0 | 4 | 515/44 | 4,295 ms | 0 | 无 |
+| `web-writer-constant` | 1 | 0 | 8 | 1,110/86 | 11,337 ms | 0 | seal → integrate → verify → cleanup → terminal |
+
+aggregate 为 verified success=`3/3`、false success=`0`、requests=`16`、
+input/output=`2,120/174`、wall=`17,543 ms`、rework=`0`。三项均未写入
+`HostCompletionAccepted`；SQLite terminal reopen 后 event/workspace 不变，模型、工具、exact
+verifier、Web 与 Writer reexecution 全为 `0`。Web vertical 固定一次 search、两次 fetch 和两个
+URL citation，不声明 Tavily/live-search。
+
+本 actual 使用 scripted production loopback，只证明 completion gate、exact verifier、Writer
+lifecycle 和 replay observer 能正确判定结果；它不能建立或排除真实 DeepSeek owner loss。因此
+repeated-loss 决策仍为 pending，successor 未准入，production delta=`0`。fresh official treatment
+已冻结为 `deepseek-v4-pro/high`、2,048 output tokens、每个任务零 rerun/零 runtime retry，
+code task 各最多 8 physical requests/16 tool calls，Web+Writer 最多 12/24，suite known-cost
+ceiling `$0.10`；当前 credential 不可用，所以 credential read=`false`、official requests=`0`、
+actual cost=`$0`。凭据闭合前不得用离线 3/3 冒充产品成功，也不得启动下一 capability slice。

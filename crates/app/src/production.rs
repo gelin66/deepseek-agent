@@ -1453,7 +1453,7 @@ mod tests {
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
-        RunCommandResult, RunView,
+        RunCommandResult, RunCompletion, RunView,
     };
     use dse_protocol::task::{
         AcceptanceId, CompletionCandidate, CompletionCandidateId, CompletionDecision,
@@ -2872,6 +2872,181 @@ sys.argv = [server_path, lease]
 exec(compiled, {"__name__": "__main__", "__file__": server_path})
 "#;
 
+    #[derive(Debug, Clone, Copy)]
+    enum PostCompletionCodeCase {
+        PythonQuota,
+        RustRetry,
+    }
+
+    impl PostCompletionCodeCase {
+        fn id(self) -> &'static str {
+            match self {
+                Self::PythonQuota => "python-quota",
+                Self::RustRetry => "rust-retry",
+            }
+        }
+    }
+
+    const PYTHON_QUOTA_INITIAL: &str = r#"LIMITS = {"free": 10, "pro": 100}
+
+
+def limit_for(plan):
+    return LIMITS.get(plan, 0)
+"#;
+
+    const PYTHON_SERVICE_INITIAL: &str = r#"from quota import limit_for
+
+
+def remaining(plan, used):
+    return limit_for(plan) - used
+
+
+def can_reserve(plan, used, requested):
+    return requested < remaining(plan, used)
+"#;
+
+    const PYTHON_QUOTA_EXPECTED: &str = r#"LIMITS = {"free": 10, "pro": 100}
+
+
+def limit_for(plan):
+    return LIMITS.get(plan, 0)
+
+
+def remaining_capacity(plan, used):
+    return max(0, limit_for(plan) - used)
+"#;
+
+    const PYTHON_SERVICE_EXPECTED: &str = r#"from quota import remaining_capacity
+
+
+def can_reserve(plan, used, requested):
+    if requested < 0:
+        return False
+    return requested <= remaining_capacity(plan, used)
+"#;
+
+    const PYTHON_QUOTA_VERIFIER: &str = r#"import importlib
+import pathlib
+import subprocess
+import sys
+
+counter = pathlib.Path(sys.argv[1])
+counter.write_text(str(int(counter.read_text() or "0") + 1) if counter.exists() else "1")
+sys.path.insert(0, str(pathlib.Path.cwd()))
+
+changed = {
+    line.strip()
+    for line in subprocess.check_output(
+        ["git", "diff", "--name-only", "HEAD", "--"], text=True
+    ).splitlines()
+    if line.strip()
+}
+if changed != {"quota.py", "service.py"}:
+    raise SystemExit(f"unexpected changed paths: {sorted(changed)}")
+
+quota = importlib.import_module("quota")
+service = importlib.import_module("service")
+checks = [
+    quota.remaining_capacity("free", 0) == 10,
+    quota.remaining_capacity("free", 12) == 0,
+    quota.remaining_capacity("unknown", 1) == 0,
+    service.can_reserve("free", 7, 3) is True,
+    service.can_reserve("free", 7, 4) is False,
+    service.can_reserve("free", 12, 0) is True,
+    service.can_reserve("free", 0, -1) is False,
+]
+if not all(checks):
+    raise SystemExit("quota behavior contract failed")
+
+service_source = pathlib.Path("service.py").read_text()
+if "remaining_capacity" not in service_source or "limit_for" in service_source:
+    raise SystemExit("service must consume quota.remaining_capacity without duplicating policy")
+"#;
+
+    const RUST_CARGO_TOML: &str = r#"[package]
+name = "engineering-alpha-retry"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+"#;
+
+    const RUST_RETRY_INITIAL: &str = r#"pub fn backoff_ms(attempt: u32) -> u64 {
+    u64::from(attempt) * 100
+}
+"#;
+
+    const RUST_LIB_INITIAL: &str = r#"mod retry;
+
+pub use retry::backoff_ms;
+
+pub fn next_delay(attempt: u32, max_attempts: u32) -> Option<u64> {
+    (attempt < max_attempts).then(|| backoff_ms(attempt))
+}
+"#;
+
+    const RUST_RETRY_EXPECTED: &str = r#"pub fn backoff_ms(attempt: u32) -> u64 {
+    if attempt == 0 {
+        return 0;
+    }
+    100_u64.saturating_mul(1_u64 << attempt.saturating_sub(1).min(4))
+}
+"#;
+
+    const RUST_LIB_EXPECTED: &str = r#"mod retry;
+
+pub use retry::backoff_ms;
+
+pub fn next_delay(attempt: u32, max_attempts: u32) -> Option<u64> {
+    (attempt > 0 && attempt <= max_attempts).then(|| backoff_ms(attempt))
+}
+"#;
+
+    const RUST_RETRY_TESTS: &str = r#"use engineering_alpha_retry::{backoff_ms, next_delay};
+
+#[test]
+fn one_based_retry_contract_is_bounded_and_keeps_the_final_attempt() {
+    assert_eq!(next_delay(0, 3), None);
+    assert_eq!(next_delay(1, 3), Some(100));
+    assert_eq!(next_delay(2, 3), Some(200));
+    assert_eq!(next_delay(3, 3), Some(400));
+    assert_eq!(next_delay(4, 3), None);
+    assert_eq!(next_delay(1, 0), None);
+    assert_eq!(backoff_ms(5), 1_600);
+    assert_eq!(backoff_ms(9), 1_600);
+}
+"#;
+
+    const RUST_RETRY_VERIFIER: &str = r#"import pathlib
+import subprocess
+import sys
+
+counter = pathlib.Path(sys.argv[1])
+counter.write_text(str(int(counter.read_text() or "0") + 1) if counter.exists() else "1")
+
+changed = {
+    line.strip()
+    for line in subprocess.check_output(
+        ["git", "diff", "--name-only", "HEAD", "--"], text=True
+    ).splitlines()
+    if line.strip()
+}
+if changed != {"src/lib.rs", "src/retry.rs"}:
+    raise SystemExit(f"unexpected changed paths: {sorted(changed)}")
+
+for command in (
+    ["cargo", "fmt", "--all", "--", "--check"],
+    ["cargo", "test", "--offline", "--quiet"],
+    ["cargo", "clippy", "--offline", "--all-targets", "--", "-D", "warnings"],
+):
+    completed = subprocess.run(command, text=True, capture_output=True)
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        raise SystemExit(f"verifier command failed: {command}")
+"#;
+
     fn alpha_server_script(case: AlphaCheckpointCase, marker: &str) -> String {
         let marker_definition = match case.shape {
             AlphaServerShape::Constant => {
@@ -3054,6 +3229,878 @@ while True:
                 .copied()
                 .filter(|name| *name != "read_file")
                 .eq(["web_search", "web_fetch", "web_fetch", AGENT_TOOL_NAME])
+    }
+
+    fn post_completion_code_task(
+        case: PostCompletionCodeCase,
+        verifier_path: &Path,
+        verifier_counter_path: &Path,
+    ) -> TaskDefinition {
+        let (objective, constraints, acceptance) = match case {
+            PostCompletionCodeCase::PythonQuota => (
+                "修复 Python quota/service 跨文件容量合同：容量必须由 quota owner 统一计算，已用额度不得产生负容量，exact-fit reservation 必须允许，负请求与超额请求必须拒绝",
+                vec![
+                    "先读取 quota.py 与 service.py，再修改两个文件",
+                    "service.py 必须消费 quota.py 的 remaining-capacity owner，不能复制额度规则",
+                    "只允许修改 quota.py 与 service.py",
+                ],
+                "Python quota behavior、owner 与 changed-path exact verifier 通过",
+            ),
+            PostCompletionCodeCase::RustRetry => (
+                "修复 Rust retry 跨文件边界：attempt 是 one-based，最后一次 attempt 必须保留，0/out-of-range 必须拒绝，退避从 100ms 指数增长并在 1600ms 封顶",
+                vec![
+                    "先读取 src/lib.rs 与 src/retry.rs，再修改两个文件",
+                    "只允许修改 src/lib.rs 与 src/retry.rs；测试与 manifest 不得改写",
+                    "最终代码必须通过 fmt、test 与 clippy -D warnings",
+                ],
+                "Rust retry behavior、changed-path、fmt/test/clippy exact verifier 通过",
+            ),
+        };
+        serde_json::from_value(json!({
+            "objective": objective,
+            "constraints": constraints,
+            "non_goals": [
+                "不使用 Web、browser、外部副作用、Host acceptance 或第二运行时",
+                "不修改 verifier、tests、manifest 或 Git metadata"
+            ],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": format!("engineering-alpha-{}-exact", case.id()),
+                "description": acceptance,
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "run_verifiers",
+                    "parameters": {
+                        "profile": "exact",
+                        "commands": [{
+                            "name": format!("engineering-alpha-{}-exact", case.id()),
+                            "program": "/usr/bin/python3",
+                            "args": [
+                                "-I",
+                                "-B",
+                                verifier_path.display().to_string(),
+                                verifier_counter_path.display().to_string()
+                            ],
+                            "cwd": ""
+                        }]
+                    },
+                    "plan": {"steps": [{
+                        "id": "caller-guess",
+                        "program": "false",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1
+                    }]}
+                }
+            }]
+        }))
+        .expect("post-ADR-0021 Engineering Alpha task")
+    }
+
+    fn post_completion_code_responses(case: PostCompletionCodeCase) -> Vec<Value> {
+        match case {
+            PostCompletionCodeCase::PythonQuota => vec![
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-python-read-quota",
+                    "read_file",
+                    json!({"path": "quota.py"}),
+                    90,
+                    8,
+                ),
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-python-read-service",
+                    "read_file",
+                    json!({"path": "service.py"}),
+                    110,
+                    8,
+                ),
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-python-patch",
+                    "apply_patch",
+                    json!({"changes": [
+                        {"path": "quota.py", "content": PYTHON_QUOTA_EXPECTED},
+                        {"path": "service.py", "content": PYTHON_SERVICE_EXPECTED}
+                    ]}),
+                    140,
+                    14,
+                ),
+                thinking_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "quota owner 与 service reservation 边界已修复，请由 Host exact verifier 验证最新 revision。",
+                    155,
+                    14,
+                ),
+            ],
+            PostCompletionCodeCase::RustRetry => vec![
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-rust-read-lib",
+                    "read_file",
+                    json!({"path": "src/lib.rs"}),
+                    95,
+                    8,
+                ),
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-rust-read-retry",
+                    "read_file",
+                    json!({"path": "src/retry.rs"}),
+                    115,
+                    8,
+                ),
+                tool_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "engineering-alpha-rust-patch",
+                    "apply_patch",
+                    json!({"changes": [
+                        {"path": "src/lib.rs", "content": RUST_LIB_EXPECTED},
+                        {"path": "src/retry.rs", "content": RUST_RETRY_EXPECTED}
+                    ]}),
+                    145,
+                    14,
+                ),
+                thinking_response(
+                    DEEPSEEK_PRO_MODEL,
+                    "one-based retry 与 bounded exponential backoff 已修复，请由 Host exact verifier 验证最新 revision。",
+                    160,
+                    14,
+                ),
+            ],
+        }
+    }
+
+    fn initialize_post_completion_code_fixture(
+        case: PostCompletionCodeCase,
+        workspace: &Path,
+        verifier_path: &Path,
+    ) {
+        std::fs::create_dir_all(workspace).expect("Engineering Alpha code workspace");
+        match case {
+            PostCompletionCodeCase::PythonQuota => {
+                std::fs::write(workspace.join("quota.py"), PYTHON_QUOTA_INITIAL)
+                    .expect("Python quota fixture");
+                std::fs::write(workspace.join("service.py"), PYTHON_SERVICE_INITIAL)
+                    .expect("Python service fixture");
+                std::fs::write(workspace.join(".gitignore"), "__pycache__/\n*.pyc\n")
+                    .expect("Python ignore fixture");
+                std::fs::write(verifier_path, PYTHON_QUOTA_VERIFIER)
+                    .expect("Python exact verifier");
+            }
+            PostCompletionCodeCase::RustRetry => {
+                std::fs::create_dir_all(workspace.join("src")).expect("Rust src fixture");
+                std::fs::create_dir_all(workspace.join("tests")).expect("Rust tests fixture");
+                std::fs::write(workspace.join("Cargo.toml"), RUST_CARGO_TOML)
+                    .expect("Rust manifest fixture");
+                std::fs::write(workspace.join("src/lib.rs"), RUST_LIB_INITIAL)
+                    .expect("Rust lib fixture");
+                std::fs::write(workspace.join("src/retry.rs"), RUST_RETRY_INITIAL)
+                    .expect("Rust retry fixture");
+                std::fs::write(workspace.join("tests/retry.rs"), RUST_RETRY_TESTS)
+                    .expect("Rust test fixture");
+                std::fs::write(workspace.join(".gitignore"), "target/\n")
+                    .expect("Rust ignore fixture");
+                std::fs::write(verifier_path, RUST_RETRY_VERIFIER).expect("Rust exact verifier");
+                let output = ProcessCommand::new("cargo")
+                    .args(["generate-lockfile", "--offline"])
+                    .current_dir(workspace)
+                    .output()
+                    .expect("generate Rust fixture lockfile");
+                assert!(
+                    output.status.success(),
+                    "cargo generate-lockfile failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        initialize_git_fixture(workspace);
+    }
+
+    async fn run_post_completion_code_case(case: PostCompletionCodeCase) {
+        let started = Instant::now();
+        let temp = tempfile::tempdir().expect("post-ADR-0021 Engineering Alpha root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        let verifier_path = temp.path().join(format!("{}-verify.py", case.id()));
+        let verifier_counter_path = temp.path().join(format!("{}-verifier-count", case.id()));
+        initialize_post_completion_code_fixture(case, &workspace, &verifier_path);
+        let task = post_completion_code_task(case, &verifier_path, &verifier_counter_path);
+        let server = MockDeepSeekServer::start_with_accept_timeout(
+            post_completion_code_responses(case),
+            Duration::from_secs(20),
+        )
+        .await;
+        let tools = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
+        let app = AgentApplication::production(
+            config(&state_path, connection(&server.root, false), true)
+                .with_tool_config(tools.clone())
+                .with_composition_build_revision("adr0021-engineering-alpha-v1"),
+        )
+        .expect("post-ADR-0021 Engineering Alpha production app");
+        let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
+        command.task = task;
+        command.max_output_tokens = Some(512);
+        command.max_api_requests = Some(NonZeroU32::new(6).expect("non-zero request limit"));
+        command.tool_policy.allowed = Some(vec!["read_file".to_owned(), "apply_patch".to_owned()]);
+        command.limits = RunLimits {
+            max_turns: 6,
+            max_model_requests: 6,
+            max_model_retries: 0,
+            max_tool_calls: 4,
+            max_depth: 0,
+            max_concurrent_children: 0,
+            model_event_idle_ms: Some(10_000),
+            wall_time_ms: Some(60_000),
+        };
+        command.controls.write_execution_mode = WriteExecutionMode::Root;
+        let run = run_result(
+            app.execute(envelope(
+                &format!("engineering-alpha-{}-start", case.id()),
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal_with_timeout(
+            &app,
+            app.store.as_ref(),
+            &run.run_id,
+            Duration::from_secs(75),
+        )
+        .await;
+        let requests = server.finish().await;
+        assert_eq!(requests.len(), 4, "{}", case.id());
+
+        let view = run_result(
+            app.execute(envelope(
+                &format!("engineering-alpha-{}-get", case.id()),
+                RunCommand::Get {
+                    run_id: run.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        let decision = match &view.completion {
+            RunCompletion::VerifiedCompleted { decision } => decision,
+            other => panic!(
+                "Engineering Alpha {} must project VerifiedCompleted, got {other:?}",
+                case.id()
+            ),
+        };
+        assert_eq!(decision.satisfied.len(), 1, "{}", case.id());
+        assert!(matches!(
+            view.terminal,
+            Some(TerminalState::Completed { .. })
+        ));
+        assert!(
+            !replay.events.iter().any(|stored| matches!(
+                stored.event,
+                RuntimeEventKind::HostCompletionAccepted { .. }
+            )),
+            "{} must not use Host acceptance as verified evidence",
+            case.id()
+        );
+        let receipt = replay
+            .snapshot
+            .evidence_receipts
+            .last()
+            .expect("latest exact EvidenceReceipt");
+        assert_eq!(
+            receipt.workspace_state,
+            replay.snapshot.workspace_state,
+            "{} receipt must bind the latest workspace revision",
+            case.id()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&verifier_counter_path)
+                .expect("exact verifier invocation count"),
+            "1",
+            "{} exact verifier must run once",
+            case.id()
+        );
+        let rework = replay
+            .events
+            .iter()
+            .filter(|stored| {
+                matches!(
+                    stored.event,
+                    RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
+                )
+            })
+            .count();
+        assert_eq!(rework, 0, "{} unexpected verifier rework", case.id());
+
+        match case {
+            PostCompletionCodeCase::PythonQuota => {
+                assert_eq!(
+                    std::fs::read_to_string(workspace.join("quota.py")).expect("quota result"),
+                    PYTHON_QUOTA_EXPECTED
+                );
+                assert_eq!(
+                    std::fs::read_to_string(workspace.join("service.py")).expect("service result"),
+                    PYTHON_SERVICE_EXPECTED
+                );
+            }
+            PostCompletionCodeCase::RustRetry => {
+                assert_eq!(
+                    std::fs::read_to_string(workspace.join("src/lib.rs")).expect("Rust lib result"),
+                    RUST_LIB_EXPECTED
+                );
+                assert_eq!(
+                    std::fs::read_to_string(workspace.join("src/retry.rs"))
+                        .expect("Rust retry result"),
+                    RUST_RETRY_EXPECTED
+                );
+            }
+        }
+
+        let frozen_events = replay.events.clone();
+        let frozen_workspace = replay.snapshot.workspace_state.clone();
+        let accounting = replay.snapshot.accounting.clone();
+        drop(app);
+        let (quiet_root, accepted) = quiet_loopback().await;
+        let reopened = AgentApplication::production(
+            config(&state_path, connection(&quiet_root, false), false)
+                .with_tool_config(tools)
+                .with_composition_build_revision("adr0021-engineering-alpha-v1"),
+        )
+        .expect("credential-free Engineering Alpha reopen");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    &format!("engineering-alpha-{}-resume", case.id()),
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                        expected_workspace: Some(
+                            workspace
+                                .canonicalize()
+                                .expect("canonical code workspace")
+                                .display()
+                                .to_string(),
+                        ),
+                    },
+                ))
+                .await,
+        );
+        assert!(matches!(
+            resumed.completion,
+            RunCompletion::VerifiedCompleted { .. }
+        ));
+        let reopened_replay = reopened
+            .store
+            .load(&run.run_id)
+            .await
+            .expect("load reopened code task")
+            .expect("reopened code task exists");
+        assert_eq!(reopened_replay.events, frozen_events);
+        assert_eq!(reopened_replay.snapshot.workspace_state, frozen_workspace);
+        assert_eq!(
+            std::fs::read_to_string(&verifier_counter_path)
+                .expect("reopened verifier invocation count"),
+            "1",
+            "{} reopen must not rerun the verifier",
+            case.id()
+        );
+        assert_eq!(accepted.await.expect("quiet code Alpha loopback"), 0);
+        println!(
+            "ENGINEERING_ALPHA task={} verified_success=1 false_success=0 physical_requests={} input_tokens={} output_tokens={} wall_ms={} rework={} writer=false reopen_reexecution=0",
+            case.id(),
+            accounting.total_started(),
+            accounting.usage.input_tokens,
+            accounting.usage.output_tokens,
+            started.elapsed().as_millis(),
+            rework,
+        );
+    }
+
+    #[derive(Debug)]
+    struct OfficialEngineeringAlphaActual {
+        task_id: &'static str,
+        verified_success: bool,
+        false_success: bool,
+        usage_complete: bool,
+        billing_unknown: bool,
+        physical_requests: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_hit_tokens: u64,
+        cost_nanousd: u64,
+        wall_time_ms: u128,
+        tool_calls: u32,
+        runtime_retries: u64,
+        tool_failures: usize,
+        patch_failures: usize,
+        rework_cycles: usize,
+        writer_lifecycle: bool,
+        reopen_reexecution: usize,
+        terminal: Value,
+        completion: Value,
+        workspace_state: WorkspaceState,
+        receipt_id: Option<String>,
+        root_tools: Vec<String>,
+    }
+
+    impl OfficialEngineeringAlphaActual {
+        fn print(&self) {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "kind": "ADR0021_ENGINEERING_ALPHA_OFFICIAL",
+                    "task_id": self.task_id,
+                    "verified_success": self.verified_success,
+                    "false_success": self.false_success,
+                    "usage_complete": self.usage_complete,
+                    "billing_unknown": self.billing_unknown,
+                    "physical_requests": self.physical_requests,
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "cache_hit_tokens": self.cache_hit_tokens,
+                    "cost_nanousd": self.cost_nanousd,
+                    "wall_time_ms": self.wall_time_ms,
+                    "tool_calls": self.tool_calls,
+                    "runtime_retries": self.runtime_retries,
+                    "tool_failures": self.tool_failures,
+                    "patch_failures": self.patch_failures,
+                    "rework_cycles": self.rework_cycles,
+                    "writer_lifecycle": self.writer_lifecycle,
+                    "reopen_reexecution": self.reopen_reexecution,
+                    "terminal": self.terminal,
+                    "completion": self.completion,
+                    "workspace_state": self.workspace_state,
+                    "receipt_id": self.receipt_id,
+                    "root_tools": self.root_tools,
+                }))
+                .expect("serialize official Engineering Alpha actual")
+            );
+        }
+
+        fn permits_next_paid_task(&self, cumulative_cost_nanousd: u64) {
+            assert!(
+                !self.false_success,
+                "{} produced false success; stop before another paid task",
+                self.task_id
+            );
+            assert!(
+                self.usage_complete && !self.billing_unknown,
+                "{} accounting is incomplete; stop before another paid task",
+                self.task_id
+            );
+            assert!(
+                self.cost_nanousd <= 40_000_000,
+                "{} exceeded the $0.04 per-task ceiling",
+                self.task_id
+            );
+            assert!(
+                cumulative_cost_nanousd <= 100_000_000,
+                "Engineering Alpha exceeded the $0.10 suite ceiling"
+            );
+        }
+    }
+
+    fn official_engineering_alpha_actual(
+        task_id: &'static str,
+        replay: &RunReplay,
+        view: &RunView,
+        started: Instant,
+        task_observer_passed: bool,
+        writer_lifecycle: bool,
+        reopen_reexecution: usize,
+    ) -> OfficialEngineeringAlphaActual {
+        let receipt = replay.snapshot.evidence_receipts.last();
+        let receipt_is_latest = receipt
+            .is_some_and(|receipt| receipt.workspace_state == replay.snapshot.workspace_state);
+        let production_verified =
+            matches!(view.completion, RunCompletion::VerifiedCompleted { .. });
+        let verified_success = production_verified && receipt_is_latest && task_observer_passed;
+        let completed_terminal = matches!(view.terminal, Some(TerminalState::Completed { .. }));
+        let false_success = completed_terminal && !verified_success;
+        let root_tools = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let tool_failures = replay
+            .events
+            .iter()
+            .filter(|stored| {
+                matches!(
+                    &stored.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+                        if !outcome.is_success()
+                )
+            })
+            .count();
+        let patch_failures = replay
+            .events
+            .iter()
+            .filter(|stored| {
+                matches!(
+                    &stored.event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, outcome, .. }
+                        if name == "apply_patch" && !outcome.is_success()
+                )
+            })
+            .count();
+        let rework_cycles = replay
+            .events
+            .iter()
+            .filter(|stored| {
+                matches!(
+                    stored.event,
+                    RuntimeEventKind::HostVerificationCommitted { receipt: None, .. }
+                )
+            })
+            .count();
+        OfficialEngineeringAlphaActual {
+            task_id,
+            verified_success,
+            false_success,
+            usage_complete: replay.snapshot.accounting.usage_complete,
+            billing_unknown: replay.snapshot.accounting.billing_unknown,
+            physical_requests: replay.snapshot.accounting.total_started(),
+            input_tokens: replay.snapshot.accounting.usage.input_tokens,
+            output_tokens: replay.snapshot.accounting.usage.output_tokens,
+            cache_hit_tokens: replay.snapshot.accounting.usage.cache_hit_tokens,
+            cost_nanousd: replay.snapshot.accounting.cost_nanousd,
+            wall_time_ms: started.elapsed().as_millis(),
+            tool_calls: view.tool_calls,
+            runtime_retries: replay.snapshot.accounting.runtime_retries,
+            tool_failures,
+            patch_failures,
+            rework_cycles,
+            writer_lifecycle,
+            reopen_reexecution,
+            terminal: serde_json::to_value(&view.terminal)
+                .expect("serialize Engineering Alpha terminal"),
+            completion: serde_json::to_value(&view.completion)
+                .expect("serialize Engineering Alpha completion"),
+            workspace_state: replay.snapshot.workspace_state.clone(),
+            receipt_id: receipt.map(|receipt| receipt.id.0.clone()),
+            root_tools,
+        }
+    }
+
+    async fn run_official_post_completion_code_case(
+        case: PostCompletionCodeCase,
+        api_key: &str,
+    ) -> OfficialEngineeringAlphaActual {
+        let started = Instant::now();
+        let temp = tempfile::tempdir().expect("official Engineering Alpha code root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        let verifier_path = temp.path().join(format!("{}-verify.py", case.id()));
+        let verifier_counter_path = temp.path().join(format!("{}-verifier-count", case.id()));
+        initialize_post_completion_code_fixture(case, &workspace, &verifier_path);
+        let task = post_completion_code_task(case, &verifier_path, &verifier_counter_path);
+        let tools = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
+        let app = AgentApplication::production(
+            ProductionApplicationConfig::official()
+                .with_state_db_path(&state_path)
+                .with_tool_config(tools.clone())
+                .with_composition_build_revision("adr0021-engineering-alpha-official-v1")
+                .with_default_max_api_requests(NonZeroU32::new(8).unwrap())
+                .with_api_key(api_key.to_owned())
+                .expect("bind official DeepSeek credential"),
+        )
+        .expect("official Engineering Alpha code app");
+        let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
+        command.task = task;
+        command.reasoning_effort = ReasoningEffort::High;
+        command.max_output_tokens = Some(2_048);
+        command.max_api_requests = Some(NonZeroU32::new(8).unwrap());
+        command.tool_policy.allowed = Some(vec![
+            "read_file".to_owned(),
+            "grep_files".to_owned(),
+            "apply_patch".to_owned(),
+        ]);
+        command.limits = RunLimits {
+            max_turns: 8,
+            max_model_requests: 8,
+            max_model_retries: 0,
+            max_tool_calls: 16,
+            max_depth: 0,
+            max_concurrent_children: 0,
+            model_event_idle_ms: Some(120_000),
+            wall_time_ms: Some(300_000),
+        };
+        command.controls.write_execution_mode = WriteExecutionMode::Root;
+        let run = run_result(
+            app.execute(envelope(
+                &format!("engineering-alpha-official-{}-start", case.id()),
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal_with_timeout(
+            &app,
+            app.store.as_ref(),
+            &run.run_id,
+            Duration::from_secs(360),
+        )
+        .await;
+        let view = run_result(
+            app.execute(envelope(
+                &format!("engineering-alpha-official-{}-get", case.id()),
+                RunCommand::Get {
+                    run_id: run.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        let verifier_count_before_reopen = std::fs::read_to_string(&verifier_counter_path)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let frozen_events = replay.events.clone();
+        let frozen_workspace = replay.snapshot.workspace_state.clone();
+        drop(app);
+
+        let reopened = AgentApplication::production(
+            ProductionApplicationConfig::official()
+                .with_state_db_path(&state_path)
+                .with_tool_config(tools)
+                .with_composition_build_revision("adr0021-engineering-alpha-official-v1"),
+        )
+        .expect("credential-free official code reopen");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    &format!("engineering-alpha-official-{}-resume", case.id()),
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                        expected_workspace: Some(
+                            workspace
+                                .canonicalize()
+                                .expect("canonical official code workspace")
+                                .display()
+                                .to_string(),
+                        ),
+                    },
+                ))
+                .await,
+        );
+        let reopened_replay = reopened
+            .store
+            .load(&run.run_id)
+            .await
+            .expect("load official code reopen")
+            .expect("official code run exists");
+        let verifier_count_after_reopen = std::fs::read_to_string(&verifier_counter_path)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let reopen_reexecution = usize::from(
+            reopened_replay.events != frozen_events
+                || reopened_replay.snapshot.workspace_state != frozen_workspace
+                || verifier_count_after_reopen != verifier_count_before_reopen,
+        );
+        assert_eq!(resumed.terminal, view.terminal);
+        assert!(
+            !replay.events.iter().any(|stored| matches!(
+                stored.event,
+                RuntimeEventKind::HostCompletionAccepted { .. }
+            )),
+            "{} official task must not use Host acceptance",
+            case.id()
+        );
+        let task_observer_passed =
+            matches!(view.completion, RunCompletion::VerifiedCompleted { .. })
+                && verifier_count_before_reopen > 0;
+        official_engineering_alpha_actual(
+            case.id(),
+            &replay,
+            &view,
+            started,
+            task_observer_passed,
+            false,
+            reopen_reexecution,
+        )
+    }
+
+    async fn run_official_web_writer_case(api_key: &str) -> OfficialEngineeringAlphaActual {
+        let started = Instant::now();
+        let case = ALPHA_CHECKPOINT_CASES[0];
+        let temp = tempfile::tempdir().expect("official Engineering Alpha Web/Writer root");
+        let workspace = temp.path().join("repo");
+        let state_path = temp.path().join("state.db");
+        std::fs::create_dir(&workspace).expect("official Web/Writer workspace");
+        std::fs::write(
+            workspace.join("server.py"),
+            alpha_server_script(case, "draft-post-adr0021-alpha"),
+        )
+        .expect("official Web/Writer initial application");
+        std::fs::write(workspace.join("build_and_serve.py"), ALPHA_BUILD_AND_SERVE)
+            .expect("official Web/Writer build runner");
+        initialize_git_fixture(&workspace);
+
+        let fixture = Arc::new(AlphaWebFixture::new(case));
+        let tools = ProductionToolConfig::new(".")
+            .with_shell_policy(ShellPolicy::Full)
+            .with_web_search_network(fixture.clone())
+            .with_web_fetch_network(fixture.clone());
+        let app = AgentApplication::production(
+            ProductionApplicationConfig::official()
+                .with_state_db_path(&state_path)
+                .with_tool_config(tools.clone())
+                .with_composition_build_revision("adr0021-engineering-alpha-official-v1")
+                .with_default_max_api_requests(NonZeroU32::new(12).unwrap())
+                .with_api_key(api_key.to_owned())
+                .expect("bind official DeepSeek credential"),
+        )
+        .expect("official Engineering Alpha Web/Writer app");
+        let mut command = start_command(&workspace, Some(DEEPSEEK_PRO_MODEL));
+        command.task = alpha_checkpoint_task(case);
+        command.reasoning_effort = ReasoningEffort::High;
+        command.max_output_tokens = Some(2_048);
+        command.max_api_requests = Some(NonZeroU32::new(12).unwrap());
+        command.tool_policy.allowed = Some(vec![
+            "web_search".to_owned(),
+            "web_fetch".to_owned(),
+            AGENT_TOOL_NAME.to_owned(),
+            "read_file".to_owned(),
+            "apply_patch".to_owned(),
+        ]);
+        command.limits = RunLimits {
+            max_turns: 12,
+            max_model_requests: 12,
+            max_model_retries: 0,
+            max_tool_calls: 24,
+            max_depth: 1,
+            max_concurrent_children: 1,
+            model_event_idle_ms: Some(120_000),
+            wall_time_ms: Some(300_000),
+        };
+        command.controls.write_execution_mode = WriteExecutionMode::IsolatedWriter;
+        let run = run_result(
+            app.execute(envelope(
+                "engineering-alpha-official-web-writer-start",
+                RunCommand::Start(command),
+            ))
+            .await,
+        );
+        let replay = wait_terminal_with_timeout(
+            &app,
+            app.store.as_ref(),
+            &run.run_id,
+            Duration::from_secs(360),
+        )
+        .await;
+        let view = run_result(
+            app.execute(envelope(
+                "engineering-alpha-official-web-writer-get",
+                RunCommand::Get {
+                    run_id: run.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        let root_tools = replay
+            .events
+            .iter()
+            .filter_map(|stored| match &stored.event {
+                RuntimeEventKind::ToolOutcomeCommitted { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let writer_lifecycle = replay
+            .events
+            .iter()
+            .any(|stored| matches!(stored.event, RuntimeEventKind::AgentSealCommitted { .. }))
+            && replay.events.iter().any(|stored| {
+                matches!(
+                    stored.event,
+                    RuntimeEventKind::AgentIntegrationCommitted { .. }
+                )
+            })
+            && replay.events.iter().any(|stored| {
+                matches!(stored.event, RuntimeEventKind::AgentCleanupCommitted { .. })
+            });
+        let completion_cites_sources = match &view.terminal {
+            Some(TerminalState::Completed { message, .. }) => {
+                message.contains(case.source_a) && message.contains(case.source_b)
+            }
+            _ => false,
+        };
+        let task_observer_passed =
+            matches!(view.completion, RunCompletion::VerifiedCompleted { .. })
+                && completion_cites_sources
+                && alpha_root_tool_trajectory_is_valid(&root_tools)
+                && fixture.search_calls.load(Ordering::SeqCst) == 1
+                && fixture.get_calls.load(Ordering::SeqCst) == 2
+                && writer_lifecycle
+                && std::fs::read_to_string(workspace.join("server.py"))
+                    .is_ok_and(|script| script.contains(case.marker));
+        let frozen_events = replay.events.clone();
+        let frozen_workspace = replay.snapshot.workspace_state.clone();
+        let counters_before_reopen = (
+            fixture.search_calls.load(Ordering::SeqCst),
+            fixture.resolve_calls.load(Ordering::SeqCst),
+            fixture.get_calls.load(Ordering::SeqCst),
+        );
+        drop(app);
+
+        let reopened = AgentApplication::production(
+            ProductionApplicationConfig::official()
+                .with_state_db_path(&state_path)
+                .with_tool_config(tools)
+                .with_composition_build_revision("adr0021-engineering-alpha-official-v1"),
+        )
+        .expect("credential-free official Web/Writer reopen");
+        let resumed = run_result(
+            reopened
+                .execute(envelope(
+                    "engineering-alpha-official-web-writer-resume",
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                        expected_workspace: Some(
+                            workspace
+                                .canonicalize()
+                                .expect("canonical official Web/Writer workspace")
+                                .display()
+                                .to_string(),
+                        ),
+                    },
+                ))
+                .await,
+        );
+        let reopened_replay = reopened
+            .store
+            .load(&run.run_id)
+            .await
+            .expect("load official Web/Writer reopen")
+            .expect("official Web/Writer run exists");
+        let counters_after_reopen = (
+            fixture.search_calls.load(Ordering::SeqCst),
+            fixture.resolve_calls.load(Ordering::SeqCst),
+            fixture.get_calls.load(Ordering::SeqCst),
+        );
+        let reopen_reexecution = usize::from(
+            reopened_replay.events != frozen_events
+                || reopened_replay.snapshot.workspace_state != frozen_workspace
+                || counters_after_reopen != counters_before_reopen,
+        );
+        assert_eq!(resumed.terminal, view.terminal);
+        assert!(
+            !replay.events.iter().any(|stored| matches!(
+                stored.event,
+                RuntimeEventKind::HostCompletionAccepted { .. }
+            )),
+            "official Web/Writer task must not use Host acceptance"
+        );
+        official_engineering_alpha_actual(
+            "web-writer-constant",
+            &replay,
+            &view,
+            started,
+            task_observer_passed,
+            writer_lifecycle,
+            reopen_reexecution,
+        )
     }
 
     fn sigkill_application_probe_task(marker: &Path) -> TaskDefinition {
@@ -5708,6 +6755,29 @@ while True:
                 case.id
             ),
         };
+        let view = run_result(
+            app.execute(envelope(
+                &format!("internal-alpha-{}-get", case.id),
+                RunCommand::Get {
+                    run_id: run.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        assert!(
+            matches!(&view.completion, RunCompletion::VerifiedCompleted { .. }),
+            "internal Alpha {} must project VerifiedCompleted, got {:?}",
+            case.id,
+            view.completion
+        );
+        assert!(
+            !replay.events.iter().any(|stored| matches!(
+                stored.event,
+                RuntimeEventKind::HostCompletionAccepted { .. }
+            )),
+            "internal Alpha {} must not use Host acceptance as verified evidence",
+            case.id
+        );
         assert!(terminal_message.contains(case.source_a));
         assert!(terminal_message.contains(case.source_b));
         assert_eq!(requests.len(), 8, "one root/Writer production model loop");
@@ -5868,6 +6938,10 @@ while True:
             resumed.terminal,
             Some(TerminalState::Completed { .. })
         ));
+        assert!(matches!(
+            resumed.completion,
+            RunCompletion::VerifiedCompleted { .. }
+        ));
         let events = reopened
             .execute(envelope(
                 &format!("internal-alpha-{}-events", case.id),
@@ -5912,6 +6986,80 @@ while True:
             run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[1]),
             run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[2]),
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "the code+Web+Writer task uses the positive macOS Seatbelt Host-loopback contract; Linux bwrap intentionally keeps a separate network namespace"
+    )]
+    async fn post_adr0021_engineering_alpha_three_independent_verified_tasks() {
+        run_post_completion_code_case(PostCompletionCodeCase::PythonQuota).await;
+        run_post_completion_code_case(PostCompletionCodeCase::RustRetry).await;
+        run_internal_alpha_checkpoint_case(ALPHA_CHECKPOINT_CASES[0]).await;
+        println!(
+            "ENGINEERING_ALPHA_SUMMARY tasks=3 verified_success=3 false_success=0 repeated_owner_loss=none production_delta=0"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    #[ignore = "one fresh post-ADR-0021 official Engineering Alpha treatment; three tasks, maximum_reruns=0, runtime retries=0, suite ceiling $0.10"]
+    async fn post_adr0021_engineering_alpha_official_treatment() {
+        let api_key = std::env::var("DEEPSEEK_API_KEY")
+            .expect("official Engineering Alpha requires DEEPSEEK_API_KEY");
+        let mut actuals = Vec::with_capacity(3);
+        let mut cumulative_cost_nanousd = 0_u64;
+
+        for case in [
+            PostCompletionCodeCase::PythonQuota,
+            PostCompletionCodeCase::RustRetry,
+        ] {
+            let actual = run_official_post_completion_code_case(case, &api_key).await;
+            actual.print();
+            cumulative_cost_nanousd = cumulative_cost_nanousd.saturating_add(actual.cost_nanousd);
+            actual.permits_next_paid_task(cumulative_cost_nanousd);
+            actuals.push(actual);
+        }
+
+        let web_writer = run_official_web_writer_case(&api_key).await;
+        web_writer.print();
+        cumulative_cost_nanousd = cumulative_cost_nanousd.saturating_add(web_writer.cost_nanousd);
+        web_writer.permits_next_paid_task(cumulative_cost_nanousd);
+        actuals.push(web_writer);
+
+        let verified = actuals
+            .iter()
+            .filter(|actual| actual.verified_success)
+            .count();
+        let false_success = actuals.iter().filter(|actual| actual.false_success).count();
+        let physical_requests = actuals
+            .iter()
+            .map(|actual| actual.physical_requests)
+            .sum::<u64>();
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "kind": "ADR0021_ENGINEERING_ALPHA_OFFICIAL_SUMMARY",
+                "tasks": actuals.len(),
+                "verified_success": verified,
+                "false_success": false_success,
+                "physical_requests": physical_requests,
+                "cost_nanousd": cumulative_cost_nanousd,
+                "maximum_reruns": 0,
+                "runtime_retries": actuals
+                    .iter()
+                    .map(|actual| actual.runtime_retries)
+                    .sum::<u64>(),
+            }))
+            .expect("serialize official Engineering Alpha summary")
+        );
+        assert_eq!(false_success, 0);
+        assert_eq!(
+            verified, 3,
+            "official Engineering Alpha exposed product losses; classify owner evidence before any production slice"
+        );
+        assert!(physical_requests <= 28);
+        assert!(actuals.iter().all(|actual| actual.reopen_reexecution == 0));
     }
 
     #[test]
