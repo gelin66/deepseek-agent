@@ -74,7 +74,11 @@ impl RunHubView {
         let selected = index == self.selected;
         let marker = if selected { "›" } else { " " };
         let text = if let Some(root) = self.roots.get(index) {
-            let status = status_label(self.language, root.run.terminal.as_ref());
+            let status = status_label(
+                self.language,
+                &root.run.completion,
+                root.run.terminal.as_ref(),
+            );
             let updated = format_updated_at(root.summary.updated_at_unix_ms);
             let objective = root
                 .run
@@ -225,7 +229,10 @@ impl SecondarySurface for RunHubView {
             let tone = if item_index == self.new_root_index() || selected {
                 palette::DSE_ACCENT_PRIMARY
             } else {
-                status_tone(self.roots[item_index].run.terminal.as_ref())
+                status_tone(
+                    &self.roots[item_index].run.completion,
+                    self.roots[item_index].run.terminal.as_ref(),
+                )
             };
             Paragraph::new(Line::from(Span::styled(
                 self.row_text(item_index, usize::from(rows.width)),
@@ -258,29 +265,61 @@ impl SecondarySurface for RunHubView {
     }
 }
 
-fn status_label(language: ProductLanguage, terminal: Option<&TerminalState>) -> Cow<'static, str> {
-    match terminal {
-        None => tr_in(language, MessageId::RunHubStatusActive),
-        Some(TerminalState::Completed { .. }) => tr_in(language, MessageId::RunTerminalCompleted),
-        Some(TerminalState::Blocked { .. }) => tr_in(language, MessageId::RunTerminalBlocked),
-        Some(TerminalState::Failed { .. }) => tr_in(language, MessageId::RunTerminalFailed),
-        Some(TerminalState::Cancelled) => tr_in(language, MessageId::RunTerminalCancelled),
-        Some(TerminalState::Interrupted) => tr_in(language, MessageId::RunTerminalInterrupted),
-        Some(TerminalState::RecoveryRequired { .. }) => {
-            tr_in(language, MessageId::RunTerminalRecoveryRequired)
+fn status_label(
+    language: ProductLanguage,
+    completion: &dse_protocol::run_api::RunCompletion,
+    terminal: Option<&TerminalState>,
+) -> Cow<'static, str> {
+    use dse_protocol::run_api::RunCompletion;
+    match completion {
+        RunCompletion::Answered { .. } => tr_in(language, MessageId::RunStatusAnswered),
+        RunCompletion::HostAccepted { .. } => tr_in(language, MessageId::RunStatusHostAccepted),
+        RunCompletion::VerifiedCompleted { .. } => {
+            tr_in(language, MessageId::RunStatusVerifiedCompleted)
         }
+        RunCompletion::Running if terminal.is_none() => {
+            tr_in(language, MessageId::RunHubStatusActive)
+        }
+        RunCompletion::Running | RunCompletion::EndedWithoutCompletion => match terminal {
+            None => tr_in(language, MessageId::RunHubStatusActive),
+            Some(TerminalState::AwaitingHostAcceptance { .. }) => {
+                tr_in(language, MessageId::RunTerminalAwaitingHostAcceptance)
+            }
+            Some(TerminalState::Completed { .. }) => {
+                tr_in(language, MessageId::RunTerminalCompleted)
+            }
+            Some(TerminalState::Blocked { .. }) => tr_in(language, MessageId::RunTerminalBlocked),
+            Some(TerminalState::Failed { .. }) => tr_in(language, MessageId::RunTerminalFailed),
+            Some(TerminalState::Cancelled) => tr_in(language, MessageId::RunTerminalCancelled),
+            Some(TerminalState::Interrupted) => tr_in(language, MessageId::RunTerminalInterrupted),
+            Some(TerminalState::RecoveryRequired { .. }) => {
+                tr_in(language, MessageId::RunTerminalRecoveryRequired)
+            }
+        },
     }
 }
 
-fn status_tone(terminal: Option<&TerminalState>) -> ratatui::style::Color {
-    match terminal {
-        None => palette::DSE_INFO,
-        Some(TerminalState::Completed { .. }) => palette::STATUS_SUCCESS,
-        Some(TerminalState::Blocked { .. } | TerminalState::Interrupted) => palette::STATUS_WARNING,
-        Some(TerminalState::Failed { .. } | TerminalState::RecoveryRequired { .. }) => {
-            palette::STATUS_ERROR
-        }
-        Some(TerminalState::Cancelled) => palette::TEXT_MUTED,
+fn status_tone(
+    completion: &dse_protocol::run_api::RunCompletion,
+    terminal: Option<&TerminalState>,
+) -> ratatui::style::Color {
+    use dse_protocol::run_api::RunCompletion;
+    match completion {
+        RunCompletion::Answered { .. } => palette::STATUS_WARNING,
+        RunCompletion::HostAccepted { .. } => palette::DSE_INFO,
+        RunCompletion::VerifiedCompleted { .. } => palette::STATUS_SUCCESS,
+        RunCompletion::Running | RunCompletion::EndedWithoutCompletion => match terminal {
+            None => palette::DSE_INFO,
+            Some(TerminalState::AwaitingHostAcceptance { .. }) => palette::STATUS_WARNING,
+            Some(TerminalState::Completed { .. }) => palette::STATUS_SUCCESS,
+            Some(TerminalState::Blocked { .. } | TerminalState::Interrupted) => {
+                palette::STATUS_WARNING
+            }
+            Some(TerminalState::Failed { .. } | TerminalState::RecoveryRequired { .. }) => {
+                palette::STATUS_ERROR
+            }
+            Some(TerminalState::Cancelled) => palette::TEXT_MUTED,
+        },
     }
 }
 
@@ -304,12 +343,59 @@ fn point_in_rect(column: u16, row: u16, rect: Rect) -> bool {
 mod tests {
     use crossterm::event::{KeyEvent, KeyModifiers};
     use dse_protocol::agent_runtime::TerminalState;
-    use dse_protocol::run_api::{RootRunSummary, RunView};
-    use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+    use dse_protocol::run_api::{RootRunSummary, RunCompletion, RunView};
+    use dse_protocol::task::{
+        AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
+        CompletionDecision, EvidenceReceiptId, HostAcceptanceReceipt, HostAcceptanceReceiptId,
+        TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
+    };
 
     use super::*;
 
     fn root(run_id: &str, objective: &str, terminal: Option<TerminalState>) -> TuiRootRun {
+        let completion = match &terminal {
+            Some(TerminalState::AwaitingHostAcceptance { candidate }) => RunCompletion::Answered {
+                candidate: candidate.clone(),
+                current_workspace_state: candidate.workspace_state.clone(),
+            },
+            Some(TerminalState::Completed { decision, .. })
+                if decision.satisfied.iter().any(|criterion| {
+                    matches!(criterion, AcceptanceSatisfaction::Evidence { .. })
+                }) =>
+            {
+                RunCompletion::VerifiedCompleted {
+                    decision: decision.clone(),
+                }
+            }
+            Some(TerminalState::Completed { message, decision }) => {
+                let receipt_id = decision
+                    .satisfied
+                    .iter()
+                    .find_map(|satisfaction| match satisfaction {
+                        AcceptanceSatisfaction::Host { receipt_id, .. } => Some(receipt_id.clone()),
+                        AcceptanceSatisfaction::Evidence { .. } => None,
+                    })
+                    .expect("Host-completed fixture receipt");
+                let candidate = CompletionCandidate {
+                    id: decision.candidate_id.clone(),
+                    generation_id: decision.generation_id.clone(),
+                    message: message.clone(),
+                    workspace_state: decision.workspace_state.clone(),
+                };
+                RunCompletion::HostAccepted {
+                    candidate,
+                    receipt: HostAcceptanceReceipt {
+                        id: receipt_id,
+                        candidate_id: decision.candidate_id.clone(),
+                        generation_id: decision.generation_id.clone(),
+                        workspace_state: decision.workspace_state.clone(),
+                    },
+                    current_workspace_state: decision.workspace_state.clone(),
+                }
+            }
+            Some(_) => RunCompletion::EndedWithoutCompletion,
+            None => RunCompletion::Running,
+        };
         TuiRootRun {
             summary: RootRunSummary {
                 run_id: RunId::from(run_id),
@@ -331,6 +417,7 @@ mod tests {
                 }),
                 workspace: "/workspace/project".to_owned(),
                 last_sequence: 4,
+                completion,
                 terminal,
                 usage: Default::default(),
                 accounting: Default::default(),
@@ -351,6 +438,67 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn completion_truth_has_distinct_labels_and_tones() {
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:hub".to_owned(),
+            },
+        };
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("candidate"),
+            generation_id: TaskGenerationId::from("generation"),
+            message: "answer".to_owned(),
+            workspace_state: workspace_state.clone(),
+        };
+        let decision = |satisfied| CompletionDecision {
+            candidate_id: candidate.id.clone(),
+            generation_id: candidate.generation_id.clone(),
+            workspace_state: workspace_state.clone(),
+            satisfied: vec![satisfied],
+        };
+        let answered = RunCompletion::Answered {
+            candidate: candidate.clone(),
+            current_workspace_state: workspace_state.clone(),
+        };
+        let host = RunCompletion::HostAccepted {
+            candidate: candidate.clone(),
+            receipt: HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:fixture"),
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: workspace_state.clone(),
+            },
+            current_workspace_state: workspace_state.clone(),
+        };
+        let verified = RunCompletion::VerifiedCompleted {
+            decision: decision(AcceptanceSatisfaction::Evidence {
+                acceptance_id: AcceptanceId::from("tests"),
+                receipt_id: EvidenceReceiptId::from("evidence:fixture"),
+            }),
+        };
+
+        assert_eq!(
+            status_label(ProductLanguage::English, &answered, None),
+            tr_in(ProductLanguage::English, MessageId::RunStatusAnswered)
+        );
+        assert_eq!(
+            status_label(ProductLanguage::English, &host, None),
+            tr_in(ProductLanguage::English, MessageId::RunStatusHostAccepted)
+        );
+        assert_eq!(
+            status_label(ProductLanguage::English, &verified, None),
+            tr_in(
+                ProductLanguage::English,
+                MessageId::RunStatusVerifiedCompleted
+            )
+        );
+        assert_eq!(status_tone(&answered, None), palette::STATUS_WARNING);
+        assert_eq!(status_tone(&host, None), palette::DSE_INFO);
+        assert_eq!(status_tone(&verified, None), palette::STATUS_SUCCESS);
     }
 
     #[test]

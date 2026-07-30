@@ -294,6 +294,20 @@
   有界恢复后安装 `0.8.69 (83c9d4315194)`；CLI/TUI version、doctor=`0` 和预置
   `DSE_HOME` marker byte-identical 全部通过。因此公网一键安装闭环已完成；Homebrew 仍是非阻塞的
   后续次级入口。本里程碑关闭后不自动启动新 capability cluster。
+- ADR-0021 显式 Host completion acceptance 的 production cutover、focused 与 canonical full gate
+  已闭合：默认 Host task 的模型
+  Stop 从旧的自动 `Completed` 降为无 Terminal 的 `Answered`；只有 exact canonical command/event/
+  receipt 可形成非验证性的 `HostAccepted`，只有 latest-revision `EvidenceReceipt` 可形成
+  `VerifiedCompleted`。Run API/RuntimeEvent/State/exec-stream 已直接切到 v16/v23/v29/v7，旧
+  unconditional `AcceptanceSatisfaction::Host`、旧 conformance 预期与 compatibility reader 为 0；
+  root、read-only child、Writer、TUI、exec、app-server 与 SQLite reopen 共用同一状态机。
+  focused 实际覆盖 runtime 96/96、app 80/80（4 ignored）、app-server 23/23、exec 30/30
+  （1 ignored）、TUI run 24/24、真实 PTY 7/7 以及 delivery/authority/check；official DeepSeek
+  requests=`0`。首次 full 在 workspace tests 前被 3 个等价可消除的 TUI Clippy warning 拒绝；
+  修复后的新 revision 只调用一次 full 且 exit=`0`，覆盖 public/authority、delivery、fmt、
+  workspace check/strict Clippy、全部 workspace tests 与 doctests；没有在失败 revision 或最终
+  revision 上重复求绿。结果写回后只复核 authority/fmt/diff，形成 clean reviewable commit，
+  不自动启动下一 Goal。
 - M40-A 继续保持 `reject_incomplete_acquisition`，不能续跑或补样；没有并行启动后续项。
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见

@@ -52,7 +52,7 @@ use crate::tui::key_shortcuts;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::permission_selector::PermissionSelector;
-use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
+use crate::tui::run_client::{TuiRunClient, TuiRunClientError, run_is_active_projection};
 use crate::tui::run_hub::RunHubView;
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
@@ -440,10 +440,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         } else {
             RunId::from(resume_id)
         };
-        let _ = run_client
+        let run = run_client
             .attach_or_resume(run_id, Some(workspace_identity.clone()))
             .await?;
-        app.is_loading = true;
+        app.is_loading = run_is_active_projection(&run);
     } else {
         match recover_creation_at_startup(&run_client, workspace_identity).await? {
             StartupCreationRecovery::None => {}
@@ -558,10 +558,13 @@ async fn recover_creation_at_startup(
 ) -> Result<StartupCreationRecovery, TuiRunClientError> {
     match run_client.recover_pending_for_workspace(workspace).await {
         Ok(None) => Ok(StartupCreationRecovery::None),
-        Ok(Some(run)) => Ok(StartupCreationRecovery::Recovered {
-            run_id: run.run_id,
-            active: run.terminal.is_none(),
-        }),
+        Ok(Some(run)) => {
+            let active = run_is_active_projection(&run);
+            Ok(StartupCreationRecovery::Recovered {
+                run_id: run.run_id,
+                active,
+            })
+        }
         Err(TuiRunClientError::AmbiguousPendingCreations {
             workspace,
             creation_request_ids,
@@ -1082,6 +1085,21 @@ async fn handle_canonical_key(
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Permissions) => {
                     open_permission_selector(app);
                 }
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Accept) => {
+                    match run_client.accept_completion().await {
+                        Ok(_) => {
+                            app.is_loading = true;
+                            app.status_message =
+                                Some(app.tr(MessageId::CanonicalCompletionAccepted).into_owned());
+                        }
+                        Err(error) => {
+                            app.status_message = Some(
+                                app.tr(MessageId::CanonicalCompletionAcceptFailed)
+                                    .replace("{error}", &error.to_string()),
+                            );
+                        }
+                    }
+                }
                 CanonicalSlashParse::Error(message) => {
                     app.insert_str(&input);
                     app.status_message = Some(message);
@@ -1258,8 +1276,9 @@ async fn handle_canonical_view_events(
                         ) {
                             let _ = app.view_stack.pop();
                         }
-                        app.is_loading = run.terminal.is_none();
+                        app.is_loading = run_is_active_projection(&run);
                         let message_id = match run.terminal.as_ref() {
+                            None if !run_is_active_projection(&run) => MessageId::RunHubAnswered,
                             None => MessageId::RunHubResuming,
                             Some(TerminalState::RecoveryRequired { .. }) => {
                                 MessageId::RunHubRecoveryReadOnly
@@ -1326,6 +1345,7 @@ fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<
                         && !matches!(
                             app.run_presentation.phase(),
                             crate::tui::run_presentation::RunPresentationPhase::Idle
+                                | crate::tui::run_presentation::RunPresentationPhase::HostAccepted
                                 | crate::tui::run_presentation::RunPresentationPhase::Completed
                                 | crate::tui::run_presentation::RunPresentationPhase::Blocked
                                 | crate::tui::run_presentation::RunPresentationPhase::Failed
@@ -1349,6 +1369,7 @@ fn open_permission_selector(app: &mut App) {
         && !matches!(
             app.run_presentation.phase(),
             crate::tui::run_presentation::RunPresentationPhase::Idle
+                | crate::tui::run_presentation::RunPresentationPhase::HostAccepted
                 | crate::tui::run_presentation::RunPresentationPhase::Completed
                 | crate::tui::run_presentation::RunPresentationPhase::Blocked
                 | crate::tui::run_presentation::RunPresentationPhase::Failed

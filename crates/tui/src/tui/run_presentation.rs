@@ -11,6 +11,7 @@ use dse_protocol::agent_runtime::{
     AgentTaskId, RunId, RunPermissionMode, RuntimeEventKind, StoredRuntimeEvent, TerminalState,
     ToolSideEffectStatus,
 };
+use dse_protocol::task::{AcceptanceSatisfaction, TaskAcceptance};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunPresentationPhase {
@@ -21,6 +22,7 @@ pub enum RunPresentationPhase {
     WaitingForUser,
     Verifying,
     Reworking,
+    HostAccepted,
     Completed,
     Blocked,
     Failed,
@@ -39,6 +41,7 @@ impl RunPresentationPhase {
             Self::WaitingForUser => MessageId::PhaseWaitingOnYou,
             Self::Verifying => MessageId::WorkPhaseVerifying,
             Self::Reworking => MessageId::WorkPhaseReworking,
+            Self::HostAccepted => MessageId::RunStatusHostAccepted,
             Self::Completed => MessageId::WorkPhaseCompleted,
             Self::Blocked => MessageId::WorkPhaseBlocked,
             Self::Failed => MessageId::PhaseFailed,
@@ -112,6 +115,8 @@ pub struct CanonicalRunPresentation {
     root_run_id: Option<RunId>,
     objective: Option<String>,
     acceptance_total: usize,
+    host_acceptance_required: bool,
+    verifier_required: bool,
     phase: RunPresentationPhase,
     verification: VerificationPresentation,
     satisfied_acceptance_ids: BTreeSet<String>,
@@ -175,7 +180,18 @@ impl CanonicalRunPresentation {
             }
             RuntimeEventKind::WorkspaceObserved { .. } => {}
             RuntimeEventKind::CompletionProposed { .. } => {
-                self.phase = RunPresentationPhase::Verifying;
+                self.phase = if self.host_acceptance_required {
+                    RunPresentationPhase::WaitingForUser
+                } else {
+                    RunPresentationPhase::Verifying
+                };
+            }
+            RuntimeEventKind::HostCompletionAccepted { .. } => {
+                self.phase = if self.verifier_required {
+                    RunPresentationPhase::Verifying
+                } else {
+                    RunPresentationPhase::Executing
+                };
             }
             RuntimeEventKind::HostVerificationPrepared { .. } => {
                 self.verification = VerificationPresentation::Preparing;
@@ -231,6 +247,16 @@ impl CanonicalRunPresentation {
         if let Some(contract) = &request.task_contract {
             self.objective = Some(contract.definition.objective.clone());
             self.acceptance_total = contract.definition.acceptance.len();
+            self.host_acceptance_required = contract
+                .definition
+                .acceptance
+                .iter()
+                .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }));
+            self.verifier_required = contract
+                .definition
+                .acceptance
+                .iter()
+                .any(|criterion| matches!(criterion, TaskAcceptance::Verifier { .. }));
         }
     }
 
@@ -252,6 +278,7 @@ impl CanonicalRunPresentation {
 
     fn apply_terminal(&mut self, terminal: &TerminalState) {
         self.phase = match terminal {
+            TerminalState::AwaitingHostAcceptance { .. } => RunPresentationPhase::WaitingForUser,
             TerminalState::Completed { decision, .. } => {
                 self.satisfied_acceptance_ids.extend(
                     decision
@@ -259,8 +286,20 @@ impl CanonicalRunPresentation {
                         .iter()
                         .map(|satisfaction| satisfaction.acceptance_id().0.clone()),
                 );
-                self.verification = VerificationPresentation::Passed;
-                RunPresentationPhase::Completed
+                self.verification = if decision.satisfied.iter().any(|satisfaction| {
+                    matches!(satisfaction, AcceptanceSatisfaction::Evidence { .. })
+                }) {
+                    VerificationPresentation::Passed
+                } else {
+                    VerificationPresentation::NotStarted
+                };
+                if decision.satisfied.iter().any(|satisfaction| {
+                    matches!(satisfaction, AcceptanceSatisfaction::Evidence { .. })
+                }) {
+                    RunPresentationPhase::Completed
+                } else {
+                    RunPresentationPhase::HostAccepted
+                }
             }
             TerminalState::Blocked { .. } => RunPresentationPhase::Blocked,
             TerminalState::Failed { .. } => RunPresentationPhase::Failed,
@@ -329,8 +368,9 @@ mod tests {
             RuntimeEventId, ToolOutcome,
         },
         task::{
-            AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
-            TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
+            AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
+            CompletionDecision, HostAcceptanceReceiptId, TaskContract, TaskDefinition,
+            TaskGenerationId, WorkspaceRevision, WorkspaceState,
         },
     };
 
@@ -350,7 +390,7 @@ mod tests {
 
     fn stored(run_id: &str, sequence: u64, event: RuntimeEventKind) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
-            schema_version: 25,
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: RunId::from(run_id),
             parent_run_id: None,
             event_id: RuntimeEventId(format!("event-{sequence}")),
@@ -370,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn root_flow_tracks_confirmed_change_and_terminal_verification() {
+    fn root_flow_tracks_confirmed_change_without_claiming_host_acceptance_is_verified() {
         let mut view = CanonicalRunPresentation::default();
         view.apply(&stored(
             "root",
@@ -407,11 +447,43 @@ mod tests {
             workspace_state: workspace(2),
             satisfied: vec![AcceptanceSatisfaction::Host {
                 acceptance_id: AcceptanceId::from("host"),
+                receipt_id: HostAcceptanceReceiptId::from("host-acceptance:fixture"),
             }],
         };
         view.apply(&stored(
             "root",
             3,
+            RuntimeEventKind::CompletionProposed {
+                candidate: CompletionCandidate {
+                    id: CompletionCandidateId::from("candidate"),
+                    generation_id: TaskGenerationId::from("root"),
+                    message: "done".to_owned(),
+                    workspace_state: workspace(2),
+                },
+            },
+        ));
+        assert_eq!(view.phase(), RunPresentationPhase::WaitingForUser);
+        assert_eq!(view.verification(), VerificationPresentation::NotStarted);
+
+        view.apply(&stored(
+            "root",
+            4,
+            RuntimeEventKind::HostCompletionAccepted {
+                command_id: dse_protocol::agent_runtime::CommandId::from("accept"),
+                receipt: dse_protocol::task::HostAcceptanceReceipt {
+                    id: HostAcceptanceReceiptId::from("host-acceptance:fixture"),
+                    candidate_id: CompletionCandidateId::from("candidate"),
+                    generation_id: TaskGenerationId::from("root"),
+                    workspace_state: workspace(2),
+                },
+            },
+        ));
+        assert_eq!(view.phase(), RunPresentationPhase::Executing);
+        assert_eq!(view.verification(), VerificationPresentation::NotStarted);
+
+        view.apply(&stored(
+            "root",
+            5,
             RuntimeEventKind::Terminal {
                 outcome: Box::new(AgentOutcome {
                     run_id: RunId::from("root"),
@@ -428,9 +500,65 @@ mod tests {
                 }),
             },
         ));
-        assert_eq!(view.phase(), RunPresentationPhase::Completed);
-        assert_eq!(view.verification(), VerificationPresentation::Passed);
+        assert_eq!(view.phase(), RunPresentationPhase::HostAccepted);
+        assert_eq!(view.verification(), VerificationPresentation::NotStarted);
         assert_eq!(view.satisfied_acceptance_count(), 1);
+    }
+
+    #[test]
+    fn verifier_only_proposal_stays_active_instead_of_waiting_for_user() {
+        let mut request = root_request("verified-root", RunPermissionMode::Agent);
+        request
+            .task_contract
+            .as_mut()
+            .expect("task contract")
+            .definition = serde_json::from_value(serde_json::json!({
+            "objective": "verify the parser",
+            "constraints": [],
+            "non_goals": [],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": "tests",
+                "description": "exact tests pass",
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "run_verifiers",
+                    "parameters": {},
+                    "plan": {"steps": [{
+                        "id": "tests",
+                        "program": "true",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1000
+                    }]}
+                }
+            }]
+        }))
+        .expect("verifier fixture");
+        let mut view = CanonicalRunPresentation::default();
+        view.apply(&stored(
+            "verified-root",
+            1,
+            RuntimeEventKind::RunCreated {
+                request: Box::new(request),
+            },
+        ));
+        view.apply(&stored(
+            "verified-root",
+            2,
+            RuntimeEventKind::CompletionProposed {
+                candidate: CompletionCandidate {
+                    id: CompletionCandidateId::from("candidate"),
+                    generation_id: TaskGenerationId::from("verified-root"),
+                    message: "done".to_owned(),
+                    workspace_state: workspace(1),
+                },
+            },
+        ));
+
+        assert_eq!(view.phase(), RunPresentationPhase::Verifying);
+        assert_eq!(view.verification(), VerificationPresentation::NotStarted);
     }
 
     #[test]

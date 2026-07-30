@@ -299,11 +299,13 @@ async fn native_phase_line_tracks_working_through_completion() -> Result<()> {
         INTERACTION_TIMEOUT,
     )?;
     tui.resize(40, 140)?;
-    tui.wait_for(
-        |frame| frame.contains("收尾中") || frame.contains("✓ 完成"),
-        INTERACTION_TIMEOUT,
-    )?;
-    tui.wait_for(|frame| frame.contains("✓ 完成"), INTERACTION_TIMEOUT)?;
+    tui.wait_for(|frame| frame.contains("等你处理"), INTERACTION_TIMEOUT)?;
+    type_and_submit(&mut tui, "/accept")?;
+    tui.wait_for(|frame| frame.contains("Host 已接受"), INTERACTION_TIMEOUT)?;
+    assert!(
+        !tui.frame().contains("✓ 完成"),
+        "Host acceptance must not use verifier-success styling"
+    );
 
     let _ = tui.shutdown();
     Ok(())

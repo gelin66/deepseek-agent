@@ -232,7 +232,7 @@
   M9-D 接受 ADR-0008 并退休 Auto 产品方向：model/reasoning Auto 的输入、状态语义、
   Host 分支、显示与 current evaluator 投影已删除；中性 actual-route audit 和显式
   Pro/Flash baseline 能力保留。该范围删除不读取 Key、不调用 API，也不重开 M9-A。
-- 当前协议：Run API v15、RuntimeEvent v22、State schema v28、exec-stream v6。产品默认
+- 当前协议：Run API v16、RuntimeEvent v23、State schema v29、exec-stream v7。产品默认
   固定 `deepseek-v4-pro` + `high`；Auto 产品方向已删除。
 
 <a id="current-core-facts"></a>
@@ -294,11 +294,14 @@ Fleet 的真实执行仍是 `FleetExecutor -> codewhale exec`。只有 route、r
 custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢复这些状态，而是在
 `protocol/runtime/state` 中建立唯一 TaskContract/EvidenceReceipt/Host completion 链路；
 历史测试只作为反例，仓库不存在旧类型 adapter、镜像 Store 或第二 completion loop。
+ADR-0021 又把显式 `accept_completion -> HostCompletionAccepted -> HostAcceptanceReceipt`
+纳入这条唯一链路；无 receipt 的模型 Stop 只能形成可展示 answer，旧无条件 Host satisfaction
+已物理删除。
 
 M7-A 现在由 production composition 在 Run 创建、继续和恢复边界调用唯一
 `ProductionToolExecutor` resolver，把调用方 verifier parameters 解析成实际执行的 frozen
 plan；Runtime 的 Host verification 复用该 exact spec。旧的 caller/Host/recovery 三份 plan
-推断已被替代。当前 RuntimeEvent v22 与 State schema v28 继续持久化 v16/v21 引入的
+推断已被替代。当前 RuntimeEvent v23 与 State schema v29 继续持久化 v16/v21 引入的
 completion rejection typed `cause` 和 `required_transition`，恢复只能消费当前 generation
 的 exact rejection 事实；
 root、只读 child 和 Writer 没有因此分裂出新的 Runtime 或 completion owner。
@@ -427,11 +430,12 @@ DeepSeek wire delta=`0`。
   facts，Writer root 不直接写入且 seal/integrate/cleanup 各 committed 一次；
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
-  cancel、resolve_interaction；
+  cancel、resolve_interaction、accept_completion；
 - start/continue 通过 State schema v21 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
-- control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
-  已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
+- control command 只有在对应 `SteerQueued`、`ControlRequested`、`InteractionResolved` 或
+  `HostCompletionAccepted` 已提交到 `RunStore` 后才返回 accepted sequence；重复
+  `request_id` 按持久回执幂等处理。
 
 active registry 只保存当前进程可投递的 control handle，不是第二个 lifecycle 或持久事实。
 run projection、event、lease 和 terminal 都从 `RunStore` 读取。
@@ -453,7 +457,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v22 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
+当前 RuntimeEvent v23 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：
 Runtime 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -461,15 +465,18 @@ ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 不等于物理耗尽，Runtime 不为证明耗尽而故意发送额外请求。旧泛化
 `request_budget_exceeded` 不再接受。
 
-M5-A 还把模型 `Stop` 从任务成功降为 `CompletionProposed`。每个 Agent run 在
+M5-A 把模型 `Stop` 从直接任务成功降为 `CompletionProposed`。ADR-0021 进一步删除默认
+Host task 在同一控制流无条件构造 `AcceptanceSatisfaction::Host` 的旧路。每个 Agent run 在
 `RunCreated` 冻结 `TaskContract`；非默认结构化 task 的 objective、constraints、non-goals
 和 acceptance description 以唯一确定性中文格式进入 canonical transcript，因此
-DeepSeek 能看到 Host 将执行的任务语义。Runtime 在接受候选前重新观测 workspace。显式
-verifier acceptance 只接受匹配 generation、精确 parameters/plan、最新单调 workspace
-generation 和已知 revision 的 Host-sealed `EvidenceReceipt`。任何 `MayWrite` 工具一旦
-执行都会推进 workspace generation，即使内容 hash 恢复原值；旧 receipt 因而不能复活。默认
-`TaskDefinition::host` 仍由 Host Runtime policy 接受候选，它不是确定性验证成功，也不能
-自动计为评测的 `verified_success`。
+DeepSeek 能看到 Host 将执行的任务语义。Stop 现在只提交绑定 generation 与当时 workspace
+state 的 candidate；RunStore 没有 Terminal，Run API 投影为 `Answered`，普通问答可以立即
+显示。只有 exact `accept_completion` command 持久化匹配 candidate/generation/latest Known
+revision 的 `HostAcceptanceReceipt` 后才投影 `HostAccepted`，且不冒充 deterministic verified。
+显式 verifier acceptance 只接受匹配 generation、精确 parameters/plan、最新单调 workspace
+generation 和已知 revision 的 Host-sealed `EvidenceReceipt`，并投影 `VerifiedCompleted`。
+任何 `MayWrite` 工具一旦执行都会推进 workspace generation，即使内容 hash 恢复原值；旧
+Host acceptance/receipt 因而不能复活。Unknown revision 仍可展示答案，但不能被 Host 接受。
 
 M7-A2 后，`crates/protocol` 的 canonical JSON 不再依赖 `serde_json::Map` 的 feature 后端：
 每层 object 显式按 UTF-8 key bytes 排序，array 保持原序；inline verification artifact 的
@@ -529,7 +536,7 @@ resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实�
 retained，确定无副作用时精确清理。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是当前 RuntimeEvent v22 / State v28 的 canonical facts。
+post-integration verification 都是当前 RuntimeEvent v23 / State v29 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定，也不拥有 M45-A ApplicationProbe 的 process/port/health/log 生命周期。它只为 probe
 沿用调用方已经选定的 Writer worktree；一次性 probe 的实现、进程树 lease 与 cleanup 均在
@@ -828,9 +835,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v24；RunStore 继续复用同一 event/snapshot 表，不增加
-  EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v18；
+- 当前 State 物理 schema 为 v29；RunStore 继续复用同一 event/snapshot 表，不增加
+  EvidenceReceipt 或 Host acceptance 私表；
+- 当前 canonical RuntimeEvent writer/reader 为 v23；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -841,8 +848,8 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - execution lease 与 epoch；
 - pending model attempt、typed response/failure evidence、原子 retry decision 与 unknown billing；
 - pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
-- frozen TaskContract、workspace state、completion candidate、Host verifier durable action
-  与 EvidenceReceipt；
+- frozen TaskContract、workspace state、completion candidate、显式 Host acceptance command/
+  event/receipt、Host verifier durable action 与 EvidenceReceipt；
 - AgentTask/workspace assignment、Host-observed AgentOutcome、Writer integration、
   post-integration verification 与 cleanup/recovery；
 - terminal exactly-once；
@@ -865,6 +872,10 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   同时保留 replay-safe pending Start；
 - v26 删除无法无损映射到三档 `RunPermissionMode` 的旧 materialized Run 和 pending Start；
   旧 bool/trust/sandbox/elevation tuple 不被猜成新 preset，迁移后只有 v20 reader/writer；
+- v27 退役不能证明 exact verifier execution grant 的 v20 materialized Run，只保留 replay-safe
+  pending Start；v28 同样退役缺少 Runtime-owned retry decision time 的 v21 materialized Run；
+- v29 退役缺少独立 Host acceptance receipt、且候选没有 workspace binding 的 v22 materialized
+  Run，只保留 replay-safe pending Start，不推导或伪造 acceptance；
 - no-key terminal replay。
 
 旧 `codewhale thread`、SQLite `threads` metadata 表与 `session_index.jsonl` 已删除；
@@ -879,6 +890,8 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 真实执行进入 `AgentApplication`；
 - text/NDJSON、receipt 和 exit code 投影仍在 `crates/tui`；
 - start/continue/list_roots/resume/events/cancel 均读写 canonical Run API；
+- 模型 Stop 在 plain/JSON/NDJSON 中返回 `answered` / `answered_unverified`，没有成功 Terminal；
+  未显式接受的 source 不能用于 continuation；
 - `codewhale exec --continue <PROMPT>` 查询精确 workspace 下最新 root；只有最新 root 已终态
   时才以新 prompt 创建新的 root continuation。若最新 root 未终态，必须显式使用
   `codewhale exec --resume <RUN_ID>` 恢复同一个 run；
@@ -893,9 +906,10 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v15 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
-  completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v21；
+- 当前 Run API v16 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+  `Answered` / `HostAccepted` / `VerifiedCompleted`、durable creation-intent list/recover；
+  `/v1/runs/{run_id}/accept-completion` 只承载 exact canonical command，当前 RuntimeEvent
+  writer/reader 为 v23；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -905,7 +919,8 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
 
 交互 foreground 已切到 `AgentApplication`：
 
-- `TuiRunClient` 提交 start/resume/continue/steer/interrupt/cancel 和 interaction
+- `TuiRunClient` 提交 start/resume/continue/steer/interrupt/cancel、interaction 和 exact
+  completion acceptance
   command；
 - `CanonicalRunProjection` 与 presenter 只从 `RunStore` event 投影 root/child 进度、终态和
   durable outcome；
@@ -921,7 +936,9 @@ M7-C 后，`edit_file` 的 prior-read freshness 绑定 exact-byte SHA-256，并�
   同一状态；不存在 TUI 私有 `runtime_turn_status`；
 - 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
   cache 和 registry-driven slash command system 已删除；
-- slash command 只剩统一的 `help/runs/cost/permissions/exit` canonical contract；
+- slash command 只剩统一的 `help/runs/cost/permissions/accept/exit` canonical contract；
+- `/accept` 只接受当前 exact proposal；Run Hub、phase strip 与详情明确区分 answered、
+  Host accepted 和 verifier-verified completed，不从文案或本地状态提升完成事实；
 - 退役的 `crates/tui/src/compaction.rs`、`seam_manager.rs` 以及不再生效的 TUI
   `auto_compact` 开关/阈值状态均已删除；hard-limit compaction 位于
   `crates/context + crates/runtime`，不存在手动 `/compact` 或传输层 command；

@@ -16,9 +16,10 @@ use dse_protocol::agent_runtime::{
 };
 use dse_protocol::run_api::{
     ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary, RUN_API_SCHEMA_VERSION,
-    RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope, RunCommandResult, RunView,
-    StartRunCommand,
+    RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope, RunCommandResult, RunCompletion,
+    RunView, StartRunCommand,
 };
+use dse_protocol::task::{CompletionCandidate, HostCompletionAcceptance, TaskAcceptance};
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -89,6 +90,7 @@ impl std::error::Error for TuiRunClientError {}
 pub struct TuiRunClientSnapshot {
     pub current_active_root: Option<RunId>,
     pub latest_terminal_root: Option<RunId>,
+    pub pending_completion: Option<(RunId, CompletionCandidate)>,
     pub cursors: HashMap<RunId, u64>,
 }
 
@@ -96,8 +98,11 @@ pub struct TuiRunClientSnapshot {
 struct TuiRunClientState {
     current_active_root: Option<RunId>,
     latest_terminal_root: Option<RunId>,
+    pending_completion: Option<(RunId, CompletionCandidate)>,
     cursors: HashMap<RunId, u64>,
     monitored_runs: HashSet<RunId>,
+    monitor_restart_runs: HashSet<RunId>,
+    host_acceptance_runs: HashSet<RunId>,
     launch_in_flight: bool,
 }
 
@@ -106,6 +111,7 @@ impl TuiRunClientState {
         TuiRunClientSnapshot {
             current_active_root: self.current_active_root.clone(),
             latest_terminal_root: self.latest_terminal_root.clone(),
+            pending_completion: self.pending_completion.clone(),
             cursors: self.cursors.clone(),
         }
     }
@@ -140,12 +146,54 @@ impl TuiRunClientState {
     }
 
     fn observe_run(&mut self, run: &RunView) -> Result<bool, TuiRunClientError> {
+        if self
+            .pending_completion
+            .as_ref()
+            .is_some_and(|(pending_run_id, _)| pending_run_id != &run.run_id)
+        {
+            self.pending_completion = None;
+        }
+        if run.task_contract.as_ref().is_some_and(|contract| {
+            contract
+                .definition
+                .acceptance
+                .iter()
+                .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }))
+        }) {
+            self.host_acceptance_runs.insert(run.run_id.clone());
+        }
+        let host_answered = self.host_acceptance_runs.contains(&run.run_id)
+            && matches!(
+                run.completion,
+                dse_protocol::run_api::RunCompletion::Answered { .. }
+            );
+        if host_answered
+            && let dse_protocol::run_api::RunCompletion::Answered { candidate, .. } =
+                &run.completion
+        {
+            self.pending_completion = Some((run.run_id.clone(), candidate.clone()));
+        }
         let cursor = *self.cursors.entry(run.run_id.clone()).or_insert(0);
         if let Some(terminal) = run.terminal.as_ref() {
             if self.current_active_root.as_ref() == Some(&run.run_id) {
                 self.current_active_root = None;
             }
             self.latest_terminal_root = terminal_can_continue(terminal).then(|| run.run_id.clone());
+            if self
+                .pending_completion
+                .as_ref()
+                .is_some_and(|(pending_run_id, _)| pending_run_id == &run.run_id)
+            {
+                self.pending_completion = None;
+            }
+        } else if host_answered {
+            if self.current_active_root.as_ref() == Some(&run.run_id) {
+                self.current_active_root = None;
+            }
+            // This quiescent answer is now the newest conversational fact but
+            // it has no accepted terminal that can back `Continue`. Do not
+            // fall back to an older terminal and silently fork a sibling run.
+            self.latest_terminal_root = None;
         } else {
             if let Some(active) = &self.current_active_root
                 && active != &run.run_id
@@ -160,21 +208,57 @@ impl TuiRunClientState {
     }
 
     fn begin_monitor(&mut self, run_id: &RunId) -> bool {
-        self.monitored_runs.insert(run_id.clone())
+        if self.monitored_runs.insert(run_id.clone()) {
+            true
+        } else {
+            self.monitor_restart_runs.insert(run_id.clone());
+            false
+        }
     }
 
-    fn finish_monitor(&mut self, run_id: &RunId) {
-        self.monitored_runs.remove(run_id);
+    fn finish_monitor(&mut self, run_id: &RunId) -> bool {
+        if self.monitor_restart_runs.remove(run_id) {
+            true
+        } else {
+            self.monitored_runs.remove(run_id);
+            false
+        }
     }
 
     fn record_event(&mut self, event: &StoredRuntimeEvent) {
         self.cursors.insert(event.run_id.clone(), event.sequence);
+        if let RuntimeEventKind::CompletionProposed { candidate } = &event.event
+            && self.host_acceptance_runs.contains(&event.run_id)
+        {
+            self.pending_completion = Some((event.run_id.clone(), candidate.clone()));
+            if self.current_active_root.as_ref() == Some(&event.run_id) {
+                self.current_active_root = None;
+            }
+            self.latest_terminal_root = None;
+        }
+        if let RuntimeEventKind::HostCompletionAccepted { receipt, .. } = &event.event
+            && self
+                .pending_completion
+                .as_ref()
+                .is_some_and(|(pending_run_id, candidate)| {
+                    pending_run_id == &event.run_id && candidate.id == receipt.candidate_id
+                })
+        {
+            self.pending_completion = None;
+        }
         if let RuntimeEventKind::Terminal { outcome } = &event.event {
             if self.current_active_root.as_ref() == Some(&event.run_id) {
                 self.current_active_root = None;
             }
             self.latest_terminal_root =
                 terminal_can_continue(&outcome.terminal).then(|| event.run_id.clone());
+            if self
+                .pending_completion
+                .as_ref()
+                .is_some_and(|(pending_run_id, _)| pending_run_id == &event.run_id)
+            {
+                self.pending_completion = None;
+            }
         }
     }
 }
@@ -199,8 +283,22 @@ impl RequestIds {
     }
 }
 
+fn run_is_quiescent_host_answer(run: &RunView) -> bool {
+    run.task_contract.as_ref().is_some_and(|contract| {
+        contract
+            .definition
+            .acceptance
+            .iter()
+            .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }))
+    }) && matches!(run.completion, RunCompletion::Answered { .. })
+}
+
+pub(crate) fn run_is_active_projection(run: &RunView) -> bool {
+    run.terminal.is_none() && !run_is_quiescent_host_answer(run)
+}
+
 fn run_requires_resume(run: &RunView) -> bool {
-    run.terminal.is_none()
+    run_is_active_projection(run)
 }
 
 fn terminal_can_continue(terminal: &TerminalState) -> bool {
@@ -319,6 +417,7 @@ impl TuiRunClient {
             return Err(TuiRunClientError::ActiveRun { run_id });
         }
         state.latest_terminal_root = None;
+        state.pending_completion = None;
         Ok(())
     }
 
@@ -497,6 +596,50 @@ impl TuiRunClient {
         .await
     }
 
+    pub async fn accept_completion(&self) -> Result<u64, TuiRunClientError> {
+        let (run_id, candidate) = {
+            let state = self.state.lock().await;
+            let pending = state
+                .pending_completion
+                .clone()
+                .ok_or(TuiRunClientError::NoActiveRun)?;
+            if let Some(active) = &state.current_active_root {
+                return Err(TuiRunClientError::ActiveRun {
+                    run_id: active.clone(),
+                });
+            }
+            pending
+        };
+        let candidate_id = candidate.id.clone();
+        let last_sequence = self
+            .execute_control(
+                "accept-completion",
+                RunCommand::AcceptCompletion {
+                    run_id: run_id.clone(),
+                    acceptance: HostCompletionAcceptance {
+                        candidate_id: candidate.id,
+                        generation_id: candidate.generation_id,
+                        workspace_state: candidate.workspace_state,
+                    },
+                },
+            )
+            .await?;
+        let mut state = self.state.lock().await;
+        if state
+            .pending_completion
+            .as_ref()
+            .is_some_and(|(pending_run_id, pending_candidate)| {
+                pending_run_id == &run_id && pending_candidate.id == candidate_id
+            })
+        {
+            state.pending_completion = None;
+        }
+        state.current_active_root = Some(run_id.clone());
+        drop(state);
+        self.ensure_monitor(run_id).await;
+        Ok(last_sequence)
+    }
+
     async fn begin_launch(&self) -> Result<(), TuiRunClientError> {
         self.state.lock().await.begin_launch()
     }
@@ -601,51 +744,59 @@ async fn monitor_run(
     run_id: RunId,
 ) {
     loop {
-        let cursor = {
-            let state = state.lock().await;
-            state.cursors.get(&run_id).copied().unwrap_or(0)
-        };
-        let result = application.wait_events(&run_id, cursor).await;
-        let events = match result {
-            RunCommandResult::Events {
-                run_id: response_run_id,
-                events,
-                ..
-            } if response_run_id == run_id => events,
-            RunCommandResult::Error { error } => {
-                tracing::warn!(
-                    run_id = %run_id,
-                    code = ?error.code,
-                    message = %error.message,
-                    "canonical TUI run monitor stopped"
-                );
+        loop {
+            let cursor = {
+                let state = state.lock().await;
+                state.cursors.get(&run_id).copied().unwrap_or(0)
+            };
+            let result = application.wait_events(&run_id, cursor).await;
+            let events = match result {
+                RunCommandResult::Events {
+                    run_id: response_run_id,
+                    events,
+                    ..
+                } if response_run_id == run_id => events,
+                RunCommandResult::Error { error } => {
+                    tracing::warn!(
+                        run_id = %run_id,
+                        code = ?error.code,
+                        message = %error.message,
+                        "canonical TUI run monitor stopped"
+                    );
+                    break;
+                }
+                other => {
+                    tracing::warn!(
+                        run_id = %run_id,
+                        result = ?other,
+                        "canonical TUI run monitor received an unexpected result"
+                    );
+                    break;
+                }
+            };
+            if events.is_empty() {
                 break;
             }
-            other => {
-                tracing::warn!(
-                    run_id = %run_id,
-                    result = ?other,
-                    "canonical TUI run monitor received an unexpected result"
-                );
+            let mut terminal = false;
+            let mut host_answered = false;
+            for event in events {
+                terminal |= event.event.is_terminal();
+                host_answered |=
+                    matches!(&event.event, RuntimeEventKind::CompletionProposed { .. })
+                        && state.lock().await.host_acceptance_runs.contains(&run_id);
+                if record_and_send(&state, &event_tx, event).await.is_err() {
+                    terminal = true;
+                    break;
+                }
+            }
+            if terminal || host_answered {
                 break;
             }
-        };
-        if events.is_empty() {
-            break;
         }
-        let mut terminal = false;
-        for event in events {
-            terminal |= event.event.is_terminal();
-            if record_and_send(&state, &event_tx, event).await.is_err() {
-                terminal = true;
-                break;
-            }
-        }
-        if terminal {
-            break;
+        if !state.lock().await.finish_monitor(&run_id) {
+            return;
         }
     }
-    state.lock().await.finish_monitor(&run_id);
 }
 
 async fn record_and_send(
@@ -671,8 +822,11 @@ mod tests {
         AgentOutcome, CommandId, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
         RuntimeEventKind, TerminalState, ToolPolicy,
     };
-    use dse_protocol::run_api::{PendingCreationKind, RunProductControls};
-    use dse_protocol::task::TaskDefinition;
+    use dse_protocol::run_api::{PendingCreationKind, RunCompletion, RunProductControls};
+    use dse_protocol::task::{
+        CompletionCandidate, CompletionCandidateId, HostAcceptanceReceipt, HostAcceptanceReceiptId,
+        TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
+    };
     use dse_runtime::{CreationIntent, RunStore};
     use dse_state::StateStore;
     use sha2::{Digest, Sha256};
@@ -697,6 +851,11 @@ mod tests {
     }
 
     fn run_view(run_id: &str, terminal: Option<TerminalState>, last_sequence: u64) -> RunView {
+        let completion = if terminal.is_some() {
+            RunCompletion::EndedWithoutCompletion
+        } else {
+            RunCompletion::Running
+        };
         RunView {
             run_id: RunId::from(run_id),
             parent_run_id: None,
@@ -705,6 +864,7 @@ mod tests {
             task_contract: None,
             workspace: "/workspace/project".to_owned(),
             last_sequence,
+            completion,
             terminal,
             usage: Default::default(),
             accounting: Default::default(),
@@ -738,6 +898,146 @@ mod tests {
                 }),
             },
         }
+    }
+
+    #[test]
+    fn completion_events_preserve_the_exact_candidate_and_clear_it_after_host_acceptance() {
+        let run_id = RunId::from("host-answer");
+        let workspace_state = WorkspaceState {
+            generation: 3,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:host-answer".to_owned(),
+            },
+        };
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("candidate-3"),
+            generation_id: TaskGenerationId::from("generation-3"),
+            message: "answer".to_owned(),
+            workspace_state: workspace_state.clone(),
+        };
+        let mut state = TuiRunClientState {
+            current_active_root: Some(run_id.clone()),
+            ..TuiRunClientState::default()
+        };
+        state.host_acceptance_runs.insert(run_id.clone());
+        state.record_event(&StoredRuntimeEvent {
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            event_id: RuntimeEventId("proposal".to_owned()),
+            sequence: 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::CompletionProposed {
+                candidate: candidate.clone(),
+            },
+        });
+        assert_eq!(state.pending_completion, Some((run_id.clone(), candidate)));
+        assert_eq!(state.current_active_root, None);
+        assert!(matches!(
+            state.plan_submit(start_command("next independent question")),
+            Ok(RunCommand::Start(_))
+        ));
+
+        state.record_event(&StoredRuntimeEvent {
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id,
+            parent_run_id: None,
+            event_id: RuntimeEventId("accepted".to_owned()),
+            sequence: 2,
+            occurred_at_unix_ms: 2,
+            event: RuntimeEventKind::HostCompletionAccepted {
+                command_id: CommandId::from("accept"),
+                receipt: HostAcceptanceReceipt {
+                    id: HostAcceptanceReceiptId::from("host-acceptance:accept"),
+                    candidate_id: CompletionCandidateId::from("candidate-3"),
+                    generation_id: TaskGenerationId::from("generation-3"),
+                    workspace_state,
+                },
+            },
+        });
+        assert_eq!(state.pending_completion, None);
+    }
+
+    #[test]
+    fn answered_continuation_never_reuses_an_older_terminal_as_its_next_source() {
+        let terminal_root = RunId::from("terminal-a");
+        let answered_root = RunId::from("answered-b");
+        let mut state = TuiRunClientState {
+            current_active_root: Some(answered_root.clone()),
+            latest_terminal_root: Some(terminal_root.clone()),
+            ..TuiRunClientState::default()
+        };
+        assert!(matches!(
+            TuiRunClientState {
+                latest_terminal_root: Some(terminal_root.clone()),
+                ..TuiRunClientState::default()
+            }
+            .plan_submit(start_command("create B from terminal A")),
+            Ok(RunCommand::Continue(command)) if command.run_id == terminal_root
+        ));
+
+        state.host_acceptance_runs.insert(answered_root.clone());
+        state.record_event(&StoredRuntimeEvent {
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: answered_root.clone(),
+            parent_run_id: None,
+            event_id: RuntimeEventId("answered-b-proposal".to_owned()),
+            sequence: 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::CompletionProposed {
+                candidate: CompletionCandidate {
+                    id: CompletionCandidateId::from("answered-b-candidate"),
+                    generation_id: TaskGenerationId::from("answered-b-generation"),
+                    message: "B answered without Host acceptance".to_owned(),
+                    workspace_state: WorkspaceState {
+                        generation: 1,
+                        revision: WorkspaceRevision::Known {
+                            sha256: "sha256:answered-b".to_owned(),
+                        },
+                    },
+                },
+            },
+        });
+
+        assert_eq!(state.current_active_root, None);
+        assert_eq!(state.latest_terminal_root, None);
+        assert!(matches!(
+            state.plan_submit(start_command("next after unaccepted B")),
+            Ok(RunCommand::Start(_))
+        ));
+    }
+
+    #[test]
+    fn verifier_only_proposal_stays_active_and_never_offers_host_acceptance() {
+        let run_id = RunId::from("verifier-proposal");
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:verifier-proposal".to_owned(),
+            },
+        };
+        let mut state = TuiRunClientState {
+            current_active_root: Some(run_id.clone()),
+            ..TuiRunClientState::default()
+        };
+        state.record_event(&StoredRuntimeEvent {
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            event_id: RuntimeEventId("verifier-proposal".to_owned()),
+            sequence: 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::CompletionProposed {
+                candidate: CompletionCandidate {
+                    id: CompletionCandidateId::from("verifier-candidate"),
+                    generation_id: TaskGenerationId::from("verifier-generation"),
+                    message: "verify me".to_owned(),
+                    workspace_state,
+                },
+            },
+        });
+        assert_eq!(state.current_active_root, Some(run_id));
+        assert_eq!(state.pending_completion, None);
     }
 
     struct RecoveryFixture {
@@ -905,6 +1205,26 @@ mod tests {
     #[test]
     fn attach_decision_resumes_only_non_terminal_runs() {
         let active = run_view("active", None, 2);
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:answered-attach".to_owned(),
+            },
+        };
+        let mut answered = run_view("answered", None, 3);
+        answered.task_contract = Some(TaskContract {
+            generation_id: TaskGenerationId::from("answered-generation"),
+            definition: TaskDefinition::host("answer without accepting"),
+        });
+        answered.completion = RunCompletion::Answered {
+            candidate: CompletionCandidate {
+                id: CompletionCandidateId::from("answered-candidate"),
+                generation_id: TaskGenerationId::from("answered-generation"),
+                message: "unverified answer".to_owned(),
+                workspace_state: workspace_state.clone(),
+            },
+            current_workspace_state: workspace_state,
+        };
         let terminal = run_view(
             "terminal",
             Some(TerminalState::Blocked {
@@ -913,7 +1233,59 @@ mod tests {
             7,
         );
         assert!(run_requires_resume(&active));
+        assert!(!run_requires_resume(&answered));
+        assert!(!run_is_active_projection(&answered));
         assert!(!run_requires_resume(&terminal));
+
+        let mut state = TuiRunClientState {
+            current_active_root: Some(answered.run_id.clone()),
+            latest_terminal_root: Some(RunId::from("older-terminal")),
+            ..TuiRunClientState::default()
+        };
+        assert!(state.observe_run(&answered).expect("observe answered root"));
+        assert_eq!(state.current_active_root, None);
+        assert_eq!(state.latest_terminal_root, None);
+        assert!(state.pending_completion.is_some());
+    }
+
+    #[test]
+    fn observing_another_terminal_root_discards_the_hidden_answered_acceptance() {
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:answered-a".to_owned(),
+            },
+        };
+        let mut answered = run_view("answered-a", None, 3);
+        answered.task_contract = Some(TaskContract {
+            generation_id: TaskGenerationId::from("answered-a-generation"),
+            definition: TaskDefinition::host("answer A"),
+        });
+        answered.completion = RunCompletion::Answered {
+            candidate: CompletionCandidate {
+                id: CompletionCandidateId::from("answered-a-candidate"),
+                generation_id: TaskGenerationId::from("answered-a-generation"),
+                message: "unverified A".to_owned(),
+                workspace_state: workspace_state.clone(),
+            },
+            current_workspace_state: workspace_state,
+        };
+        let terminal_b = run_view(
+            "terminal-b",
+            Some(TerminalState::Blocked {
+                reason: "B closed".to_owned(),
+            }),
+            7,
+        );
+        let mut state = TuiRunClientState::default();
+        state.observe_run(&answered).expect("observe answered A");
+        assert!(state.pending_completion.is_some());
+
+        state
+            .observe_run(&terminal_b)
+            .expect("observe distinct terminal B");
+        assert_eq!(state.pending_completion, None);
+        assert_eq!(state.latest_terminal_root, Some(terminal_b.run_id));
     }
 
     #[test]
@@ -950,6 +1322,13 @@ mod tests {
         assert_eq!(state.current_active_root, Some(RunId::from("run-1")));
         assert!(state.begin_monitor(&active.run_id));
         assert!(!state.begin_monitor(&active.run_id));
+        assert!(
+            state.finish_monitor(&active.run_id),
+            "a monitor request racing the old monitor exit must hand off"
+        );
+        assert!(state.monitored_runs.contains(&active.run_id));
+        assert!(!state.finish_monitor(&active.run_id));
+        assert!(!state.monitored_runs.contains(&active.run_id));
 
         let event = terminal_event(&active.run_id, 7);
         state.record_event(&event);

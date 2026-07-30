@@ -14,12 +14,13 @@ use uuid::Uuid;
 
 use crate::task::{
     AcceptanceId, CompletionCandidate, CompletionDecision, CompletionRejection, EvidenceReceipt,
-    FailedVerifierEvidence, TaskContract, VerificationId, VerifierObservation, VerifierSpec,
-    VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
+    FailedVerifierEvidence, HostAcceptanceReceipt, TaskContract, VerificationId,
+    VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceMutationEvidence,
+    WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 22;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 22;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 23;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 23;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -1845,8 +1846,12 @@ impl WriterCleanupResult {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AgentResultDetails {
     pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_candidate: Option<CompletionCandidate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_acceptance_receipts: Vec<HostAcceptanceReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1871,6 +1876,9 @@ pub struct AgentResultDetails {
 
 impl AgentResultDetails {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(candidate) = &self.completion_candidate {
+            candidate.validate()?;
+        }
         validate_relative_path_list("changed file", &self.changed_files)?;
         validate_unique_non_empty_text("unresolved item", &self.unresolved)?;
         validate_unique_non_empty_text(
@@ -1882,6 +1890,17 @@ impl AgentResultDetails {
                 .collect::<Vec<_>>(),
         )?;
         for receipt in &self.evidence {
+            receipt.validate()?;
+        }
+        validate_unique_non_empty_text(
+            "Host acceptance receipt id",
+            &self
+                .host_acceptance_receipts
+                .iter()
+                .map(|receipt| receipt.id.0.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for receipt in &self.host_acceptance_receipts {
             receipt.validate()?;
         }
         validate_unique_non_empty_text(
@@ -2364,6 +2383,12 @@ pub enum RuntimeFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TerminalState {
+    /// The model produced a displayable answer, but no Host/verifier success
+    /// fact exists. Runtime returns this quiescent state without persisting a
+    /// canonical Terminal event.
+    AwaitingHostAcceptance {
+        candidate: CompletionCandidate,
+    },
     Completed {
         message: String,
         decision: CompletionDecision,
@@ -2402,6 +2427,20 @@ impl AgentOutcome {
             .is_some_and(|parent| parent == &self.run_id)
         {
             return Err("Agent outcome cannot be its own parent".to_owned());
+        }
+        match &self.terminal {
+            TerminalState::AwaitingHostAcceptance { candidate } => candidate.validate()?,
+            TerminalState::Completed { message, decision } => {
+                require_agent_text("completed Agent message", message)?;
+                decision.validate()?;
+            }
+            TerminalState::Blocked { reason } => {
+                require_agent_text("blocked Agent reason", reason)?;
+            }
+            TerminalState::Failed { .. }
+            | TerminalState::Cancelled
+            | TerminalState::Interrupted
+            | TerminalState::RecoveryRequired { .. } => {}
         }
         self.details.validate()
     }
@@ -3019,6 +3058,10 @@ pub enum RuntimeEventKind {
     CompletionProposed {
         candidate: CompletionCandidate,
     },
+    HostCompletionAccepted {
+        command_id: CommandId,
+        receipt: HostAcceptanceReceipt,
+    },
     HostVerificationPrepared {
         verification_id: VerificationId,
         candidate: CompletionCandidate,
@@ -3526,8 +3569,8 @@ mod tests {
 
     #[test]
     fn current_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 22);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 22);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 23);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 23);
     }
 
     #[test]

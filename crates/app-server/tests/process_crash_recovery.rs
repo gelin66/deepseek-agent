@@ -35,9 +35,9 @@ use dse_protocol::agent_runtime::{
 };
 use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
-    RunCommandResult, RunProductControls, RunView, StartRunCommand,
+    RunCommandResult, RunCompletion, RunProductControls, RunView, StartRunCommand,
 };
-use dse_protocol::task::TaskDefinition;
+use dse_protocol::task::{HostCompletionAcceptance, TaskDefinition};
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -865,6 +865,50 @@ fn events_from_response(response: RunCommandResponse) -> Vec<StoredRuntimeEvent>
     }
 }
 
+fn wait_answered_and_accept(process: &mut StdioProcess, run_id: &RunId, request_prefix: &str) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut attempt = 0_u32;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let view = run_from_response(process.request(&envelope(
+            &format!("{request_prefix}-get-{attempt}"),
+            RunCommand::Get {
+                run_id: run_id.clone(),
+            },
+        )));
+        if let RunCompletion::Answered {
+            candidate,
+            current_workspace_state,
+        } = view.completion
+        {
+            assert_eq!(candidate.workspace_state, current_workspace_state);
+            let response = process.request(&envelope(
+                &format!("{request_prefix}-accept"),
+                RunCommand::AcceptCompletion {
+                    run_id: run_id.clone(),
+                    acceptance: HostCompletionAcceptance {
+                        candidate_id: candidate.id,
+                        generation_id: candidate.generation_id,
+                        workspace_state: current_workspace_state,
+                    },
+                },
+            ));
+            assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
+            return;
+        }
+        assert!(
+            matches!(view.completion, RunCompletion::Running),
+            "run left Running without an answer proposal: {:?}",
+            view.completion
+        );
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for answer proposal"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn tree_digest(root: &Path) -> String {
     fn collect(root: &Path, path: &Path, entries: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(path).expect("read fixture workspace") {
@@ -908,6 +952,16 @@ fn fixture_paths(prefix: &str) -> (TempDir, PathBuf, PathBuf, PathBuf) {
         "canonical app-server crash fixture\n",
     )
     .expect("write fixture file");
+    let git = Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&workspace)
+        .output()
+        .expect("initialize versioned crash fixture");
+    assert!(
+        git.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&git.stderr)
+    );
     let db = temp.path().join("state.db");
     (temp, workspace, home, db)
 }
@@ -1060,6 +1114,7 @@ fn retry_decision_sigkill_reopen_waits_remaining_deadline_and_sends_once() {
     );
 
     fixture.wait_requests(2);
+    wait_answered_and_accept(&mut resumed, &started.run_id, "retry-completion");
     let completed = wait_db_state(&db, Duration::from_secs(8), |state| state.terminal);
     assert_eq!(completed.run_id, started.run_id.0);
     assert_eq!(fixture.request_count(), 2);
@@ -1146,6 +1201,7 @@ fn sigkill_app_server_recovers_same_run_and_terminal_replays_without_key() {
     assert_ne!(new_owner.lease_owner_id, pre_crash.lease_owner_id);
     assert!(new_owner.execution_epoch > pre_crash.execution_epoch);
     fixture.release_one();
+    wait_answered_and_accept(&mut resumed_process, &run_id, "sigkill-completion");
     let completed = wait_db_state(&db, Duration::from_secs(8), |state| state.terminal);
     assert_eq!(completed.run_id, run_id.0);
     assert!(completed.last_sequence > pre_crash.last_sequence);

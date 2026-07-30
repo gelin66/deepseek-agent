@@ -24,7 +24,7 @@ use dse_protocol::agent_runtime::{
     CommandId, ReasoningEffort, RunId, RunLimits, RuntimeEventKind, TerminalState, ToolPolicy,
 };
 use dse_protocol::run_api::{PendingCreationKind, RunCommand, RunProductControls, StartRunCommand};
-use dse_protocol::task::TaskDefinition;
+use dse_protocol::task::{AcceptanceSatisfaction, TaskDefinition};
 use dse_runtime::{CreationIntent, RunStore};
 use dse_state::StateStore;
 use qa_harness::harness::{Harness, make_sealed_workspace};
@@ -46,6 +46,16 @@ const RECOVERY_CREATION_ID: &str = "pty-recover-explicit-creation";
 const RECOVERY_RESERVED_RUN_ID: &str = "pty-reserved-explicit-run";
 const RECOVERY_PROMPT: &str = "恢复中断的显式创建，不得生成第二个 run。";
 const FROZEN_NATIVE_SIZES: [(u16, u16); 5] = [(12, 48), (16, 60), (24, 80), (32, 100), (40, 140)];
+
+fn accept_current_answer(tui: &mut Harness) -> anyhow::Result<()> {
+    tui.wait_for(
+        |frame| frame.contains("状态 · 等你处理") || frame.contains("Status · waiting on you"),
+        RUN_TIMEOUT,
+    )?;
+    tui.paste("/accept")?;
+    tui.send(keys::key::enter())?;
+    Ok(())
+}
 
 #[test]
 fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow::Result<()> {
@@ -88,6 +98,7 @@ fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow:
         .size(40, 140)
         .spawn()?;
 
+    tui.wait_for_text("只支持官方 DeepSeek Provider", BOOT_TIMEOUT)?;
     let exit = tui.wait_for_exit(EXIT_TIMEOUT);
     assert_eq!(exit, Some(1), "foreign provider did not fail closed");
     assert!(
@@ -139,11 +150,12 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     tui.wait_for_text("第二行", Duration::from_secs(5))?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    accept_current_answer(&mut tui)?;
+    tui.wait_for(|frame| frame.contains("状态 · Host 已接受"), RUN_TIMEOUT)?;
     tui.wait_for(
         |frame| {
-            frame.contains("状态 · 完成")
-                && frame.contains("验证 · 1/1 通过")
+            frame.contains("状态 · Host 已接受")
+                && frame.contains("验证 · 未开始")
                 && frame.contains("RunStore · 可恢复")
         },
         RUN_TIMEOUT,
@@ -155,9 +167,9 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
                 frame.rows() == rows
                     && frame.cols() == cols
                     && frame.contains(COMPLETION_MARKER)
-                    && frame.contains("状态 · 完成")
+                    && frame.contains("状态 · Host 已接受")
                     && frame.contains("变更 ·")
-                    && frame.contains("验证 · 1/1 通过")
+                    && frame.contains("验证 · 未开始")
             },
             RUN_TIMEOUT,
         )?;
@@ -221,8 +233,8 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     reopened.wait_for_text(COMPLETION_MARKER, BOOT_TIMEOUT)?;
     reopened.wait_for(
         |frame| {
-            frame.contains("状态 · 完成")
-                && frame.contains("验证 · 1/1 通过")
+            frame.contains("状态 · Host 已接受")
+                && frame.contains("验证 · 未开始")
                 && frame.contains("RunStore · 可恢复")
         },
         BOOT_TIMEOUT,
@@ -281,9 +293,15 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
     tui.wait_for_text("Second line", Duration::from_secs(5))?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(|frame| frame.contains("✓ done"), RUN_TIMEOUT)?;
+    accept_current_answer(&mut tui)?;
     tui.wait_for(
-        |frame| frame.contains("Status · done") && frame.contains("RunStore · recoverable"),
+        |frame| frame.contains("Status · Host accepted"),
+        RUN_TIMEOUT,
+    )?;
+    tui.wait_for(
+        |frame| {
+            frame.contains("Status · Host accepted") && frame.contains("RunStore · recoverable")
+        },
         RUN_TIMEOUT,
     )?;
     for (rows, cols) in FROZEN_NATIVE_SIZES {
@@ -293,9 +311,9 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
                 frame.rows() == rows
                     && frame.cols() == cols
                     && frame.contains(COMPLETION_MARKER)
-                    && frame.contains("Status · done")
+                    && frame.contains("Status · Host accepted")
                     && frame.contains("Changes ·")
-                    && frame.contains("Verification · 1/1 passed")
+                    && frame.contains("Verification · not started")
             },
             RUN_TIMEOUT,
         )?;
@@ -306,7 +324,7 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
             frame.rows() == 28
                 && frame.cols() == 80
                 && frame.contains(COMPLETION_MARKER)
-                && frame.contains("Status · done")
+                && frame.contains("Status · Host accepted")
         },
         RUN_TIMEOUT,
     )?;
@@ -362,7 +380,9 @@ fn real_pty_english_narrow_multiline_reaches_same_canonical_truth() -> anyhow::R
         .spawn()?;
     reopened.wait_for_text(COMPLETION_MARKER, BOOT_TIMEOUT)?;
     reopened.wait_for(
-        |frame| frame.contains("Status · done") && frame.contains("RunStore · recoverable"),
+        |frame| {
+            frame.contains("Status · Host accepted") && frame.contains("RunStore · recoverable")
+        },
         BOOT_TIMEOUT,
     )?;
     reopened.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
@@ -496,7 +516,8 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
     tui.paste(PROMPT)?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    accept_current_answer(&mut tui)?;
+    tui.wait_for(|frame| frame.contains("状态 · Host 已接受"), RUN_TIMEOUT)?;
     tui.send(b"\x04")?;
     assert_eq!(
         tui.wait_for_exit(EXIT_TIMEOUT),
@@ -560,7 +581,8 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
         .spawn()?;
 
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    accept_current_answer(&mut tui)?;
+    tui.wait_for(|frame| frame.contains("状态 · Host 已接受"), RUN_TIMEOUT)?;
     tui.send(b"\x04")?;
     assert_eq!(
         tui.wait_for_exit(EXIT_TIMEOUT),
@@ -645,7 +667,8 @@ fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> any
 
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    accept_current_answer(&mut tui)?;
+    tui.wait_for(|frame| frame.contains("状态 · Host 已接受"), RUN_TIMEOUT)?;
     tui.send(b"\x04")?;
     assert_eq!(
         tui.wait_for_exit(EXIT_TIMEOUT),
@@ -808,10 +831,25 @@ fn assert_canonical_sqlite_truth(
         )),
         "durable event stream lost the committed model output"
     );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. }))
+            .count(),
+        1,
+        "Host acceptance must be one explicit durable fact"
+    );
     assert!(matches!(
         replay.events.last().map(|event| &event.event),
         Some(RuntimeEventKind::Terminal { outcome })
-            if matches!(outcome.terminal, TerminalState::Completed { .. })
+            if matches!(
+                &outcome.terminal,
+                TerminalState::Completed { decision, .. }
+                    if decision.satisfied.iter().all(
+                        |satisfaction| matches!(satisfaction, AcceptanceSatisfaction::Host { .. })
+                    )
+            )
     ));
     Ok(())
 }
@@ -898,6 +936,15 @@ fn assert_recovered_creation_sqlite_truth(
             .count(),
         1,
         "recovery must commit exactly one RunCreated"
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. }))
+            .count(),
+        1,
+        "recovered root must contain one explicit Host acceptance"
     );
     match &replay.events.first().expect("RunCreated event").event {
         RuntimeEventKind::RunCreated { request } => {

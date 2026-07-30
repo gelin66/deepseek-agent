@@ -13,7 +13,7 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 28;
+const STATE_SCHEMA_VERSION: u32 = 29;
 
 /// Persistent storage for canonical Agent runs.
 ///
@@ -376,6 +376,26 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-runtime-retry canonical run state")?;
         }
+        if user_version < 29 {
+            // RuntimeEvent v23 requires an explicit, exact Host acceptance
+            // receipt before any Host criterion can close a Run. A v22
+            // materialized Completed event cannot prove that independent
+            // command fact, and its CompletionCandidate lacks the bound
+            // workspace state. Preserve only replay-safe pending Start
+            // intents and retire materialized rows rather than inventing
+            // acceptance during migration.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                if user_version >= 9 {
+                    run_store::retain_recoverable_start_creation_intents(&tx)
+                        .context("failed to retire pre-explicit-acceptance creation state")?;
+                } else {
+                    tx.execute("DELETE FROM agent_run_creations", [])
+                        .context("failed to retire pre-explicit-acceptance creation receipts")?;
+                }
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-explicit-acceptance canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -579,6 +599,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 28)
                 .context("failed to commit Runtime-owned model retry state cutover")?;
             user_version = 28;
+        }
+        if user_version < 29 {
+            tx.pragma_update(None, "user_version", 29)
+                .context("failed to commit explicit Host acceptance state cutover")?;
+            user_version = 29;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

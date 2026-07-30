@@ -12,6 +12,7 @@ pub(crate) enum CanonicalSlashCommand {
     Runs,
     Cost,
     Permissions,
+    Accept,
     Exit,
 }
 
@@ -47,6 +48,12 @@ const COMMANDS: &[CanonicalSlashCommandInfo] = &[
         name: "permissions",
         aliases: &[],
         description_id: MessageId::CmdPermissionsDescription,
+    },
+    CanonicalSlashCommandInfo {
+        command: CanonicalSlashCommand::Accept,
+        name: "accept",
+        aliases: &[],
+        description_id: MessageId::CmdAcceptDescription,
     },
     CanonicalSlashCommandInfo {
         command: CanonicalSlashCommand::Exit,

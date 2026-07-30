@@ -1443,20 +1443,22 @@ mod tests {
     };
     use dse_protocol::agent_runtime::{
         AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
-        AgentWorkspaceAccess, AgentWorkspaceAssignment, ApprovalRisk, AttemptId, ModelAccounting,
-        ModelFinishReason, ModelMessage, ModelOutput, ModelRequest, ModelStreamEvent,
-        ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity, RecoveryAmbiguityPhase,
-        RunLimits, RuntimeEventKind, TerminalState, ToolArguments, ToolAuthorizationDecision,
-        ToolAuthorizationDisposition, ToolDefinition, ToolExecutionGrant, ToolFailureCode,
-        ToolInvocation, ToolOutcome, ToolPolicy, ToolSideEffectStatus, Usage,
-        UserInteractionResponse, WorkspaceAccess, WriteExecutionMode,
+        AgentWorkspaceAccess, AgentWorkspaceAssignment, ApprovalRisk, AttemptId,
+        HostVerificationFailure, ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput,
+        ModelRequest, ModelStreamEvent, ModelToolCall, OperationId, PendingRuntimeEvent,
+        RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits, RuntimeEventKind, TerminalState,
+        ToolArguments, ToolAuthorizationDecision, ToolAuthorizationDisposition, ToolDefinition,
+        ToolExecutionGrant, ToolFailureCode, ToolInvocation, ToolOutcome, ToolPolicy,
+        ToolSideEffectStatus, Usage, UserInteractionResponse, WorkspaceAccess, WriteExecutionMode,
     };
     use dse_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
         RunCommandResult, RunView,
     };
     use dse_protocol::task::{
-        CompletionCandidateId, CompletionDecision, WorkspaceRevision, WorkspaceState,
+        AcceptanceId, CompletionCandidate, CompletionCandidateId, CompletionDecision,
+        CompletionRejection, CompletionRequiredTransition, EvidenceSealRejection,
+        HostCompletionAcceptance, WorkspaceRevision, WorkspaceState,
     };
     use dse_runtime::{
         AgentChildFinishedFact, CancellationToken, InMemoryRunStore, ModelPortError, ModelStream,
@@ -2679,6 +2681,7 @@ mod tests {
     }
 
     fn start_command(workspace: &Path, model: Option<&str>) -> StartRunCommand {
+        ensure_workspace_revision_fixture(workspace);
         StartRunCommand {
             task: TaskDefinition::host("修复真实边界问题"),
             workspace: workspace.display().to_string(),
@@ -2699,6 +2702,37 @@ mod tests {
                 interactive: false,
             },
         }
+    }
+
+    /// Production completion acceptance requires a real, repeatable workspace
+    /// revision. Most production-loopback tests use isolated temporary
+    /// directories, so admit them as unborn Git worktrees and keep the test
+    /// RunStore database outside the revision through Git's local exclude.
+    fn ensure_workspace_revision_fixture(workspace: &Path) {
+        std::fs::create_dir_all(workspace).expect("workspace fixture");
+        let already_versioned = ProcessCommand::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(workspace)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if already_versioned {
+            return;
+        }
+        let output = ProcessCommand::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(workspace)
+            .output()
+            .expect("initialize Git workspace fixture");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::write(
+            workspace.join(".git/info/exclude"),
+            "state.db\nstate.db-*\n",
+        )
+        .expect("exclude production test RunStore from workspace revision");
     }
 
     fn caller_authored_verifier_task() -> TaskDefinition {
@@ -3530,6 +3564,78 @@ while True:
             );
         }
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_verifier_commit_prefix_requires_live_model_binding_for_repair_turn() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("verifier-failure-prefix-live-repair");
+        let mut request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+            WriteExecutionMode::Root,
+        );
+        let mut command = start_command(temp.path(), Some("deepseek-v4-pro"));
+        command.task = caller_authored_verifier_task();
+        let resolved = prepare_production_start_command(command, &composition.tools)
+            .expect("resolve exact production verifier");
+        request
+            .task_contract
+            .as_mut()
+            .expect("task contract")
+            .definition = resolved.task;
+        let created = store.create(request).await.expect("seed verifier run");
+        store
+            .release(&created.lease)
+            .await
+            .expect("release seed run");
+        let mut replay = store
+            .load(&run_id)
+            .await
+            .expect("load verifier run")
+            .expect("verifier run exists");
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("verifier-failure-prefix-candidate"),
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            message: "claims completion".to_owned(),
+            workspace_state: replay.snapshot.workspace_state.clone(),
+        };
+        replay.snapshot.pending_completion = Some(candidate.clone());
+        replay.snapshot.last_host_verification_failure = Some(HostVerificationFailure {
+            outcome: ToolOutcome::error("deterministic verifier failure"),
+            workspace_state: replay.snapshot.workspace_state.clone(),
+            rejection: CompletionRejection {
+                candidate_id: candidate.id,
+                generation_id: candidate.generation_id,
+                unmet_acceptance_ids: vec![AcceptanceId::from("exact-check")],
+                cause: EvidenceSealRejection::VerifierFailed,
+                required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+                reason: "repair required".to_owned(),
+            },
+        });
+        assert!(resume_needs_live_model(&replay));
+        let error = match composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+        {
+            Ok(_) => panic!("failed-verifier prefix must bind a live DeepSeek model"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
+        assert_eq!(
+            error.reason,
+            Some(RunApiErrorReason::DeepSeekCredentialMissing)
+        );
+        assert_eq!(
+            accepted.await.expect("zero request fixture"),
+            0,
+            "selecting the live repair path must not rerun the committed verifier"
+        );
     }
 
     #[tokio::test]
@@ -4383,7 +4489,10 @@ while True:
 
         let outcome = runtime.start(request).wait().await.expect("runtime joins");
 
-        assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::AwaitingHostAcceptance { .. }
+        ));
         assert_eq!(outcome.runtime_model_requests, 1);
         let replay = store
             .load(&run_id)
@@ -4681,11 +4790,16 @@ while True:
         })
     }
 
-    async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
-        wait_terminal_with_timeout(store, run_id, Duration::from_secs(15)).await
+    async fn wait_terminal(
+        app: &AgentApplication,
+        store: &dyn RunStore,
+        run_id: &RunId,
+    ) -> RunReplay {
+        wait_terminal_with_timeout(app, store, run_id, Duration::from_secs(15)).await
     }
 
     async fn wait_terminal_with_timeout(
+        app: &AgentApplication,
         store: &dyn RunStore,
         run_id: &RunId,
         timeout: Duration,
@@ -4699,6 +4813,40 @@ while True:
                     .expect("run exists");
                 if replay.snapshot.terminal.is_some() {
                     return replay;
+                }
+                let host_candidate = replay
+                    .snapshot
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .is_some_and(|contract| {
+                        contract
+                            .definition
+                            .acceptance
+                            .iter()
+                            .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }))
+                    })
+                    .then(|| replay.snapshot.pending_completion.clone())
+                    .flatten();
+                if let Some(candidate) = host_candidate {
+                    let response = app
+                        .execute(envelope(
+                            &format!("production-test-host-accept:{}:{}", run_id, candidate.id.0),
+                            RunCommand::AcceptCompletion {
+                                run_id: run_id.clone(),
+                                acceptance: HostCompletionAcceptance {
+                                    candidate_id: candidate.id,
+                                    generation_id: candidate.generation_id,
+                                    workspace_state: candidate.workspace_state,
+                                },
+                            },
+                        ))
+                        .await;
+                    assert!(
+                        matches!(response.result, RunCommandResult::Accepted { .. }),
+                        "production test Host acceptance failed: {:?}",
+                        response.result
+                    );
                 }
                 tokio::task::yield_now().await;
             }
@@ -4764,7 +4912,7 @@ while True:
             app.execute(envelope("m7g-fanout", RunCommand::Start(command)))
                 .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let captured = server.finish().await;
 
         assert!(matches!(
@@ -4968,7 +5116,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert!(matches!(
@@ -5199,7 +5347,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         let terminal_message = match replay
@@ -5380,9 +5528,13 @@ while True:
             ))
             .await,
         );
-        let replay =
-            wait_terminal_with_timeout(app.store.as_ref(), &run.run_id, Duration::from_secs(45))
-                .await;
+        let replay = wait_terminal_with_timeout(
+            &app,
+            app.store.as_ref(),
+            &run.run_id,
+            Duration::from_secs(45),
+        )
+        .await;
         let requests = server.finish().await;
 
         let writer_task = replay
@@ -5989,7 +6141,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert!(matches!(
@@ -6160,7 +6312,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert!(matches!(
@@ -6326,7 +6478,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert!(matches!(
@@ -6502,7 +6654,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert!(matches!(
@@ -6723,7 +6875,7 @@ while True:
             ))
             .await;
         assert!(matches!(resolved.result, RunCommandResult::Accepted { .. }));
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
         assert!(matches!(
             replay
@@ -6954,7 +7106,7 @@ while True:
             assert!(matches!(resolved.result, RunCommandResult::Accepted { .. }));
         }
         assert_eq!(approved_actions, ["login", "upload", "session_clear"]);
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
         assert!(matches!(
             replay
@@ -7111,7 +7263,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
 
         assert_eq!(
@@ -7265,7 +7417,7 @@ while True:
                 ))
                 .await,
             );
-            let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+            let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
             assert!(
                 matches!(
                     replay
@@ -7392,7 +7544,7 @@ while True:
             app.execute(envelope("m7f-host-fact-suffix", RunCommand::Start(command)))
                 .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let captured = server.finish().await;
         let requests = replay
             .events
@@ -7544,7 +7696,7 @@ while True:
             app.execute(envelope(request_id, RunCommand::Start(command)))
                 .await,
         );
-        let before_reopen = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let before_reopen = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         drop(app);
 
         let reopened = StateStore::open(Some(state_path.to_path_buf())).expect("reopen StateStore");
@@ -7728,7 +7880,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let captured = server.finish().await;
 
         assert_eq!(captured.path, "/v1/chat/completions");
@@ -7879,7 +8031,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         assert!(matches!(
             replay.snapshot.terminal,
             Some(AgentOutcome {
@@ -7936,7 +8088,7 @@ while True:
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         assert!(matches!(
             replay.snapshot.terminal,
             Some(AgentOutcome {
@@ -8049,7 +8201,7 @@ server.serve_forever()
             ))
             .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         assert!(matches!(
             replay.snapshot.terminal,
             Some(AgentOutcome {
@@ -8202,7 +8354,7 @@ server.serve_forever()
             app.execute(envelope("m45-rework", RunCommand::Start(command)))
                 .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         assert!(matches!(
             replay.snapshot.terminal,
             Some(AgentOutcome {
@@ -8331,6 +8483,9 @@ server.serve_forever()
             .as_ref()
             .map(|outcome| &outcome.terminal)
         {
+            Some(TerminalState::AwaitingHostAcceptance { .. }) => {
+                "invalid_awaiting_host_acceptance_terminal"
+            }
             Some(TerminalState::Completed { .. }) => "completed",
             Some(TerminalState::Blocked { .. }) => "blocked",
             Some(TerminalState::Failed { .. }) => "failed",
@@ -8524,7 +8679,7 @@ time.sleep(60)
                 .await,
         );
         assert_eq!(resumed.run_id, run_id);
-        let recovered = wait_terminal(reopened.store.as_ref(), &run_id).await;
+        let recovered = wait_terminal(&reopened, reopened.store.as_ref(), &run_id).await;
         assert!(matches!(
             recovered
                 .snapshot
@@ -8597,7 +8752,7 @@ time.sleep(60)
         );
         println!("M45_RUN_ID={}", run.run_id.0);
         std::io::Write::flush(&mut std::io::stdout()).expect("flush supervised run id");
-        let _ = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let _ = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
     }
 
     #[tokio::test]
@@ -8668,7 +8823,7 @@ time.sleep(60)
             app.execute(envelope("fixed-actor", RunCommand::Start(command.clone())))
                 .await,
         );
-        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
         let requests = server.finish().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].body["model"], "deepseek-v4-pro");
@@ -8886,7 +9041,7 @@ time.sleep(60)
                 ))
                 .await,
             );
-            wait_terminal(app.store.as_ref(), &run.run_id).await;
+            wait_terminal(&app, app.store.as_ref(), &run.run_id).await;
             let requests = server.finish().await;
             assert_eq!(requests.len(), 1);
             observed.push((requests[0].path.clone(), requests[0].body["tools"].clone()));

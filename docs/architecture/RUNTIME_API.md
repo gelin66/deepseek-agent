@@ -4,9 +4,9 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
 - 状态：M8-J legacy Thread truth 已删除，canonical RunStore 是唯一持久状态
-- 更新日期：2026-07-27
-- schema：`Run API`（`schema_version = 15`）、`RuntimeEvent`（writer/reader v22）、
-  `State`（schema v28）、`dse.exec-stream`（v6）
+- 更新日期：2026-07-30
+- schema：`Run API`（`schema_version = 16`）、`RuntimeEvent`（writer/reader v23）、
+  `State`（schema v29）、`dse.exec-stream`（v7）
 
 `dse app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -17,7 +17,7 @@ HTTP / SSE / stdio
         |
 crates/app-server        认证、限流、framing
         |
-AgentApplication         start/continue/list/recover/get/events/resume/control
+AgentApplication         start/continue/list/recover/get/events/resume/control/accept
         |
         +------> AgentRuntime                  唯一根/只读子/Writer 执行内核
         |
@@ -98,6 +98,7 @@ DSE 仍可作为 MCP client 消费外部工具服务，但不再提供自托管 
 | `POST` | `/v1/runs/{run_id}/interrupt` | interrupt |
 | `POST` | `/v1/runs/{run_id}/cancel` | cancel |
 | `POST` | `/v1/runs/{run_id}/interactions/{interaction_id}/resolve` | resolve_interaction |
+| `POST` | `/v1/runs/{run_id}/accept-completion` | accept_completion |
 
 除 `/healthz` 外，HTTP route 都要求精确的 `Authorization: Bearer <token>`，除非服务以
 loopback-only 的 `--insecure-no-auth` 启动。query token、备用 header 和浏览器页面注入均
@@ -112,7 +113,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 16,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -121,7 +122,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 }
 ```
 
-支持且只支持十二种 command：
+支持且只支持十三种 command：
 
 ```text
 start
@@ -136,6 +137,7 @@ steer
 interrupt
 cancel
 resolve_interaction
+accept_completion
 ```
 
 所有机器字段、command kind、error code、模型 ID 和工具名保持英文稳定。中文只用于人类
@@ -164,7 +166,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 13,
+  "schema_version": 16,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -200,14 +202,16 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 }
 ```
 
-`task` 在创建 run 时被 Host 冻结为带 generation ID 的 `TaskContract`。acceptance 可由
-Host policy 接受，也可以要求一个精确的 deterministic verifier plan；同一任务至多有一个
+`task` 在创建 run 时被 Host 冻结为带 generation ID 的 `TaskContract`。acceptance 可要求
+显式 Host 接受，也可以要求一个精确的 deterministic verifier plan；同一任务至多有一个
 verifier acceptance，多项命令门禁放进该 plan 的多个 step。verifier 的参数、program、
 argv、workspace 内 cwd、environment 和 timeout 都是契约的一部分，不能由模型在验收时
 改写。非默认结构化 task 的 objective、constraints、non-goals 和人类可读 acceptance
 description 会以确定性的中文 user turn 进入 canonical transcript；精确 verifier 参数仍是
-Host typed fact，不复制进 prompt。默认 Host acceptance 只表示 Runtime policy 接受完成
-候选，不等于评测意义上的 `verified_success`。
+Host typed fact，不复制进 prompt。模型 Stop 只能产生可展示的 `Answered` candidate；默认
+Host acceptance 必须由客户端/父 Host 另行提交 exact durable command，形成的
+`HostAccepted` 不等于 deterministic `VerifiedCompleted` 或评测意义上的
+`verified_success`。
 
 `permission_mode` 只接受 `ask`、`agent`、`full_access`。它在 Run 创建时冻结，并进入
 execution fingerprint；每次工具调用的 Host authorization decision 还绑定 exact
@@ -226,7 +230,7 @@ Agent，也不是同 run 的 `resume`。
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 16,
   "request_id": "continue-42",
   "command": {
     "kind": "continue",
@@ -275,7 +279,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 16,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -296,13 +300,44 @@ user-input prompt 的合法 response 是 `answered`（带按 question ID 索引�
 typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解决；展示给用户的参数
 必须与 `ToolPrepared` 的规范化调用参数完全一致。
 
+### accept_completion
+
+Host 只能接受当前 RunStore 中唯一 pending candidate。客户端必须从 `RunCompletion::Answered`
+读取 exact `candidate_id`、`generation_id` 与 `workspace_state`，再提交：
+
+```json
+{
+  "schema_version": 16,
+  "request_id": "accept-answer-42",
+  "command": {
+    "kind": "accept_completion",
+    "run_id": "...",
+    "acceptance": {
+      "candidate_id": "completion-17",
+      "generation_id": "...",
+      "workspace_state": {
+        "generation": 3,
+        "revision": { "status": "known", "sha256": "..." }
+      }
+    }
+  }
+}
+```
+
+Runtime 在提交前重新观察 workspace；只有 candidate、task generation 与最新 Known revision
+完全匹配时才持久化 `HostCompletionAccepted` 和 `HostAcceptanceReceipt`。同一 request ID、
+同一 payload 重试返回原 sequence，并可在 receipt 已提交但 terminal 尚未提交的 crash prefix
+继续闭合同一 terminal；同 ID 不同 payload、foreign/stale candidate、错误 generation 或
+workspace drift 分别 typed fail closed。该 receipt 只产生 `HostAccepted`，不能冒充
+`EvidenceReceipt` 或 `VerifiedCompleted`。
+
 ## 4. Response 与错误
 
 每个请求返回相同 schema 的 `RunCommandResponse`：
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 16,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -338,6 +373,9 @@ interaction_not_pending
 interaction_mismatch
 interaction_already_resolved
 invalid_interaction_response
+completion_not_pending
+completion_mismatch
+completion_stale
 run_store_failed
 ```
 
@@ -374,7 +412,7 @@ sequence 重连即可。
 DeepSeek Key，不调用模型或工具，也不追加新事件。
 
 app-server 的 SSE/stdio 始终原样投影完整 stored event。`dse exec --output-format
-stream-json` 的 `dse.exec-stream` v6 另提供 bounded `model_request_failed` 客户端事件：
+stream-json` 的 `dse.exec-stream` v7 另提供 bounded `model_request_failed` 客户端事件：
 它从同一 `ModelRequestFailed` 确定性投影 run/event/attempt identity、typed failure、
 retry/stop decision 与紧凑 accounting，但不复制完整 request、system prompt、transcript
 或 tool catalog。plain exec 把 transient retry progress 写到 stderr，模型内容继续只写
@@ -496,9 +534,13 @@ M7-B 的 `ModelRequestPrepared.request.tools` 是当次 actual advertised catalo
 由唯一 planner 从 exact request 确定性重建完整 `RequestPlan`。生产回环测试同时证明重开前后
 request/plan 相等，并证明 strict policy 变化会改变 fingerprint 而在恢复边界 fail closed。
 
-Run API v15 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
+RuntimeEvent v23 在 v22 上增加 exact `HostCompletionAccepted`，并把模型 Stop、Host 接受与
+verifier 证据分别投影为 `Answered`、`HostAccepted`、`VerifiedCompleted`；三者不能由客户端
+互相升级。
+
+Run API v16 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio，并为 DeepSeek
 startup/environment 失败增加稳定 `reason`；没有 presentation-local worktree command、第二
-事件总线或兼容 alias。State schema v28 复用 canonical
+事件总线或兼容 alias。State schema v29 复用 canonical
 event/snapshot/lease/creation intent；v21 已退役无法补齐 typed tool failure 的旧 run，
 v22 再退役缺少 route audit 的 materialized run，v23 物理删除旧 `threads` metadata 表。
 v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 materialized run，只
@@ -506,7 +548,9 @@ v24 退休无法无损映射 old Auto/omitted-reasoning exact wire 的 v23 mater
 v26 不猜旧 bool/trust/sandbox/elevation tuple，直接退休无法无损映射为三档 permission
 contract 的旧 materialized Run 与 pending Start；v27 再退休缺少 typed execution grant
 的旧 materialized Run；v28 退休无法无损重建 durable retry schedule 的旧 materialized
-Run，只保留能按当前 Start command 无损反序列化的 pending intent。
+Run，只保留能按当前 Start command 无损反序列化的 pending intent；v29 再退休无法证明
+独立 Host acceptance、且旧 candidate 未绑定 workspace 的 materialized Run，只保留可按
+v16 command 无损恢复的 pending Start intent。
 旧 `session_index.jsonl`
 writer/reader 已删除；没有 compatibility reader 或 dual write。
 
@@ -526,10 +570,12 @@ writer/reader 已删除；没有 compatibility reader 或 dual write。
 - steer 先提交 `SteerQueued`，只在完整模型响应与整组 tool/child outcome 之后的安全边界提交
   `SteerApplied` 并进入下一次模型请求；运行中 steer 不再制造恢复故障。
 - interrupt/cancel 先提交 `ControlRequested` 再进入 typed terminal；steer、interrupt、
-  cancel 和 resolve_interaction 使用持久 command receipt：同一 `request_id`、同一 payload
+  cancel、resolve_interaction 和 accept_completion 使用持久 command receipt：同一
+  `request_id`、同一 payload
   重试返回原 sequence，不同 payload 复用同一 `request_id` 会被拒绝。creation command
   使用上一条独立的 durable creation reservation，而不是 control receipt。
-- command receipt 持久保存命令类型与规范化 payload；应用层事前检查和 Runtime 原子受理点
+- command receipt 持久保存命令类型与规范化 payload；`accept_completion` 只有在
+  `HostCompletionAccepted` 已提交后才返回 accepted sequence。应用层事前检查和 Runtime 原子受理点
   都执行一致性校验，因此并发复用 `request_id` 也不能让两个不同命令同时成功。
 - tool approval 和 `request_user_input` 先提交 `InteractionRequested`，Host 只有在
   `InteractionResolved` 已提交后才能继续。reducer/conformance 契约保证未解决交互可从

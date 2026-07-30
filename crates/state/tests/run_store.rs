@@ -179,11 +179,13 @@ fn writer_parity_task() -> AgentTask {
 
 fn writer_parity_outcome(integrated: bool) -> AgentOutcome {
     let task = writer_parity_task();
+    let verification_id =
+        VerificationId::from("host-verification:writer-parity-candidate:writer-parity-verifier");
     let receipt = EvidenceReceipt {
-        id: EvidenceReceiptId::from("writer-parity-receipt"),
+        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
         generation_id: task.task_contract.generation_id.clone(),
         acceptance_id: AcceptanceId::from("writer-parity-verifier"),
-        verification_id: VerificationId::from("writer-parity-verification"),
+        verification_id,
         verifier: writer_parity_verifier(),
         workspace_state: known_workspace(1, "writer-dirty"),
         artifact_ids: vec!["writer-parity-artifact".to_owned()],
@@ -218,8 +220,15 @@ fn writer_parity_outcome(integrated: bool) -> AgentOutcome {
         runtime_retries: 0,
         tool_calls: 1,
         details: AgentResultDetails {
-            summary: "修改并封存一个文件".to_owned(),
+            summary: "writer 完成".to_owned(),
+            completion_candidate: Some(CompletionCandidate {
+                id: CompletionCandidateId::from("writer-parity-candidate"),
+                generation_id: task.task_contract.generation_id.clone(),
+                message: "writer 完成".to_owned(),
+                workspace_state: known_workspace(0, "writer-dirty"),
+            }),
             evidence: vec![receipt],
+            host_acceptance_receipts: Vec::new(),
             changed_files: vec!["src/lib.rs".to_owned()],
             checks: Vec::new(),
             unresolved: Vec::new(),
@@ -417,7 +426,7 @@ async fn append_to_both(
     memory: &InMemoryRunStore,
     memory_lease: &RunLease,
     pending: PendingRuntimeEvent,
-) {
+) -> StoredRuntimeEvent {
     let sqlite_event = sqlite
         .append(sqlite_lease, pending.clone())
         .await
@@ -427,6 +436,94 @@ async fn append_to_both(
         .await
         .expect("append lifecycle event to memory");
     assert_canonical_event_eq(&sqlite_event, &memory_event);
+    sqlite_event
+}
+
+async fn append_model_stop_to_both(
+    sqlite: &StateStore,
+    sqlite_lease: &RunLease,
+    memory: &InMemoryRunStore,
+    memory_lease: &RunLease,
+    event_prefix: &str,
+    message: &str,
+) -> CompletionCandidate {
+    let snapshot = sqlite
+        .load(&sqlite_lease.run_id)
+        .await
+        .expect("load canonical completion boundary")
+        .expect("completion boundary run exists")
+        .snapshot;
+    let attempt_id = AttemptId(format!("{event_prefix}-attempt"));
+    append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-prepared")),
+            event: RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(model_request_for_snapshot(
+                    sqlite_lease.run_id.clone(),
+                    &snapshot,
+                    Vec::new(),
+                )),
+            },
+        },
+    )
+    .await;
+    append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-in-flight")),
+            event: RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        },
+    )
+    .await;
+    let committed = append_to_both(
+        sqlite,
+        sqlite_lease,
+        memory,
+        memory_lease,
+        PendingRuntimeEvent {
+            event_id: RuntimeEventId(format!("{event_prefix}-committed")),
+            event: RuntimeEventKind::ModelResponseCommitted {
+                attempt_id,
+                output: Box::new(ModelOutput {
+                    content: message.to_owned(),
+                    reasoning_content: None,
+                    tool_calls: Vec::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: Usage::default(),
+                }),
+                accounting: Box::new(snapshot.accounting),
+            },
+        },
+    )
+    .await;
+    let current = sqlite
+        .load(&sqlite_lease.run_id)
+        .await
+        .expect("reload completion boundary")
+        .expect("completion boundary run remains available")
+        .snapshot;
+    CompletionCandidate {
+        id: CompletionCandidateId::from(format!("completion-{}", committed.sequence)),
+        generation_id: current
+            .request
+            .task_contract
+            .as_ref()
+            .expect("completion boundary contract")
+            .generation_id
+            .clone(),
+        message: message.to_owned(),
+        workspace_state: current.workspace_state,
+    }
 }
 
 async fn append_model_tool_calls_to_both(
@@ -2638,7 +2735,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2730,7 +2827,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
 }
 
 #[tokio::test]
@@ -2802,7 +2899,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
 }
 
 #[tokio::test]
@@ -2846,7 +2943,7 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
 }
 
 #[tokio::test]
@@ -2915,7 +3012,7 @@ async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserv
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -3013,7 +3110,7 @@ async fn v19_cutover_retires_untyped_rejection_rows_and_preserves_pending_creati
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     let creation_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get(0)
@@ -3096,7 +3193,7 @@ async fn v20_cutover_retires_runs_without_response_evidence_and_preserves_pendin
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| {
             row.get::<_, i64>(0)
@@ -3283,7 +3380,7 @@ async fn v21_cutover_retires_v20_tool_outcomes_and_preserves_pending_start() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3403,7 +3500,7 @@ async fn v22_cutover_retires_v16_requests_without_route_audit_and_preserves_pend
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3512,7 +3609,7 @@ async fn v24_cutover_retires_materialized_auto_state_and_keeps_only_v18_safe_pen
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3658,7 +3755,7 @@ async fn v26_permission_cutover_retires_old_runs_and_pending_starts_without_gues
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3740,7 +3837,7 @@ async fn v27_verifier_grant_cutover_retires_materialized_runs_and_keeps_pending_
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
@@ -3822,12 +3919,95 @@ async fn v28_runtime_retry_cutover_retires_materialized_runs_and_keeps_pending_s
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
             .get::<_, i64>(0))
             .expect("count retired pre-retry-schedule runs"),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_run_creations", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retained pending Starts"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn v29_explicit_host_acceptance_cutover_retires_runs_and_keeps_pending_start() {
+    let path = temp_state_path("v29_explicit_host_acceptance_cutover");
+    let workspace = "/tmp/v29-explicit-host-acceptance-cutover";
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+    let created = store
+        .create(request("v28-materialized-run", workspace))
+        .await
+        .expect("create materialized pre-acceptance run");
+    let run_id = created.lease.run_id.clone();
+    store
+        .release(&created.lease)
+        .await
+        .expect("release materialized pre-acceptance run");
+
+    let pending_id = CommandId::from("v28-pending-start");
+    let pending_intent = creation_intent(workspace);
+    let pending = store
+        .reserve_creation(
+            &pending_id,
+            "sha256:v28-pending-start",
+            RunId::from("v28-pending-run"),
+            pending_intent.clone(),
+        )
+        .await
+        .expect("reserve pre-acceptance pending Start");
+    assert!(pending.newly_reserved);
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare exact state v28 fixture");
+    conn.execute(
+        "UPDATE agent_run_events SET schema_version = 22 WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("mark materialized events as RuntimeEvent v22");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"implicit_host_acceptance\"}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible pre-acceptance snapshot");
+    conn.pragma_update(None, "user_version", 28)
+        .expect("mark exact state v28 fixture");
+    drop(conn);
+
+    let reopened =
+        StateStore::open(Some(path.clone())).expect("apply v29 explicit acceptance cutover");
+    assert!(
+        reopened
+            .load(&run_id)
+            .await
+            .expect("query retired pre-acceptance run")
+            .is_none()
+    );
+    let recovered = reopened
+        .creation(&pending_id)
+        .await
+        .expect("query retained pending Start")
+        .expect("pending Start survives the explicit acceptance cutover");
+    assert_eq!(recovered.intent, Some(pending_intent));
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v29 explicit acceptance cutover");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("read current version"),
+        29
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row
+            .get::<_, i64>(0))
+            .expect("count retired pre-acceptance runs"),
         0
     );
     assert_eq!(
@@ -3910,7 +4090,7 @@ async fn v23_thread_deletion_and_v24_route_cutover_are_atomic_and_direct() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("read current version"),
-        28
+        29
     );
     let threads_exists: bool = conn
         .query_row(
@@ -4005,7 +4185,7 @@ async fn v8_creation_schema_migrates_to_v19_before_command_json_exists() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     for column in [
         "creation_kind",
         "workspace",
@@ -4044,7 +4224,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
 }
 
 #[tokio::test]
@@ -4068,7 +4248,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
 }
 
 #[tokio::test]
@@ -4178,7 +4358,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -4229,7 +4409,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -4286,7 +4466,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 28);
+    assert_eq!(user_version, 29);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -4402,7 +4582,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 28);
+        assert_eq!(user_version, 29);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -4411,7 +4591,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
 }
 
 #[tokio::test]
-async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
+async fn sqlite_and_memory_reject_stale_candidate_after_same_hash_verifier_epoch() {
     let path = temp_state_path("stale_receipt_epoch");
     let sqlite = StateStore::open(Some(path.clone())).expect("open SQLite store");
     let memory = InMemoryRunStore::default();
@@ -4451,11 +4631,6 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     let revision = WorkspaceRevision::Known {
         sha256: "sha256:workspace-a".to_owned(),
     };
-    let candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-stale-receipt"),
-        generation_id: generation_id.clone(),
-        message: "任务完成".to_owned(),
-    };
     let observed = WorkspaceState {
         generation: 1,
         revision: revision.clone(),
@@ -4476,6 +4651,15 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
                 workspace_state: observed.clone(),
             },
         ),
+    )
+    .await;
+    let candidate = append_model_stop_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        "stale-receipt-origin",
+        "任务完成",
     )
     .await;
     append_to_both(
@@ -4574,248 +4758,30 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
     .await;
 
     let failing_verification = VerificationId::from("host-verification-reopen-boundary");
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "host-verification-fail-prepared",
-            RuntimeEventKind::HostVerificationPrepared {
-                verification_id: failing_verification.clone(),
-                candidate: candidate.clone(),
-                acceptance_id: AcceptanceId::from("tests"),
-                verifier: verifier.clone(),
-                workspace_state_before: verified_state,
-            },
-        ),
-    )
-    .await;
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "host-verification-fail-started",
-            RuntimeEventKind::HostVerificationStarted {
-                verification_id: failing_verification.clone(),
-            },
-        ),
-    )
-    .await;
-    let failed_artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
-        summary: "deterministic verifier failed".to_owned(),
-        verifier: verifier.clone(),
-        verdict: VerifierVerdict::Failed,
-        workspace_revision: revision.clone(),
-    });
-    let failed_artifact_id = failed_artifact.id.clone();
-    let mut failed_outcome = ToolOutcome::error("deterministic verifier failed")
-        .with_failure_code(dse_runtime::ToolFailureCode::VerifierFailed);
-    failed_outcome.side_effect = ToolSideEffectStatus::NotApplied;
-    failed_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
-    failed_outcome.evidence = ToolEvidence {
-        status: ToolEvidenceStatus::Produced,
-        references: vec![failed_artifact_id.clone()],
-    };
-    failed_outcome.artifacts = vec![failed_artifact];
-    failed_outcome.verifier_observation = Some(VerifierObservation {
-        spec: verifier,
-        verdict: VerifierVerdict::Failed,
-        workspace_revision: revision.clone(),
-        artifact_ids: vec![failed_artifact_id],
-    });
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "host-verification-fail-committed",
-            RuntimeEventKind::HostVerificationCommitted {
-                verification_id: failing_verification,
-                outcome: Box::new(failed_outcome),
-                receipt: None,
-                workspace_state_after: WorkspaceState {
-                    generation: 3,
-                    revision: revision.clone(),
-                },
-            },
-        ),
-    )
-    .await;
-    let rejection = sqlite
-        .load(&run_id)
-        .await
-        .expect("load failed verifier state")
-        .expect("failed verifier run exists")
-        .snapshot
-        .last_host_verification_failure
-        .expect("typed Host verifier failure")
-        .rejection;
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "completion-rejected-before-write",
-            RuntimeEventKind::CompletionRejected { rejection },
-        ),
-    )
-    .await;
-
-    let write_arguments = ToolArguments::from_value(serde_json::json!({
-        "changes": [{"path": "same.txt", "content": "same bytes"}]
-    }));
-    append_model_tool_calls_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        "stale-receipt-write-model",
-        vec![ModelToolCall {
-            id: "write-after-receipt".to_owned(),
-            name: "apply_patch".to_owned(),
-            arguments: write_arguments.clone(),
-        }],
-    )
-    .await;
-    let operation_id = OperationId::from("write-after-receipt");
-    let write_invocation = ToolInvocation {
-        run_id: run_id.clone(),
-        call_id: "write-after-receipt".to_owned(),
-        name: "apply_patch".to_owned(),
-        arguments: write_arguments,
-    };
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "write-prepared",
-            RuntimeEventKind::ToolPrepared {
-                operation_id: operation_id.clone(),
-                invocation: write_invocation.clone(),
-                workspace_access: WorkspaceAccess::MayWrite,
-            },
-        ),
-    )
-    .await;
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "write-authorized",
-            RuntimeEventKind::ToolAuthorizationCommitted {
-                operation_id: operation_id.clone(),
-                decision: allow_authorization(
-                    RunPermissionMode::Ask,
-                    &write_invocation,
-                    &WorkspaceState {
-                        generation: 3,
-                        revision: revision.clone(),
-                    },
-                ),
-            },
-        ),
-    )
-    .await;
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "write-started",
-            RuntimeEventKind::ToolExecutionStarted {
-                operation_id: operation_id.clone(),
-            },
-        ),
-    )
-    .await;
-    let mut write_outcome = ToolOutcome::success("same bytes restored");
-    write_outcome.side_effect = ToolSideEffectStatus::Applied;
-    write_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
-    let current_state = WorkspaceState {
-        generation: 4,
-        revision: revision.clone(),
-    };
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "write-committed",
-            RuntimeEventKind::ToolOutcomeCommitted {
-                operation_id,
-                call_id: "write-after-receipt".to_owned(),
-                name: "apply_patch".to_owned(),
-                outcome: Box::new(write_outcome),
-                workspace_state: Some(current_state.clone()),
-            },
-        ),
-    )
-    .await;
-
-    let second_candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-after-same-hash-write"),
-        generation_id: generation_id.clone(),
-        message: "写入后再次提出完成".to_owned(),
-    };
-    append_to_both(
-        &sqlite,
-        &sqlite_created.lease,
-        &memory,
-        &memory_created.lease,
-        pending(
-            "completion-proposed-after-write",
-            RuntimeEventKind::CompletionProposed {
-                candidate: second_candidate.clone(),
-            },
-        ),
-    )
-    .await;
-    let terminal = PendingRuntimeEvent::terminal(AgentOutcome {
-        run_id: run_id.clone(),
-        parent_run_id: None,
-        terminal: TerminalState::Completed {
-            message: second_candidate.message,
-            decision: CompletionDecision {
-                candidate_id: second_candidate.id,
-                generation_id,
-                workspace_state: current_state,
-                satisfied: vec![AcceptanceSatisfaction::Evidence {
-                    acceptance_id: AcceptanceId::from("tests"),
-                    receipt_id: receipt.id,
-                }],
-            },
+    let stale_verification = pending(
+        "host-verification-stale-prepared",
+        RuntimeEventKind::HostVerificationPrepared {
+            verification_id: failing_verification,
+            candidate,
+            acceptance_id: AcceptanceId::from("tests"),
+            verifier,
+            workspace_state_before: verified_state,
         },
-        accounting: ModelAccounting::default(),
-        runtime_model_requests: 1,
-        runtime_retries: 0,
-        tool_calls: 1,
-        details: Default::default(),
-    });
+    );
     for error in [
         sqlite
-            .append(&sqlite_created.lease, terminal.clone())
+            .append(&sqlite_created.lease, stale_verification.clone())
             .await
-            .expect_err("SQLite must reject stale evidence"),
+            .expect_err("SQLite must reject stale candidate verification"),
         memory
-            .append(&memory_created.lease, terminal)
+            .append(&memory_created.lease, stale_verification)
             .await
-            .expect_err("memory must reject stale evidence"),
+            .expect_err("memory must reject stale candidate verification"),
     ] {
         assert!(matches!(
             error,
             RunStoreError::Corrupt { ref message, .. }
-                if message.contains("current contract or workspace")
+                if message.contains("candidate is stale")
         ));
     }
 
@@ -4831,7 +4797,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
         .expect("memory run exists");
     assert_canonical_replay_eq(&sqlite_before_reopen, &memory_replay);
     assert!(sqlite_before_reopen.snapshot.terminal.is_none());
-    assert_eq!(sqlite_before_reopen.snapshot.workspace_state.generation, 4);
+    assert_eq!(sqlite_before_reopen.snapshot.workspace_state.generation, 2);
     assert_eq!(sqlite_before_reopen.snapshot.evidence_receipts.len(), 1);
     drop(sqlite);
     let reopened = StateStore::open(Some(path)).expect("reopen SQLite store");
@@ -5082,13 +5048,18 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
         .expect("reopened failure progress gains one effective mutation");
     let mutation = progress.mutation.clone().expect("effective mutation");
 
-    let candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("temporal-candidate"),
-        generation_id: TaskGenerationId::from("temporal-progress-run"),
-        message: "fixed".to_owned(),
-    };
     let verification_id = VerificationId::from("temporal-host-verification");
     let verified_workspace = known_workspace(4, "sha256:fixed");
+    let candidate = append_model_stop_to_both(
+        &reopened,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        "temporal-completion-model",
+        "fixed",
+    )
+    .await;
+    let candidate_workspace = candidate.workspace_state.clone();
     let pass_artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
         summary: "deterministic verifier passed".to_owned(),
         verifier: verifier.clone(),
@@ -5131,7 +5102,7 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
             candidate,
             acceptance_id: AcceptanceId::from("tests"),
             verifier: verifier.clone(),
-            workspace_state_before: known_workspace(3, "sha256:fixed"),
+            workspace_state_before: candidate_workspace,
         },
         RuntimeEventKind::HostVerificationStarted {
             verification_id: verification_id.clone(),
@@ -5175,13 +5146,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 29)
+    conn.pragma_update(None, "user_version", 30)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 28")
+            .contains("newer than supported version 29")
     );
 }

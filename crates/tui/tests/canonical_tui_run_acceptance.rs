@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,6 +85,16 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     let skills_dir = dse_home.join("skills");
     std::fs::create_dir_all(&workspace).expect("create workspace");
     std::fs::create_dir_all(&skills_dir).expect("create isolated DSE home");
+    let git = Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&workspace)
+        .output()
+        .expect("initialize versioned TUI workspace");
+    assert!(
+        git.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&git.stderr)
+    );
     let state_path = dse_home.join("state.db");
     let canonical_workspace = std::fs::canonicalize(&workspace)
         .expect("canonical workspace")
@@ -98,8 +109,13 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .await
         .expect("fresh canonical TUI run starts");
     let mut first_projection = CanonicalRunProjection::new();
-    let (first_events, first_effects) =
-        collect_terminal(&mut first_rx, &mut first_projection, &first_view.run_id).await;
+    let (first_events, first_effects) = collect_terminal(
+        Some(&first_client),
+        &mut first_rx,
+        &mut first_projection,
+        &first_view.run_id,
+    )
+    .await;
 
     assert_canonical_projection(&first_events, &first_effects, FIRST_INPUT);
     assert_stored_event_identity(&first_events, &first_view.run_id);
@@ -139,8 +155,13 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .expect("Run Hub reopens terminal source");
     assert_eq!(attached.run_id, first_view.run_id);
     let mut rebuilt_projection = CanonicalRunProjection::new();
-    let (replayed_events, replayed_effects) =
-        collect_terminal(&mut rebuilt_rx, &mut rebuilt_projection, &first_view.run_id).await;
+    let (replayed_events, replayed_effects) = collect_terminal(
+        None,
+        &mut rebuilt_rx,
+        &mut rebuilt_projection,
+        &first_view.run_id,
+    )
+    .await;
     assert_eq!(replayed_events, first_events);
     assert_canonical_projection(&replayed_events, &replayed_effects, FIRST_INPUT);
 
@@ -154,6 +175,7 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         Some(first_view.run_id.clone())
     );
     let (continued_events, continued_effects) = collect_terminal(
+        Some(&rebuilt_client),
         &mut rebuilt_rx,
         &mut rebuilt_projection,
         &continued_view.run_id,
@@ -172,6 +194,7 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .expect("new action starts an independent canonical root");
     assert_eq!(independent_view.continued_from_run_id, None);
     let (independent_events, independent_effects) = collect_terminal(
+        Some(&rebuilt_client),
         &mut rebuilt_rx,
         &mut rebuilt_projection,
         &independent_view.run_id,
@@ -186,8 +209,13 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .expect("same-process Hub selection resets only the local replay cursor");
     assert_eq!(reopened_source.run_id, first_view.run_id);
     rebuilt_projection = CanonicalRunProjection::new();
-    let (reopened_events, reopened_effects) =
-        collect_terminal(&mut rebuilt_rx, &mut rebuilt_projection, &first_view.run_id).await;
+    let (reopened_events, reopened_effects) = collect_terminal(
+        None,
+        &mut rebuilt_rx,
+        &mut rebuilt_projection,
+        &first_view.run_id,
+    )
+    .await;
     assert_eq!(reopened_events, first_events);
     assert_canonical_projection(&reopened_events, &reopened_effects, FIRST_INPUT);
 
@@ -302,6 +330,7 @@ fn start_command(input: &str, workspace: &str) -> StartRunCommand {
 }
 
 async fn collect_terminal(
+    client: Option<&TuiRunClient>,
     receiver: &mut mpsc::Receiver<StoredRuntimeEvent>,
     projection: &mut CanonicalRunProjection,
     run_id: &RunId,
@@ -319,8 +348,15 @@ async fn collect_terminal(
                 .apply(event.clone())
                 .expect("canonical event projects without loss"),
         );
+        let proposed = matches!(&event.event, RuntimeEventKind::CompletionProposed { .. });
         let terminal = event.event.is_terminal();
         events.push(event);
+        if proposed && let Some(client) = client {
+            client
+                .accept_completion()
+                .await
+                .expect("explicit Host acceptance succeeds");
+        }
         if terminal {
             return (events, effects);
         }

@@ -106,6 +106,7 @@ enum PostRoute {
     Interrupt,
     Cancel,
     ResolveInteraction,
+    AcceptCompletion,
 }
 
 /// Serve the canonical local Run API until the listener stops.
@@ -144,6 +145,10 @@ pub fn router(
         .route("/v1/runs/{run_id}/steer", post(steer_run))
         .route("/v1/runs/{run_id}/interrupt", post(interrupt_run))
         .route("/v1/runs/{run_id}/cancel", post(cancel_run))
+        .route(
+            "/v1/runs/{run_id}/accept-completion",
+            post(accept_completion),
+        )
         .route(
             "/v1/runs/{run_id}/interactions/{interaction_id}/resolve",
             post(resolve_interaction),
@@ -256,6 +261,21 @@ async fn resolve_interaction(
         PostRoute::ResolveInteraction,
         Some(run_id),
         Some(interaction_id),
+        payload,
+    )
+    .await
+}
+
+async fn accept_completion(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(
+        &state,
+        PostRoute::AcceptCompletion,
+        Some(run_id),
+        None,
         payload,
     )
     .await
@@ -567,7 +587,8 @@ fn validate_post_envelope(
         | (PostRoute::Steer, RunCommand::Steer { run_id, .. })
         | (PostRoute::Interrupt, RunCommand::Interrupt { run_id })
         | (PostRoute::Cancel, RunCommand::Cancel { run_id })
-        | (PostRoute::ResolveInteraction, RunCommand::ResolveInteraction { run_id, .. }) => run_id,
+        | (PostRoute::ResolveInteraction, RunCommand::ResolveInteraction { run_id, .. })
+        | (PostRoute::AcceptCompletion, RunCommand::AcceptCompletion { run_id, .. }) => run_id,
         _ => {
             return Err(format!(
                 "command kind does not match the {} route",
@@ -606,6 +627,7 @@ fn route_name(route: PostRoute) -> &'static str {
         PostRoute::Interrupt => "interrupt",
         PostRoute::Cancel => "cancel",
         PostRoute::ResolveInteraction => "resolve interaction",
+        PostRoute::AcceptCompletion => "accept completion",
     }
 }
 
@@ -684,7 +706,10 @@ fn response_status(response: &RunCommandResponse) -> StatusCode {
             | RunApiErrorCode::RunEnvironmentMismatch
             | RunApiErrorCode::InteractionNotPending
             | RunApiErrorCode::InteractionMismatch
-            | RunApiErrorCode::InteractionAlreadyResolved => StatusCode::CONFLICT,
+            | RunApiErrorCode::InteractionAlreadyResolved
+            | RunApiErrorCode::CompletionNotPending
+            | RunApiErrorCode::CompletionMismatch
+            | RunApiErrorCode::CompletionStale => StatusCode::CONFLICT,
             RunApiErrorCode::RunStoreFailed => StatusCode::INTERNAL_SERVER_ERROR,
         },
     }
@@ -827,6 +852,7 @@ fn has_valid_bearer_token(headers: &HeaderMap, expected: &str) -> bool {
 mod tests {
     use std::num::NonZeroU32;
     use std::path::Path;
+    use std::process::Command as ProcessCommand;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use axum::body::{Body, to_bytes};
@@ -838,10 +864,12 @@ mod tests {
         TerminalState, ToolPolicy, UserInteractionResponse,
     };
     use dse_protocol::run_api::{
-        ContinueRunCommand, PendingCreationKind, RunApiErrorReason, RunProductControls, RunView,
-        StartRunCommand,
+        ContinueRunCommand, PendingCreationKind, RunApiErrorReason, RunCompletion,
+        RunProductControls, RunView, StartRunCommand,
     };
-    use dse_protocol::task::TaskDefinition;
+    use dse_protocol::task::{
+        HostCompletionAcceptance, TaskDefinition, WorkspaceRevision, WorkspaceState,
+    };
     use serde_json::json;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::sync::{Notify, Semaphore};
@@ -1035,6 +1063,7 @@ mod tests {
     }
 
     fn production_start(workspace: &Path, input: &str) -> StartRunCommand {
+        ensure_workspace_revision_fixture(workspace);
         StartRunCommand {
             task: TaskDefinition::host(input),
             workspace: workspace
@@ -1059,6 +1088,32 @@ mod tests {
             },
             controls: RunProductControls::default(),
         }
+    }
+
+    fn ensure_workspace_revision_fixture(workspace: &Path) {
+        let already_versioned = ProcessCommand::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(workspace)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if already_versioned {
+            return;
+        }
+        let output = ProcessCommand::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(workspace)
+            .output()
+            .expect("initialize app-server workspace fixture");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::write(
+            workspace.join(".git/info/exclude"),
+            "state.db\nstate.db-*\n",
+        )
+        .expect("exclude app-server test RunStore from workspace revision");
     }
 
     fn test_options(auth_token: Option<&str>) -> AppServerOptions {
@@ -1117,6 +1172,7 @@ mod tests {
 
     async fn wait_http_terminal(app: &Router, run_id: &RunId, token: Option<&str>) -> RunView {
         tokio::time::timeout(Duration::from_secs(5), async {
+            let mut acceptance_submitted = false;
             loop {
                 let (_, response) =
                     get_command(app, &format!("/v1/runs/{}", run_id.0), token).await;
@@ -1125,6 +1181,32 @@ mod tests {
                 };
                 if run.terminal.is_some() {
                     return *run;
+                }
+                if !acceptance_submitted
+                    && let RunCompletion::Answered {
+                        candidate,
+                        current_workspace_state,
+                    } = &run.completion
+                {
+                    assert_eq!(&candidate.workspace_state, current_workspace_state);
+                    let accept = envelope(RunCommand::AcceptCompletion {
+                        run_id: run_id.clone(),
+                        acceptance: HostCompletionAcceptance {
+                            candidate_id: candidate.id.clone(),
+                            generation_id: candidate.generation_id.clone(),
+                            workspace_state: current_workspace_state.clone(),
+                        },
+                    });
+                    let (status, response) = post_command(
+                        app,
+                        &format!("/v1/runs/{}/accept-completion", run_id.0),
+                        &accept,
+                        token,
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::ACCEPTED);
+                    assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
+                    acceptance_submitted = true;
                 }
                 tokio::task::yield_now().await;
             }
@@ -1222,6 +1304,22 @@ mod tests {
                 PostRoute::Cancel,
                 RunCommand::Cancel {
                     run_id: run_id.clone(),
+                },
+            ),
+            (
+                PostRoute::AcceptCompletion,
+                RunCommand::AcceptCompletion {
+                    run_id: run_id.clone(),
+                    acceptance: HostCompletionAcceptance {
+                        candidate_id: "candidate-1".into(),
+                        generation_id: "generation-1".into(),
+                        workspace_state: WorkspaceState {
+                            generation: 1,
+                            revision: WorkspaceRevision::Known {
+                                sha256: "sha256:revision-1".to_owned(),
+                            },
+                        },
+                    },
                 },
             ),
         ];
@@ -1406,6 +1504,9 @@ mod tests {
             (RunApiErrorCode::RunAlreadyRunning, StatusCode::CONFLICT),
             (RunApiErrorCode::RunNotActive, StatusCode::CONFLICT),
             (RunApiErrorCode::RunTerminal, StatusCode::CONFLICT),
+            (RunApiErrorCode::CompletionNotPending, StatusCode::CONFLICT),
+            (RunApiErrorCode::CompletionMismatch, StatusCode::CONFLICT),
+            (RunApiErrorCode::CompletionStale, StatusCode::CONFLICT),
             (
                 RunApiErrorCode::RunContinuationInvalid,
                 StatusCode::CONFLICT,
@@ -1489,6 +1590,19 @@ mod tests {
             },
             RunCommand::Cancel {
                 run_id: run_id.clone(),
+            },
+            RunCommand::AcceptCompletion {
+                run_id: run_id.clone(),
+                acceptance: HostCompletionAcceptance {
+                    candidate_id: "candidate-1".into(),
+                    generation_id: "generation-1".into(),
+                    workspace_state: WorkspaceState {
+                        generation: 1,
+                        revision: WorkspaceRevision::Known {
+                            sha256: "sha256:revision-1".to_owned(),
+                        },
+                    },
+                },
             },
             RunCommand::ResolveInteraction {
                 run_id,
@@ -2109,7 +2223,11 @@ mod tests {
         let (_, response) = post_command(&app, "/v1/runs", &start, None).await;
         let run = run_from_response(response);
         fixture.wait_requests(1).await;
-        wait_http_terminal(&app, &run.run_id, None).await;
+        let accepted = wait_http_terminal(&app, &run.run_id, None).await;
+        assert!(matches!(
+            accepted.completion,
+            RunCompletion::HostAccepted { .. }
+        ));
         let (_, response) = get_command(
             &app,
             &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),

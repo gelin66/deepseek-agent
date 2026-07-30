@@ -1,6 +1,7 @@
 //! Read-only canonical child-Agent projection for the native work surface.
 
 use crate::tui::app::App;
+use crate::tui::run_presenter::terminal_label;
 use dse_localization::MessageId;
 use dse_protocol::agent_runtime::TerminalState;
 
@@ -59,9 +60,15 @@ impl LiveWorkProjection {
 }
 
 fn child_status(app: &App, terminal: Option<&TerminalState>) -> String {
+    if let Some(terminal @ TerminalState::Completed { .. }) = terminal {
+        return terminal_label(app.language, terminal).into_owned();
+    }
     app.tr(match terminal {
         None => MessageId::WorkChildRunning,
-        Some(TerminalState::Completed { .. }) => MessageId::WorkChildDone,
+        Some(TerminalState::AwaitingHostAcceptance { .. }) => {
+            MessageId::RunTerminalAwaitingHostAcceptance
+        }
+        Some(TerminalState::Completed { .. }) => unreachable!("handled above"),
         Some(TerminalState::Blocked { .. }) => MessageId::WorkChildBlocked,
         Some(TerminalState::Failed { .. }) => MessageId::WorkChildFailed,
         Some(TerminalState::Cancelled) => MessageId::WorkChildCanceled,

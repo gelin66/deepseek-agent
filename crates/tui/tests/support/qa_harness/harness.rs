@@ -261,6 +261,17 @@ pub fn make_sealed_workspace() -> Result<SealedWorkspace> {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&workspace).context("mkdir workspace")?;
     std::fs::create_dir_all(home.join(".dse")).context("mkdir home/.dse")?;
+    let git = std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&workspace)
+        .output()
+        .context("initialize versioned PTY workspace")?;
+    if !git.status.success() {
+        return Err(anyhow!(
+            "git init failed for PTY workspace: {}",
+            String::from_utf8_lossy(&git.stderr)
+        ));
+    }
     Ok(SealedWorkspace {
         _tmp: tmp,
         workspace,
