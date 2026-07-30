@@ -6365,7 +6365,7 @@ all-features check/strict Clippy、全部 workspace tests 与 doctests；不是�
 Runtime/Event/RunStore 状态机，且前者永不冒充 deterministic verified。旧自动 Host satisfaction、
 旧 false-complete conformance 和旧 materialized compatibility 路径保持物理删除。
 
-### 2026-07-30 ADR-0021 后 Engineering Alpha（进行中）
+### 2026-07-30 ADR-0021 后 Engineering Alpha
 
 冻结合同为 `eval/manifests/adr0021-engineering-alpha-v1.json`；本节记录一次
 deterministic actual。三个 fresh、cross-file task 分别覆盖 Python owner boundary、Rust retry
@@ -6385,10 +6385,27 @@ input/output=`2,120/174`、wall=`17,543 ms`、rework=`0`。三项均未写入
 verifier、Web 与 Writer reexecution 全为 `0`。Web vertical 固定一次 search、两次 fetch 和两个
 URL citation，不声明 Tavily/live-search。
 
-本 actual 使用 scripted production loopback，只证明 completion gate、exact verifier、Writer
-lifecycle 和 replay observer 能正确判定结果；它不能建立或排除真实 DeepSeek owner loss。因此
-repeated-loss 决策仍为 pending，successor 未准入，production delta=`0`。fresh official treatment
-已冻结为 `deepseek-v4-pro/high`、2,048 output tokens、每个任务零 rerun/零 runtime retry，
-code task 各最多 8 physical requests/16 tool calls，Web+Writer 最多 12/24，suite known-cost
-ceiling `$0.10`；当前 credential 不可用，所以 credential read=`false`、official requests=`0`、
-actual cost=`$0`。凭据闭合前不得用离线 3/3 冒充产品成功，也不得启动下一 capability slice。
+本 deterministic actual 使用 scripted production loopback，只证明 completion gate、exact verifier、
+Writer lifecycle 和 replay observer 能正确判定结果；它不冒充 DeepSeek 产品成功。唯一 fresh
+official treatment 使用 `deepseek-v4-pro/high`、2,048 output tokens、每个任务零 rerun/零
+runtime retry，且实际遵守 `$0.10` ceiling：
+
+| task | acquired | verified | false success | requests | input/output | known cost | rework | terminal |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `python-quota` | 1 | 0 | 0 | 7 | 32,463/3,503 | `$0.009770071` | 2 | exact verifier failure 后 `Blocked` |
+| `rust-retry` | 1 | 0 | 0 | 1 | unknown | unknown | 0 | typed retryable `deepseek_transport` |
+| `web-writer-constant` | 0 | — | — | 0 | — | — | — | billing-unknown stop rule 后未启动 |
+
+Python task 的八次工具 outcome 为六次 bounded read 与两次 patch，tool/patch failure=`0`；
+两次 Host exact verification 都没有 receipt，最后保持
+`ended_without_completion`。Rust task 在工具前 transport fail，usage/billing 不完整；因此 suite
+只能报告 known cost，不能声明 exact total cost，也不能发起下一 paid task。两项 committed Store
+在 credential-free reopen 后 event/workspace 不变，reexecution=`0`。
+
+official acquired=`2/3`、verified success=`0/2`、false success=`0`、physical requests=`8`、
+known input/output=`32,463/3,503`、known cost=`$0.009770071`、wall=`54,091 ms`。maximum
+reruns=`0`，没有为绿重跑，也没有补做 Web+Writer。观察到的 current owner loss 分别是一个
+Python exact-task completion loss 和一个外部 DeepSeek transport/accounting loss，不是两个独立
+task 的同一 owner loss；第三 task 没有 acquisition，不能拼接 deterministic fixture 冒充第二个
+official loss。decision=`no_successor_incomplete_official_acquisition`：successor 不准入，
+production delta=`0`，能力扩张停止；不续跑 M40。
