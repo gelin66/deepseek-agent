@@ -12,16 +12,28 @@ mod model_fault_proxy;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use dse_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
+use dse_app::{
+    AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
+    ProductionPromptConfig, ProductionToolConfig, ShellPolicy,
+};
+use dse_config::PromptPreferences;
+use dse_protocol::run_api::{
+    RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResult, RunCompletion,
+};
+use dse_protocol::task::{
+    HostAcceptanceReceipt, HostAcceptanceReceiptId, HostCompletionAcceptance, TaskContract,
+    TaskDefinition, TaskGenerationId,
+};
 use dse_runtime::{
-    ModelRouteProfile, RunEnvironment, RunId, RunPermissionMode, RunRequest, RunStore,
-    RuntimeEventKind, StoredRuntimeEvent, TerminalState,
+    CommandId, ModelRouteProfile, PendingRuntimeEvent, RunEnvironment, RunId, RunPermissionMode,
+    RunRequest, RunStore, RuntimeEventKind, StoredRuntimeEvent, TerminalState,
 };
 use dse_state::StateStore;
 use serde_json::{Value, json};
@@ -53,6 +65,13 @@ const NESTED_ROOT_INTEGRATED_MARKER: &str = "nested-root-integrated-full-tree";
 const NESTED_CHILD_HANDOFF_MARKER: &str = "<dse:runtime_event kind=\"child_subagent_completion\"";
 const UNAUTHORIZED_WRITE_CALL_ID: &str = "call_exec_unauthorized_write";
 const UNAUTHORIZED_WRITE_PATH: &str = "must-not-be-created.txt";
+const ACCEPTANCE_CHILD_MODE: &str = "DSE_EXEC_ACCEPTANCE_CHILD";
+const ACCEPTANCE_CHILD_STATE_DB: &str = "DSE_EXEC_ACCEPTANCE_STATE_DB";
+const ACCEPTANCE_CHILD_BASE_URL: &str = "DSE_EXEC_ACCEPTANCE_BASE_URL";
+const ACCEPTANCE_CHILD_WORKSPACE: &str = "DSE_EXEC_ACCEPTANCE_WORKSPACE";
+const ACCEPTANCE_CHILD_HOME: &str = "DSE_EXEC_ACCEPTANCE_HOME";
+const ACCEPTANCE_CHILD_RUN_ID: &str = "DSE_EXEC_ACCEPTANCE_RUN_ID";
+const ACCEPTANCE_CHILD_COMMAND_ID: &str = "DSE_EXEC_ACCEPTANCE_COMMAND_ID";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 static EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -182,7 +201,7 @@ impl Respond for NestedAgentResponder {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn completed_exec_resume_replays_the_same_terminal_without_another_model_request() {
+async fn answered_exec_reopen_then_exact_host_acceptance_replays_without_another_model_request() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
@@ -199,6 +218,7 @@ async fn completed_exec_resume_replays_the_same_terminal_without_another_model_r
         "",
         None,
     );
+    init_versioned_workspace(workspace.path());
     let first = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(
         first.status.success(),
@@ -231,17 +251,11 @@ async fn completed_exec_resume_replays_the_same_terminal_without_another_model_r
     let replay_before = store
         .load(&RunId::from(run_id.clone()))
         .await
-        .expect("load completed run")
-        .expect("completed run exists");
-    assert_eq!(terminal_event_count(&replay_before.events), 1);
-    assert!(matches!(
-        replay_before
-            .snapshot
-            .terminal
-            .as_ref()
-            .map(|outcome| &outcome.terminal),
-        Some(TerminalState::Completed { .. })
-    ));
+        .expect("load answered run")
+        .expect("answered run exists");
+    assert_eq!(terminal_event_count(&replay_before.events), 0);
+    assert!(replay_before.snapshot.terminal.is_none());
+    assert!(replay_before.snapshot.pending_completion.is_some());
     drop(store);
 
     let mut resume_command = prepare_resume_exec(
@@ -292,24 +306,134 @@ async fn completed_exec_resume_replays_the_same_terminal_without_another_model_r
     assert_eq!(
         chat_request_count(&server).await,
         1,
-        "resuming a terminal run sent another model request"
+        "reopening an answered run sent another model request"
     );
 
-    let store = StateStore::open(Some(state_db)).expect("reopen production state db");
+    let store = StateStore::open(Some(state_db.clone())).expect("reopen production state db");
     let replay_after = store
-        .load(&RunId::from(run_id))
+        .load(&RunId::from(run_id.clone()))
         .await
-        .expect("reload completed run")
-        .expect("completed run still exists");
+        .expect("reload answered run")
+        .expect("answered run still exists");
     assert_eq!(
         replay_after.events, replay_before.events,
-        "terminal replay appended or rewrote the canonical event log"
+        "answer replay appended or rewrote the canonical event log"
     );
-    assert_eq!(terminal_event_count(&replay_after.events), 1);
+    assert_eq!(terminal_event_count(&replay_after.events), 0);
+    assert_eq!(
+        replay_after.snapshot.pending_completion,
+        replay_before.snapshot.pending_completion
+    );
+    drop(store);
+
+    let canonical_run_id = RunId::from(run_id.clone());
+    seed_host_acceptance_crash_prefix(
+        &state_db,
+        &canonical_run_id,
+        "exec-test-accept-answer-prefix",
+    )
+    .await;
+    assert_eq!(
+        chat_request_count(&server).await,
+        1,
+        "Host acceptance must not call the model"
+    );
+
+    let mut accepted_resume = prepare_resume_exec(
+        &server.uri(),
+        workspace.path(),
+        home.path(),
+        &run_id,
+        true,
+        None,
+    );
+    accepted_resume.env_remove("DEEPSEEK_API_KEY");
+    let accepted = run_with_timeout(accepted_resume, PROCESS_TIMEOUT);
+    assert!(
+        accepted.status.success(),
+        "accepted terminal replay failed\nstdout:\n{}\nstderr:\n{}",
+        accepted.stdout,
+        accepted.stderr
+    );
+    let accepted_events = parse_strict_ndjson(&accepted.stdout);
+    let accepted_metadata = assert_terminal_tail(&accepted_events, None);
+    assert_eq!(accepted_metadata["status"], "host_accepted");
+    assert_eq!(accepted_metadata["termination_reason"], "host_accepted");
+    assert_eq!(
+        content_events(&accepted_events),
+        content_events(&first_events)
+    );
+    assert_eq!(chat_request_count(&server).await, 1);
+
+    let accepted_replay = StateStore::open(Some(state_db))
+        .expect("reopen accepted production state db")
+        .load(&canonical_run_id)
+        .await
+        .expect("load accepted run")
+        .expect("accepted run exists");
+    assert_eq!(terminal_event_count(&accepted_replay.events), 1);
+    assert_eq!(
+        accepted_replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. }))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        accepted_replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal),
+        Some(TerminalState::Completed { .. })
+    ));
+}
+
+async fn seed_host_acceptance_crash_prefix(state_db: &Path, run_id: &RunId, command_id: &str) {
+    let store = StateStore::open(Some(state_db.to_path_buf())).expect("open answered run store");
+    let acquired = store
+        .acquire(run_id)
+        .await
+        .expect("acquire answered run for crash prefix");
+    let lease = acquired.lease.as_ref().expect("answered run has a lease");
+    let candidate = acquired
+        .replay
+        .snapshot
+        .pending_completion
+        .clone()
+        .expect("answered run has an exact completion candidate");
+    let command_id = CommandId::from(command_id);
+    store
+        .append(
+            lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::HostCompletionAccepted {
+                command_id: command_id.clone(),
+                receipt: HostAcceptanceReceipt {
+                    id: HostAcceptanceReceiptId::from(format!("host-acceptance:{}", command_id.0)),
+                    candidate_id: candidate.id,
+                    generation_id: candidate.generation_id,
+                    workspace_state: candidate.workspace_state,
+                },
+            }),
+        )
+        .await
+        .expect("commit exact Host acceptance crash prefix");
+    store
+        .release(lease)
+        .await
+        .expect("release simulated crashed acceptance process");
+    let prefix = store
+        .load(run_id)
+        .await
+        .expect("reload Host acceptance prefix")
+        .expect("Host acceptance prefix exists");
+    assert!(prefix.snapshot.terminal.is_none());
+    assert_eq!(prefix.snapshot.host_acceptance_receipts.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_conflicts() {
+async fn sequential_answered_runs_share_one_store_and_continue_refuses_unaccepted_source() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
@@ -324,6 +448,7 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
     let continue_prompt = "continue only the second fresh run";
     let (mut first_command, workspace, home) =
         prepare_exec(&server.uri(), 30, first_prompt, "", None);
+    init_versioned_workspace(workspace.path());
     let dse_home = home.path().join(".dse");
     first_command.env("DSE_HOME", &dse_home);
     let first = run_with_timeout(first_command, PROCESS_TIMEOUT);
@@ -386,8 +511,49 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
         PROCESS_TIMEOUT,
     );
     assert!(
+        !continued.status.success(),
+        "continue must not treat an unaccepted answer as a terminal source\nstdout:\n{}\nstderr:\n{}",
+        continued.stdout,
+        continued.stderr
+    );
+    assert!(
+        continued.stdout.contains("not terminal") || continued.stderr.contains("not terminal"),
+        "continue did not explain the unaccepted source state\nstdout:\n{}\nstderr:\n{}",
+        continued.stdout,
+        continued.stderr
+    );
+    assert_eq!(chat_request_count(&server).await, 2);
+
+    accept_answered_run(
+        &state_db,
+        &server.uri(),
+        workspace.path(),
+        home.path(),
+        &second_run_id,
+        "exec-test-accept-continuation-source",
+    )
+    .await;
+    assert_eq!(chat_request_count(&server).await, 2);
+    let accepted_source = StateStore::open(Some(state_db.clone()))
+        .expect("open accepted continuation source")
+        .load(&second_run_id)
+        .await
+        .expect("load accepted continuation source")
+        .expect("accepted continuation source exists");
+
+    let continued = run_with_timeout(
+        prepare_existing_exec(
+            &server.uri(),
+            workspace.path(),
+            home.path(),
+            continue_prompt,
+            true,
+        ),
+        PROCESS_TIMEOUT,
+    );
+    assert!(
         continued.status.success(),
-        "continue exec hit a creation conflict\nstdout:\n{}\nstderr:\n{}",
+        "accepted source did not admit a continuation\nstdout:\n{}\nstderr:\n{}",
         continued.stdout,
         continued.stderr
     );
@@ -418,11 +584,21 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
         .expect("load continued run")
         .expect("continued run exists");
     assert_eq!(
-        second_after.events, second_before.events,
+        second_after.events, accepted_source.events,
         "creating the continuation must not rewrite its source run"
     );
     assert_eq!(first_replay.snapshot.request.continued_from_run_id, None);
     assert_eq!(second_after.snapshot.request.continued_from_run_id, None);
+    assert!(first_replay.snapshot.pending_completion.is_some());
+    assert!(second_before.snapshot.pending_completion.is_some());
+    assert!(matches!(
+        second_after
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal),
+        Some(TerminalState::Completed { .. })
+    ));
     assert_eq!(continued_replay.snapshot.request.parent_run_id, None);
     assert_eq!(
         continued_replay.snapshot.request.continued_from_run_id,
@@ -822,8 +998,8 @@ async fn successful_exec_emits_strict_ndjson_and_one_terminal_receipt() {
 
     let events = parse_strict_ndjson(&output.stdout);
     let metadata = assert_terminal_tail(&events, None);
-    assert_eq!(metadata["status"], "completed");
-    assert_eq!(metadata["termination_reason"], "resolved");
+    assert_eq!(metadata["status"], "answered");
+    assert_eq!(metadata["termination_reason"], "answered_unverified");
     assert_exact_success_accounting(metadata, 1, 11, 3);
     assert!(
         events.iter().any(|event| {
@@ -910,8 +1086,8 @@ async fn summary_json_exec_uses_the_runtime_terminal_without_tools() {
     let summary: Value = serde_json::from_str(&output.stdout)
         .unwrap_or_else(|error| panic!("summary JSON is invalid ({error}): {}", output.stdout));
     assert_ne!(summary["mode"], "one-shot");
-    assert_eq!(summary["status"], "completed");
-    assert_eq!(summary["termination_reason"], "resolved");
+    assert_eq!(summary["status"], "answered");
+    assert_eq!(summary["termination_reason"], "answered_unverified");
     assert_eq!(summary["output"], "json-runtime-production-marker");
     assert_exact_success_accounting(&summary, 1, 11, 3);
     assert_eq!(chat_request_count(&server).await, 1);
@@ -1232,8 +1408,8 @@ async fn explicit_fixed_pro_uses_one_root_request_and_one_exact_ledger() {
 
     let events = parse_strict_ndjson(&output.stdout);
     let metadata = assert_terminal_tail(&events, None);
-    assert_eq!(metadata["status"], "completed");
-    assert_eq!(metadata["termination_reason"], "resolved");
+    assert_eq!(metadata["status"], "answered");
+    assert_eq!(metadata["termination_reason"], "answered_unverified");
     assert_eq!(metadata["route_source"], "explicit_or_configured");
     assert_exact_success_accounting(metadata, 1, 11, 3);
 
@@ -1333,13 +1509,15 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
         .mount(&server)
         .await;
 
-    let output = run_exec_at(
+    let (command, workspace, _home) = prepare_exec(
         &server.uri(),
         20,
         MULTI_AGENT_ROOT_PROMPT,
         "[subagents]\nmax_concurrent = 1\n",
         None,
     );
+    init_versioned_workspace(workspace.path());
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(
         output.status.success(),
         "multi-agent exec exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
@@ -1349,8 +1527,8 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
 
     let events = parse_strict_ndjson(&output.stdout);
     let metadata = assert_terminal_tail(&events, None);
-    assert_eq!(metadata["status"], "completed");
-    assert_eq!(metadata["termination_reason"], "resolved");
+    assert_eq!(metadata["status"], "answered");
+    assert_eq!(metadata["termination_reason"], "answered_unverified");
     // Root spawn reports 19/8 tokens; child and parent integration each
     // report 11/3. Eager join removes the information-free root wait request.
     let parent_integration_index = events
@@ -1547,13 +1725,15 @@ async fn nested_agent_exec_integrates_delayed_grandchild_before_terminal() {
         .mount(&server)
         .await;
 
-    let output = run_exec_at(
+    let (command, workspace, _home) = prepare_exec(
         &server.uri(),
         20,
         NESTED_ROOT_PROMPT,
         "[subagents]\nmax_concurrent = 2\nmax_depth = 3\n",
         None,
     );
+    init_versioned_workspace(workspace.path());
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(
         output.status.success(),
         "nested multi-agent exec exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
@@ -1563,8 +1743,8 @@ async fn nested_agent_exec_integrates_delayed_grandchild_before_terminal() {
 
     let events = parse_strict_ndjson(&output.stdout);
     let metadata = assert_terminal_tail(&events, None);
-    assert_eq!(metadata["status"], "completed");
-    assert_eq!(metadata["termination_reason"], "resolved");
+    assert_eq!(metadata["status"], "answered");
+    assert_eq!(metadata["termination_reason"], "answered_unverified");
     // Root spawn: 19/8. Parent spawn: 17/6. Grandchild, parent integration,
     // and root integration each report 11/3. Eager join removes both
     // information-free early parent turns.
@@ -1823,7 +2003,8 @@ fn reset_recovery_and_permanent_auth_failure_keep_attempts_and_decisions_exact()
         2
     );
     let reset_metadata = assert_terminal_tail(&reset_events, None);
-    assert_eq!(reset_metadata["status"], "completed");
+    assert_eq!(reset_metadata["status"], "answered");
+    assert_eq!(reset_metadata["termination_reason"], "answered_unverified");
     assert_eq!(reset_metadata["runtime_retry_count"], 2);
     assert_eq!(reset_metadata["api_request_count"], 3);
 
@@ -2191,6 +2372,10 @@ async fn full_unread_stdout_pipe_still_honors_the_runtime_bound() {
         "stdout never accumulated enough flood data to exercise pipe backpressure: {} bytes",
         output.stdout.len()
     );
+    assert!(
+        !output.stdout.contains("\"type\":\"done\""),
+        "a blocked stdout pipe must not fabricate a complete stream tail"
+    );
 }
 
 async fn mount_models(server: &MockServer) {
@@ -2254,6 +2439,200 @@ fn prepare_exec(
         None,
         None,
     )
+}
+
+fn init_versioned_workspace(workspace: &Path) {
+    let git = Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(workspace)
+        .output()
+        .expect("initialize versioned exec workspace");
+    assert!(
+        git.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&git.stderr)
+    );
+}
+
+fn production_application_for_exec_store(
+    state_db: &Path,
+    base_url: &str,
+    workspace: &Path,
+    home: &Path,
+) -> Arc<AgentApplication> {
+    let skills_dir = home.join(".dse/skills");
+    let connection = DeepSeekConnectionConfig {
+        endpoint: DeepSeekEndpoint::loopback_fixture(format!("{base_url}/v1"))
+            .expect("loopback DeepSeek endpoint"),
+        strict_tools: false,
+        response_header_timeout: Duration::from_secs(45),
+        stream_idle_timeout: Duration::from_secs(900),
+    };
+    let tools = ProductionToolConfig::new(workspace)
+        .with_permission_mode(RunPermissionMode::Agent)
+        .with_shell_policy(ShellPolicy::Full)
+        .with_browser_state_root(home.join(".dse/browser"));
+    let prompt = ProductionPromptConfig {
+        preferences: PromptPreferences::default(),
+        instructions: Vec::new(),
+        skills_dir: Some(skills_dir),
+        verbosity: None,
+        skills_scan_dse_only: false,
+        shell_binary: dse_tools::shell_dispatcher::global_dispatcher()
+            .kind()
+            .binary()
+            .to_owned(),
+    };
+    let config = ProductionApplicationConfig::official()
+        .with_state_db_path(state_db)
+        .with_deepseek_connection(connection)
+        .with_tool_config(tools)
+        .with_prompt(prompt)
+        .with_default_max_api_requests(NonZeroU32::new(u32::MAX).expect("non-zero request limit"))
+        .with_api_key(TEST_KEY)
+        .expect("fixture credential");
+    Arc::new(AgentApplication::production(config).expect("production AgentApplication"))
+}
+
+async fn accept_answered_run_in_current_process(
+    state_db: &Path,
+    base_url: &str,
+    workspace: &Path,
+    home: &Path,
+    run_id: &RunId,
+    command_id: &str,
+) {
+    let store = StateStore::open(Some(state_db.to_path_buf())).expect("open answered run store");
+    let replay = store
+        .load(run_id)
+        .await
+        .expect("load answered run")
+        .expect("answered run exists");
+    let candidate = replay
+        .snapshot
+        .pending_completion
+        .clone()
+        .expect("run has an exact pending completion candidate");
+    drop(store);
+
+    let application = production_application_for_exec_store(state_db, base_url, workspace, home);
+    let response = application
+        .execute(RunCommandEnvelope {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: command_id.to_owned(),
+            command: RunCommand::AcceptCompletion {
+                run_id: run_id.clone(),
+                acceptance: HostCompletionAcceptance {
+                    candidate_id: candidate.id,
+                    generation_id: candidate.generation_id,
+                    workspace_state: candidate.workspace_state,
+                },
+            },
+        })
+        .await;
+    assert!(
+        matches!(response.result, RunCommandResult::Accepted { .. }),
+        "canonical Host acceptance failed: {:?}",
+        response.result
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = application
+                .execute(RunCommandEnvelope {
+                    schema_version: RUN_API_SCHEMA_VERSION,
+                    request_id: format!("{command_id}-get"),
+                    command: RunCommand::Get {
+                        run_id: run_id.clone(),
+                    },
+                })
+                .await;
+            match response.result {
+                RunCommandResult::Run { run }
+                    if run.terminal.is_some()
+                        && matches!(run.completion, RunCompletion::HostAccepted { .. }) =>
+                {
+                    break;
+                }
+                RunCommandResult::Run { .. } => tokio::time::sleep(Duration::from_millis(5)).await,
+                other => panic!("unexpected Host acceptance projection: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("Host acceptance reaches one durable terminal fact");
+}
+
+async fn accept_answered_run(
+    state_db: &Path,
+    base_url: &str,
+    workspace: &Path,
+    home: &Path,
+    run_id: &RunId,
+    command_id: &str,
+) {
+    let mut command =
+        Command::new(std::env::current_exe().expect("current acceptance test binary"));
+    command
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("exec_host_acceptance_process_child")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(ACCEPTANCE_CHILD_MODE, "1")
+        .env(ACCEPTANCE_CHILD_STATE_DB, state_db)
+        .env(ACCEPTANCE_CHILD_BASE_URL, base_url)
+        .env(ACCEPTANCE_CHILD_WORKSPACE, workspace)
+        .env(ACCEPTANCE_CHILD_HOME, home)
+        .env(ACCEPTANCE_CHILD_RUN_ID, &run_id.0)
+        .env(ACCEPTANCE_CHILD_COMMAND_ID, command_id)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("DSE_HOME", home.join(".dse"))
+        .env("DSE_CONFIG_PATH", home.join(".dse/config.toml"))
+        .env("DEEPSEEK_API_KEY", TEST_KEY)
+        .env("DSE_BASE_URL", base_url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
+    assert!(
+        output.status.success(),
+        "isolated production Host acceptance failed\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+#[test]
+#[ignore = "launched only by the parent exec acceptance tests"]
+fn exec_host_acceptance_process_child() {
+    if std::env::var(ACCEPTANCE_CHILD_MODE).as_deref() != Ok("1") {
+        return;
+    }
+    let state_db = PathBuf::from(
+        std::env::var_os(ACCEPTANCE_CHILD_STATE_DB).expect("acceptance child state db"),
+    );
+    let base_url = std::env::var(ACCEPTANCE_CHILD_BASE_URL).expect("acceptance child base URL");
+    let workspace = PathBuf::from(
+        std::env::var_os(ACCEPTANCE_CHILD_WORKSPACE).expect("acceptance child workspace"),
+    );
+    let home =
+        PathBuf::from(std::env::var_os(ACCEPTANCE_CHILD_HOME).expect("acceptance child home"));
+    let run_id =
+        RunId::from(std::env::var(ACCEPTANCE_CHILD_RUN_ID).expect("acceptance child run id"));
+    let command_id =
+        std::env::var(ACCEPTANCE_CHILD_COMMAND_ID).expect("acceptance child command id");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("acceptance child Tokio runtime")
+        .block_on(accept_answered_run_in_current_process(
+            &state_db,
+            &base_url,
+            &workspace,
+            &home,
+            &run_id,
+            &command_id,
+        ));
 }
 
 fn prepare_resume_exec(
@@ -2618,7 +2997,7 @@ fn parse_strict_ndjson(stdout: &str) -> Vec<Value> {
                 )
             });
             assert_eq!(event["schema"], "dse.exec-stream");
-            assert_eq!(event["schema_version"], 6);
+            assert_eq!(event["schema_version"], 7);
             assert!(
                 event["type"].is_string(),
                 "stdout line {} has no event type: {event:#}",
@@ -2687,7 +3066,12 @@ fn assert_terminal_tail<'a>(events: &'a [Value], error_code: Option<&str>) -> &'
     assert_eq!(metadata.len(), 1, "metadata must be unique: {events:#?}");
     assert_eq!(done.len(), 1, "done must be unique: {events:#?}");
     assert_eq!(done[0].0, events.len() - 1, "done must be the last event");
-    assert_eq!(metadata[0].1["meta"]["receipt_kind"], "terminal");
+    let expected_receipt_kind = if metadata[0].1["meta"]["status"] == "answered" {
+        "answer"
+    } else {
+        "terminal"
+    };
+    assert_eq!(metadata[0].1["meta"]["receipt_kind"], expected_receipt_kind);
 
     match error_code {
         None => {
@@ -2762,7 +3146,8 @@ async fn chat_request_count(server: &MockServer) -> usize {
 }
 
 /// Minimal raw HTTP server for states that WireMock cannot model precisely:
-/// an established stream with no events, and an unbounded content stream.
+/// an established stream with no events, and a bounded content flood that
+/// deterministically saturates an unread stdout pipe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RawSseMode {
     EventStall,
@@ -3009,7 +3394,7 @@ fn serve_event_stall(stream: &mut TcpStream, stop: &AtomicBool) {
 }
 
 fn serve_content_flood(stream: &mut TcpStream, stop: &AtomicBool) {
-    let content = "x".repeat(32 * 1024);
+    let content = "x".repeat(2 * 1024 * 1024);
     let event = sse_chunk(json!({
         "id": "chatcmpl-output-flood",
         "object": "chat.completion.chunk",
@@ -3020,11 +3405,15 @@ fn serve_content_flood(stream: &mut TcpStream, stop: &AtomicBool) {
             "finish_reason": null
         }]
     }));
-    while !stop.load(Ordering::Acquire) {
-        if write_chunked_payload(stream, event.as_bytes()).is_err() {
-            break;
-        }
+    // One two-MiB delta is well above the stdout pipe capacity on every
+    // supported Unix target while remaining below the transport's bounded
+    // SSE frame limit. It establishes backpressure without an unbounded
+    // producer or dozens of irrelevant Store events under a parallel test
+    // scheduler. Then keep the transport alive until the runtime bound fires.
+    if stop.load(Ordering::Acquire) || write_chunked_payload(stream, event.as_bytes()).is_err() {
+        return;
     }
+    serve_event_stall(stream, stop);
 }
 
 fn write_chunked_payload(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {

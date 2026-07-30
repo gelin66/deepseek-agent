@@ -13,7 +13,9 @@ use dse_localization::{MessageId, tr};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RunTerminationReason {
-    Resolved,
+    AnsweredUnverified,
+    HostAccepted,
+    VerifiedCompleted,
     Unresolved,
     Canceled,
     Timeout,
@@ -30,7 +32,9 @@ pub(crate) enum RunTerminationReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExecTerminalStatus {
-    Completed,
+    Answered,
+    HostAccepted,
+    VerifiedCompleted,
     Interrupted,
     Failed,
 }
@@ -46,7 +50,9 @@ impl ExecTerminalReceipt {
     #[must_use]
     pub(crate) const fn from_reason(termination_reason: RunTerminationReason) -> Self {
         let status = match termination_reason {
-            RunTerminationReason::Resolved => ExecTerminalStatus::Completed,
+            RunTerminationReason::AnsweredUnverified => ExecTerminalStatus::Answered,
+            RunTerminationReason::HostAccepted => ExecTerminalStatus::HostAccepted,
+            RunTerminationReason::VerifiedCompleted => ExecTerminalStatus::VerifiedCompleted,
             RunTerminationReason::Canceled => ExecTerminalStatus::Interrupted,
             RunTerminationReason::Unresolved
             | RunTerminationReason::Timeout
@@ -388,7 +394,12 @@ mod tests {
     #[test]
     fn terminal_receipt_derives_a_stable_status_from_the_typed_reason() {
         for (reason, expected_status) in [
-            (RunTerminationReason::Resolved, "completed"),
+            (RunTerminationReason::AnsweredUnverified, "answered"),
+            (RunTerminationReason::HostAccepted, "host_accepted"),
+            (
+                RunTerminationReason::VerifiedCompleted,
+                "verified_completed",
+            ),
             (RunTerminationReason::Canceled, "interrupted"),
             (RunTerminationReason::Timeout, "failed"),
             (RunTerminationReason::InfrastructureError, "failed"),

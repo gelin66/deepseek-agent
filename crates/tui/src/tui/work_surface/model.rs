@@ -89,6 +89,7 @@ fn root_rows(app: &App, live: &super::live_projection::LiveWorkProjection) -> Ve
     };
     let status_mark = match phase {
         RunPresentationPhase::Completed => "✓",
+        RunPresentationPhase::HostAccepted => "○",
         RunPresentationPhase::WaitingForUser => "◆",
         phase if phase.needs_attention() => "✕",
         phase if phase.is_active() => "●",

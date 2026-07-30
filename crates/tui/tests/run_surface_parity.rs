@@ -37,13 +37,14 @@ use dse_protocol::agent_runtime::{
 };
 use dse_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
-    RunProductControls, RunView, StartRunCommand,
+    RunCompletion, RunProductControls, RunView, StartRunCommand,
 };
 use dse_protocol::task::{
-    AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
-    EvidenceLineage, EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract,
-    TaskDefinition, TaskGenerationId, VerificationId, VerifierEvidencePolicy, VerifierPlan,
-    VerifierSpec, VerifierStep, WorkspaceRevision, WorkspaceState,
+    AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
+    CompletionDecision, EvidenceLineage, EvidenceReceipt, EvidenceReceiptId,
+    HostCompletionAcceptance, TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId,
+    VerificationId, VerifierEvidencePolicy, VerifierPlan, VerifierSpec, VerifierStep,
+    WorkspaceRevision, WorkspaceState,
 };
 use dse_runtime::{RunReplay, RunStore};
 use dse_state::StateStore;
@@ -115,7 +116,7 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
         exec.stdout,
         exec.stderr
     );
-    let exec_run_id = terminal_run_id(&exec.stdout);
+    let exec_run_id = answer_run_id(&exec.stdout);
     let exec_state_path = config_dir.join("state.db");
     let exec_replay = load_replay(&exec_state_path, &exec_run_id).await;
     assert_fixture_event_sequence(&exec_replay.events);
@@ -127,6 +128,7 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
         &shared_state_path,
         &model.uri(),
         workspace.path(),
+        &config_dir,
         &config_dir.join("skills"),
     );
     let http = router(application.clone(), &transport_options()).expect("HTTP Run API router");
@@ -139,7 +141,7 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
     )
     .await;
     let http_run_id = run_from_response(http_start).run_id;
-    let http_view = wait_http_terminal(&http, &http_run_id).await;
+    let http_view = wait_http_answer(&http, &http_run_id).await;
     let http_events = http_sse_events(&http, &http_run_id).await;
     let http_replay = load_replay(&shared_state_path, &http_run_id).await;
     assert_eq!(
@@ -154,7 +156,7 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
     )
     .await;
     let stdio_run_id = run_from_response(stdio_start).run_id;
-    let stdio_view = wait_stdio_terminal(application.clone(), &stdio_run_id).await;
+    let stdio_view = wait_stdio_answer(application.clone(), &stdio_run_id).await;
     let stdio_events = events_from_response(
         stdio_command(
             application,
@@ -185,7 +187,7 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
     let exec_view = view_from_replay(&exec_replay);
     assert_eq!(normalize_value(&exec_view), normalize_value(&http_view));
     assert_eq!(normalize_value(&exec_view), normalize_value(&stdio_view));
-    assert_terminal_accounting(&view_from_replay(&exec_replay));
+    assert_answer_accounting(&view_from_replay(&exec_replay));
 
     let requests = model
         .received_requests()
@@ -219,6 +221,248 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
         normalize_value(&requests[1]),
         normalize_value(&requests[5]),
         "exec/stdio replay request drifted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verified_completion_has_one_exec_http_and_stdio_projection() {
+    let model = MockServer::start().await;
+    mount_model_fixture(&model).await;
+
+    let workspace = TempDir::new().expect("temporary verified parity workspace");
+    std::fs::write(
+        workspace.path().join("fixture.txt"),
+        "surface-parity-fixture\n",
+    )
+    .expect("write verified read-only tool fixture");
+    initialize_versioned_workspace(workspace.path());
+    let exec_home = TempDir::new().expect("isolated verified exec home");
+    let config_dir = prepare_exec_config(exec_home.path());
+    let state_path = config_dir.join("state.db");
+    let application = production_application(
+        &state_path,
+        &model.uri(),
+        workspace.path(),
+        &config_dir,
+        &config_dir.join("skills"),
+    );
+    let http = router(application.clone(), &transport_options()).expect("HTTP Run API router");
+
+    let started = http_post(
+        &http,
+        "/v1/runs",
+        &envelope(
+            "verified-http-start",
+            RunCommand::Start(verified_start_command(workspace.path())),
+        ),
+    )
+    .await;
+    let run_id = run_from_response(started).run_id;
+    let http_view = wait_http_verified(&http, &run_id).await;
+    assert!(matches!(
+        http_view.completion,
+        RunCompletion::VerifiedCompleted { .. }
+    ));
+
+    let stdio_view = run_from_response(
+        stdio_command(
+            application.clone(),
+            envelope(
+                "verified-stdio-get",
+                RunCommand::Get {
+                    run_id: run_id.clone(),
+                },
+            ),
+        )
+        .await,
+    );
+    assert_eq!(
+        normalize_value(&http_view),
+        normalize_value(&stdio_view),
+        "HTTP and stdio changed the canonical verified projection"
+    );
+
+    let http_events = http_sse_events(&http, &run_id).await;
+    let stdio_events = events_from_response(
+        stdio_command(
+            application.clone(),
+            envelope(
+                "verified-stdio-events",
+                RunCommand::Events {
+                    run_id: run_id.clone(),
+                    after_sequence: 0,
+                },
+            ),
+        )
+        .await,
+    );
+    let replay = load_replay(&state_path, &run_id).await;
+    assert_eq!(http_events, replay.events, "HTTP rewrote verified facts");
+    assert_eq!(stdio_events, replay.events, "stdio rewrote verified facts");
+    assert_eq!(
+        normalize_value(view_from_replay(&replay)),
+        normalize_value(&http_view),
+        "transport projection differs from the SQLite replay"
+    );
+    assert!(replay.events.iter().any(|event| matches!(
+        event.event,
+        RuntimeEventKind::HostVerificationCommitted {
+            receipt: Some(_),
+            ..
+        }
+    )));
+
+    let exec = run_resume_exec(
+        &model.uri(),
+        workspace.path(),
+        exec_home.path(),
+        &config_dir.join("config.toml"),
+        &run_id,
+    );
+    assert!(
+        exec.status.success(),
+        "verified exec replay failed\nstdout:\n{}\nstderr:\n{}",
+        exec.stdout,
+        exec.stderr
+    );
+    let metadata = terminal_metadata(&exec.stdout);
+    assert_eq!(metadata["run_id"], run_id.to_string());
+    assert_eq!(metadata["receipt_kind"], "terminal");
+    assert_eq!(metadata["status"], "verified_completed");
+    assert_eq!(metadata["termination_reason"], "verified_completed");
+
+    let requests = model
+        .received_requests()
+        .await
+        .expect("DeepSeek request journal")
+        .into_iter()
+        .filter(|request| request.url.path() == "/v1/chat/completions")
+        .count();
+    assert_eq!(
+        requests, 2,
+        "exec replay, HTTP Get, and stdio Get must not repeat the model"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_acceptance_has_one_exec_http_and_stdio_projection() {
+    let model = MockServer::start().await;
+    mount_model_fixture(&model).await;
+
+    let workspace = TempDir::new().expect("temporary Host parity workspace");
+    std::fs::write(
+        workspace.path().join("fixture.txt"),
+        "surface-parity-fixture\n",
+    )
+    .expect("write Host read-only tool fixture");
+    initialize_versioned_workspace(workspace.path());
+    let exec_home = TempDir::new().expect("isolated Host exec home");
+    let config_dir = prepare_exec_config(exec_home.path());
+    let state_path = config_dir.join("state.db");
+    let application = production_application(
+        &state_path,
+        &model.uri(),
+        workspace.path(),
+        &config_dir,
+        &config_dir.join("skills"),
+    );
+    let http = router(application.clone(), &transport_options()).expect("HTTP Run API router");
+
+    let started = http_post(
+        &http,
+        "/v1/runs",
+        &envelope(
+            "host-http-start",
+            RunCommand::Start(host_start_command(workspace.path())),
+        ),
+    )
+    .await;
+    let run_id = run_from_response(started).run_id;
+    let answered = wait_http_answer(&http, &run_id).await;
+    let candidate = match answered.completion {
+        RunCompletion::Answered { candidate, .. } => candidate,
+        other => panic!("expected Host answer candidate, got {other:?}"),
+    };
+    let accepted = http_accept(
+        &http,
+        &run_id,
+        &envelope(
+            "host-surface-accept",
+            RunCommand::AcceptCompletion {
+                run_id: run_id.clone(),
+                acceptance: HostCompletionAcceptance {
+                    candidate_id: candidate.id,
+                    generation_id: candidate.generation_id,
+                    workspace_state: candidate.workspace_state,
+                },
+            },
+        ),
+    )
+    .await;
+    assert!(matches!(accepted.result, RunCommandResult::Accepted { .. }));
+
+    let http_view = wait_http_host_accepted(&http, &run_id).await;
+    let stdio_view = run_from_response(
+        stdio_command(
+            application,
+            envelope(
+                "host-stdio-get",
+                RunCommand::Get {
+                    run_id: run_id.clone(),
+                },
+            ),
+        )
+        .await,
+    );
+    assert_eq!(
+        normalize_value(&http_view),
+        normalize_value(&stdio_view),
+        "HTTP and stdio changed the canonical Host-accepted projection"
+    );
+    let replay = load_replay(&state_path, &run_id).await;
+    assert_eq!(
+        normalize_value(view_from_replay(&replay)),
+        normalize_value(&http_view),
+        "Host-accepted transport projection differs from SQLite replay"
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. }))
+            .count(),
+        1
+    );
+
+    let exec = run_resume_exec(
+        &model.uri(),
+        workspace.path(),
+        exec_home.path(),
+        &config_dir.join("config.toml"),
+        &run_id,
+    );
+    assert!(
+        exec.status.success(),
+        "Host-accepted exec replay failed\nstdout:\n{}\nstderr:\n{}",
+        exec.stdout,
+        exec.stderr
+    );
+    let metadata = terminal_metadata(&exec.stdout);
+    assert_eq!(metadata["run_id"], run_id.to_string());
+    assert_eq!(metadata["receipt_kind"], "terminal");
+    assert_eq!(metadata["status"], "host_accepted");
+    assert_eq!(metadata["termination_reason"], "host_accepted");
+
+    let requests = model
+        .received_requests()
+        .await
+        .expect("DeepSeek request journal")
+        .into_iter()
+        .filter(|request| request.url.path() == "/v1/chat/completions")
+        .count();
+    assert_eq!(
+        requests, 2,
+        "Host acceptance and reopen must not call the model"
     );
 }
 
@@ -306,6 +550,24 @@ fn prepare_exec_config(home: &Path) -> PathBuf {
     config_dir
 }
 
+fn initialize_versioned_workspace(workspace: &Path) {
+    for (label, args) in [
+        ("init", vec!["init", "-q", "-b", "main"]),
+        ("add", vec!["add", "fixture.txt"]),
+    ] {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .output()
+            .unwrap_or_else(|error| panic!("git {label} fixture failed to start: {error}"));
+        assert!(
+            output.status.success(),
+            "git {label} fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 fn run_exec(base_url: &str, workspace: &Path, home: &Path, config: &Path) -> ExecResult {
     let mut command = Command::new(dse_tui_binary());
     preserve_host_env(&mut command);
@@ -360,29 +622,98 @@ fn run_exec(base_url: &str, workspace: &Path, home: &Path, config: &Path) -> Exe
     }
 }
 
+fn run_resume_exec(
+    base_url: &str,
+    workspace: &Path,
+    home: &Path,
+    config: &Path,
+    run_id: &RunId,
+) -> ExecResult {
+    let mut command = Command::new(dse_tui_binary());
+    preserve_host_env(&mut command);
+    command
+        .current_dir(workspace)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--no-project-config")
+        .arg("exec")
+        .arg("--auto")
+        .arg("--model")
+        .arg(TEST_MODEL)
+        .arg("--max-turns")
+        .arg("4")
+        .arg("--max-runtime-secs")
+        .arg("60")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--resume")
+        .arg(run_id.to_string())
+        .env("DSE_HOME", home.join(".dse"))
+        .env("DSE_CONFIG_PATH", config)
+        .env_remove("DEEPSEEK_API_KEY")
+        .env("DSE_BASE_URL", base_url)
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn verified exec replay");
+    let stdout = child.stdout.take().expect("exec stdout");
+    let stderr = child.stderr.take().expect("exec stderr");
+    let stdout = std::thread::spawn(move || read_all(stdout));
+    let stderr = std::thread::spawn(move || read_all(stderr));
+    let status = match child
+        .wait_timeout(PROCESS_TIMEOUT)
+        .expect("wait for verified exec replay")
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("verified exec replay exceeded {PROCESS_TIMEOUT:?}");
+        }
+    };
+    ExecResult {
+        status,
+        stdout: String::from_utf8(stdout.join().expect("stdout reader")).expect("UTF-8 stdout"),
+        stderr: String::from_utf8(stderr.join().expect("stderr reader")).expect("UTF-8 stderr"),
+    }
+}
+
 fn read_all(mut reader: impl Read) -> Vec<u8> {
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).expect("read child pipe");
     bytes
 }
 
-fn terminal_run_id(stdout: &str) -> RunId {
+fn answer_run_id(stdout: &str) -> RunId {
+    stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("strict exec NDJSON"))
+        .find_map(|line| {
+            (line["type"] == "metadata" && line["meta"]["receipt_kind"] == "answer")
+                .then(|| line["meta"]["run_id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .map(RunId::from)
+        .expect("exec answer receipt run id")
+}
+
+fn terminal_metadata(stdout: &str) -> Value {
     stdout
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("strict exec NDJSON"))
         .find_map(|line| {
             (line["type"] == "metadata" && line["meta"]["receipt_kind"] == "terminal")
-                .then(|| line["meta"]["run_id"].as_str().map(str::to_owned))
-                .flatten()
+                .then(|| line["meta"].clone())
         })
-        .map(RunId::from)
-        .expect("exec terminal receipt run id")
+        .expect("exec terminal metadata")
 }
 
 fn production_application(
     state_path: &Path,
     base_url: &str,
     workspace: &Path,
+    dse_home: &Path,
     skills_dir: &Path,
 ) -> Arc<AgentApplication> {
     let connection = DeepSeekConnectionConfig {
@@ -395,12 +726,7 @@ fn production_application(
     let tools = ProductionToolConfig::new(workspace)
         .with_permission_mode(RunPermissionMode::Agent)
         .with_shell_policy(ShellPolicy::Full)
-        .with_browser_state_root(
-            state_path
-                .parent()
-                .expect("parity state has a parent")
-                .join(".dse/browser"),
-        );
+        .with_browser_state_root(dse_home.join("browser"));
     let prompt = ProductionPromptConfig {
         preferences: PromptPreferences::default(),
         instructions: Vec::new(),
@@ -440,6 +766,75 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
             interactive: false,
         },
     }
+}
+
+fn verified_start_command(workspace: &Path) -> StartRunCommand {
+    let parameters = json!({
+        "commands": [{
+            "name": "surface-parity",
+            "program": "true",
+            "args": [],
+            "cwd": ""
+        }],
+        "level": "quick",
+        "max_python_files": 200,
+        "profile": "exact"
+    });
+    let verifier = VerifierSpec {
+        verifier_id: "run_verifiers".to_owned(),
+        parameters,
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "surface-parity".to_owned(),
+                program: "true".to_owned(),
+                args: Vec::new(),
+                cwd: String::new(),
+                env: BTreeMap::from([("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned())]),
+                timeout_ms: 600_000,
+            }],
+        },
+    };
+    verifier.validate().expect("valid exact verifier fixture");
+    StartRunCommand {
+        task: TaskDefinition {
+            objective: TEST_PROMPT.to_owned(),
+            constraints: Vec::new(),
+            non_goals: Vec::new(),
+            acceptance: vec![TaskAcceptance::Verifier {
+                id: AcceptanceId::from("surface-parity"),
+                description: "exact surface parity verifier passes".to_owned(),
+                evidence_policy: VerifierEvidencePolicy::LatestPass,
+                verifier,
+            }],
+        },
+        workspace: workspace
+            .canonicalize()
+            .expect("canonical verified parity workspace")
+            .display()
+            .to_string(),
+        model: Some(TEST_MODEL.to_owned()),
+        reasoning_effort: ReasoningEffort::High,
+        max_output_tokens: Some(384_000),
+        max_api_requests: NonZeroU32::new(4),
+        streaming: true,
+        tool_policy: ToolPolicy {
+            enabled: true,
+            allowed: Some(vec!["read_file".to_owned()]),
+            denied: Vec::new(),
+        },
+        limits: Default::default(),
+        controls: RunProductControls {
+            write_execution_mode: Default::default(),
+            permission_mode: RunPermissionMode::Agent,
+            interactive: false,
+        },
+    }
+}
+
+fn host_start_command(workspace: &Path) -> StartRunCommand {
+    let mut command = verified_start_command(workspace);
+    command.task = TaskDefinition::host(TEST_PROMPT);
+    command
 }
 
 fn assert_exec_command_contract(request: &RunRequest, workspace: &Path) {
@@ -516,6 +911,29 @@ async fn http_post(app: &Router, uri: &str, command: &RunCommandEnvelope) -> Run
     response_json(response).await
 }
 
+async fn http_accept(
+    app: &Router,
+    run_id: &RunId,
+    command: &RunCommandEnvelope,
+) -> RunCommandResponse {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/v1/runs/{}/accept-completion", run_id.0))
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(command).expect("serialize HTTP acceptance"),
+                ))
+                .expect("HTTP acceptance request"),
+        )
+        .await
+        .expect("HTTP acceptance response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    response_json(response).await
+}
+
 async fn http_get(app: &Router, uri: &str) -> RunCommandResponse {
     let response = app
         .clone()
@@ -583,18 +1001,58 @@ async fn response_json(response: axum::response::Response) -> RunCommandResponse
     serde_json::from_slice(&bytes).expect("canonical HTTP response")
 }
 
-async fn wait_http_terminal(app: &Router, run_id: &RunId) -> RunView {
+async fn wait_http_answer(app: &Router, run_id: &RunId) -> RunView {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let run = run_from_response(http_get(app, &format!("/v1/runs/{}", run_id.0)).await);
-            if run.terminal.is_some() {
+            if matches!(run.completion, RunCompletion::Answered { .. }) {
                 return run;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("HTTP run reaches terminal")
+    .expect("HTTP run reaches an unverified answer")
+}
+
+async fn wait_http_verified(app: &Router, run_id: &RunId) -> RunView {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let run = run_from_response(http_get(app, &format!("/v1/runs/{}", run_id.0)).await);
+            if run.terminal.is_some()
+                && matches!(run.completion, RunCompletion::VerifiedCompleted { .. })
+            {
+                return run;
+            }
+            assert!(
+                run.terminal.is_none(),
+                "verifier run ended without verified completion: {run:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("HTTP run reaches verified completion")
+}
+
+async fn wait_http_host_accepted(app: &Router, run_id: &RunId) -> RunView {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let run = run_from_response(http_get(app, &format!("/v1/runs/{}", run_id.0)).await);
+            if run.terminal.is_some()
+                && matches!(run.completion, RunCompletion::HostAccepted { .. })
+            {
+                return run;
+            }
+            assert!(
+                run.terminal.is_none(),
+                "Host run ended without an accepted completion: {run:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("HTTP run reaches Host-accepted completion")
 }
 
 async fn stdio_command(
@@ -629,7 +1087,7 @@ async fn stdio_command(
     serde_json::from_str(output.trim_end()).expect("canonical stdio response")
 }
 
-async fn wait_stdio_terminal(application: Arc<AgentApplication>, run_id: &RunId) -> RunView {
+async fn wait_stdio_answer(application: Arc<AgentApplication>, run_id: &RunId) -> RunView {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let run = run_from_response(
@@ -644,14 +1102,14 @@ async fn wait_stdio_terminal(application: Arc<AgentApplication>, run_id: &RunId)
                 )
                 .await,
             );
-            if run.terminal.is_some() {
+            if matches!(run.completion, RunCompletion::Answered { .. }) {
                 return run;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("stdio run reaches terminal")
+    .expect("stdio run reaches an unverified answer")
 }
 
 fn run_from_response(response: RunCommandResponse) -> RunView {
@@ -687,6 +1145,57 @@ fn run_created_request(events: &[StoredRuntimeEvent]) -> &RunRequest {
 fn view_from_replay(replay: &RunReplay) -> RunView {
     let snapshot = &replay.snapshot;
     let request = &snapshot.request;
+    let terminal = snapshot
+        .terminal
+        .as_ref()
+        .map(|outcome| outcome.terminal.clone());
+    let completion = match &terminal {
+        Some(TerminalState::Completed { decision, .. })
+            if decision
+                .satisfied
+                .iter()
+                .any(|criterion| matches!(criterion, AcceptanceSatisfaction::Evidence { .. })) =>
+        {
+            RunCompletion::VerifiedCompleted {
+                decision: decision.clone(),
+            }
+        }
+        Some(TerminalState::Completed { decision, .. }) => {
+            let candidate = snapshot
+                .pending_completion
+                .clone()
+                .expect("Host-completed replay has its accepted candidate");
+            let receipt_id = decision
+                .satisfied
+                .iter()
+                .find_map(|satisfaction| match satisfaction {
+                    AcceptanceSatisfaction::Host { receipt_id, .. } => Some(receipt_id),
+                    AcceptanceSatisfaction::Evidence { .. } => None,
+                })
+                .expect("Host-completed replay has a Host receipt reference");
+            let receipt = snapshot
+                .host_acceptance_receipts
+                .iter()
+                .find(|receipt| &receipt.id == receipt_id)
+                .expect("Host-completed replay has the referenced Host receipt")
+                .clone();
+            RunCompletion::HostAccepted {
+                candidate,
+                receipt,
+                current_workspace_state: snapshot.workspace_state.clone(),
+            }
+        }
+        Some(_) => RunCompletion::EndedWithoutCompletion,
+        None => snapshot
+            .pending_completion
+            .clone()
+            .map_or(RunCompletion::Running, |candidate| {
+                RunCompletion::Answered {
+                    candidate,
+                    current_workspace_state: snapshot.workspace_state.clone(),
+                }
+            }),
+    };
     RunView {
         run_id: request.run_id.clone().expect("persisted run id"),
         parent_run_id: request.parent_run_id.clone(),
@@ -695,10 +1204,8 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
         task_contract: request.task_contract.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
-        terminal: snapshot
-            .terminal
-            .as_ref()
-            .map(|outcome| outcome.terminal.clone()),
+        completion,
+        terminal,
         usage: snapshot.usage,
         accounting: snapshot.accounting.clone(),
         runtime_model_requests: snapshot.runtime_model_requests,
@@ -708,10 +1215,11 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
     }
 }
 
-fn assert_terminal_accounting(view: &RunView) {
+fn assert_answer_accounting(view: &RunView) {
+    assert!(view.terminal.is_none());
     assert!(matches!(
-        view.terminal.as_ref(),
-        Some(TerminalState::Completed { message, .. }) if message == FINAL_MESSAGE
+        &view.completion,
+        RunCompletion::Answered { candidate, .. } if candidate.message == FINAL_MESSAGE
     ));
     assert_eq!(view.runtime_model_requests, 2);
     assert_eq!(view.runtime_retries, 0);
@@ -756,6 +1264,7 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             RuntimeEventKind::ControlRequested { .. } => "control_requested",
             RuntimeEventKind::WorkspaceObserved { .. } => "workspace_observed",
             RuntimeEventKind::CompletionProposed { .. } => "completion_proposed",
+            RuntimeEventKind::HostCompletionAccepted { .. } => "host_completion_accepted",
             RuntimeEventKind::HostVerificationPrepared { .. } => "host_verification_prepared",
             RuntimeEventKind::HostVerificationStarted { .. } => "host_verification_started",
             RuntimeEventKind::HostVerificationCommitted { .. } => "host_verification_committed",
@@ -792,9 +1301,8 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             "model_request_in_flight",
             "content_delta",
             "model_response_committed",
-            "completion_proposed",
             "workspace_observed",
-            "terminal",
+            "completion_proposed",
         ]
     );
 }
@@ -1037,7 +1545,14 @@ fn writer_outcome(
         tool_calls: 3,
         details: AgentResultDetails {
             summary: "writer 修改并验证了目标文件".to_owned(),
+            completion_candidate: Some(CompletionCandidate {
+                id: CompletionCandidateId::from("writer-candidate"),
+                generation_id: task.task_contract.generation_id.clone(),
+                message: "writer 子任务完成".to_owned(),
+                workspace_state: writer_workspace_state(4, WRITER_FINAL_COMMIT),
+            }),
             evidence: vec![receipt.clone()],
+            host_acceptance_receipts: Vec::new(),
             changed_files: vec!["src/lib.rs".to_owned()],
             checks: Vec::new(),
             unresolved: vec!["父 Agent 仍需消费 handoff".to_owned()],

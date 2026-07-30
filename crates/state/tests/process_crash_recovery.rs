@@ -27,17 +27,18 @@ use dse_protocol::task::{
 };
 use dse_runtime::{
     AGENT_TOOL_NAME, ActorRequestAccounting, AgentActorKind, AgentControl, AgentOrchestrationError,
-    AgentOrchestrationErrorKind, AgentOrchestrator, AgentRuntime, AgentTask, AgentWorkspaceAccess,
-    AgentWorkspaceAssignment, ApiSurface, ApprovalRisk, CancellationToken, CommandId,
-    DurableActionState, ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput, ModelPort,
-    ModelPortError, ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink,
-    PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunPermissionMode, RunRequest, RunStore,
-    RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent,
-    SurfaceUsage, TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact,
-    ToolAuthorizationDecision, ToolAuthorizationDisposition, ToolDefinition, ToolEvidence,
-    ToolEvidenceStatus, ToolExecutionError, ToolExecutionGrant, ToolExecutor, ToolFailureCode,
-    ToolInvocation, ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload,
-    WorkspaceState, WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
+    AgentOrchestrationErrorKind, AgentOrchestrator, AgentOutcome, AgentRuntime, AgentTask,
+    AgentWorkspaceAccess, AgentWorkspaceAssignment, ApiSurface, ApprovalRisk, CancellationToken,
+    CommandId, DurableActionState, HostCompletionAcceptance, ModelAccounting, ModelFinishReason,
+    ModelMessage, ModelOutput, ModelPort, ModelPortError, ModelRequest, ModelStream,
+    ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent, RecoveryAmbiguityPhase,
+    RunId, RunPermissionMode, RunRequest, RunStore, RunStoreError, RuntimeEventId,
+    RuntimeEventKind, RuntimeEventSink, RuntimeRun, StoredRuntimeEvent, SurfaceUsage,
+    TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolAuthorizationDecision,
+    ToolAuthorizationDisposition, ToolDefinition, ToolEvidence, ToolEvidenceStatus,
+    ToolExecutionError, ToolExecutionGrant, ToolExecutor, ToolFailureCode, ToolInvocation,
+    ToolOutcome, Usage, UserInteractionResponse, VerificationArtifactPayload, WorkspaceState,
+    WriteExecutionMode, WriterArtifactState, WriterBinding, WriterCleanupMode,
     WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
     WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState,
     WriterSeal, reduce_events, writer_path_set_sha256,
@@ -52,6 +53,12 @@ const CHILD_DB: &str = "DSE_CRASH_TEST_DB";
 const CHILD_MODEL_MARKER: &str = "DSE_CRASH_TEST_MODEL_MARKER";
 const CHILD_TOOL_MARKER: &str = "DSE_CRASH_TEST_TOOL_MARKER";
 const CHILD_ABORT_MARKER: &str = "DSE_CRASH_TEST_ABORT_MARKER";
+// The workspace test runner may execute every SIGKILL case concurrently. Each
+// case owns an isolated database, but spawning dozens of helper processes at
+// once can starve an otherwise healthy helper past the fixed ready-marker
+// deadline. Serialize only the bounded spawn/commit/kill window; recovery and
+// replay assertions remain independent and parallel.
+static CRASH_CHILD_LOCK: Mutex<()> = Mutex::new(());
 const CHILD_WRITER_MARKER: &str = "DSE_CRASH_TEST_WRITER_MARKER";
 const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
@@ -141,6 +148,8 @@ fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
             | CrashScenario::HostVerificationPrepared
             | CrashScenario::HostVerificationInFlight
             | CrashScenario::HostVerificationCommitted
+            | CrashScenario::MixedHostFirstVerificationCommitted
+            | CrashScenario::MixedVerifierFirstVerificationCommitted
             | CrashScenario::TemporalFailureCommitted
             | CrashScenario::TemporalRejectionCommitted
             | CrashScenario::TemporalMutationCommitted
@@ -213,6 +222,7 @@ enum CrashScenario {
     ContractVerifierOutcomeCommitted,
     ModelResponseCommitted,
     TerminalModelResponseCommitted,
+    CompletionProposedCommitted,
     InteractionRequested,
     InteractionResolved,
     SteerQueued,
@@ -221,6 +231,9 @@ enum CrashScenario {
     HostVerificationPrepared,
     HostVerificationInFlight,
     HostVerificationCommitted,
+    MixedHostFirstVerificationCommitted,
+    MixedVerifierFirstVerificationCommitted,
+    HostAcceptanceCommitted,
     TemporalFailureCommitted,
     TemporalRejectionCommitted,
     TemporalMutationCommitted,
@@ -261,6 +274,7 @@ impl CrashScenario {
             Self::ContractVerifierOutcomeCommitted => "contract_verifier_outcome_committed",
             Self::ModelResponseCommitted => "model_response_committed",
             Self::TerminalModelResponseCommitted => "terminal_model_response_committed",
+            Self::CompletionProposedCommitted => "completion_proposed_committed",
             Self::InteractionRequested => "interaction_requested",
             Self::InteractionResolved => "interaction_resolved",
             Self::SteerQueued => "steer_queued",
@@ -269,6 +283,11 @@ impl CrashScenario {
             Self::HostVerificationPrepared => "host_verification_prepared",
             Self::HostVerificationInFlight => "host_verification_in_flight",
             Self::HostVerificationCommitted => "host_verification_committed",
+            Self::MixedHostFirstVerificationCommitted => "mixed_host_first_verification_committed",
+            Self::MixedVerifierFirstVerificationCommitted => {
+                "mixed_verifier_first_verification_committed"
+            }
+            Self::HostAcceptanceCommitted => "host_acceptance_committed",
             Self::TemporalFailureCommitted => "temporal_failure_committed",
             Self::TemporalRejectionCommitted => "temporal_rejection_committed",
             Self::TemporalMutationCommitted => "temporal_mutation_committed",
@@ -309,6 +328,7 @@ impl CrashScenario {
             "contract_verifier_outcome_committed" => Self::ContractVerifierOutcomeCommitted,
             "model_response_committed" => Self::ModelResponseCommitted,
             "terminal_model_response_committed" => Self::TerminalModelResponseCommitted,
+            "completion_proposed_committed" => Self::CompletionProposedCommitted,
             "interaction_requested" => Self::InteractionRequested,
             "interaction_resolved" => Self::InteractionResolved,
             "steer_queued" => Self::SteerQueued,
@@ -317,6 +337,11 @@ impl CrashScenario {
             "host_verification_prepared" => Self::HostVerificationPrepared,
             "host_verification_in_flight" => Self::HostVerificationInFlight,
             "host_verification_committed" => Self::HostVerificationCommitted,
+            "mixed_host_first_verification_committed" => Self::MixedHostFirstVerificationCommitted,
+            "mixed_verifier_first_verification_committed" => {
+                Self::MixedVerifierFirstVerificationCommitted
+            }
+            "host_acceptance_committed" => Self::HostAcceptanceCommitted,
             "temporal_failure_committed" => Self::TemporalFailureCommitted,
             "temporal_rejection_committed" => Self::TemporalRejectionCommitted,
             "temporal_mutation_committed" => Self::TemporalMutationCommitted,
@@ -368,6 +393,9 @@ impl CrashFixture {
     }
 
     fn crash_child(&self, scenario: CrashScenario) {
+        let _spawn_guard = CRASH_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let expected_ready_count =
             marker_line_count(&self.abort_marker, scenario.as_str()).saturating_add(1);
         let mut child =
@@ -1382,14 +1410,7 @@ impl ToolExecutor for MarkerTools {
     }
 
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
-        if is_host_verification_scenario(self.scenario) {
-            Ok(self.revision().to_owned())
-        } else {
-            Err(ToolExecutionError::new(
-                "workspace_revision_unavailable",
-                "process crash fixture has no workspace revision",
-            ))
-        }
+        Ok(self.revision().to_owned())
     }
 
     async fn execute(
@@ -1577,6 +1598,9 @@ impl RuntimeEventSink for CrashSink {
             CrashScenario::ModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
             }
+            CrashScenario::CompletionProposedCommitted => {
+                matches!(event.event, RuntimeEventKind::CompletionProposed { .. })
+            }
             CrashScenario::TerminalModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
             }
@@ -1609,10 +1633,15 @@ impl RuntimeEventSink for CrashSink {
                 RuntimeEventKind::HostVerificationPrepared { .. }
             ),
             CrashScenario::HostVerificationInFlight => false,
-            CrashScenario::HostVerificationCommitted => matches!(
+            CrashScenario::HostVerificationCommitted
+            | CrashScenario::MixedHostFirstVerificationCommitted
+            | CrashScenario::MixedVerifierFirstVerificationCommitted => matches!(
                 event.event,
                 RuntimeEventKind::HostVerificationCommitted { .. }
             ),
+            CrashScenario::HostAcceptanceCommitted => {
+                matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. })
+            }
             CrashScenario::TemporalFailureCommitted => matches!(
                 event.event,
                 RuntimeEventKind::HostVerificationCommitted {
@@ -1713,6 +1742,33 @@ async fn wait_for_control(slot: &Arc<Mutex<Option<AgentControl>>>) -> AgentContr
     }
 }
 
+async fn wait_host_accepted(runtime: &Arc<AgentRuntime>, run: RuntimeRun) -> AgentOutcome {
+    let proposed = run.wait().await.expect("run returns a completion proposal");
+    let TerminalState::AwaitingHostAcceptance { candidate } = proposed.terminal else {
+        return proposed;
+    };
+    let resumed = runtime.resume(proposed.run_id.clone());
+    let accepted = resumed
+        .queue_completion_acceptance(
+            CommandId::from(format!(
+                "process-crash-host-accept:{}:{}",
+                proposed.run_id, candidate.id.0
+            )),
+            HostCompletionAcceptance {
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        )
+        .expect("queue exact Host acceptance");
+    let resumed = resumed.ready().await.expect("resume proposed run");
+    accepted
+        .await
+        .expect("Host acceptance acknowledgement")
+        .expect("Host acceptance commits");
+    resumed.wait().await.expect("accepted run reaches terminal")
+}
+
 fn one_usage() -> Usage {
     Usage {
         input_tokens: 11,
@@ -1748,12 +1804,7 @@ fn runtime_request() -> RunRequest {
 fn scenario_request(scenario: CrashScenario) -> RunRequest {
     let mut request = runtime_request();
     if is_host_verification_scenario(scenario) {
-        request
-            .task_contract
-            .as_mut()
-            .expect("Agent task contract")
-            .definition
-            .acceptance = vec![TaskAcceptance::Verifier {
+        let verifier = TaskAcceptance::Verifier {
             id: AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID),
             description: "冻结的进程级 Host verifier 必须通过".to_owned(),
             evidence_policy: if is_temporal_verification_scenario(scenario) {
@@ -1762,7 +1813,30 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
                 VerifierEvidencePolicy::LatestPass
             },
             verifier: host_verifier_spec(),
-        }];
+        };
+        let acceptance = match scenario {
+            CrashScenario::MixedHostFirstVerificationCommitted => vec![
+                TaskAcceptance::Host {
+                    id: AcceptanceId::from("host"),
+                    description: "Host 必须显式接受".to_owned(),
+                },
+                verifier,
+            ],
+            CrashScenario::MixedVerifierFirstVerificationCommitted => vec![
+                verifier,
+                TaskAcceptance::Host {
+                    id: AcceptanceId::from("host"),
+                    description: "Host 必须显式接受".to_owned(),
+                },
+            ],
+            _ => vec![verifier],
+        };
+        request
+            .task_contract
+            .as_mut()
+            .expect("Agent task contract")
+            .definition
+            .acceptance = acceptance;
     }
     if matches!(
         scenario,
@@ -2216,7 +2290,17 @@ fn process_crash_helper() {
         if let Some(control_slot) = control_slot {
             *control_slot.lock().expect("control slot lock") = Some(run.control());
         }
-        let outcome = run.wait().await.expect("child runtime join");
+        let outcome = if matches!(
+            scenario,
+            CrashScenario::HostAcceptanceCommitted
+                | CrashScenario::MixedHostFirstVerificationCommitted
+                | CrashScenario::MixedVerifierFirstVerificationCommitted
+                | CrashScenario::TerminalCommitted
+        ) {
+            wait_host_accepted(&runtime, run).await
+        } else {
+            run.wait().await.expect("child runtime join")
+        };
         panic!("crash helper unexpectedly completed: {outcome:?}");
     });
 }
@@ -2386,11 +2470,7 @@ async fn tool_prepared_sigkill_executes_once_after_sqlite_reopen() {
     drop(prefix_store);
 
     let (runtime, store) = fixture.reopen(CrashScenario::ToolPrepared);
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume prepared tool");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
         "unexpected prepared resume outcome: {outcome:?}"
@@ -2470,11 +2550,7 @@ async fn tool_outcome_committed_sigkill_never_reexecutes_after_sqlite_reopen() {
     drop(prefix_store);
 
     let (runtime, store) = fixture.reopen(CrashScenario::ToolOutcomeCommitted);
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume committed tool outcome");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
         "unexpected committed outcome resume: {outcome:?}"
@@ -2646,11 +2722,7 @@ async fn committed_model_response_resumes_without_duplicate_request_usage_or_ass
     assert_eq!(marker_count(&fixture.model_marker), 1);
 
     let (runtime, store) = fixture.reopen(CrashScenario::ModelResponseCommitted);
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume runtime");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(marker_count(&fixture.model_marker), 1);
     assert_eq!(outcome.accounting.usage, one_usage());
@@ -2727,7 +2799,11 @@ async fn interaction_requested_crash_replays_one_pending_approval_before_any_sid
         before_resume.snapshot.command_receipts.is_empty(),
         "request commit alone must not invent a resolution receipt"
     );
-    let run = runtime.resume(RunId::from(RUN_ID));
+    let run = runtime
+        .resume(RunId::from(RUN_ID))
+        .ready()
+        .await
+        .expect("acquire pending interaction run");
     run.control()
         .resolve_interaction(
             CommandId::from("resume-process-crash-approval"),
@@ -2736,7 +2812,7 @@ async fn interaction_requested_crash_replays_one_pending_approval_before_any_sid
         )
         .await
         .expect("resolve replayed interaction");
-    let outcome = run.wait().await.expect("resume pending interaction");
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(marker_count(&fixture.model_marker), 2);
     assert_eq!(marker_count(&fixture.tool_marker), 1);
@@ -2845,11 +2921,7 @@ async fn interaction_resolved_crash_starts_the_approved_tool_exactly_once_after_
             response: UserInteractionResponse::Approved,
         } if interaction_id == &expected_interaction_id
     ));
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume resolved interaction");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(marker_count(&fixture.model_marker), 2);
     assert_eq!(marker_count(&fixture.tool_marker), 1);
@@ -2990,11 +3062,7 @@ async fn steer_applied_crash_resumes_with_a_new_model_request_instead_of_old_sto
     assert_eq!(marker_count(&fixture.model_marker), 1);
 
     let (runtime, store) = fixture.reopen(CrashScenario::SteerApplied);
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume steer-applied run");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(
         marker_count(&fixture.model_marker),
@@ -4475,6 +4543,118 @@ async fn host_verification_in_flight_sigkill_requires_recovery_without_rerun() {
 }
 
 #[tokio::test]
+async fn completion_proposed_sigkill_replays_the_same_answer_before_exact_acceptance() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::CompletionProposedCommitted);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+    let (runtime, store, model) =
+        fixture.reopen_with_model(CrashScenario::CompletionProposedCommitted);
+    let before = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load committed completion proposal")
+        .expect("committed completion proposal exists");
+    let candidate = before
+        .snapshot
+        .pending_completion
+        .clone()
+        .expect("one durable completion candidate");
+    assert!(before.snapshot.host_acceptance_receipts.is_empty());
+    assert!(before.snapshot.evidence_receipts.is_empty());
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
+    let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+        panic!("exact acceptance must close the replayed proposal: {outcome:?}");
+    };
+    assert_eq!(decision.candidate_id, candidate.id);
+    assert!(
+        model.observed_requests().is_empty(),
+        "proposal recovery must not issue another model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert!(marker_lines(&fixture.tool_marker).is_empty());
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load accepted replayed proposal")
+        .expect("accepted replayed proposal exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce accepted replayed proposal"),
+        after.snapshot
+    );
+    assert_eq!(after.snapshot.pending_completion.as_ref(), Some(&candidate));
+    assert_eq!(after.snapshot.host_acceptance_receipts.len(), 1);
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostCompletionAccepted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn host_acceptance_committed_sigkill_replays_fact_and_completes_exactly_once() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::HostAcceptanceCommitted);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+    let (runtime, store, model) = fixture.reopen_with_model(CrashScenario::HostAcceptanceCommitted);
+    let before = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load committed Host acceptance")
+        .expect("committed Host acceptance exists");
+    assert_eq!(before.snapshot.host_acceptance_receipts.len(), 1);
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostCompletionAccepted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume committed Host acceptance");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        model.observed_requests().is_empty(),
+        "committed Host acceptance recovery must not issue another model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert!(marker_lines(&fixture.tool_marker).is_empty());
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load completed Host acceptance")
+        .expect("completed Host acceptance exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce completed Host acceptance"),
+        after.snapshot
+    );
+    assert_eq!(after.snapshot.host_acceptance_receipts.len(), 1);
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostCompletionAccepted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
 async fn host_verification_committed_sigkill_replays_receipt_and_completes_exactly_once() {
     let fixture = CrashFixture::new();
     fixture.crash_child(CrashScenario::HostVerificationCommitted);
@@ -4570,6 +4750,74 @@ async fn host_verification_committed_sigkill_replays_receipt_and_completes_exact
         1,
         "receipt replay may produce exactly one canonical terminal"
     );
+}
+
+#[tokio::test]
+async fn mixed_host_and_verifier_receipts_survive_sigkill_in_either_contract_order() {
+    for scenario in [
+        CrashScenario::MixedHostFirstVerificationCommitted,
+        CrashScenario::MixedVerifierFirstVerificationCommitted,
+    ] {
+        let fixture = CrashFixture::new();
+        fixture.crash_child(scenario);
+        assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+        let (runtime, store, model) = fixture.reopen_with_model(scenario);
+        let before = store
+            .load(&RunId::from(RUN_ID))
+            .await
+            .expect("load mixed acceptance crash prefix")
+            .expect("mixed acceptance crash prefix exists");
+        assert_eq!(before.snapshot.host_acceptance_receipts.len(), 1);
+        assert_eq!(before.snapshot.evidence_receipts.len(), 1);
+        assert!(before.snapshot.pending_host_verification.is_none());
+        assert_eq!(
+            event_count(&before, |event| matches!(
+                event,
+                RuntimeEventKind::HostCompletionAccepted { .. }
+            )),
+            1
+        );
+        assert_eq!(
+            event_count(&before, |event| matches!(
+                event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            )),
+            1
+        );
+        assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+        let tool_markers_before = marker_lines(&fixture.tool_marker);
+
+        let outcome = runtime
+            .resume(RunId::from(RUN_ID))
+            .wait()
+            .await
+            .expect("resume mixed accepted and verified prefix");
+        let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+            panic!("mixed receipt prefix must settle once: {outcome:?}");
+        };
+        assert_eq!(decision.satisfied.len(), 2);
+        assert!(
+            model.observed_requests().is_empty(),
+            "mixed receipt recovery must not issue another model request"
+        );
+        assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+        assert_eq!(marker_lines(&fixture.tool_marker), tool_markers_before);
+
+        let after = store
+            .load(&RunId::from(RUN_ID))
+            .await
+            .expect("load settled mixed acceptance")
+            .expect("settled mixed acceptance exists");
+        assert_replay_prefix_preserved(&before, &after);
+        assert_eq!(
+            reduce_events(&after.events).expect("reduce settled mixed acceptance"),
+            after.snapshot
+        );
+        assert_eq!(after.snapshot.host_acceptance_receipts.len(), 1);
+        assert_eq!(after.snapshot.evidence_receipts.len(), 1);
+        assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+    }
 }
 
 #[tokio::test]
@@ -5017,11 +5265,7 @@ async fn local_context_compaction_commit_survives_sigkill_without_model_or_trans
     );
     assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
 
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume committed compaction");
+    let outcome = wait_host_accepted(&runtime, runtime.resume(RunId::from(RUN_ID))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
     let observed = model.observed_requests();

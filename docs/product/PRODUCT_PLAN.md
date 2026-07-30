@@ -440,7 +440,8 @@ V1 必须同时满足：
 - DeepSeek Standard Chat 与 Strict 整目录准入/无损回退准确；FIM 只在新证据准入后进入；
 - 跨文件任务可由 canonical 搜索/读取、ContextBroker 和 deterministic verifier 在冻结
   预算内完成；RepoGraph 实现不作为 V1 门槛；
-- 完成状态依赖最新 EvidenceReceipt；
+- verified engineering completion 依赖最新 EvidenceReceipt；显式 `HostAccepted` 是独立、
+  持久但非 deterministic verified 的接受事实；
 - 其他 Provider、旧 updater、重复状态和重复运行路径已清除；
 - release benchmark 同时保留合格的真实官方 DeepSeek coding evidence 与 exact current
   production retention；不要求对缺失完整 physical accounting 的旧 revision 伪造不可计量的

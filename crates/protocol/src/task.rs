@@ -37,6 +37,7 @@ string_id!(AcceptanceId);
 string_id!(VerificationId);
 string_id!(EvidenceReceiptId);
 string_id!(CompletionCandidateId);
+string_id!(HostAcceptanceReceiptId);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -549,13 +550,58 @@ pub struct CompletionCandidate {
     pub id: CompletionCandidateId,
     pub generation_id: TaskGenerationId,
     pub message: String,
+    pub workspace_state: WorkspaceState,
 }
 
 impl CompletionCandidate {
     pub fn validate(&self) -> Result<(), String> {
         require_id("completion candidate id", &self.id.0)?;
         require_id("task generation id", &self.generation_id.0)?;
-        require_text("completion candidate message", &self.message)
+        require_text("completion candidate message", &self.message)?;
+        self.workspace_state.validate()
+    }
+}
+
+/// Exact optimistic-concurrency input supplied by the Host when accepting one
+/// already committed completion proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct HostCompletionAcceptance {
+    pub candidate_id: CompletionCandidateId,
+    pub generation_id: TaskGenerationId,
+    pub workspace_state: WorkspaceState,
+}
+
+impl HostCompletionAcceptance {
+    pub fn validate(&self) -> Result<(), String> {
+        require_id("completion candidate id", &self.candidate_id.0)?;
+        require_id("task generation id", &self.generation_id.0)?;
+        require_known_workspace_state("Host completion acceptance", &self.workspace_state)
+    }
+}
+
+/// Durable Host-owned proof that one exact proposal was explicitly accepted.
+///
+/// This receipt is intentionally distinct from [`EvidenceReceipt`]: it proves
+/// an explicit Host decision, not deterministic verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct HostAcceptanceReceipt {
+    pub id: HostAcceptanceReceiptId,
+    pub candidate_id: CompletionCandidateId,
+    pub generation_id: TaskGenerationId,
+    pub workspace_state: WorkspaceState,
+}
+
+impl HostAcceptanceReceipt {
+    pub fn validate(&self) -> Result<(), String> {
+        require_id("Host acceptance receipt id", &self.id.0)?;
+        HostCompletionAcceptance {
+            candidate_id: self.candidate_id.clone(),
+            generation_id: self.generation_id.clone(),
+            workspace_state: self.workspace_state.clone(),
+        }
+        .validate()
     }
 }
 
@@ -564,6 +610,7 @@ impl CompletionCandidate {
 pub enum AcceptanceSatisfaction {
     Host {
         acceptance_id: AcceptanceId,
+        receipt_id: HostAcceptanceReceiptId,
     },
     Evidence {
         acceptance_id: AcceptanceId,
@@ -575,7 +622,9 @@ impl AcceptanceSatisfaction {
     #[must_use]
     pub fn acceptance_id(&self) -> &AcceptanceId {
         match self {
-            Self::Host { acceptance_id } | Self::Evidence { acceptance_id, .. } => acceptance_id,
+            Self::Host { acceptance_id, .. } | Self::Evidence { acceptance_id, .. } => {
+                acceptance_id
+            }
         }
     }
 }
@@ -600,8 +649,13 @@ impl CompletionDecision {
         let mut ids = HashSet::new();
         for satisfaction in &self.satisfied {
             require_id("acceptance id", &satisfaction.acceptance_id().0)?;
-            if let AcceptanceSatisfaction::Evidence { receipt_id, .. } = satisfaction {
-                require_id("evidence receipt id", &receipt_id.0)?;
+            match satisfaction {
+                AcceptanceSatisfaction::Host { receipt_id, .. } => {
+                    require_id("Host acceptance receipt id", &receipt_id.0)?;
+                }
+                AcceptanceSatisfaction::Evidence { receipt_id, .. } => {
+                    require_id("evidence receipt id", &receipt_id.0)?;
+                }
             }
             if !ids.insert(satisfaction.acceptance_id().0.as_str()) {
                 return Err(format!(
@@ -919,6 +973,29 @@ mod tests {
         assert_eq!(
             receipt.validate().unwrap_err(),
             "evidence receipt requires a known workspace revision"
+        );
+    }
+
+    #[test]
+    fn host_acceptance_requires_a_known_revision_without_claiming_verification() {
+        let mut acceptance = HostCompletionAcceptance {
+            candidate_id: CompletionCandidateId::from("candidate-1"),
+            generation_id: TaskGenerationId::from("run-1"),
+            workspace_state: WorkspaceState {
+                generation: 2,
+                revision: WorkspaceRevision::Known {
+                    sha256: "sha256:revision-2".to_owned(),
+                },
+            },
+        };
+        assert!(acceptance.validate().is_ok());
+
+        acceptance.workspace_state.revision = WorkspaceRevision::Unknown {
+            reason: "workspace revision unavailable".to_owned(),
+        };
+        assert_eq!(
+            acceptance.validate().unwrap_err(),
+            "Host completion acceptance requires a known workspace revision"
         );
     }
 

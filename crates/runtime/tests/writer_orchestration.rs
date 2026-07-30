@@ -445,6 +445,7 @@ fn failed_verifier(invocation: &ToolInvocation, revision: &str) -> ToolOutcome {
 
 struct RootTools {
     revision: Mutex<String>,
+    revision_failure: AtomicBool,
     bytes: Mutex<Vec<u8>>,
     calls: Mutex<Vec<String>>,
     timeline: Arc<Mutex<Vec<String>>>,
@@ -455,6 +456,7 @@ impl RootTools {
     fn new(timeline: Arc<Mutex<Vec<String>>>) -> Self {
         Self {
             revision: Mutex::new(BASE_COMMIT.to_owned()),
+            revision_failure: AtomicBool::new(false),
             bytes: Mutex::new(b"root-before".to_vec()),
             calls: Mutex::new(Vec::new()),
             timeline,
@@ -478,6 +480,12 @@ impl ToolExecutor for RootTools {
     }
 
     async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        if self.revision_failure.load(Ordering::Acquire) {
+            return Err(ToolExecutionError::new(
+                "workspace_revision_unavailable",
+                "fixture revision is intentionally unavailable",
+            ));
+        }
         Ok(self.revision.lock().expect("root revision lock").clone())
     }
 
@@ -1044,6 +1052,33 @@ fn runtime_fixture(script: ModelScript) -> RuntimeFixture {
     }
 }
 
+async fn wait_host_accepted(runtime: &Arc<AgentRuntime>, run: RuntimeRun) -> AgentOutcome {
+    let proposed = run.wait().await.expect("run returns a completion proposal");
+    let TerminalState::AwaitingHostAcceptance { candidate } = proposed.terminal else {
+        return proposed;
+    };
+    let resumed = runtime.resume(proposed.run_id.clone());
+    let accepted = resumed
+        .queue_completion_acceptance(
+            CommandId::from(format!(
+                "writer-test-host-accept:{}:{}",
+                proposed.run_id, candidate.id.0
+            )),
+            HostCompletionAcceptance {
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        )
+        .expect("queue exact Host acceptance");
+    let resumed = resumed.ready().await.expect("resume proposed run");
+    accepted
+        .await
+        .expect("Host acceptance acknowledgement")
+        .expect("Host acceptance commits");
+    resumed.wait().await.expect("accepted run reaches terminal")
+}
+
 fn recovery_root_request() -> RunRequest {
     let mut request = root_request(true, true);
     let run_id = RunId::from("recovery-root");
@@ -1096,11 +1131,12 @@ fn recovery_task(request: &RunRequest) -> AgentTask {
 }
 
 fn child_receipt(task: &AgentTask) -> EvidenceReceipt {
+    let verification_id = VerificationId::from("host-verification:child-candidate:tests");
     EvidenceReceipt {
-        id: EvidenceReceiptId::from("child-receipt"),
+        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
         generation_id: task.task_contract.generation_id.clone(),
         acceptance_id: AcceptanceId::from("tests"),
-        verification_id: VerificationId::from("child-verification"),
+        verification_id,
         verifier: verifier(),
         workspace_state: known(3, DIRTY_REVISION),
         artifact_ids: vec!["child-artifact".to_owned()],
@@ -1135,6 +1171,12 @@ fn collected_child_outcome(task: &AgentTask) -> AgentOutcome {
         tool_calls: 2,
         details: AgentResultDetails {
             summary: "子任务完成".to_owned(),
+            completion_candidate: Some(CompletionCandidate {
+                id: CompletionCandidateId::from("child-candidate"),
+                generation_id: task.task_contract.generation_id.clone(),
+                message: "子任务完成".to_owned(),
+                workspace_state: known(2, DIRTY_REVISION),
+            }),
             evidence: vec![receipt],
             changed_files: vec!["src/lib.rs".to_owned()],
             workspace: Some(task.workspace.clone()),
@@ -2320,11 +2362,7 @@ async fn isolated_writer_requires_one_exact_verifier() {
         store,
         ..
     } = runtime_fixture(ModelScript::RejectWriter);
-    let outcome = runtime
-        .start(root_request(false, false))
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(root_request(false, false))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     assert!(replay.snapshot.agent_tasks.is_empty());
@@ -2463,7 +2501,7 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
     let mut request = root_request(false, false);
     request.environment.tool_catalog_sha256 = Some("sha256:root-catalog".to_owned());
     request.environment.execution_fingerprint_sha256 = Some("sha256:root-execution".to_owned());
-    let outcome = runtime.start(request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request)).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     let lifecycle = replay.snapshot.agent_tasks.first().expect("read-only task");
@@ -2520,6 +2558,87 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
     );
     assert_eq!(orchestrator.prepare_calls.load(Ordering::Acquire), 0);
     assert_eq!(orchestrator.bind_calls.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn unknown_readonly_child_revision_settles_once_before_root_recovery_and_reopen() {
+    let RuntimeFixture {
+        runtime,
+        model,
+        root_tools,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::ReadOnlyRole);
+    root_tools.revision_failure.store(true, Ordering::Release);
+
+    let outcome = runtime
+        .start(root_request(false, false))
+        .wait()
+        .await
+        .expect("root returns a durable recovery outcome");
+    assert!(matches!(
+        &outcome.terminal,
+        TerminalState::RecoveryRequired { ambiguity }
+            if ambiguity.action_id.contains("readonly_child_acceptance_rejected")
+    ));
+
+    let replay = store
+        .load(&outcome.run_id)
+        .await
+        .expect("load recovered root")
+        .expect("recovered root exists");
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::AgentResultCollected { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::ChildFinished { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::Terminal { .. }))
+            .count(),
+        1
+    );
+    let lifecycle = replay.snapshot.agent_tasks.first().expect("read-only task");
+    assert!(lifecycle.result.is_some());
+    assert!(lifecycle.finished.is_some());
+    assert!(matches!(
+        lifecycle.result.as_ref().map(|result| &result.terminal),
+        Some(TerminalState::RecoveryRequired { .. })
+    ));
+
+    let child = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .expect("load child proposal")
+        .expect("child proposal exists");
+    assert!(child.snapshot.pending_completion.is_some());
+    assert!(child.snapshot.terminal.is_none());
+    let requests_before_reopen = model.requests.lock().expect("request log").len();
+
+    let reopened = runtime
+        .resume(outcome.run_id.clone())
+        .wait()
+        .await
+        .expect("terminal root reopens from Store");
+    assert_eq!(reopened.terminal, outcome.terminal);
+    assert_eq!(
+        model.requests.lock().expect("request log").len(),
+        requests_before_reopen,
+        "terminal reopen must not rerun root or child models"
+    );
 }
 
 #[tokio::test]
@@ -3379,7 +3498,7 @@ async fn resume_after_child_finished_rebuilds_exact_tool_outcome_without_live_wr
     assert_eq!(tool_outcome.side_effect, ToolSideEffectStatus::Applied);
     assert_eq!(
         tool_outcome.evidence.references,
-        vec!["child-receipt".to_owned()]
+        vec!["receipt:host-verification:child-candidate:tests".to_owned()]
     );
     assert_eq!(
         tool_outcome.workspace_revision.as_deref(),

@@ -164,6 +164,9 @@ pub enum DurableCommand {
         interaction_id: InteractionId,
         response: UserInteractionResponse,
     },
+    AcceptCompletion {
+        acceptance: HostCompletionAcceptance,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -293,6 +296,7 @@ pub struct RunSnapshot {
     pub terminal: Option<AgentOutcome>,
     pub workspace_state: WorkspaceState,
     pub evidence_receipts: Vec<EvidenceReceipt>,
+    pub host_acceptance_receipts: Vec<HostAcceptanceReceipt>,
     pub pending_completion: Option<CompletionCandidate>,
     pub pending_host_verification: Option<PendingHostVerification>,
     pub last_completion_rejection: Option<CompletionRejection>,
@@ -490,6 +494,7 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
                 },
             }),
         evidence_receipts: Vec::new(),
+        host_acceptance_receipts: Vec::new(),
         pending_completion: None,
         pending_host_verification: None,
         last_completion_rejection: inherited_facts
@@ -1438,6 +1443,45 @@ pub fn apply_event(
             candidate
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
+            let model_response_sequence =
+                snapshot.last_model_response_sequence.ok_or_else(|| {
+                    corrupt(
+                        &run_id,
+                        "completion proposal has no committed model response origin",
+                    )
+                })?;
+            let model_output = snapshot.last_model_output.as_ref().ok_or_else(|| {
+                corrupt(
+                    &run_id,
+                    "completion proposal has no committed model output origin",
+                )
+            })?;
+            let exact_candidate_id =
+                CompletionCandidateId::from(format!("completion-{model_response_sequence}"));
+            if snapshot.last_model_activity_sequence != Some(model_response_sequence)
+                || snapshot.pending_model.is_some()
+                || snapshot.pending_tool.is_some()
+                || !snapshot.pending_steers.is_empty()
+                || snapshot.pending_control.is_some()
+                || !snapshot.pending_child_run_ids().is_empty()
+                || model_output.finish_reason != ModelFinishReason::Stop
+                || !model_output.tool_calls.is_empty()
+                || model_output.content.trim().is_empty()
+                || candidate.id != exact_candidate_id
+                || candidate.message != model_output.content
+                || snapshot
+                    .last_completion_rejection
+                    .as_ref()
+                    .is_some_and(|rejection| {
+                        rejection.candidate_id == candidate.id
+                            && rejection.generation_id == candidate.generation_id
+                    })
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "completion proposal does not match the current actionable model Stop",
+                ));
+            }
             let generation = &snapshot
                 .request
                 .task_contract
@@ -1450,7 +1494,73 @@ pub fn apply_event(
                     "completion candidate belongs to another task generation",
                 ));
             }
+            if candidate.workspace_state != snapshot.workspace_state {
+                return Err(corrupt(
+                    &run_id,
+                    "completion candidate does not bind the current workspace state",
+                ));
+            }
+            if snapshot.pending_completion.is_some() {
+                return Err(corrupt(
+                    &run_id,
+                    "completion proposal cannot replace an existing pending candidate",
+                ));
+            }
             snapshot.pending_completion = Some(candidate.clone());
+        }
+        RuntimeEventKind::HostCompletionAccepted {
+            command_id,
+            receipt,
+        } => {
+            receipt
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            let candidate = snapshot.pending_completion.as_ref().ok_or_else(|| {
+                corrupt(
+                    &run_id,
+                    "Host completion acceptance has no pending candidate",
+                )
+            })?;
+            let contract = snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("Agent contract validated at run creation");
+            if receipt.id.0 != format!("host-acceptance:{}", command_id.0)
+                || receipt.candidate_id != candidate.id
+                || receipt.generation_id != contract.generation_id
+                || receipt.workspace_state != candidate.workspace_state
+                || receipt.workspace_state != snapshot.workspace_state
+                || !contract
+                    .definition
+                    .acceptance
+                    .iter()
+                    .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }))
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host completion acceptance does not match the current candidate, generation, workspace, or contract",
+                ));
+            }
+            let durable = DurableCommand::AcceptCompletion {
+                acceptance: HostCompletionAcceptance {
+                    candidate_id: receipt.candidate_id.clone(),
+                    generation_id: receipt.generation_id.clone(),
+                    workspace_state: receipt.workspace_state.clone(),
+                },
+            };
+            record_command(snapshot, &run_id, command_id, stored.sequence, durable)?;
+            if snapshot
+                .host_acceptance_receipts
+                .iter()
+                .any(|existing| existing.id == receipt.id)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host completion acceptance receipt appears more than once",
+                ));
+            }
+            snapshot.host_acceptance_receipts.push(receipt.clone());
         }
         RuntimeEventKind::HostVerificationPrepared {
             verification_id,
@@ -1487,6 +1597,12 @@ pub fn apply_event(
                 return Err(corrupt(
                     &run_id,
                     "Host verification does not match the contract or current workspace",
+                ));
+            }
+            if candidate.workspace_state != *workspace_state_before {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification candidate is stale for the prepared workspace",
                 ));
             }
             snapshot.pending_host_verification = Some(PendingHostVerification {
@@ -2294,8 +2410,26 @@ pub fn apply_event(
                     ));
                 }
             }
+            if matches!(
+                outcome.terminal,
+                TerminalState::AwaitingHostAcceptance { .. }
+            ) {
+                return Err(corrupt(
+                    &run_id,
+                    "awaiting Host acceptance cannot be persisted as a terminal event",
+                ));
+            }
             validate_terminal_agent_cleanup(snapshot, &run_id, &outcome.terminal)?;
-            if let TerminalState::Completed { decision, .. } = &outcome.terminal {
+            if let TerminalState::Completed { message, decision } = &outcome.terminal {
+                let candidate = snapshot.pending_completion.as_ref().ok_or_else(|| {
+                    corrupt(&run_id, "completed Agent has no completion candidate")
+                })?;
+                if message != &candidate.message {
+                    return Err(corrupt(
+                        &run_id,
+                        "completed Agent message does not match the accepted completion candidate",
+                    ));
+                }
                 validate_completion_decision(snapshot, &run_id, decision)?;
             }
             snapshot.accounting = outcome.accounting.clone();
@@ -2366,7 +2500,9 @@ fn validate_writer_cleanup_plan(
             TerminalState::Cancelled => "writer_child_cancelled",
             TerminalState::Interrupted => "writer_child_interrupted",
             TerminalState::RecoveryRequired { .. } => "writer_child_recovery_required",
-            TerminalState::Failed { .. } | TerminalState::Completed { .. } => "writer_child_failed",
+            TerminalState::AwaitingHostAcceptance { .. }
+            | TerminalState::Failed { .. }
+            | TerminalState::Completed { .. } => "writer_child_failed",
         }),
     };
     if expected_reason != Some(plan.reason_code.as_str()) {
@@ -2471,6 +2607,17 @@ fn validate_collected_agent_result(
             "collected Agent evidence belongs to another task generation",
         ));
     }
+    if outcome
+        .details
+        .host_acceptance_receipts
+        .iter()
+        .any(|receipt| receipt.generation_id != lifecycle.task.task_contract.generation_id)
+    {
+        return Err(corrupt(
+            run_id,
+            "collected Agent Host acceptance belongs to another task generation",
+        ));
+    }
     match lifecycle.task.workspace.access {
         AgentWorkspaceAccess::ReadOnly => {
             if lifecycle.workspace_created.is_some()
@@ -2488,6 +2635,7 @@ fn validate_collected_agent_result(
                     "read-only Agent result carries writer lifecycle facts or a different workspace",
                 ));
             }
+            validate_readonly_child_completion(run_id, lifecycle, outcome)?;
         }
         AgentWorkspaceAccess::IsolatedWrite => {
             let successful = matches!(outcome.terminal, TerminalState::Completed { .. });
@@ -2520,6 +2668,8 @@ fn validate_collected_agent_result(
                         ));
                     }
                     if successful {
+                        validate_child_completion_facts(&lifecycle.task, outcome)
+                            .map_err(|message| corrupt(run_id, message))?;
                         let expected_acceptance = lifecycle
                             .task
                             .task_contract
@@ -2627,6 +2777,159 @@ fn validate_collected_agent_result(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_readonly_child_completion(
+    run_id: &RunId,
+    lifecycle: &AgentTaskLifecycle,
+    outcome: &AgentOutcome,
+) -> Result<(), RunStoreError> {
+    let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+        return Ok(());
+    };
+    validate_child_completion_facts(&lifecycle.task, outcome)
+        .map_err(|message| corrupt(run_id, message))?;
+    if outcome.details.workspace_state.as_ref() != Some(&decision.workspace_state) {
+        return Err(corrupt(
+            run_id,
+            "successful read-only Agent completion does not match its candidate, contract, or workspace",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the completion facts carried across an Agent boundary before the
+/// parent is allowed to trust them. A child outcome is not authoritative on
+/// its own: every receipt identity must be derivable from the frozen task,
+/// exact proposal, and canonical Host action that the child Runtime uses.
+pub(crate) fn validate_child_completion_facts(
+    task: &AgentTask,
+    outcome: &AgentOutcome,
+) -> Result<(), String> {
+    let TerminalState::Completed { message, decision } = &outcome.terminal else {
+        return Ok(());
+    };
+    let contract = &task.task_contract;
+    let candidate = outcome
+        .details
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "successful read-only Agent omitted its completion candidate".to_owned())?;
+    if candidate.id != decision.candidate_id
+        || candidate.generation_id != contract.generation_id
+        || candidate.message != *message
+        || decision.generation_id != contract.generation_id
+        || outcome.details.summary != *message
+        || decision.satisfied.len() != contract.definition.acceptance.len()
+    {
+        return Err(
+            "successful Agent completion does not match its candidate or frozen contract"
+                .to_owned(),
+        );
+    }
+
+    let has_host_acceptance = contract
+        .definition
+        .acceptance
+        .iter()
+        .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }));
+    let verifier_acceptance = contract
+        .definition
+        .acceptance
+        .iter()
+        .find(|acceptance| matches!(acceptance, TaskAcceptance::Verifier { .. }));
+    let candidate_workspace_is_current = if verifier_acceptance.is_some() {
+        candidate.workspace_state.generation.checked_add(1)
+            == Some(decision.workspace_state.generation)
+            && candidate.workspace_state.revision == decision.workspace_state.revision
+    } else {
+        candidate.workspace_state == decision.workspace_state
+    };
+    if !candidate_workspace_is_current {
+        return Err(
+            "successful Agent candidate is stale for its exact completion decision".to_owned(),
+        );
+    }
+    for acceptance in &contract.definition.acceptance {
+        let satisfaction = decision
+            .satisfied
+            .iter()
+            .find(|item| item.acceptance_id() == acceptance.id())
+            .ok_or_else(|| {
+                "successful Agent omitted a frozen acceptance satisfaction".to_owned()
+            })?;
+        match (acceptance, satisfaction) {
+            (TaskAcceptance::Host { .. }, AcceptanceSatisfaction::Host { receipt_id, .. }) => {
+                let receipt = outcome
+                    .details
+                    .host_acceptance_receipts
+                    .iter()
+                    .find(|receipt| &receipt.id == receipt_id)
+                    .ok_or_else(|| {
+                        "successful read-only Agent references an unknown Host acceptance receipt"
+                            .to_owned()
+                    })?;
+                let expected_receipt_id = HostAcceptanceReceiptId::from(format!(
+                    "host-acceptance:parent-host-accept:{}:{}:{}",
+                    task.parent_run_id.0, task.task_id.0, candidate.id.0
+                ));
+                if receipt.id != expected_receipt_id
+                    || receipt.candidate_id != candidate.id
+                    || receipt.generation_id != contract.generation_id
+                    || receipt.workspace_state != candidate.workspace_state
+                {
+                    return Err(
+                        "successful read-only Agent Host receipt does not match its exact candidate"
+                            .to_owned(),
+                    );
+                }
+            }
+            (
+                TaskAcceptance::Verifier {
+                    id,
+                    evidence_policy,
+                    verifier,
+                    ..
+                },
+                AcceptanceSatisfaction::Evidence { receipt_id, .. },
+            ) => {
+                let expected_verification_id =
+                    VerificationId::from(format!("host-verification:{}:{}", candidate.id.0, id.0));
+                let expected_receipt_id =
+                    EvidenceReceiptId::from(format!("receipt:{}", expected_verification_id.0));
+                let exact = outcome.details.evidence.iter().any(|receipt| {
+                    receipt.id == expected_receipt_id
+                        && &receipt.id == receipt_id
+                        && receipt.generation_id == contract.generation_id
+                        && receipt.acceptance_id == *id
+                        && receipt.verification_id == expected_verification_id
+                        && receipt.verifier == *verifier
+                        && receipt.lineage.satisfies(*evidence_policy)
+                        && receipt.workspace_state == decision.workspace_state
+                });
+                if !exact {
+                    return Err(
+                        "successful read-only Agent evidence does not match its exact canonical verifier acceptance"
+                            .to_owned(),
+                    );
+                }
+            }
+            _ => {
+                return Err(
+                    "successful Agent satisfaction kind does not match its frozen contract"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    if outcome.details.host_acceptance_receipts.len() != usize::from(has_host_acceptance)
+        || outcome.details.evidence.len() != usize::from(verifier_acceptance.is_some())
+    {
+        return Err(
+            "successful Agent carries receipts outside its frozen acceptance contract".to_owned(),
+        );
     }
     Ok(())
 }
@@ -2901,6 +3204,33 @@ fn validate_completion_decision(
             "completion decision does not satisfy the whole task contract",
         ));
     }
+    let has_current_verifier_satisfaction =
+        contract.definition.acceptance.iter().any(|acceptance| {
+            let TaskAcceptance::Verifier {
+                id,
+                evidence_policy,
+                verifier,
+                ..
+            } = acceptance
+            else {
+                return false;
+            };
+            let Some(AcceptanceSatisfaction::Evidence { receipt_id, .. }) = decision
+                .satisfied
+                .iter()
+                .find(|item| item.acceptance_id() == id)
+            else {
+                return false;
+            };
+            snapshot.evidence_receipts.iter().any(|receipt| {
+                &receipt.id == receipt_id
+                    && receipt.generation_id == contract.generation_id
+                    && receipt.acceptance_id == *id
+                    && receipt.verifier == *verifier
+                    && receipt.lineage.satisfies(*evidence_policy)
+                    && receipt.workspace_state == snapshot.workspace_state
+            })
+        });
     for acceptance in &contract.definition.acceptance {
         let Some(satisfaction) = decision
             .satisfied
@@ -2913,7 +3243,33 @@ fn validate_completion_decision(
             ));
         };
         match (acceptance, satisfaction) {
-            (TaskAcceptance::Host { .. }, AcceptanceSatisfaction::Host { .. }) => {}
+            (TaskAcceptance::Host { .. }, AcceptanceSatisfaction::Host { receipt_id, .. }) => {
+                let receipt = snapshot
+                    .host_acceptance_receipts
+                    .iter()
+                    .find(|receipt| &receipt.id == receipt_id)
+                    .ok_or_else(|| {
+                        corrupt(
+                            run_id,
+                            "completion references an unknown Host acceptance receipt",
+                        )
+                    })?;
+                let exact_current_workspace = receipt.workspace_state == snapshot.workspace_state;
+                let verifier_advanced_same_revision = has_current_verifier_satisfaction
+                    && receipt.workspace_state == candidate.workspace_state
+                    && receipt.workspace_state.generation.checked_add(1)
+                        == Some(snapshot.workspace_state.generation)
+                    && receipt.workspace_state.revision == snapshot.workspace_state.revision;
+                if receipt.candidate_id != decision.candidate_id
+                    || receipt.generation_id != contract.generation_id
+                    || !(exact_current_workspace || verifier_advanced_same_revision)
+                {
+                    return Err(corrupt(
+                        run_id,
+                        "Host acceptance receipt does not match the current candidate, generation, or workspace",
+                    ));
+                }
+            }
             (
                 TaskAcceptance::Verifier {
                     evidence_policy,
@@ -4174,11 +4530,12 @@ mod tests {
     }
 
     fn child_receipt() -> EvidenceReceipt {
+        let verification_id = VerificationId::from("host-verification:child-candidate:host");
         EvidenceReceipt {
-            id: EvidenceReceiptId::from("child-receipt"),
+            id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
             generation_id: TaskGenerationId::from("child"),
             acceptance_id: AcceptanceId::from("host"),
-            verification_id: VerificationId::from("child-verification"),
+            verification_id,
             verifier: verifier(),
             workspace_state: known(1, "writer-dirty"),
             artifact_ids: vec!["child-artifact".to_owned()],
@@ -4187,6 +4544,7 @@ mod tests {
     }
 
     fn collected_writer_outcome() -> AgentOutcome {
+        let receipt = child_receipt();
         AgentOutcome {
             run_id: RunId::from("child"),
             parent_run_id: Some(RunId::from("root")),
@@ -4198,7 +4556,7 @@ mod tests {
                     workspace_state: known(1, "writer-dirty"),
                     satisfied: vec![AcceptanceSatisfaction::Evidence {
                         acceptance_id: AcceptanceId::from("host"),
-                        receipt_id: EvidenceReceiptId::from("child-receipt"),
+                        receipt_id: receipt.id.clone(),
                     }],
                 },
             },
@@ -4207,8 +4565,15 @@ mod tests {
             runtime_retries: 0,
             tool_calls: 1,
             details: AgentResultDetails {
-                summary: "changed one file".to_owned(),
-                evidence: vec![child_receipt()],
+                summary: "done".to_owned(),
+                completion_candidate: Some(CompletionCandidate {
+                    id: CompletionCandidateId::from("child-candidate"),
+                    generation_id: TaskGenerationId::from("child"),
+                    message: "done".to_owned(),
+                    workspace_state: known(0, "writer-dirty"),
+                }),
+                evidence: vec![receipt],
+                host_acceptance_receipts: Vec::new(),
                 changed_files: vec!["src/lib.rs".to_owned()],
                 checks: Vec::new(),
                 unresolved: Vec::new(),
@@ -4290,6 +4655,210 @@ mod tests {
                 ..AgentResultDetails::default()
             },
         }
+    }
+
+    fn completed_read_only_outcome() -> AgentOutcome {
+        let task = read_only_task();
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("child-candidate"),
+            generation_id: task.task_contract.generation_id.clone(),
+            message: "read-only findings accepted".to_owned(),
+            workspace_state: known(0, "root-read-view"),
+        };
+        let receipt = HostAcceptanceReceipt {
+            id: HostAcceptanceReceiptId::from(format!(
+                "host-acceptance:parent-host-accept:{}:{}:{}",
+                task.parent_run_id.0, task.task_id.0, candidate.id.0
+            )),
+            candidate_id: candidate.id.clone(),
+            generation_id: candidate.generation_id.clone(),
+            workspace_state: candidate.workspace_state.clone(),
+        };
+        AgentOutcome {
+            run_id: task.child_run_id,
+            parent_run_id: Some(task.parent_run_id),
+            terminal: TerminalState::Completed {
+                message: candidate.message.clone(),
+                decision: CompletionDecision {
+                    candidate_id: candidate.id.clone(),
+                    generation_id: candidate.generation_id.clone(),
+                    workspace_state: candidate.workspace_state.clone(),
+                    satisfied: vec![AcceptanceSatisfaction::Host {
+                        acceptance_id: AcceptanceId::from("host"),
+                        receipt_id: receipt.id.clone(),
+                    }],
+                },
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 1,
+            runtime_retries: 0,
+            tool_calls: 1,
+            details: AgentResultDetails {
+                summary: candidate.message.clone(),
+                completion_candidate: Some(candidate.clone()),
+                host_acceptance_receipts: vec![receipt],
+                workspace: Some(task.workspace),
+                workspace_state: Some(candidate.workspace_state),
+                ..AgentResultDetails::default()
+            },
+        }
+    }
+
+    fn verified_read_only_task(with_host: bool) -> AgentTask {
+        let mut task = read_only_task();
+        let verifier_acceptance = TaskAcceptance::Verifier {
+            id: AcceptanceId::from("verify"),
+            description: "verify the latest read-only result".to_owned(),
+            evidence_policy: VerifierEvidencePolicy::LatestPass,
+            verifier: verifier(),
+        };
+        task.task_contract.definition.acceptance = if with_host {
+            vec![
+                TaskAcceptance::Host {
+                    id: AcceptanceId::from("host"),
+                    description: "parent Host accepts the exact child answer".to_owned(),
+                },
+                verifier_acceptance,
+            ]
+        } else {
+            vec![verifier_acceptance]
+        };
+        task
+    }
+
+    fn verified_read_only_outcome(
+        task: &AgentTask,
+        candidate_workspace: WorkspaceState,
+        decision_workspace: WorkspaceState,
+    ) -> AgentOutcome {
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("verified-child-candidate"),
+            generation_id: task.task_contract.generation_id.clone(),
+            message: "read-only verification completed".to_owned(),
+            workspace_state: candidate_workspace.clone(),
+        };
+        let verification_id =
+            VerificationId::from(format!("host-verification:{}:verify", candidate.id.0));
+        let evidence = EvidenceReceipt {
+            id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+            generation_id: task.task_contract.generation_id.clone(),
+            acceptance_id: AcceptanceId::from("verify"),
+            verification_id,
+            verifier: verifier(),
+            workspace_state: decision_workspace.clone(),
+            artifact_ids: vec!["verified-child-artifact".to_owned()],
+            lineage: EvidenceLineage::LatestPass,
+        };
+        let host_receipt = task
+            .task_contract
+            .definition
+            .acceptance
+            .iter()
+            .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }))
+            .then(|| HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from(format!(
+                    "host-acceptance:parent-host-accept:{}:{}:{}",
+                    task.parent_run_id.0, task.task_id.0, candidate.id.0
+                )),
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate_workspace,
+            });
+        let satisfied = task
+            .task_contract
+            .definition
+            .acceptance
+            .iter()
+            .map(|acceptance| match acceptance {
+                TaskAcceptance::Host { id, .. } => AcceptanceSatisfaction::Host {
+                    acceptance_id: id.clone(),
+                    receipt_id: host_receipt
+                        .as_ref()
+                        .expect("Host acceptance has a receipt")
+                        .id
+                        .clone(),
+                },
+                TaskAcceptance::Verifier { id, .. } => AcceptanceSatisfaction::Evidence {
+                    acceptance_id: id.clone(),
+                    receipt_id: evidence.id.clone(),
+                },
+            })
+            .collect();
+        AgentOutcome {
+            run_id: task.child_run_id.clone(),
+            parent_run_id: Some(task.parent_run_id.clone()),
+            terminal: TerminalState::Completed {
+                message: candidate.message.clone(),
+                decision: CompletionDecision {
+                    candidate_id: candidate.id.clone(),
+                    generation_id: candidate.generation_id.clone(),
+                    workspace_state: decision_workspace.clone(),
+                    satisfied,
+                },
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 1,
+            runtime_retries: 0,
+            tool_calls: 1,
+            details: AgentResultDetails {
+                summary: candidate.message.clone(),
+                completion_candidate: Some(candidate),
+                evidence: vec![evidence],
+                host_acceptance_receipts: host_receipt.into_iter().collect(),
+                workspace: Some(task.workspace.clone()),
+                workspace_state: Some(decision_workspace),
+                ..AgentResultDetails::default()
+            },
+        }
+    }
+
+    fn read_only_collected_result_kinds(outcome: AgentOutcome) -> Vec<RuntimeEventKind> {
+        let task = read_only_task();
+        read_only_collected_result_kinds_for(task, outcome)
+    }
+
+    fn read_only_collected_result_kinds_for(
+        task: AgentTask,
+        outcome: AgentOutcome,
+    ) -> Vec<RuntimeEventKind> {
+        vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: task.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+            RuntimeEventKind::ChildStarted {
+                task_id: task.task_id.clone(),
+                call_id: task.call_id.clone(),
+                child_run_id: task.child_run_id,
+                depth: 1,
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("agent-operation".to_owned()),
+                call_id: task.call_id.clone(),
+                name: AGENT_TOOL_NAME.to_owned(),
+                outcome: Box::new(ToolOutcome::success("read-only child launched")),
+                workspace_state: None,
+            },
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id,
+                outcome: Box::new(outcome),
+            },
+        ]
     }
 
     fn event_kinds() -> Vec<RuntimeEventKind> {
@@ -4481,24 +5050,97 @@ mod tests {
         kinds
     }
 
-    fn stored_events(kinds: Vec<RuntimeEventKind>) -> Vec<StoredRuntimeEvent> {
-        fn push(events: &mut Vec<StoredRuntimeEvent>, event: RuntimeEventKind) {
-            let index = events.len();
-            events.push(StoredRuntimeEvent {
-                schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
-                run_id: RunId::from("root"),
-                parent_run_id: None,
-                event_id: if index == 0 {
-                    RuntimeEventId::run_created()
-                } else {
-                    RuntimeEventId(format!("event-{index}"))
-                },
-                sequence: u64::try_from(index).unwrap() + 1,
-                occurred_at_unix_ms: 1,
-                event,
-            });
-        }
+    fn push_stored_event(events: &mut Vec<StoredRuntimeEvent>, event: RuntimeEventKind) {
+        let index = events.len();
+        events.push(StoredRuntimeEvent {
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: RunId::from("root"),
+            parent_run_id: None,
+            event_id: if index == 0 {
+                RuntimeEventId::run_created()
+            } else {
+                RuntimeEventId(format!("event-{index}"))
+            },
+            sequence: u64::try_from(index).unwrap() + 1,
+            occurred_at_unix_ms: 1,
+            event,
+        });
+    }
 
+    fn push_completion_origin(
+        events: &mut Vec<StoredRuntimeEvent>,
+        message: &str,
+    ) -> CompletionCandidate {
+        let snapshot = reduce_events(events).expect("completion fixture prefix");
+        let tools = Vec::new();
+        let context = effective_context(context_input(&snapshot, &tools))
+            .expect("completion fixture model context");
+        let request_number = snapshot.local_turns.saturating_add(1);
+        let attempt_id = AttemptId(format!("fixture-completion-attempt-{request_number}"));
+        let request = ModelRequest {
+            run_id: RunId::from("root"),
+            parent_run_id: snapshot.request.parent_run_id.clone(),
+            actor: snapshot.request.actor,
+            model: snapshot.request.model.clone(),
+            system_prompt: context.system_prompt,
+            messages: context.messages,
+            tools,
+            reasoning_effort: snapshot.request.reasoning_effort,
+            max_output_tokens: snapshot.request.max_output_tokens,
+            streaming: snapshot.request.streaming,
+            request_number,
+            attempt: 0,
+        };
+        push_stored_event(
+            events,
+            RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(request),
+            },
+        );
+        push_stored_event(
+            events,
+            RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        );
+        let response_sequence = u64::try_from(events.len()).unwrap() + 1;
+        push_stored_event(
+            events,
+            RuntimeEventKind::ModelResponseCommitted {
+                attempt_id,
+                output: Box::new(ModelOutput {
+                    content: message.to_owned(),
+                    reasoning_content: None,
+                    tool_calls: Vec::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: Usage::default(),
+                }),
+                accounting: Box::new(snapshot.accounting),
+            },
+        );
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from(format!("completion-{response_sequence}")),
+            generation_id: snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("completion fixture contract")
+                .generation_id
+                .clone(),
+            message: message.to_owned(),
+            workspace_state: snapshot.workspace_state,
+        };
+        push_stored_event(
+            events,
+            RuntimeEventKind::CompletionProposed {
+                candidate: candidate.clone(),
+            },
+        );
+        candidate
+    }
+
+    fn stored_events(kinds: Vec<RuntimeEventKind>) -> Vec<StoredRuntimeEvent> {
         let mut events = Vec::new();
         for kind in kinds {
             let prepared = if let RuntimeEventKind::ToolPrepared {
@@ -4531,20 +5173,20 @@ mod tests {
                     request_number,
                     attempt: 0,
                 };
-                push(
+                push_stored_event(
                     &mut events,
                     RuntimeEventKind::ModelRequestPrepared {
                         attempt_id: attempt_id.clone(),
                         request: Box::new(request),
                     },
                 );
-                push(
+                push_stored_event(
                     &mut events,
                     RuntimeEventKind::ModelRequestInFlight {
                         attempt_id: attempt_id.clone(),
                     },
                 );
-                push(
+                push_stored_event(
                     &mut events,
                     RuntimeEventKind::ModelResponseCommitted {
                         attempt_id,
@@ -4566,7 +5208,7 @@ mod tests {
             } else {
                 None
             };
-            push(&mut events, kind);
+            push_stored_event(&mut events, kind);
             if let Some((operation_id, invocation)) = prepared
                 && invocation.name != AGENT_TOOL_NAME
                 && invocation.name != REQUEST_USER_INPUT_TOOL_NAME
@@ -4578,7 +5220,7 @@ mod tests {
                 let execution_invocation = resolved_execution
                     .invocation
                     .expect("fixture verifier resolution");
-                push(
+                push_stored_event(
                     &mut events,
                     RuntimeEventKind::ToolAuthorizationCommitted {
                         operation_id,
@@ -4794,18 +5436,8 @@ mod tests {
         ] {
             let mut kinds = temporal_failure_kinds();
             push_effective_write(&mut kinds, "repair", known(3, "revision-b"));
-            let prefix = reduce_events(&stored_events(kinds.clone())).unwrap();
-            let candidate = CompletionCandidate {
-                id: CompletionCandidateId::from(format!("candidate-{label}")),
-                generation_id: prefix
-                    .request
-                    .task_contract
-                    .as_ref()
-                    .expect("temporal contract")
-                    .generation_id
-                    .clone(),
-                message: "claims completion".to_owned(),
-            };
+            let mut events = stored_events(kinds);
+            let candidate = push_completion_origin(&mut events, "claims completion");
             let verification_id = VerificationId::from(format!("verification-{label}"));
             let workspace_state_after = known(4, settled_revision);
             let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
@@ -4828,16 +5460,14 @@ mod tests {
                 workspace_revision: workspace_state_after.revision.clone(),
                 artifact_ids: outcome.evidence.references.clone(),
             });
-            kinds.extend([
-                RuntimeEventKind::CompletionProposed {
-                    candidate: candidate.clone(),
-                },
+            let workspace_state_before = candidate.workspace_state.clone();
+            for event in [
                 RuntimeEventKind::HostVerificationPrepared {
                     verification_id: verification_id.clone(),
                     candidate,
                     acceptance_id: AcceptanceId::from("temporal"),
                     verifier: verifier(),
-                    workspace_state_before: prefix.workspace_state,
+                    workspace_state_before,
                 },
                 RuntimeEventKind::HostVerificationStarted {
                     verification_id: verification_id.clone(),
@@ -4848,9 +5478,11 @@ mod tests {
                     receipt: None,
                     workspace_state_after,
                 },
-            ]);
+            ] {
+                push_stored_event(&mut events, event);
+            }
 
-            let snapshot = reduce_events(&stored_events(kinds)).expect("typed rejection replay");
+            let snapshot = reduce_events(&events).expect("typed rejection replay");
             let rejection = &snapshot
                 .last_host_verification_failure
                 .expect("Host failure")
@@ -4922,29 +5554,17 @@ mod tests {
     fn host_verification_commit_rejects_workspace_drift_after_prepare() {
         let mut kinds = temporal_failure_kinds();
         push_effective_write(&mut kinds, "repair", known(3, "revision-b"));
-        let prefix = reduce_events(&stored_events(kinds.clone())).expect("write prefix");
-        let candidate = CompletionCandidate {
-            id: CompletionCandidateId::from("candidate-workspace-drift"),
-            generation_id: prefix
-                .request
-                .task_contract
-                .as_ref()
-                .expect("temporal contract")
-                .generation_id
-                .clone(),
-            message: "claims completion".to_owned(),
-        };
+        let mut events = stored_events(kinds);
+        let candidate = push_completion_origin(&mut events, "claims completion");
         let verification_id = VerificationId::from("verification-workspace-drift");
-        kinds.extend([
-            RuntimeEventKind::CompletionProposed {
-                candidate: candidate.clone(),
-            },
+        let workspace_state_before = candidate.workspace_state.clone();
+        for event in [
             RuntimeEventKind::HostVerificationPrepared {
                 verification_id: verification_id.clone(),
                 candidate,
                 acceptance_id: AcceptanceId::from("temporal"),
                 verifier: verifier(),
-                workspace_state_before: prefix.workspace_state,
+                workspace_state_before,
             },
             RuntimeEventKind::HostVerificationStarted {
                 verification_id: verification_id.clone(),
@@ -4958,10 +5578,12 @@ mod tests {
                 receipt: None,
                 workspace_state_after: known(4, "revision-c"),
             },
-        ]);
+        ] {
+            push_stored_event(&mut events, event);
+        }
 
         assert!(matches!(
-            reduce_events(&stored_events(kinds)),
+            reduce_events(&events),
             Err(RunStoreError::Corrupt { message, .. })
                 if message.contains("workspace changed after its exact action was prepared")
         ));
@@ -5171,6 +5793,216 @@ mod tests {
         assert!(lifecycle.finished.is_some());
     }
 
+    #[test]
+    fn successful_read_only_child_replay_requires_exact_candidate_receipt_and_workspace() {
+        fn assert_rejected(outcome: AgentOutcome, expected: &str) {
+            let error = reduce_events(&stored_events(read_only_collected_result_kinds(outcome)))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    RunStoreError::Corrupt { ref message, .. } if message.contains(expected)
+                ),
+                "unexpected replay error: {error:?}"
+            );
+        }
+
+        let valid = completed_read_only_outcome();
+        let snapshot = reduce_events(&stored_events(read_only_collected_result_kinds(
+            valid.clone(),
+        )))
+        .expect("exact Host-accepted read-only child result");
+        assert_eq!(
+            snapshot.agent_tasks[0]
+                .result
+                .as_ref()
+                .expect("collected result"),
+            &valid
+        );
+
+        let mut missing_candidate = valid.clone();
+        missing_candidate.details.completion_candidate = None;
+        assert_rejected(missing_candidate, "omitted its completion candidate");
+
+        let mut missing_receipt = valid.clone();
+        missing_receipt.details.host_acceptance_receipts.clear();
+        assert_rejected(
+            missing_receipt,
+            "references an unknown Host acceptance receipt",
+        );
+
+        let mut unknown_receipt = valid.clone();
+        let TerminalState::Completed { decision, .. } = &mut unknown_receipt.terminal else {
+            unreachable!("fixture is completed");
+        };
+        let AcceptanceSatisfaction::Host { receipt_id, .. } = &mut decision.satisfied[0] else {
+            unreachable!("fixture uses Host acceptance");
+        };
+        *receipt_id = HostAcceptanceReceiptId::from("unknown-child-host-receipt");
+        assert_rejected(
+            unknown_receipt,
+            "references an unknown Host acceptance receipt",
+        );
+
+        let mut forged_receipt = valid.clone();
+        forged_receipt.details.host_acceptance_receipts[0].candidate_id =
+            CompletionCandidateId::from("forged-child-candidate");
+        assert_rejected(
+            forged_receipt,
+            "Host receipt does not match its exact candidate",
+        );
+
+        let mut forged_receipt_id = valid.clone();
+        let forged_id = HostAcceptanceReceiptId::from("self-consistent-forged-child-receipt");
+        forged_receipt_id.details.host_acceptance_receipts[0].id = forged_id.clone();
+        let TerminalState::Completed { decision, .. } = &mut forged_receipt_id.terminal else {
+            unreachable!("fixture is completed");
+        };
+        let AcceptanceSatisfaction::Host { receipt_id, .. } = &mut decision.satisfied[0] else {
+            unreachable!("fixture uses Host acceptance");
+        };
+        *receipt_id = forged_id;
+        assert_rejected(
+            forged_receipt_id,
+            "Host receipt does not match its exact candidate",
+        );
+
+        let mut wrong_decision_workspace = valid;
+        let TerminalState::Completed { decision, .. } = &mut wrong_decision_workspace.terminal
+        else {
+            unreachable!("fixture is completed");
+        };
+        decision.workspace_state = known(1, "drifted-root-read-view");
+        wrong_decision_workspace.details.workspace_state = Some(decision.workspace_state.clone());
+        assert_rejected(
+            wrong_decision_workspace,
+            "candidate is stale for its exact completion decision",
+        );
+    }
+
+    #[test]
+    fn verifier_only_read_only_child_requires_exact_one_verifier_epoch() {
+        let task = verified_read_only_task(false);
+        let candidate_workspace = known(1, "same-revision");
+        let decision_workspace = known(2, "same-revision");
+        let outcome = verified_read_only_outcome(
+            &task,
+            candidate_workspace.clone(),
+            decision_workspace.clone(),
+        );
+
+        let snapshot = reduce_events(&stored_events(read_only_collected_result_kinds_for(
+            task.clone(),
+            outcome.clone(),
+        )))
+        .expect("one exact verifier epoch closes a verifier-only child");
+        assert_eq!(
+            snapshot.agent_tasks[0]
+                .result
+                .as_ref()
+                .expect("collected verifier-only child"),
+            &outcome
+        );
+        assert_eq!(
+            candidate_workspace.generation + 1,
+            decision_workspace.generation
+        );
+
+        for stale in [
+            verified_read_only_outcome(
+                &task,
+                candidate_workspace.clone(),
+                known(3, "same-revision"),
+            ),
+            verified_read_only_outcome(
+                &task,
+                candidate_workspace.clone(),
+                known(2, "different-revision"),
+            ),
+        ] {
+            let error = reduce_events(&stored_events(read_only_collected_result_kinds_for(
+                task.clone(),
+                stale,
+            )))
+            .expect_err("stale verifier-only candidate must fail closed");
+            assert!(matches!(
+                error,
+                RunStoreError::Corrupt { ref message, .. }
+                    if message.contains("candidate is stale")
+            ));
+        }
+
+        let mut forged_identity = outcome;
+        let forged_verification = VerificationId::from("self-consistent-forged-verification");
+        forged_identity.details.evidence[0].verification_id = forged_verification.clone();
+        forged_identity.details.evidence[0].id =
+            EvidenceReceiptId::from(format!("receipt:{}", forged_verification.0));
+        let TerminalState::Completed { decision, .. } = &mut forged_identity.terminal else {
+            unreachable!("fixture is completed");
+        };
+        let AcceptanceSatisfaction::Evidence { receipt_id, .. } = &mut decision.satisfied[0] else {
+            unreachable!("fixture uses verifier evidence");
+        };
+        *receipt_id = forged_identity.details.evidence[0].id.clone();
+        let error = reduce_events(&stored_events(read_only_collected_result_kinds_for(
+            task,
+            forged_identity,
+        )))
+        .expect_err("self-consistent forged verifier identity must fail closed");
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { ref message, .. }
+                if message.contains("canonical verifier acceptance")
+        ));
+    }
+
+    #[test]
+    fn mixed_read_only_child_host_receipt_binds_candidate_and_one_verifier_epoch() {
+        fn assert_rejected(task: &AgentTask, outcome: AgentOutcome, expected: &str) {
+            let error = reduce_events(&stored_events(read_only_collected_result_kinds_for(
+                task.clone(),
+                outcome,
+            )))
+            .expect_err("invalid mixed Host/verifier child must fail closed");
+            assert!(matches!(
+                error,
+                RunStoreError::Corrupt { ref message, .. }
+                    if message.contains(expected)
+            ));
+        }
+
+        let task = verified_read_only_task(true);
+        let candidate_workspace = known(1, "same-revision");
+        let verified_workspace = known(2, "same-revision");
+        let valid =
+            verified_read_only_outcome(&task, candidate_workspace.clone(), verified_workspace);
+        reduce_events(&stored_events(read_only_collected_result_kinds_for(
+            task.clone(),
+            valid.clone(),
+        )))
+        .expect("one verifier epoch may advance an exact Host-accepted candidate");
+
+        let mut forged_candidate_binding = valid.clone();
+        forged_candidate_binding.details.host_acceptance_receipts[0].workspace_state =
+            known(1, "foreign-candidate-revision");
+        assert_rejected(
+            &task,
+            forged_candidate_binding,
+            "Host receipt does not match its exact candidate",
+        );
+
+        let two_epoch_advance = verified_read_only_outcome(
+            &task,
+            candidate_workspace.clone(),
+            known(3, "same-revision"),
+        );
+        assert_rejected(&task, two_epoch_advance, "candidate is stale");
+
+        let revision_escape =
+            verified_read_only_outcome(&task, candidate_workspace, known(2, "different-revision"));
+        assert_rejected(&task, revision_escape, "candidate is stale");
+    }
+
     fn unfinished_read_only_child_kinds(launch_outcome_committed: bool) -> Vec<RuntimeEventKind> {
         let task = read_only_task();
         let mut kinds = vec![
@@ -5373,6 +6205,57 @@ mod tests {
             RunStoreError::Corrupt { message, .. }
                 if message.contains("before its seal committed")
         ));
+    }
+
+    #[test]
+    fn writer_result_requires_exact_candidate_and_canonical_verifier_identity() {
+        fn assert_rejected(mutator: impl FnOnce(&mut AgentOutcome), expected: &str) {
+            let mut kinds = event_kinds();
+            let RuntimeEventKind::AgentResultCollected { outcome, .. } = &mut kinds[9] else {
+                unreachable!("writer fixture contains a collected result");
+            };
+            mutator(outcome);
+            let error = reduce_events(&stored_events(kinds))
+                .expect_err("forged writer completion must fail closed");
+            assert!(matches!(
+                error,
+                RunStoreError::Corrupt { ref message, .. } if message.contains(expected)
+            ));
+        }
+
+        assert_rejected(
+            |outcome| outcome.details.completion_candidate = None,
+            "omitted its completion candidate",
+        );
+        assert_rejected(
+            |outcome| {
+                let forged = VerificationId::from("self-consistent-forged-writer-verification");
+                outcome.details.evidence[0].verification_id = forged.clone();
+                outcome.details.evidence[0].id =
+                    EvidenceReceiptId::from(format!("receipt:{}", forged.0));
+                let TerminalState::Completed { decision, .. } = &mut outcome.terminal else {
+                    unreachable!("writer fixture is completed");
+                };
+                let AcceptanceSatisfaction::Evidence { receipt_id, .. } =
+                    &mut decision.satisfied[0]
+                else {
+                    unreachable!("writer fixture uses evidence");
+                };
+                *receipt_id = outcome.details.evidence[0].id.clone();
+            },
+            "canonical verifier acceptance",
+        );
+        assert_rejected(
+            |outcome| {
+                outcome
+                    .details
+                    .completion_candidate
+                    .as_mut()
+                    .expect("writer candidate")
+                    .workspace_state = known(1, "writer-dirty");
+            },
+            "candidate is stale",
+        );
     }
 
     #[test]

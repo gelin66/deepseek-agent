@@ -147,6 +147,7 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
         .replace("{permissions}", "/permissions");
     let cost_line = app
         .tr(MessageId::OnboardTipsLine3)
+        .replace("{accept}", "/accept")
         .replace("{cost}", "/cost");
     let exit_line = app
         .tr(MessageId::OnboardTipsLine4)

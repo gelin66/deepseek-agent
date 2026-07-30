@@ -411,10 +411,14 @@ acceptance 只有两类产品语义：
    模型的完成声明、`update_goal` 请求、测试结果或自评只能提交候选和 artifact，不能替
    Host 接受终态。
 
-Runtime 的 `Completed` 与评测的 `verified_success` 是两个层次：前者是 Host 按当前
-TaskContract 接受的运行终态，后者还必须满足评测任务预先定义的确定性验收或人工 rubric，
-并通过协议、预算和记录完整性检查。Host 手动结束目标、工具函数返回成功或模型自报完成，
-都不能自动生成产品指标上的 `verified_success=true`。
+canonical completion truth 明确分成三类：`Answered` 只有当前 generation/workspace-bound
+candidate 且没有 Terminal；`HostAccepted` 必须有 exact durable Host command/event/receipt，
+但不是 deterministic verified；`VerifiedCompleted` 必须引用 latest-revision
+`EvidenceReceipt`。内部 `TerminalState::Completed` 只有在对应 decision/receipt 经 Store
+重放验证后才是接受事实，本身不能作为评测真相。评测的 `verified_success` 还必须满足任务
+预先定义的确定性验收或人工 rubric，并通过协议、预算和记录完整性检查。Host 手动结束目标、
+工具函数返回成功或模型自报完成，都不能自动生成产品指标上的
+`verified_success=true`。
 
 `verification_runs` 只记录模型在运行中主动发起且被 Harness 识别的验证动作，用于衡量
 行为和成本；除非 TaskContract 明确把某个精确调用本身列为 acceptance，否则它不是
@@ -429,7 +433,8 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 #### 2026-07-19 M5-A 机制与真实 A/B 证据
 
 M5-A 被测 checkpoint 实现了上述 canonical 边界：当时的 Run API v5、RuntimeEvent v7、
-State schema v12；当前 v10/v16/v21 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
+State schema v12；当前 Run API v16 / RuntimeEvent v23 / State schema v29 继续保留并收紧
+该语义。TaskContract 在 `RunCreated` 冻结，
 模型 `Stop` 只产生 completion candidate，Runtime 是
 唯一 EvidenceReceipt 与 Completed owner。结构化 task 的 constraints、non-goals 和
 acceptance description 已进入确定性的 model-visible canonical transcript。显式 verifier
@@ -6313,3 +6318,49 @@ retries 耗尽后得到 typed HTTPS-transport failure；owned path 为 0，22-by
 `keep_public_immutable_release_and_one_command_install`，public false success=`0`。无需重发 tag/Release
 或重跑仓库 full。原始与 patch 路径均未发起 official DeepSeek request，Runtime/Event/Store/catalog/
 Prompt/DeepSeek wire delta=`0`。
+
+### 2026-07-30 ADR-0021 显式 Host completion acceptance
+
+该 Risk-2 slice 修复默认 Host task 的 false completion。before：模型非空 Stop 提交
+`CompletionProposed` 后，Runtime 会无条件构造 Host satisfaction 并写入 `Completed`。
+after 的 canonical completion truth 为：
+
+| fact | durable basis | verified engineering success |
+|---|---|---|
+| `Answered` | 当前 generation/workspace-bound `CompletionCandidate`；无 Terminal | 否 |
+| `HostAccepted` | exact `AcceptCompletion` command、`HostCompletionAccepted` 与 `HostAcceptanceReceipt` | 否 |
+| `VerifiedCompleted` | 全部 frozen acceptance 均满足，且至少一个 satisfaction 引用预冻结 exact verifier 对 latest workspace revision 的有效 `EvidenceReceipt` | 是 |
+
+确定性矩阵覆盖：zero-mutation Stop 无 Terminal；exact Host acceptance 幂等；foreign/stale
+candidate、wrong generation、Unknown/drifted workspace 全部拒绝；verifier fail 后只有 effective
+mutation + latest pass 才能 verified；proposal、Host receipt、verifier receipt 与 terminal 各
+crash prefix reopen 不重发模型、工具、verifier 或 Host action。root、read-only child、Writer、
+TUI、exec、HTTP/stdio 与 SQLite 使用同一事实；orphan/tampered proposal、伪造 Host receipt、
+缺 candidate terminal、错 generation/workspace、read-only child forged result 均 fail closed。
+
+Run API/RuntimeEvent/State/exec-stream 直接切换为 v16/v23/v29/v7。v29 退役无法证明独立 Host
+acceptance 的旧 materialized Run，只保留 replay-safe pending Start。生产
+`AcceptanceSatisfaction::Host` 只剩 receipt-gated completion gate；旧自动满足路径、旧
+conformance 预期与 compatibility reader 为 0。DeepSeek wire、model-visible Prompt、tool catalog
+与 Provider delta=`0`；official DeepSeek requests=`0`，不产生费用或效率声明。
+
+targeted completion/store/crash/child/surface parity 已闭合。focused 的首个 red 定位为 acceptance
+测试子进程在 `HostAccepted` projection 已出现、但 durable Terminal 尚未提交时提前退出；fixture
+改为同时等待 terminal，production 不变。第二个 red 来自 stdout backpressure fixture 的无界
+content producer，以及 exec 在 absolute watchdog 到期后仍向已阻塞 writer 继续排队展示字节；
+fixture 改为一个有界 2 MiB delta 后只保活，production 只停止后续展示 enqueue、继续 drain canonical
+Runtime Terminal 到 RunStore，8 秒 runtime 与 25 秒 harness hard bound 均未放宽。真实 PTY 随后还
+删除了等待旧 `完成/done` 的断言，改为精确等待 `Host 已接受/Host accepted`。新 revision 的
+targeted exec 30/30（1 ignored）、PTY 7/7 与 focused 全绿；focused 另覆盖 runtime 96/96、app
+80/80（4 ignored）、app-server 23/23、TUI run 24/24、authority/delivery/fmt/check。首次 full
+在 workspace tests 前由 `-D warnings` 拒绝两个
+`collapsible_if` 与一个 `needless_borrow`；修复只做 Rust 等价表达，新 revision 的
+`cargo clippy -p dse-tui --all-targets --locked -- -D warnings` 已绿。修复后的冻结 revision
+canonical full invocation=`1`、exit=`0`，覆盖 public/authority、delivery、fmt、workspace
+all-features check/strict Clippy、全部 workspace tests 与 doctests；不是在失败 revision 上重复求绿，
+最终 revision 也没有第二次 full。结果写回后只复核 authority/fmt/diff。
+
+实际 keep/delete 结论为 `keep_explicit_host_completion_acceptance`：Host task 的模型 Stop 只保留
+可展示的 durable answer/proposal；exact Host decision 与 exact verifier receipt 继续使用同一
+Runtime/Event/RunStore 状态机，且前者永不冒充 deterministic verified。旧自动 Host satisfaction、
+旧 false-complete conformance 和旧 materialized compatibility 路径保持物理删除。

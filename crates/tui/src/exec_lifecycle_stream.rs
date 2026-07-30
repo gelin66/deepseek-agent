@@ -12,7 +12,7 @@ use dse_protocol::agent_runtime::{
 use serde::Serialize;
 
 pub(crate) const EXEC_STREAM_SCHEMA: &str = "dse.exec-stream";
-pub(crate) const EXEC_STREAM_SCHEMA_VERSION: u32 = 6;
+pub(crate) const EXEC_STREAM_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Serialize)]
 struct CanonicalRuntimeStreamEvent<'a> {

@@ -20,9 +20,12 @@ use dse_app::{
 use dse_context::InstructionSource;
 use dse_protocol::run_api::{
     ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunApiErrorReason,
-    RunCommand, RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
+    RunCommand, RunCommandEnvelope, RunCommandResult, RunCompletion, RunProductControls, RunView,
+    StartRunCommand,
 };
-use dse_protocol::task::TaskDefinition;
+use dse_protocol::task::{
+    AcceptanceSatisfaction, CompletionCandidate, TaskAcceptance, TaskDefinition,
+};
 use dse_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
     ReasoningEffort, RunId, RunLimits, RunPermissionMode, RuntimeEventKind, RuntimeFailure,
@@ -84,6 +87,35 @@ enum ExecStartupFailure {
     StartupTimeout,
     Client,
     ToolContext,
+}
+
+/// Linearizes the headless Answered projection against the canonical Store.
+/// `false` means another client committed a later event, so exec must drain
+/// from `after_sequence` instead of treating that legitimate advancement as a
+/// projection mismatch.
+fn answered_projection_is_stable(
+    after_sequence: u64,
+    candidate: &CompletionCandidate,
+    last_sequence: u64,
+    completion: &RunCompletion,
+) -> std::result::Result<bool, String> {
+    if last_sequence > after_sequence {
+        return Ok(false);
+    }
+    if last_sequence == after_sequence
+        && matches!(
+            completion,
+            RunCompletion::Answered {
+                candidate: current,
+                ..
+            } if current == candidate
+        )
+    {
+        return Ok(true);
+    }
+    Err(format!(
+        "answered projection changed without a canonical event: {completion:?}"
+    ))
 }
 
 impl ExecStartupFailure {
@@ -397,6 +429,13 @@ pub(crate) async fn run_exec_runtime(
         };
         runtime_started = true;
         let root_run_id = run.run_id.clone();
+        let mut host_acceptance_required = run.task_contract.as_ref().is_some_and(|contract| {
+            contract
+                .definition
+                .acceptance
+                .iter()
+                .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }))
+        });
         let mut effective_model = run.model;
         let mut effective_prompt = prompt.to_owned();
         let mut effective_permission_mode = permission_mode;
@@ -417,6 +456,8 @@ pub(crate) async fn run_exec_runtime(
         let mut transcript = CanonicalTranscript::default();
         let mut tool_starts: HashMap<String, ToolStart> = HashMap::new();
         let mut terminal: Option<AgentOutcome> = None;
+        let mut answered: Option<CompletionCandidate> = None;
+        let mut answered_projection: Option<(CompletionCandidate, RunView)> = None;
         let mut after_sequence = 0_u64;
         let mut drain_events = false;
         let mut output_writable = true;
@@ -511,6 +552,7 @@ pub(crate) async fn run_exec_runtime(
                 }
             };
 
+            let events_empty = events.is_empty();
             for event in events {
                 if event.run_id != root_run_id || event.sequence <= after_sequence {
                     continue;
@@ -527,6 +569,13 @@ pub(crate) async fn run_exec_runtime(
                     run_provider.clone_from(&request.environment.provider);
                     run_workspace = PathBuf::from(&request.environment.workspace);
                     tool_catalog_sha256.clone_from(&request.environment.tool_catalog_sha256);
+                    host_acceptance_required = request.task_contract.as_ref().is_some_and(|contract| {
+                        contract
+                            .definition
+                            .acceptance
+                            .iter()
+                            .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }))
+                    });
                     summary.model.clone_from(&request.model);
                     summary.prompt.clone_from(&effective_prompt);
                 }
@@ -534,6 +583,15 @@ pub(crate) async fn run_exec_runtime(
                     let committed_signal = commit_exec_terminal_signal(&signal_phase);
                     signal_exit_code = signal_exit_code.or(committed_signal);
                     drain_events |= committed_signal.is_some();
+                }
+                match &event.event {
+                    RuntimeEventKind::CompletionProposed { candidate }
+                        if host_acceptance_required =>
+                    {
+                        answered = Some(candidate.clone());
+                    }
+                    RuntimeEventKind::HostCompletionAccepted { .. } => answered = None,
+                    _ => {}
                 }
                 let wait = RuntimeEventProjection {
                     summary: &mut summary,
@@ -555,7 +613,15 @@ pub(crate) async fn run_exec_runtime(
                     } else {
                         match wait_exec_output_until(wait, deadline, &mut signal_rx).await {
                         ExecOutputWait::Written => {}
-                        ExecOutputWait::WatchdogTimeout => drain_events = true,
+                        ExecOutputWait::WatchdogTimeout => {
+                            // The absolute runtime deadline has expired while
+                            // stdout/stderr is blocked. Continue draining the
+                            // canonical Runtime terminal into RunStore, but do
+                            // not enqueue more presentation bytes behind the
+                            // blocked write and multiply the shutdown bound.
+                            output_writable = false;
+                            drain_events = true;
+                        }
                         ExecOutputWait::Signal(Some(exit_code)) => {
                             let response = application
                                 .execute(run_envelope(
@@ -610,6 +676,186 @@ pub(crate) async fn run_exec_runtime(
                     break;
                 }
             }
+            if terminal.is_none() && events_empty {
+                let response = application
+                    .execute(run_envelope(
+                        "exec-read-answered",
+                        RunCommand::Get {
+                            run_id: root_run_id.clone(),
+                        },
+                    ))
+                    .await;
+                let run = match response.result {
+                    RunCommandResult::Run { run } => *run,
+                    RunCommandResult::Error { error } => {
+                        output_failure
+                            .get_or_insert_with(|| format!("runtime_store_failed：{}", error.message));
+                        break;
+                    }
+                    other => {
+                        output_failure.get_or_insert_with(|| {
+                            format!("unexpected answered Run projection: {other:?}")
+                        });
+                        break;
+                    }
+                };
+                if run.last_sequence > after_sequence {
+                    continue;
+                }
+                match &run.completion {
+                    RunCompletion::Answered { candidate, .. } => {
+                        let Some(observed) = answered.as_ref() else {
+                            output_failure.get_or_insert_with(|| {
+                                "answered projection has no matching CompletionProposed event"
+                                    .to_owned()
+                            });
+                            break;
+                        };
+                        match answered_projection_is_stable(
+                            after_sequence,
+                            observed,
+                            run.last_sequence,
+                            &run.completion,
+                        ) {
+                            Ok(false) => continue,
+                            Ok(true) => {
+                                answered_projection = Some((candidate.clone(), run));
+                                break;
+                            }
+                            Err(error) => {
+                                output_failure.get_or_insert(error);
+                                break;
+                            }
+                        }
+                    }
+                    RunCompletion::HostAccepted { .. }
+                    | RunCompletion::VerifiedCompleted { .. }
+                        if run.last_sequence == after_sequence =>
+                    {
+                        // A process may crash after committing the durable Host
+                        // receipt/evidence but before the derived Terminal. The
+                        // same Runtime resumes that exact prefix and settles it;
+                        // no model, verifier, or Host action is repeated.
+                        let response = application
+                            .execute(run_envelope(
+                                "exec-settle-completion-prefix",
+                                RunCommand::Resume {
+                                    run_id: root_run_id.clone(),
+                                    expected_workspace: Some(
+                                        run_workspace.to_string_lossy().into_owned(),
+                                    ),
+                                },
+                            ))
+                            .await;
+                        match response.result {
+                            RunCommandResult::Run { .. } => continue,
+                            RunCommandResult::Error { error }
+                                if error.code == RunApiErrorCode::RunAlreadyRunning =>
+                            {
+                                continue;
+                            }
+                            RunCommandResult::Error { error } => {
+                                output_failure.get_or_insert(error.message.into_string());
+                                break;
+                            }
+                            other => {
+                                output_failure.get_or_insert_with(|| {
+                                    format!(
+                                        "unexpected completion-prefix resume result: {other:?}"
+                                    )
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if terminal.is_none()
+            && let Some((candidate, run)) = answered_projection
+        {
+            if summary.output.is_empty() {
+                summary.output.clone_from(&candidate.message);
+                if output_writable
+                    && output_format != ExecOutputFormat::StreamJson
+                    && !json_output
+                    && let Err(error) = wait_terminal_output(
+                        output.enqueue_stdout(format!("{}\n", candidate.message).into_bytes()),
+                    )
+                    .await
+                {
+                    output_failure.get_or_insert(error);
+                }
+            }
+            let answered_projection = TerminalProjection {
+                receipt: ExecTerminalReceipt::from_reason(
+                    RunTerminationReason::AnsweredUnverified,
+                ),
+                error: None,
+                code: "",
+                category: "",
+                recoverable: false,
+            };
+            summary.terminal = Some(answered_projection.receipt);
+            summary.accounting = accounting_receipt(&run.accounting);
+            if output_writable {
+                emit_terminal_output(
+                    &output,
+                    &summary,
+                    &transcript,
+                    &run.accounting,
+                    &answered_projection,
+                    TerminalMetadata {
+                        receipt_kind: "answer",
+                        provider: &run_provider,
+                        model: &effective_model,
+                        route_source,
+                        started,
+                        approval_posture: effective_permission_mode.as_str(),
+                        sandbox_posture: permission_sandbox_posture(effective_permission_mode),
+                        prompt: &effective_prompt,
+                        tool_catalog_sha256,
+                        workspace: &run_workspace,
+                        run_id: &root_run_id,
+                    },
+                    output_format,
+                    json_output,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    output_failure.get_or_insert(error);
+                });
+            }
+            if json_output && output_format != ExecOutputFormat::StreamJson && output_writable {
+                let mut bytes = serde_json::to_vec_pretty(&summary)?;
+                bytes.push(b'\n');
+                if let Err(error) = wait_terminal_output(output.enqueue_stdout(bytes)).await {
+                    output_failure.get_or_insert(error);
+                }
+            }
+            let report = output
+                .close_and_join(Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS))
+                .await;
+            stop_exec_signal_controller(&mut signal_task).await;
+            if report.unjoined {
+                std::process::exit(1);
+            }
+            if let Some(error) = report
+                .write_error
+                .map(|error| error.to_string())
+                .or(report.join_error)
+            {
+                output_failure.get_or_insert(error);
+            }
+            if let Some(error) = output_failure {
+                bail!(
+                    "{}",
+                    tr(MessageId::ExecOutputFailed).replace("{error}", &error)
+                );
+            }
+            return Ok(());
         }
 
         let Some(outcome) = terminal else {
@@ -642,7 +888,7 @@ pub(crate) async fn run_exec_runtime(
                 &output,
                 &summary,
                 &transcript,
-                &outcome,
+                &outcome.accounting,
                 &terminal_projection,
                 TerminalMetadata {
                     receipt_kind: "terminal",
@@ -1285,6 +1531,7 @@ impl<'a> RuntimeEventProjection<'a> {
             | RuntimeEventKind::ToolAuthorizationCommitted { .. }
             | RuntimeEventKind::WorkspaceObserved { .. }
             | RuntimeEventKind::CompletionProposed { .. }
+            | RuntimeEventKind::HostCompletionAccepted { .. }
             | RuntimeEventKind::HostVerificationPrepared { .. }
             | RuntimeEventKind::HostVerificationStarted { .. }
             | RuntimeEventKind::HostVerificationCommitted { .. }
@@ -1425,7 +1672,25 @@ fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
 
 fn project_terminal_in(terminal: &TerminalState, language: ProductLanguage) -> TerminalProjection {
     let (reason, error, code, category, recoverable) = match terminal {
-        TerminalState::Completed { .. } => (RunTerminationReason::Resolved, None, "", "", false),
+        TerminalState::AwaitingHostAcceptance { .. } => (
+            RunTerminationReason::AnsweredUnverified,
+            None,
+            "",
+            "",
+            false,
+        ),
+        TerminalState::Completed { decision, .. } => {
+            let reason = if decision
+                .satisfied
+                .iter()
+                .any(|criterion| matches!(criterion, AcceptanceSatisfaction::Evidence { .. }))
+            {
+                RunTerminationReason::VerifiedCompleted
+            } else {
+                RunTerminationReason::HostAccepted
+            };
+            (reason, None, "", "", false)
+        }
         TerminalState::Blocked { reason } => (
             RunTerminationReason::Unresolved,
             Some(reason.clone()),
@@ -1763,7 +2028,7 @@ async fn emit_terminal_output(
     output: &crate::exec_output::ExecOutput,
     summary: &ExecSummary,
     transcript: &CanonicalTranscript,
-    outcome: &AgentOutcome,
+    accounting: &ModelAccounting,
     terminal: &TerminalProjection,
     metadata: TerminalMetadata<'_>,
     format: ExecOutputFormat,
@@ -1821,7 +2086,6 @@ async fn emit_terminal_output(
         }
         write_exec_stream_terminal(output, &ExecStreamEvent::Done).await?;
     } else if !json_output {
-        let accounting = &outcome.accounting;
         let request_line = if let Some(limit) = accounting.hard_request_limit {
             tr(MessageId::ExecRequestCountLimited)
                 .replace("{used}", &accounting.total_started().to_string())
@@ -1848,11 +2112,16 @@ async fn emit_terminal_output(
             ),
         )
         .await?;
-        if let Some(error) = project_terminal_in(&outcome.terminal, process_language()).error {
+        if terminal.receipt.termination_reason() == RunTerminationReason::AnsweredUnverified {
+            let mut line = tr(MessageId::ExecAnsweredUnverified).into_owned();
+            line.push('\n');
+            wait_terminal_output(output.enqueue_stderr(line.into_bytes())).await?;
+        }
+        if let Some(error) = terminal.error.as_ref() {
             wait_terminal_output(
                 output.enqueue_stderr(
                     tr(MessageId::ExecErrorLine)
-                        .replace("{error}", &error)
+                        .replace("{error}", error)
                         .into_bytes(),
                 ),
             )
@@ -1984,7 +2253,121 @@ fn unix_ms_now() -> u64 {
 mod tests {
     use super::*;
     use crate::config::SubagentsConfig;
+    use dse_protocol::task::{
+        AcceptanceId, CompletionCandidateId, CompletionDecision, EvidenceReceiptId,
+        HostAcceptanceReceipt, HostAcceptanceReceiptId, TaskGenerationId, WorkspaceRevision,
+        WorkspaceState,
+    };
     use dse_runtime::{ToolFailureCode, ToolRetryDisposition, ToolSideEffectStatus};
+
+    fn completion_workspace() -> WorkspaceState {
+        WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:exec-projection".to_owned(),
+            },
+        }
+    }
+
+    fn completed_with(satisfied: AcceptanceSatisfaction) -> TerminalState {
+        TerminalState::Completed {
+            message: "done".to_owned(),
+            decision: CompletionDecision {
+                candidate_id: CompletionCandidateId::from("candidate"),
+                generation_id: TaskGenerationId::from("generation"),
+                workspace_state: completion_workspace(),
+                satisfied: vec![satisfied],
+            },
+        }
+    }
+
+    #[test]
+    fn answered_quiescence_drains_a_concurrent_host_acceptance_before_settling() {
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("candidate"),
+            generation_id: TaskGenerationId::from("generation"),
+            message: "answer".to_owned(),
+            workspace_state: completion_workspace(),
+        };
+        let answered = RunCompletion::Answered {
+            candidate: candidate.clone(),
+            current_workspace_state: completion_workspace(),
+        };
+        assert_eq!(
+            answered_projection_is_stable(9, &candidate, 9, &answered),
+            Ok(true)
+        );
+
+        let accepted = RunCompletion::HostAccepted {
+            candidate: candidate.clone(),
+            receipt: HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:command"),
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+            current_workspace_state: completion_workspace(),
+        };
+        assert_eq!(
+            answered_projection_is_stable(9, &candidate, 11, &accepted),
+            Ok(false),
+            "a later canonical acceptance/terminal must be drained, not reported as a projection race"
+        );
+        assert!(
+            answered_projection_is_stable(9, &candidate, 9, &accepted).is_err(),
+            "a projection change without a later Store sequence is corrupt"
+        );
+
+        let mut foreign = candidate.clone();
+        foreign.id = CompletionCandidateId::from("foreign");
+        assert!(
+            answered_projection_is_stable(
+                9,
+                &candidate,
+                9,
+                &RunCompletion::Answered {
+                    candidate: foreign,
+                    current_workspace_state: completion_workspace(),
+                }
+            )
+            .is_err(),
+            "same-sequence candidate substitution must fail closed"
+        );
+    }
+
+    #[test]
+    fn exec_projection_keeps_answer_host_acceptance_and_verification_distinct() {
+        let answered = TerminalState::AwaitingHostAcceptance {
+            candidate: CompletionCandidate {
+                id: CompletionCandidateId::from("candidate"),
+                generation_id: TaskGenerationId::from("generation"),
+                message: "answer".to_owned(),
+                workspace_state: completion_workspace(),
+            },
+        };
+        assert_eq!(
+            project_terminal(&answered).receipt.termination_reason(),
+            RunTerminationReason::AnsweredUnverified
+        );
+
+        let host = completed_with(AcceptanceSatisfaction::Host {
+            acceptance_id: AcceptanceId::from("host"),
+            receipt_id: HostAcceptanceReceiptId::from("host-acceptance:fixture"),
+        });
+        assert_eq!(
+            project_terminal(&host).receipt.termination_reason(),
+            RunTerminationReason::HostAccepted
+        );
+
+        let verified = completed_with(AcceptanceSatisfaction::Evidence {
+            acceptance_id: AcceptanceId::from("tests"),
+            receipt_id: EvidenceReceiptId::from("evidence:fixture"),
+        });
+        assert_eq!(
+            project_terminal(&verified).receipt.termination_reason(),
+            RunTerminationReason::VerifiedCompleted
+        );
+    }
 
     #[test]
     fn production_tool_projection_preserves_transcript_and_exact_model_feedback_size() {

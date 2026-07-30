@@ -15,6 +15,7 @@ use dse_protocol::agent_runtime::{
     ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
     WriterCleanupResult, WriterIntegrationStatus,
 };
+use dse_protocol::task::AcceptanceSatisfaction;
 use serde_json::Value;
 
 use crate::model_failure_presentation::{
@@ -222,8 +223,32 @@ fn present_canonical_event(
         }
         RuntimeEventKind::WorkspaceObserved { .. } => None,
         RuntimeEventKind::CompletionProposed { .. } => {
+            finalize_streaming_cells(app);
+            let waiting_for_host = matches!(
+                app.run_presentation.phase(),
+                super::run_presentation::RunPresentationPhase::WaitingForUser
+            );
+            app.is_loading = !waiting_for_host;
+            if waiting_for_host {
+                app.turn_started_at = None;
+            }
+            app.status_message = Some(
+                tr_in(
+                    language,
+                    if waiting_for_host {
+                        MessageId::RunCompletionProposed
+                    } else {
+                        MessageId::RunCompletionProposedForVerification
+                    },
+                )
+                .into_owned(),
+            );
+            None
+        }
+        RuntimeEventKind::HostCompletionAccepted { .. } => {
+            app.is_loading = true;
             app.status_message =
-                Some(tr_in(language, MessageId::RunCompletionProposed).into_owned());
+                Some(tr_in(language, MessageId::RunHostCompletionAccepted).into_owned());
             None
         }
         RuntimeEventKind::HostVerificationPrepared { verifier, .. } => {
@@ -755,9 +780,25 @@ fn narrow_u64(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-fn terminal_label(language: ProductLanguage, terminal: &TerminalState) -> Cow<'static, str> {
+pub(super) fn terminal_label(
+    language: ProductLanguage,
+    terminal: &TerminalState,
+) -> Cow<'static, str> {
     match terminal {
-        TerminalState::Completed { .. } => tr_in(language, MessageId::RunTerminalCompleted),
+        TerminalState::AwaitingHostAcceptance { .. } => {
+            tr_in(language, MessageId::RunTerminalAwaitingHostAcceptance)
+        }
+        TerminalState::Completed { decision, .. } => {
+            if decision
+                .satisfied
+                .iter()
+                .any(|criterion| matches!(criterion, AcceptanceSatisfaction::Evidence { .. }))
+            {
+                tr_in(language, MessageId::RunStatusVerifiedCompleted)
+            } else {
+                tr_in(language, MessageId::RunStatusHostAccepted)
+            }
+        }
         TerminalState::Blocked { .. } => tr_in(language, MessageId::RunTerminalBlocked),
         TerminalState::Failed { .. } => tr_in(language, MessageId::RunTerminalFailed),
         TerminalState::Cancelled => tr_in(language, MessageId::RunTerminalCancelled),
@@ -794,8 +835,9 @@ mod tests {
         WriterIntegrationStatus, WriterResourceState,
     };
     use dse_protocol::task::{
-        AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
-        TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
+        AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
+        CompletionDecision, EvidenceReceiptId, HostAcceptanceReceiptId, TaskContract,
+        TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
     };
 
     use super::*;
@@ -864,8 +906,39 @@ mod tests {
             },
             satisfied: vec![AcceptanceSatisfaction::Host {
                 acceptance_id: AcceptanceId::from("host"),
+                receipt_id: HostAcceptanceReceiptId::from("host-acceptance:fixture"),
             }],
         }
+    }
+
+    #[test]
+    fn terminal_labels_distinguish_host_acceptance_from_verified_completion() {
+        let run_id = RunId::from("truthful-label");
+        let host = TerminalState::Completed {
+            message: "accepted".to_owned(),
+            decision: completion_decision(&run_id),
+        };
+        assert_eq!(
+            terminal_label(ProductLanguage::English, &host),
+            tr_in(ProductLanguage::English, MessageId::RunStatusHostAccepted)
+        );
+
+        let mut verified_decision = completion_decision(&run_id);
+        verified_decision.satisfied = vec![AcceptanceSatisfaction::Evidence {
+            acceptance_id: AcceptanceId::from("tests"),
+            receipt_id: EvidenceReceiptId::from("evidence:fixture"),
+        }];
+        let verified = TerminalState::Completed {
+            message: "verified".to_owned(),
+            decision: verified_decision,
+        };
+        assert_eq!(
+            terminal_label(ProductLanguage::SimplifiedChinese, &verified),
+            tr_in(
+                ProductLanguage::SimplifiedChinese,
+                MessageId::RunStatusVerifiedCompleted
+            )
+        );
     }
 
     fn created(run_id: &RunId, transcript: Vec<TranscriptEntry>) -> StoredRuntimeEvent {
@@ -999,6 +1072,100 @@ mod tests {
         assert_eq!(app.effective_model_for_budget(), "deepseek-v4-pro");
         assert_eq!(app.model_display_label(), "deepseek-v4-pro");
         assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn proposal_unlocks_only_host_tasks_while_verifier_tasks_stay_loading() {
+        let workspace_state = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:proposal".to_owned(),
+            },
+        };
+        let host_run = RunId::from("host-proposal");
+        let host_candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("host-candidate"),
+            generation_id: TaskGenerationId::from(host_run.0.clone()),
+            message: "answer".to_owned(),
+            workspace_state: workspace_state.clone(),
+        };
+        let mut host_app = app();
+        apply_events(
+            &mut host_app,
+            vec![
+                created(&host_run, Vec::new()),
+                stored(
+                    &host_run,
+                    2,
+                    RuntimeEventKind::CompletionProposed {
+                        candidate: host_candidate,
+                    },
+                ),
+            ],
+        );
+        assert!(!host_app.is_loading);
+
+        let verifier_run = RunId::from("verifier-proposal");
+        let mut verifier_request = request(&verifier_run, "verify", "system");
+        verifier_request
+            .task_contract
+            .as_mut()
+            .expect("task contract")
+            .definition = serde_json::from_value(serde_json::json!({
+            "objective": "verify",
+            "constraints": [],
+            "non_goals": [],
+            "acceptance": [{
+                "kind": "verifier",
+                "id": "tests",
+                "description": "tests pass",
+                "evidence_policy": "latest_pass",
+                "verifier": {
+                    "verifier_id": "run_verifiers",
+                    "parameters": {},
+                    "plan": {"steps": [{
+                        "id": "tests",
+                        "program": "true",
+                        "args": [],
+                        "cwd": "",
+                        "env": {},
+                        "timeout_ms": 1000
+                    }]}
+                }
+            }]
+        }))
+        .expect("verifier task");
+        let verifier_candidate = CompletionCandidate {
+            id: CompletionCandidateId::from("verifier-candidate"),
+            generation_id: TaskGenerationId::from(verifier_run.0.clone()),
+            message: "candidate".to_owned(),
+            workspace_state,
+        };
+        let mut verifier_app = app();
+        apply_events(
+            &mut verifier_app,
+            vec![
+                stored(
+                    &verifier_run,
+                    1,
+                    RuntimeEventKind::RunCreated {
+                        request: Box::new(verifier_request),
+                    },
+                ),
+                stored(
+                    &verifier_run,
+                    2,
+                    RuntimeEventKind::CompletionProposed {
+                        candidate: verifier_candidate,
+                    },
+                ),
+            ],
+        );
+        assert!(verifier_app.is_loading);
+        assert_eq!(
+            verifier_app.run_presentation.phase(),
+            super::super::run_presentation::RunPresentationPhase::Verifying
+        );
     }
 
     #[test]
@@ -1458,7 +1625,7 @@ mod tests {
         assert!(!terminal_app.is_loading);
         assert_eq!(
             terminal_app.run_presentation.phase(),
-            crate::tui::run_presentation::RunPresentationPhase::Completed
+            crate::tui::run_presentation::RunPresentationPhase::HostAccepted
         );
     }
 

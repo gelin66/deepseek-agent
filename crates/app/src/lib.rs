@@ -17,14 +17,17 @@ use dse_protocol::run_api::{
     ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT, PendingCreationKind,
     PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunApiErrorCode,
     RunApiErrorReason, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
-    RunView, StartRunCommand,
+    RunCompletion, RunView, StartRunCommand,
 };
-use dse_protocol::task::TaskDefinition;
+use dse_protocol::task::{
+    AcceptanceSatisfaction, CompletionCandidate, CompletionDecision, HostCompletionAcceptance,
+    TaskAcceptance, TaskDefinition,
+};
 use dse_runtime::{
     AgentControl, ContinuationError, ControlError, CreationIntent, CreationReservation,
     DurableActionState, DurableCommand, ModelAccounting, ModelErrorCategory, ModelPort,
-    ModelPortError, ModelRequest, ModelStream, RootRunRecord, RunReadyError, RunReplay, RunStore,
-    RunStoreError, RuntimeEventSink, RuntimeFailure, RuntimeRun,
+    ModelPortError, ModelRequest, ModelStream, RootRunRecord, RunReadyError, RunReplay,
+    RunSnapshot, RunStore, RunStoreError, RuntimeEventSink, RuntimeFailure, RuntimeRun,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
@@ -84,11 +87,39 @@ impl ModelPort for ReplayOnlyModelPort {
 #[must_use]
 pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
     let recovering_writer = recoverable_writer_task(replay).is_some();
-    if replay.snapshot.terminal.is_some()
-        || replay.snapshot.last_model_failure.is_some()
-        || replay.snapshot.pending_completion.is_some()
-    {
+    if replay.snapshot.terminal.is_some() || replay.snapshot.last_model_failure.is_some() {
         return false;
+    }
+    if let Some(candidate) = replay.snapshot.pending_completion.as_ref() {
+        // A committed failed verifier result followed by a process crash may
+        // still be missing only CompletionRejected. Runtime repairs that
+        // event locally, then an EffectiveWorkspaceMutation contract needs a
+        // fresh model turn for the repair. Other pending candidates (plain
+        // answers, accepted receipts, successful evidence, or Host repair
+        // failures) settle without model access.
+        return replay
+            .snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .is_some_and(|failure| {
+                failure.rejection.candidate_id == candidate.id
+                    && failure.rejection.generation_id == candidate.generation_id
+                    && failure.rejection.required_transition
+                        == dse_protocol::task::CompletionRequiredTransition::EffectiveWorkspaceMutation
+                    && replay
+                        .snapshot
+                        .request
+                        .task_contract
+                        .as_ref()
+                        .is_some_and(|contract| {
+                            !failure.rejection.unmet_acceptance_ids.is_empty()
+                                && failure.rejection.unmet_acceptance_ids.iter().all(|unmet| {
+                                    contract.definition.acceptance.iter().any(|acceptance| {
+                                        matches!(acceptance, TaskAcceptance::Verifier { id, .. } if id == unmet)
+                                    })
+                                })
+                        })
+            });
     }
     if replay
         .snapshot
@@ -383,6 +414,10 @@ impl AgentApplication {
                     )
                     .await
                 }
+                RunCommand::AcceptCompletion { run_id, acceptance } => {
+                    self.accept_completion(command_id, &run_id, acceptance)
+                        .await
+                }
             }
         };
         RunCommandResponse {
@@ -427,6 +462,13 @@ impl AgentApplication {
                 };
             }
             if !self.active.lock().await.contains_key(run_id) {
+                if replay.snapshot.pending_completion.is_some() {
+                    return RunCommandResult::Events {
+                        run_id: run_id.clone(),
+                        after_sequence,
+                        events: Vec::new(),
+                    };
+                }
                 return error_result(recovery_required(run_id));
             }
             notified.await;
@@ -832,6 +874,7 @@ impl AgentApplication {
         if events.is_empty()
             && replay.snapshot.terminal.is_none()
             && !self.active.lock().await.contains_key(run_id)
+            && replay.snapshot.pending_completion.is_none()
         {
             return error_result(recovery_required(run_id));
         }
@@ -924,6 +967,15 @@ impl AgentApplication {
                     .resolve_interaction(command_id, interaction_id, response)
                     .await
             }
+            ControlAction::AcceptCompletion {
+                command_id,
+                acceptance,
+            } => {
+                active
+                    .control
+                    .accept_completion(command_id, acceptance)
+                    .await
+            }
         };
         match sent {
             Ok(last_sequence) => RunCommandResult::Accepted {
@@ -967,6 +1019,155 @@ impl AgentApplication {
                 Some(run_id.clone()),
                 None,
             )),
+            Err(ControlError::CompletionNotPending) => error_result(api_error(
+                RunApiErrorCode::CompletionNotPending,
+                "run has no completion proposal awaiting Host acceptance",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::CompletionMismatch) => error_result(api_error(
+                RunApiErrorCode::CompletionMismatch,
+                "completion acceptance does not match the current candidate or task generation",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::CompletionStale) => error_result(api_error(
+                RunApiErrorCode::CompletionStale,
+                "completion acceptance does not match the latest workspace revision",
+                Some(run_id.clone()),
+                None,
+            )),
+        }
+    }
+
+    async fn accept_completion(
+        &self,
+        command_id: CommandId,
+        run_id: &RunId,
+        acceptance: HostCompletionAcceptance,
+    ) -> RunCommandResult {
+        let action = ControlAction::AcceptCompletion {
+            command_id: command_id.clone(),
+            acceptance: acceptance.clone(),
+        };
+        let replay = match self.load(run_id).await {
+            Ok(replay) => replay,
+            Err(error) => return error_result(error),
+        };
+        if let Some(result) = committed_control_result(run_id, &replay, &action) {
+            if replay.snapshot.terminal.is_none()
+                && replay.snapshot.pending_completion.is_some()
+                && let Err(error) = self
+                    .resume_after_committed_host_acceptance(run_id, replay)
+                    .await
+            {
+                return error_result(error);
+            }
+            return result;
+        }
+        if let Some(outcome) = &replay.snapshot.terminal {
+            return error_result(terminal_error(run_id, outcome.terminal.clone()));
+        }
+        if replay.snapshot.pending_completion.is_none() {
+            return error_result(api_error(
+                RunApiErrorCode::CompletionNotPending,
+                "run has no completion proposal awaiting Host acceptance",
+                Some(run_id.clone()),
+                None,
+            ));
+        }
+
+        // CompletionProposed is committed Store-first. A caller can observe
+        // that durable event in the narrow window before the original Runtime
+        // has applied it to its live projection and released the lease. Do not
+        // race the acceptance into that pre-proposal live state. A Host task
+        // quiesces immediately after the proposal, so wait for the monitor to
+        // retire that launch and then resume with the exact command queued
+        // before Runtime inspection.
+        loop {
+            let notified = self.watch.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.active.lock().await.contains_key(run_id) {
+                break;
+            }
+            notified.await;
+        }
+        let replay = match self.load(run_id).await {
+            Ok(replay) => replay,
+            Err(error) => return error_result(error),
+        };
+        if let Some(result) = committed_control_result(run_id, &replay, &action) {
+            if replay.snapshot.terminal.is_none()
+                && replay.snapshot.pending_completion.is_some()
+                && let Err(error) = self
+                    .resume_after_committed_host_acceptance(run_id, replay)
+                    .await
+            {
+                return error_result(error);
+            }
+            return result;
+        }
+        if let Some(outcome) = &replay.snapshot.terminal {
+            return error_result(terminal_error(run_id, outcome.terminal.clone()));
+        }
+        if replay.snapshot.pending_completion.is_none() {
+            return error_result(api_error(
+                RunApiErrorCode::CompletionNotPending,
+                "run has no completion proposal awaiting Host acceptance",
+                Some(run_id.clone()),
+                None,
+            ));
+        }
+
+        let sink = self.event_sink();
+        let run = match self
+            .composition
+            .resume(run_id.clone(), replay, self.store.clone(), sink)
+            .await
+        {
+            Ok(run) => run,
+            Err(error) => return error_result(error),
+        };
+        let accepted = match run.queue_completion_acceptance(command_id, acceptance) {
+            Ok(accepted) => accepted,
+            Err(error) => return control_error_result(run_id, error),
+        };
+        if let Err(error) = self.activate(run).await {
+            return error_result(error);
+        }
+        match accepted.await {
+            Ok(Ok(last_sequence)) => RunCommandResult::Accepted {
+                run_id: run_id.clone(),
+                last_sequence,
+            },
+            Ok(Err(error)) => control_error_result(run_id, error),
+            Err(_) => self.control_after_race(run_id, &action).await,
+        }
+    }
+
+    async fn resume_after_committed_host_acceptance(
+        &self,
+        run_id: &RunId,
+        replay: RunReplay,
+    ) -> Result<(), RunApiError> {
+        if self.active.lock().await.contains_key(run_id) {
+            return Ok(());
+        }
+        let sink = self.event_sink();
+        let run = match self
+            .composition
+            .resume(run_id.clone(), replay, self.store.clone(), sink)
+            .await
+        {
+            Ok(run) => run,
+            Err(error) if error.code == RunApiErrorCode::RunAlreadyRunning => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        match self.activate(run).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.code == RunApiErrorCode::RunAlreadyRunning => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
@@ -1063,6 +1264,10 @@ enum ControlAction {
         interaction_id: InteractionId,
         response: UserInteractionResponse,
     },
+    AcceptCompletion {
+        command_id: CommandId,
+        acceptance: HostCompletionAcceptance,
+    },
 }
 
 fn committed_control_result(
@@ -1094,7 +1299,8 @@ impl ControlAction {
         match self {
             Self::Steer { command_id, .. }
             | Self::Stop { command_id, .. }
-            | Self::ResolveInteraction { command_id, .. } => command_id,
+            | Self::ResolveInteraction { command_id, .. }
+            | Self::AcceptCompletion { command_id, .. } => command_id,
         }
     }
 
@@ -1111,6 +1317,9 @@ impl ControlAction {
             } => DurableCommand::ResolveInteraction {
                 interaction_id: interaction_id.clone(),
                 response: response.clone(),
+            },
+            Self::AcceptCompletion { acceptance, .. } => DurableCommand::AcceptCompletion {
+                acceptance: acceptance.clone(),
             },
         }
     }
@@ -1193,6 +1402,7 @@ fn project_run(replay: &RunReplay) -> RunView {
         task_contract: request.task_contract.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
+        completion: project_completion(snapshot),
         terminal: snapshot
             .terminal
             .as_ref()
@@ -1204,6 +1414,148 @@ fn project_run(replay: &RunReplay) -> RunView {
         tool_calls: snapshot.tool_calls,
         local_turns: snapshot.local_turns,
     }
+}
+
+fn project_completion(snapshot: &RunSnapshot) -> RunCompletion {
+    match snapshot.terminal.as_ref().map(|outcome| &outcome.terminal) {
+        Some(TerminalState::Completed { decision, .. })
+            if decision.satisfied.iter().any(|satisfaction| {
+                matches!(satisfaction, AcceptanceSatisfaction::Evidence { .. })
+            }) =>
+        {
+            RunCompletion::VerifiedCompleted {
+                decision: decision.clone(),
+            }
+        }
+        Some(TerminalState::Completed { decision, .. }) => {
+            project_host_accepted(snapshot, decision)
+                .unwrap_or(RunCompletion::EndedWithoutCompletion)
+        }
+        Some(_) => RunCompletion::EndedWithoutCompletion,
+        None => {
+            let Some(candidate) = snapshot.pending_completion.clone() else {
+                return RunCompletion::Running;
+            };
+            if let Some(decision) = project_verified_decision(snapshot, &candidate) {
+                return RunCompletion::VerifiedCompleted { decision };
+            }
+            if let Some(receipt) = snapshot
+                .host_acceptance_receipts
+                .iter()
+                .rev()
+                .find(|receipt| {
+                    receipt.candidate_id == candidate.id
+                        && receipt.generation_id == candidate.generation_id
+                        && receipt.workspace_state == candidate.workspace_state
+                        && receipt.workspace_state == snapshot.workspace_state
+                })
+            {
+                return RunCompletion::HostAccepted {
+                    candidate,
+                    receipt: receipt.clone(),
+                    current_workspace_state: snapshot.workspace_state.clone(),
+                };
+            }
+            RunCompletion::Answered {
+                candidate,
+                current_workspace_state: snapshot.workspace_state.clone(),
+            }
+        }
+    }
+}
+
+fn project_host_accepted(
+    snapshot: &RunSnapshot,
+    decision: &CompletionDecision,
+) -> Option<RunCompletion> {
+    let candidate = snapshot.pending_completion.clone()?;
+    let receipt_id = decision
+        .satisfied
+        .iter()
+        .find_map(|satisfaction| match satisfaction {
+            AcceptanceSatisfaction::Host { receipt_id, .. } => Some(receipt_id),
+            AcceptanceSatisfaction::Evidence { .. } => None,
+        })?;
+    let receipt = snapshot
+        .host_acceptance_receipts
+        .iter()
+        .find(|receipt| &receipt.id == receipt_id)?
+        .clone();
+    Some(RunCompletion::HostAccepted {
+        candidate,
+        receipt,
+        current_workspace_state: snapshot.workspace_state.clone(),
+    })
+}
+
+fn project_verified_decision(
+    snapshot: &RunSnapshot,
+    candidate: &CompletionCandidate,
+) -> Option<CompletionDecision> {
+    let contract = snapshot.request.task_contract.as_ref()?;
+    let current_evidence = |acceptance: &TaskAcceptance| {
+        let TaskAcceptance::Verifier {
+            id,
+            evidence_policy,
+            verifier,
+            ..
+        } = acceptance
+        else {
+            return None;
+        };
+        snapshot.evidence_receipts.iter().find(|receipt| {
+            receipt.generation_id == contract.generation_id
+                && receipt.acceptance_id == *id
+                && receipt.verifier == *verifier
+                && receipt.lineage.satisfies(*evidence_policy)
+                && receipt.workspace_state == snapshot.workspace_state
+        })
+    };
+    let has_current_evidence = contract
+        .definition
+        .acceptance
+        .iter()
+        .any(|acceptance| current_evidence(acceptance).is_some());
+    if !has_current_evidence {
+        return None;
+    }
+
+    let mut satisfied = Vec::with_capacity(contract.definition.acceptance.len());
+    for acceptance in &contract.definition.acceptance {
+        match acceptance {
+            TaskAcceptance::Host { id, .. } => {
+                let receipt = snapshot
+                    .host_acceptance_receipts
+                    .iter()
+                    .rev()
+                    .find(|receipt| {
+                        receipt.candidate_id == candidate.id
+                            && receipt.generation_id == contract.generation_id
+                            && receipt.workspace_state == candidate.workspace_state
+                            && receipt.workspace_state.revision == snapshot.workspace_state.revision
+                    })?;
+                satisfied.push(AcceptanceSatisfaction::Host {
+                    acceptance_id: id.clone(),
+                    receipt_id: receipt.id.clone(),
+                });
+            }
+            TaskAcceptance::Verifier { id, .. } => {
+                let receipt = current_evidence(acceptance)?;
+                satisfied.push(AcceptanceSatisfaction::Evidence {
+                    acceptance_id: id.clone(),
+                    receipt_id: receipt.id.clone(),
+                });
+            }
+        }
+    }
+    let decision = CompletionDecision {
+        candidate_id: candidate.id.clone(),
+        generation_id: contract.generation_id.clone(),
+        workspace_state: snapshot.workspace_state.clone(),
+        satisfied,
+    };
+    decision.validate().ok()?;
+    Some(decision)
 }
 
 fn project_root_run(record: RootRunRecord) -> RootRunSummary {
@@ -1403,6 +1755,49 @@ fn error_result(error: RunApiError) -> RunCommandResult {
     RunCommandResult::Error { error }
 }
 
+fn control_error_result(run_id: &RunId, error: ControlError) -> RunCommandResult {
+    let (code, message) = match error {
+        ControlError::RunFinished => (
+            RunApiErrorCode::RunNotActive,
+            "run finished before the command was committed".to_owned(),
+        ),
+        ControlError::Store { message } => (RunApiErrorCode::RunStoreFailed, message),
+        ControlError::CommandPayloadMismatch => (
+            RunApiErrorCode::InvalidRequest,
+            "command request_id was already committed with a different payload".to_owned(),
+        ),
+        ControlError::InteractionNotPending => (
+            RunApiErrorCode::InteractionNotPending,
+            "run is not waiting for a user interaction".to_owned(),
+        ),
+        ControlError::InteractionMismatch => (
+            RunApiErrorCode::InteractionMismatch,
+            "interaction id does not match the pending request".to_owned(),
+        ),
+        ControlError::InteractionAlreadyResolved => (
+            RunApiErrorCode::InteractionAlreadyResolved,
+            "interaction was already resolved".to_owned(),
+        ),
+        ControlError::InvalidInteractionResponse { message } => {
+            (RunApiErrorCode::InvalidInteractionResponse, message)
+        }
+        ControlError::CompletionNotPending => (
+            RunApiErrorCode::CompletionNotPending,
+            "run has no completion proposal awaiting Host acceptance".to_owned(),
+        ),
+        ControlError::CompletionMismatch => (
+            RunApiErrorCode::CompletionMismatch,
+            "completion acceptance does not match the current candidate or task generation"
+                .to_owned(),
+        ),
+        ControlError::CompletionStale => (
+            RunApiErrorCode::CompletionStale,
+            "completion acceptance does not match the latest workspace revision".to_owned(),
+        ),
+    };
+    error_result(api_error(code, message, Some(run_id.clone()), None))
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::pending;
@@ -1411,15 +1806,22 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    use dse_context::compaction::{ContextInput, effective_context};
     use dse_protocol::agent_runtime::{
-        ContextPolicy, InheritedRunFacts, ModelAccounting, ModelFinishReason, ModelOutput,
-        ModelRequest, ModelStreamEvent, ReasoningEffort, RunEnvironment, RunLimits, RunRequest,
-        RuntimeEventKind, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry,
-        Usage,
+        AttemptId, ContextPolicy, HostVerificationFailure, InheritedRunFacts, ModelAccounting,
+        ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent, PendingRuntimeEvent,
+        ReasoningEffort, RunEnvironment, RunLimits, RunRequest, RuntimeEventKind, ToolArtifact,
+        ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolOutcome, ToolPolicy,
+        TranscriptEntry, Usage, VerificationArtifactPayload,
     };
     use dse_protocol::run_api::RunProductControls;
     use dse_protocol::task::{
-        CompletionCandidate, CompletionCandidateId, TaskContract, TaskGenerationId,
+        AcceptanceId, CompletionCandidate, CompletionCandidateId, CompletionRejection,
+        CompletionRequiredTransition, EvidenceLineage, EvidenceReceipt, EvidenceReceiptId,
+        EvidenceSealRejection, HostAcceptanceReceipt, HostAcceptanceReceiptId, TaskAcceptance,
+        TaskContract, TaskGenerationId, VerificationId, VerifierEvidencePolicy,
+        VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
+        WorkspaceRevision, WorkspaceState,
     };
     use dse_runtime::{
         AgentRuntime, CancellationToken, InMemoryRunStore, ModelPort, ModelPortError, ModelStream,
@@ -1499,6 +1901,10 @@ mod tests {
     impl ToolExecutor for FixtureTools {
         fn definitions(&self) -> Vec<ToolDefinition> {
             Vec::new()
+        }
+
+        async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+            Ok("sha256:fixture-workspace".to_owned())
         }
 
         async fn execute(
@@ -1733,6 +2139,42 @@ mod tests {
         }
     }
 
+    fn model_request_for_snapshot(snapshot: &RunSnapshot) -> ModelRequest {
+        let tools = Vec::new();
+        let context = effective_context(ContextInput {
+            transcript: &snapshot.transcript,
+            projection: snapshot.context_projection.as_ref(),
+            task_contract: snapshot.request.task_contract.as_ref(),
+            workspace_state: &snapshot.workspace_state,
+            evidence_receipts: &snapshot.evidence_receipts,
+            last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+            last_verifier_failure: snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .map(|failure| &failure.outcome),
+            last_verifier_failure_workspace: snapshot
+                .last_host_verification_failure
+                .as_ref()
+                .map(|failure| &failure.workspace_state),
+            tools: &tools,
+        })
+        .expect("build canonical app fixture request");
+        ModelRequest {
+            run_id: snapshot.request.run_id.clone().expect("app fixture run id"),
+            parent_run_id: snapshot.request.parent_run_id.clone(),
+            actor: snapshot.request.actor,
+            model: snapshot.request.model.clone(),
+            system_prompt: context.system_prompt,
+            messages: context.messages,
+            tools,
+            reasoning_effort: snapshot.request.reasoning_effort,
+            max_output_tokens: snapshot.request.max_output_tokens,
+            streaming: snapshot.request.streaming,
+            request_number: snapshot.local_turns.saturating_add(1),
+            attempt: 0,
+        }
+    }
+
     fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
         RunCommandEnvelope {
             schema_version: RUN_API_SCHEMA_VERSION,
@@ -1797,7 +2239,11 @@ mod tests {
         (app, store, composition)
     }
 
-    async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
+    async fn wait_terminal(
+        app: &AgentApplication,
+        store: &dyn RunStore,
+        run_id: &RunId,
+    ) -> RunReplay {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let replay = store
@@ -1808,11 +2254,63 @@ mod tests {
                 if replay.snapshot.terminal.is_some() {
                     return replay;
                 }
+                let host_candidate = replay
+                    .snapshot
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .is_some_and(|contract| {
+                        contract
+                            .definition
+                            .acceptance
+                            .iter()
+                            .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }))
+                    })
+                    .then(|| replay.snapshot.pending_completion.clone())
+                    .flatten();
+                if let Some(candidate) = host_candidate {
+                    let response = app
+                        .execute(envelope(
+                            &format!("test-host-accept:{}:{}", run_id, candidate.id.0),
+                            RunCommand::AcceptCompletion {
+                                run_id: run_id.clone(),
+                                acceptance: HostCompletionAcceptance {
+                                    candidate_id: candidate.id,
+                                    generation_id: candidate.generation_id,
+                                    workspace_state: candidate.workspace_state,
+                                },
+                            },
+                        ))
+                        .await;
+                    assert!(
+                        matches!(response.result, RunCommandResult::Accepted { .. }),
+                        "test Host acceptance failed: {:?}",
+                        response.result
+                    );
+                }
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("run reaches terminal")
+    }
+
+    async fn wait_answered(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let replay = store
+                    .load(run_id)
+                    .await
+                    .expect("load run")
+                    .expect("run exists");
+                if replay.snapshot.pending_completion.is_some() {
+                    return replay;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("run reaches answered proposal")
     }
 
     async fn wait_for_event(
@@ -1878,10 +2376,456 @@ mod tests {
 
         replay.snapshot.pending_completion = Some(CompletionCandidate {
             id: CompletionCandidateId::from("pending-completion"),
-            generation_id: TaskGenerationId::from(run_id.0),
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
             message: "等待 Host 完成裁决".to_owned(),
+            workspace_state: replay.snapshot.workspace_state.clone(),
         });
         assert!(!resume_needs_live_model(&replay));
+
+        let candidate = replay
+            .snapshot
+            .pending_completion
+            .as_ref()
+            .expect("pending completion")
+            .clone();
+        replay
+            .snapshot
+            .request
+            .task_contract
+            .as_mut()
+            .expect("task contract")
+            .definition
+            .acceptance = vec![TaskAcceptance::Verifier {
+            id: AcceptanceId::from("tests"),
+            description: "repair then pass".to_owned(),
+            evidence_policy: VerifierEvidencePolicy::LatestPass,
+            verifier: VerifierSpec {
+                verifier_id: "run_tests".to_owned(),
+                parameters: serde_json::json!({}),
+                plan: VerifierPlan {
+                    steps: vec![VerifierStep {
+                        id: "tests".to_owned(),
+                        program: "true".to_owned(),
+                        args: Vec::new(),
+                        cwd: String::new(),
+                        env: Default::default(),
+                        timeout_ms: 1_000,
+                    }],
+                },
+            },
+        }];
+        replay.snapshot.last_host_verification_failure = Some(HostVerificationFailure {
+            outcome: ToolOutcome::error("deterministic failure"),
+            workspace_state: replay.snapshot.workspace_state.clone(),
+            rejection: CompletionRejection {
+                candidate_id: candidate.id,
+                generation_id: candidate.generation_id,
+                unmet_acceptance_ids: vec![AcceptanceId::from("tests")],
+                cause: EvidenceSealRejection::VerifierFailed,
+                required_transition: CompletionRequiredTransition::EffectiveWorkspaceMutation,
+                reason: "repair required".to_owned(),
+            },
+        });
+        assert!(
+            resume_needs_live_model(&replay),
+            "failed-verifier commit prefix must bind a live model for the repair turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_completion_is_exact_durable_idempotent_and_projects_host_truth() {
+        let (app, store, _) = new_fixture(ModelMode::Complete).await;
+        let started = run_result(
+            app.execute(envelope(
+                "start-host-answer",
+                RunCommand::Start(start_command("普通问答")),
+            ))
+            .await,
+        );
+        let answered = wait_answered(store.as_ref(), &started.run_id).await;
+        let candidate = answered
+            .snapshot
+            .pending_completion
+            .clone()
+            .expect("pending answer candidate");
+        let acceptance = HostCompletionAcceptance {
+            candidate_id: candidate.id.clone(),
+            generation_id: candidate.generation_id.clone(),
+            workspace_state: candidate.workspace_state.clone(),
+        };
+        let command = RunCommand::AcceptCompletion {
+            run_id: started.run_id.clone(),
+            acceptance: acceptance.clone(),
+        };
+        let first = app
+            .execute(envelope("accept-host-answer", command.clone()))
+            .await;
+        let first_sequence = match first.result {
+            RunCommandResult::Accepted { last_sequence, .. } => last_sequence,
+            other => panic!("expected accepted Host command, got {other:?}"),
+        };
+        let terminal = wait_terminal(&app, store.as_ref(), &started.run_id).await;
+        let projected = run_result(
+            app.execute(envelope(
+                "get-host-accepted",
+                RunCommand::Get {
+                    run_id: started.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        assert!(matches!(
+            projected.completion,
+            RunCompletion::HostAccepted { .. }
+        ));
+        assert!(matches!(
+            terminal
+                .snapshot
+                .terminal
+                .as_ref()
+                .map(|outcome| &outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+
+        let repeated = app.execute(envelope("accept-host-answer", command)).await;
+        assert!(matches!(
+            repeated.result,
+            RunCommandResult::Accepted { last_sequence, .. }
+                if last_sequence == first_sequence
+        ));
+        let mismatched = app
+            .execute(envelope(
+                "accept-host-answer",
+                RunCommand::AcceptCompletion {
+                    run_id: started.run_id,
+                    acceptance: HostCompletionAcceptance {
+                        candidate_id: CompletionCandidateId::from("foreign-candidate"),
+                        ..acceptance
+                    },
+                },
+            ))
+            .await;
+        assert_eq!(error_code(mismatched), RunApiErrorCode::InvalidRequest);
+    }
+
+    #[tokio::test]
+    async fn committed_host_acceptance_prefix_projects_truth_and_retry_only_settles_terminal() {
+        let (app, store, composition) = new_fixture(ModelMode::Complete).await;
+        let started = run_result(
+            app.execute(envelope(
+                "start-host-prefix",
+                RunCommand::Start(start_command("保留 Host receipt crash prefix")),
+            ))
+            .await,
+        );
+        let answered = wait_answered(store.as_ref(), &started.run_id).await;
+        let candidate = answered
+            .snapshot
+            .pending_completion
+            .clone()
+            .expect("pending completion candidate");
+        let acceptance = HostCompletionAcceptance {
+            candidate_id: candidate.id.clone(),
+            generation_id: candidate.generation_id.clone(),
+            workspace_state: candidate.workspace_state.clone(),
+        };
+        let command_id = CommandId::from("accept-host-prefix");
+        let acquired = store
+            .acquire(&started.run_id)
+            .await
+            .expect("acquire quiescent answer");
+        let lease = acquired.lease.as_ref().expect("quiescent answer lease");
+        let accepted = store
+            .append(
+                lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::HostCompletionAccepted {
+                    command_id: command_id.clone(),
+                    receipt: HostAcceptanceReceipt {
+                        id: HostAcceptanceReceiptId::from(format!(
+                            "host-acceptance:{}",
+                            command_id.0
+                        )),
+                        candidate_id: candidate.id.clone(),
+                        generation_id: candidate.generation_id.clone(),
+                        workspace_state: candidate.workspace_state.clone(),
+                    },
+                }),
+            )
+            .await
+            .expect("commit Host acceptance crash prefix");
+        store
+            .release(lease)
+            .await
+            .expect("release simulated crashed lease");
+
+        let projected = run_result(
+            app.execute(envelope(
+                "get-host-prefix",
+                RunCommand::Get {
+                    run_id: started.run_id.clone(),
+                },
+            ))
+            .await,
+        );
+        assert!(projected.terminal.is_none());
+        assert!(matches!(
+            projected.completion,
+            RunCompletion::HostAccepted {
+                ref candidate,
+                ref receipt,
+                ..
+            } if candidate.id == acceptance.candidate_id
+                && receipt.id == HostAcceptanceReceiptId::from("host-acceptance:accept-host-prefix")
+        ));
+
+        let retry = app
+            .execute(envelope(
+                "accept-host-prefix",
+                RunCommand::AcceptCompletion {
+                    run_id: started.run_id.clone(),
+                    acceptance,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            retry.result,
+            RunCommandResult::Accepted { last_sequence, .. }
+                if last_sequence == accepted.sequence
+        ));
+        let terminal = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let replay = store
+                    .load(&started.run_id)
+                    .await
+                    .expect("load Host prefix")
+                    .expect("Host prefix run");
+                if replay.snapshot.terminal.is_some() {
+                    break replay;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("committed acceptance retry settles terminal");
+        assert_eq!(composition.starts.load(Ordering::Acquire), 1);
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            terminal
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event.event,
+                    RuntimeEventKind::HostCompletionAccepted { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            terminal
+                .events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_latest_evidence_prefix_projects_verified_before_terminal() {
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("verified-prefix-run");
+        let verifier = VerifierSpec {
+            verifier_id: "run_tests".to_owned(),
+            parameters: serde_json::json!({"args": ["--locked"]}),
+            plan: VerifierPlan {
+                steps: vec![VerifierStep {
+                    id: "tests".to_owned(),
+                    program: "cargo".to_owned(),
+                    args: vec!["test".to_owned(), "--locked".to_owned()],
+                    cwd: String::new(),
+                    env: Default::default(),
+                    timeout_ms: 60_000,
+                }],
+            },
+        };
+        let mut start = start_command("验证 crash prefix");
+        start.task = TaskDefinition {
+            objective: "验证 crash prefix".to_owned(),
+            constraints: Vec::new(),
+            non_goals: Vec::new(),
+            acceptance: vec![TaskAcceptance::Verifier {
+                id: AcceptanceId::from("tests"),
+                description: "冻结测试通过".to_owned(),
+                evidence_policy: VerifierEvidencePolicy::LatestPass,
+                verifier: verifier.clone(),
+            }],
+        };
+        let mut request = request_from(start);
+        request.run_id = Some(run_id.clone());
+        request
+            .task_contract
+            .as_mut()
+            .expect("verifier contract")
+            .generation_id = TaskGenerationId::from(run_id.0.clone());
+        let created = store.create(request).await.expect("create verifier prefix");
+        let before = WorkspaceState {
+            generation: 1,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:verified-prefix".to_owned(),
+            },
+        };
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::WorkspaceObserved {
+                    workspace_state: before.clone(),
+                }),
+            )
+            .await
+            .expect("observe verifier workspace");
+        let snapshot = store
+            .load(&run_id)
+            .await
+            .expect("load verifier prefix")
+            .expect("verifier prefix exists")
+            .snapshot;
+        let attempt_id = AttemptId("verified-prefix-attempt".to_owned());
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::ModelRequestPrepared {
+                    attempt_id: attempt_id.clone(),
+                    request: Box::new(model_request_for_snapshot(&snapshot)),
+                }),
+            )
+            .await
+            .expect("prepare verifier prefix model request");
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::ModelRequestInFlight {
+                    attempt_id: attempt_id.clone(),
+                }),
+            )
+            .await
+            .expect("start verifier prefix model request");
+        let response = store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::ModelResponseCommitted {
+                    attempt_id,
+                    output: Box::new(ModelOutput {
+                        content: "verified candidate".to_owned(),
+                        reasoning_content: None,
+                        tool_calls: Vec::new(),
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: Usage::default(),
+                    }),
+                    accounting: Box::new(snapshot.accounting),
+                }),
+            )
+            .await
+            .expect("commit verifier prefix model response");
+        let candidate = CompletionCandidate {
+            id: CompletionCandidateId::from(format!("completion-{}", response.sequence)),
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            message: "verified candidate".to_owned(),
+            workspace_state: before.clone(),
+        };
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::CompletionProposed {
+                    candidate: candidate.clone(),
+                }),
+            )
+            .await
+            .expect("propose verifier candidate");
+        let verification_id =
+            VerificationId::from(format!("host-verification:{}:tests", candidate.id.0));
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::HostVerificationPrepared {
+                    verification_id: verification_id.clone(),
+                    candidate: candidate.clone(),
+                    acceptance_id: AcceptanceId::from("tests"),
+                    verifier: verifier.clone(),
+                    workspace_state_before: before.clone(),
+                }),
+            )
+            .await
+            .expect("prepare verifier prefix");
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::HostVerificationStarted {
+                    verification_id: verification_id.clone(),
+                }),
+            )
+            .await
+            .expect("start verifier prefix");
+        let after = WorkspaceState {
+            generation: 2,
+            revision: before.revision.clone(),
+        };
+        let artifact = ToolArtifact::inline_verification(VerificationArtifactPayload {
+            summary: "fixture passed".to_owned(),
+            verifier: verifier.clone(),
+            verdict: VerifierVerdict::Passed,
+            workspace_revision: after.revision.clone(),
+        });
+        let artifact_id = artifact.id.clone();
+        let mut outcome = ToolOutcome::success("fixture passed");
+        outcome.workspace_revision = Some("sha256:verified-prefix".to_owned());
+        outcome.evidence = ToolEvidence {
+            status: ToolEvidenceStatus::Produced,
+            references: vec![artifact_id.clone()],
+        };
+        outcome.artifacts = vec![artifact];
+        outcome.verifier_observation = Some(VerifierObservation {
+            spec: verifier.clone(),
+            verdict: VerifierVerdict::Passed,
+            workspace_revision: after.revision.clone(),
+            artifact_ids: vec![artifact_id.clone()],
+        });
+        let receipt = EvidenceReceipt {
+            id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            acceptance_id: AcceptanceId::from("tests"),
+            verification_id: verification_id.clone(),
+            verifier,
+            workspace_state: after.clone(),
+            artifact_ids: vec![artifact_id],
+            lineage: EvidenceLineage::LatestPass,
+        };
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::HostVerificationCommitted {
+                    verification_id,
+                    outcome: Box::new(outcome),
+                    receipt: Some(Box::new(receipt)),
+                    workspace_state_after: after,
+                }),
+            )
+            .await
+            .expect("commit verified crash prefix");
+        store
+            .release(&created.lease)
+            .await
+            .expect("release verifier crash prefix");
+        let composition = Arc::new(FixtureComposition::new(ModelMode::Pending));
+        let app = AgentApplication::new(store.clone(), composition);
+        let projected = run_result(
+            app.execute(envelope("get-verified-prefix", RunCommand::Get { run_id }))
+                .await,
+        );
+        assert!(projected.terminal.is_none());
+        assert!(matches!(
+            projected.completion,
+            RunCompletion::VerifiedCompleted { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1937,9 +2881,9 @@ mod tests {
             ))
             .await,
         );
-        let terminal = wait_terminal(store.as_ref(), &run.run_id).await;
+        let terminal = wait_terminal(&app, store.as_ref(), &run.run_id).await;
         let before_events = terminal.events.clone();
-        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 1);
 
         let resumed = run_result(
             app.execute(envelope(
@@ -1952,7 +2896,7 @@ mod tests {
             .await,
         );
         assert!(resumed.terminal.is_some());
-        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 1);
         let mismatch = error(
             app.execute(envelope(
                 "resume-wrong-workspace",
@@ -1965,7 +2909,7 @@ mod tests {
         );
         assert_eq!(mismatch.code, RunApiErrorCode::RunEnvironmentMismatch);
         assert_eq!(mismatch.reason, Some(RunApiErrorReason::WorkspaceMismatch));
-        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 1);
         assert_eq!(
             store
                 .load(&run.run_id)
@@ -1987,7 +2931,7 @@ mod tests {
             ))
             .await,
         );
-        let source_replay = wait_terminal(store.as_ref(), &source.run_id).await;
+        let source_replay = wait_terminal(&app, store.as_ref(), &source.run_id).await;
         let source_events = source_replay.events.clone();
 
         let continued = run_result(
@@ -2004,7 +2948,7 @@ mod tests {
         assert_ne!(continued.run_id, source.run_id);
         assert_eq!(continued.parent_run_id, None);
         assert_eq!(continued.continued_from_run_id, Some(source.run_id.clone()));
-        let continued_replay = wait_terminal(store.as_ref(), &continued.run_id).await;
+        let continued_replay = wait_terminal(&app, store.as_ref(), &continued.run_id).await;
         assert_eq!(
             &continued_replay.snapshot.transcript.entries
                 [..source_replay.snapshot.transcript.entries.len()],
@@ -2122,7 +3066,7 @@ mod tests {
         );
         assert_eq!(conflict.code, RunApiErrorCode::InvalidRequest);
 
-        wait_terminal(store.as_ref(), &first.run_id).await;
+        wait_terminal(&app, store.as_ref(), &first.run_id).await;
         let continuation = RunCommand::Continue(ContinueRunCommand {
             run_id: first.run_id.clone(),
             task: TaskDefinition::host("下一轮"),
@@ -2135,7 +3079,7 @@ mod tests {
         let continued_retry =
             run_result(app.execute(envelope("same-continue", continuation)).await);
         assert_eq!(continued_retry.run_id, continued.run_id);
-        wait_terminal(store.as_ref(), &continued.run_id).await;
+        wait_terminal(&app, store.as_ref(), &continued.run_id).await;
 
         let roots = store
             .list_root_runs("/workspace/project", 10)
@@ -2325,7 +3269,7 @@ mod tests {
             .await,
         );
         assert_eq!(recovered.run_id, reserved_run_id);
-        let replay = wait_terminal(store.as_ref(), &reserved_run_id).await;
+        let replay = wait_terminal(&app, store.as_ref(), &reserved_run_id).await;
         assert_eq!(
             replay
                 .events
@@ -2439,7 +3383,7 @@ mod tests {
             ))
             .await,
         );
-        wait_terminal(store.as_ref(), &source.run_id).await;
+        wait_terminal(&app, store.as_ref(), &source.run_id).await;
 
         let continue_request_id = "recover-continue";
         let continue_command = RunCommand::Continue(ContinueRunCommand {
@@ -2475,7 +3419,7 @@ mod tests {
             .await,
         );
         assert_eq!(continued.run_id, continued_run_id);
-        wait_terminal(store.as_ref(), &continued.run_id).await;
+        wait_terminal(&app, store.as_ref(), &continued.run_id).await;
     }
 
     #[tokio::test]
@@ -2511,7 +3455,7 @@ mod tests {
             .await,
         );
         assert_eq!(recovered.run_id, reserved_run_id);
-        wait_terminal(store.as_ref(), &recovered.run_id).await;
+        wait_terminal(&app, store.as_ref(), &recovered.run_id).await;
         assert_eq!(composition.starts.load(Ordering::Acquire), 1);
 
         let replayed = run_result(app.execute(envelope(creation_request_id, command)).await);
@@ -2563,7 +3507,7 @@ mod tests {
             ))
             .await;
         assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
-        wait_terminal(store.as_ref(), &first.run_id).await;
+        wait_terminal(&app, store.as_ref(), &first.run_id).await;
     }
 
     #[tokio::test]
@@ -2612,7 +3556,7 @@ mod tests {
             ))
             .await;
         assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
-        wait_terminal(store.as_ref(), &accepted[0].run_id).await;
+        wait_terminal(&app, store.as_ref(), &accepted[0].run_id).await;
     }
 
     #[tokio::test]
@@ -2633,7 +3577,7 @@ mod tests {
                 ))
                 .await,
         );
-        let terminal = wait_terminal(first_store.as_ref(), &run.run_id).await;
+        let terminal = wait_terminal(&first_app, first_store.as_ref(), &run.run_id).await;
         let frozen_events = terminal.events.clone();
         let terminal_accounting = terminal
             .snapshot
@@ -2748,7 +3692,14 @@ mod tests {
             matches!(event, RuntimeEventKind::SteerQueued { .. })
         })
         .await;
-        assert_eq!(steered.snapshot.last_sequence, accepted_sequence);
+        assert!(steered.events.iter().any(|event| {
+            event.sequence == accepted_sequence
+                && matches!(
+                    &event.event,
+                    RuntimeEventKind::SteerQueued { command_id, .. }
+                        if command_id == &CommandId::from("steer")
+                )
+        }));
         let retried = app
             .execute(envelope(
                 "steer",
@@ -2786,7 +3737,7 @@ mod tests {
             stop_steered.result,
             RunCommandResult::Accepted { .. }
         ));
-        wait_terminal(store.as_ref(), &seeded).await;
+        wait_terminal(&app, store.as_ref(), &seeded).await;
 
         let interrupt_run = run_result(
             app.execute(envelope(
@@ -2807,7 +3758,7 @@ mod tests {
             interrupted.result,
             RunCommandResult::Accepted { .. }
         ));
-        wait_terminal(store.as_ref(), &interrupt_run.run_id).await;
+        wait_terminal(&app, store.as_ref(), &interrupt_run.run_id).await;
 
         let cancel_run = run_result(
             app.execute(envelope(
@@ -2828,7 +3779,7 @@ mod tests {
             cancelled.result,
             RunCommandResult::Accepted { .. }
         ));
-        wait_terminal(store.as_ref(), &cancel_run.run_id).await;
+        wait_terminal(&app, store.as_ref(), &cancel_run.run_id).await;
 
         let events = app
             .execute(envelope(
@@ -2931,7 +3882,7 @@ mod tests {
             ))
             .await;
         assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
-        wait_terminal(store.as_ref(), &run.run_id).await;
+        wait_terminal(&app, store.as_ref(), &run.run_id).await;
     }
 
     #[tokio::test]
@@ -2969,7 +3920,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(sequences[0], sequences[1]);
-        let same_payload_replay = wait_terminal(store.as_ref(), &same_payload_run.run_id).await;
+        let same_payload_replay =
+            wait_terminal(&app, store.as_ref(), &same_payload_run.run_id).await;
         assert_eq!(
             same_payload_replay
                 .events
@@ -3034,7 +3986,7 @@ mod tests {
                 .count(),
             1
         );
-        let conflicting_replay = wait_terminal(store.as_ref(), &conflicting_run.run_id).await;
+        let conflicting_replay = wait_terminal(&app, store.as_ref(), &conflicting_run.run_id).await;
         assert_eq!(
             conflicting_replay
                 .events
@@ -3166,7 +4118,7 @@ mod tests {
                 },
             ))
             .await;
-        wait_terminal(store.as_ref(), &active.run_id).await;
+        wait_terminal(&app, store.as_ref(), &active.run_id).await;
         assert_eq!(
             error_code(
                 app.execute(envelope(
@@ -3192,7 +4144,7 @@ mod tests {
             ))
             .await,
         );
-        let replay = wait_terminal(store.as_ref(), &run.run_id).await;
+        let replay = wait_terminal(&app, store.as_ref(), &run.run_id).await;
         let after = replay.events[1].sequence;
         let response = app
             .execute(envelope(
@@ -3320,7 +4272,7 @@ mod tests {
             run_ids.push(start.await.expect("start task").run_id);
         }
         for run_id in run_ids {
-            wait_terminal(store.as_ref(), &run_id).await;
+            wait_terminal(&app, store.as_ref(), &run_id).await;
         }
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -3369,7 +4321,7 @@ mod tests {
         assert!(activation.await.is_err());
         ready_gate.release.add_permits(1);
 
-        let replay = wait_terminal(store.as_ref(), &run_id).await;
+        let replay = wait_terminal(&app, store.as_ref(), &run_id).await;
         assert!(matches!(
             replay.snapshot.terminal.map(|outcome| outcome.terminal),
             Some(TerminalState::Cancelled)

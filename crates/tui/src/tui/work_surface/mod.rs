@@ -81,7 +81,7 @@ mod tests {
             "system",
         );
         app.run_presentation.apply(&StoredRuntimeEvent {
-            schema_version: 25,
+            schema_version: dse_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: RunId::from("root-run"),
             parent_run_id: None,
             event_id: RuntimeEventId("event-1".to_owned()),

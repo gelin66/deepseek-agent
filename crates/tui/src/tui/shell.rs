@@ -83,6 +83,7 @@ impl ShellPhase {
             | RunPresentationPhase::Verifying
             | RunPresentationPhase::Reworking => return Self::Working,
             RunPresentationPhase::WaitingForUser => return Self::Approval,
+            RunPresentationPhase::HostAccepted => return Self::Idle,
             RunPresentationPhase::Completed => return Self::Done,
             RunPresentationPhase::Blocked
             | RunPresentationPhase::Failed

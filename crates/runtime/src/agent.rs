@@ -359,6 +359,7 @@ impl AgentRuntime {
     ) -> RuntimeRun {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (ready_sender, ready_receiver) = oneshot::channel();
+        let (launch_sender, launch_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
         let task_run_id = run_id.clone();
@@ -372,12 +373,14 @@ impl AgentRuntime {
             },
             receiver,
             ready_sender,
+            launch_receiver,
         )));
         RuntimeRun {
             run_id,
             control,
             join,
             ready: Some(ready_receiver),
+            launch: Some(launch_sender),
         }
     }
 
@@ -398,6 +401,7 @@ impl AgentRuntime {
         request.run_id = Some(run_id.clone());
         let (sender, receiver) = mpsc::unbounded_channel();
         let (ready_sender, ready_receiver) = oneshot::channel();
+        let (launch_sender, launch_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
         let join = tokio::spawn(Box::pin(runtime.run_launch(
@@ -410,12 +414,14 @@ impl AgentRuntime {
             },
             receiver,
             ready_sender,
+            launch_receiver,
         )));
         RuntimeRun {
             run_id,
             control,
             join,
             ready: Some(ready_receiver),
+            launch: Some(launch_sender),
         }
     }
 
@@ -425,6 +431,7 @@ impl AgentRuntime {
         options: RunLaunchOptions,
         mut control: mpsc::UnboundedReceiver<ControlCommand>,
         ready: oneshot::Sender<Result<(), RunStoreError>>,
+        launch_gate: oneshot::Receiver<()>,
     ) -> AgentOutcome {
         let RunLaunchOptions {
             budget,
@@ -505,6 +512,7 @@ impl AgentRuntime {
             },
         };
         signal_ready(&mut ready, Ok(()));
+        let _ = launch_gate.await;
         let snapshot = replay.snapshot;
         let deadline = effective_deadline(&snapshot.request);
         let budget = budget.unwrap_or_else(|| {
@@ -537,10 +545,12 @@ impl AgentRuntime {
                 .then(|| budget.reserve_terminal_model_request())
                 .flatten()
         });
+        let runtime_model_requests_at_launch = snapshot.runtime_model_requests;
         let mut state = RunState {
             snapshot,
             lease,
             accounting_epoch_baseline,
+            runtime_model_requests_at_launch,
             model_accounting_includes_baseline,
             started_unix_ms: replay
                 .events
@@ -632,6 +642,20 @@ impl AgentRuntime {
                         };
                     }
                 } else {
+                    if task_requires_host_acceptance(&state.snapshot)
+                        && current_host_acceptance(&state.snapshot, &candidate).is_none()
+                    {
+                        match self.drain_controls(state, control).await {
+                            Ok(Some(terminal)) => {
+                                return self.settled_terminal(state, terminal).await;
+                            }
+                            Ok(None) => {}
+                            Err(failure) => return TerminalState::Failed { failure },
+                        }
+                        if current_host_acceptance(&state.snapshot, &candidate).is_none() {
+                            return TerminalState::AwaitingHostAcceptance { candidate };
+                        }
+                    }
                     match self.accept_completion_candidate(state, candidate).await {
                         Ok((message, decision)) => {
                             return TerminalState::Completed { message, decision };
@@ -798,6 +822,11 @@ impl AgentRuntime {
                     .task_contract
                     .clone()
                     .expect("Agent run contract is validated at creation");
+                if let Err(message) = self.reconcile_workspace(state).await {
+                    return TerminalState::Failed {
+                        failure: RuntimeFailure::Store { message },
+                    };
+                }
                 let candidate = CompletionCandidate {
                     id: completion_candidate_id(
                         state
@@ -807,6 +836,7 @@ impl AgentRuntime {
                     ),
                     generation_id: contract.generation_id.clone(),
                     message: turn.content,
+                    workspace_state: state.snapshot.workspace_state.clone(),
                 };
                 if let Err(failure) = self
                     .publish(
@@ -818,6 +848,9 @@ impl AgentRuntime {
                     .await
                 {
                     return TerminalState::Failed { failure };
+                }
+                if task_requires_host_acceptance(&state.snapshot) {
+                    return TerminalState::AwaitingHostAcceptance { candidate };
                 }
                 match self.accept_completion_candidate(state, candidate).await {
                     Ok((message, decision)) => {
@@ -881,7 +914,7 @@ impl AgentRuntime {
                 }
             }
             if !state.pending_children.is_empty()
-                && let Err(terminal) = self.join_children(state, control, deadline).await
+                && let Err(terminal) = self.join_children(state, budget, control, deadline).await
             {
                 return self.settled_terminal(state, terminal).await;
             }
@@ -1142,7 +1175,9 @@ impl AgentRuntime {
                 },
                 command = control.recv() => if let Some(command) = command {
                     match self.handle_control(state, command).await? {
-                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Continue
+                        | ControlEffect::InteractionResolved(_)
+                        | ControlEffect::CompletionAccepted => {}
                         ControlEffect::Terminal(terminal) => {
                             return Ok(ModelAttemptControl::Terminal(terminal));
                         }
@@ -1274,7 +1309,9 @@ impl AgentRuntime {
                 }
                 command = control.recv() => if let Some(command) = command {
                     match self.handle_control(state, command).await? {
-                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Continue
+                        | ControlEffect::InteractionResolved(_)
+                        | ControlEffect::CompletionAccepted => {}
                         ControlEffect::Terminal(terminal) => {
                             return Ok(ModelAttemptControl::Terminal(terminal));
                         }
@@ -1323,6 +1360,13 @@ impl AgentRuntime {
                 cumulative.billing_unknown = true;
             }
         }
+        // Runtime owns retry decisions, while the model port owns physical
+        // request/usage accounting. Keep the durable cumulative receipt in
+        // sync at every response boundary, including an unverified answer
+        // that intentionally has no Terminal event.
+        cumulative.runtime_retries = cumulative
+            .runtime_retries
+            .max(u64::from(state.snapshot.runtime_retries));
         cumulative
     }
 
@@ -1409,7 +1453,9 @@ impl AgentRuntime {
                 () = self.clock.sleep_until_unix_ms(schedule.not_before_unix_ms) => {}
                 command = control.recv() => if let Some(command) = command {
                     match self.handle_control(state, command).await? {
-                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Continue
+                        | ControlEffect::InteractionResolved(_)
+                        | ControlEffect::CompletionAccepted => {}
                         ControlEffect::Terminal(terminal) => return Ok(Some(terminal)),
                     }
                 },
@@ -1790,7 +1836,9 @@ impl AgentRuntime {
                         },
                         command = control.recv() => if let Some(command) = command {
                             match self.handle_control(state, command).await.map_err(store_terminal)? {
-                                ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                                ControlEffect::Continue
+                                | ControlEffect::InteractionResolved(_)
+                                | ControlEffect::CompletionAccepted => {}
                                 ControlEffect::Terminal(terminal) => {
                                     cancellation.cancel();
                                     let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
@@ -1925,7 +1973,7 @@ impl AgentRuntime {
             tokio::select! {
                 command = control.recv() => if let Some(command) = command {
                     match self.handle_control(state, command).await? {
-                        ControlEffect::Continue => {}
+                        ControlEffect::Continue | ControlEffect::CompletionAccepted => {}
                         ControlEffect::InteractionResolved(response) => {
                             return Ok(InteractionWaitResult::Resolved(response));
                         }
@@ -2303,12 +2351,22 @@ impl AgentRuntime {
                 orchestration_recovery(&task.task_id, "child_route_prompt_failed", message)
             })?;
         child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
-        let child = child_runtime.start_inner(
-            child_request,
-            budget.clone(),
-            Some(child_terminal_model_request),
-            state.model_accounting_includes_baseline,
-        );
+        let child = child_runtime
+            .start_inner(
+                child_request,
+                budget.clone(),
+                Some(child_terminal_model_request),
+                state.model_accounting_includes_baseline,
+            )
+            .ready()
+            .await
+            .map_err(|error| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "child_runtime_start",
+                    format!("子 Agent 无法建立 canonical Run：{error}"),
+                )
+            })?;
         if writer {
             return Box::pin(self.finish_writer_child(
                 state,
@@ -2519,7 +2577,7 @@ impl AgentRuntime {
                     "恢复 writer child 时没有可用并发额度",
                 )
             })?;
-            let mut child = if let Some(replay) = child_replay.as_ref() {
+            let child = if let Some(replay) = child_replay.as_ref() {
                 debug_assert!(replay.snapshot.terminal.is_none());
                 child_runtime.resume_inner(task.child_run_id.clone(), Some(budget.clone()))
             } else {
@@ -2543,6 +2601,13 @@ impl AgentRuntime {
                     state.model_accounting_includes_baseline,
                 )
             };
+            let mut child = child.ready().await.map_err(|error| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "writer_child_runtime_start",
+                    format!("writer child 无法建立 canonical Run：{error}"),
+                )
+            })?;
             let outcome = loop {
                 tokio::select! {
                     joined = &mut child.join => {
@@ -2553,7 +2618,9 @@ impl AgentRuntime {
                     }
                     command = control.recv() => if let Some(command) = command {
                         match self.handle_control(state, command).await.map_err(store_terminal)? {
-                            ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                            ControlEffect::Continue
+                            | ControlEffect::InteractionResolved(_)
+                            | ControlEffect::CompletionAccepted => {}
                             ControlEffect::Terminal(terminal) => {
                                 if matches!(terminal, TerminalState::Interrupted) {
                                     child.control.interrupt().ok();
@@ -2628,7 +2695,9 @@ impl AgentRuntime {
                 }
                 return Ok(writer_failure_tool_outcome(&task, &finished));
             }
-            if let Err(message) = validate_writer_receipts(&task, &child_outcome.details.evidence) {
+            if let Err(message) =
+                crate::store::validate_child_completion_facts(&task, &child_outcome)
+            {
                 return self
                     .finish_bound_writer_failure(
                         state,
@@ -2976,7 +3045,9 @@ impl AgentRuntime {
                 }
                 command = control.recv() => if let Some(command) = command {
                     match self.handle_control(state, command).await.map_err(store_terminal)? {
-                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Continue
+                        | ControlEffect::InteractionResolved(_)
+                        | ControlEffect::CompletionAccepted => {}
                         ControlEffect::Terminal(terminal) => {
                             if matches!(terminal, TerminalState::Interrupted) {
                                 child.control.interrupt().ok();
@@ -3148,8 +3219,9 @@ impl AgentRuntime {
     }
 
     async fn join_children(
-        &self,
+        self: &Arc<Self>,
         state: &mut RunState,
+        budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
     ) -> Result<(), TerminalState> {
@@ -3171,7 +3243,9 @@ impl AgentRuntime {
                     }),
                     command = control.recv() => if let Some(command) = command {
                         match self.handle_control(state, command).await.map_err(store_terminal)? {
-                            ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                            ControlEffect::Continue
+                            | ControlEffect::InteractionResolved(_)
+                            | ControlEffect::CompletionAccepted => {}
                             ControlEffect::Terminal(terminal) => {
                                 if matches!(terminal, TerminalState::Interrupted) {
                                     child.control.interrupt().ok();
@@ -3221,10 +3295,132 @@ impl AgentRuntime {
                     }
                 }
             };
-            self.settle_readonly_child(state, child.task_id, child.call_id, child.run_id, outcome)
-                .await?;
+            let task = current_agent_lifecycle(state, &child.task_id)?.task;
+            let unsettled_outcome = outcome.clone();
+            match self
+                .accept_readonly_child_answer(state, &task, outcome, budget)
+                .await
+            {
+                Ok(outcome) => {
+                    self.settle_readonly_child(
+                        state,
+                        child.task_id,
+                        child.call_id,
+                        child.run_id,
+                        outcome,
+                    )
+                    .await?;
+                }
+                Err(terminal) => {
+                    // The child has already joined and was removed from the
+                    // in-memory pending list. Its durable AgentTask must still
+                    // close before the root may persist RecoveryRequired.
+                    // Otherwise a rejected Host acceptance would strand an
+                    // unsettled lifecycle and make the Store correctly reject
+                    // the root terminal as corrupt.
+                    let outcome =
+                        readonly_child_recovery_outcome(&task, unsettled_outcome, terminal.clone());
+                    self.settle_readonly_child(
+                        state,
+                        child.task_id,
+                        child.call_id,
+                        child.run_id,
+                        outcome,
+                    )
+                    .await?;
+                    self.join_remaining_children(state).await?;
+                    return Err(terminal);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// A read-only child answer is still only a proposal when its model stops.
+    /// The parent Host records a separate exact command/receipt before using
+    /// that answer as a completed child result. This is the same Runtime and
+    /// Store path as root acceptance; no child-only completion shortcut exists.
+    async fn accept_readonly_child_answer(
+        self: &Arc<Self>,
+        state: &RunState,
+        task: &AgentTask,
+        outcome: AgentOutcome,
+        budget: &Arc<RuntimeBudget>,
+    ) -> Result<AgentOutcome, TerminalState> {
+        let TerminalState::AwaitingHostAcceptance { candidate } = &outcome.terminal else {
+            return Ok(outcome);
+        };
+        if outcome.run_id != task.child_run_id
+            || outcome.parent_run_id.as_ref() != Some(&task.parent_run_id)
+            || candidate.generation_id != task.task_contract.generation_id
+        {
+            return Err(orchestration_recovery(
+                &task.task_id,
+                "readonly_child_acceptance_identity",
+                "只读子 Agent 的完成提案与冻结任务身份不一致",
+            ));
+        }
+        let command_id = CommandId::from(format!(
+            "parent-host-accept:{}:{}:{}",
+            state.run_id().0,
+            task.task_id.0,
+            candidate.id.0
+        ));
+        let acceptance = HostCompletionAcceptance {
+            candidate_id: candidate.id.clone(),
+            generation_id: candidate.generation_id.clone(),
+            workspace_state: candidate.workspace_state.clone(),
+        };
+        let resumed = self.resume_inner(task.child_run_id.clone(), Some(budget.clone()));
+        let accepted = match resumed.queue_completion_acceptance(command_id, acceptance) {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                let _ = resumed.wait().await;
+                return Err(orchestration_recovery(
+                    &task.task_id,
+                    "readonly_child_acceptance_queue",
+                    error.to_string(),
+                ));
+            }
+        };
+        let resumed = resumed.ready().await.map_err(|error| {
+            orchestration_recovery(
+                &task.task_id,
+                "readonly_child_acceptance_resume",
+                error.to_string(),
+            )
+        })?;
+        let acceptance_result = accepted.await;
+        let accepted_outcome = resumed.wait().await.map_err(|error| {
+            orchestration_recovery(
+                &task.task_id,
+                "readonly_child_acceptance_join",
+                error.to_string(),
+            )
+        })?;
+        acceptance_result
+            .map_err(|_| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "readonly_child_acceptance_ack",
+                    "只读子 Agent 的 Host acceptance 回执通道提前关闭",
+                )
+            })?
+            .map_err(|error| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "readonly_child_acceptance_rejected",
+                    error.to_string(),
+                )
+            })?;
+        if !matches!(accepted_outcome.terminal, TerminalState::Completed { .. }) {
+            return Err(orchestration_recovery(
+                &task.task_id,
+                "readonly_child_acceptance_terminal",
+                "显式接受后的只读子 Agent 没有形成 canonical Completed",
+            ));
+        }
+        Ok(accepted_outcome)
     }
 
     async fn cancel_children(&self, state: &mut RunState) -> Result<(), TerminalState> {
@@ -3349,7 +3545,9 @@ impl AgentRuntime {
         loop {
             match control.try_recv() {
                 Ok(command) => match self.handle_control(state, command).await? {
-                    ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                    ControlEffect::Continue
+                    | ControlEffect::InteractionResolved(_)
+                    | ControlEffect::CompletionAccepted => {}
                     ControlEffect::Terminal(terminal) => return Ok(Some(terminal)),
                 },
                 Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
@@ -3521,6 +3719,94 @@ impl AgentRuntime {
                     }
                 }
             }
+            ControlCommand::AcceptCompletion {
+                command_id,
+                acceptance,
+                ack,
+            } => {
+                let durable = DurableCommand::AcceptCompletion {
+                    acceptance: acceptance.clone(),
+                };
+                if let Some(receipt) =
+                    command_receipt_result(&state.snapshot, &command_id, &durable)
+                {
+                    match receipt {
+                        Ok(sequence) => {
+                            let _ = ack.send(Ok(sequence));
+                            return Ok(ControlEffect::CompletionAccepted);
+                        }
+                        Err(error) => {
+                            let _ = ack.send(Err(error));
+                            return Ok(ControlEffect::Continue);
+                        }
+                    }
+                }
+                if acceptance.validate().is_err() {
+                    let _ = ack.send(Err(ControlError::CompletionMismatch));
+                    return Ok(ControlEffect::Continue);
+                }
+                let Some(candidate) = state.snapshot.pending_completion.clone() else {
+                    let _ = ack.send(Err(ControlError::CompletionNotPending));
+                    return Ok(ControlEffect::Continue);
+                };
+                let contract = state
+                    .snapshot
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .expect("Agent contract validated at run creation");
+                if acceptance.candidate_id != candidate.id
+                    || acceptance.generation_id != candidate.generation_id
+                    || acceptance.generation_id != contract.generation_id
+                    || !contract
+                        .definition
+                        .acceptance
+                        .iter()
+                        .any(|criterion| matches!(criterion, TaskAcceptance::Host { .. }))
+                {
+                    let _ = ack.send(Err(ControlError::CompletionMismatch));
+                    return Ok(ControlEffect::Continue);
+                }
+                if let Err(message) = self.reconcile_workspace(state).await {
+                    let _ = ack.send(Err(ControlError::Store {
+                        message: message.clone(),
+                    }));
+                    return Err(RuntimeFailure::Store { message });
+                }
+                if acceptance.workspace_state != candidate.workspace_state
+                    || acceptance.workspace_state != state.snapshot.workspace_state
+                {
+                    let _ = ack.send(Err(ControlError::CompletionStale));
+                    return Ok(ControlEffect::Continue);
+                }
+                let receipt = HostAcceptanceReceipt {
+                    id: HostAcceptanceReceiptId::from(format!("host-acceptance:{}", command_id.0)),
+                    candidate_id: acceptance.candidate_id,
+                    generation_id: acceptance.generation_id,
+                    workspace_state: acceptance.workspace_state,
+                };
+                match self
+                    .publish(
+                        state,
+                        RuntimeEventKind::HostCompletionAccepted {
+                            command_id,
+                            receipt,
+                        },
+                    )
+                    .await
+                {
+                    Ok(stored) => {
+                        let _ = ack.send(Ok(stored.sequence));
+                        Ok(ControlEffect::CompletionAccepted)
+                    }
+                    Err(failure) => {
+                        let _ = ack.send(Err(ControlError::Store {
+                            message: format!("{failure:?}"),
+                        }));
+                        Err(failure)
+                    }
+                }
+            }
         }
     }
 
@@ -3599,6 +3885,34 @@ impl AgentRuntime {
         mut terminal: TerminalState,
         _budget: &RuntimeBudget,
     ) -> AgentOutcome {
+        if let TerminalState::AwaitingHostAcceptance { candidate } = &terminal {
+            let candidate = candidate.clone();
+            let summary = candidate.message.clone();
+            let accounting = self
+                .cumulative_accounting(
+                    state,
+                    state.snapshot.request.actor.kind == AgentActorKind::Root,
+                )
+                .await;
+            let outcome = AgentOutcome {
+                run_id: state.run_id().clone(),
+                parent_run_id: state.snapshot.request.parent_run_id.clone(),
+                terminal,
+                accounting,
+                runtime_model_requests: state.snapshot.runtime_model_requests,
+                runtime_retries: state.snapshot.runtime_retries,
+                tool_calls: state.snapshot.tool_calls,
+                details: AgentResultDetails {
+                    summary,
+                    completion_candidate: Some(candidate),
+                    evidence: state.snapshot.evidence_receipts.clone(),
+                    host_acceptance_receipts: state.snapshot.host_acceptance_receipts.clone(),
+                    ..AgentResultDetails::default()
+                },
+            };
+            let _ = self.store.release(&state.lease).await;
+            return outcome;
+        }
         let root = state.snapshot.request.actor.kind == AgentActorKind::Root;
         if root {
             terminal = match self.cleanup_integrated_writers(state).await {
@@ -3606,7 +3920,20 @@ impl AgentRuntime {
                 Ok(None) => terminal,
             };
         }
-        let mut accounting = self.cumulative_accounting(state, root).await;
+        let replay_only_completion = matches!(terminal, TerminalState::Completed { .. })
+            && state.snapshot.runtime_model_requests == state.runtime_model_requests_at_launch;
+        let mut accounting = if replay_only_completion {
+            let mut accounting = state.accounting_epoch_baseline.clone();
+            accounting.runtime_retries = accounting
+                .runtime_retries
+                .max(u64::from(state.snapshot.runtime_retries));
+            if root {
+                accounting.sealed = true;
+            }
+            accounting
+        } else {
+            self.cumulative_accounting(state, root).await
+        };
         let model_request_unsettled = state
             .snapshot
             .pending_model
@@ -3636,7 +3963,7 @@ impl AgentRuntime {
         }
         accounting.runtime_retries = accounting
             .runtime_retries
-            .saturating_add(u64::from(state.snapshot.runtime_retries));
+            .max(u64::from(state.snapshot.runtime_retries));
         let budget_can_replace = matches!(
             &terminal,
             TerminalState::Completed { .. }
@@ -3669,7 +3996,9 @@ impl AgentRuntime {
             .map(|task| task.workspace.clone());
         let details = AgentResultDetails {
             summary,
+            completion_candidate: state.snapshot.pending_completion.clone(),
             evidence: state.snapshot.evidence_receipts.clone(),
+            host_acceptance_receipts: state.snapshot.host_acceptance_receipts.clone(),
             workspace_state: read_only_workspace
                 .as_ref()
                 .map(|_| state.snapshot.workspace_state.clone()),
@@ -3842,12 +4171,19 @@ impl AgentRuntime {
             .acceptance
             .iter()
             .any(|acceptance| matches!(acceptance, TaskAcceptance::Verifier { .. }));
+        let accepted_host_receipt = current_host_acceptance(&state.snapshot, &candidate).cloned();
         let mut satisfied = Vec::with_capacity(contract.definition.acceptance.len());
         for acceptance in &contract.definition.acceptance {
             match acceptance {
                 TaskAcceptance::Host { id, .. } => {
+                    let receipt = accepted_host_receipt.as_ref().ok_or_else(|| {
+                        CompletionReviewError::Blocked(
+                            "完成候选尚未获得显式 Host acceptance receipt".to_owned(),
+                        )
+                    })?;
                     satisfied.push(AcceptanceSatisfaction::Host {
                         acceptance_id: id.clone(),
+                        receipt_id: receipt.id.clone(),
                     });
                 }
                 TaskAcceptance::Verifier {
@@ -3886,6 +4222,13 @@ impl AgentRuntime {
             self.reconcile_workspace(state)
                 .await
                 .map_err(CompletionReviewError::Blocked)?;
+        }
+        if let Some(receipt) = accepted_host_receipt
+            && receipt.workspace_state.revision != state.snapshot.workspace_state.revision
+        {
+            return Err(CompletionReviewError::Blocked(
+                "显式 Host acceptance receipt 不再匹配最新工作区 revision".to_owned(),
+            ));
         }
         let decision = CompletionDecision {
             candidate_id: candidate.id,
@@ -4060,6 +4403,7 @@ struct RunState {
     snapshot: RunSnapshot,
     lease: RunLease,
     accounting_epoch_baseline: ModelAccounting,
+    runtime_model_requests_at_launch: u32,
     /// Fresh runs use the same physical ledger that supplied the durable
     /// baseline, whereas a resumed run opens a new process-local ledger.
     model_accounting_includes_baseline: bool,
@@ -4350,6 +4694,7 @@ enum ControlEffect {
     Continue,
     Terminal(TerminalState),
     InteractionResolved(UserInteractionResponse),
+    CompletionAccepted,
 }
 
 enum InteractionWaitResult {
@@ -4372,6 +4717,11 @@ enum ControlCommand {
         command_id: CommandId,
         interaction_id: InteractionId,
         response: UserInteractionResponse,
+        ack: oneshot::Sender<Result<u64, ControlError>>,
+    },
+    AcceptCompletion {
+        command_id: CommandId,
+        acceptance: HostCompletionAcceptance,
         ack: oneshot::Sender<Result<u64, ControlError>>,
     },
 }
@@ -4495,6 +4845,22 @@ impl AgentControl {
             .map_err(|_| ControlError::RunFinished)?;
         received.await.map_err(|_| ControlError::RunFinished)?
     }
+
+    pub async fn accept_completion(
+        &self,
+        command_id: CommandId,
+        acceptance: HostCompletionAcceptance,
+    ) -> Result<u64, ControlError> {
+        let (ack, received) = oneshot::channel();
+        self.sender
+            .send(ControlCommand::AcceptCompletion {
+                command_id,
+                acceptance,
+                ack,
+            })
+            .map_err(|_| ControlError::RunFinished)?;
+        received.await.map_err(|_| ControlError::RunFinished)?
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -4513,6 +4879,12 @@ pub enum ControlError {
     InteractionAlreadyResolved,
     #[error("invalid interaction response: {message}")]
     InvalidInteractionResponse { message: String },
+    #[error("the run has no pending completion proposal")]
+    CompletionNotPending,
+    #[error("the Host completion acceptance does not match the pending candidate or generation")]
+    CompletionMismatch,
+    #[error("the Host completion acceptance does not match the latest workspace revision")]
+    CompletionStale,
 }
 
 pub struct RuntimeRun {
@@ -4520,12 +4892,32 @@ pub struct RuntimeRun {
     control: AgentControl,
     join: JoinHandle<AgentOutcome>,
     ready: Option<oneshot::Receiver<Result<(), RunStoreError>>>,
+    launch: Option<oneshot::Sender<()>>,
 }
 
 impl RuntimeRun {
     #[must_use]
     pub fn control(&self) -> AgentControl {
         self.control.clone()
+    }
+
+    /// Queue exact Host acceptance before the acquired Runtime is allowed to
+    /// inspect its pending proposal.
+    pub fn queue_completion_acceptance(
+        &self,
+        command_id: CommandId,
+        acceptance: HostCompletionAcceptance,
+    ) -> Result<oneshot::Receiver<Result<u64, ControlError>>, ControlError> {
+        let (ack, received) = oneshot::channel();
+        self.control
+            .sender
+            .send(ControlCommand::AcceptCompletion {
+                command_id,
+                acceptance,
+                ack,
+            })
+            .map_err(|_| ControlError::RunFinished)?;
+        Ok(received)
     }
 
     /// Wait until the canonical Store has durably created or acquired this
@@ -4536,13 +4928,21 @@ impl RuntimeRun {
             return Ok(self);
         };
         match ready.await {
-            Ok(Ok(())) => Ok(self),
+            Ok(Ok(())) => {
+                if let Some(launch) = self.launch.take() {
+                    let _ = launch.send(());
+                }
+                Ok(self)
+            }
             Ok(Err(error)) => Err(RunReadyError::Store(error)),
             Err(_) => Err(RunReadyError::RuntimeStopped),
         }
     }
 
-    pub async fn wait(self) -> Result<AgentOutcome, RuntimeJoinError> {
+    pub async fn wait(mut self) -> Result<AgentOutcome, RuntimeJoinError> {
+        if let Some(launch) = self.launch.take() {
+            let _ = launch.send(());
+        }
         self.join.await.map_err(|_error| RuntimeJoinError {
             message: "Agent Runtime 后台任务异常终止".to_owned(),
         })
@@ -5074,9 +5474,10 @@ fn writer_cleanup_context(lifecycle: &AgentTaskLifecycle) -> (WriterCleanupPhase
         Some(TerminalState::Cancelled) => "writer_child_cancelled",
         Some(TerminalState::Interrupted) => "writer_child_interrupted",
         Some(TerminalState::RecoveryRequired { .. }) => "writer_child_recovery_required",
-        Some(TerminalState::Failed { .. }) | Some(TerminalState::Completed { .. }) | None => {
-            "writer_child_failed"
-        }
+        Some(TerminalState::AwaitingHostAcceptance { .. })
+        | Some(TerminalState::Failed { .. })
+        | Some(TerminalState::Completed { .. })
+        | None => "writer_child_failed",
     };
     (WriterCleanupPhase::Child, reason.to_owned())
 }
@@ -5478,40 +5879,6 @@ fn validate_writer_seal(task: &AgentTask, seal: &WriterSeal) -> Result<(), Strin
     event.validate_agent_lifecycle_payload()
 }
 
-fn validate_writer_receipts(task: &AgentTask, receipts: &[EvidenceReceipt]) -> Result<(), String> {
-    let Some((acceptance_id, evidence_policy, verifier)) = task
-        .task_contract
-        .definition
-        .acceptance
-        .iter()
-        .find_map(|acceptance| match acceptance {
-            TaskAcceptance::Verifier {
-                id,
-                evidence_policy,
-                verifier,
-                ..
-            } => Some((id, evidence_policy, verifier)),
-            TaskAcceptance::Host { .. } => None,
-        })
-    else {
-        return Err("writer AgentTask 没有冻结 exact verifier".to_owned());
-    };
-    if receipts.len() != 1
-        || receipts.iter().any(|receipt| {
-            receipt.generation_id != task.task_contract.generation_id
-                || receipt.acceptance_id != *acceptance_id
-                || receipt.verifier != *verifier
-                || !receipt.lineage.satisfies(*evidence_policy)
-        })
-    {
-        return Err(
-            "writer EvidenceReceipt 与 child generation、acceptance 或 exact verifier 不一致"
-                .to_owned(),
-        );
-    }
-    Ok(())
-}
-
 fn failed_child_outcome(task: &AgentTask, failure: RuntimeFailure) -> AgentOutcome {
     AgentOutcome {
         run_id: task.child_run_id.clone(),
@@ -5523,6 +5890,30 @@ fn failed_child_outcome(task: &AgentTask, failure: RuntimeFailure) -> AgentOutco
         tool_calls: 0,
         details: AgentResultDetails::default(),
     }
+}
+
+fn readonly_child_recovery_outcome(
+    task: &AgentTask,
+    mut outcome: AgentOutcome,
+    terminal: TerminalState,
+) -> AgentOutcome {
+    if outcome.run_id != task.child_run_id
+        || outcome.parent_run_id.as_ref() != Some(&task.parent_run_id)
+    {
+        outcome = AgentOutcome {
+            run_id: task.child_run_id.clone(),
+            parent_run_id: Some(task.parent_run_id.clone()),
+            terminal: terminal.clone(),
+            accounting: incomplete_accounting(),
+            runtime_model_requests: 0,
+            runtime_retries: 0,
+            tool_calls: 0,
+            details: AgentResultDetails::default(),
+        };
+    }
+    outcome.terminal = terminal;
+    outcome.details.summary = terminal_state_label(&outcome.terminal).to_owned();
+    outcome
 }
 
 fn runtime_join_failure() -> RuntimeFailure {
@@ -5570,6 +5961,7 @@ fn readonly_child_handoff(state: &RunState, outcome: &AgentOutcome) -> String {
 
 fn terminal_state_label(terminal: &TerminalState) -> &'static str {
     match terminal {
+        TerminalState::AwaitingHostAcceptance { .. } => "awaiting_host_acceptance",
         TerminalState::Completed { .. } => "completed",
         TerminalState::Blocked { .. } => "blocked",
         TerminalState::Failed { .. } => "failed",
@@ -5577,6 +5969,79 @@ fn terminal_state_label(terminal: &TerminalState) -> &'static str {
         TerminalState::Interrupted => "interrupted",
         TerminalState::RecoveryRequired { .. } => "recovery_required",
     }
+}
+
+fn task_requires_host_acceptance(snapshot: &RunSnapshot) -> bool {
+    snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .is_some_and(|contract| {
+            contract
+                .definition
+                .acceptance
+                .iter()
+                .any(|acceptance| matches!(acceptance, TaskAcceptance::Host { .. }))
+        })
+}
+
+fn current_host_acceptance<'a>(
+    snapshot: &'a RunSnapshot,
+    candidate: &CompletionCandidate,
+) -> Option<&'a HostAcceptanceReceipt> {
+    snapshot
+        .host_acceptance_receipts
+        .iter()
+        .rev()
+        .find(|receipt| {
+            receipt.candidate_id == candidate.id
+                && receipt.generation_id == candidate.generation_id
+                && receipt.workspace_state == candidate.workspace_state
+                && (receipt.workspace_state == snapshot.workspace_state
+                    || host_verifier_advanced_same_revision(snapshot, candidate, receipt))
+        })
+}
+
+/// A frozen Host verifier is the only completion action allowed to advance the
+/// workspace epoch after an exact Host acceptance without invalidating it. The
+/// durable receipt must prove that exact one-generation, same-revision
+/// transition for this candidate and the current verifier criterion. A generic
+/// same-hash epoch advance is deliberately insufficient.
+fn host_verifier_advanced_same_revision(
+    snapshot: &RunSnapshot,
+    candidate: &CompletionCandidate,
+    receipt: &HostAcceptanceReceipt,
+) -> bool {
+    if receipt.workspace_state.generation.checked_add(1)
+        != Some(snapshot.workspace_state.generation)
+        || receipt.workspace_state.revision != snapshot.workspace_state.revision
+    {
+        return false;
+    }
+    let Some(contract) = snapshot.request.task_contract.as_ref() else {
+        return false;
+    };
+    contract.definition.acceptance.iter().any(|acceptance| {
+        let TaskAcceptance::Verifier {
+            id,
+            evidence_policy,
+            verifier,
+            ..
+        } = acceptance
+        else {
+            return false;
+        };
+        let verification_id =
+            VerificationId::from(format!("host-verification:{}:{}", candidate.id.0, id.0));
+        snapshot.evidence_receipts.iter().any(|evidence| {
+            evidence.generation_id == candidate.generation_id
+                && evidence.acceptance_id == *id
+                && evidence.verification_id == verification_id
+                && evidence.verifier == *verifier
+                && evidence.lineage.satisfies(*evidence_policy)
+                && evidence.workspace_state == snapshot.workspace_state
+        })
+    })
 }
 
 fn writer_cleanup_recovery_terminal(task: &AgentTask, message: &str) -> TerminalState {

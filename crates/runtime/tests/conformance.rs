@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -257,7 +257,14 @@ struct CollectSink {
 
 impl CollectSink {
     fn events(&self) -> Vec<StoredRuntimeEvent> {
-        self.events.lock().expect("event lock").clone()
+        let mut seen = HashSet::new();
+        self.events
+            .lock()
+            .expect("event lock")
+            .iter()
+            .filter(|event| seen.insert((event.run_id.clone(), event.event_id.clone())))
+            .cloned()
+            .collect()
     }
 
     async fn wait_for(&self, predicate: impl Fn(&StoredRuntimeEvent) -> bool) {
@@ -321,11 +328,20 @@ impl RuntimeEventSink for CollectSink {
     }
 }
 
-#[derive(Default)]
 struct MockTools {
     calls: Mutex<Vec<ToolInvocation>>,
     slow_cancelled: AtomicBool,
     revision: Mutex<Option<String>>,
+}
+
+impl Default for MockTools {
+    fn default() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            slow_cancelled: AtomicBool::new(false),
+            revision: Mutex::new(Some("sha256:fixture-workspace".to_owned())),
+        }
+    }
 }
 
 struct HugeCatalogTools;
@@ -369,6 +385,10 @@ impl ToolExecutor for HugeCatalogTools {
         WorkspaceAccess::ReadOnly
     }
 
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        Ok("sha256:huge-catalog-fixture".to_owned())
+    }
+
     async fn execute(
         &self,
         _invocation: ToolInvocation,
@@ -400,6 +420,10 @@ impl ToolExecutor for RejectingPreflightTools {
             )
             .with_failure_code(ToolFailureCode::SchemaValidation),
         )
+    }
+
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        Ok("sha256:preflight-fixture".to_owned())
     }
 
     async fn execute(
@@ -712,7 +736,10 @@ fn fixture(
     Arc<CollectSink>,
     Arc<InMemoryRunStore>,
 ) {
-    let tools = Arc::new(MockTools::default());
+    let tools = Arc::new(MockTools {
+        revision: Mutex::new(Some("sha256:fixture-workspace".to_owned())),
+        ..MockTools::default()
+    });
     let sink = Arc::new(CollectSink::default());
     let store = Arc::new(InMemoryRunStore::default());
     let runtime = Arc::new(AgentRuntime::new(
@@ -733,13 +760,47 @@ fn fixture_with_clock(
     Arc<CollectSink>,
     Arc<InMemoryRunStore>,
 ) {
-    let tools = Arc::new(MockTools::default());
+    let tools = Arc::new(MockTools {
+        revision: Mutex::new(Some("sha256:fixture-workspace".to_owned())),
+        ..MockTools::default()
+    });
     let sink = Arc::new(CollectSink::default());
     let store = Arc::new(InMemoryRunStore::default());
     let runtime = Arc::new(
         AgentRuntime::new(model, tools.clone(), sink.clone(), store.clone()).with_clock(clock),
     );
     (runtime, tools, sink, store)
+}
+
+/// Test caller for the production Host contract: first observe the durable
+/// answer proposal, then submit one exact acceptance command through the same
+/// Runtime/Store path and wait for its canonical terminal fact.
+async fn wait_host_accepted(runtime: &Arc<AgentRuntime>, run: RuntimeRun) -> AgentOutcome {
+    let proposed = run.wait().await.expect("run returns an answer proposal");
+    let TerminalState::AwaitingHostAcceptance { candidate } = proposed.terminal else {
+        return proposed;
+    };
+    let acceptance = HostCompletionAcceptance {
+        candidate_id: candidate.id.clone(),
+        generation_id: candidate.generation_id.clone(),
+        workspace_state: candidate.workspace_state.clone(),
+    };
+    let resumed = runtime.resume(proposed.run_id.clone());
+    let accepted = resumed
+        .queue_completion_acceptance(
+            CommandId::from(format!(
+                "test-host-accept:{}:{}",
+                proposed.run_id, candidate.id.0
+            )),
+            acceptance,
+        )
+        .expect("queue exact Host acceptance");
+    let resumed = resumed.ready().await.expect("resume proposed run");
+    accepted
+        .await
+        .expect("Host acceptance acknowledgement")
+        .expect("Host acceptance commits");
+    resumed.wait().await.expect("accepted run reaches terminal")
 }
 
 fn request(input: &str) -> RunRequest {
@@ -1133,6 +1194,89 @@ async fn seed_committed_model_output(
     attempt_id
 }
 
+async fn seed_completion_candidate_origin(
+    store: &InMemoryRunStore,
+    lease: &RunLease,
+    event_prefix: &str,
+    message: &str,
+) -> CompletionCandidate {
+    let replay = store
+        .load(&lease.run_id)
+        .await
+        .expect("load completion origin fixture")
+        .expect("completion origin run exists");
+    let snapshot = &replay.snapshot;
+    let tools = Vec::new();
+    let context = request_context(snapshot, &tools);
+    let attempt_id = AttemptId(format!("{event_prefix}-attempt"));
+    append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-prepared"),
+        RuntimeEventKind::ModelRequestPrepared {
+            attempt_id: attempt_id.clone(),
+            request: Box::new(ModelRequest {
+                run_id: lease.run_id.clone(),
+                parent_run_id: snapshot.request.parent_run_id.clone(),
+                actor: snapshot.request.actor,
+                model: snapshot.request.model.clone(),
+                system_prompt: context.system_prompt,
+                messages: context.messages,
+                tools,
+                reasoning_effort: snapshot.request.reasoning_effort,
+                max_output_tokens: snapshot.request.max_output_tokens,
+                streaming: snapshot.request.streaming,
+                request_number: snapshot.local_turns.saturating_add(1),
+                attempt: 0,
+            }),
+        },
+    )
+    .await;
+    append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-in-flight"),
+        RuntimeEventKind::ModelRequestInFlight {
+            attempt_id: attempt_id.clone(),
+        },
+    )
+    .await;
+    let committed = append_event(
+        store,
+        lease,
+        &format!("{event_prefix}-committed"),
+        RuntimeEventKind::ModelResponseCommitted {
+            attempt_id,
+            output: Box::new(model_output(
+                message,
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )),
+            accounting: Box::new(ModelAccounting::default()),
+        },
+    )
+    .await;
+    let current = store
+        .load(&lease.run_id)
+        .await
+        .expect("reload completion origin fixture")
+        .expect("completion origin run remains available")
+        .snapshot;
+    CompletionCandidate {
+        id: CompletionCandidateId::from(format!("completion-{}", committed.sequence)),
+        generation_id: current
+            .request
+            .task_contract
+            .as_ref()
+            .expect("completion origin contract")
+            .generation_id
+            .clone(),
+        message: message.to_owned(),
+        workspace_state: current.workspace_state,
+    }
+}
+
 async fn seed_current_model_tool_calls(
     store: &InMemoryRunStore,
     lease: &RunLease,
@@ -1312,7 +1456,7 @@ async fn final_is_store_first_and_terminal_is_exactly_once() {
         )])
     }));
     let (runtime, _, sink, store) = fixture(model);
-    let outcome = runtime.start(request("任务")).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("任务"))).await;
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
         "unexpected terminal: {:?}",
@@ -1410,7 +1554,7 @@ async fn structured_task_semantics_are_visible_to_the_model_and_canonical_transc
     definition.constraints = vec!["只修改 ranges.py".to_owned()];
     definition.non_goals = vec!["不要修改测试".to_owned()];
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
         "unexpected terminal: {:#?}",
@@ -1515,7 +1659,7 @@ async fn tool_reasoning_and_raw_arguments_replay_exactly() {
         )])
     }));
     let (runtime, tools, _, _) = fixture(model);
-    let outcome = runtime.start(request("读取")).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("读取"))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let calls = tools.calls.lock().unwrap();
     assert_eq!(calls[0].arguments.raw, "{ \"path\" : \"src/lib.rs\" }");
@@ -1577,11 +1721,7 @@ async fn reused_call_id_executes_once_for_each_assistant_turn() {
     }));
     let (runtime, tools, _, _) = fixture(model);
 
-    let outcome = runtime
-        .start(request("依次读取两个文件"))
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("依次读取两个文件"))).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let calls = tools.calls.lock().unwrap();
@@ -1692,7 +1832,7 @@ async fn resume_partially_settled_assistant_turn_executes_only_remaining_call() 
         store,
     ));
 
-    let outcome = runtime.resume(run_id).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(run_id)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let calls = tools.calls.lock().unwrap();
@@ -1732,7 +1872,7 @@ async fn approval_is_durable_and_precedes_every_tool_side_effect() {
     let (runtime, tools, sink, store) = fixture(model);
     let mut run_request = request("approval");
     run_request.environment.interactive = true;
-    let run = runtime.start(run_request);
+    let run = runtime.start(run_request).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
@@ -1758,7 +1898,7 @@ async fn approval_is_durable_and_precedes_every_tool_side_effect() {
         )
         .await
         .expect("approval accepted durably");
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "approved"
@@ -1807,8 +1947,9 @@ async fn denied_authorization_is_durable_and_never_starts_the_tool() {
     let (runtime, tools, _, store) = fixture(model);
     let run = runtime.start(request("deny"));
     let run_id = run.run_id.clone();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(matches!(
-        run.wait().await.unwrap().terminal,
+        outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "deny observed"
     ));
     assert!(tools.calls.lock().unwrap().is_empty());
@@ -1867,7 +2008,7 @@ async fn approval_becomes_stale_when_workspace_revision_changes_before_start() {
     ));
     let mut run_request = request("stale approval");
     run_request.environment.interactive = true;
-    let run = runtime.start(run_request);
+    let run = runtime.start(run_request).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
@@ -1890,7 +2031,7 @@ async fn approval_becomes_stale_when_workspace_revision_changes_before_start() {
         .await
         .expect("approval response is durable");
 
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(
         matches!(
             outcome.terminal,
@@ -1933,7 +2074,7 @@ async fn cancelling_write_approval_before_execution_proves_no_side_effect() {
     let (runtime, tools, sink, store) = fixture(model);
     let mut run_request = request("取消待审批的写工具");
     run_request.environment.interactive = true;
-    let run = runtime.start(run_request);
+    let run = runtime.start(run_request).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
@@ -1999,7 +2140,7 @@ async fn pending_approval_replays_without_reasking_and_resumes_each_safe_window_
             sink.clone(),
             store.clone(),
         ));
-        let run = runtime.resume(RunId::from(run_id));
+        let run = runtime.resume(RunId::from(run_id)).ready().await.unwrap();
         let control = run.control();
         sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
             .await;
@@ -2014,8 +2155,9 @@ async fn pending_approval_replays_without_reasking_and_resumes_each_safe_window_
                 .await
                 .expect("resume approval accepted");
         }
+        let outcome = wait_host_accepted(&runtime, run).await;
         assert!(matches!(
-            run.wait().await.unwrap().terminal,
+            outcome.terminal,
             TerminalState::Completed { ref message, .. } if message == "resumed"
         ));
         assert_eq!(tools.calls.lock().unwrap().len(), 1);
@@ -2098,7 +2240,7 @@ async fn request_user_input_submit_and_cancel_are_canonical_tool_outcomes() {
         let (runtime, tools, sink, _) = fixture(model);
         let mut run_request = request("ask");
         run_request.environment.interactive = true;
-        let run = runtime.start(run_request);
+        let run = runtime.start(run_request).ready().await.unwrap();
         let control = run.control();
         sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
             .await;
@@ -2137,10 +2279,8 @@ async fn request_user_input_submit_and_cancel_are_canonical_tool_outcomes() {
             )
             .await
             .expect("user input resolution accepted");
-        assert!(matches!(
-            run.wait().await.unwrap().terminal,
-            TerminalState::Completed { .. }
-        ));
+        let outcome = wait_host_accepted(&runtime, run).await;
+        assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
         assert!(
             tools.calls.lock().unwrap().is_empty(),
             "request_user_input is runtime-owned and never reaches ToolExecutor"
@@ -2197,7 +2337,7 @@ async fn runtime_builtin_schema_failures_commit_before_any_execution_start() {
         let (runtime, tools, sink, _) = fixture(model);
         let mut run_request = request("builtin schema preflight");
         run_request.environment.interactive = tool_name == REQUEST_USER_INPUT_TOOL_NAME;
-        let outcome = runtime.start(run_request).wait().await.unwrap();
+        let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
         assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
         assert!(tools.calls.lock().unwrap().is_empty());
         assert!(
@@ -2253,7 +2393,7 @@ async fn malformed_advertised_tool_returns_typed_feedback_without_leaking_raw() 
         )])
     }));
     let (runtime, tools, _, store) = fixture(model);
-    let outcome = runtime.start(request("bad tools")).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("bad tools"))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert!(
         tools.calls.lock().unwrap().is_empty(),
@@ -2310,11 +2450,7 @@ async fn executor_preflight_rejection_commits_without_execution_started() {
     let store = Arc::new(InMemoryRunStore::default());
     let runtime = Arc::new(AgentRuntime::new(model, tools.clone(), sink.clone(), store));
 
-    let outcome = runtime
-        .start(request("schema preflight"))
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("schema preflight"))).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(tools.executions.load(Ordering::Acquire), 0);
@@ -2374,7 +2510,7 @@ async fn unadvertised_tool_returns_corrective_result_instead_of_ending_the_run()
         )])
     }));
     let (runtime, tools, _, store) = fixture(model);
-    let outcome = runtime.start(request("unknown tool")).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("unknown tool"))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert!(tools.calls.lock().unwrap().is_empty());
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
@@ -2436,16 +2572,14 @@ async fn steer_during_tools_is_appended_only_after_every_tool_result() {
         )])
     }));
     let (runtime, _, sink, store) = fixture(model);
-    let run = runtime.start(request("tool steer"));
+    let run = runtime.start(request("tool steer")).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(&event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
         .await;
     control.steer("steer-after-tools").unwrap();
-    assert!(matches!(
-        run.wait().await.unwrap().terminal,
-        TerminalState::Completed { .. }
-    ));
+    let outcome = wait_host_accepted(&runtime, run).await;
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let entries = store
         .load(&run_id)
         .await
@@ -2526,12 +2660,12 @@ async fn in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_t
         }
     }));
     let (runtime, _, sink, _) = fixture(model);
-    let run = runtime.start(request("旧任务"));
+    let run = runtime.start(request("旧任务")).ready().await.unwrap();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. }))
         .await;
     control.steer("改做新任务").unwrap();
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "新结果"
@@ -2572,7 +2706,7 @@ async fn in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_t
         )])
     }));
     let (runtime, _, sink, _) = fixture(model);
-    let run = runtime.start(request("取消"));
+    let run = runtime.start(request("取消")).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. }))
@@ -2608,7 +2742,7 @@ async fn in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_t
         )])
     }));
     let (runtime, _, sink, _) = fixture(model);
-    let run = runtime.start(request("中断"));
+    let run = runtime.start(request("中断")).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. }))
@@ -2644,7 +2778,11 @@ async fn concurrent_same_command_id_accepts_only_one_payload() {
         )])
     }));
     let (runtime, _, sink, store) = fixture(model);
-    let run = runtime.start(request("并发 command id"));
+    let run = runtime
+        .start(request("并发 command id"))
+        .ready()
+        .await
+        .unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. }))
@@ -2733,7 +2871,7 @@ async fn resume_after_steer_applied_never_reuses_the_superseded_stop_response() 
         Arc::new(CollectSink::default()),
         store,
     ));
-    let outcome = runtime.resume(created.lease.run_id).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id)).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "新结果"
@@ -2766,7 +2904,7 @@ async fn cancelling_a_tool_preserves_read_and_write_recovery_truth() {
             )])
         }));
         let (runtime, tools, sink, store) = fixture(model);
-        let run = runtime.start(request("慢工具"));
+        let run = runtime.start(request("慢工具")).ready().await.unwrap();
         let run_id = run.run_id.clone();
         let control = run.control();
         sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
@@ -2848,7 +2986,7 @@ async fn readonly_executor_transport_failure_is_typed_and_recovers_on_the_next_m
     let (runtime, _tools, _sink, store) = fixture(model);
     let run = runtime.start(request("执行器失败后恢复"));
     let run_id = run.run_id.clone();
-    let terminal = run.wait().await.unwrap();
+    let terminal = wait_host_accepted(&runtime, run).await;
     assert!(matches!(
         terminal.terminal,
         TerminalState::Completed { ref message, .. } if message == "已恢复"
@@ -2956,7 +3094,7 @@ async fn root_readonly_child_and_writer_share_tool_failure_correction_contract()
         let created = store.create(run_request).await.unwrap();
         store.release(&created.lease).await.unwrap();
 
-        let outcome = runtime.resume(run_id.clone()).wait().await.unwrap();
+        let outcome = wait_host_accepted(&runtime, runtime.resume(run_id.clone())).await;
 
         assert!(matches!(
             outcome.terminal,
@@ -3195,7 +3333,7 @@ async fn runtime_retry_waits_for_durable_not_before_and_honors_retry_after_hint(
     let (runtime, _, sink, _) = fixture_with_clock(model, clock.clone());
     let mut retry_request = request("retry with backoff");
     retry_request.limits.max_model_retries = 2;
-    let run = runtime.start(retry_request);
+    let run = runtime.start(retry_request).ready().await.unwrap();
 
     sink.wait_for(|event| {
         matches!(
@@ -3237,10 +3375,9 @@ async fn runtime_retry_waits_for_durable_not_before_and_honors_retry_after_hint(
     assert_eq!(calls.load(Ordering::Acquire), 1);
     clock.advance_to(15_000);
 
-    let outcome = tokio::time::timeout(Duration::from_secs(1), run.wait())
+    let outcome = tokio::time::timeout(Duration::from_secs(1), wait_host_accepted(&runtime, run))
         .await
-        .expect("fake-clock retry completes without real sleep")
-        .unwrap();
+        .expect("fake-clock retry completes without real sleep");
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "已恢复"
@@ -3275,7 +3412,7 @@ async fn runtime_network_retry_uses_one_then_two_second_backoff_and_exact_accoun
     let (runtime, _, sink, _) = fixture_with_clock(model, clock.clone());
     let mut retry_request = request("network reset twice");
     retry_request.limits.max_model_retries = 2;
-    let run = runtime.start(retry_request);
+    let run = runtime.start(retry_request).ready().await.unwrap();
 
     sink.wait_for(|event| {
         matches!(
@@ -3338,7 +3475,7 @@ async fn runtime_network_retry_uses_one_then_two_second_backoff_and_exact_accoun
     assert_eq!(calls.load(Ordering::Acquire), 2);
 
     clock.advance_to(3_000);
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "两次退避后恢复"
@@ -3404,7 +3541,7 @@ async fn root_readonly_child_and_writer_share_the_same_durable_retry_contract() 
         let run_id = run_request.run_id.clone().expect("actor run id");
         let created = store.create(run_request).await.unwrap();
         store.release(&created.lease).await.unwrap();
-        let run = runtime.resume(run_id.clone());
+        let run = runtime.resume(run_id.clone()).ready().await.unwrap();
 
         sink.wait_for(|event| {
             matches!(
@@ -3422,7 +3559,7 @@ async fn root_readonly_child_and_writer_share_the_same_durable_retry_contract() 
         .await;
         assert_eq!(calls.load(Ordering::Acquire), 1);
         clock.advance_to(1_000);
-        let outcome = run.wait().await.unwrap();
+        let outcome = wait_host_accepted(&runtime, run).await;
 
         assert!(matches!(
             outcome.terminal,
@@ -3588,7 +3725,7 @@ async fn root_and_read_only_child_share_the_same_unsafe_replay_contract() {
     parent_request.limits.max_model_retries = 2;
     parent_request.limits.max_turns = 3;
     parent_request.limits.max_model_requests = 4;
-    let parent_outcome = runtime.start(parent_request).wait().await.unwrap();
+    let parent_outcome = wait_host_accepted(&runtime, runtime.start(parent_request)).await;
     assert!(matches!(
         parent_outcome.terminal,
         TerminalState::Completed { .. }
@@ -3640,7 +3777,7 @@ async fn model_event_idle_is_runtime_owned_and_obeys_actionable_output_gate() {
     let mut stalled = request("idle");
     stalled.limits.model_event_idle_ms = Some(10);
     stalled.limits.max_model_retries = 1;
-    let run = runtime.start(stalled);
+    let run = runtime.start(stalled).ready().await.unwrap();
     sink.wait_for(|event| {
         matches!(
             event.event,
@@ -4044,11 +4181,11 @@ async fn forked_child_excludes_the_entire_current_multi_tool_turn() {
     }));
     let (runtime, _, _, store) = fixture(model);
 
-    let outcome = runtime
-        .start(request("验证多工具批次的 fork_context"))
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(
+        &runtime,
+        runtime.start(request("验证多工具批次的 fork_context")),
+    )
+    .await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 3);
@@ -4138,7 +4275,7 @@ async fn a_real_child_uses_the_same_broker_and_compacts_without_a_summary_reques
         hard_input_tokens: 2_000,
     };
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
@@ -4269,7 +4406,7 @@ async fn shared_exact_four_budget_preserves_child_artifact_and_root_integration_
     run_request.limits.max_turns = 2;
     run_request.limits.max_model_requests = 4;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -4411,7 +4548,7 @@ async fn child_max_steps_four_makes_only_the_fourth_request_tool_free() {
     run_request.limits.max_turns = 4;
     run_request.limits.max_model_requests = 6;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -4519,7 +4656,7 @@ async fn child_search_then_read_can_return_on_a_third_ordinary_request() {
     run_request.limits.max_turns = 4;
     run_request.limits.max_model_requests = 6;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -4553,7 +4690,7 @@ async fn tool_call_from_tool_free_terminal_request_fails_without_execution() {
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -4582,7 +4719,7 @@ async fn empty_tool_free_terminal_response_is_not_false_completion() {
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert_eq!(
         outcome.terminal,
@@ -4594,7 +4731,7 @@ async fn empty_tool_free_terminal_response_is_not_false_completion() {
 }
 
 #[tokio::test]
-async fn host_only_completion_observes_the_workspace_at_each_evidence_boundary() {
+async fn host_only_model_stop_is_only_a_durable_answer_proposal() {
     let model = Arc::new(MockModel::new(|_| {
         ScriptResponse::Events(vec![completed(
             "任务已完成",
@@ -4603,20 +4740,299 @@ async fn host_only_completion_observes_the_workspace_at_each_evidence_boundary()
             ModelFinishReason::Stop,
         )])
     }));
-    let (runtime, tools, sink, _) = fixture(model);
+    let (runtime, tools, sink, store) = fixture(model);
 
     let outcome = runtime.start(request("完成只读任务")).wait().await.unwrap();
 
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(matches!(
+        &outcome.terminal,
+        TerminalState::AwaitingHostAcceptance { candidate }
+            if candidate.message == "任务已完成"
+    ));
     assert!(tools.calls.lock().unwrap().is_empty());
+    let replay = store
+        .load(&outcome.run_id)
+        .await
+        .unwrap()
+        .expect("answered run remains durable");
+    assert_eq!(
+        replay
+            .snapshot
+            .pending_completion
+            .as_ref()
+            .map(|candidate| candidate.message.as_str()),
+        Some("任务已完成")
+    );
+    assert!(replay.snapshot.terminal.is_none());
+    assert!(!replay.events.iter().any(|event| event.event.is_terminal()));
     assert_eq!(
         sink.events()
             .iter()
             .filter(|event| matches!(event.event, RuntimeEventKind::WorkspaceObserved { .. }))
             .count(),
-        2,
-        "the request context and completion decision each observe current workspace state"
+        1,
+        "one unchanged workspace observation is reused by the exact answer proposal"
     );
+    assert_eq!(
+        replay
+            .snapshot
+            .pending_completion
+            .as_ref()
+            .map(|candidate| &candidate.workspace_state),
+        Some(&replay.snapshot.workspace_state)
+    );
+}
+
+#[tokio::test]
+async fn explicit_host_acceptance_is_durable_exact_and_reopen_safe() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        calls.fetch_add(1, Ordering::AcqRel);
+        ScriptResponse::Events(vec![completed(
+            "可展示答案",
+            None,
+            vec![],
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, tools, _, store) = fixture(model);
+    *tools.revision.lock().unwrap() = Some("sha256:answer-workspace".to_owned());
+    let answered = runtime.start(request("普通问答")).wait().await.unwrap();
+    let TerminalState::AwaitingHostAcceptance { candidate } = answered.terminal else {
+        panic!("model Stop must await explicit Host acceptance");
+    };
+    let acceptance = HostCompletionAcceptance {
+        candidate_id: candidate.id.clone(),
+        generation_id: candidate.generation_id.clone(),
+        workspace_state: candidate.workspace_state.clone(),
+    };
+    let command_id = CommandId::from("accept-answer-1");
+    let resumed = runtime.resume(answered.run_id.clone());
+    let accepted = resumed
+        .queue_completion_acceptance(command_id.clone(), acceptance.clone())
+        .expect("queue exact Host acceptance");
+    let outcome = resumed.wait().await.unwrap();
+    let accepted_sequence = accepted
+        .await
+        .expect("acceptance acknowledgement")
+        .expect("acceptance committed");
+
+    let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+        panic!("explicit Host acceptance must close the Host-only task");
+    };
+    assert!(matches!(
+        decision.satisfied.as_slice(),
+        [AcceptanceSatisfaction::Host {
+            acceptance_id,
+            receipt_id,
+        }] if acceptance_id == &AcceptanceId::from("host")
+            && receipt_id == &HostAcceptanceReceiptId::from("host-acceptance:accept-answer-1")
+    ));
+    assert_eq!(model_calls.load(Ordering::Acquire), 1);
+
+    let replay = store
+        .load(&outcome.run_id)
+        .await
+        .unwrap()
+        .expect("accepted run reopens");
+    assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
+    assert!(replay.snapshot.command_receipts.iter().any(|receipt| {
+        receipt.command_id == command_id
+            && receipt.sequence == accepted_sequence
+            && receipt.command
+                == DurableCommand::AcceptCompletion {
+                    acceptance: acceptance.clone(),
+                }
+    }));
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::HostCompletionAccepted { .. }))
+            .count(),
+        1
+    );
+
+    let reopened = runtime.resume(outcome.run_id.clone()).wait().await.unwrap();
+    assert_eq!(reopened, outcome);
+    assert_eq!(model_calls.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn mixed_host_and_verifier_contract_closes_in_either_acceptance_order() {
+    for host_first in [true, false] {
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let calls = model_calls.clone();
+        let model = Arc::new(MockModel::new(move |_| {
+            calls.fetch_add(1, Ordering::AcqRel);
+            ScriptResponse::Events(vec![completed(
+                "Host 接受且冻结 verifier 通过",
+                None,
+                vec![],
+                ModelFinishReason::Stop,
+            )])
+        }));
+        let verifier = exact_run_tests_spec();
+        let tools = Arc::new(VerifierTools {
+            spec: verifier.clone(),
+            revision: Mutex::new("sha256:mixed-workspace".to_owned()),
+            fail: false,
+            omit_artifact: false,
+            calls: AtomicUsize::new(0),
+        });
+        let store = Arc::new(InMemoryRunStore::default());
+        let runtime = Arc::new(AgentRuntime::new(
+            model,
+            tools.clone(),
+            Arc::new(CollectSink::default()),
+            store.clone(),
+        ));
+        let host = TaskAcceptance::Host {
+            id: AcceptanceId::from("host"),
+            description: "Host 必须显式接受".to_owned(),
+        };
+        let exact = TaskAcceptance::Verifier {
+            id: AcceptanceId::from("tests"),
+            description: "冻结测试必须通过".to_owned(),
+            evidence_policy: VerifierEvidencePolicy::LatestPass,
+            verifier,
+        };
+        let mut run_request = request(if host_first {
+            "Host-first mixed acceptance"
+        } else {
+            "Verifier-first mixed acceptance"
+        });
+        run_request
+            .task_contract
+            .as_mut()
+            .expect("mixed task contract")
+            .definition
+            .acceptance = if host_first {
+            vec![host, exact]
+        } else {
+            vec![exact, host]
+        };
+
+        let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
+        let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+            panic!("mixed contract must reach one completed decision");
+        };
+        assert_eq!(decision.satisfied.len(), 2);
+        assert!(
+            decision
+                .satisfied
+                .iter()
+                .any(|satisfaction| matches!(satisfaction, AcceptanceSatisfaction::Host { .. }))
+        );
+        assert!(
+            decision.satisfied.iter().any(|satisfaction| matches!(
+                satisfaction,
+                AcceptanceSatisfaction::Evidence { .. }
+            ))
+        );
+        assert_eq!(model_calls.load(Ordering::Acquire), 1);
+        assert_eq!(tools.calls.load(Ordering::Acquire), 1);
+        let replay = store
+            .load(&outcome.run_id)
+            .await
+            .unwrap()
+            .expect("mixed terminal replays");
+        assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
+    }
+}
+
+#[tokio::test]
+async fn host_acceptance_rejects_stale_foreign_generation_and_workspace_facts() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        calls.fetch_add(1, Ordering::AcqRel);
+        ScriptResponse::Events(vec![completed(
+            "可展示但尚未接受",
+            None,
+            vec![],
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, tools, _, _) = fixture(model);
+
+    let first = runtime.start(request("第一条问答")).wait().await.unwrap();
+    let TerminalState::AwaitingHostAcceptance {
+        candidate: foreign_candidate,
+    } = first.terminal
+    else {
+        panic!("first run must stop at a proposal");
+    };
+    let second = runtime.start(request("第二条问答")).wait().await.unwrap();
+    let TerminalState::AwaitingHostAcceptance { candidate } = second.terminal else {
+        panic!("second run must stop at a proposal");
+    };
+
+    for (command, acceptance) in [
+        (
+            "accept-stale-candidate",
+            HostCompletionAcceptance {
+                candidate_id: CompletionCandidateId::from("stale-candidate"),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        ),
+        (
+            "accept-foreign-run",
+            HostCompletionAcceptance {
+                candidate_id: foreign_candidate.id.clone(),
+                generation_id: foreign_candidate.generation_id.clone(),
+                workspace_state: foreign_candidate.workspace_state.clone(),
+            },
+        ),
+        (
+            "accept-wrong-generation",
+            HostCompletionAcceptance {
+                candidate_id: candidate.id.clone(),
+                generation_id: TaskGenerationId::from("wrong-generation"),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        ),
+    ] {
+        let resumed = runtime.resume(second.run_id.clone());
+        let ack = resumed
+            .queue_completion_acceptance(CommandId::from(command), acceptance)
+            .expect("queue mismatched acceptance");
+        let resumed = resumed.ready().await.expect("acquire proposed run");
+        assert_eq!(
+            ack.await.expect("mismatch acknowledgement"),
+            Err(ControlError::CompletionMismatch),
+            "{command}"
+        );
+        assert!(matches!(
+            resumed.wait().await.unwrap().terminal,
+            TerminalState::AwaitingHostAcceptance { .. }
+        ));
+    }
+
+    *tools.revision.lock().unwrap() = Some("sha256:workspace-drift".to_owned());
+    let resumed = runtime.resume(second.run_id.clone());
+    let ack = resumed
+        .queue_completion_acceptance(
+            CommandId::from("accept-after-workspace-drift"),
+            HostCompletionAcceptance {
+                candidate_id: candidate.id,
+                generation_id: candidate.generation_id,
+                workspace_state: candidate.workspace_state,
+            },
+        )
+        .expect("queue stale-workspace acceptance");
+    let resumed = resumed.ready().await.expect("acquire drifted run");
+    assert_eq!(
+        ack.await.expect("stale acknowledgement"),
+        Err(ControlError::CompletionStale)
+    );
+    assert!(matches!(
+        resumed.wait().await.unwrap().terminal,
+        TerminalState::AwaitingHostAcceptance { .. }
+    ));
+    assert_eq!(model_calls.load(Ordering::Acquire), 2);
 }
 
 #[tokio::test]
@@ -4715,7 +5131,7 @@ async fn failed_write_pass_rejects_an_isolated_final_pass() {
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
     assert!(sink.events().iter().any(|event| matches!(
@@ -4775,7 +5191,7 @@ async fn model_named_verifier_persists_only_the_id_and_executes_frozen_parameter
     run_request.limits.max_turns = 2;
     run_request.limits.max_model_requests = 2;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
     assert_eq!(model_calls.load(Ordering::Acquire), 2);
@@ -5133,7 +5549,7 @@ async fn failed_write_pass_rejects_a_write_without_content_change() {
     run_request.limits.max_turns = 3;
     run_request.limits.max_model_requests = 3;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
     assert_eq!(model_calls.load(Ordering::Acquire), 3);
@@ -5417,6 +5833,7 @@ async fn completed_terminal_without_a_host_completion_candidate_is_rejected() {
                         workspace_state: created.replay.snapshot.workspace_state,
                         satisfied: vec![AcceptanceSatisfaction::Host {
                             acceptance_id: AcceptanceId::from("host"),
+                            receipt_id: HostAcceptanceReceiptId::from("forged-host-receipt"),
                         }],
                     },
                 },
@@ -5438,6 +5855,412 @@ async fn completed_terminal_without_a_host_completion_candidate_is_rejected() {
 }
 
 #[tokio::test]
+async fn completion_proposal_must_equal_the_current_actionable_model_stop() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(request("候选必须来自当前模型 Stop"))
+        .await
+        .expect("create proposal-origin run");
+    let contract = created
+        .replay
+        .snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .expect("proposal-origin contract");
+    let orphan = CompletionCandidate {
+        id: CompletionCandidateId::from("completion-1"),
+        generation_id: contract.generation_id.clone(),
+        message: "模型从未输出的答案".to_owned(),
+        workspace_state: created.replay.snapshot.workspace_state.clone(),
+    };
+    let orphan_error = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::CompletionProposed { candidate: orphan }),
+        )
+        .await
+        .expect_err("originless completion proposal must fail closed");
+    assert!(matches!(
+        orphan_error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("no committed model response origin")
+    ));
+
+    let candidate = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "proposal-origin",
+        "模型真实 Stop 内容",
+    )
+    .await;
+    for (label, tampered) in [
+        (
+            "message",
+            CompletionCandidate {
+                message: "篡改后的展示文本".to_owned(),
+                ..candidate.clone()
+            },
+        ),
+        (
+            "id",
+            CompletionCandidate {
+                id: CompletionCandidateId::from("completion-forged"),
+                ..candidate.clone()
+            },
+        ),
+    ] {
+        let error = store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::CompletionProposed {
+                    candidate: tampered,
+                }),
+            )
+            .await
+            .expect_err("tampered completion proposal must fail closed");
+        assert!(
+            matches!(
+                error,
+                RunStoreError::Corrupt { ref message, .. }
+                    if message.contains("current actionable model Stop")
+            ),
+            "{label}"
+        );
+    }
+
+    append_event(
+        &store,
+        &created.lease,
+        "proposal-origin-exact",
+        RuntimeEventKind::CompletionProposed { candidate },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_pending_completion_candidate_cannot_be_overwritten() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(request("不得覆盖待接受候选"))
+        .await
+        .expect("create Agent run");
+    let first = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "pending-candidate-origin",
+        "Host 看见的原始答案",
+    )
+    .await;
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::CompletionProposed {
+                candidate: first.clone(),
+            }),
+        )
+        .await
+        .expect("commit first candidate");
+    let error = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::CompletionProposed { candidate: first }),
+        )
+        .await
+        .expect_err("pending candidate replacement must fail closed");
+    assert!(matches!(
+        error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("cannot replace an existing pending candidate")
+    ));
+}
+
+#[tokio::test]
+async fn completed_message_must_equal_the_exact_host_accepted_candidate() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(request("不得替换 Host 接受的文本"))
+        .await
+        .expect("create Agent run");
+    let run_id = created.lease.run_id.clone();
+    let generation_id = created
+        .replay
+        .snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .expect("task contract")
+        .generation_id
+        .clone();
+    let workspace_state = WorkspaceState {
+        generation: 1,
+        revision: WorkspaceRevision::Known {
+            sha256: "sha256:accepted-message-workspace".to_owned(),
+        },
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "observe-known-workspace",
+        RuntimeEventKind::WorkspaceObserved {
+            workspace_state: workspace_state.clone(),
+        },
+    )
+    .await;
+    let candidate = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "accepted-message-origin",
+        "Host 实际接受的答案",
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "propose-accepted-message",
+        RuntimeEventKind::CompletionProposed {
+            candidate: candidate.clone(),
+        },
+    )
+    .await;
+    let command_id = CommandId::from("accept-exact-message");
+    let receipt_id = HostAcceptanceReceiptId::from(format!("host-acceptance:{}", command_id.0));
+    append_event(
+        &store,
+        &created.lease,
+        "accept-exact-message",
+        RuntimeEventKind::HostCompletionAccepted {
+            command_id,
+            receipt: HostAcceptanceReceipt {
+                id: receipt_id.clone(),
+                candidate_id: candidate.id.clone(),
+                generation_id: generation_id.clone(),
+                workspace_state: workspace_state.clone(),
+            },
+        },
+    )
+    .await;
+    let error = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::terminal(AgentOutcome {
+                run_id,
+                parent_run_id: None,
+                terminal: TerminalState::Completed {
+                    message: "未被 Host 接受的替换答案".to_owned(),
+                    decision: CompletionDecision {
+                        candidate_id: candidate.id,
+                        generation_id,
+                        workspace_state,
+                        satisfied: vec![AcceptanceSatisfaction::Host {
+                            acceptance_id: AcceptanceId::from("host"),
+                            receipt_id,
+                        }],
+                    },
+                },
+                accounting: ModelAccounting::default(),
+                runtime_model_requests: 0,
+                runtime_retries: 0,
+                tool_calls: 0,
+                details: AgentResultDetails::default(),
+            }),
+        )
+        .await
+        .expect_err("terminal message substitution must fail closed");
+    assert!(matches!(
+        error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("does not match the accepted completion candidate")
+    ));
+}
+
+#[tokio::test]
+async fn host_acceptance_fact_without_a_pending_candidate_is_rejected() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(request("不得伪造 Host 接受事实"))
+        .await
+        .expect("create Agent run");
+    let run_id = created.lease.run_id.clone();
+    let generation_id = TaskGenerationId::from(run_id.0.clone());
+    let workspace_state = WorkspaceState {
+        generation: 1,
+        revision: WorkspaceRevision::Known {
+            sha256: "sha256:forged-host-workspace".to_owned(),
+        },
+    };
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::WorkspaceObserved {
+                workspace_state: workspace_state.clone(),
+            }),
+        )
+        .await
+        .expect("commit exact workspace observation");
+    let command_id = CommandId::from("forged-host-command");
+    let error = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent::new(RuntimeEventKind::HostCompletionAccepted {
+                command_id: command_id.clone(),
+                receipt: HostAcceptanceReceipt {
+                    id: HostAcceptanceReceiptId::from(format!("host-acceptance:{}", command_id.0)),
+                    candidate_id: CompletionCandidateId::from("forged-candidate"),
+                    generation_id,
+                    workspace_state,
+                },
+            }),
+        )
+        .await
+        .expect_err("Store must reject acceptance without a pending candidate");
+
+    assert!(matches!(
+        error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("no pending candidate")
+    ));
+}
+
+#[tokio::test]
+async fn host_acceptance_receipt_and_terminal_references_are_exact_replay_facts() {
+    let store = InMemoryRunStore::default();
+    let created = store
+        .create(request("Host receipt 字段必须精确"))
+        .await
+        .expect("create exact Host receipt run");
+    let workspace_state = WorkspaceState {
+        generation: 1,
+        revision: WorkspaceRevision::Known {
+            sha256: "sha256:exact-host-receipt".to_owned(),
+        },
+    };
+    append_event(
+        &store,
+        &created.lease,
+        "exact-host-workspace",
+        RuntimeEventKind::WorkspaceObserved {
+            workspace_state: workspace_state.clone(),
+        },
+    )
+    .await;
+    let candidate = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "exact-host-origin",
+        "Host 可接受的精确答案",
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "exact-host-proposal",
+        RuntimeEventKind::CompletionProposed {
+            candidate: candidate.clone(),
+        },
+    )
+    .await;
+
+    let unknown_terminal = PendingRuntimeEvent::terminal(AgentOutcome {
+        run_id: created.lease.run_id.clone(),
+        parent_run_id: None,
+        terminal: TerminalState::Completed {
+            message: candidate.message.clone(),
+            decision: CompletionDecision {
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+                satisfied: vec![AcceptanceSatisfaction::Host {
+                    acceptance_id: AcceptanceId::from("host"),
+                    receipt_id: HostAcceptanceReceiptId::from("unknown-host-receipt"),
+                }],
+            },
+        },
+        accounting: ModelAccounting::default(),
+        runtime_model_requests: 1,
+        runtime_retries: 0,
+        tool_calls: 0,
+        details: AgentResultDetails::default(),
+    });
+    let error = store
+        .append(&created.lease, unknown_terminal)
+        .await
+        .expect_err("terminal cannot reference an uncommitted Host receipt");
+    assert!(matches!(
+        error,
+        RunStoreError::Corrupt { ref message, .. }
+            if message.contains("unknown Host acceptance receipt")
+    ));
+
+    for (label, command_id, receipt) in [
+        (
+            "receipt-id",
+            CommandId::from("tamper-receipt-id"),
+            HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:different-command"),
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        ),
+        (
+            "candidate",
+            CommandId::from("tamper-candidate"),
+            HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:tamper-candidate"),
+                candidate_id: CompletionCandidateId::from("foreign-candidate"),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        ),
+        (
+            "generation",
+            CommandId::from("tamper-generation"),
+            HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:tamper-generation"),
+                candidate_id: candidate.id.clone(),
+                generation_id: TaskGenerationId::from("foreign-generation"),
+                workspace_state: candidate.workspace_state.clone(),
+            },
+        ),
+        (
+            "workspace",
+            CommandId::from("tamper-workspace"),
+            HostAcceptanceReceipt {
+                id: HostAcceptanceReceiptId::from("host-acceptance:tamper-workspace"),
+                candidate_id: candidate.id.clone(),
+                generation_id: candidate.generation_id.clone(),
+                workspace_state: WorkspaceState {
+                    generation: candidate.workspace_state.generation,
+                    revision: WorkspaceRevision::Known {
+                        sha256: "sha256:foreign-workspace".to_owned(),
+                    },
+                },
+            },
+        ),
+    ] {
+        let error = store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::HostCompletionAccepted {
+                    command_id,
+                    receipt,
+                }),
+            )
+            .await
+            .expect_err("tampered Host receipt must fail closed");
+        assert!(
+            matches!(
+                error,
+                RunStoreError::Corrupt { ref message, .. }
+                    if message.contains("does not match the current candidate")
+            ),
+            "{label}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn host_receipt_terminal_must_use_the_exact_verified_workspace() {
     let store = InMemoryRunStore::default();
     let created = store
@@ -5452,11 +6275,6 @@ async fn host_receipt_terminal_must_use_the_exact_verified_workspace() {
         .task_contract
         .clone()
         .expect("frozen task contract");
-    let candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-exact-workspace"),
-        generation_id: contract.generation_id.clone(),
-        message: "任务已完成".to_owned(),
-    };
     let observed = WorkspaceState {
         generation: 1,
         revision: WorkspaceRevision::Known {
@@ -5470,6 +6288,13 @@ async fn host_receipt_terminal_must_use_the_exact_verified_workspace() {
         RuntimeEventKind::WorkspaceObserved {
             workspace_state: observed.clone(),
         },
+    )
+    .await;
+    let candidate = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "exact-workspace-origin",
+        "任务已完成",
     )
     .await;
     append_event(
@@ -5585,7 +6410,6 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         .create(verifier_request("验证证据不得跨越同哈希写入世代"))
         .await
         .expect("create verifier Agent run");
-    let run_id = created.lease.run_id.clone();
     let contract = created
         .replay
         .snapshot
@@ -5594,11 +6418,6 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         .clone()
         .expect("frozen task contract");
     let verifier = exact_run_tests_spec();
-    let candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-before-aba-write"),
-        generation_id: contract.generation_id.clone(),
-        message: "第一次提出完成".to_owned(),
-    };
     let revision = WorkspaceRevision::Known {
         sha256: "sha256:workspace-a".to_owned(),
     };
@@ -5613,6 +6432,13 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
         RuntimeEventKind::WorkspaceObserved {
             workspace_state: observed.clone(),
         },
+    )
+    .await;
+    let candidate = seed_completion_candidate_origin(
+        &store,
+        &created.lease,
+        "aba-first-origin",
+        "第一次提出完成",
     )
     .await;
     append_event(
@@ -5681,191 +6507,29 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
     )
     .await;
 
-    // A later failed verification legally rejects the pending completion and
-    // reopens the model/tool boundary while retaining the earlier receipt as
-    // historical evidence. This avoids manufacturing an impossible tool call
-    // while a successful completion is still pending.
+    // A verifier epoch is itself newer than the candidate. Re-verifying the
+    // old proposal (even at the same content hash) must fail before any
+    // further action can manufacture a path that reuses the historical
+    // receipt.
     let failing_verification = VerificationId::from("aba-fail");
-    append_event(
-        &store,
-        &created.lease,
-        "aba-fail-prepared",
-        RuntimeEventKind::HostVerificationPrepared {
-            verification_id: failing_verification.clone(),
-            candidate: candidate.clone(),
-            acceptance_id: AcceptanceId::from("tests"),
-            verifier: verifier.clone(),
-            workspace_state_before: passed_state,
-        },
-    )
-    .await;
-    append_event(
-        &store,
-        &created.lease,
-        "aba-fail-started",
-        RuntimeEventKind::HostVerificationStarted {
-            verification_id: failing_verification.clone(),
-        },
-    )
-    .await;
-    append_event(
-        &store,
-        &created.lease,
-        "aba-fail-committed",
-        RuntimeEventKind::HostVerificationCommitted {
-            verification_id: failing_verification,
-            outcome: Box::new(failed_verifier_outcome(
-                verifier,
-                "sha256:workspace-a",
-                "复验失败，必须重新修改",
-            )),
-            receipt: None,
-            workspace_state_after: WorkspaceState {
-                generation: 3,
-                revision: revision.clone(),
-            },
-        },
-    )
-    .await;
-    let rejection = store
-        .load(&run_id)
-        .await
-        .unwrap()
-        .expect("run after failed verification")
-        .snapshot
-        .last_host_verification_failure
-        .expect("typed Host verification failure")
-        .rejection;
-    append_event(
-        &store,
-        &created.lease,
-        "aba-completion-rejected",
-        RuntimeEventKind::CompletionRejected { rejection },
-    )
-    .await;
-
-    let write_arguments = ToolArguments::from_value(json!({"path": "same.txt"}));
-    seed_current_model_tool_calls(
-        &store,
-        &created.lease,
-        "aba-write-model",
-        vec![ModelToolCall {
-            id: "aba-write".to_owned(),
-            name: "write".to_owned(),
-            arguments: write_arguments.clone(),
-        }],
-    )
-    .await;
-    let operation_id = OperationId::from("aba-write-operation");
-    let write_invocation = ToolInvocation {
-        run_id: run_id.clone(),
-        call_id: "aba-write".to_owned(),
-        name: "write".to_owned(),
-        arguments: write_arguments,
-    };
-    append_event(
-        &store,
-        &created.lease,
-        "aba-write-prepared",
-        RuntimeEventKind::ToolPrepared {
-            operation_id: operation_id.clone(),
-            invocation: write_invocation.clone(),
-            workspace_access: WorkspaceAccess::MayWrite,
-        },
-    )
-    .await;
-    append_authorization(
-        &store,
-        &created.lease,
-        "aba-write-authorized",
-        operation_id.clone(),
-        &write_invocation,
-        ToolAuthorizationDisposition::Allow,
-        None,
-    )
-    .await;
-    append_event(
-        &store,
-        &created.lease,
-        "aba-write-started",
-        RuntimeEventKind::ToolExecutionStarted {
-            operation_id: operation_id.clone(),
-        },
-    )
-    .await;
-    let mut write_outcome = ToolOutcome::success("写入已执行，但内容最终回到同一哈希");
-    write_outcome.side_effect = ToolSideEffectStatus::Applied;
-    write_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
-    let current_state = WorkspaceState {
-        generation: 4,
-        revision,
-    };
-    append_event(
-        &store,
-        &created.lease,
-        "aba-write-committed",
-        RuntimeEventKind::ToolOutcomeCommitted {
-            operation_id,
-            call_id: "aba-write".to_owned(),
-            name: "write".to_owned(),
-            outcome: Box::new(write_outcome),
-            workspace_state: Some(current_state.clone()),
-        },
-    )
-    .await;
-
-    let second_candidate = CompletionCandidate {
-        id: CompletionCandidateId::from("candidate-after-aba-write"),
-        generation_id: contract.generation_id.clone(),
-        message: "写入后再次提出完成".to_owned(),
-    };
-    append_event(
-        &store,
-        &created.lease,
-        "aba-second-completion-proposed",
-        RuntimeEventKind::CompletionProposed {
-            candidate: second_candidate.clone(),
-        },
-    )
-    .await;
-    let current = store
-        .load(&run_id)
-        .await
-        .unwrap()
-        .expect("run before stale receipt terminal")
-        .snapshot;
     let error = store
         .append(
             &created.lease,
-            PendingRuntimeEvent::terminal(AgentOutcome {
-                run_id: run_id.clone(),
-                parent_run_id: None,
-                terminal: TerminalState::Completed {
-                    message: second_candidate.message,
-                    decision: CompletionDecision {
-                        candidate_id: second_candidate.id,
-                        generation_id: contract.generation_id,
-                        workspace_state: current_state,
-                        satisfied: vec![AcceptanceSatisfaction::Evidence {
-                            acceptance_id: AcceptanceId::from("tests"),
-                            receipt_id: receipt.id,
-                        }],
-                    },
-                },
-                accounting: current.accounting,
-                runtime_model_requests: current.runtime_model_requests,
-                runtime_retries: current.runtime_retries,
-                tool_calls: current.tool_calls,
-                details: AgentResultDetails::default(),
+            PendingRuntimeEvent::new(RuntimeEventKind::HostVerificationPrepared {
+                verification_id: failing_verification,
+                candidate,
+                acceptance_id: AcceptanceId::from("tests"),
+                verifier,
+                workspace_state_before: passed_state,
             }),
         )
         .await
-        .expect_err("old evidence must not survive a MayWrite epoch");
+        .expect_err("an old candidate cannot be re-verified after an epoch advance");
 
     assert!(matches!(
         error,
         RunStoreError::Corrupt { ref message, .. }
-            if message.contains("current contract or workspace")
+            if message.contains("candidate is stale")
     ));
 }
 
@@ -5962,7 +6626,7 @@ async fn child_without_terminal_capacity_has_no_child_lifecycle() {
     run_request.limits.max_turns = 2;
     run_request.limits.max_model_requests = 2;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -6104,7 +6768,7 @@ async fn unused_child_terminal_permit_is_returned_before_second_child_launch() {
     run_request.limits.max_turns = 3;
     run_request.limits.max_model_requests = 5;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 3);
@@ -6201,7 +6865,7 @@ async fn shared_capacity_rejects_second_same_turn_child_without_fake_lifecycle()
     run_request.limits.max_model_requests = 3;
     run_request.limits.max_concurrent_children = 2;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -6299,7 +6963,7 @@ async fn two_same_batch_children_join_before_one_root_integration_request() {
     run_request.limits.max_model_requests = 4;
     run_request.limits.max_concurrent_children = 2;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -6423,7 +7087,7 @@ async fn same_batch_partial_child_failure_preserves_the_sibling_handoff() {
     run_request.limits.max_model_retries = 0;
     run_request.limits.max_concurrent_children = 2;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
@@ -6489,7 +7153,7 @@ async fn cancelling_same_batch_fanout_settles_every_pending_child() {
     run_request.limits.max_model_requests = 4;
     run_request.limits.max_model_retries = 0;
     run_request.limits.max_concurrent_children = 2;
-    let run = runtime.start(run_request);
+    let run = runtime.start(run_request).ready().await.unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
 
@@ -6595,7 +7259,7 @@ async fn child_limit_rejects_second_same_turn_spawn_without_fake_lifecycle_and_r
     let (runtime, _, sink, _) = fixture(model);
     let mut request = request("bounded children");
     request.limits.max_concurrent_children = 1;
-    let outcome = runtime.start(request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request)).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(root_calls.load(Ordering::Acquire), 3);
     assert_eq!(child_calls.load(Ordering::Acquire), 2);
@@ -6675,7 +7339,7 @@ async fn nested_runs_join_descendants_before_consuming_each_terminal_permit() {
     let mut run_request = request("nested");
     run_request.limits.max_turns = 3;
     run_request.limits.max_model_requests = 6;
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(calls.load(Ordering::Acquire), 5);
     assert_eq!(outcome.runtime_model_requests, 5);
@@ -6833,7 +7497,7 @@ async fn typed_finish_failures_and_accounting_fail_closed() {
         )])
     }));
     let (runtime, _, _, _) = fixture(model);
-    let outcome = runtime.start(request("accounting")).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(request("accounting"))).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert!(!outcome.accounting.complete);
     assert!(outcome.accounting.usage_incomplete);
@@ -7775,11 +8439,7 @@ async fn resuming_terminal_run_returns_durable_outcome_without_model_or_tool_cal
         )])
     }));
     let (runtime, tools, _, store) = fixture(model.clone());
-    let completed = runtime
-        .start(request("complete once"))
-        .wait()
-        .await
-        .unwrap();
+    let completed = wait_host_accepted(&runtime, runtime.start(request("complete once"))).await;
     let model_calls = model.ledger.root.started.load(Ordering::Acquire);
     let tool_calls = tools.calls.lock().unwrap().len();
 
@@ -7838,11 +8498,7 @@ async fn resume_prepared_model_executes_the_persisted_attempt_once() {
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "resumed prepared request"
@@ -7907,11 +8563,7 @@ async fn resume_prepared_terminal_request_preserves_its_empty_catalog_without_ne
         store.clone(),
     ));
 
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -7962,11 +8614,7 @@ async fn resume_committed_tool_free_response_rejects_hallucinated_tool_without_e
         store.clone(),
     ));
 
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -8107,7 +8755,11 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
         )
         .with_clock(clock.clone()),
     );
-    let run = runtime.resume(created.lease.run_id.clone());
+    let run = runtime
+        .resume(created.lease.run_id.clone())
+        .ready()
+        .await
+        .unwrap();
     tokio::task::yield_now().await;
     assert!(
         attempts.lock().unwrap().is_empty(),
@@ -8128,7 +8780,7 @@ async fn crash_after_atomic_retry_decision_resumes_the_prepared_retry_once() {
     .await;
     assert_eq!(*attempts.lock().unwrap(), vec![1]);
     clock.advance_to(13_000);
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
     assert_eq!(*attempts.lock().unwrap(), vec![1, 2]);
     assert_eq!(outcome.runtime_model_requests, 3);
     assert_eq!(outcome.runtime_retries, 2);
@@ -8228,11 +8880,7 @@ async fn resume_in_flight_retry_requires_recovery_without_reissuing_the_retry() 
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
@@ -8320,11 +8968,7 @@ async fn resume_prepared_tool_executes_once_then_continues_from_committed_respon
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::Completed { ref message, .. } if message == "continued after tool"
@@ -8394,11 +9038,7 @@ async fn resume_in_flight_model_requires_recovery_without_reissuing_request() {
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
     assert!(matches!(
         outcome.terminal,
         TerminalState::RecoveryRequired {
@@ -8603,11 +9243,7 @@ async fn run_created_accounting_baseline_survives_crash_and_resume() {
         Arc::new(CollectSink::default()),
         store.clone(),
     ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.resume(created.lease.run_id.clone())).await;
 
     assert_eq!(outcome.accounting.total_started(), 2);
     assert_eq!(outcome.accounting.total_completed(), 2);
@@ -8655,13 +9291,17 @@ async fn live_projection_matches_store_replay_through_tool_steer_and_terminal() 
         }
     }));
     let (runtime, _, sink, store) = fixture(model);
-    let run = runtime.start(request("验证 live projection"));
+    let run = runtime
+        .start(request("验证 live projection"))
+        .ready()
+        .await
+        .unwrap();
     let run_id = run.run_id.clone();
     let control = run.control();
     sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
         .await;
     control.steer("追加约束").unwrap();
-    let outcome = run.wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, run).await;
 
     let replay = store.load(&run_id).await.unwrap().unwrap();
     assert_eq!(reduce_events(&replay.events).unwrap(), replay.snapshot);
@@ -8740,7 +9380,7 @@ async fn terminal_no_tools_catalog_is_selected_before_hard_limit_compaction() {
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     assert_eq!(calls.load(Ordering::Acquire), 1);
@@ -8774,7 +9414,7 @@ async fn mandatory_facts_over_limit_fail_before_any_model_request() {
         hard_input_tokens: 1_000,
     };
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -8836,7 +9476,7 @@ async fn limit_compaction_cannot_consume_the_reserved_terminal_request() {
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
 
     assert!(matches!(
         outcome.terminal,
@@ -8900,7 +9540,7 @@ async fn limit_compaction_is_durable_and_the_agent_consumes_only_the_projection(
     let mut run_request = request("最新任务");
     run_request.transcript = original;
     run_request.context_policy = compaction_policy();
-    let outcome = runtime.start(run_request).wait().await.unwrap();
+    let outcome = wait_host_accepted(&runtime, runtime.start(run_request)).await;
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
 
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();

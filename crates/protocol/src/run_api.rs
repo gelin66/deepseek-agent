@@ -14,10 +14,13 @@ use crate::agent_runtime::{
     StoredRuntimeEvent, TerminalState, ToolPolicy, Usage, UserInteractionResponse,
     WriteExecutionMode,
 };
-use crate::task::{TaskContract, TaskDefinition};
+use crate::task::{
+    CompletionCandidate, CompletionDecision, HostAcceptanceReceipt, HostCompletionAcceptance,
+    TaskContract, TaskDefinition, WorkspaceState,
+};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 15;
+pub const RUN_API_SCHEMA_VERSION: u32 = 16;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -167,6 +170,30 @@ pub enum RunCommand {
         interaction_id: InteractionId,
         response: UserInteractionResponse,
     },
+    AcceptCompletion {
+        run_id: RunId,
+        acceptance: HostCompletionAcceptance,
+    },
+}
+
+/// Canonical user-visible completion truth derived from the one RunStore.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RunCompletion {
+    Running,
+    Answered {
+        candidate: CompletionCandidate,
+        current_workspace_state: WorkspaceState,
+    },
+    HostAccepted {
+        candidate: CompletionCandidate,
+        receipt: HostAcceptanceReceipt,
+        current_workspace_state: WorkspaceState,
+    },
+    VerifiedCompleted {
+        decision: CompletionDecision,
+    },
+    EndedWithoutCompletion,
 }
 
 /// Read-only projection of one canonical run.
@@ -186,6 +213,7 @@ pub struct RunView {
     pub task_contract: Option<TaskContract>,
     pub workspace: String,
     pub last_sequence: u64,
+    pub completion: RunCompletion,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalState>,
     pub usage: Usage,
@@ -233,6 +261,9 @@ pub enum RunApiErrorCode {
     InteractionMismatch,
     InteractionAlreadyResolved,
     InvalidInteractionResponse,
+    CompletionNotPending,
+    CompletionMismatch,
+    CompletionStale,
 }
 
 /// Stable machine-readable cause for failures that share one broad API code.
@@ -367,6 +398,7 @@ mod tests {
             task_contract: None,
             workspace: "/workspace/project".to_owned(),
             last_sequence: 2,
+            completion: RunCompletion::Running,
             terminal: None,
             usage: Usage {
                 input_tokens: 10,
@@ -396,7 +428,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 15,
+                "schema_version": 16,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
