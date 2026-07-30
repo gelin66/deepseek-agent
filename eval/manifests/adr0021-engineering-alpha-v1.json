@@ -1,0 +1,147 @@
+{
+  "schema": "dse.eval.adr0021-engineering-alpha.v1",
+  "frozen_at": "2026-07-30",
+  "source_identity": {
+    "starting_revision": "10bd2e6adab0140cd7749caed3e09b13e8b0b66a",
+    "starting_tree": "34337a6026bfedd21e982e9573cbf599d438361a",
+    "required_clean_start": true,
+    "run_api": 16,
+    "runtime_event": 23,
+    "state_schema": 29,
+    "exec_stream": 7,
+    "rustc": "1.97.0",
+    "cargo": "1.97.0",
+    "cargo_lock_sha256": "sha256:d38be69ea72b381d5348d0f0a326c0db49441f986060dcae5ccb49a12831d250",
+    "rust_toolchain_sha256": "sha256:d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85"
+  },
+  "problem": "After ADR-0021, earlier Host-accepted Alpha evidence cannot by itself establish verified engineering completion. Three independent fresh tasks must close only through latest-revision EvidenceReceipt and canonical VerifiedCompleted projection before another capability slice can be admitted.",
+  "owner": "existing crates/app production composition test harness; production Rust delta must remain zero",
+  "task_source": "crates/app/src/production.rs::tests",
+  "tasks": [
+    {
+      "task_id": "python-quota",
+      "family": "pure_code_cross_file_python",
+      "required_files": [
+        "quota.py",
+        "service.py"
+      ],
+      "exact_verifier": "Host-frozen external Python behavior, owner and changed-path verifier",
+      "writer_required": false,
+      "web_required": false
+    },
+    {
+      "task_id": "rust-retry",
+      "family": "pure_code_cross_file_rust",
+      "required_files": [
+        "src/lib.rs",
+        "src/retry.rs",
+        "tests/retry.rs"
+      ],
+      "exact_verifier": "Host-frozen changed-path plus cargo fmt/test/clippy -D warnings verifier",
+      "writer_required": false,
+      "web_required": false
+    },
+    {
+      "task_id": "web-writer-constant",
+      "family": "code_web_writer_recovery",
+      "required_files": [
+        "server.py",
+        "build_and_serve.py"
+      ],
+      "exact_verifier": "Host-frozen ApplicationProbe after Writer seal/integration on the latest root revision",
+      "writer_required": true,
+      "web_required": true,
+      "web_contract": "one deterministic Host web_search, two independent web_fetch source reads and two URL citations"
+    }
+  ],
+  "completion_contract": {
+    "success_projection": "verified_completed",
+    "required_terminal": "completed",
+    "required_evidence": "latest-revision EvidenceReceipt for every frozen verifier acceptance",
+    "answered_counts_as_success": false,
+    "host_accepted_counts_as_success": false,
+    "host_completion_receipt_allowed": false,
+    "false_success_target": 0
+  },
+  "replay_contract": {
+    "sqlite_reopen": true,
+    "event_prefix": "byte-equivalent canonical events",
+    "model_reexecution": 0,
+    "tool_reexecution": 0,
+    "verifier_reexecution": 0,
+    "writer_reexecution": 0,
+    "web_reexecution": 0
+  },
+  "deterministic_treatment": {
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "runtime_retries": 0,
+    "model": "scripted production-loopback fixture",
+    "test": "cargo test -p dse-app --locked post_adr0021_engineering_alpha_three_independent_verified_tasks -- --nocapture"
+  },
+  "official_treatment": {
+    "admission": "only after deterministic 3/3, complete accounting and an available DeepSeek credential",
+    "model": "deepseek-v4-pro",
+    "reasoning_effort": "high",
+    "runs_per_task": 1,
+    "maximum_reruns": 0,
+    "runtime_retries": 0,
+    "max_output_tokens": 2048,
+    "max_physical_requests": {
+      "python-quota": 8,
+      "rust-retry": 8,
+      "web-writer-constant": 12
+    },
+    "max_tool_calls": {
+      "python-quota": 16,
+      "rust-retry": 16,
+      "web-writer-constant": 24
+    },
+    "per_task_known_cost_ceiling_usd": "0.04",
+    "suite_known_cost_ceiling_usd": "0.10",
+    "stop_before_next_task_on": [
+      "usage_incomplete",
+      "billing_unknown",
+      "identity_or_observer_ambiguity",
+      "false_success",
+      "unsafe_evidence",
+      "suite_cost_ceiling"
+    ]
+  },
+  "metrics": [
+    "verified_success",
+    "false_success",
+    "behavior_status",
+    "owner_loss_code",
+    "physical_requests",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit_tokens",
+    "cost_nanousd",
+    "wall_time_ms",
+    "tool_calls",
+    "tool_failures",
+    "patch_failures",
+    "rework_cycles",
+    "writer_lifecycle",
+    "workspace_revision",
+    "receipt_identity",
+    "reopen_reexecution"
+  ],
+  "decision_rule": {
+    "admit_successor": "the same current owner loss must recur in at least two independent fresh tasks",
+    "no_repeated_loss": "keep current production, production delta=0, stop capability expansion",
+    "single_loss": "record the bounded product failure but do not admit a production treatment",
+    "false_success": "fail closed and fix completion/evaluator truth before any capability work",
+    "product_metric_eligible": false,
+    "general_efficiency_claim_allowed": false
+  },
+  "explicit_exclusions": [
+    "M40 acquisition or evaluator",
+    "visual or multimodal placeholder",
+    "MCP or Provider expansion",
+    "second Runtime, Store or Agent loop",
+    "production Prompt or DeepSeek wire change",
+    "selective rerun"
+  ]
+}

@@ -478,6 +478,15 @@ generation 和已知 revision 的 Host-sealed `EvidenceReceipt`，并投影 `Ver
 任何 `MayWrite` 工具一旦执行都会推进 workspace generation，即使内容 hash 恢复原值；旧
 Host acceptance/receipt 因而不能复活。Unknown revision 仍可展示答案，但不能被 Host 接受。
 
+ADR-0021 后的 Engineering Alpha 复用这一唯一状态机，production delta=`0`。当前三项
+deterministic production-loopback task 都只由 latest-revision `EvidenceReceipt` 投影
+`VerifiedCompleted`，没有 `HostCompletionAccepted`：两个独立 pure-code cross-file task 与一个
+deterministic Host Web + isolated Writer/recovery vertical 合计 verified=`3/3`、false success=`0`。
+Writer 顺序为 seal → integrate → latest-revision verify → cleanup → terminal；SQLite terminal
+reopen 不增加 event，也不重发模型、工具、verifier、Web 或 Writer side effect。该结果证明
+completion/evaluator/replay current fact，不证明 DeepSeek 产品能力；official fresh treatment
+仍因 credential 不可用而未执行，successor admission 保持关闭。
+
 M7-A2 后，`crates/protocol` 的 canonical JSON 不再依赖 `serde_json::Map` 的 feature 后端：
 每层 object 显式按 UTF-8 key bytes 排序，array 保持原序；inline verification artifact 的
 构造与 replay validation 共用同一 canonical-byte helper。跨 Rust/Python、
